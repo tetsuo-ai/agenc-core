@@ -1,37 +1,68 @@
-import { constants as fsConstants } from "node:fs";
+import { createHash } from "node:crypto";
+import { constants, lstatSync, realpathSync, type Stats } from "node:fs";
 import {
-  copyFile,
-  link,
   lstat,
-  mkdir,
-  readlink,
+  open,
   readdir,
-  rename,
-  rm,
-  rmdir,
-  stat,
-  symlink,
-  unlink,
-  writeFile,
+  readlink,
+  realpath,
+  type FileHandle,
 } from "node:fs/promises";
 import path from "node:path";
 import { globbyStream } from "globby";
 
 import { buildProjectTreeRows } from "./buildTree.js";
-import { collectGitStatus, listGitFiles, type GitStatusByPath } from "./gitStatus.js";
+import {
+  collectGitStatus,
+  listGitFiles,
+  type GitStatusByPath,
+} from "./gitStatus.js";
 import { normalizeWorkspacePathForReferences } from "../pathReferences.js";
 import type { ProjectTreeRow, ProjectTreeSnapshot } from "../types.js";
+import {
+  bindWorkspaceDirectoryMutation,
+  captureWorkspaceFilePathTransactionGuard,
+  WorkspaceFileMutationPreEffectConflictError,
+  type WorkspaceBoundDirectoryMutation,
+  type WorkspaceFilePathTransactionGuard,
+} from "../../../workspace/file-mutation-transaction.js";
 
 type Listener = () => void;
 export type ProjectTreeMutationResult =
   | { readonly ok: true; readonly path: string }
-  | { readonly ok: false; readonly error: string };
+  | {
+      readonly ok: false;
+      readonly error: string;
+      /**
+       * A destructive filesystem primitive started but did not report success.
+       * Callers must reconcile this as an unknown outcome, never as a safe
+       * pre-effect cancellation.
+       */
+      readonly effect?: "unknown";
+    };
 export type ProjectTreeMutationOptions = {
   /**
    * Synchronous last-moment guard invoked after every preparatory await and
-   * immediately before the destructive filesystem syscall.
+   * before the final path-identity check which precedes the filesystem syscall.
    */
   readonly beforeCommit?: () => string | null;
+  /**
+   * Deterministic ancestor-exchange seam after the last main-process
+   * pathname assertion. The bound helper/descriptor must still prevent escape.
+   */
+  readonly __testAfterFinalPathCheck?: () => void | Promise<void>;
+  /**
+   * Deterministic post-syscall race seam for regression tests only. Production
+   * callers must omit it.
+   */
+  readonly __testAfterPathEffect?: () => void | Promise<void>;
+};
+export type RenamePathNoClobberTestHooks = {
+  /**
+   * Deterministic race injection used by filesystem regression tests only.
+   * Production callers must omit these hooks.
+   */
+  readonly beforeRenameFailClosed?: () => void | Promise<void>;
 };
 
 const EMPTY_SNAPSHOT: ProjectTreeSnapshot = Object.freeze({
@@ -97,6 +128,7 @@ export class ProjectTreeStore {
   #refreshActive = 0;
   #refreshTimer: ReturnType<typeof setInterval> | null = null;
   #started = false;
+  #mutationWorkspaceRootIdentity: StableDirectoryIdentity | null;
   // Directory paths known at the last successful scan, used to detect directories
   // that newly appeared mid-session (an agent-created subpackage) so they can be
   // auto-revealed. Stays null until the first scan establishes the baseline — the
@@ -106,6 +138,8 @@ export class ProjectTreeStore {
   constructor(cwd = process.cwd(), refreshIntervalMs = 5_000) {
     this.#cwd = cwd;
     this.#refreshIntervalMs = refreshIntervalMs;
+    this.#mutationWorkspaceRootIdentity =
+      captureInitialWorkspaceRootIdentity(cwd);
   }
 
   start(): void {
@@ -134,12 +168,13 @@ export class ProjectTreeStore {
   }
 
   hasInFlightPathWithin(pathValue: string): boolean {
-    const normalized = normalizeWorkspacePathForReferences(pathValue)
-      .replace(/\/+$/u, "");
+    const normalized = normalizeWorkspacePathForReferences(pathValue).replace(
+      /\/+$/u,
+      "",
+    );
     return [...this.#inFlightPaths].some(
       (candidate) =>
-        candidate === normalized ||
-        candidate.startsWith(`${normalized}/`),
+        candidate === normalized || candidate.startsWith(`${normalized}/`),
     );
   }
 
@@ -175,7 +210,8 @@ export class ProjectTreeStore {
       this.#autoExpandNewDirectories(paths);
       this.#paths = paths;
       this.#gitStatus = gitStatus;
-      this.#cursorPath = this.#cursorPath ?? firstFilePath(paths) ?? paths[0] ?? null;
+      this.#cursorPath =
+        this.#cursorPath ?? firstFilePath(paths) ?? paths[0] ?? null;
       this.#loading = false;
       this.#error = null;
       this.#emit();
@@ -227,7 +263,10 @@ export class ProjectTreeStore {
     const rows = selectableRows(this.#snapshot.rows);
     if (rows.length === 0) return;
     const current = rows.findIndex((row) => row.path === this.#cursorPath);
-    const next = Math.max(0, Math.min(rows.length - 1, (current < 0 ? 0 : current) + delta));
+    const next = Math.max(
+      0,
+      Math.min(rows.length - 1, (current < 0 ? 0 : current) + delta),
+    );
     this.#cursorPath = rows[next]?.path ?? this.#cursorPath;
     this.#emit();
   }
@@ -258,7 +297,10 @@ export class ProjectTreeStore {
     if (!row || row.kind !== "directory") return;
     if (this.#expandedPaths.has(normalizedPath)) {
       this.#expandedPaths.delete(normalizedPath);
-      if (this.#cursorPath && isDescendantPath(this.#cursorPath, normalizedPath)) {
+      if (
+        this.#cursorPath &&
+        isDescendantPath(this.#cursorPath, normalizedPath)
+      ) {
         this.#cursorPath = normalizedPath;
       }
     } else {
@@ -282,7 +324,10 @@ export class ProjectTreeStore {
     const row = this.#rowForPath(normalizedPath);
     if (row?.kind === "directory" && this.#expandedPaths.has(normalizedPath)) {
       this.#expandedPaths.delete(normalizedPath);
-      if (this.#cursorPath && isDescendantPath(this.#cursorPath, normalizedPath)) {
+      if (
+        this.#cursorPath &&
+        isDescendantPath(this.#cursorPath, normalizedPath)
+      ) {
         this.#cursorPath = normalizedPath;
       }
     } else {
@@ -309,21 +354,88 @@ export class ProjectTreeStore {
   }
 
   getCursorRow(): ProjectTreeRow | null {
-    return this.#snapshot.rows.find((row) => row.path === this.#cursorPath) ?? null;
+    return (
+      this.#snapshot.rows.find((row) => row.path === this.#cursorPath) ?? null
+    );
   }
 
-  async createFile(relativePath: string): Promise<ProjectTreeMutationResult> {
-    const target = resolveWorkspaceRelativePath(this.#cwd, relativePath, { requireFilePath: true });
+  async createFile(
+    relativePath: string,
+    options: ProjectTreeMutationOptions = {},
+  ): Promise<ProjectTreeMutationResult> {
+    const target = resolveWorkspaceRelativePath(this.#cwd, relativePath, {
+      requireFilePath: true,
+    });
     if (!target.ok) return target;
 
+    let commitAttempted = false;
+    let guard: WorkspaceFilePathTransactionGuard | undefined;
     try {
-      await mkdir(path.dirname(target.absolutePath), { recursive: true });
-      await writeFile(target.absolutePath, "", { flag: "wx" });
+      if (this.hasInFlightPathWithin(target.relativePath)) {
+        return {
+          ok: false,
+          error: `Cannot create ${target.relativePath} while an agent may be writing to it.`,
+        };
+      }
+      await assertWorkspaceMutationParentContained(
+        this.#cwd,
+        target.absolutePath,
+      );
+      guard = await captureWorkspaceFilePathTransactionGuard(
+        target.absolutePath,
+      );
+      if (guard.targetExisted) {
+        throw Object.assign(new Error("path already exists"), {
+          code: "EEXIST" as const,
+        });
+      }
+      const missingState = { kind: "missing" as const };
+      await guard.prepareBoundMutation(missingState, "write");
+      if (this.hasInFlightPathWithin(target.relativePath)) {
+        return {
+          ok: false,
+          error: `Cannot create ${target.relativePath} while an agent may be writing to it.`,
+        };
+      }
+      const refusal = options.beforeCommit?.();
+      if (refusal) return { ok: false, error: refusal };
+      await guard.assertOriginalState();
+      await options.__testAfterFinalPathCheck?.();
+      await guard.writeBoundContent(missingState, Buffer.alloc(0), () => {
+        commitAttempted = true;
+      });
+      await options.__testAfterPathEffect?.();
+      await guard.assertState({
+        kind: "content",
+        content: Buffer.alloc(0),
+      });
       await this.refresh();
       this.reveal(target.relativePath);
       return { ok: true, path: target.relativePath };
     } catch (error) {
-      return { ok: false, error: fileActionError("create", target.relativePath, error) };
+      let normalizedError =
+        error instanceof WorkspaceFileMutationPreEffectConflictError
+          ? Object.assign(new Error("path already exists"), {
+              code: "EEXIST" as const,
+            })
+          : error;
+      if (isSharedWorkspacePathIdentityError(normalizedError)) {
+        normalizedError =
+          !commitAttempted && (await pathExists(target.absolutePath))
+            ? Object.assign(new Error("path already exists"), {
+                code: "EEXIST" as const,
+              })
+            : projectTreePathIdentityChangedError(target.absolutePath);
+      }
+      return {
+        ok: false,
+        error: fileActionError("create", target.relativePath, normalizedError),
+        ...(commitAttempted && mutationErrorMayHaveEffect(normalizedError)
+          ? { effect: "unknown" as const }
+          : {}),
+      };
+    } finally {
+      await guard?.dispose();
     }
   }
 
@@ -337,6 +449,8 @@ export class ProjectTreeStore {
     const target = resolveWorkspaceRelativePath(this.#cwd, toPath);
     if (!target.ok) return target;
 
+    let commitAttempted = false;
+    let directoryMutation: WorkspaceBoundDirectoryMutation | undefined;
     try {
       if (this.hasInFlightPathWithin(source.relativePath)) {
         return {
@@ -350,38 +464,113 @@ export class ProjectTreeStore {
           error: `Cannot rename ${source.relativePath} to ${target.relativePath}: target is inside the source path.`,
         };
       }
-      if (await pathExists(target.absolutePath)) {
-        return { ok: false, error: `Cannot rename to ${target.relativePath}: path already exists.` };
-      }
-      await mkdir(path.dirname(target.absolutePath), { recursive: true });
-      // The first existence check preceded mkdir and can no longer authorize
-      // the commit. Recheck both target no-clobber and live editor/agent state
-      // after all asynchronous preparation, directly before rename().
-      if (await pathExists(target.absolutePath)) {
-        return { ok: false, error: `Cannot rename to ${target.relativePath}: path already exists.` };
-      }
+      await Promise.all([
+        assertWorkspaceMutationParentContained(this.#cwd, source.absolutePath),
+        assertWorkspaceMutationParentContained(this.#cwd, target.absolutePath),
+      ]);
       if (this.hasInFlightPathWithin(source.relativePath)) {
         return {
           ok: false,
           error: `Cannot rename ${source.relativePath} while an agent may be writing inside it.`,
         };
       }
+      if (
+        path.dirname(source.absolutePath) !== path.dirname(target.absolutePath)
+      ) {
+        throw unsupportedPathRenameError(
+          source.absolutePath,
+          target.absolutePath,
+          "Only same-directory regular-file renames can be made identity-bound and no-clobber.",
+        );
+      }
+      if (await pathExists(target.absolutePath)) {
+        return {
+          ok: false,
+          error: `Cannot rename to ${target.relativePath}: path already exists.`,
+        };
+      }
+      const workspaceRootIdentity =
+        await this.#getMutationWorkspaceRootIdentity();
+      const sourceIdentity = await captureDeletePathIdentity(
+        workspaceRootIdentity,
+        source.relativePath,
+      );
+      if (sourceIdentity.target.kind !== "file") {
+        throw unsupportedPathRenameError(
+          source.absolutePath,
+          target.absolutePath,
+          "Directory and symlink rename still lack a portable identity-bound no-clobber destination primitive.",
+        );
+      }
+      const targetIdentity = await captureCreatePathIdentity(
+        workspaceRootIdentity,
+        target.relativePath,
+      );
+      directoryMutation = await bindWorkspaceDirectoryMutation({
+        parent: sourceIdentity.parent,
+        targetPath: sourceIdentity.targetPath,
+      });
       const refusal = options.beforeCommit?.();
       if (refusal) return { ok: false, error: refusal };
-      await renamePathNoClobber(source.absolutePath, target.absolutePath);
-      this.#renameExpandedPaths(source.relativePath, target.relativePath);
+      await assertDeletePathIdentity(sourceIdentity);
+      await assertCreatePathIdentity(targetIdentity);
+      await options.__testAfterFinalPathCheck?.();
+      const renamedIdentity = await directoryMutation.renameRegularFile(
+        path.basename(target.absolutePath),
+        sourceIdentity.target,
+        () => {
+          commitAttempted = true;
+        },
+      );
+      await options.__testAfterPathEffect?.();
+      await assertMissingTarget(sourceIdentity, { staleIfPresent: true });
+      const observedTarget = await observeRegularFileIdentity(
+        target.absolutePath,
+      );
+      if (
+        renamedIdentity.dev !== observedTarget.dev ||
+        renamedIdentity.ino !== observedTarget.ino ||
+        !sameRenamedRegularFileIdentity(sourceIdentity.target, observedTarget)
+      ) {
+        throw projectTreePathIdentityChangedError(target.absolutePath);
+      }
       await this.refresh();
       this.reveal(target.relativePath);
       return { ok: true, path: target.relativePath };
     } catch (error) {
-      return { ok: false, error: fileActionError("rename", source.relativePath, error) };
+      let normalizedError =
+        error instanceof WorkspaceFileMutationPreEffectConflictError
+          ? Object.assign(new Error("path already exists"), {
+              code: "EEXIST" as const,
+            })
+          : error;
+      if (isSharedWorkspacePathIdentityError(normalizedError)) {
+        normalizedError = projectTreePathIdentityChangedError(
+          source.absolutePath,
+        );
+      }
+      return {
+        ok: false,
+        error: fileActionError("rename", source.relativePath, normalizedError),
+        ...(commitAttempted && mutationErrorMayHaveEffect(normalizedError)
+          ? { effect: "unknown" as const }
+          : {}),
+      };
+    } finally {
+      await directoryMutation?.dispose();
     }
   }
 
-  async deletePath(relativePath: string): Promise<ProjectTreeMutationResult> {
+  async deletePath(
+    relativePath: string,
+    options: ProjectTreeMutationOptions = {},
+  ): Promise<ProjectTreeMutationResult> {
     const target = resolveWorkspaceRelativePath(this.#cwd, relativePath);
     if (!target.ok) return target;
 
+    let commitAttempted = false;
+    let fileGuard: WorkspaceFilePathTransactionGuard | undefined;
+    let directoryMutation: WorkspaceBoundDirectoryMutation | undefined;
     try {
       if (this.hasInFlightPathWithin(target.relativePath)) {
         return {
@@ -389,13 +578,85 @@ export class ProjectTreeStore {
           error: `Cannot delete ${target.relativePath} while an agent may be writing inside it.`,
         };
       }
-      await rm(target.absolutePath, { recursive: true });
+      await assertWorkspaceMutationParentContained(
+        this.#cwd,
+        target.absolutePath,
+      );
+      const workspaceRootIdentity =
+        await this.#getMutationWorkspaceRootIdentity();
+      const pathIdentity = await captureDeletePathIdentity(
+        workspaceRootIdentity,
+        target.relativePath,
+      );
+      if (pathIdentity.target.kind === "file") {
+        fileGuard = await captureWorkspaceFilePathTransactionGuard(
+          target.absolutePath,
+        );
+        if (
+          !fileGuard.targetExisted ||
+          fileGuard.backupContent === undefined ||
+          sha256Buffer(fileGuard.backupContent) !==
+            pathIdentity.target.contentSha256
+        ) {
+          throw projectTreePathIdentityChangedError(target.absolutePath);
+        }
+        await fileGuard.prepareBoundMutation(
+          { kind: "content", content: fileGuard.backupContent },
+          "remove",
+        );
+      } else {
+        directoryMutation = await bindWorkspaceDirectoryMutation({
+          parent: pathIdentity.parent,
+          targetPath: pathIdentity.targetPath,
+        });
+      }
+      const refusal = options.beforeCommit?.();
+      if (refusal) return { ok: false, error: refusal };
+      await assertDeletePathIdentity(pathIdentity);
+      await options.__testAfterFinalPathCheck?.();
+      const markEffectStarted = (): void => {
+        commitAttempted = true;
+      };
+      if (pathIdentity.target.kind === "file") {
+        await fileGuard!.removeBoundEntry(
+          {
+            kind: "content",
+            content: fileGuard!.backupContent!,
+          },
+          markEffectStarted,
+        );
+      } else if (pathIdentity.target.kind === "symlink") {
+        await directoryMutation!.removeSymlink(
+          pathIdentity.target,
+          pathIdentity.target.linkTarget,
+          markEffectStarted,
+        );
+      } else {
+        await directoryMutation!.removeDirectory(
+          pathIdentity.target,
+          markEffectStarted,
+        );
+      }
+      await options.__testAfterPathEffect?.();
+      await assertDeletedPathIdentity(pathIdentity);
       this.#deleteExpandedPaths(target.relativePath);
       await this.refresh();
       this.reveal(parentPath(target.relativePath));
       return { ok: true, path: target.relativePath };
     } catch (error) {
-      return { ok: false, error: fileActionError("delete", target.relativePath, error) };
+      const normalizedError = isSharedWorkspacePathIdentityError(error)
+        ? projectTreePathIdentityChangedError(target.absolutePath)
+        : error;
+      return {
+        ok: false,
+        error: fileActionError("delete", target.relativePath, normalizedError),
+        ...(commitAttempted && mutationErrorMayHaveEffect(normalizedError)
+          ? { effect: "unknown" as const }
+          : {}),
+      };
+    } finally {
+      await fileGuard?.dispose();
+      await directoryMutation?.dispose();
     }
   }
 
@@ -429,26 +690,24 @@ export class ProjectTreeStore {
     return this.#snapshot.rows.find((row) => row.path === pathValue) ?? null;
   }
 
-  #renameExpandedPaths(fromPath: string, toPath: string): void {
-    const next = new Set<string>();
-    for (const expandedPath of this.#expandedPaths) {
-      if (expandedPath === fromPath) {
-        next.add(toPath);
-      } else if (isDescendantPath(expandedPath, fromPath)) {
-        next.add(`${toPath}${expandedPath.slice(fromPath.length)}`);
-      } else {
-        next.add(expandedPath);
-      }
-    }
-    this.#expandedPaths = next;
-  }
-
   #deleteExpandedPaths(pathValue: string): void {
     for (const expandedPath of [...this.#expandedPaths]) {
-      if (expandedPath === pathValue || isDescendantPath(expandedPath, pathValue)) {
+      if (
+        expandedPath === pathValue ||
+        isDescendantPath(expandedPath, pathValue)
+      ) {
         this.#expandedPaths.delete(expandedPath);
       }
     }
+  }
+
+  async #getMutationWorkspaceRootIdentity(): Promise<StableDirectoryIdentity> {
+    const existing = this.#mutationWorkspaceRootIdentity;
+    if (existing !== null) return existing;
+    const canonicalRoot = await realpath(path.resolve(this.#cwd));
+    const captured = await observeStableDirectoryIdentity(canonicalRoot);
+    this.#mutationWorkspaceRootIdentity = captured;
+    return captured;
   }
 
   #emit(): void {
@@ -465,20 +724,21 @@ export class ProjectTreeStore {
       focused: true,
     });
     const normalizedCursorPath = visibleCursorPath(this.#cursorPath, rows);
-    const visibleRows = normalizedCursorPath === this.#cursorPath
-      ? rows
-      : buildProjectTreeRows({
-        cwd: this.#cwd,
-        paths: this.#paths,
-        expandedPaths: this.#expandedPaths,
-        cursorPath: normalizedCursorPath,
-        activePath: this.#activePath,
-        attachedPaths: this.#attachedPaths,
-        searchHitPaths: this.#searchHitPaths,
-        inFlightPaths: this.#inFlightPaths,
-        gitStatus: this.#gitStatus,
-        focused: true,
-      });
+    const visibleRows =
+      normalizedCursorPath === this.#cursorPath
+        ? rows
+        : buildProjectTreeRows({
+            cwd: this.#cwd,
+            paths: this.#paths,
+            expandedPaths: this.#expandedPaths,
+            cursorPath: normalizedCursorPath,
+            activePath: this.#activePath,
+            attachedPaths: this.#attachedPaths,
+            searchHitPaths: this.#searchHitPaths,
+            inFlightPaths: this.#inFlightPaths,
+            gitStatus: this.#gitStatus,
+            focused: true,
+          });
     this.#cursorPath = normalizedCursorPath;
     this.#snapshot = {
       cwd: this.#cwd,
@@ -502,106 +762,87 @@ export class ProjectTreeStore {
  * Move one workspace path without ever authorizing replacement from a prior
  * existence check.
  *
- * Regular files prefer link(2)+unlink(2): destination creation is atomic and
- * exclusive, preserves the inode/metadata, and fails with EEXIST if another
- * process wins the target name. Filesystems without hard-link support and
- * cross-device moves fall back to an exclusive copy before removing the
- * source. POSIX directories reserve the target with an exclusive mkdir before
- * rename; a writer adding anything to that reservation makes rename fail
- * rather than lose its data. Windows directory moves already fail whenever the
- * destination exists, so its single rename syscall is the no-clobber primitive
- * there.
+ * All moves fail closed before mutation. Node exposes neither identity-bound
+ * source removal nor portable exclusive rename flags, and check-then-unlink or
+ * check-then-rename protocols remain vulnerable to source or target name
+ * replacement races.
  */
 export async function renamePathNoClobber(
   sourcePath: string,
   targetPath: string,
+  testHooks: RenamePathNoClobberTestHooks = {},
 ): Promise<void> {
-  const source = await lstat(sourcePath);
-  if (source.isDirectory()) {
-    if (process.platform === "win32") {
-      await rename(sourcePath, targetPath);
-      return;
-    }
-    await mkdir(targetPath);
-    try {
-      await rename(sourcePath, targetPath);
-    } catch (renameError) {
-      try {
-        // Never recursively remove a reservation: if another process populated
-        // it, ENOTEMPTY intentionally leaves that data in place.
-        await rmdir(targetPath);
-      } catch (cleanupError) {
-        if (!isFsErrorCode(cleanupError, "ENOENT") &&
-          !isFsErrorCode(cleanupError, "ENOTEMPTY") &&
-          !isFsErrorCode(cleanupError, "EEXIST")) {
-          throw new AggregateError(
-            [renameError, cleanupError],
-            `Directory rename failed and its empty target reservation could not be released: ${targetPath}`,
-          );
-        }
-      }
-      throw renameError;
-    }
-    return;
+  const source = path.resolve(sourcePath).normalize("NFC");
+  const target = path.resolve(targetPath).normalize("NFC");
+  if (path.dirname(source) !== path.dirname(target)) {
+    throw unsupportedPathRenameError(source, target);
   }
-
-  if (source.isSymbolicLink()) {
-    const linkTarget = await readlink(sourcePath);
-    let type: "dir" | "file" | undefined;
-    if (process.platform === "win32") {
-      type = (await stat(sourcePath)).isDirectory() ? "dir" : "file";
-    }
-    await symlink(linkTarget, targetPath, type);
-  } else {
-    try {
-      await link(sourcePath, targetPath);
-    } catch (linkError) {
-      if (!source.isFile() || !isUnsupportedFileLinkError(linkError)) {
-        throw linkError;
-      }
-      // COPYFILE_EXCL is the fallback's no-clobber primitive. In particular,
-      // a destination created after link(2) failed remains untouched and the
-      // source name is retained.
-      await copyFile(sourcePath, targetPath, fsConstants.COPYFILE_EXCL);
-    }
+  const parent = await observeStableDirectoryIdentity(path.dirname(source));
+  const sourceStats = await lstat(source);
+  if (!sourceStats.isFile() || sourceStats.isSymbolicLink()) {
+    throw unsupportedPathRenameError(
+      source,
+      target,
+      "Directory and symlink rename still lack a portable identity-bound no-clobber destination primitive.",
+    );
   }
-  const createdTarget = await lstat(targetPath);
-
+  const sourceIdentity = await observeRegularFileIdentity(source);
+  if (sourceIdentity.kind !== "file") {
+    throw unsupportedPathRenameError(source, target);
+  }
+  if (await pathExists(target)) {
+    throw Object.assign(new Error("path already exists"), {
+      code: "EEXIST" as const,
+    });
+  }
+  const mutation = await bindWorkspaceDirectoryMutation({
+    parent,
+    targetPath: source,
+  });
   try {
-    await unlink(sourcePath);
-  } catch (unlinkError) {
-    try {
-      const target = await lstat(targetPath);
-      if (target.dev === createdTarget.dev && target.ino === createdTarget.ino) {
-        await unlink(targetPath);
-      }
-    } catch (cleanupError) {
-      if (!isFsErrorCode(cleanupError, "ENOENT")) {
-        throw new AggregateError(
-          [unlinkError, cleanupError],
-          `Path rename created its exclusive target but could not remove either name: ${targetPath}`,
-        );
-      }
+    await testHooks.beforeRenameFailClosed?.();
+    await assertStableDirectoryIdentity(parent, source);
+    const currentSource = await observeRegularFileIdentity(source);
+    if (
+      currentSource.kind !== "file" ||
+      !sameDeleteTargetIdentity(sourceIdentity, currentSource) ||
+      (await pathExists(target))
+    ) {
+      throw projectTreePathIdentityChangedError(source);
     }
-    throw unlinkError;
+    await mutation.renameRegularFile(path.basename(target), sourceIdentity);
+    const targetIdentity = await observeRegularFileIdentity(target);
+    if (
+      targetIdentity.kind !== "file" ||
+      !sameRenamedRegularFileIdentity(sourceIdentity, targetIdentity)
+    ) {
+      throw projectTreePathIdentityChangedError(target);
+    }
+  } finally {
+    await mutation.dispose();
   }
+}
+
+function unsupportedPathRenameError(
+  sourcePath: string,
+  targetPath: string,
+  reason = "Only same-directory regular-file renames can currently be made identity-bound and no-clobber.",
+): Error & { readonly code: string } {
+  return Object.assign(
+    new Error(
+      `Atomic identity-bound no-clobber rename from ${sourcePath} to ${targetPath} is unavailable. ${reason} Close Editor and use trusted external tooling for other moves.`,
+    ),
+    { code: "ENOTSUP" as const },
+  );
 }
 
 function isFsErrorCode(error: unknown, code: string): boolean {
-  return typeof error === "object" &&
+  return (
+    typeof error === "object" &&
     error !== null &&
     "code" in error &&
-    (error as { readonly code?: unknown }).code === code;
-}
-
-function isUnsupportedFileLinkError(error: unknown): boolean {
-  return [
-    "EXDEV",
-    "ENOSYS",
-    "ENOTSUP",
-    "EOPNOTSUPP",
-    "EPERM",
-  ].some((code) => isFsErrorCode(error, code));
+    (error as { readonly code?: unknown }).code === code
+  );
 }
 
 let singleton: ProjectTreeStore | null = null;
@@ -611,14 +852,20 @@ export function getProjectTreeStore(): ProjectTreeStore {
   return singleton;
 }
 
-function selectableRows(rows: readonly ProjectTreeRow[]): readonly ProjectTreeRow[] {
+function selectableRows(
+  rows: readonly ProjectTreeRow[],
+): readonly ProjectTreeRow[] {
   return rows.filter((row) => row.kind === "file" || row.kind === "directory");
 }
 
-function visibleCursorPath(cursorPath: string | null, rows: readonly ProjectTreeRow[]): string | null {
+function visibleCursorPath(
+  cursorPath: string | null,
+  rows: readonly ProjectTreeRow[],
+): string | null {
   const selectable = selectableRows(rows);
   if (selectable.length === 0) return null;
-  if (cursorPath && selectable.some((row) => row.path === cursorPath)) return cursorPath;
+  if (cursorPath && selectable.some((row) => row.path === cursorPath))
+    return cursorPath;
 
   let parent = cursorPath ? parentPath(cursorPath) : null;
   while (parent !== null) {
@@ -630,7 +877,10 @@ function visibleCursorPath(cursorPath: string | null, rows: readonly ProjectTree
   return selectable[0]?.path ?? cursorPath;
 }
 
-function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+function sameSet(
+  left: ReadonlySet<string>,
+  right: ReadonlySet<string>,
+): boolean {
   if (left.size !== right.size) return false;
   for (const value of left) {
     if (!right.has(value)) return false;
@@ -638,12 +888,20 @@ function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean
   return true;
 }
 
-function normalizeProjectTreeReference(pathValue: string | null): string | null {
-  return pathValue === null ? null : normalizeWorkspacePathForReferences(pathValue);
+function normalizeProjectTreeReference(
+  pathValue: string | null,
+): string | null {
+  return pathValue === null
+    ? null
+    : normalizeWorkspacePathForReferences(pathValue);
 }
 
 function normalizedPathSet(paths: Iterable<string>): Set<string> {
-  return new Set([...paths].map((pathValue) => normalizeWorkspacePathForReferences(pathValue)));
+  return new Set(
+    [...paths].map((pathValue) =>
+      normalizeWorkspacePathForReferences(pathValue),
+    ),
+  );
 }
 
 function firstFilePath(paths: readonly string[]): string | null {
@@ -682,7 +940,9 @@ function collectDirectoryPaths(paths: readonly string[]): ReadonlySet<string> {
     const segments = trimmed.split("/").filter(Boolean);
     // For a file, every parent segment is a directory; for an explicit directory
     // entry, the entry itself is also a directory.
-    const lastDirectoryIndex = isDirectoryEntry ? segments.length : segments.length - 1;
+    const lastDirectoryIndex = isDirectoryEntry
+      ? segments.length
+      : segments.length - 1;
     for (let index = 1; index <= lastDirectoryIndex; index += 1) {
       directories.add(segments.slice(0, index).join("/"));
     }
@@ -696,14 +956,23 @@ function parentPath(value: string): string | null {
 }
 
 function isDescendantPath(value: string, possibleAncestor: string): boolean {
-  return value.length > possibleAncestor.length && value.startsWith(`${possibleAncestor}/`);
+  return (
+    value.length > possibleAncestor.length &&
+    value.startsWith(`${possibleAncestor}/`)
+  );
 }
 
 async function readTopLevelPaths(cwd: string): Promise<string[]> {
   const entries = await readdir(cwd, { withFileTypes: true });
   return entries
-    .filter((entry) => !(entry.isDirectory() && WORKSPACE_TREE_IGNORED_DIRECTORY_NAMES.has(entry.name)))
-    .map((entry) => entry.isDirectory() ? `${entry.name}/` : entry.name)
+    .filter(
+      (entry) =>
+        !(
+          entry.isDirectory() &&
+          WORKSPACE_TREE_IGNORED_DIRECTORY_NAMES.has(entry.name)
+        ),
+    )
+    .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
     .sort((a, b) => a.localeCompare(b));
 }
 
@@ -792,11 +1061,25 @@ function resolveWorkspaceRelativePath(
   cwd: string,
   inputPath: string,
   options: { readonly requireFilePath?: boolean } = {},
-): { readonly ok: true; readonly relativePath: string; readonly absolutePath: string } | { readonly ok: false; readonly error: string } {
+):
+  | {
+      readonly ok: true;
+      readonly relativePath: string;
+      readonly absolutePath: string;
+    }
+  | { readonly ok: false; readonly error: string } {
   const input = inputPath.replace(/\\/gu, "/");
-  if (input.trim().length === 0) return { ok: false, error: "Enter a workspace-relative path." };
-  if (isWindowsDriveQualifiedPath(input) || path.posix.isAbsolute(input) || path.isAbsolute(input)) {
-    return { ok: false, error: "Use a workspace-relative path, not an absolute path." };
+  if (input.trim().length === 0)
+    return { ok: false, error: "Enter a workspace-relative path." };
+  if (
+    isWindowsDriveQualifiedPath(input) ||
+    path.posix.isAbsolute(input) ||
+    path.isAbsolute(input)
+  ) {
+    return {
+      ok: false,
+      error: "Use a workspace-relative path, not an absolute path.",
+    };
   }
 
   const normalizedPath = path.posix.normalize(input).replace(/^\.\//u, "");
@@ -811,7 +1094,9 @@ function resolveWorkspaceRelativePath(
 
   const root = path.resolve(cwd);
   const absolutePath = path.resolve(root, relativePath);
-  const rootWithSeparator = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  const rootWithSeparator = root.endsWith(path.sep)
+    ? root
+    : `${root}${path.sep}`;
   if (absolutePath !== root && !absolutePath.startsWith(rootWithSeparator)) {
     return { ok: false, error: "Path must stay inside the workspace." };
   }
@@ -830,6 +1115,500 @@ function isWindowsDriveQualifiedPath(value: string): boolean {
   return /^[A-Za-z]:/u.test(value);
 }
 
+interface StableDirectoryIdentity {
+  readonly path: string;
+  readonly realPath: string;
+  readonly dev: number;
+  readonly ino: number;
+  readonly mode: number;
+}
+
+interface ProjectTreeMutationPathIdentity {
+  readonly targetPath: string;
+  readonly workspaceRoot: StableDirectoryIdentity;
+  readonly parent: StableDirectoryIdentity;
+}
+
+type ProjectTreeCreatePathIdentity = ProjectTreeMutationPathIdentity;
+
+type ProjectTreeDeleteTargetIdentity =
+  | {
+      readonly kind: "file";
+      readonly dev: number;
+      readonly ino: number;
+      readonly mode: number;
+      readonly size: number;
+      readonly mtimeMs: number;
+      readonly ctimeMs: number;
+      readonly contentSha256: string;
+    }
+  | {
+      readonly kind: "symlink";
+      readonly dev: number;
+      readonly ino: number;
+      readonly mode: number;
+      readonly linkTarget: string;
+    }
+  | {
+      readonly kind: "directory";
+      readonly dev: number;
+      readonly ino: number;
+      readonly mode: number;
+    };
+
+interface ProjectTreeDeletePathIdentity extends ProjectTreeMutationPathIdentity {
+  readonly target: ProjectTreeDeleteTargetIdentity;
+}
+
+function captureInitialWorkspaceRootIdentity(
+  cwd: string,
+): StableDirectoryIdentity | null {
+  try {
+    const canonicalRoot = realpathSync(path.resolve(cwd)).normalize("NFC");
+    const before = lstatSync(canonicalRoot);
+    const observedRealPath = realpathSync(canonicalRoot).normalize("NFC");
+    const after = lstatSync(canonicalRoot);
+    if (
+      !before.isDirectory() ||
+      before.isSymbolicLink() ||
+      !after.isDirectory() ||
+      after.isSymbolicLink() ||
+      !sameFilesystemIdentity(before, after) ||
+      observedRealPath !== canonicalRoot
+    ) {
+      return null;
+    }
+    return {
+      path: canonicalRoot,
+      realPath: observedRealPath,
+      dev: after.dev,
+      ino: after.ino,
+      mode: after.mode,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sameFilesystemIdentity(
+  left: Pick<Stats, "dev" | "ino" | "mode">,
+  right: Pick<Stats, "dev" | "ino" | "mode">,
+): boolean {
+  return (
+    left.dev === right.dev && left.ino === right.ino && left.mode === right.mode
+  );
+}
+
+function projectTreePathIdentityChangedError(
+  targetPath: string,
+): Error & { readonly code: "ESTALE" } {
+  return Object.assign(
+    new Error(
+      `filesystem path identity changed across the operation boundary for ${targetPath}; no further pathname mutation was authorized`,
+    ),
+    { code: "ESTALE" as const },
+  );
+}
+
+function unsupportedCreateParentError(
+  targetPath: string,
+): Error & { readonly code: "ENOTSUP" } {
+  return Object.assign(
+    new Error(
+      `the parent directory for ${targetPath} does not exist. Create the directory first, then retry the file creation; recursive parent creation cannot be made identity-bound with portable Node filesystem APIs`,
+    ),
+    { code: "ENOTSUP" as const },
+  );
+}
+
+async function observeStableDirectoryIdentity(
+  expectedPath: string,
+): Promise<StableDirectoryIdentity> {
+  const normalizedPath = path.resolve(expectedPath).normalize("NFC");
+  const before = await lstat(normalizedPath);
+  const observedRealPath = (await realpath(normalizedPath)).normalize("NFC");
+  const after = await lstat(normalizedPath);
+  if (
+    !before.isDirectory() ||
+    before.isSymbolicLink() ||
+    !after.isDirectory() ||
+    after.isSymbolicLink() ||
+    !sameFilesystemIdentity(before, after) ||
+    observedRealPath !== normalizedPath
+  ) {
+    throw projectTreePathIdentityChangedError(normalizedPath);
+  }
+  return {
+    path: normalizedPath,
+    realPath: observedRealPath,
+    dev: after.dev,
+    ino: after.ino,
+    mode: after.mode,
+  };
+}
+
+async function assertStableDirectoryIdentity(
+  identity: StableDirectoryIdentity,
+  targetPath: string,
+): Promise<void> {
+  let observed: StableDirectoryIdentity;
+  try {
+    observed = await observeStableDirectoryIdentity(identity.path);
+  } catch {
+    throw projectTreePathIdentityChangedError(targetPath);
+  }
+  if (
+    observed.realPath !== identity.realPath ||
+    observed.dev !== identity.dev ||
+    observed.ino !== identity.ino ||
+    observed.mode !== identity.mode
+  ) {
+    throw projectTreePathIdentityChangedError(targetPath);
+  }
+}
+
+function resolvePinnedWorkspaceMutationTarget(
+  workspaceRoot: StableDirectoryIdentity,
+  relativePath: string,
+): string {
+  const targetPath = path
+    .resolve(workspaceRoot.path, relativePath)
+    .normalize("NFC");
+  const relativeTarget = path.relative(workspaceRoot.path, targetPath);
+  if (
+    relativeTarget === "" ||
+    relativeTarget === ".." ||
+    relativeTarget.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeTarget)
+  ) {
+    throw projectTreePathIdentityChangedError(targetPath);
+  }
+  return targetPath;
+}
+
+async function captureMutationPathIdentity(
+  workspaceRoot: StableDirectoryIdentity,
+  relativePath: string,
+  options: { readonly create: boolean },
+): Promise<ProjectTreeMutationPathIdentity> {
+  const targetPath = resolvePinnedWorkspaceMutationTarget(
+    workspaceRoot,
+    relativePath,
+  );
+  await assertStableDirectoryIdentity(workspaceRoot, targetPath);
+  let parent: StableDirectoryIdentity;
+  try {
+    parent = await observeStableDirectoryIdentity(path.dirname(targetPath));
+  } catch (error) {
+    if (options.create && isNodeError(error) && error.code === "ENOENT") {
+      throw unsupportedCreateParentError(targetPath);
+    }
+    throw error;
+  }
+  await assertStableDirectoryIdentity(workspaceRoot, targetPath);
+  return {
+    targetPath,
+    workspaceRoot,
+    parent,
+  };
+}
+
+async function assertMutationPathDirectories(
+  identity: ProjectTreeMutationPathIdentity,
+): Promise<void> {
+  await assertStableDirectoryIdentity(
+    identity.workspaceRoot,
+    identity.targetPath,
+  );
+  if (identity.parent.path !== identity.workspaceRoot.path) {
+    await assertStableDirectoryIdentity(identity.parent, identity.targetPath);
+  }
+}
+
+async function assertMissingTarget(
+  identity: ProjectTreeMutationPathIdentity,
+  options: { readonly staleIfPresent: boolean },
+): Promise<void> {
+  await assertMutationPathDirectories(identity);
+  try {
+    await lstat(identity.targetPath);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      await assertMutationPathDirectories(identity);
+      return;
+    }
+    throw error;
+  }
+  if (options.staleIfPresent) {
+    throw projectTreePathIdentityChangedError(identity.targetPath);
+  }
+  throw Object.assign(new Error("path already exists"), {
+    code: "EEXIST" as const,
+  });
+}
+
+async function captureCreatePathIdentity(
+  workspaceRoot: StableDirectoryIdentity,
+  relativePath: string,
+): Promise<ProjectTreeCreatePathIdentity> {
+  const identity = await captureMutationPathIdentity(
+    workspaceRoot,
+    relativePath,
+    {
+      create: true,
+    },
+  );
+  await assertMissingTarget(identity, { staleIfPresent: false });
+  return identity;
+}
+
+async function assertCreatePathIdentity(
+  identity: ProjectTreeCreatePathIdentity,
+): Promise<void> {
+  await assertMissingTarget(identity, { staleIfPresent: false });
+}
+
+async function sha256FileHandle(handle: FileHandle): Promise<string> {
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  let position = 0;
+  for (;;) {
+    const { bytesRead } = await handle.read(
+      buffer,
+      0,
+      buffer.byteLength,
+      position,
+    );
+    if (bytesRead === 0) break;
+    hash.update(buffer.subarray(0, bytesRead));
+    position += bytesRead;
+  }
+  return hash.digest("hex");
+}
+
+function sha256Buffer(content: Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+async function observeRegularFileIdentity(
+  targetPath: string,
+): Promise<ProjectTreeDeleteTargetIdentity> {
+  const before = await lstat(targetPath);
+  if (!before.isFile() || before.isSymbolicLink()) {
+    throw projectTreePathIdentityChangedError(targetPath);
+  }
+  const flags = constants.O_RDONLY | constants.O_NOFOLLOW;
+  let handle: FileHandle | null = null;
+  try {
+    handle = await open(targetPath, flags);
+    const opened = await handle.stat();
+    if (!opened.isFile() || !sameFilesystemIdentity(before, opened)) {
+      throw projectTreePathIdentityChangedError(targetPath);
+    }
+    const contentSha256 = await sha256FileHandle(handle);
+    const afterRead = await handle.stat();
+    const afterPath = await lstat(targetPath);
+    if (
+      !afterRead.isFile() ||
+      !afterPath.isFile() ||
+      !sameFilesystemIdentity(opened, afterRead) ||
+      !sameFilesystemIdentity(afterRead, afterPath) ||
+      opened.size !== afterRead.size ||
+      opened.mtimeMs !== afterRead.mtimeMs ||
+      opened.ctimeMs !== afterRead.ctimeMs
+    ) {
+      throw projectTreePathIdentityChangedError(targetPath);
+    }
+    return {
+      kind: "file",
+      dev: afterRead.dev,
+      ino: afterRead.ino,
+      mode: afterRead.mode,
+      size: afterRead.size,
+      mtimeMs: afterRead.mtimeMs,
+      ctimeMs: afterRead.ctimeMs,
+      contentSha256,
+    };
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function observeSymlinkIdentity(
+  targetPath: string,
+): Promise<ProjectTreeDeleteTargetIdentity> {
+  const before = await lstat(targetPath);
+  if (!before.isSymbolicLink()) {
+    throw projectTreePathIdentityChangedError(targetPath);
+  }
+  const linkTarget = await readlink(targetPath);
+  const after = await lstat(targetPath);
+  if (!after.isSymbolicLink() || !sameFilesystemIdentity(before, after)) {
+    throw projectTreePathIdentityChangedError(targetPath);
+  }
+  return {
+    kind: "symlink",
+    dev: after.dev,
+    ino: after.ino,
+    mode: after.mode,
+    linkTarget,
+  };
+}
+
+async function observeDeleteTargetIdentity(
+  targetPath: string,
+): Promise<ProjectTreeDeleteTargetIdentity> {
+  const observed = await lstat(targetPath);
+  if (observed.isDirectory() && !observed.isSymbolicLink()) {
+    return {
+      kind: "directory",
+      dev: observed.dev,
+      ino: observed.ino,
+      mode: observed.mode,
+    };
+  }
+  if (observed.isFile() && !observed.isSymbolicLink()) {
+    return observeRegularFileIdentity(targetPath);
+  }
+  if (observed.isSymbolicLink()) {
+    return observeSymlinkIdentity(targetPath);
+  }
+  throw Object.assign(
+    new Error(
+      `identity-bound deletion is unavailable for this filesystem object at ${targetPath}`,
+    ),
+    { code: "ENOTSUP" as const },
+  );
+}
+
+function sameDeleteTargetIdentity(
+  expected: ProjectTreeDeleteTargetIdentity,
+  observed: ProjectTreeDeleteTargetIdentity,
+): boolean {
+  if (expected.kind !== observed.kind) return false;
+  if (
+    expected.dev !== observed.dev ||
+    expected.ino !== observed.ino ||
+    expected.mode !== observed.mode
+  ) {
+    return false;
+  }
+  if (expected.kind === "file" && observed.kind === "file") {
+    return (
+      expected.size === observed.size &&
+      expected.mtimeMs === observed.mtimeMs &&
+      expected.ctimeMs === observed.ctimeMs &&
+      expected.contentSha256 === observed.contentSha256
+    );
+  }
+  return (
+    (expected.kind === "symlink" &&
+      observed.kind === "symlink" &&
+      expected.linkTarget === observed.linkTarget) ||
+    (expected.kind === "directory" && observed.kind === "directory")
+  );
+}
+
+function sameRenamedRegularFileIdentity(
+  expected: ProjectTreeDeleteTargetIdentity,
+  observed: ProjectTreeDeleteTargetIdentity,
+): boolean {
+  return (
+    expected.kind === "file" &&
+    observed.kind === "file" &&
+    expected.dev === observed.dev &&
+    expected.ino === observed.ino &&
+    expected.mode === observed.mode &&
+    expected.size === observed.size &&
+    expected.mtimeMs === observed.mtimeMs &&
+    expected.contentSha256 === observed.contentSha256
+  );
+}
+
+function isSharedWorkspacePathIdentityError(error: unknown): boolean {
+  return (
+    error instanceof Error && error.name === "WorkspacePathIdentityChangedError"
+  );
+}
+
+async function captureDeletePathIdentity(
+  workspaceRoot: StableDirectoryIdentity,
+  relativePath: string,
+): Promise<ProjectTreeDeletePathIdentity> {
+  const identity = await captureMutationPathIdentity(
+    workspaceRoot,
+    relativePath,
+    {
+      create: false,
+    },
+  );
+  await assertMutationPathDirectories(identity);
+  const target = await observeDeleteTargetIdentity(identity.targetPath);
+  await assertMutationPathDirectories(identity);
+  return { ...identity, target };
+}
+
+async function assertDeletePathIdentity(
+  identity: ProjectTreeDeletePathIdentity,
+): Promise<void> {
+  await assertMutationPathDirectories(identity);
+  let observed: ProjectTreeDeleteTargetIdentity;
+  try {
+    observed = await observeDeleteTargetIdentity(identity.targetPath);
+  } catch (error) {
+    if (
+      isNodeError(error) &&
+      (error.code === "ENOTSUP" || error.code === "ENOENT")
+    ) {
+      throw projectTreePathIdentityChangedError(identity.targetPath);
+    }
+    throw error;
+  }
+  if (!sameDeleteTargetIdentity(identity.target, observed)) {
+    throw projectTreePathIdentityChangedError(identity.targetPath);
+  }
+  await assertMutationPathDirectories(identity);
+}
+
+async function assertDeletedPathIdentity(
+  identity: ProjectTreeDeletePathIdentity,
+): Promise<void> {
+  await assertMissingTarget(identity, { staleIfPresent: true });
+}
+
+async function assertWorkspaceMutationParentContained(
+  cwd: string,
+  absolutePath: string,
+): Promise<void> {
+  const canonicalRoot = await realpath(path.resolve(cwd));
+  let candidate = path.dirname(absolutePath);
+  let canonicalParent: string | null = null;
+  for (;;) {
+    try {
+      canonicalParent = await realpath(candidate);
+      break;
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "ENOENT") throw error;
+      const parent = path.dirname(candidate);
+      if (parent === candidate) break;
+      candidate = parent;
+    }
+  }
+  if (canonicalParent === null) {
+    throw new Error("cannot verify the workspace mutation parent directory");
+  }
+  const relativeParent = path.relative(canonicalRoot, canonicalParent);
+  if (
+    relativeParent === ".." ||
+    relativeParent.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeParent)
+  ) {
+    throw new Error(
+      "path resolves outside the workspace through a symbolic link",
+    );
+  }
+}
+
 async function pathExists(absolutePath: string): Promise<boolean> {
   try {
     await lstat(absolutePath);
@@ -840,7 +1619,11 @@ async function pathExists(absolutePath: string): Promise<boolean> {
   }
 }
 
-function fileActionError(action: string, relativePath: string, error: unknown): string {
+function fileActionError(
+  action: string,
+  relativePath: string,
+  error: unknown,
+): string {
   if (isNodeError(error) && error.code === "EEXIST") {
     return `Cannot ${action} ${relativePath}: path already exists.`;
   }
@@ -853,4 +1636,8 @@ function fileActionError(action: string, relativePath: string, error: unknown): 
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function mutationErrorMayHaveEffect(error: unknown): boolean {
+  return !isFsErrorCode(error, "EEXIST") && !isFsErrorCode(error, "ENOENT");
 }

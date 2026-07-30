@@ -1,10 +1,47 @@
-import type { PermissionMode, ToolPermissionContext } from "../permissions/types.js";
+import type {
+  PermissionMode,
+  ToolPermissionContext,
+} from "../permissions/types.js";
 
 export const AUTONOMOUS_TICK_TAG = "tick";
 export const AUTONOMOUS_SUBMIT_SOURCE = "autonomous_tick";
 const DEFAULT_AUTONOMOUS_TICK_DELAY_MS = 0;
 
 export type SessionSubmitSource = "user" | typeof AUTONOMOUS_SUBMIT_SOURCE;
+
+export type EditorInteractionKind =
+  "ask" | "explain" | "fix" | "edit" | "refactor";
+
+export type EditorTurnPolicy = "read_only" | "proposal_only";
+
+export interface EditorInteractionRange {
+  readonly start: {
+    readonly line: number;
+    readonly column: number;
+  };
+  readonly end: {
+    readonly line: number;
+    readonly column: number;
+  };
+}
+
+/**
+ * Trusted, request-scoped editor policy. The daemon validates this shape from
+ * message metadata and copies it into the immutable TurnContext. It is never
+ * inferred from model-visible prompt text.
+ */
+export interface SessionEditorInteraction {
+  readonly interactionId: string;
+  readonly kind: EditorInteractionKind;
+  readonly policy: EditorTurnPolicy;
+  readonly editorInstanceId: string;
+  readonly bufferHandle: number;
+  readonly changedtick: number;
+  readonly contentSha256: string;
+  readonly path?: string;
+  readonly range: EditorInteractionRange;
+  readonly selectionMode?: "character" | "line" | "block";
+}
 
 export interface SessionSubmitOptions {
   readonly source?: SessionSubmitSource;
@@ -14,6 +51,7 @@ export interface SessionSubmitOptions {
    * internal wakeups such as mailbox-triggered agent follow-ups.
    */
   readonly displayUserMessage?: string | null;
+  readonly editorInteraction?: SessionEditorInteraction;
 }
 
 function readPermissionMode(
@@ -52,7 +90,10 @@ export class AutonomousKeepaliveScheduler {
   private readonly submitTick: (message: string) => Promise<void>;
   private readonly delayMs: number;
   private readonly now: () => Date;
-  private readonly setTimeoutFn: (callback: () => void, ms: number) => TimerHandle;
+  private readonly setTimeoutFn: (
+    callback: () => void,
+    ms: number,
+  ) => TimerHandle;
   private readonly clearTimeoutFn: (handle: TimerHandle) => void;
   private readonly onError?: (error: unknown) => void;
   private timer: TimerHandle | null = null;

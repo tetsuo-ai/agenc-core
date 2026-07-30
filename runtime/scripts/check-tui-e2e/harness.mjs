@@ -131,7 +131,7 @@ async function walkFiles(dir) {
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      files.push(...await walkFiles(fullPath));
+      files.push(...(await walkFiles(fullPath)));
     } else {
       files.push(fullPath);
     }
@@ -152,7 +152,10 @@ async function latestRolloutFilesForAgencHome(agencHome) {
     return basename.startsWith("rollout-") && basename.endsWith(".jsonl");
   });
   const withStats = await Promise.all(
-    rolloutFiles.map(async (file) => ({ file, mtimeMs: (await stat(file)).mtimeMs })),
+    rolloutFiles.map(async (file) => ({
+      file,
+      mtimeMs: (await stat(file)).mtimeMs,
+    })),
   );
   return withStats
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
@@ -213,7 +216,9 @@ export function stripAnsi(s) {
 }
 
 function emptyGrid(rows, cols) {
-  return Array.from({ length: rows }, () => Array.from({ length: cols }, () => " "));
+  return Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => " "),
+  );
 }
 
 function clamp(value, min, max) {
@@ -342,7 +347,11 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
 
   const clearLine = (line, from, to) => {
     const target = grid[clamp(line, 0, rows - 1)];
-    for (let idx = clamp(from, 0, cols - 1); idx <= clamp(to, 0, cols - 1); idx += 1) {
+    for (
+      let idx = clamp(from, 0, cols - 1);
+      idx <= clamp(to, 0, cols - 1);
+      idx += 1
+    ) {
       target[idx] = " ";
     }
   };
@@ -376,9 +385,14 @@ export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
       if (next === "]") {
         const bell = raw.indexOf("\x07", i + 2);
         const escTerm = raw.indexOf("\x1b\\", i + 2);
-        const end = bell === -1
-          ? escTerm === -1 ? raw.length - 1 : escTerm + 1
-          : escTerm === -1 ? bell : Math.min(bell, escTerm + 1);
+        const end =
+          bell === -1
+            ? escTerm === -1
+              ? raw.length - 1
+              : escTerm + 1
+            : escTerm === -1
+              ? bell
+              : Math.min(bell, escTerm + 1);
         i = end;
         continue;
       }
@@ -489,7 +503,9 @@ export function normalizePtyOutput(raw, opts = {}) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function frameLooksBusy(frame) {
-  return /\bSynchronizing\b/u.test(frame) || /\besc to interrupt\b/iu.test(frame);
+  return (
+    /\bSynchronizing\b/u.test(frame) || /\besc to interrupt\b/iu.test(frame)
+  );
 }
 
 export class TuiSession {
@@ -559,9 +575,10 @@ export class TuiSession {
         "TuiSession cannot nest useTempHome inside runner-owned gate state",
       );
     }
-    let env = this.gateState === null
-      ? { ...process.env, ...this.envOverrides }
-      : environmentForTuiGateState(this.gateState, this.envOverrides);
+    let env =
+      this.gateState === null
+        ? { ...process.env, ...this.envOverrides }
+        : environmentForTuiGateState(this.gateState, this.envOverrides);
     if (this.gateState !== null) {
       this.tempHome = this.gateState.home;
     }
@@ -596,7 +613,9 @@ export class TuiSession {
         resolve(value);
       };
       child.once("close", (code, signal) => finish({ code, signal }));
-      child.once("error", (error) => finish({ code: null, signal: null, error }));
+      child.once("error", (error) =>
+        finish({ code: null, signal: null, error }),
+      );
     });
     this.childRecords.set(child, record);
     return child;
@@ -605,23 +624,26 @@ export class TuiSession {
   async spawnTracked(command, args, options = {}) {
     const env = await this.prepare();
     this.throwIfAborted();
-    const childEnv = options.env === undefined
-      ? env
-      : this.gateState === null
-        ? tuiGateEnvironment(this.tempHome, env, {
-            ...this.envOverrides,
-            ...options.env,
-          })
-        : environmentForTuiGateState(this.gateState, {
-            ...this.envOverrides,
-            ...options.env,
-          });
-    return this.trackChild(spawn(command, args, {
-      ...options,
-      // Gate isolation cannot be overridden by a scenario's spawn options.
-      cwd: options.cwd ?? this.cwd,
-      env: childEnv,
-    }));
+    const childEnv =
+      options.env === undefined
+        ? env
+        : this.gateState === null
+          ? tuiGateEnvironment(this.tempHome, env, {
+              ...this.envOverrides,
+              ...options.env,
+            })
+          : environmentForTuiGateState(this.gateState, {
+              ...this.envOverrides,
+              ...options.env,
+            });
+    return this.trackChild(
+      spawn(command, args, {
+        ...options,
+        // Gate isolation cannot be overridden by a scenario's spawn options.
+        cwd: options.cwd ?? this.cwd,
+        env: childEnv,
+      }),
+    );
   }
 
   async waitForChildClose(child, timeoutMs) {
@@ -639,10 +661,10 @@ export class TuiSession {
     });
   }
 
-  async terminateTrackedChild(child, {
-    graceMs = 2_000,
-    forceKillGraceMs = 2_000,
-  } = {}) {
+  async terminateTrackedChild(
+    child,
+    { graceMs = 2_000, forceKillGraceMs = 2_000 } = {},
+  ) {
     const record = this.childRecords.get(child);
     if (record === undefined || record.closed) return record?.close ?? null;
     try {
@@ -659,15 +681,15 @@ export class TuiSession {
     }
     result = await this.waitForChildClose(child, forceKillGraceMs);
     if (result !== null) return result;
-    throw new Error(`tracked child survived SIGKILL (pid ${child.pid ?? "unknown"})`);
+    throw new Error(
+      `tracked child survived SIGKILL (pid ${child.pid ?? "unknown"})`,
+    );
   }
 
-  async runAgenc(args, {
-    cwd = this.cwd,
-    env,
-    input,
-    timeoutMs = 30_000,
-  } = {}) {
+  async runAgenc(
+    args,
+    { cwd = this.cwd, env, input, timeoutMs = 30_000 } = {},
+  ) {
     const child = await this.spawnTracked(
       process.execPath,
       [BIN_AGENC, ...args],
@@ -706,7 +728,9 @@ export class TuiSession {
 
   async restartGateDaemon() {
     if (this.gateState === null) {
-      throw new Error("cannot restart a gate daemon without runner-owned state");
+      throw new Error(
+        "cannot restart a gate daemon without runner-owned state",
+      );
     }
     await stopTuiGateDaemon(this.gateState);
     return startTuiGateDaemon(this.gateState, BIN_AGENC);
@@ -714,12 +738,14 @@ export class TuiSession {
 
   async abort(reason = new Error("TUI scenario aborted")) {
     if (this.abortError === null) {
-      this.abortError = reason instanceof Error ? reason : new Error(String(reason));
+      this.abortError =
+        reason instanceof Error ? reason : new Error(String(reason));
     }
     this.kill("SIGKILL");
     await Promise.allSettled(
       [...this.childRecords.keys()].map((child) =>
-        this.terminateTrackedChild(child, { graceMs: 250 })),
+        this.terminateTrackedChild(child, { graceMs: 250 }),
+      ),
     );
   }
 
@@ -819,9 +845,7 @@ export class TuiSession {
       }
       await sleep(100);
     }
-    throw new Error(
-      `waitFor(${label ?? re}): timeout after ${timeout}ms`,
-    );
+    throw new Error(`waitFor(${label ?? re}): timeout after ${timeout}ms`);
   }
 
   /**
@@ -880,9 +904,10 @@ export class TuiSession {
    * Read rollout entries from the exact private AGENC_HOME used by the PTY.
    */
   async readRolloutItems() {
-    const agencHome = this.runtimeEnv === null
-      ? resolveHarnessAgencHome()
-      : resolveHarnessAgencHome(this.runtimeEnv);
+    const agencHome =
+      this.runtimeEnv === null
+        ? resolveHarnessAgencHome()
+        : resolveHarnessAgencHome(this.runtimeEnv);
     return readRolloutItemsForAgencHome(agencHome);
   }
 
@@ -894,7 +919,10 @@ export class TuiSession {
       const msg = item?.payload?.msg;
       if (msg?.type === "tool_call_started") {
         const payload = msg.payload ?? {};
-        if (typeof payload.callId === "string" && typeof payload.toolName === "string") {
+        if (
+          typeof payload.callId === "string" &&
+          typeof payload.toolName === "string"
+        ) {
           startedToolsByCallId.set(payload.callId, payload.toolName);
         }
         continue;
@@ -918,28 +946,75 @@ export class TuiSession {
    * marker. This proves the tool actually ran without relying on the model
    * to repeat stdout in the assistant's final message.
    */
-  async assertRolloutToolOutput(marker, { label = "tool output", toolName } = {}) {
-    for (const { payload } of await this.completedRolloutToolCalls({ toolName })) {
+  async assertRolloutToolOutput(
+    marker,
+    { label = "tool output", toolName } = {},
+  ) {
+    for (const { payload } of await this.completedRolloutToolCalls({
+      toolName,
+    })) {
       const stdout =
-        typeof payload.metadata?.stdout === "string" ? payload.metadata.stdout : "";
+        typeof payload.metadata?.stdout === "string"
+          ? payload.metadata.stdout
+          : "";
       const result = typeof payload.result === "string" ? payload.result : "";
-      if (payload.isError === false && (stdout.includes(marker) || result.includes(marker))) {
+      if (
+        payload.isError === false &&
+        (stdout.includes(marker) || result.includes(marker))
+      ) {
         return;
       }
     }
     const suffix = toolName === undefined ? "" : ` for ${toolName}`;
-    throw new Error(`${label}: no completed rollout tool output${suffix} contained "${marker}"`);
+    throw new Error(
+      `${label}: no completed rollout tool output${suffix} contained "${marker}"`,
+    );
+  }
+
+  /**
+   * Assert that a completed tool call was rejected with a specific rollout
+   * error and metadata marker. This distinguishes an enforced policy denial
+   * from either a successful execution or an unrelated tool failure.
+   */
+  async assertRolloutToolError(
+    marker,
+    { label = "tool error", metadata = {}, toolName } = {},
+  ) {
+    for (const { payload } of await this.completedRolloutToolCalls({
+      toolName,
+    })) {
+      const result = typeof payload.result === "string" ? payload.result : "";
+      const metadataMatches = Object.entries(metadata).every(
+        ([key, expected]) => payload.metadata?.[key] === expected,
+      );
+      if (
+        payload.isError === true &&
+        result.includes(marker) &&
+        metadataMatches
+      ) {
+        return;
+      }
+    }
+    const suffix = toolName === undefined ? "" : ` for ${toolName}`;
+    throw new Error(
+      `${label}: no failed rollout tool completion${suffix} contained "${marker}" with metadata ${JSON.stringify(metadata)}`,
+    );
   }
 
   /**
    * Assert that a tool completed successfully in rollout, even when its
    * success payload does not include the file contents being verified.
    */
-  async assertRolloutToolCompleted({ label = "tool completion", toolName } = {}) {
+  async assertRolloutToolCompleted({
+    label = "tool completion",
+    toolName,
+  } = {}) {
     const timeout = 15_000;
     const start = Date.now();
     while (Date.now() - start < timeout) {
-      for (const { payload } of await this.completedRolloutToolCalls({ toolName })) {
+      for (const { payload } of await this.completedRolloutToolCalls({
+        toolName,
+      })) {
         if (payload.isError === false) return;
       }
       if (this.exited) break;
@@ -954,15 +1029,22 @@ export class TuiSession {
    * order. This proves a real multi-call pipeline instead of one combined
    * command that happened to print multiple expected strings.
    */
-  async assertRolloutToolOutputSequence(markers, { label = "tool output sequence", toolName } = {}) {
+  async assertRolloutToolOutputSequence(
+    markers,
+    { label = "tool output sequence", toolName } = {},
+  ) {
     if (!Array.isArray(markers) || markers.length === 0) {
       throw new Error(`${label}: expected at least one marker`);
     }
     let nextMarkerIndex = 0;
-    for (const { payload } of await this.completedRolloutToolCalls({ toolName })) {
+    for (const { payload } of await this.completedRolloutToolCalls({
+      toolName,
+    })) {
       if (payload.isError !== false) continue;
       const stdout =
-        typeof payload.metadata?.stdout === "string" ? payload.metadata.stdout : "";
+        typeof payload.metadata?.stdout === "string"
+          ? payload.metadata.stdout
+          : "";
       const result = typeof payload.result === "string" ? payload.result : "";
       const marker = markers[nextMarkerIndex];
       if (stdout.includes(marker) || result.includes(marker)) {
@@ -982,10 +1064,13 @@ export class TuiSession {
    * / "enter approve" rather than the old numbered prompt copy.
    */
   async waitForPermissionOverlay({ timeout = 60_000 } = {}) {
-    return this.waitFor(/NEEDS APPROVAL|needs approval[\s\S]*enter approve|enter approve/i, {
-      timeout,
-      label: "permission overlay",
-    });
+    return this.waitFor(
+      /NEEDS APPROVAL|needs approval[\s\S]*enter approve|enter approve/i,
+      {
+        timeout,
+        label: "permission overlay",
+      },
+    );
   }
 
   /**
@@ -1139,7 +1224,8 @@ export class TuiSession {
       }
       const childResults = await Promise.allSettled(
         [...this.childRecords.keys()].map((child) =>
-          this.terminateTrackedChild(child)),
+          this.terminateTrackedChild(child),
+        ),
       );
       for (const result of childResults) {
         if (result.status === "rejected") errors.push(result.reason);
@@ -1180,7 +1266,10 @@ export class TuiSession {
    * Plain-text view of the captured output for ad-hoc assertions.
    */
   get text() {
-    return normalizePtyOutput(this.buffer, { cols: this.cols, rows: this.rows });
+    return normalizePtyOutput(this.buffer, {
+      cols: this.cols,
+      rows: this.rows,
+    });
   }
 
   get plainText() {

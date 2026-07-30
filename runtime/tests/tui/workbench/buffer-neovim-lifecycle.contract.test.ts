@@ -6,12 +6,26 @@ import { EventEmitter } from "node:events";
 import { encode } from "@msgpack/msgpack";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { bufferManifestFromRpcValue, dirtyFlagFromRpcNotificationParams, EmbeddedNeovimSession, NeovimStartupCleanupError, startEmbeddedNeovim } from "../../../src/tui/workbench/buffer/neovim/NeovimLifecycle.js";
+import {
+  bufferManifestFromRpcValue,
+  dirtyFlagFromRpcNotificationParams,
+  EmbeddedNeovimSession,
+  NeovimStartupCleanupError,
+  startEmbeddedNeovim,
+} from "../../../src/tui/workbench/buffer/neovim/NeovimLifecycle.js";
 import {
   NeovimRpcError,
   NeovimRpcRequestTimeoutError,
 } from "../../../src/tui/workbench/buffer/neovim/NeovimRpc.js";
-import { cleanupTrackedNeovimProcesses, getTrackedNeovimProcessCountForTesting, killNeovimChild, normalizeNeovimPid, runTrackedNeovimProcessExitCleanupForTesting, spawnNeovimProcess, waitForNeovimExit } from "../../../src/tui/workbench/buffer/neovim/NeovimProcess.js";
+import {
+  cleanupTrackedNeovimProcesses,
+  getTrackedNeovimProcessCountForTesting,
+  killNeovimChild,
+  normalizeNeovimPid,
+  runTrackedNeovimProcessExitCleanupForTesting,
+  spawnNeovimProcess,
+  waitForNeovimExit,
+} from "../../../src/tui/workbench/buffer/neovim/NeovimProcess.js";
 
 let dir: string;
 
@@ -42,22 +56,28 @@ describe("embedded Neovim lifecycle", () => {
     killNeovimChild(noPidChild, true, "SIGTERM");
     expect(noPidChild.kill).toHaveBeenCalledWith("SIGTERM");
 
-    const attachedChild = fakeChild({ killed: true, pid: 222 });
+    const attachedChild = fakeChild({
+      killed: true,
+      pid: syntheticNeovimPid(222),
+    });
     killNeovimChild(attachedChild, false, "SIGKILL");
     expect(attachedChild.kill).toHaveBeenCalledWith("SIGKILL");
 
-    const detachedChild = fakeChild({ pid: 333 });
+    const detachedChild = fakeChild({ pid: syntheticNeovimPid(333) });
     killNeovimChild(detachedChild, true, "SIGTERM");
     expect(detachedChild.kill).toHaveBeenCalledWith("SIGTERM");
 
-    const exitedChild = fakeChild({ exitCode: 0, pid: 2_000_000_444 });
+    const exitedChild = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(444),
+    });
     await expect(waitForNeovimExit(exitedChild, 10)).resolves.toBeUndefined();
 
-    const hangingChild = fakeChild({ pid: 2_000_000_555 });
+    const hangingChild = fakeChild({ pid: syntheticNeovimPid(555) });
     await expect(waitForNeovimExit(hangingChild, 1)).resolves.toBeUndefined();
     expect(hangingChild.kill).toHaveBeenCalledWith("SIGTERM");
 
-    const delayedExitChild = fakeChild({ pid: 2_000_000_556 });
+    const delayedExitChild = fakeChild({ pid: syntheticNeovimPid(556) });
     const forceKillObserved = controlled<void>();
     delayedExitChild.kill = vi.fn(() => {
       delayedExitChild.killed = true;
@@ -75,7 +95,7 @@ describe("embedded Neovim lifecycle", () => {
     delayedExitChild.emit("exit");
     await delayedExitWait;
 
-    const unkillableChild = fakeChild({ pid: 2_000_000_557 });
+    const unkillableChild = fakeChild({ pid: syntheticNeovimPid(557) });
     unkillableChild.kill = vi.fn(() => true);
     await expect(waitForNeovimExit(unkillableChild, 1)).rejects.toThrow(
       "Neovim process 2000000557 did not exit after SIGKILL",
@@ -84,10 +104,10 @@ describe("embedded Neovim lifecycle", () => {
 
   it("guards closed embedded sessions and keeps cleanup idempotent", async () => {
     mockMissingProcessGroups();
-    const child = fakeChild({ exitCode: 0, pid: 777 });
+    const child = fakeChild({ exitCode: 0, pid: syntheticNeovimPid(777) });
     const handle = {
       child,
-      pid: 777,
+      pid: syntheticNeovimPid(777),
       kill: vi.fn(),
     };
     const rpc = {
@@ -102,7 +122,12 @@ describe("embedded Neovim lifecycle", () => {
       resize: vi.fn(async () => {}),
       dispose: vi.fn(),
     };
-    const session = new EmbeddedNeovimSession(handle as any, rpc as any, ui as any, 5);
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      ui as any,
+      5,
+    );
 
     await session.input("");
     await session.input("i");
@@ -152,51 +177,71 @@ describe("embedded Neovim lifecycle", () => {
         signal: expect.any(AbortSignal),
       },
     );
-    expect(rpc.request.mock.calls.filter((call) => call[0] === "nvim_command" && call[1]?.[0] === "qa!")).toHaveLength(1);
+    expect(
+      rpc.request.mock.calls.filter(
+        (call) => call[0] === "nvim_command" && call[1]?.[0] === "qa!",
+      ),
+    ).toHaveLength(1);
     expect(rpc.close).toHaveBeenCalledWith("session cleanup");
     expect(handle.kill).toHaveBeenCalledWith("SIGKILL");
 
-    const cleanChild = fakeChild({ exitCode: 0, pid: 778 });
+    const cleanChild = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(778),
+    });
     const cleanHandle = {
       child: cleanChild,
-      pid: 778,
+      pid: syntheticNeovimPid(778),
       kill: vi.fn(),
     };
     const cleanRpc = {
-      request: vi.fn(async (method: string) => method === "nvim_buf_get_option" ? false : true),
+      request: vi.fn(async (method: string) =>
+        method === "nvim_buf_get_option" ? false : true,
+      ),
       close: vi.fn(),
     };
-    const cleanSession = new EmbeddedNeovimSession(cleanHandle as any, cleanRpc as any, ui as any, 5);
-    await expect(cleanSession.quit(false)).resolves.toEqual({ closed: true });
-    expect(cleanRpc.request).toHaveBeenCalledWith(
-      "nvim_command",
-      ["qa"],
-      {
-        timeoutMs: 5,
-        signal: expect.any(AbortSignal),
-      },
+    const cleanSession = new EmbeddedNeovimSession(
+      cleanHandle as any,
+      cleanRpc as any,
+      ui as any,
+      5,
     );
+    await expect(cleanSession.quit(false)).resolves.toEqual({ closed: true });
+    expect(cleanRpc.request).toHaveBeenCalledWith("nvim_command", ["qa"], {
+      timeoutMs: 5,
+      signal: expect.any(AbortSignal),
+    });
 
-    const racedChild = fakeChild({ pid: 783 });
+    const racedChild = fakeChild({ pid: syntheticNeovimPid(783) });
     const racedHandle = {
       child: racedChild,
-      pid: 783,
+      pid: syntheticNeovimPid(783),
       kill: vi.fn(),
     };
     const racedRpc = {
       request: vi.fn(async (method: string, args: readonly any[]) => {
         if (method === "nvim_buf_get_option") return false;
         if (method === "nvim_command" && args[0] === "qa") {
-          throw new NeovimRpcError("nvim_command", 1, "E37: No write since last change");
+          throw new NeovimRpcError(
+            "nvim_command",
+            1,
+            "E37: No write since last change",
+          );
         }
         return true;
       }),
       close: vi.fn(),
     };
-    const racedSession = new EmbeddedNeovimSession(racedHandle as any, racedRpc as any, ui as any, 5);
+    const racedSession = new EmbeddedNeovimSession(
+      racedHandle as any,
+      racedRpc as any,
+      ui as any,
+      5,
+    );
     await expect(racedSession.quit(false)).resolves.toEqual({
       closed: false,
-      reason: "Unsaved Neovim edits. Save or use force quit before closing BUFFER.",
+      reason:
+        "Unsaved Neovim edits. Save or use force quit before closing BUFFER.",
       dirtyState: "dirty",
     });
     expect(racedHandle.kill).not.toHaveBeenCalled();
@@ -204,75 +249,118 @@ describe("embedded Neovim lifecycle", () => {
     await expect(racedSession.quit(true)).resolves.toEqual({ closed: true });
 
     const dirtyGate = controlled<boolean>();
-    const concurrentChild = fakeChild({ exitCode: 0, pid: 780 });
+    const concurrentChild = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(780),
+    });
     const concurrentHandle = {
       child: concurrentChild,
-      pid: 780,
+      pid: syntheticNeovimPid(780),
       kill: vi.fn(),
     };
     const concurrentRpc = {
       request: vi.fn(async (method: string) =>
         method === "nvim_exec_lua"
           ? dirtyGate.promise.then((dirty) => bufferManifest(dirty))
-          : true),
+          : true,
+      ),
       close: vi.fn(),
     };
-    const concurrentSession = new EmbeddedNeovimSession(concurrentHandle as any, concurrentRpc as any, ui as any, 5);
+    const concurrentSession = new EmbeddedNeovimSession(
+      concurrentHandle as any,
+      concurrentRpc as any,
+      ui as any,
+      5,
+    );
     const firstCleanClose = concurrentSession.quit(false);
     const secondCleanClose = concurrentSession.quit(false);
     expect(concurrentRpc.request).toHaveBeenCalledTimes(1);
     dirtyGate.resolve(false);
-    await expect(Promise.all([firstCleanClose, secondCleanClose])).resolves.toEqual([{ closed: true }, { closed: true }]);
-    expect(concurrentRpc.request.mock.calls.filter((call) => call[0] === "nvim_command" && call[1]?.[0] === "qa")).toHaveLength(1);
+    await expect(
+      Promise.all([firstCleanClose, secondCleanClose]),
+    ).resolves.toEqual([{ closed: true }, { closed: true }]);
+    expect(
+      concurrentRpc.request.mock.calls.filter(
+        (call) => call[0] === "nvim_command" && call[1]?.[0] === "qa",
+      ),
+    ).toHaveLength(1);
 
     const dirtyDiscardGate = controlled<boolean>();
-    const dirtyDiscardChild = fakeChild({ exitCode: 0, pid: 781 });
+    const dirtyDiscardChild = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(781),
+    });
     const dirtyDiscardHandle = {
       child: dirtyDiscardChild,
-      pid: 781,
+      pid: syntheticNeovimPid(781),
       kill: vi.fn(),
     };
     const dirtyDiscardRpc = {
       request: vi.fn(async (method: string) =>
         method === "nvim_exec_lua"
           ? dirtyDiscardGate.promise.then((dirty) => bufferManifest(dirty))
-          : true),
+          : true,
+      ),
       close: vi.fn(),
     };
-    const dirtyDiscardSession = new EmbeddedNeovimSession(dirtyDiscardHandle as any, dirtyDiscardRpc as any, ui as any, 5);
+    const dirtyDiscardSession = new EmbeddedNeovimSession(
+      dirtyDiscardHandle as any,
+      dirtyDiscardRpc as any,
+      ui as any,
+      5,
+    );
     const blockedDirtyClose = dirtyDiscardSession.quit(false);
     const forcedDirtyClose = dirtyDiscardSession.quit(true);
     expect(dirtyDiscardRpc.request).toHaveBeenCalledTimes(1);
     dirtyDiscardGate.resolve(true);
-    await expect(Promise.all([blockedDirtyClose, forcedDirtyClose])).resolves.toEqual([
+    await expect(
+      Promise.all([blockedDirtyClose, forcedDirtyClose]),
+    ).resolves.toEqual([
       {
         closed: false,
-        reason: "Unsaved Neovim edits. Save or use force quit before closing BUFFER.",
+        reason:
+          "Unsaved Neovim edits. Save or use force quit before closing BUFFER.",
         dirtyState: "dirty",
       },
       { closed: true },
     ]);
-    expect(dirtyDiscardRpc.request.mock.calls.filter((call) => call[0] === "nvim_command" && call[1]?.[0] === "qa!")).toHaveLength(1);
+    expect(
+      dirtyDiscardRpc.request.mock.calls.filter(
+        (call) => call[0] === "nvim_command" && call[1]?.[0] === "qa!",
+      ),
+    ).toHaveLength(1);
 
-    const closeChild = fakeChild({ exitCode: 0, pid: 779 });
+    const closeChild = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(779),
+    });
     const closeHandle = {
       child: closeChild,
-      pid: 779,
+      pid: syntheticNeovimPid(779),
       kill: vi.fn(),
     };
     const closeRpc = {
       request: vi.fn(async () => true),
       close: vi.fn(),
     };
-    const closeSession = new EmbeddedNeovimSession(closeHandle as any, closeRpc as any, ui as any, 5);
+    const closeSession = new EmbeddedNeovimSession(
+      closeHandle as any,
+      closeRpc as any,
+      ui as any,
+      5,
+    );
     await Promise.all([closeSession.quit(true), closeSession.quit(true)]);
-    expect(closeRpc.request.mock.calls.filter((call) => call[0] === "nvim_command" && call[1]?.[0] === "qa!")).toHaveLength(1);
+    expect(
+      closeRpc.request.mock.calls.filter(
+        (call) => call[0] === "nvim_command" && call[1]?.[0] === "qa!",
+      ),
+    ).toHaveLength(1);
 
-    const unkillableChild = fakeChild({ pid: 782 });
+    const unkillableChild = fakeChild({ pid: syntheticNeovimPid(782) });
     unkillableChild.kill = vi.fn(() => true);
     const unkillableHandle = {
       child: unkillableChild,
-      pid: 782,
+      pid: syntheticNeovimPid(782),
       kill: vi.fn(),
     };
     const unkillableRpc = {
@@ -286,23 +374,25 @@ describe("embedded Neovim lifecycle", () => {
       1,
     );
     await expect(unkillableSession.cleanup()).rejects.toThrow(
-      "Neovim process 782 did not exit after SIGKILL",
+      `Neovim process ${syntheticNeovimPid(782)} did not exit after SIGKILL`,
     );
     expect(unkillableRpc.close).toHaveBeenCalledWith("session cleanup");
     expect(unkillableHandle.kill).toHaveBeenCalledWith("SIGKILL");
 
     await expect(unkillableSession.quit(true)).rejects.toThrow(
-      "Neovim process 782 did not exit after SIGKILL",
+      `Neovim process ${syntheticNeovimPid(782)} did not exit after SIGKILL`,
     );
     unkillableChild.exitCode = 0;
-    await expect(unkillableSession.quit(true)).resolves.toEqual({ closed: true });
+    await expect(unkillableSession.quit(true)).resolves.toEqual({
+      closed: true,
+    });
   });
 
   it("routes explicit process signals through the supervised Neovim boundary", () => {
-    const child = fakeChild({ pid: 778 });
+    const child = fakeChild({ pid: syntheticNeovimPid(778) });
     const handle = {
       child,
-      pid: 778,
+      pid: syntheticNeovimPid(778),
       kill: vi.fn(() => true),
     };
     const session = new EmbeddedNeovimSession(
@@ -317,26 +407,38 @@ describe("embedded Neovim lifecycle", () => {
   });
 
   it("applies the configured deadline and an abort signal to every interactive RPC", async () => {
-    const child = fakeChild({ exitCode: 0, pid: 791 });
-    const handle = { child, pid: 791, kill: vi.fn() };
+    const child = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(791),
+    });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(791),
+      kill: vi.fn(),
+    };
     const liveSignals: boolean[] = [];
     const rpc = {
-      request: vi.fn(async (
-        method: string,
-        args: readonly any[],
-        options?: { readonly timeoutMs?: number; readonly signal?: AbortSignal },
-      ) => {
-        liveSignals.push(options?.signal?.aborted === false);
-        if (
-          method === "nvim_exec_lua" &&
-          String(args[0]).includes("nvim_list_bufs")
-        ) {
-          return bufferManifest(false);
-        }
-        if (method === "nvim_buf_get_lines") return ["alpha", "beta"];
-        if (method === "nvim_get_option_value") return true;
-        return true;
-      }),
+      request: vi.fn(
+        async (
+          method: string,
+          args: readonly any[],
+          options?: {
+            readonly timeoutMs?: number;
+            readonly signal?: AbortSignal;
+          },
+        ) => {
+          liveSignals.push(options?.signal?.aborted === false);
+          if (
+            method === "nvim_exec_lua" &&
+            String(args[0]).includes("nvim_list_bufs")
+          ) {
+            return bufferManifest(false);
+          }
+          if (method === "nvim_buf_get_lines") return ["alpha", "beta"];
+          if (method === "nvim_get_option_value") return true;
+          return true;
+        },
+      ),
       close: vi.fn(),
     };
     const ui = {
@@ -358,15 +460,19 @@ describe("embedded Neovim lifecycle", () => {
     await session.save(false);
     await session.inspectBuffers();
     await session.saveBuffer(1);
-    await session.rebaseFileBuffers([{
-      handle: 1,
-      fromPath: "/workspace/src/app.ts",
-      toPath: "/workspace/lib/app.ts",
-    }]);
-    await session.deleteFileBuffers([{
-      handle: 2,
-      path: "/workspace/lib/hidden.ts",
-    }]);
+    await session.rebaseFileBuffers([
+      {
+        handle: 1,
+        fromPath: "/workspace/src/app.ts",
+        toPath: "/workspace/lib/app.ts",
+      },
+    ]);
+    await session.deleteFileBuffers([
+      {
+        handle: 2,
+        path: "/workspace/lib/hidden.ts",
+      },
+    ]);
     await expect(session.readBufferText(1)).resolves.toBe("alpha\nbeta\n");
     await session.resize({ rows: 8, columns: 40 });
 
@@ -389,11 +495,15 @@ describe("embedded Neovim lifecycle", () => {
       "nvim_exec_lua",
       [
         expect.stringContaining("nvim_buf_set_name"),
-        [[{
-          handle: 1,
-          from_path: "/workspace/src/app.ts",
-          to_path: "/workspace/lib/app.ts",
-        }]],
+        [
+          [
+            {
+              handle: 1,
+              from_path: "/workspace/src/app.ts",
+              to_path: "/workspace/lib/app.ts",
+            },
+          ],
+        ],
       ],
       {
         timeoutMs: 25,
@@ -404,10 +514,14 @@ describe("embedded Neovim lifecycle", () => {
       "nvim_exec_lua",
       [
         expect.stringContaining("nvim_buf_delete"),
-        [[{
-          handle: 2,
-          path: "/workspace/lib/hidden.ts",
-        }]],
+        [
+          [
+            {
+              handle: 2,
+              path: "/workspace/lib/hidden.ts",
+            },
+          ],
+        ],
       ],
       {
         timeoutMs: 25,
@@ -418,9 +532,148 @@ describe("embedded Neovim lifecycle", () => {
     await session.cleanup();
   });
 
+  it("reloads a clean loaded path through a guarded Neovim buffer call", async () => {
+    const child = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(792),
+    });
+    const rpc = {
+      request: vi.fn(async () => ({
+        ok: true,
+        reloaded: true,
+      })),
+      close: vi.fn(),
+    };
+    const session = new EmbeddedNeovimSession(
+      { child, pid: syntheticNeovimPid(792), kill: vi.fn() } as any,
+      rpc as any,
+      { resize: vi.fn(), dispose: vi.fn() } as any,
+      5,
+      25,
+    );
+
+    await expect(
+      session.reloadCleanPath("/workspace/src/app.ts"),
+    ).resolves.toEqual({ ok: true, reloaded: true });
+    expect(rpc.request).toHaveBeenCalledWith(
+      "nvim_exec_lua",
+      [
+        expect.stringContaining("buffer has unsaved changes"),
+        ["/workspace/src/app.ts"],
+      ],
+      {
+        timeoutMs: 25,
+        signal: expect.any(AbortSignal),
+      },
+    );
+  });
+
+  it("translates code-prediction context, staging, and dismissal RPCs", async () => {
+    const child = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(798),
+    });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(798),
+      kill: vi.fn(),
+    };
+    let reportFileBytes = true;
+    const rpc = {
+      request: vi.fn(async (method: string, args: readonly any[]) => {
+        if (method !== "nvim_exec_lua") return true;
+        const source = String(args[0]);
+        if (source.includes("AgenCCaptureCodePredictionContext")) {
+          const context = {
+            buffer_handle: 4,
+            path: "/workspace/src/app.ts",
+            changedtick: 17,
+            cursor: { line: 2, byte_column: 9 },
+            prefix: "const app",
+            suffix: " = true;",
+            language: "typescript",
+          };
+          return reportFileBytes ? { ...context, file_bytes: 8_192 } : context;
+        }
+        return true;
+      }),
+      close: vi.fn(),
+    };
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      { resize: vi.fn(async () => {}), dispose: vi.fn() } as any,
+      5,
+      25,
+    );
+
+    await expect(session.captureCodePredictionContext()).resolves.toEqual({
+      bufferHandle: 4,
+      path: "/workspace/src/app.ts",
+      changedtick: 17,
+      fileBytes: 8_192,
+      cursor: { line: 2, byteColumn: 9 },
+      prefix: "const app",
+      suffix: " = true;",
+      language: "typescript",
+    });
+    reportFileBytes = false;
+    await expect(session.captureCodePredictionContext()).resolves.toBeNull();
+    reportFileBytes = true;
+    await expect(
+      session.stageCodePrediction({
+        requestId: "prediction-1",
+        generation: 3,
+        bufferHandle: 4,
+        changedtick: 17,
+        cursor: { line: 2, byteColumn: 9 },
+        text: "lication",
+        latencyMs: 12,
+      }),
+    ).resolves.toBe(true);
+    await expect(session.clearCodePrediction("prediction-1")).resolves.toBe(
+      true,
+    );
+
+    expect(rpc.request).toHaveBeenCalledWith(
+      "nvim_exec_lua",
+      [
+        "return _G.AgenCStageCodePrediction(...)",
+        [
+          {
+            request_id: "prediction-1",
+            generation: 3,
+            buffer_handle: 4,
+            changedtick: 17,
+            cursor: { line: 2, byte_column: 9 },
+            text: "lication",
+            latency_ms: 12,
+          },
+        ],
+      ],
+      {
+        timeoutMs: 25,
+        signal: expect.any(AbortSignal),
+      },
+    );
+    expect(rpc.request).toHaveBeenCalledWith(
+      "nvim_exec_lua",
+      ["return _G.AgenCDismissCodePrediction(...)", ["prediction-1", false]],
+      {
+        timeoutMs: 25,
+        signal: expect.any(AbortSignal),
+      },
+    );
+    await session.cleanup();
+  });
+
   it("retires timed-out read probes so pending RPCs stay bounded and late replies are ignored", async () => {
-    const child = fakeChild({ pid: 792 });
-    const handle = { child, pid: 792, kill: vi.fn() };
+    const child = fakeChild({ pid: syntheticNeovimPid(792) });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(792),
+      kill: vi.fn(),
+    };
     const rpc = createDeadlineRpcHarness();
     const session = new EmbeddedNeovimSession(
       handle as any,
@@ -448,8 +701,15 @@ describe("embedded Neovim lifecycle", () => {
   });
 
   it("poisons the session when a timed-out mutation could otherwise continue late", async () => {
-    const child = fakeChild({ exitCode: 0, pid: 793 });
-    const handle = { child, pid: 793, kill: vi.fn() };
+    const child = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(793),
+    });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(793),
+      kill: vi.fn(),
+    };
     const rpc = createDeadlineRpcHarness();
     const ui = { resize: vi.fn(async () => {}), dispose: vi.fn() };
     const onFatalError = vi.fn();
@@ -474,25 +734,32 @@ describe("embedded Neovim lifecycle", () => {
     expect(mouseCalls[0]?.[1]?.[1]).toBe("press");
     expect(rpc.pendingCount()).toBe(0);
     expect(rpc.reply(1, true)).toBe(false);
-    expect(rpc.close).toHaveBeenCalledWith(
-      expect.stringContaining("mutating operation timed out"),
-    );
+    expect(rpc.close).not.toHaveBeenCalled();
     expect(ui.dispose).toHaveBeenCalledOnce();
-    expect(child.stdin.end).toHaveBeenCalledOnce();
-    expect(onFatalError).toHaveBeenCalledWith(
+    expect(child.stdin.end).not.toHaveBeenCalled();
+    expect(onFatalError).toHaveBeenNthCalledWith(
+      1,
       expect.any(NeovimRpcRequestTimeoutError),
     );
+    expect(onFatalError).toHaveBeenNthCalledWith(2, expect.any(AggregateError));
     await expect(session.save(false)).resolves.toBe(false);
     expect(rpc.request).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => {
-      expect(handle.kill).toHaveBeenCalledWith("SIGKILL");
-    });
-    await expect(session.cleanup()).resolves.toBeUndefined();
+    expect(handle.kill).not.toHaveBeenCalled();
+    await expect(session.cleanup()).rejects.toThrow(
+      "exact recovery preservation was not confirmed",
+    );
   });
 
   it("bounds file navigation and prevents a late edit reply from moving the cursor", async () => {
-    const child = fakeChild({ exitCode: 0, pid: 794 });
-    const handle = { child, pid: 794, kill: vi.fn() };
+    const child = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(794),
+    });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(794),
+      kill: vi.fn(),
+    };
     const rpc = createDeadlineRpcHarness();
     const onFatalError = vi.fn();
     const session = new EmbeddedNeovimSession(
@@ -526,15 +793,13 @@ describe("embedded Neovim lifecycle", () => {
       expect.anything(),
       expect.anything(),
     );
-    expect(onFatalError).toHaveBeenCalledOnce();
-    await vi.waitFor(() => {
-      expect(handle.kill).toHaveBeenCalledWith("SIGKILL");
-    });
+    expect(onFatalError).toHaveBeenCalledTimes(2);
+    expect(handle.kill).not.toHaveBeenCalled();
   });
 
-  it("automatically force-stops a hung child after a mutating timeout", async () => {
+  it("retains a hung child when a mutating timeout cannot prove recovery", async () => {
     mockMissingProcessGroups();
-    const child = fakeChild({ pid: 797 });
+    const child = fakeChild({ pid: syntheticNeovimPid(797) });
     child.kill = vi.fn((signal: NodeJS.Signals) => {
       if (signal === "SIGKILL") {
         child.signalCode = "SIGKILL";
@@ -542,7 +807,11 @@ describe("embedded Neovim lifecycle", () => {
       }
       return true;
     });
-    const handle = { child, pid: 797, kill: vi.fn() };
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(797),
+      kill: vi.fn(),
+    };
     const rpc = createDeadlineRpcHarness();
     const onFatalError = vi.fn();
     const session = new EmbeddedNeovimSession(
@@ -559,10 +828,11 @@ describe("embedded Neovim lifecycle", () => {
       NeovimRpcRequestTimeoutError,
     );
     await vi.waitFor(() => {
-      expect(child.kill).toHaveBeenCalledWith("SIGKILL");
-      expect(handle.kill).toHaveBeenCalledWith("SIGKILL");
+      expect(onFatalError).toHaveBeenCalledTimes(2);
     });
-    expect(onFatalError).toHaveBeenCalledOnce();
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(handle.kill).not.toHaveBeenCalled();
+    expect(rpc.close).not.toHaveBeenCalled();
     await expect(session.save(false)).resolves.toBe(false);
   });
 
@@ -593,7 +863,7 @@ describe("embedded Neovim lifecycle", () => {
       "nvim_exec_lua",
     ]);
     expect(discard.rpc.reply(1, true)).toBe(false);
-    expect(discard.onFatalError).toHaveBeenCalledOnce();
+    expect(discard.onFatalError).toHaveBeenCalledTimes(2);
 
     const safeClose = makeTimedSession(796);
     const closing = safeClose.session.quit(false);
@@ -607,20 +877,17 @@ describe("embedded Neovim lifecycle", () => {
       "nvim_command",
     ]);
     expect(safeClose.rpc.reply(2, true)).toBe(false);
-    expect(safeClose.onFatalError).toHaveBeenCalledOnce();
-
-    await vi.waitFor(() => {
-      expect(discard.handle.kill).toHaveBeenCalledWith("SIGKILL");
-      expect(safeClose.handle.kill).toHaveBeenCalledWith("SIGKILL");
-    });
+    expect(safeClose.onFatalError).toHaveBeenCalledTimes(2);
+    expect(discard.handle.kill).not.toHaveBeenCalled();
+    expect(safeClose.handle.kill).not.toHaveBeenCalled();
   });
 
   it("bounds cleanup when Neovim never answers the graceful quit RPC", async () => {
     mockMissingProcessGroups();
-    const child = fakeChild({ pid: 784 });
+    const child = fakeChild({ pid: syntheticNeovimPid(784) });
     const handle = {
       child,
-      pid: 784,
+      pid: syntheticNeovimPid(784),
       kill: vi.fn(),
     };
     const neverReplies = controlled<unknown>();
@@ -631,11 +898,18 @@ describe("embedded Neovim lifecycle", () => {
     const ui = {
       dispose: vi.fn(),
     };
-    const session = new EmbeddedNeovimSession(handle as any, rpc as any, ui as any, 5);
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      ui as any,
+      5,
+    );
 
     const outcome = await Promise.race([
       session.cleanup().then(() => "cleaned" as const),
-      new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 250)),
+      new Promise<"timed-out">((resolve) =>
+        setTimeout(() => resolve("timed-out"), 250),
+      ),
     ]);
 
     expect(outcome).toBe("cleaned");
@@ -645,21 +919,130 @@ describe("embedded Neovim lifecycle", () => {
     expect(handle.kill).toHaveBeenCalledWith("SIGKILL");
   });
 
+  it("preserves recovery and never sends qa! during abnormal cleanup", async () => {
+    mockMissingProcessGroups();
+    const child = fakeChild({ pid: syntheticNeovimPid(7841) });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(7841),
+      kill: vi.fn(),
+    };
+    const rpc = {
+      request: vi.fn(async (method: string) =>
+        method === "nvim_exec_lua"
+          ? [
+              {
+                handle: 1,
+                changedtick: 7,
+                end_of_line: true,
+                swap: "/private/swap/recovery.swp",
+                size: 4096,
+              },
+            ]
+          : true,
+      ),
+      close: vi.fn(),
+    };
+    const ui = { dispose: vi.fn() };
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      ui as any,
+      5,
+    );
+
+    await session.cleanup({ preserveRecovery: true });
+
+    expect(rpc.request).toHaveBeenCalledWith(
+      "nvim_exec_lua",
+      [expect.stringContaining("silent preserve"), []],
+      { timeoutMs: 5 },
+    );
+    expect(rpc.request).not.toHaveBeenCalledWith("nvim_command", ["qa!"]);
+    expect(child.stdin.end).not.toHaveBeenCalled();
+    expect(rpc.close).toHaveBeenCalledWith("abnormal session cleanup");
+    expect(handle.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(session.recoveryPreservationProven).toBe(true);
+    expect(rpc.request.mock.invocationCallOrder[0]).toBeLessThan(
+      handle.kill.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("leaves the live process intact when abnormal recovery preservation is unproven", async () => {
+    mockMissingProcessGroups();
+    const child = fakeChild({ pid: syntheticNeovimPid(7842) });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(7842),
+      kill: vi.fn(),
+    };
+    const rpc = {
+      request: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("preserve transport failed"))
+        .mockResolvedValueOnce([
+          {
+            handle: 1,
+            changedtick: 8,
+            end_of_line: true,
+            swap: "/private/swap/retry.swp",
+            size: 4096,
+          },
+        ]),
+      close: vi.fn(),
+    };
+    const ui = { dispose: vi.fn() };
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      ui as any,
+      5,
+    );
+
+    await expect(session.cleanup({ preserveRecovery: true })).rejects.toThrow(
+      "exact recovery preservation was not confirmed: preserve transport failed",
+    );
+
+    expect(handle.kill).not.toHaveBeenCalled();
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(child.stdin.end).not.toHaveBeenCalled();
+    expect(rpc.close).not.toHaveBeenCalled();
+
+    // The preservation requirement is latched: even a retry without options
+    // must obtain valid proof before it may stop the retained process.
+    await session.cleanup();
+    expect(rpc.request).toHaveBeenCalledTimes(2);
+    expect(session.recoveryPreservationProven).toBe(true);
+    expect(rpc.close).toHaveBeenCalledWith("abnormal session cleanup");
+    expect(handle.kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
   it("fails a non-discarding close closed when the dirty probe never settles", async () => {
     mockMissingProcessGroups();
-    const child = fakeChild({ pid: 785 });
-    const handle = { child, pid: 785, kill: vi.fn() };
+    const child = fakeChild({ pid: syntheticNeovimPid(785) });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(785),
+      kill: vi.fn(),
+    };
     const neverReplies = controlled<unknown>();
     const rpc = {
       request: vi.fn(() => neverReplies.promise),
       close: vi.fn(),
     };
     const ui = { dispose: vi.fn() };
-    const session = new EmbeddedNeovimSession(handle as any, rpc as any, ui as any, 5);
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      ui as any,
+      5,
+    );
 
     const outcome = await Promise.race([
       session.quit(false),
-      new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 250)),
+      new Promise<"timed-out">((resolve) =>
+        setTimeout(() => resolve("timed-out"), 250),
+      ),
     ]);
 
     expect(outcome).toMatchObject({
@@ -680,54 +1063,62 @@ describe("embedded Neovim lifecycle", () => {
     expect(ui.dispose).not.toHaveBeenCalled();
   });
 
-  it("retires and tears down a clean all-buffer quit RPC that never settles", async () => {
+  it("retires but preserves a clean-probed session when all-buffer quit is ambiguous", async () => {
     mockMissingProcessGroups();
-    const child = fakeChild({ pid: 786 });
-    const handle = { child, pid: 786, kill: vi.fn() };
+    const child = fakeChild({ pid: syntheticNeovimPid(786) });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(786),
+      kill: vi.fn(),
+    };
     const neverReplies = controlled<unknown>();
     const rpc = {
       request: vi.fn((method: string, args: readonly unknown[]) => {
         if (method === "nvim_buf_get_option") return Promise.resolve(false);
-        if (method === "nvim_command" && args[0] === "qa") return neverReplies.promise;
+        if (method === "nvim_command" && args[0] === "qa")
+          return neverReplies.promise;
         return Promise.resolve(true);
       }),
       close: vi.fn(),
     };
     const ui = { dispose: vi.fn() };
-    const session = new EmbeddedNeovimSession(handle as any, rpc as any, ui as any, 5);
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      ui as any,
+      5,
+    );
 
     const outcome = await Promise.race([
       session.quit(false),
-      new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 250)),
+      new Promise<"timed-out">((resolve) =>
+        setTimeout(() => resolve("timed-out"), 250),
+      ),
     ]);
 
     expect(outcome).toMatchObject({ closed: false });
-    expect(rpc.request).toHaveBeenCalledWith(
-      "nvim_command",
-      ["qa"],
-      {
-        timeoutMs: 5,
-        signal: expect.any(AbortSignal),
-      },
-    );
+    expect(rpc.request).toHaveBeenCalledWith("nvim_command", ["qa"], {
+      timeoutMs: 5,
+      signal: expect.any(AbortSignal),
+    });
     expect(
       rpc.request.mock.calls.filter(
         (call) => call[0] === "nvim_command" && call[1]?.[0] === "qa!",
       ),
     ).toHaveLength(0);
-    expect(rpc.close).toHaveBeenCalledWith(
-      expect.stringContaining("mutating operation timed out"),
-    );
-    expect(child.stdin.end).toHaveBeenCalledOnce();
-    await vi.waitFor(() => {
-      expect(handle.kill).toHaveBeenCalledWith("SIGKILL");
-    });
+    expect(rpc.close).not.toHaveBeenCalled();
+    expect(child.stdin.end).not.toHaveBeenCalled();
+    expect(handle.kill).not.toHaveBeenCalled();
   });
 
   it("waits for a transport-raced safe exit without killing the live child", async () => {
     mockMissingProcessGroups();
-    const child = fakeChild({ pid: 789 });
-    const handle = { child, pid: 789, kill: vi.fn() };
+    const child = fakeChild({ pid: syntheticNeovimPid(789) });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(789),
+      kill: vi.fn(),
+    };
     const rpc = {
       request: vi.fn(async (method: string, args: readonly unknown[]) => {
         if (method === "nvim_buf_get_option") return false;
@@ -739,7 +1130,12 @@ describe("embedded Neovim lifecycle", () => {
       close: vi.fn(),
     };
     const ui = { dispose: vi.fn() };
-    const session = new EmbeddedNeovimSession(handle as any, rpc as any, ui as any, 50);
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      ui as any,
+      50,
+    );
 
     const closing = session.quit(false);
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -749,26 +1145,30 @@ describe("embedded Neovim lifecycle", () => {
     child.exitCode = 0;
     child.emit("exit", 0, null);
     await expect(closing).resolves.toEqual({ closed: true });
-    expect(rpc.request).toHaveBeenCalledWith(
-      "nvim_command",
-      ["qa"],
-      {
-        timeoutMs: 50,
-        signal: expect.any(AbortSignal),
-      },
-    );
+    expect(rpc.request).toHaveBeenCalledWith("nvim_command", ["qa"], {
+      timeoutMs: 50,
+      signal: expect.any(AbortSignal),
+    });
     expect(ui.dispose).toHaveBeenCalledTimes(1);
   });
 
   it("requires an all-buffer safe close before force teardown can begin", async () => {
     mockMissingProcessGroups();
-    const child = fakeChild({ pid: 788 });
-    const handle = { child, pid: 788, kill: vi.fn() };
+    const child = fakeChild({ pid: syntheticNeovimPid(788) });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(788),
+      kill: vi.fn(),
+    };
     const rpc = {
       request: vi.fn(async (method: string, args: readonly unknown[]) => {
         if (method === "nvim_buf_get_option") return false;
         if (method === "nvim_command" && args[0] === "qa") {
-          throw new NeovimRpcError("nvim_command", 2, "E37: another buffer has unsaved changes");
+          throw new NeovimRpcError(
+            "nvim_command",
+            2,
+            "E37: another buffer has unsaved changes",
+          );
         }
         if (method === "nvim_command" && args[0] === "quit") return true;
         return true;
@@ -776,22 +1176,24 @@ describe("embedded Neovim lifecycle", () => {
       close: vi.fn(),
     };
     const ui = { dispose: vi.fn() };
-    const session = new EmbeddedNeovimSession(handle as any, rpc as any, ui as any, 5);
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      ui as any,
+      5,
+    );
 
     await expect(session.quit(false)).resolves.toEqual({
       closed: false,
-      reason: "Unsaved Neovim edits. Save or use force quit before closing BUFFER.",
+      reason:
+        "Unsaved Neovim edits. Save or use force quit before closing BUFFER.",
       dirtyState: "dirty",
     });
 
-    expect(rpc.request).toHaveBeenCalledWith(
-      "nvim_command",
-      ["qa"],
-      {
-        timeoutMs: 5,
-        signal: expect.any(AbortSignal),
-      },
-    );
+    expect(rpc.request).toHaveBeenCalledWith("nvim_command", ["qa"], {
+      timeoutMs: 5,
+      signal: expect.any(AbortSignal),
+    });
     expect(rpc.request).not.toHaveBeenCalledWith("nvim_command", ["quit"]);
     expect(rpc.request).not.toHaveBeenCalledWith("nvim_command", ["qa!"]);
     expect(rpc.close).not.toHaveBeenCalled();
@@ -801,19 +1203,30 @@ describe("embedded Neovim lifecycle", () => {
 
   it("forces a bounded supervised cleanup without awaiting a stuck quit RPC", async () => {
     mockMissingProcessGroups();
-    const child = fakeChild({ pid: 787 });
-    const handle = { child, pid: 787, kill: vi.fn() };
+    const child = fakeChild({ pid: syntheticNeovimPid(787) });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(787),
+      kill: vi.fn(),
+    };
     const neverReplies = controlled<unknown>();
     const rpc = {
       request: vi.fn(() => neverReplies.promise),
       close: vi.fn(),
     };
     const ui = { dispose: vi.fn() };
-    const session = new EmbeddedNeovimSession(handle as any, rpc as any, ui as any, 5);
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      ui as any,
+      5,
+    );
 
     const outcome = await Promise.race([
       session.quit(true),
-      new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 250)),
+      new Promise<"timed-out">((resolve) =>
+        setTimeout(() => resolve("timed-out"), 250),
+      ),
     ]);
 
     expect(outcome).toEqual({ closed: true });
@@ -831,8 +1244,15 @@ describe("embedded Neovim lifecycle", () => {
   });
 
   it("preflights every dirty buffer before Save All and writes by stable handle", async () => {
-    const child = fakeChild({ exitCode: 0, pid: 790 });
-    const handle = { child, pid: 790, kill: vi.fn() };
+    const child = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(790),
+    });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(790),
+      kill: vi.fn(),
+    };
     let manifest = {
       active: 1,
       buffers: [
@@ -851,7 +1271,9 @@ describe("embedded Neovim lifecycle", () => {
           manifest = {
             ...manifest,
             buffers: manifest.buffers.map((buffer) =>
-              buffer.handle === target ? { ...buffer, modified: false } : buffer
+              buffer.handle === target
+                ? { ...buffer, modified: false }
+                : buffer,
             ),
           };
           return true;
@@ -859,7 +1281,10 @@ describe("embedded Neovim lifecycle", () => {
         if (source.includes("silent keepalt noautocmd edit!")) {
           manifest = {
             ...manifest,
-            buffers: manifest.buffers.map((buffer) => ({ ...buffer, modified: false })),
+            buffers: manifest.buffers.map((buffer) => ({
+              ...buffer,
+              modified: false,
+            })),
           };
           return true;
         }
@@ -894,54 +1319,66 @@ describe("embedded Neovim lifecycle", () => {
 
     manifest = {
       ...manifest,
-      buffers: manifest.buffers.map((buffer) => ({ ...buffer, modified: true })),
+      buffers: manifest.buffers.map((buffer) => ({
+        ...buffer,
+        modified: true,
+      })),
     };
     await expect(session.discardAll()).resolves.toBe(true);
     await expect(session.inspectDirtyBuffers()).resolves.toEqual([]);
-    await expect(session.saveBuffer(0)).rejects.toThrow("Invalid Neovim buffer handle");
+    await expect(session.saveBuffer(0)).rejects.toThrow(
+      "Invalid Neovim buffer handle",
+    );
   });
 
   it("normalizes authoritative buffer manifests from RPC values", () => {
-    expect(bufferManifestFromRpcValue({
-      active: 7,
-      buffers: [
-        rpcBuffer(7, "/workspace/current.txt", true, false),
-        { handle: "invalid", modified: true },
-      ],
-    })).toEqual({
+    expect(
+      bufferManifestFromRpcValue({
+        active: 7,
+        buffers: [
+          rpcBuffer(7, "/workspace/current.txt", true, false),
+          { handle: "invalid", modified: true },
+        ],
+      }),
+    ).toEqual({
       activeBufferHandle: 7,
-      buffers: [{
-        handle: 7,
-        changedtick: 70,
-        name: "/workspace/current.txt",
-        listed: true,
-        loaded: true,
-        modified: true,
-        current: true,
-        bufferType: "",
-        modifiable: true,
-        readOnly: false,
-        saveable: true,
-      }],
+      buffers: [
+        {
+          handle: 7,
+          changedtick: 70,
+          endOfLine: true,
+          name: "/workspace/current.txt",
+          listed: true,
+          loaded: true,
+          modified: true,
+          current: true,
+          bufferType: "",
+          modifiable: true,
+          readOnly: false,
+          saveable: true,
+        },
+      ],
     });
   });
 
   it("reports stderr from a child that exits during startup", async () => {
     const errors: string[] = [];
 
-    await expect(startEmbeddedNeovim({
-      executable: process.execPath,
-      args: ["-e", "process.stderr.write('startup boom'); process.exit(1)"],
-      filePath: join(dir, "target.txt"),
-      line: 1,
-      column: 0,
-      size: { rows: 2, columns: 10 },
-      onSnapshot: () => {},
-      onError: (error) => {
-        errors.push(error.message);
-      },
-      onExit: () => {},
-    })).rejects.toThrow();
+    await expect(
+      startEmbeddedNeovim({
+        executable: process.execPath,
+        args: ["-e", "process.stderr.write('startup boom'); process.exit(1)"],
+        filePath: join(dir, "target.txt"),
+        line: 1,
+        column: 0,
+        size: { rows: 2, columns: 10 },
+        onSnapshot: () => {},
+        onError: (error) => {
+          errors.push(error.message);
+        },
+        onExit: () => {},
+      }),
+    ).rejects.toThrow();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(errors).toContain("startup boom");
@@ -999,7 +1436,9 @@ describe("embedded Neovim lifecycle", () => {
     });
     const pid = await waitForPidFile(pidFile);
 
-    await expect(startup).rejects.toThrow("Embedded Neovim startup timed out after 1000ms");
+    await expect(startup).rejects.toThrow(
+      "Embedded Neovim startup timed out after 1000ms",
+    );
     await waitUntilDead(pid);
     expect(isProcessAlive(pid)).toBe(false);
     expect(getTrackedNeovimProcessCountForTesting()).toBe(0);
@@ -1027,7 +1466,9 @@ describe("embedded Neovim lifecycle", () => {
   });
 
   it("kills a live child when startup setup rejects after spawn", async () => {
-    const frame = Buffer.from(encode([1, 1, "attach failed", null])).toString("base64");
+    const frame = Buffer.from(encode([1, 1, "attach failed", null])).toString(
+      "base64",
+    );
     const pidFile = join(dir, "child.pid");
     const script = [
       `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
@@ -1035,18 +1476,20 @@ describe("embedded Neovim lifecycle", () => {
       "setInterval(() => {}, 1000);",
     ].join("");
 
-    await expect(startEmbeddedNeovim({
-      executable: process.execPath,
-      args: ["-e", script],
-      filePath: join(dir, "target.txt"),
-      line: 1,
-      column: 0,
-      size: { rows: 2, columns: 10 },
-      cleanupTimeoutMs: 20,
-      onSnapshot: () => {},
-      onError: () => {},
-      onExit: () => {},
-    })).rejects.toThrow("attach failed");
+    await expect(
+      startEmbeddedNeovim({
+        executable: process.execPath,
+        args: ["-e", script],
+        filePath: join(dir, "target.txt"),
+        line: 1,
+        column: 0,
+        size: { rows: 2, columns: 10 },
+        cleanupTimeoutMs: 20,
+        onSnapshot: () => {},
+        onError: () => {},
+        onExit: () => {},
+      }),
+    ).rejects.toThrow("attach failed");
 
     const pid = Number(await readFile(pidFile, "utf8"));
     await waitUntilDead(pid);
@@ -1128,7 +1571,10 @@ describe("embedded Neovim lifecycle", () => {
   it("parent cleanup kills tracked Neovim children when graceful paths are unavailable", async () => {
     const handle = spawnNeovimProcess({
       executable: process.execPath,
-      args: ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+      args: [
+        "-e",
+        "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)",
+      ],
       cwd: dir,
     });
 
@@ -1143,7 +1589,10 @@ describe("embedded Neovim lifecycle", () => {
   it("runs the registered process-exit cleanup path for tracked children", async () => {
     const handle = spawnNeovimProcess({
       executable: process.execPath,
-      args: ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+      args: [
+        "-e",
+        "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)",
+      ],
       cwd: dir,
     });
 
@@ -1169,25 +1618,27 @@ describe("embedded Neovim lifecycle", () => {
     expect(isProcessAlive(handle.pid)).toBe(false);
     expect(getTrackedNeovimProcessCountForTesting()).toBe(0);
   });
-
 });
 
 function bufferManifest(modified: boolean) {
   return {
     active: 1,
-    buffers: [{
-      handle: 1,
-      changedtick: 1,
-      name: "/workspace/target.txt",
-      listed: true,
-      loaded: true,
-      modified,
-      current: true,
-      buffer_type: "",
-      modifiable: true,
-      read_only: false,
-      saveable: true,
-    }],
+    buffers: [
+      {
+        handle: 1,
+        changedtick: 1,
+        end_of_line: true,
+        name: "/workspace/target.txt",
+        listed: true,
+        loaded: true,
+        modified,
+        current: true,
+        buffer_type: "",
+        modifiable: true,
+        read_only: false,
+        saveable: true,
+      },
+    ],
   };
 }
 
@@ -1200,6 +1651,7 @@ function rpcBuffer(
   return {
     handle,
     changedtick: handle * 10,
+    end_of_line: true,
     name,
     listed: true,
     loaded: true,
@@ -1210,6 +1662,17 @@ function rpcBuffer(
     read_only: false,
     saveable: name.length > 0,
   };
+}
+
+/**
+ * Keep mocked process roots outside every supported native PID range.
+ *
+ * Low fixed PIDs can belong to a concurrently running Vitest worker. The
+ * production teardown intentionally inspects the native process table, so a
+ * collision would make an already-exited fake appear to own that real worker.
+ */
+function syntheticNeovimPid(suffix: number): number {
+  return 2_000_000_000 + suffix;
 }
 
 function fakeChild(options: {
@@ -1270,51 +1733,53 @@ function createDeadlineRpcHarness() {
   let nextRequestId = 1;
   let maximumPending = 0;
   const pending = new Map<number, Pending>();
-  const request = vi.fn((
-    method: string,
-    _args: readonly unknown[] = [],
-    options: RequestOptions = {},
-  ): Promise<unknown> => {
-    if (closed) return Promise.reject(new Error("closed"));
-    const requestId = nextRequestId;
-    nextRequestId += 1;
-    return new Promise((resolve, reject) => {
-      let timer: NodeJS.Timeout | undefined;
-      const onAbort = (): void => {
-        const active = pending.get(requestId);
-        if (!active) return;
-        pending.delete(requestId);
-        active.cleanup();
-        reject(new Error(`${method} aborted`));
-      };
-      const cleanup = (): void => {
-        if (timer) clearTimeout(timer);
-        options.signal?.removeEventListener("abort", onAbort);
-      };
-      pending.set(requestId, { resolve, reject, cleanup });
-      maximumPending = Math.max(maximumPending, pending.size);
-      options.signal?.addEventListener("abort", onAbort, { once: true });
-      if (options.signal?.aborted) {
-        onAbort();
-        return;
-      }
-      if (options.timeoutMs !== undefined) {
-        timer = setTimeout(() => {
+  const request = vi.fn(
+    (
+      method: string,
+      _args: readonly unknown[] = [],
+      options: RequestOptions = {},
+    ): Promise<unknown> => {
+      if (closed) return Promise.reject(new Error("closed"));
+      const requestId = nextRequestId;
+      nextRequestId += 1;
+      return new Promise((resolve, reject) => {
+        let timer: NodeJS.Timeout | undefined;
+        const onAbort = (): void => {
           const active = pending.get(requestId);
           if (!active) return;
           pending.delete(requestId);
           active.cleanup();
-          reject(
-            new NeovimRpcRequestTimeoutError(
-              method,
-              requestId,
-              options.timeoutMs!,
-            ),
-          );
-        }, options.timeoutMs);
-      }
-    });
-  });
+          reject(new Error(`${method} aborted`));
+        };
+        const cleanup = (): void => {
+          if (timer) clearTimeout(timer);
+          options.signal?.removeEventListener("abort", onAbort);
+        };
+        pending.set(requestId, { resolve, reject, cleanup });
+        maximumPending = Math.max(maximumPending, pending.size);
+        options.signal?.addEventListener("abort", onAbort, { once: true });
+        if (options.signal?.aborted) {
+          onAbort();
+          return;
+        }
+        if (options.timeoutMs !== undefined) {
+          timer = setTimeout(() => {
+            const active = pending.get(requestId);
+            if (!active) return;
+            pending.delete(requestId);
+            active.cleanup();
+            reject(
+              new NeovimRpcRequestTimeoutError(
+                method,
+                requestId,
+                options.timeoutMs!,
+              ),
+            );
+          }, options.timeoutMs);
+        }
+      });
+    },
+  );
   const close = vi.fn((reason = "closed") => {
     if (closed) return;
     closed = true;
@@ -1361,7 +1826,9 @@ async function waitForPidFile(path: string): Promise<number> {
 function mockMissingProcessGroups(): void {
   vi.spyOn(process, "kill").mockImplementation((pid) => {
     if (pid < 0) {
-      throw Object.assign(new Error(`process group ${-pid} does not exist`), { code: "ESRCH" });
+      throw Object.assign(new Error(`process group ${-pid} does not exist`), {
+        code: "ESRCH",
+      });
     }
     return true;
   });

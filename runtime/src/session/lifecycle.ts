@@ -63,12 +63,30 @@ export async function shutdownSessionLifecycle(
     opts.shutdownBudgetMs ?? SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS;
   const deadlineMs = monotonicMs() + budgetMs;
 
-  // Step 1: quiesce.
+  // Step 1: synchronously close startup admission and cancel MCP startup
+  // before any awaited teardown step leaves a race window.
+  const startupLifecycle = opts.session as Session & {
+    beginShutdown?: () => void;
+    drainDeferredStartupForShutdown?: () => Promise<void>;
+  };
+  startupLifecycle.beginShutdown?.();
   if (!opts.session.abortController.signal.aborted) {
     opts.session.abortController.abort("session_shutdown");
   }
 
-  // Step 2: settle the root task, including any permission/effect
+  // Step 2: drain startup activation before taking the agent-control
+  // snapshot. This prevents deferred job recovery from spawning a child after
+  // shutdownAll has already passed.
+  if (startupLifecycle.drainDeferredStartupForShutdown !== undefined) {
+    await raceBudget(
+      startupLifecycle.drainDeferredStartupForShutdown(),
+      deadlineMs,
+      "deferred_startup_shutdown",
+      opts.session,
+    );
+  }
+
+  // Step 3: settle the root task, including any permission/effect
   // continuations, before a background-run terminal can seal the journal.
   const abortAllTasks = (
     opts.session as Session & {
@@ -84,7 +102,7 @@ export async function shutdownSessionLifecycle(
     );
   }
 
-  // Step 3: cascade subagent shutdown (I-33 ordering — must happen
+  // Step 4: cascade subagent shutdown (I-33 ordering — must happen
   // before Session.shutdown() drain, else children can refill mailboxes).
   if (opts.agentControl) {
     await raceBudget(
@@ -105,7 +123,7 @@ export async function shutdownSessionLifecycle(
     }
   ).services?.unifiedExecManager;
   if (unifiedExecManager?.closeAll) {
-    // Step 4: live terminal shutdown.
+    // Step 5: live terminal shutdown.
     await raceBudget(
       unifiedExecManager.closeAll("session_shutdown"),
       deadlineMs,
@@ -114,7 +132,7 @@ export async function shutdownSessionLifecycle(
     );
   }
 
-  // Step 5: I-33 + I-87 mailbox drain via Session.shutdown().
+  // Step 6: I-33 + I-87 mailbox drain via Session.shutdown().
   await raceBudget(
     opts.session.shutdown(),
     deadlineMs,
@@ -122,7 +140,7 @@ export async function shutdownSessionLifecycle(
     opts.session,
   );
 
-  // Step 6: MCP manager stop (best-effort; I-6 fail-soft).
+  // Step 7: MCP manager stop (best-effort; I-6 fail-soft).
   if (opts.mcpManager) {
     try {
       await raceBudget(
@@ -169,15 +187,17 @@ async function raceBudget(
   });
   try {
     const outcome = await Promise.race([
-      task.then(() => "done" as const).catch((err) => {
-        emitWarning(
-          session.eventLog,
-          session.nextInternalSubId(),
-          `${step}_failed`,
-          err instanceof Error ? err.message : String(err),
-        );
-        return "done" as const;
-      }),
+      task
+        .then(() => "done" as const)
+        .catch((err) => {
+          emitWarning(
+            session.eventLog,
+            session.nextInternalSubId(),
+            `${step}_failed`,
+            err instanceof Error ? err.message : String(err),
+          );
+          return "done" as const;
+        }),
       timeout,
     ]);
     if (outcome === "timeout") {

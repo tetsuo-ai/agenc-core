@@ -1,11 +1,15 @@
 export const WORKBENCH_ENV_VAR = "AGENC_TUI_WORKBENCH";
 
-export type WorkbenchPane = "explorer" | "surface" | "agents" | "composer" | "rail";
+export type WorkspaceView = "agent" | "editor";
+
+export type WorkbenchPane =
+  "explorer" | "surface" | "agents" | "composer" | "rail";
 
 export type WorkbenchRail =
   | { readonly kind: "file"; readonly path: string }
   | { readonly kind: "transcript" }
   | { readonly kind: "change-review"; readonly changeId: string }
+  | { readonly kind: "editor-proposal"; readonly proposalId: string }
   | null;
 
 export type ActiveSurfaceMode =
@@ -16,7 +20,9 @@ export type ActiveSurfaceMode =
   | "test"
   | "shell"
   | "search"
-  | "agent";
+  | "task-detail";
+
+export type AgentSurfaceMode = Exclude<ActiveSurfaceMode, "buffer">;
 
 export type WorkbenchAttachmentKind =
   | "file"
@@ -49,15 +55,47 @@ export type WorkbenchAttachment = {
     readonly source?: string;
     readonly code?: string;
   };
+  /** Trusted submit metadata for an explicit embedded-editor interaction. */
+  readonly editorInteraction?: {
+    readonly kind: "ask" | "explain" | "fix" | "edit" | "refactor";
+    readonly bufferHandle: number;
+    readonly path: string;
+    readonly changedtick: number;
+    readonly range: {
+      readonly start: { readonly line: number; readonly column: number };
+      readonly end: { readonly line: number; readonly column: number };
+    };
+  };
 };
 
 export type WorkbenchSurfaceLeaveCommand =
   | { readonly type: "openSurface"; readonly mode: ActiveSurfaceMode }
-  | { readonly type: "openPreview"; readonly path: string; readonly line?: number; readonly focus?: boolean }
-  | { readonly type: "openSearch"; readonly query?: string; readonly selectedMatchId?: string | null }
-  | { readonly type: "openDiff"; readonly diffId?: string | null; readonly focus?: boolean }
-  | { readonly type: "openShell"; readonly taskId: string; readonly focus?: boolean }
-  | { readonly type: "openAgent"; readonly taskId: string; readonly focus?: boolean }
+  | {
+      readonly type: "openPreview";
+      readonly path: string;
+      readonly line?: number;
+      readonly focus?: boolean;
+    }
+  | {
+      readonly type: "openSearch";
+      readonly query?: string;
+      readonly selectedMatchId?: string | null;
+    }
+  | {
+      readonly type: "openDiff";
+      readonly diffId?: string | null;
+      readonly focus?: boolean;
+    }
+  | {
+      readonly type: "openShell";
+      readonly taskId: string;
+      readonly focus?: boolean;
+    }
+  | {
+      readonly type: "openAgent";
+      readonly taskId: string;
+      readonly focus?: boolean;
+    }
   | { readonly type: "closeSurface" }
   /**
    * Atomic ctrl+r handoff: show `path` in the file rail, return the center to
@@ -78,20 +116,33 @@ export type WorkbenchSurfaceLeaveCommand =
       readonly closeAffectedSurface?: boolean;
     };
 
-export type WorkbenchBlockedOverlay =
-  | null
-  | {
-      readonly kind: "buffer-dirty";
-      readonly requestId: string;
-      readonly attemptedAction: string;
-      /**
-       * The exact navigation command that was stopped. It is replayed only
-       * after the user has saved or explicitly discarded every dirty buffer.
-       */
-      readonly deferredCommand: WorkbenchSurfaceLeaveCommand;
-    };
+export type WorkbenchBlockedOverlay = null | {
+  readonly kind: "buffer-dirty";
+  readonly requestId: string;
+  readonly attemptedAction: string;
+  /**
+   * The exact navigation command that was stopped. It is replayed only
+   * after the user has saved or explicitly discarded every dirty buffer.
+   */
+  readonly deferredCommand: WorkbenchSurfaceLeaveCommand;
+};
 
 export type WorkbenchState = {
+  /**
+   * Agent and Editor are two presentations of the same session. The active
+   * view is intentionally orthogonal to activeSurfaceMode: task/search/shell
+   * surfaces belong to Agent while BUFFER belongs to Editor.
+   */
+  readonly activeWorkspaceView: WorkspaceView;
+  readonly agentFocusedPane: WorkbenchPane;
+  readonly editorFocusedPane: WorkbenchPane;
+  readonly agentSurfaceMode: AgentSurfaceMode;
+  readonly agentRail: WorkbenchRail;
+  readonly editorRail: WorkbenchRail;
+  readonly agentActiveFilePath: string | null;
+  readonly agentActiveFileLine: number | null;
+  readonly editorActiveFilePath: string | null;
+  readonly editorActiveFileLine: number | null;
   readonly focusedPane: WorkbenchPane;
   readonly explorerVisible: boolean;
   readonly agentsVisible: boolean;
@@ -104,12 +155,21 @@ export type WorkbenchState = {
   readonly openDiffId: string | null;
   readonly searchQuery: string;
   readonly selectedSearchMatchId: string | null;
+  /** Attachment ids owned by the currently active workspace composer. */
   readonly composerAttachmentIds: readonly string[];
+  readonly agentComposerAttachmentIds: readonly string[];
+  readonly editorComposerAttachmentIds: readonly string[];
   readonly attachments: readonly WorkbenchAttachment[];
   readonly pendingBlockedOverlay: WorkbenchBlockedOverlay;
   readonly composerDraftRequest: {
     readonly id: number;
     readonly text: string;
+    /**
+     * The composer that owns this handoff. Effects may settle after a tab
+     * switch, so the request must never be applied to whichever view happens
+     * to be active later.
+     */
+    readonly view: WorkspaceView;
   } | null;
   /** Temporarily gives the center surface the whole workbench viewport. */
   readonly surfaceMaximized: boolean;
@@ -139,11 +199,28 @@ export type WorkbenchState = {
 };
 
 export type WorkbenchCommand =
+  | { readonly type: "switchWorkspaceView"; readonly view: WorkspaceView }
+  | {
+      readonly type: "cycleWorkspaceView";
+      readonly direction?: "next" | "previous";
+    }
   | { readonly type: "focus"; readonly pane: WorkbenchPane }
-  | { readonly type: "focusNext"; readonly visiblePanes: readonly WorkbenchPane[] }
+  | {
+      readonly type: "focusNext";
+      readonly visiblePanes: readonly WorkbenchPane[];
+    }
   | WorkbenchSurfaceLeaveCommand
-  | { readonly type: "openBuffer"; readonly path: string; readonly line?: number; readonly focus?: boolean }
-  | { readonly type: "syncBufferPath"; readonly path: string; readonly line?: number }
+  | {
+      readonly type: "openBuffer";
+      readonly path: string;
+      readonly line?: number;
+      readonly focus?: boolean;
+    }
+  | {
+      readonly type: "syncBufferPath";
+      readonly path: string;
+      readonly line?: number;
+    }
   | { readonly type: "selectAgent"; readonly taskId: string | null }
   | {
       readonly type: "renamePathReferences";
@@ -156,7 +233,19 @@ export type WorkbenchCommand =
   | { readonly type: "toggleSurfaceMaximized"; readonly maximized?: boolean }
   | { readonly type: "attach"; readonly attachment: WorkbenchAttachment }
   | { readonly type: "removeAttachment"; readonly id: string }
-  | { readonly type: "clearAttachments" }
+  | {
+      readonly type: "clearAttachments";
+      /**
+       * The composer that owned the submitted snapshot. Async submissions
+       * must not clear whichever tab happens to be active when they settle.
+       */
+      readonly workspaceView?: WorkspaceView;
+      /**
+       * Exact attachment snapshot consumed by the submission. Attachments
+       * added while the request is in flight remain available.
+       */
+      readonly ids?: readonly string[];
+    }
   | {
       readonly type: "handoffToComposer";
       readonly attachment: WorkbenchAttachment;
@@ -193,7 +282,8 @@ export type ProjectTreeGitState =
   | "untracked"
   | "ignored";
 
-export type ProjectTreeRowKind = "root" | "directory" | "file" | "loading" | "empty" | "error";
+export type ProjectTreeRowKind =
+  "root" | "directory" | "file" | "loading" | "empty" | "error";
 
 export type ProjectTreeRow = {
   readonly id: string;

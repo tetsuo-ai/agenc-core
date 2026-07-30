@@ -22,10 +22,118 @@ import {
   getQueuedUserInputCount,
   peek,
   popAllEditable,
+  queuedCommandOwnedByConversation,
+  queuedCommandOwnedByMount,
+  queuedCommandWorkspaceView,
+  registerCommandQueueOwner,
   removeLastQueuedInput,
   resetCommandQueue,
 } from "./messageQueueManager.js";
 import type { QueuedCommand } from "../types/textInputTypes.js";
+
+describe("messageQueueManager workspace ownership", () => {
+  afterEach(() => {
+    resetCommandQueue();
+  });
+
+  test("preserves explicit Editor commands while legacy commands drain as Agent-owned", () => {
+    enqueue({
+      value: "editor-owned",
+      mode: "prompt",
+      workspaceView: "editor",
+    });
+    enqueue({ value: "legacy-agent-owned", mode: "prompt" });
+
+    const nextAgentCommand = peek(
+      (command) => queuedCommandWorkspaceView(command) === "agent",
+    );
+    expect(nextAgentCommand).toMatchObject({
+      value: "legacy-agent-owned",
+    });
+    expect(nextAgentCommand?.workspaceView).toBeUndefined();
+    expect(queuedCommandWorkspaceView(nextAgentCommand!)).toBe("agent");
+    expect(
+      dequeue(
+        (command) =>
+          command === nextAgentCommand &&
+          queuedCommandWorkspaceView(command) === "agent",
+      ),
+    ).toBe(nextAgentCommand);
+    expect(getCommandQueue()).toEqual([
+      expect.objectContaining({
+        value: "editor-owned",
+        workspaceView: "editor",
+      }),
+    ]);
+  });
+
+  test("rejects late callbacks from inactive mounts and never treats legacy commands as owned", () => {
+    const owner = {
+      kind: "tui_mount",
+      mountId: "mount-a",
+      conversationId: "conversation-a",
+      workspaceRoot: "/repo/a",
+    } as const;
+    const unregister = registerCommandQueueOwner(owner);
+
+    enqueue({
+      value: "same mount",
+      mode: "prompt",
+      queueOwner: owner,
+    });
+    enqueue({ value: "legacy", mode: "prompt" });
+    unregister();
+    enqueue({
+      value: "late callback",
+      mode: "prompt",
+      queueOwner: owner,
+    });
+
+    expect(getCommandQueue().map((command) => command.value)).toEqual([
+      "same mount",
+      "legacy",
+    ]);
+    expect(queuedCommandOwnedByMount(getCommandQueue()[0]!, owner)).toBe(true);
+    expect(queuedCommandOwnedByMount(getCommandQueue()[1]!, owner)).toBe(false);
+    expect(
+      queuedCommandOwnedByConversation(
+        getCommandQueue()[0]!,
+        owner.conversationId,
+      ),
+    ).toBe(false);
+  });
+
+  test("keeps sibling mount editing operations isolated", () => {
+    const ownerA = {
+      kind: "tui_mount",
+      mountId: "mount-a",
+      conversationId: "conversation-a",
+      workspaceRoot: "/repo/a",
+    } as const;
+    const ownerB = {
+      kind: "tui_mount",
+      mountId: "mount-b",
+      conversationId: "conversation-b",
+      workspaceRoot: "/repo/b",
+    } as const;
+    const unregisterA = registerCommandQueueOwner(ownerA);
+    const unregisterB = registerCommandQueueOwner(ownerB);
+    enqueue({ value: "from a", mode: "prompt", queueOwner: ownerA });
+    enqueue({ value: "from b", mode: "prompt", queueOwner: ownerB });
+
+    expect(
+      popAllEditable("", 0, (command) =>
+        queuedCommandOwnedByMount(command, ownerB),
+      ),
+    ).toMatchObject({ text: "from b" });
+    expect(getCommandQueue().map((command) => command.value)).toEqual([
+      "from a",
+    ]);
+
+    unregisterA();
+    unregisterB();
+  });
+});
 
 describe("messageQueueManager editable restore", () => {
   afterEach(() => {

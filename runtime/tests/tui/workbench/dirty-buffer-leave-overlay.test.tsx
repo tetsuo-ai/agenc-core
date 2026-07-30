@@ -39,28 +39,25 @@ const overlayHarness = vi.hoisted(() => ({
     discardAll: vi.fn<(confirmationToken?: string) => Promise<boolean>>(),
     getSnapshot: vi.fn<() => unknown>(),
     prepareDiscardAll: vi.fn<() => Promise<string | null>>(),
-    saveAll: vi.fn<
-      (options: { readonly hasInFlightAgent?: boolean }) =>
-        Promise<unknown>
-    >(),
+    saveAll:
+      vi.fn<
+        (options: { readonly hasInFlightAgent?: boolean }) => Promise<unknown>
+      >(),
   },
   input: null as CapturedInput | null,
   inputVersion: 0,
   snapshot: null as unknown,
 }));
 
-vi.mock(
-  "../../../src/tui/keybindings/useKeybinding.js",
-  () => ({
-    useInputCapture: (
-      handler: CapturedInput["handler"],
-      options: CapturedInput["options"],
-    ) => {
-      overlayHarness.input = { handler, options };
-      overlayHarness.inputVersion += 1;
-    },
-  }),
-);
+vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
+  useInputCapture: (
+    handler: CapturedInput["handler"],
+    options: CapturedInput["options"],
+  ) => {
+    overlayHarness.input = { handler, options };
+    overlayHarness.inputVersion += 1;
+  },
+}));
 
 vi.mock(
   "../../../src/tui/workbench/buffer/providers/BufferProviderController.js",
@@ -69,12 +66,9 @@ vi.mock(
   }),
 );
 
-vi.mock(
-  "../../../src/tui/workbench/buffer/useBufferStore.js",
-  () => ({
-    useBufferStore: () => overlayHarness.snapshot,
-  }),
-);
+vi.mock("../../../src/tui/workbench/buffer/useBufferStore.js", () => ({
+  useBufferStore: () => overlayHarness.snapshot,
+}));
 
 const PROVIDER = {
   kind: "neovim" as const,
@@ -111,12 +105,12 @@ beforeEach(() => {
     buffer({ filePath: "/workspace/src/current.ts", current: true }),
   ]);
   overlayHarness.controller.discardAll.mockReset().mockResolvedValue(true);
-  overlayHarness.controller.getSnapshot.mockReset().mockImplementation(
-    () => overlayHarness.snapshot,
-  );
-  overlayHarness.controller.prepareDiscardAll.mockReset().mockResolvedValue(
-    "discard-confirmation",
-  );
+  overlayHarness.controller.getSnapshot
+    .mockReset()
+    .mockImplementation(() => overlayHarness.snapshot);
+  overlayHarness.controller.prepareDiscardAll
+    .mockReset()
+    .mockResolvedValue("discard-confirmation");
   overlayHarness.controller.saveAll.mockReset().mockResolvedValue({
     saved: true,
     buffers: [],
@@ -140,8 +134,7 @@ describe("DirtyBufferLeaveOverlay", () => {
 
     const saveEvent = await press("S");
     await waitFor(
-      () =>
-        rendered.latestState().workbench.pendingBlockedOverlay === null,
+      () => rendered.latestState().workbench.pendingBlockedOverlay === null,
     );
 
     expect(saveEvent.stopImmediatePropagation).toHaveBeenCalledOnce();
@@ -164,7 +157,9 @@ describe("DirtyBufferLeaveOverlay", () => {
     const rechecked = await renderOverlay();
 
     await press("s");
-    await waitFor(() => overlayHarness.controller.saveAll.mock.calls.length === 2);
+    await waitFor(
+      () => overlayHarness.controller.saveAll.mock.calls.length === 2,
+    );
 
     expect(rechecked.latestState().workbench).toMatchObject({
       activeSurfaceMode: "buffer",
@@ -192,11 +187,13 @@ describe("DirtyBufferLeaveOverlay", () => {
 
     await press("s");
     await waitFor(() =>
-      rendered.output().includes(
-        "Read-only buffers were not written. (blocked.ts)",
-      )
+      rendered
+        .output()
+        .includes("Read-only buffers were not written. (blocked.ts)"),
     );
-    expect(rendered.latestState().workbench.pendingBlockedOverlay).not.toBeNull();
+    expect(
+      rendered.latestState().workbench.pendingBlockedOverlay,
+    ).not.toBeNull();
 
     await press("S");
     await waitFor(() => rendered.output().includes("write pipeline failed"));
@@ -214,20 +211,28 @@ describe("DirtyBufferLeaveOverlay", () => {
 
     const first = await press("D");
     await waitFor(() =>
-      rendered.output().includes("Press D again to discard every listed change")
+      rendered
+        .output()
+        .includes("Press D again to discard every listed change"),
     );
 
     expect(first.stopImmediatePropagation).toHaveBeenCalledOnce();
     expect(overlayHarness.controller.prepareDiscardAll).toHaveBeenCalledOnce();
     expect(overlayHarness.controller.discardAll).not.toHaveBeenCalled();
-    expect(rendered.latestState().workbench.pendingBlockedOverlay).not.toBeNull();
+    expect(
+      rendered.latestState().workbench.pendingBlockedOverlay,
+    ).not.toBeNull();
 
     await press("d");
-    await waitFor(() => overlayHarness.controller.discardAll.mock.calls.length === 1);
+    await waitFor(
+      () => overlayHarness.controller.discardAll.mock.calls.length === 1,
+    );
     await waitFor(() =>
-      rendered.output().includes(
-        "The dirty-buffer set changed or Neovim did not confirm Discard All.",
-      )
+      rendered
+        .output()
+        .includes(
+          "The dirty-buffer set changed or Neovim did not confirm Discard All.",
+        ),
     );
 
     expect(rendered.latestState().workbench).toMatchObject({
@@ -238,7 +243,9 @@ describe("DirtyBufferLeaveOverlay", () => {
     await press("d");
     await flush();
     expect(overlayHarness.controller.discardAll).toHaveBeenCalledTimes(1);
-    expect(overlayHarness.controller.prepareDiscardAll).toHaveBeenCalledTimes(2);
+    expect(overlayHarness.controller.prepareDiscardAll).toHaveBeenCalledTimes(
+      2,
+    );
   });
 
   it("rechecks live dirty state after a confirmed discard before deferred replay", async () => {
@@ -257,7 +264,9 @@ describe("DirtyBufferLeaveOverlay", () => {
         ) > firstConfirmationFrames,
     );
     await press("D");
-    await waitFor(() => overlayHarness.controller.discardAll.mock.calls.length === 1);
+    await waitFor(
+      () => overlayHarness.controller.discardAll.mock.calls.length === 1,
+    );
     await flush();
 
     expect(rendered.latestState().workbench).toMatchObject({
@@ -272,8 +281,7 @@ describe("DirtyBufferLeaveOverlay", () => {
     );
     await press("d", {}, false);
     await waitFor(
-      () =>
-        overlayHarness.controller.prepareDiscardAll.mock.calls.length === 2,
+      () => overlayHarness.controller.prepareDiscardAll.mock.calls.length === 2,
     );
     await waitFor(
       () =>
@@ -284,8 +292,7 @@ describe("DirtyBufferLeaveOverlay", () => {
     );
     await press("d");
     await waitFor(
-      () =>
-        rendered.latestState().workbench.pendingBlockedOverlay === null,
+      () => rendered.latestState().workbench.pendingBlockedOverlay === null,
     );
 
     expect(overlayHarness.controller.discardAll).toHaveBeenCalledTimes(2);
@@ -300,8 +307,7 @@ describe("DirtyBufferLeaveOverlay", () => {
 
     const escape = await press("", { escape: true });
     await waitFor(
-      () =>
-        rendered.latestState().workbench.pendingBlockedOverlay === null,
+      () => rendered.latestState().workbench.pendingBlockedOverlay === null,
     );
 
     expect(escape.stopImmediatePropagation).toHaveBeenCalledOnce();
@@ -318,8 +324,7 @@ describe("DirtyBufferLeaveOverlay", () => {
 
     const cancel = await press("C");
     await waitFor(
-      () =>
-        rendered.latestState().workbench.pendingBlockedOverlay === null,
+      () => rendered.latestState().workbench.pendingBlockedOverlay === null,
     );
 
     expect(cancel.stopImmediatePropagation).toHaveBeenCalledOnce();
@@ -352,9 +357,13 @@ describe("DirtyBufferLeaveOverlay", () => {
     ]);
 
     const rendered = await renderOverlay();
-    await waitFor(() => rendered.output().includes("current.ts, hidden.ts, [No Name]"));
+    await waitFor(() =>
+      rendered.output().includes("current.ts, hidden.ts, [No Name]"),
+    );
 
-    expect(rendered.output()).toContain("Unsaved BUFFER changes block leaving BUFFER.");
+    expect(rendered.output()).toContain(
+      "Unsaved BUFFER changes block leaving BUFFER.",
+    );
   });
 
   it("keeps a busy Save All fail-closed while consuming Escape and C", async () => {
@@ -364,9 +373,7 @@ describe("DirtyBufferLeaveOverlay", () => {
 
     await press("s");
     await waitFor(() => rendered.output().includes("Saving all buffers"));
-    expect(rendered.output()).not.toContain(
-      "Saving all buffers…   Esc Cancel",
-    );
+    expect(rendered.output()).not.toContain("Saving all buffers…   Esc Cancel");
 
     const unrelated = await press("x", {}, false);
     const discard = await press("d", {}, false);
@@ -387,8 +394,7 @@ describe("DirtyBufferLeaveOverlay", () => {
     overlayHarness.snapshot = cleanSnapshot();
     save.resolve({ saved: true, buffers: [] });
     await waitFor(
-      () =>
-        rendered.latestState().workbench.pendingBlockedOverlay === null,
+      () => rendered.latestState().workbench.pendingBlockedOverlay === null,
     );
 
     expect(rendered.latestState().workbench).toMatchObject({
@@ -441,8 +447,7 @@ describe("DirtyBufferLeaveOverlay", () => {
     overlayHarness.snapshot = cleanSnapshot();
     discard.resolve(true);
     await waitFor(
-      () =>
-        rendered.latestState().workbench.pendingBlockedOverlay === null,
+      () => rendered.latestState().workbench.pendingBlockedOverlay === null,
     );
 
     expect(rendered.latestState().workbench).toMatchObject({
@@ -473,7 +478,7 @@ describe("DirtyBufferLeaveOverlay", () => {
     await waitFor(
       () =>
         rendered.latestState().workbench.pendingBlockedOverlay?.requestId ===
-          "replacement-leave",
+        "replacement-leave",
     );
 
     await press("s", {}, false);
@@ -484,7 +489,9 @@ describe("DirtyBufferLeaveOverlay", () => {
     const inputVersion = overlayHarness.inputVersion;
     firstSave.resolve({ saved: true, buffers: [] });
     await waitFor(() => overlayHarness.inputVersion > inputVersion);
-    expect(rendered.latestState().workbench.pendingBlockedOverlay).toMatchObject({
+    expect(
+      rendered.latestState().workbench.pendingBlockedOverlay,
+    ).toMatchObject({
       requestId: "replacement-leave",
       deferredCommand: { type: "openSurface", mode: "diff" },
     });
@@ -569,6 +576,7 @@ function buffer(
       : overrides.filePath;
   return {
     handle,
+    changedtick: overrides.changedtick ?? 1,
     name: overrides.name ?? filePath ?? "",
     filePath,
     absolutePath:
@@ -629,7 +637,8 @@ function pressSynchronously(
   key: { readonly escape?: boolean } = {},
 ): InputEvent {
   const capture = overlayHarness.input;
-  if (capture === null) throw new Error("Dirty overlay input was not registered");
+  if (capture === null)
+    throw new Error("Dirty overlay input was not registered");
   const event = { stopImmediatePropagation: vi.fn() };
   if (capture.handler(input, key, event)) {
     event.stopImmediatePropagation();
@@ -653,7 +662,7 @@ function stdio(): {
 } {
   let output = "";
   const stdout = new PassThrough();
-  stdout.on("data", chunk => {
+  stdout.on("data", (chunk) => {
     output += chunk.toString();
   });
   (stdout as unknown as { columns: number; rows: number }).columns = 100;

@@ -26,8 +26,8 @@ import {
   JSON_RPC_VERSION,
   type AgentAttachParams,
   type AgentAttachResult,
-  type AgenCDaemonKnownMethod,
   type AgenCDaemonMethod,
+  type AgenCDaemonKnownMethod,
   type AgenCDaemonResultByMethod,
   type AgentCreateParams,
   type AgentCreateResult,
@@ -46,6 +46,7 @@ import {
   type JsonValue,
   type RequestId,
 } from "./protocol/index.js";
+import { encodeBoundedJsonLine } from "./transport/stdio.js";
 import { isRecord } from "../utils/record.js";
 import {
   AgentRoleWorkspaceError,
@@ -161,15 +162,14 @@ const MAX_DAEMON_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
 // deadline. They may legitimately remain live for hours while providers,
 // tools, approvals, or collaboration workers make progress. Explicit aborts,
 // request.cancel, socket closure, and daemon shutdown still terminate them.
-const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgenCDaemonKnownMethod> =
-  new Set([
-    // Both message methods await the full daemon turn before responding.
-    "message.send",
-    "message.stream",
-    // Compact and rewind can run model summarization over large transcripts.
-    "session.partialCompactFromMessage",
-    "session.rewindConversationToMessage",
-  ]);
+const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgenCDaemonKnownMethod> = new Set([
+  // Both message methods await the full daemon turn before responding.
+  "message.send",
+  "message.stream",
+  // Compact and rewind can run model summarization over large transcripts.
+  "session.partialCompactFromMessage",
+  "session.rewindConversationToMessage",
+]);
 
 /**
  * Client-env keys forwarded to the daemon as `agent.create` envOverrides.
@@ -281,8 +281,8 @@ export function formatAgenCAgentCliHelpText(): string {
     "  logs <id>    Print an agent's full local log and transcript",
     "",
     "Examples:",
-    "  agenc agent start \"fix the failing parser test\"",
-    "  agenc agent start --unattended-allow read,grep \"audit imports\"",
+    '  agenc agent start "fix the failing parser test"',
+    '  agenc agent start --unattended-allow read,grep "audit imports"',
     "  agenc agent list",
     "  agenc agent attach agent_123",
     "  agenc agent logs agent_123",
@@ -552,7 +552,9 @@ async function createReconnectableDaemonTuiClient(options: {
       }),
     );
   };
-  const attachInnerClient = (nextClient: AgenCJsonLineDaemonTuiClient): void => {
+  const attachInnerClient = (
+    nextClient: AgenCJsonLineDaemonTuiClient,
+  ): void => {
     detachInnerClient();
     innerClient = nextClient;
     unsubscribeNotifications =
@@ -581,7 +583,8 @@ async function createReconnectableDaemonTuiClient(options: {
     if (clientId === undefined) return;
     const sessionIds: string[] = [];
     if (method === "session.attach") {
-      if (typeof params.sessionId === "string") sessionIds.push(params.sessionId);
+      if (typeof params.sessionId === "string")
+        sessionIds.push(params.sessionId);
     } else if (isJsonObject(result as JsonValue | undefined)) {
       const resultSessionIds = (result as JsonObject).sessionIds;
       if (Array.isArray(resultSessionIds)) {
@@ -658,25 +661,24 @@ async function createReconnectableDaemonTuiClient(options: {
       setConnectionState({ status: "disconnected", message: error.message });
       throw error;
     };
-  const ensureConnected =
-    async (): Promise<AgenCJsonLineDaemonTuiClient> => {
-      if (closedByClient) {
-        throw new Error("Daemon connection is closed");
-      }
-      const current = innerClient;
-      if (current?.getConnectionState().status === "connected") {
-        return current;
-      }
-      if (reconnecting !== null) return reconnecting;
-      const staleClient = innerClient;
-      detachInnerClient();
-      innerClient = null;
-      if (staleClient !== null) await staleClient.close().catch(() => {});
-      reconnecting = connectAndInitializeWithRetry().finally(() => {
-        reconnecting = null;
-      });
-      return reconnecting;
-    };
+  const ensureConnected = async (): Promise<AgenCJsonLineDaemonTuiClient> => {
+    if (closedByClient) {
+      throw new Error("Daemon connection is closed");
+    }
+    const current = innerClient;
+    if (current?.getConnectionState().status === "connected") {
+      return current;
+    }
+    if (reconnecting !== null) return reconnecting;
+    const staleClient = innerClient;
+    detachInnerClient();
+    innerClient = null;
+    if (staleClient !== null) await staleClient.close().catch(() => {});
+    reconnecting = connectAndInitializeWithRetry().finally(() => {
+      reconnecting = null;
+    });
+    return reconnecting;
+  };
 
   const client: AgenCJsonLineDaemonTuiClient = {
     request: async (method, params = {}, requestOptions = {}) => {
@@ -797,10 +799,7 @@ function resolveAgenCAgentCliDaemonClient(
   );
 }
 
-function writeAgenCAgentCliError(
-  io: AgenCAgentCliIo,
-  error: unknown,
-): void {
+function writeAgenCAgentCliError(io: AgenCAgentCliIo, error: unknown): void {
   io.stderr.write(
     `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
   );
@@ -1123,6 +1122,12 @@ function connectPersistentDaemonClient(
           method,
           params,
         };
+        let encodedRequest: string;
+        try {
+          encodedRequest = encodeBoundedJsonLine(request);
+        } catch (error) {
+          return Promise.reject(asError(error));
+        }
         return new Promise<unknown>((requestResolve, requestReject) => {
           let removeAbortListener: (() => void) | undefined;
           const sendCancel = (reason: string): void => {
@@ -1130,7 +1135,7 @@ function connectPersistentDaemonClient(
             const cancelId = nextRequestId;
             nextRequestId += 1;
             socket.write(
-              `${JSON.stringify({
+              encodeBoundedJsonLine({
                 jsonrpc: JSON_RPC_VERSION,
                 id: cancelId,
                 method: "request.cancel",
@@ -1138,16 +1143,13 @@ function connectPersistentDaemonClient(
                   requestId: id,
                   reason,
                 },
-              })}\n`,
+              }),
             );
           };
           const sendAbortCancel = (): void => {
             sendCancel(String(options.signal?.reason ?? "request.cancel"));
           };
-          const requestTimeoutMs = requestTimeoutMsForMethod(
-            method,
-            timeoutMs,
-          );
+          const requestTimeoutMs = requestTimeoutMsForMethod(method, timeoutMs);
           const requestTimeout =
             requestTimeoutMs === null
               ? null
@@ -1183,7 +1185,7 @@ function connectPersistentDaemonClient(
           removeAbortListener = () => {
             options.signal?.removeEventListener("abort", sendAbortCancel);
           };
-          socket.write(`${JSON.stringify(request)}\n`);
+          socket.write(encodedRequest);
         }) as Promise<AgenCDaemonResultByMethod[typeof method]>;
       },
       subscribeToSessionEvents: (sessionId, cb) => {
@@ -1576,6 +1578,14 @@ function sendJsonLineRequest(
   timeoutMs: number,
   requests: readonly object[],
 ): Promise<readonly AgenCDaemonResponse[]> {
+  let encodedRequests: readonly string[];
+  try {
+    encodedRequests = requests.map((request) =>
+      encodeBoundedJsonLine(request as JsonObject),
+    );
+  } catch (error) {
+    return Promise.reject(asError(error));
+  }
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
     let buffer = "";
@@ -1603,10 +1613,10 @@ function sendJsonLineRequest(
       resolve(responseList!);
     };
     const writeNextRequest = () => {
-      const request = requests[nextRequestIndex];
-      if (request === undefined) return;
+      const encodedRequest = encodedRequests[nextRequestIndex];
+      if (encodedRequest === undefined) return;
       nextRequestIndex += 1;
-      socket.write(`${JSON.stringify(request)}\n`);
+      socket.write(encodedRequest);
     };
 
     socket.setEncoding("utf8");

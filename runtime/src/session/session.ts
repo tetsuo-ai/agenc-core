@@ -318,6 +318,16 @@ export type SessionStartSource = Extract<
 export type UserInput = unknown;
 
 /**
+ * Request ownership for idle-input payloads. Agent turns retain the legacy
+ * global drain behavior; Editor turns admit only payloads explicitly bound to
+ * the same immutable interaction id.
+ */
+export interface IdleInputOwnership {
+  readonly workspaceView: "agent" | "editor";
+  readonly editorInteractionId?: string;
+}
+
+/**
  * Sentinel used as the `metadata.source` tag for idle-input envelopes
  * routed through `Session.mailbox`. Kept as a const so downstream
  * consumers can filter without magic strings.
@@ -372,6 +382,52 @@ export interface InterAgentCommunication {
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
+function idleInputOwnershipFromMessage(
+  message: InterAgentCommunication,
+): IdleInputOwnership | undefined {
+  const candidate = message.metadata?.idleInputOwnership;
+  if (
+    typeof candidate !== "object" ||
+    candidate === null ||
+    Array.isArray(candidate)
+  ) {
+    return undefined;
+  }
+  const record = candidate as {
+    readonly workspaceView?: unknown;
+    readonly editorInteractionId?: unknown;
+  };
+  if (record.workspaceView !== "agent" && record.workspaceView !== "editor") {
+    return undefined;
+  }
+  return {
+    workspaceView: record.workspaceView,
+    ...(typeof record.editorInteractionId === "string"
+      ? { editorInteractionId: record.editorInteractionId }
+      : {}),
+  };
+}
+
+function mailboxMessageEligibleForOwnership(
+  message: InterAgentCommunication,
+  ownership?: IdleInputOwnership,
+): boolean {
+  const isIdle = message.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT;
+  if (ownership?.workspaceView === "editor") {
+    if (!isIdle) return false;
+    const interactionId = ownership.editorInteractionId;
+    const candidate = idleInputOwnershipFromMessage(message);
+    return (
+      typeof interactionId === "string" &&
+      interactionId.length > 0 &&
+      candidate?.workspaceView === "editor" &&
+      candidate.editorInteractionId === interactionId
+    );
+  }
+  if (!isIdle) return true;
+  return idleInputOwnershipFromMessage(message)?.workspaceView !== "editor";
+}
+
 export interface Mailbox<T = InterAgentCommunication> {
   send(msg: Omit<T, "seq">): number;
   hasPending(): boolean;
@@ -424,7 +480,7 @@ export interface SimpleMailboxOptions<T extends { seq: number }> {
   readonly isProtected?: (message: Omit<T, "seq"> | T) => boolean;
 }
 
-export type SimpleMailboxPrefixDecision = "take" | "omit" | "stop";
+export type SimpleMailboxPrefixDecision = "take" | "omit" | "retain" | "stop";
 
 /**
  * Bounded session-local mailbox.
@@ -625,15 +681,22 @@ export class SimpleMailbox<T extends { seq: number }> implements Mailbox<T> {
     readonly throughSeq: number;
   } {
     const items: T[] = [];
-    let retained: T[] | null = null;
+    const retained: T[] = [];
     let throughSeq = 0;
+    let stopped = false;
     for (let index = 0; index < this.queue.length; index += 1) {
       const item = this.queue[index]!;
       const decision = decide(item);
       if (decision === "stop") {
-        retained = this.queue.slice(index);
+        retained.push(...this.queue.slice(index));
         throughSeq = Math.max(throughSeq, item.seq - 1);
+        stopped = true;
         break;
+      }
+      if (decision === "retain") {
+        retained.push(item);
+        throughSeq = Math.max(throughSeq, item.seq);
+        continue;
       }
       const bytes = this.bytesBySeq.get(item.seq) ?? 0;
       if (decision === "take") {
@@ -644,8 +707,8 @@ export class SimpleMailbox<T extends { seq: number }> implements Mailbox<T> {
       this.releaseBytes(item);
       throughSeq = Math.max(throughSeq, item.seq);
     }
-    this.queue = retained ?? [];
-    if (retained === null) throughSeq = this.nextSeq;
+    this.queue = retained;
+    if (!stopped) throughSeq = this.nextSeq;
     return { items, throughSeq };
   }
 
@@ -2321,6 +2384,18 @@ export class Session {
 
   /** Bootstrap-owned submit hook used by the TUI contract. */
   private turnDriverHooks: SessionTurnDriverHooks | null = null;
+  /**
+   * SessionStart hooks may be deferred when the atomic first turn is an
+   * Editor read-only/proposal-only interaction. This prevents arbitrary
+   * configured lifecycle commands from running before that trusted policy
+   * exists; the first ordinary Agent submission flushes the hook exactly once.
+   */
+  private deferredSessionStartHook: (() => Promise<void>) | null = null;
+  private deferredSessionStartHookPromise: Promise<void> | null = null;
+  private sessionStartLifecycleReady = true;
+  private deferredOrdinarySubmitHooks: Array<() => Promise<void>> = [];
+  private deferredOrdinarySubmitHookPromise: Promise<void> | null = null;
+  private lifecycleState: "open" | "shutting_down" | "closed" = "open";
 
   /** Serialize submit calls so the session keeps a single active turn. */
   private submitQueue: Promise<void> = Promise.resolve();
@@ -2990,6 +3065,103 @@ export class Session {
     this.turnDriverHooks = hooks;
   }
 
+  installDeferredSessionStartHook(hook: (() => Promise<void>) | null): void {
+    if (this.lifecycleState !== "open") {
+      throw new Error("cannot install deferred startup work after shutdown");
+    }
+    this.deferredSessionStartHook = hook;
+    this.deferredSessionStartHookPromise = null;
+    this.sessionStartLifecycleReady = hook === null;
+  }
+
+  async flushDeferredSessionStartHook(): Promise<void> {
+    if (this.lifecycleState !== "open") {
+      throw new Error("session is shutting down");
+    }
+    const hook = this.deferredSessionStartHook;
+    if (hook === null) return;
+    if (this.deferredSessionStartHookPromise !== null) {
+      await this.deferredSessionStartHookPromise;
+      return;
+    }
+    const pending = hook().then(() => {
+      if (this.deferredSessionStartHook === hook) {
+        this.deferredSessionStartHook = null;
+        this.deferredSessionStartHookPromise = null;
+        this.sessionStartLifecycleReady = true;
+      }
+    });
+    // Preserve a rejected promise so a partially failed lifecycle hook cannot
+    // be bypassed or replayed with duplicate side effects on a later submit.
+    this.deferredSessionStartHookPromise = pending;
+    await pending;
+  }
+
+  appendDeferredOrdinarySubmitHook(hook: () => Promise<void>): void {
+    if (this.lifecycleState !== "open") {
+      throw new Error("cannot install deferred startup work after shutdown");
+    }
+    if (this.deferredOrdinarySubmitHookPromise !== null) {
+      throw new Error(
+        "cannot append deferred startup work after ordinary-submit activation began",
+      );
+    }
+    this.deferredOrdinarySubmitHooks.push(hook);
+  }
+
+  async flushDeferredOrdinarySubmitHooks(): Promise<void> {
+    if (this.lifecycleState !== "open") {
+      throw new Error("session is shutting down");
+    }
+    if (this.deferredOrdinarySubmitHookPromise !== null) {
+      await this.deferredOrdinarySubmitHookPromise;
+      return;
+    }
+    if (this.deferredOrdinarySubmitHooks.length === 0) return;
+    const hooks = [...this.deferredOrdinarySubmitHooks];
+    const pending = (async () => {
+      for (const hook of hooks) {
+        if (this.lifecycleState !== "open") {
+          throw new Error("session is shutting down");
+        }
+        await hook();
+      }
+      this.deferredOrdinarySubmitHooks = [];
+      this.deferredOrdinarySubmitHookPromise = null;
+    })();
+    // Preserve rejection so partially completed startup work cannot be
+    // replayed with duplicate side effects by a later submit.
+    this.deferredOrdinarySubmitHookPromise = pending;
+    await pending;
+  }
+
+  /**
+   * Synchronous shutdown transition used by the outer lifecycle before it
+   * awaits active work. It closes the startup admission race, cancels an MCP
+   * start already in flight, and discards callbacks that never began.
+   */
+  beginShutdown(): void {
+    if (this.lifecycleState !== "open") return;
+    this.lifecycleState = "shutting_down";
+    this.services.mcpStartupCancellationToken.cancel();
+    if (this.deferredSessionStartHookPromise === null) {
+      this.deferredSessionStartHook = null;
+    }
+    if (this.deferredOrdinarySubmitHookPromise === null) {
+      this.deferredOrdinarySubmitHooks = [];
+    }
+  }
+
+  async drainDeferredStartupForShutdown(): Promise<void> {
+    const inFlightStartup = [
+      this.deferredSessionStartHookPromise,
+      this.deferredOrdinarySubmitHookPromise,
+    ].filter((pending): pending is Promise<void> => pending !== null);
+    if (inFlightStartup.length > 0) {
+      await Promise.allSettled(inFlightStartup);
+    }
+  }
+
   setInitialTranscriptEvents(events: readonly unknown[]): void {
     this.initialTranscriptEvents = events;
   }
@@ -3060,11 +3232,35 @@ export class Session {
     message: string | readonly LLMContentPart[],
     opts: SessionSubmitOptions = {},
   ): Promise<void> {
+    if (this.lifecycleState !== "open") {
+      throw new Error("session is shutting down");
+    }
     const hooks = this.turnDriverHooks;
     if (hooks === null) {
       throw new Error("Session submit hook is not installed");
     }
-    const run = this.submitQueue.then(() => hooks.submit(message, opts));
+    const run = this.submitQueue.then(async () => {
+      if (this.lifecycleState !== "open") {
+        throw new Error("session is shutting down");
+      }
+      if (
+        opts.editorInteraction === undefined &&
+        this.deferredSessionStartHook !== null
+      ) {
+        await this.flushDeferredSessionStartHook();
+      }
+      if (
+        opts.editorInteraction === undefined &&
+        (this.deferredOrdinarySubmitHooks.length > 0 ||
+          this.deferredOrdinarySubmitHookPromise !== null)
+      ) {
+        await this.flushDeferredOrdinarySubmitHooks();
+      }
+      if (this.lifecycleState !== "open") {
+        throw new Error("session is shutting down");
+      }
+      await hooks.submit(message, opts);
+    });
     this.submitQueue = run.catch(() => {
       /* keep the queue alive for the next submit */
     });
@@ -3771,12 +3967,17 @@ export class Session {
    * the next turn. This is the only state `run-turn.ts` needs to decide
    * whether an empty submission is a no-op or should continue.
    */
-  hasPendingInput(): boolean {
-    return this.mailbox.hasPending();
+  hasPendingInput(ownership?: IdleInputOwnership): boolean {
+    return this.sessionMailbox.some((message) =>
+      mailboxMessageEligibleForOwnership(message, ownership),
+    );
   }
 
-  async waitForMailboxChange(timeoutMs: number): Promise<boolean> {
-    if (this.mailbox.hasPending()) {
+  async waitForMailboxChange(
+    timeoutMs: number,
+    ownership?: IdleInputOwnership,
+  ): Promise<boolean> {
+    if (this.hasPendingInput(ownership)) {
       return true;
     }
     if (this.mailboxSeqWatch.isClosed) {
@@ -3795,7 +3996,7 @@ export class Session {
       };
       const timer = setTimeout(() => finish(false), timeoutMs);
       const subscription = this.mailboxSeqWatch.subscribe((seq) => {
-        if (seq !== startSeq) {
+        if (seq !== startSeq && this.hasPendingInput(ownership)) {
           finish(true);
         }
       });
@@ -3804,10 +4005,7 @@ export class Session {
       // A sender can commit between the initial queue check and sequence
       // snapshot, or between the snapshot and subscription. Re-check both
       // sources after subscribing so that edge can never become a lost wake.
-      if (
-        this.mailbox.hasPending() ||
-        this.mailboxSeqWatch.value !== startSeq
-      ) {
+      if (this.hasPendingInput(ownership)) {
         finish(true);
       } else if (this.mailboxSeqWatch.isClosed) {
         finish(false);
@@ -3830,17 +4028,23 @@ export class Session {
    * pending-input slot, routed through the same mailbox that carries
    * peer/agent traffic.
    */
-  enqueueIdleInput(input: UserInput): number {
-    return this.enqueueIdleInputBatch([input]);
+  enqueueIdleInput(input: UserInput, ownership?: IdleInputOwnership): number {
+    return this.enqueueIdleInputBatch([input], ownership);
   }
 
-  enqueueIdleInputBatch(inputs: readonly UserInput[]): number {
-    const admission = this.enqueueIdleInputBatchOwned(inputs);
+  enqueueIdleInputBatch(
+    inputs: readonly UserInput[],
+    ownership?: IdleInputOwnership,
+  ): number {
+    const admission = this.enqueueIdleInputBatchOwned(inputs, ownership);
     this.commitIdleInputAdmission(admission.token);
     return admission.lastSequence;
   }
 
-  enqueueIdleInputBatchOwned(inputs: readonly UserInput[]): IdleInputAdmission {
+  enqueueIdleInputBatchOwned(
+    inputs: readonly UserInput[],
+    ownership?: IdleInputOwnership,
+  ): IdleInputAdmission {
     if (inputs.length === 0) {
       return {
         token: "idle:empty",
@@ -3859,6 +4063,18 @@ export class Session {
         metadata: {
           source: MAILBOX_SOURCE_IDLE_INPUT,
           payload: input,
+          ...(ownership !== undefined
+            ? {
+                idleInputOwnership: {
+                  workspaceView: ownership.workspaceView,
+                  ...(ownership.editorInteractionId !== undefined
+                    ? {
+                        editorInteractionId: ownership.editorInteractionId,
+                      }
+                    : {}),
+                },
+              }
+            : {}),
         },
       })),
     );
@@ -3907,15 +4123,38 @@ export class Session {
    * Returns the original `UserInput` payloads in FIFO order — the
    * session-local `InterAgentCommunication` envelope is stripped.
    */
-  drainIdleInput(): UserInput[] {
+  drainIdleInput(ownership?: IdleInputOwnership): UserInput[] {
     return this.sessionMailbox
       .extractWhere(
-        (message) => message.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT,
+        (message) =>
+          message.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT &&
+          mailboxMessageEligibleForOwnership(message, ownership),
       )
       .map((message) => message.metadata?.payload);
   }
 
-  drainPendingInputMessages(): LLMMessage[] {
+  drainPendingInputMessages(ownership?: IdleInputOwnership): LLMMessage[] {
+    if (ownership?.workspaceView === "editor") {
+      return this.sessionMailbox
+        .extractWhere((message) =>
+          mailboxMessageEligibleForOwnership(message, ownership),
+        )
+        .flatMap((message): LLMMessage[] => {
+          const payload = message.metadata?.payload;
+          if (
+            payload !== null &&
+            typeof payload === "object" &&
+            "role" in payload &&
+            "content" in payload
+          ) {
+            return [payload as LLMMessage];
+          }
+          return typeof payload === "string" && payload.trim().length > 0
+            ? [{ role: "user", content: payload }]
+            : [];
+        });
+    }
+
     const projectedEntries: Array<{
       readonly seq: number;
       readonly message: LLMMessage;
@@ -3959,12 +4198,16 @@ export class Session {
       snapshot.find(
         (candidate) =>
           candidate.seq > seq &&
+          mailboxMessageEligibleForOwnership(candidate, ownership) &&
           (candidate.triggerTurn ||
             candidate.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT),
       );
 
     const processed = this.sessionMailbox.processPrefix((msg) => {
       if (msg.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT) {
+        if (!mailboxMessageEligibleForOwnership(msg, ownership)) {
+          return "retain";
+        }
         const payload = msg.metadata?.payload;
         if (
           payload !== null &&
@@ -4778,32 +5021,38 @@ export class Session {
    */
   async shutdown(): Promise<void> {
     const MAX_DRAIN_MS = 2_000;
-    // SessionEnd hooks fire first (bounded, failure-contained) so
-    // cleanup/telemetry automations observe every shutdown while the
-    // session state is still intact.
-    try {
-      const { dispatchSessionEnd } = await import("../llm/hooks/dispatcher.js");
-      const hookTimeout = new Promise<void>((resolveTimeout) => {
-        setTimeout(resolveTimeout, MAX_DRAIN_MS).unref?.();
-      });
-      const lifecycleHooks = this.services.hooks?.lifecycleHooks;
-      await Promise.race([
-        dispatchSessionEnd(
-          {
-            hook_event_name: "SessionEnd",
-            reason: "exit",
-            session_id: this.conversationId,
-            cwd: this.state.unsafePeek().sessionConfiguration?.cwd,
-          },
-          // Dispatch against THIS session's registry (plus process-global
-          // hooks); shutdown runs outside the turn ALS scope, so ambient
-          // resolution cannot identify the session on its own.
-          lifecycleHooks !== undefined ? { registry: lifecycleHooks } : {},
-        ),
-        hookTimeout,
-      ]);
-    } catch {
-      /* SessionEnd hooks must never block shutdown */
+    this.beginShutdown();
+    await this.drainDeferredStartupForShutdown();
+    // SessionEnd hooks fire first (bounded, failure-contained) once the
+    // matching SessionStart hook has run. A cold Editor-only session keeps
+    // SessionStart deferred, so teardown must not execute an unmatched
+    // arbitrary SessionEnd command.
+    if (this.sessionStartLifecycleReady) {
+      try {
+        const { dispatchSessionEnd } =
+          await import("../llm/hooks/dispatcher.js");
+        const hookTimeout = new Promise<void>((resolveTimeout) => {
+          setTimeout(resolveTimeout, MAX_DRAIN_MS).unref?.();
+        });
+        const lifecycleHooks = this.services.hooks?.lifecycleHooks;
+        await Promise.race([
+          dispatchSessionEnd(
+            {
+              hook_event_name: "SessionEnd",
+              reason: "exit",
+              session_id: this.conversationId,
+              cwd: this.state.unsafePeek().sessionConfiguration?.cwd,
+            },
+            // Dispatch against THIS session's registry (plus process-global
+            // hooks); shutdown runs outside the turn ALS scope, so ambient
+            // resolution cannot identify the session on its own.
+            lifecycleHooks !== undefined ? { registry: lifecycleHooks } : {},
+          ),
+          hookTimeout,
+        ]);
+      } catch {
+        /* SessionEnd hooks must never block shutdown */
+      }
     }
     const drained: Array<{ threadId: ThreadId; pending: number }> = [];
 
@@ -4920,6 +5169,7 @@ export class Session {
     this.txEvent.close();
     this.agentStatus.next({ status: "shutdown", endedAtMs: monotonicMs() });
     this.agentStatus.complete();
+    this.lifecycleState = "closed";
     if (durableCloseError !== undefined) throw durableCloseError;
   }
 }

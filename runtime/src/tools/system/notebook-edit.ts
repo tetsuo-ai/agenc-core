@@ -12,16 +12,28 @@ import {
   resolveSessionId,
   safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
+import {
+  prepareWorkspaceMutation,
+  workspaceAuthoritativeRead,
+  workspaceMutationAdmissionToolResult,
+} from "../../workspace/mutation-coordinator.js";
+import {
+  executeWorkspaceFileMutation,
+  type WorkspaceFileMutationTestHooks,
+} from "../../workspace/file-mutation-transaction.js";
 
 export const NOTEBOOK_EDIT_TOOL_NAME = "NotebookEdit";
 const MAX_NOTEBOOK_EDIT_BYTES = 16 * 1024 * 1024;
 
-export interface NotebookEditToolConfig {
+export interface NotebookEditToolConfig extends WorkspaceFileMutationTestHooks {
   readonly workspaceRoot: string;
 }
 
 function json(value: Record<string, unknown>, isError = false): ToolResult {
-  return { content: JSON.stringify(value), ...(isError ? { isError: true } : {}) };
+  return {
+    content: JSON.stringify(value),
+    ...(isError ? { isError: true } : {}),
+  };
 }
 
 function parseNotebookCellIndex(cellId: string): number | undefined {
@@ -35,9 +47,7 @@ function findNotebookCellIndex(
   cells: readonly unknown[],
   cellId: string,
 ): number | { error: string } {
-  const found = cells.findIndex(
-    (cell) => isRecord(cell) && cell.id === cellId,
-  );
+  const found = cells.findIndex((cell) => isRecord(cell) && cell.id === cellId);
   if (found >= 0) return found;
 
   const numericIndex = parseNotebookCellIndex(cellId);
@@ -56,7 +66,8 @@ function formatBytes(bytes: number): string {
 }
 
 function notebookSupportsCellIds(notebook: Record<string, unknown>): boolean {
-  const nbformat = typeof notebook.nbformat === "number" ? notebook.nbformat : 0;
+  const nbformat =
+    typeof notebook.nbformat === "number" ? notebook.nbformat : 0;
   const nbformatMinor =
     typeof notebook.nbformat_minor === "number" ? notebook.nbformat_minor : 0;
   return nbformat > 4 || (nbformat === 4 && nbformatMinor >= 5);
@@ -65,7 +76,9 @@ function notebookSupportsCellIds(notebook: Record<string, unknown>): boolean {
 function generateNotebookCellId(cells: readonly unknown[]): string {
   const existing = new Set(
     cells
-      .map((cell) => (isRecord(cell) && typeof cell.id === "string" ? cell.id : null))
+      .map((cell) =>
+        isRecord(cell) && typeof cell.id === "string" ? cell.id : null,
+      )
       .filter((value): value is string => value !== null),
   );
   for (let index = 1; index < 10_000; index += 1) {
@@ -75,7 +88,9 @@ function generateNotebookCellId(cells: readonly unknown[]): string {
   return `agenc-${Date.now().toString(36)}`;
 }
 
-function notebookLanguage(notebook: Record<string, unknown>): string | undefined {
+function notebookLanguage(
+  notebook: Record<string, unknown>,
+): string | undefined {
   const metadata = isRecord(notebook.metadata) ? notebook.metadata : undefined;
   const languageInfo = isRecord(metadata?.language_info)
     ? metadata.language_info
@@ -135,14 +150,18 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
     },
     async execute(args) {
       const notebookPath = stringValue(args.notebook_path);
-      if (!notebookPath) return json({ error: "notebook_path is required" }, true);
+      if (!notebookPath)
+        return json({ error: "notebook_path is required" }, true);
       const editMode = stringValue(args.edit_mode) ?? "replace";
       if (
         editMode !== "replace" &&
         editMode !== "insert" &&
         editMode !== "delete"
       ) {
-        return json({ error: "Edit mode must be replace, insert, or delete." }, true);
+        return json(
+          { error: "Edit mode must be replace, insert, or delete." },
+          true,
+        );
       }
       if (editMode !== "delete" && typeof args.new_source !== "string") {
         return json({ error: "new_source must be a string" }, true);
@@ -156,20 +175,29 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
         return json({ error: "Cell type must be code or markdown." }, true);
       }
       if (editMode === "insert" && cellType === undefined) {
-        return json({ error: "Cell type is required when using edit_mode=insert." }, true);
+        return json(
+          { error: "Cell type is required when using edit_mode=insert." },
+          true,
+        );
       }
       const cellId = stringValue(args.cell_id);
       if (editMode !== "insert" && cellId === undefined) {
-        return json({
-          error: "Cell ID must be specified when not inserting a new cell.",
-        }, true);
+        return json(
+          {
+            error: "Cell ID must be specified when not inserting a new cell.",
+          },
+          true,
+        );
       }
 
       const requestedPath = isAbsolute(notebookPath)
         ? notebookPath
         : resolve(config.workspaceRoot, notebookPath);
       if (extname(requestedPath).toLowerCase() !== ".ipynb") {
-        return json({ error: "NotebookEdit only supports .ipynb files." }, true);
+        return json(
+          { error: "NotebookEdit only supports .ipynb files." },
+          true,
+        );
       }
       const safe = await safePathAllowingSessionPlanFile(
         requestedPath,
@@ -180,16 +208,24 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
         return json({ error: `Access denied: ${safe.reason}` }, true);
       }
       const filePath = safe.resolved;
+      const editorRead = workspaceAuthoritativeRead(filePath);
 
       try {
-        const fileStats = await stat(filePath);
-        if (!fileStats.isFile()) {
+        const fileStats =
+          editorRead === null
+            ? await stat(filePath)
+            : await stat(filePath).catch(() => null);
+        if (fileStats !== null && !fileStats.isFile()) {
           return json({ error: "Path is not a regular file" }, true);
         }
-        if (fileStats.size > MAX_NOTEBOOK_EDIT_BYTES) {
+        const size =
+          editorRead === null
+            ? (fileStats?.size ?? 0)
+            : Buffer.byteLength(editorRead.content, "utf8");
+        if (size > MAX_NOTEBOOK_EDIT_BYTES) {
           return json(
             {
-              error: `Notebook size ${formatBytes(fileStats.size)} exceeds the notebook-edit limit of ${formatBytes(MAX_NOTEBOOK_EDIT_BYTES)}.`,
+              error: `Notebook size ${formatBytes(size)} exceeds the notebook-edit limit of ${formatBytes(MAX_NOTEBOOK_EDIT_BYTES)}.`,
             },
             true,
           );
@@ -207,14 +243,17 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
       const sessionId = resolveSessionId(args);
       if (sessionId !== undefined && !hasSessionRead(sessionId, filePath)) {
         return json(
-          { error: "File has not been read yet. Read it first before writing to it." },
+          {
+            error:
+              "File has not been read yet. Read it first before writing to it.",
+          },
           true,
         );
       }
 
       let original: string;
       try {
-        original = await readFile(filePath, "utf8");
+        original = editorRead?.content ?? (await readFile(filePath, "utf8"));
       } catch (error) {
         return json(
           { error: error instanceof Error ? error.message : String(error) },
@@ -233,7 +272,10 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
           typeof snapshotContent !== "string"
         ) {
           return json(
-            { error: "File has not been read yet. Read it first before writing to it." },
+            {
+              error:
+                "File has not been read yet. Read it first before writing to it.",
+            },
             true,
           );
         }
@@ -255,14 +297,18 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
         return json({ error: "Notebook is not valid JSON." }, true);
       }
       if (!isRecord(parsed) || !Array.isArray(parsed.cells)) {
-        return json({ error: "Invalid notebook: expected a cells array" }, true);
+        return json(
+          { error: "Invalid notebook: expected a cells array" },
+          true,
+        );
       }
 
       const cells = parsed.cells;
       let index = 0;
       if (cellId !== undefined) {
         const found = findNotebookCellIndex(cells, cellId);
-        if (typeof found !== "number") return json({ error: found.error }, true);
+        if (typeof found !== "number")
+          return json({ error: found.error }, true);
         index = editMode === "insert" ? found + 1 : found;
       }
 
@@ -293,7 +339,8 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
         cells.splice(index, 0, newCell);
       } else {
         const cell = cells[index];
-        if (!isRecord(cell)) return json({ error: "Invalid notebook cell." }, true);
+        if (!isRecord(cell))
+          return json({ error: "Invalid notebook cell." }, true);
         cell.source = args.new_source;
         const finalCellType =
           cellType ??
@@ -312,7 +359,36 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
       }
 
       const updated = JSON.stringify(parsed, null, 1);
-      await writeFile(filePath, updated, "utf8");
+      const toolCallId =
+        typeof args.__callId === "string" ? args.__callId : undefined;
+      const admission = await prepareWorkspaceMutation({
+        path: filePath,
+        source: "notebook_edit",
+        beforeText: original,
+        afterText: updated,
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        ...(toolCallId !== undefined ? { toolCallId } : {}),
+      });
+      const rejection = workspaceMutationAdmissionToolResult(admission);
+      if (rejection !== null) return rejection;
+      try {
+        await executeWorkspaceFileMutation({
+          admission,
+          path: filePath,
+          afterText: updated,
+          write: () => writeFile(filePath, updated, "utf8"),
+          metadata: {
+            ...(sessionId !== undefined ? { sessionId } : {}),
+            ...(toolCallId !== undefined ? { toolCallId } : {}),
+          },
+          testHooks: config,
+        });
+      } catch (error) {
+        return json(
+          { error: error instanceof Error ? error.message : String(error) },
+          true,
+        );
+      }
       if (sessionId !== undefined) {
         let mtimeMs = Date.now();
         try {

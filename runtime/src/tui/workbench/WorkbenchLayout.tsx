@@ -1,6 +1,6 @@
 import React, { useMemo, type RefObject } from "react";
 
-import { Box, NoSelect } from "../ink.js";
+import { Box, NoSelect, Text } from "../ink.js";
 import { ModalContext } from "../context/modalContext.js";
 import { ContentWidthProvider } from "../context/contentWidthContext.js";
 import { useAppState } from "../state/AppState.js";
@@ -8,7 +8,10 @@ import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useKeybindings } from "../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../keybindings/KeybindingContext.js";
-import { PromptDialogOverlay, PromptSuggestionsOverlay } from "../components/PromptOverlaySurfaces.js";
+import {
+  PromptDialogOverlay,
+  PromptSuggestionsOverlay,
+} from "../components/PromptOverlaySurfaces.js";
 import type { PendingRequest } from "../permission-requests.js";
 import type { SpinnerMode } from "../components/spinner/types.js";
 import { AgentsRail } from "./agents/AgentsRail.js";
@@ -17,6 +20,10 @@ import { PreviewSurface } from "./surfaces/PreviewSurface.js";
 import { TranscriptSurface } from "./surfaces/TranscriptSurface.js";
 import { ProjectExplorer } from "./project-tree/ProjectExplorer.js";
 import { ActiveWorkSurface } from "./surfaces/ActiveWorkSurface.js";
+import type {
+  BufferCodePredictionUi,
+  BufferTopologyRecoveryUi,
+} from "./surfaces/BufferSurface.js";
 import { WorkbenchComposerFocusProvider } from "./composerFocusContext.js";
 import { visibleWorkbenchPane } from "./reducer.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "./state.js";
@@ -29,6 +36,9 @@ import type {
 import { WorkbenchFooter } from "./WorkbenchFooter.js";
 import { WorkbenchStatusBar } from "./WorkbenchStatusBar.js";
 import { DirtyBufferLeaveOverlay } from "./DirtyBufferLeaveOverlay.js";
+import { WorkspaceTabs } from "./WorkspaceTabs.js";
+import { EditorProposalRail } from "./EditorProposalRail.js";
+import type { BufferIntegrationIntent } from "./buffer/providers/types.js";
 
 type Props = {
   readonly transcript: React.ReactNode;
@@ -38,6 +48,8 @@ type Props = {
   readonly modalScrollRef?: RefObject<ScrollBoxHandle | null>;
   readonly pendingApproval?: PendingRequest | null;
   readonly scrollRef?: RefObject<ScrollBoxHandle | null>;
+  /** Independent scroll owner for the Editor AI/review panel. */
+  readonly panelScrollRef?: RefObject<ScrollBoxHandle | null>;
   /**
    * Cold-start/empty transcript. Forwarded to the transcript surface so the
    * welcome hero starts at the top instead of being pinned to the bottom on a
@@ -57,6 +69,10 @@ type Props = {
   readonly contextPctLabel?: string | null;
   /** Live cumulative spend projected from bridge `token_count` events. */
   readonly sessionCostUsd?: number;
+  readonly onEditorInteraction?: (intent: BufferIntegrationIntent) => void;
+  readonly codePrediction?: BufferCodePredictionUi;
+  readonly editorMutationBlockedReason?: string | null;
+  readonly editorTopologyRecovery?: BufferTopologyRecoveryUi;
 };
 
 export function WorkbenchLayout({
@@ -67,17 +83,25 @@ export function WorkbenchLayout({
   modalScrollRef,
   pendingApproval,
   scrollRef,
+  panelScrollRef,
   atWelcome,
   activityMode = null,
   contextPctLabel = null,
   sessionCostUsd = 0,
+  onEditorInteraction,
+  codePrediction,
+  editorMutationBlockedReason = null,
+  editorTopologyRecovery,
 }: Props): React.ReactElement {
   const { columns, rows } = useTerminalSize();
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
   const layoutSize = layoutSizeForColumns(columns);
   const focusedPane = visibleWorkbenchPane(workbench);
-  const editorOwnsKeys = focusedPane === "surface" && workbench.activeSurfaceMode === "buffer";
+  const editorOwnsKeys =
+    workbench.activeWorkspaceView === "editor" &&
+    focusedPane === "surface" &&
+    workbench.activeSurfaceMode === "buffer";
   // The outer shell owns one row of breathing room above and below the frame
   // when the viewport can afford it. Give the framed workbench an explicit
   // drawable height instead of `100%`: percentage height plus padding can
@@ -102,9 +126,7 @@ export function WorkbenchLayout({
   // proportional on ultrawide terminals avoids the old tiny-islands-at-the-
   // edges look while the minimums preserve usability at the wide breakpoint.
   const explorerWidth =
-    layoutSize === "wide"
-      ? Math.max(26, Math.floor(frameColumns * 0.2))
-      : 26;
+    layoutSize === "wide" ? Math.max(26, Math.floor(frameColumns * 0.2)) : 26;
   const agentsWidth = Math.max(24, Math.floor(frameColumns * 0.19));
   const showExplorer =
     !surfaceMaximized && workbench.explorerVisible && layoutSize !== "narrow";
@@ -113,14 +135,21 @@ export function WorkbenchLayout({
   // to a file under review is dead space the file can use. Without a review
   // rail open, the Agents rail keeps its always-on contract in wide layouts.
   const hasAgentTasks = useAppState((s) =>
-    Object.values(s.tasks ?? {}).some((task: any) => task.type !== "local_bash"),
+    Object.values(s.tasks ?? {}).some(
+      (task: any) => task.type !== "local_bash",
+    ),
   );
-  const showAgents = !surfaceMaximized && workbench.agentsVisible && layoutSize === "wide" &&
+  const showAgents =
+    workbench.activeWorkspaceView === "agent" &&
+    !surfaceMaximized &&
+    workbench.agentsVisible &&
+    layoutSize === "wide" &&
     (hasAgentTasks || workbench.rail === null);
-  // The review rail (ctrl+r) lives only at wide widths — below that the chat
-  // would be squeezed to nothing, and the preview surface is the better fit.
-  const showRail =
-    !surfaceMaximized && workbench.rail !== null && layoutSize === "wide";
+  // Wide terminals dock the rail beside the buffer. Medium/narrow terminals
+  // keep the same rail as a full-height overlay; it remains a real focusable
+  // pane in both layouts.
+  const railAvailable = !surfaceMaximized && workbench.rail !== null;
+  const showRail = railAvailable && layoutSize === "wide";
   // Review rail width: share the space fairly with the chat instead of a
   // fixed narrow strip. 45% of the terminal, clamped below by the original
   // 44-col rail and above so the chat always keeps a workable ~46 columns
@@ -129,29 +158,50 @@ export function WorkbenchLayout({
     ? Math.min(
         88,
         Math.max(44, Math.floor(frameColumns * 0.45)),
-        frameColumns - (showExplorer ? explorerWidth : 0) - (showAgents ? agentsWidth : 0) - 46,
+        frameColumns -
+          (showExplorer ? explorerWidth : 0) -
+          (showAgents ? agentsWidth : 0) -
+          46,
       )
     : 44;
   const surfaceWidth = Math.max(
     1,
-    frameColumns - (showExplorer ? explorerWidth : 0) - (showAgents ? agentsWidth : 0) - (showRail ? railWidth : 0),
+    frameColumns -
+      (showExplorer ? explorerWidth : 0) -
+      (showAgents ? agentsWidth : 0) -
+      (showRail ? railWidth : 0),
   );
   const surfaceContentWidth = Math.max(1, surfaceWidth - 2);
   const visiblePanes = useMemo(
-    () => visiblePaneList(showExplorer, showAgents, showRail),
-    [showExplorer, showAgents, showRail],
+    () => visiblePaneList(showExplorer, showAgents, railAvailable),
+    [railAvailable, showAgents, showExplorer],
   );
 
   useRegisterKeybindingContext("Workbench", !editorOwnsKeys);
   useRegisterKeybindingContext("Composer", focusedPane === "composer");
   useKeybindings(
     {
-      "workbench:focusExplorer": () => dispatch({ type: "focus", pane: "explorer" }),
-      "workbench:focusSurface": () => dispatch({ type: "focus", pane: nextRightPane(focusedPane, showAgents) }),
-      "workbench:focusAgents": () => dispatch({ type: "focus", pane: "agents" }),
-      "workbench:focusComposer": () => dispatch({ type: "focus", pane: "composer" }),
+      "workbench:focusExplorer": () =>
+        dispatch({
+          type: "focus",
+          pane: nextLeftPane(focusedPane, showExplorer, railAvailable),
+        }),
+      "workbench:focusSurface": () =>
+        dispatch({
+          type: "focus",
+          pane: nextRightPane(focusedPane, railAvailable, showAgents),
+        }),
+      "workbench:focusRail": () => {
+        if (!railAvailable) return false;
+        dispatch({ type: "focus", pane: "rail" });
+      },
+      "workbench:focusAgents": () =>
+        dispatch({ type: "focus", pane: "agents" }),
+      "workbench:focusComposer": () =>
+        dispatch({ type: "focus", pane: "composer" }),
       "workbench:focusUp": () => dispatch({ type: "focus", pane: "surface" }),
-      "workbench:focusNext": () => dispatch({ type: "focusNext", visiblePanes }),
+      "workbench:focusNext": () =>
+        dispatch({ type: "focusNext", visiblePanes }),
       "workbench:openDiff": () => dispatch({ type: "openDiff", focus: true }),
       "workbench:openSearch": () => dispatch({ type: "openSearch" }),
       // ctrl+r — move the open file into the right-hand review rail (or close
@@ -164,7 +214,12 @@ export function WorkbenchLayout({
         }
         const path = workbench.activeFilePath;
         if (path === null) return;
-        if (workbench.activeSurfaceMode === "buffer" || workbench.activeSurfaceMode === "preview") {
+        if (workbench.activeWorkspaceView === "editor") {
+          dispatch({ type: "toggleFileRail", path });
+          dispatch({ type: "focus", pane: "rail" });
+          return;
+        }
+        if (workbench.activeSurfaceMode === "preview") {
           dispatch({ type: "moveFileToRail", path });
           return;
         }
@@ -176,7 +231,13 @@ export function WorkbenchLayout({
   );
 
   return (
-    <Box width="100%" height={rows} paddingX={1} paddingY={showFullChrome ? 1 : 0} backgroundColor="#000000">
+    <Box
+      width="100%"
+      height={rows}
+      paddingX={1}
+      paddingY={showFullChrome ? 1 : 0}
+      backgroundColor="#000000"
+    >
       <Box
         flexDirection="column"
         width="100%"
@@ -186,7 +247,19 @@ export function WorkbenchLayout({
         borderStyle="single"
         borderColor="lineSoft"
       >
-        {rows >= 8 ? <WorkbenchStatusBar activityMode={activityMode} columns={frameColumns} contextPctLabel={contextPctLabel} /> : null}
+        {rows >= 8 ? (
+          <WorkbenchStatusBar
+            activityMode={activityMode}
+            columns={frameColumns}
+            contextPctLabel={contextPctLabel}
+          />
+        ) : null}
+        <WorkspaceTabs
+          activityMode={activityMode}
+          pendingApproval={pendingApproval != null}
+          columns={frameColumns}
+          hidden={rows < 8}
+        />
         <Box
           flexDirection="row"
           flexGrow={1}
@@ -197,20 +270,45 @@ export function WorkbenchLayout({
         >
           {showExplorer ? (
             <NoSelect flexShrink={0} width={explorerWidth} height="100%">
-              <ProjectExplorer focused={focusedPane === "explorer"} width={explorerWidth} />
+              <ProjectExplorer
+                focused={focusedPane === "explorer"}
+                width={explorerWidth}
+              />
             </NoSelect>
           ) : null}
           <ContentWidthProvider width={surfaceContentWidth}>
-            <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} atWelcome={atWelcome} />
+            <ActiveWorkSurface
+              focused={focusedPane === "surface"}
+              transcript={transcript}
+              pendingApproval={pendingApproval}
+              scrollRef={scrollRef}
+              atWelcome={atWelcome}
+              onEditorInteraction={onEditorInteraction}
+              codePrediction={codePrediction}
+              editorMutationBlockedReason={editorMutationBlockedReason}
+              editorTopologyRecovery={editorTopologyRecovery}
+            />
           </ContentWidthProvider>
           {showRail ? (
-            <NoSelect flexShrink={0} width={railWidth} height="100%">
+            <NoSelect
+              flexShrink={0}
+              width={railWidth}
+              height="100%"
+              onClick={(event) => {
+                event.stopImmediatePropagation();
+                dispatch({ type: "focus", pane: "rail" });
+              }}
+            >
               <WorkbenchRailSurface
                 rail={workbench.rail!}
                 focused={focusedPane === "rail"}
                 transcript={transcript}
                 pendingApproval={pendingApproval}
-                scrollRef={scrollRef}
+                scrollRef={
+                  workbench.activeWorkspaceView === "editor"
+                    ? panelScrollRef
+                    : scrollRef
+                }
               />
             </NoSelect>
           ) : null}
@@ -225,7 +323,12 @@ export function WorkbenchLayout({
           ) : null}
         </Box>
         {overlay ? (
-          <Box flexDirection="column" borderColor="warning" borderTop paddingX={1}>
+          <Box
+            flexDirection="column"
+            borderColor="warning"
+            borderTop
+            paddingX={1}
+          >
             {overlay}
           </Box>
         ) : null}
@@ -244,7 +347,9 @@ export function WorkbenchLayout({
               availableRows={suggestionOverlayRows}
             />
             <ContentWidthProvider width={frameColumns}>
-              <WorkbenchComposerFocusProvider active={focusedPane === "composer"}>
+              <WorkbenchComposerFocusProvider
+                active={focusedPane === "composer"}
+              >
                 {composer}
               </WorkbenchComposerFocusProvider>
             </ContentWidthProvider>
@@ -252,8 +357,19 @@ export function WorkbenchLayout({
         ) : null}
         <PromptDialogOverlay />
         {showFullChrome && !surfaceMaximized ? <WorkbenchFooter /> : null}
-        {!surfaceMaximized && layoutSize !== "wide" && workbench.agentsVisible && focusedPane === "agents" ? (
-          <Box position="absolute" right={0} top={2} bottom={2} width={Math.min(34, frameColumns)} opaque>
+        {!surfaceMaximized &&
+        workbench.activeWorkspaceView === "agent" &&
+        layoutSize !== "wide" &&
+        workbench.agentsVisible &&
+        focusedPane === "agents" ? (
+          <Box
+            position="absolute"
+            right={0}
+            top={3}
+            bottom={2}
+            width={Math.min(34, frameColumns)}
+            opaque
+          >
             <NoSelect width={Math.min(34, frameColumns)} height="100%">
               <AgentsRail
                 focused={true}
@@ -263,43 +379,82 @@ export function WorkbenchLayout({
             </NoSelect>
           </Box>
         ) : null}
-        {!surfaceMaximized && layoutSize === "narrow" && workbench.explorerVisible && focusedPane === "explorer" ? (
-          <Box position="absolute" left={0} top={2} bottom={2} width={Math.min(34, frameColumns)} opaque>
+        {!surfaceMaximized &&
+        layoutSize === "narrow" &&
+        workbench.explorerVisible &&
+        focusedPane === "explorer" ? (
+          <Box
+            position="absolute"
+            left={0}
+            top={3}
+            bottom={2}
+            width={Math.min(34, frameColumns)}
+            opaque
+          >
             <NoSelect width={Math.min(34, frameColumns)} height="100%">
-              <ProjectExplorer focused={true} width={Math.min(34, frameColumns)} />
+              <ProjectExplorer
+                focused={true}
+                width={Math.min(34, frameColumns)}
+              />
             </NoSelect>
           </Box>
         ) : null}
-        {!surfaceMaximized && !showRail && workbench.rail !== null ? (
+        {railAvailable && !showRail && focusedPane === "rail" ? (
           <Box
             position="absolute"
             right={0}
-            top={2}
+            top={3}
             bottom={2}
-            width={Math.min(layoutSize === "narrow" ? frameColumns : 64, frameColumns)}
+            width={Math.min(
+              layoutSize === "narrow" ? frameColumns : 64,
+              frameColumns,
+            )}
             opaque
             borderLeft
             borderColor="lineSoft"
             backgroundColor="surfaceBackground"
           >
-            <NoSelect width="100%" height="100%">
+            <NoSelect
+              width="100%"
+              height="100%"
+              onClick={(event) => {
+                event.stopImmediatePropagation();
+                dispatch({ type: "focus", pane: "rail" });
+              }}
+            >
               <WorkbenchRailSurface
                 rail={workbench.rail}
                 focused={focusedPane === "rail"}
                 transcript={transcript}
                 pendingApproval={pendingApproval}
-                scrollRef={scrollRef}
+                scrollRef={
+                  workbench.activeWorkspaceView === "editor"
+                    ? panelScrollRef
+                    : scrollRef
+                }
               />
             </NoSelect>
           </Box>
         ) : null}
         {modal ? (
-          <ModalContext value={{
-            rows: Math.max(0, rows - 6),
-            columns: Math.max(0, frameColumns - 2),
-            scrollRef: modalScrollRef ?? null,
-          }}>
-            <Box position="absolute" left={0} right={0} bottom={0} flexDirection="column" opaque borderTop borderColor="lineSoft" paddingX={1}>
+          <ModalContext
+            value={{
+              rows: Math.max(0, rows - 6),
+              columns: Math.max(0, frameColumns - 2),
+              scrollRef: modalScrollRef ?? null,
+            }}
+          >
+            <Box
+              position="absolute"
+              left={0}
+              right={0}
+              bottom={0}
+              flexDirection="column"
+              opaque
+              borderTop
+              borderColor="lineSoft"
+              paddingX={1}
+            >
               {modal}
             </Box>
           </ModalContext>
@@ -309,7 +464,7 @@ export function WorkbenchLayout({
             position="absolute"
             left={0}
             right={0}
-            top={2}
+            top={3}
             flexDirection="column"
             opaque
             borderColor="warning"
@@ -342,12 +497,47 @@ function WorkbenchRailSurface({
       return <PreviewSurface focused={focused} pathOverride={rail.path} />;
     case "transcript":
       return (
-        <WorkbenchTranscriptLayoutProvider>
-          <TranscriptSurface scrollRef={scrollRef}>{transcript}</TranscriptSurface>
-        </WorkbenchTranscriptLayoutProvider>
+        <Box
+          flexDirection="column"
+          width="100%"
+          height="100%"
+          overflow="hidden"
+        >
+          <Box
+            flexShrink={0}
+            paddingX={1}
+            borderBottom
+            borderColor={focused ? "text" : "lineSoft"}
+          >
+            <Text
+              bold={focused}
+              color={focused ? "text" : "inactive"}
+              wrap="truncate-end"
+            >
+              {focused
+                ? "AI · PgUp/PgDn scroll · Ctrl+W H editor"
+                : "AI · Alt+L focus and scroll"}
+            </Text>
+          </Box>
+          <WorkbenchTranscriptLayoutProvider>
+            <TranscriptSurface scrollRef={scrollRef}>
+              {transcript}
+            </TranscriptSurface>
+          </WorkbenchTranscriptLayoutProvider>
+        </Box>
       );
     case "change-review":
-      return <DiffSurface focused={focused} pendingApproval={pendingApproval} />;
+      return (
+        <DiffSurface focused={focused} pendingApproval={pendingApproval} />
+      );
+    case "editor-proposal":
+      return (
+        <EditorProposalRail
+          proposalId={rail.proposalId}
+          focused={focused}
+          scrollRef={scrollRef}
+        />
+      );
   }
 }
 
@@ -357,18 +547,41 @@ export function layoutSizeForColumns(columns: number): WorkbenchLayoutSize {
   return "narrow";
 }
 
-function visiblePaneList(showExplorer: boolean, showAgents: boolean, showRail: boolean): readonly WorkbenchPane[] {
+function visiblePaneList(
+  showExplorer: boolean,
+  showAgents: boolean,
+  railAvailable: boolean,
+): readonly WorkbenchPane[] {
   return [
     ...(showExplorer ? ["explorer" as const] : []),
     "surface" as const,
-    ...(showRail ? ["rail" as const] : []),
+    ...(railAvailable ? ["rail" as const] : []),
     ...(showAgents ? ["agents" as const] : []),
     "composer" as const,
   ];
 }
 
-function nextRightPane(current: WorkbenchPane, showAgents: boolean): WorkbenchPane {
+function nextRightPane(
+  current: WorkbenchPane,
+  railAvailable: boolean,
+  showAgents: boolean,
+): WorkbenchPane {
   if (current === "explorer") return "surface";
+  if (current === "surface" && railAvailable) return "rail";
   if (current === "surface" && showAgents) return "agents";
+  if (current === "rail" && showAgents) return "agents";
+  if (current === "composer") return "surface";
+  return "surface";
+}
+
+function nextLeftPane(
+  current: WorkbenchPane,
+  showExplorer: boolean,
+  railAvailable: boolean,
+): WorkbenchPane {
+  if (current === "rail") return "surface";
+  if (current === "agents") return railAvailable ? "rail" : "surface";
+  if (current === "surface" && showExplorer) return "explorer";
+  if (current === "composer") return showExplorer ? "explorer" : "surface";
   return "surface";
 }

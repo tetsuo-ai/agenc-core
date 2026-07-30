@@ -34,7 +34,10 @@ import type {
 import { safeStringify } from "./tools/types.js";
 import type { ToolsConfig } from "./config/schema.js";
 import { createFilesystemTools } from "./tools/system/filesystem.js";
-import { createCodingTools, SESSION_ADVERTISED_TOOL_NAMES_ARG } from "./tools/system/coding.js";
+import {
+  createCodingTools,
+  SESSION_ADVERTISED_TOOL_NAMES_ARG,
+} from "./tools/system/coding.js";
 import { createBashTool } from "./tools/system/bash.js";
 import { createExecCommandTool } from "./tools/system/exec-command.js";
 import { createWriteStdinTool } from "./tools/system/write-stdin.js";
@@ -43,13 +46,35 @@ import { createPlanningTools } from "./tools/system/planning.js";
 import { createAskUserQuestionTool } from "./tools/ask-user-question/tool.js";
 import { createSleepTool } from "./tools/system/sleep.js";
 import { createMonitorTool } from "./tools/system/monitor.js";
-import { createEnterWorktreeTool, createExitWorktreeTool } from "./tools/system/worktree.js";
-import { createFileReadTool, FILE_READ_TOOL_NAME } from "./tools/system/file-read.js";
-import { createFileEditTool, createFileMultiEditTool, FILE_EDIT_TOOL_NAME, FILE_MULTI_EDIT_TOOL_NAME } from "./tools/system/file-edit.js";
-import { createFileWriteTool, FILE_WRITE_TOOL_NAME } from "./tools/system/file-write.js";
+import {
+  createEnterWorktreeTool,
+  createExitWorktreeTool,
+} from "./tools/system/worktree.js";
+import {
+  createFileReadTool,
+  FILE_READ_TOOL_NAME,
+} from "./tools/system/file-read.js";
+import {
+  createFileEditTool,
+  createFileMultiEditTool,
+  FILE_EDIT_TOOL_NAME,
+  FILE_MULTI_EDIT_TOOL_NAME,
+} from "./tools/system/file-edit.js";
+import {
+  createFileWriteTool,
+  FILE_WRITE_TOOL_NAME,
+} from "./tools/system/file-write.js";
 import { createGlobTool, GLOB_TOOL_NAME } from "./tools/system/glob.js";
 import { createGrepTool, GREP_TOOL_NAME } from "./tools/system/grep.js";
 import { createOrientTool, ORIENT_TOOL_NAME } from "./tools/system/orient.js";
+import {
+  createEditorProposalTool,
+  EDITOR_PROPOSAL_TOOL_NAME,
+} from "./tools/system/editor-proposal.js";
+import {
+  isEditorInteractionToolName,
+  type EditorInteractionToolName,
+} from "./tools/system/editor-interaction-surface.js";
 import { createBrowserTool } from "./tools/BrowserTool/tool.js";
 import type { BashExecObserver } from "./tools/system/types.js";
 import type { WorkflowToolController } from "./tools/system/planning.js";
@@ -58,7 +83,10 @@ import type { UnifiedExecProcessManagerLike } from "./unified-exec/types.js";
 import { createCodeModeTools } from "./tools/code-mode/tools.js";
 import type { CodeModeService } from "./tools/code-mode/types.js";
 import { isCodeModeNestedToolName } from "./tools/code-mode/policy.js";
-import { APPLY_PATCH_TOOL_NAME, createApplyPatchTool } from "./tools/apply-patch/tool.js";
+import {
+  APPLY_PATCH_TOOL_NAME,
+  createApplyPatchTool,
+} from "./tools/apply-patch/tool.js";
 import {
   defaultConcurrencyClassFor,
   isBashTool,
@@ -68,14 +96,8 @@ import {
   sharedServer,
   type ConcurrencyClass,
 } from "./tools/concurrency.js";
-import {
-  ToolRouter,
-  type ConfiguredToolSpec,
-} from "./tools/router.js";
-import {
-  resolvePerToolConfig,
-  toolConfigAllowsTool,
-} from "./tools/config.js";
+import { ToolRouter, type ConfiguredToolSpec } from "./tools/router.js";
+import { resolvePerToolConfig, toolConfigAllowsTool } from "./tools/config.js";
 import { canonicalModelToolName } from "./tools/model-tool-aliases.js";
 import {
   attachSandboxExecutionBroker,
@@ -111,6 +133,12 @@ export interface ToolRegistry {
   readonly tools: readonly Tool[];
   toLLMTools(): LLMTool[];
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult>;
+  /**
+   * Returns the exact runtime-owned built-in authorized for an Editor
+   * interaction. Callers must compare object identity; tool metadata is
+   * declarative and cannot establish provenance.
+   */
+  getTrustedEditorInteractionTool?(toolName: string): Tool | undefined;
   dispatchCodeModeNestedTool?(
     toolCall: CodeModeNestedToolDispatch,
   ): Promise<ToolDispatchResult>;
@@ -141,7 +169,8 @@ function inferMcpServerId(toolName: string): string | undefined {
 }
 
 function tagTool(tool: Tool, opts: { readonly serverId?: string } = {}): Tool {
-  const serverId = opts.serverId ?? tool.serverId ?? inferMcpServerId(tool.name);
+  const serverId =
+    opts.serverId ?? tool.serverId ?? inferMcpServerId(tool.name);
   const inferredReadOnly =
     tool.metadata?.mutating === false || isReadOnlyFilesystemTool(tool.name);
   const baseClass: ConcurrencyClass =
@@ -154,8 +183,7 @@ function tagTool(tool: Tool, opts: { readonly serverId?: string } = {}): Tool {
   const isReadOnly = tool.isReadOnly ?? inferredReadOnly;
   const supportsParallelToolCalls =
     tool.supportsParallelToolCalls ??
-    (baseClass.kind === "shared_read" ||
-      baseClass.kind === "shared_server");
+    (baseClass.kind === "shared_read" || baseClass.kind === "shared_server");
 
   // write-filesystem + bash tools require approval under granular mode;
   // they never declare `requiresApproval` explicitly today so we surface
@@ -267,7 +295,9 @@ function catalogEntryForTool(
       hiddenByDefault,
       mutating,
       deferred,
-      ...(metadata.keywords !== undefined ? { keywords: metadata.keywords } : {}),
+      ...(metadata.keywords !== undefined
+        ? { keywords: metadata.keywords }
+        : {}),
       ...(metadata.preferredProfiles !== undefined
         ? { preferredProfiles: metadata.preferredProfiles }
         : {}),
@@ -424,7 +454,9 @@ function parseCodeModeNestedToolArguments(
   if (typeof input === "string") {
     const field = stringArgumentFields[toolName];
     if (field === undefined) {
-      throw new Error(`tool \`${toolName}\` expects a JSON object for arguments`);
+      throw new Error(
+        `tool \`${toolName}\` expects a JSON object for arguments`,
+      );
     }
     return { [field]: input };
   }
@@ -645,7 +677,7 @@ export function buildToolRegistry(
   const shellToolSurface = {
     execCommand: "exec_command",
     writeStdin: "write_stdin",
-    "bash": "system.bash",
+    bash: "system.bash",
   } as const;
   const firstClassFileTools = [
     createFileReadTool({
@@ -676,13 +708,13 @@ export function buildToolRegistry(
     }),
   ] as const;
   const firstClassFileSurface = {
-    "read": FILE_READ_TOOL_NAME,
-    "write": FILE_WRITE_TOOL_NAME,
-    "edit": FILE_EDIT_TOOL_NAME,
-    "multiEdit": FILE_MULTI_EDIT_TOOL_NAME,
-    "grep": GREP_TOOL_NAME,
-    "glob": GLOB_TOOL_NAME,
-    "orient": ORIENT_TOOL_NAME,
+    read: FILE_READ_TOOL_NAME,
+    write: FILE_WRITE_TOOL_NAME,
+    edit: FILE_EDIT_TOOL_NAME,
+    multiEdit: FILE_MULTI_EDIT_TOOL_NAME,
+    grep: GREP_TOOL_NAME,
+    glob: GLOB_TOOL_NAME,
+    orient: ORIENT_TOOL_NAME,
   } as const;
   const interactionTools = [
     createAskUserQuestionTool(),
@@ -703,7 +735,20 @@ export function buildToolRegistry(
   // is discovered on demand via system.searchTools, keeping the default
   // per-turn catalog small. The manager launches Chromium lazily on first use.
   const browserTools = [createBrowserTool()] as const;
-  const registryModelFacingTools = readToolList(options.modelFacingTools);
+  const requestedModelFacingTools = readToolList(options.modelFacingTools);
+  const registryModelFacingTools = [
+    ...requestedModelFacingTools.filter(
+      (tool) => !isEditorInteractionToolName(tool.name),
+    ),
+    // EditorProposal is a security terminal, not an extension point. Build it
+    // inside the registry so a caller-supplied model-facing spec cannot become
+    // the object later authenticated by an Editor turn.
+    ...(requestedModelFacingTools.some(
+      (tool) => tool.name === EDITOR_PROPOSAL_TOOL_NAME,
+    )
+      ? [createEditorProposalTool()]
+      : []),
+  ];
   const modelFacingProviderNativeSurface = {
     webFetch: "web_fetch",
     legacyWebFetch: "WebFetch",
@@ -863,6 +908,11 @@ export function buildToolRegistry(
     },
   ]);
   function applyConfiguredTool(tool: Tool): Tool | null {
+    // EditorProposal is a protocol terminal for proposal-only Editor turns,
+    // not an optional Agent capability. Once the internally constructed
+    // canonical tool is present, per-tool visibility configuration must not
+    // make the Editor contract impossible to complete.
+    if (tool.name === EDITOR_PROPOSAL_TOOL_NAME) return tool;
     if (!toolConfigAllowsTool(options.toolsConfig, tool.name)) return null;
     const config = resolvePerToolConfig(options.toolsConfig, tool.name);
     if (config.defaultPermissionMode === undefined) return tool;
@@ -877,9 +927,33 @@ export function buildToolRegistry(
 
   const defaultBuiltinTools: Tool[] = configuredTools(
     builtinSurface.tools.map((tool) =>
-      tagTool(applyBuiltinVisibility(tool, builtinSurface.visibleToolNames)),
+      tagTool(
+        withMetadata(
+          applyBuiltinVisibility(tool, builtinSurface.visibleToolNames),
+          { source: "builtin" },
+        ),
+      ),
     ),
   );
+  const trustedEditorInteractionTools = new Map<
+    EditorInteractionToolName,
+    Tool
+  >();
+  for (const tool of defaultBuiltinTools) {
+    if (isEditorInteractionToolName(tool.name)) {
+      trustedEditorInteractionTools.set(tool.name, tool);
+    }
+  }
+
+  const preserveTrustedEditorInteractionTools = (
+    tools: readonly Tool[],
+  ): Tool[] =>
+    tools.filter(
+      (tool) =>
+        !isEditorInteractionToolName(tool.name) ||
+        trustedEditorInteractionTools.get(tool.name) === tool,
+    );
+
   const extraTools: Tool[] = configuredTools(
     (options.extraTools ?? []).map((tool) => tagTool(tool)),
   );
@@ -910,7 +984,9 @@ export function buildToolRegistry(
   function currentDynamicTools(): readonly Tool[] {
     return configuredTools(
       readToolList(options.dynamicTools).map((tool) =>
-        tagTool(withMetadata(tool, { source: tool.metadata?.source ?? "plugin" })),
+        tagTool(
+          withMetadata(tool, { source: tool.metadata?.source ?? "plugin" }),
+        ),
       ),
     );
   }
@@ -931,14 +1007,17 @@ export function buildToolRegistry(
   function currentDiscoverableTools(): readonly Tool[] {
     return configuredTools(
       readToolList(options.discoverableTools).map((tool) =>
-        tagTool(withMetadata(tool, { source: tool.metadata?.source ?? "plugin" })),
+        tagTool(
+          withMetadata(tool, { source: tool.metadata?.source ?? "plugin" }),
+        ),
       ),
     );
   }
 
   function buildRouter(): ToolRouter {
-    const baseSpecs = staticTools.map(specForTool);
-    const mcpTools = currentMcpTools();
+    const baseSpecs =
+      preserveTrustedEditorInteractionTools(staticTools).map(specForTool);
+    const mcpTools = preserveTrustedEditorInteractionTools(currentMcpTools());
     const directMcpTools = mcpTools.filter(
       (tool) => tool.metadata?.deferred !== true,
     );
@@ -949,8 +1028,13 @@ export function buildToolRegistry(
       baseSpecs,
       mcpTools: toolMap(directMcpTools),
       deferredMcpTools: toolMap(deferredMcpTools),
-      discoverableTools: currentDiscoverableTools(),
-      dynamicTools: [...currentDynamicTools(), ...currentDeferredTools()],
+      discoverableTools: preserveTrustedEditorInteractionTools(
+        currentDiscoverableTools(),
+      ),
+      dynamicTools: preserveTrustedEditorInteractionTools([
+        ...currentDynamicTools(),
+        ...currentDeferredTools(),
+      ]),
       unavailableCalledTools: options.unavailableCalledTools ?? [],
       ...(options.parallelMcpServerNames !== undefined
         ? { parallelMcpServerNames: options.parallelMcpServerNames }
@@ -966,7 +1050,7 @@ export function buildToolRegistry(
     return allSpecs().filter(
       (spec) =>
         spec.deferred !== true || discoveredToolNames.has(spec.tool.name),
-      );
+    );
   }
 
   async function executeConfiguredTool(
@@ -1003,7 +1087,9 @@ export function buildToolRegistry(
           : "tool",
       );
     }
-    const invoke = async (signal?: AbortSignal): Promise<ToolDispatchResult> => {
+    const invoke = async (
+      signal?: AbortSignal,
+    ): Promise<ToolDispatchResult> => {
       if (signal !== undefined) {
         Object.defineProperty(args, "__abortSignal", {
           value: signal,
@@ -1042,6 +1128,11 @@ export function buildToolRegistry(
   return {
     get tools(): readonly Tool[] {
       return allSpecs().map((spec) => spec.tool);
+    },
+    getTrustedEditorInteractionTool(toolName: string): Tool | undefined {
+      return isEditorInteractionToolName(toolName)
+        ? trustedEditorInteractionTools.get(toolName)
+        : undefined;
     },
     toLLMTools(): LLMTool[] {
       return visibleSpecs().map((spec) => toolToLLMTool(spec.tool));

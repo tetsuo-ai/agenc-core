@@ -963,6 +963,17 @@ export type EventMsg =
       readonly type: "tool_call_completed";
       readonly payload: {
         readonly callId: string;
+        /**
+         * Runtime-authored identity of the dispatched tool. Optional for
+         * compatibility with historical rollout events.
+         */
+        readonly toolName?: string;
+        /**
+         * Runtime-authored Editor authority identity when the tool completed
+         * inside an Editor interaction. Historical and ordinary Agent events
+         * omit it.
+         */
+        readonly editorInteractionId?: string;
         readonly result: string;
         readonly isError: boolean;
         readonly metadata?: Record<string, unknown>;

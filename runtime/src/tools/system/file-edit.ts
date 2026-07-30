@@ -35,19 +35,10 @@
  * @module
  */
 
-import {
-  mkdir,
-  readFile,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 
-import type {
-  Tool,
-  ToolExecutionInjectedArgs,
-  ToolResult,
-} from "../types.js";
+import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
@@ -64,6 +55,17 @@ import {
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
+import {
+  prepareWorkspaceMutation,
+  WorkspaceMutationCoordinatorError,
+  workspaceAuthoritativeRead,
+  workspaceMutationAdmissionToolResult,
+  type WorkspaceMutationSource,
+} from "../../workspace/mutation-coordinator.js";
+import {
+  executeWorkspaceFileMutation,
+  type WorkspaceFileMutationTestHooks,
+} from "../../workspace/file-mutation-transaction.js";
 
 export const FILE_EDIT_TOOL_NAME = "Edit";
 export const FILE_MULTI_EDIT_TOOL_NAME = "MultiEdit";
@@ -173,7 +175,10 @@ export function findActualString(
   return fileContent.substring(idx, idx + searchString.length);
 }
 
-function isOpeningQuoteContext(chars: readonly string[], index: number): boolean {
+function isOpeningQuoteContext(
+  chars: readonly string[],
+  index: number,
+): boolean {
   if (index === 0) return true;
   const prev = chars[index - 1];
   return (
@@ -244,7 +249,7 @@ function preserveQuoteStyle(
 
 // ── tool config / errors ──────────────────────────────────────────────
 
-export interface FileEditToolConfig {
+export interface FileEditToolConfig extends WorkspaceFileMutationTestHooks {
   /** Allowed path prefixes (required). */
   readonly allowedPaths: readonly string[];
 }
@@ -389,6 +394,26 @@ function encodeForOriginalFormat(
 }
 
 async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
+  const editorRead = workspaceAuthoritativeRead(absolutePath);
+  if (editorRead !== null) {
+    const rawText = editorRead.content;
+    const text = rawText.replaceAll("\r\n", "\n");
+    let mtimeMs = 0;
+    try {
+      const fileStats = await stat(absolutePath);
+      if (Number.isFinite(fileStats.mtimeMs)) mtimeMs = fileStats.mtimeMs;
+    } catch {
+      // A dirty new buffer may not exist on disk yet.
+    }
+    return {
+      exists: true,
+      content: text,
+      mtimeMs,
+      size: Buffer.byteLength(rawText, "utf8"),
+      encoding: "utf8",
+      lineEndings: detectLineEndings(rawText),
+    };
+  }
   try {
     const fileStats = await stat(absolutePath);
     if (!fileStats.isFile()) {
@@ -404,7 +429,8 @@ async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
       exists: true,
       content: text,
       mtimeMs:
-        typeof fileStats.mtimeMs === "number" && Number.isFinite(fileStats.mtimeMs)
+        typeof fileStats.mtimeMs === "number" &&
+        Number.isFinite(fileStats.mtimeMs)
           ? fileStats.mtimeMs
           : 0,
       size: fileStats.size,
@@ -425,6 +451,51 @@ async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
     }
     throw err;
   }
+}
+
+async function coordinateFileWrite(
+  input: {
+    readonly absolutePath: string;
+    readonly source: WorkspaceMutationSource;
+    readonly beforeText: string;
+    readonly afterText: string;
+    readonly rawArgs: Record<string, unknown>;
+    readonly observedEncoding?: BufferEncoding;
+    readonly testHooks?: WorkspaceFileMutationTestHooks;
+  },
+  write: () => Promise<void>,
+): Promise<ToolResult | null> {
+  const sessionId = resolveSessionId(input.rawArgs);
+  const toolCallId =
+    typeof input.rawArgs.__callId === "string"
+      ? input.rawArgs.__callId
+      : undefined;
+  const admission = await prepareWorkspaceMutation({
+    path: input.absolutePath,
+    source: input.source,
+    beforeText: input.beforeText,
+    afterText: input.afterText,
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(toolCallId !== undefined ? { toolCallId } : {}),
+  });
+  const rejection = workspaceMutationAdmissionToolResult(admission);
+  if (rejection !== null) return rejection;
+  await executeWorkspaceFileMutation({
+    admission,
+    path: input.absolutePath,
+    afterText: input.afterText,
+    write,
+    metadata: {
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      ...(toolCallId !== undefined ? { toolCallId } : {}),
+    },
+    decodeObserved: (content) =>
+      content
+        .toString(input.observedEncoding ?? "utf8")
+        .replaceAll("\r\n", "\n"),
+    ...(input.testHooks !== undefined ? { testHooks: input.testHooks } : {}),
+  });
+  return null;
 }
 
 function comparableSessionContent(
@@ -487,6 +558,12 @@ class ConcurrentFileModificationError extends Error {
  * through to the generic "Failed to write file" prefix.
  */
 function formatWriteFileError(err: unknown): string {
+  if (
+    err instanceof WorkspaceMutationCoordinatorError &&
+    err.code === "MUTATION_AUDIT_FAILED"
+  ) {
+    return err.message;
+  }
   if (err instanceof ConcurrentFileModificationError) {
     return [
       `${err.path} was modified by another writer between Read and Edit.`,
@@ -496,6 +573,17 @@ function formatWriteFileError(err: unknown): string {
   }
   const message = err instanceof Error ? err.message : String(err);
   return `Failed to write file: ${message}`;
+}
+
+function formatCreateFileError(err: unknown): string {
+  if (
+    err instanceof WorkspaceMutationCoordinatorError &&
+    err.code === "MUTATION_AUDIT_FAILED"
+  ) {
+    return err.message;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return `Failed to create file: ${message}`;
 }
 
 async function writeFilePreservingSnapshot(
@@ -656,10 +744,16 @@ function applyValidatedEdit(
     newString,
   );
 
-  const applied = applyEdit(fileContent, actualOldString, actualNewString, replaceAll);
+  const applied = applyEdit(
+    fileContent,
+    actualOldString,
+    actualNewString,
+    replaceAll,
+  );
   if (applied.updated === fileContent) {
     return {
-      error: "No changes to make: old_string and new_string are exactly the same.",
+      error:
+        "No changes to make: old_string and new_string are exactly the same.",
     };
   }
   return applied;
@@ -768,7 +862,9 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // safePath so a workspace-relative `src/foo.ts` is accepted by
       // the same allowlist that absolute paths run through.
       const cwd =
-        asNonEmptyString(rawArgs.cwd) ?? config.allowedPaths[0] ?? process.cwd();
+        asNonEmptyString(rawArgs.cwd) ??
+        config.allowedPaths[0] ??
+        process.cwd();
       if (isAgentNamespacePath(file_path)) {
         return errorResult(agentNamespacePathHint(file_path, cwd));
       }
@@ -821,10 +917,20 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // Verbatim semantics from AgenC FileEditTool.ts:223-228.
       if (!snapshot.exists && old_string === "") {
         try {
-          await writeFileCreatingParents(absoluteFilePath, new_string);
+          const rejected = await coordinateFileWrite(
+            {
+              absolutePath: absoluteFilePath,
+              source: "file_edit",
+              beforeText: "",
+              afterText: new_string,
+              rawArgs,
+              testHooks: config,
+            },
+            () => writeFileCreatingParents(absoluteFilePath, new_string),
+          );
+          if (rejected !== null) return rejected;
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          return errorResult(`Failed to create file: ${message}`);
+          return errorResult(formatCreateFileError(err));
         }
         await snapshotPostWrite(
           resolveSessionId(rawArgs),
@@ -910,11 +1016,24 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           return errorResult("Cannot create new file - file already exists.");
         }
         try {
-          await writeFilePreservingSnapshot(
-            absoluteFilePath,
-            new_string,
-            snapshot,
+          const rejected = await coordinateFileWrite(
+            {
+              absolutePath: absoluteFilePath,
+              source: "file_edit",
+              beforeText: snapshot.content,
+              afterText: new_string,
+              rawArgs,
+              observedEncoding: snapshot.encoding,
+              testHooks: config,
+            },
+            () =>
+              writeFilePreservingSnapshot(
+                absoluteFilePath,
+                new_string,
+                snapshot,
+              ),
           );
+          if (rejected !== null) return rejected;
         } catch (err) {
           return errorResult(formatWriteFileError(err));
         }
@@ -942,7 +1061,20 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       const { updated, replacements: matches } = applied;
 
       try {
-        await writeFilePreservingSnapshot(absoluteFilePath, updated, snapshot);
+        const rejected = await coordinateFileWrite(
+          {
+            absolutePath: absoluteFilePath,
+            source: "file_edit",
+            beforeText: snapshot.content,
+            afterText: updated,
+            rawArgs,
+            observedEncoding: snapshot.encoding,
+            testHooks: config,
+          },
+          () =>
+            writeFilePreservingSnapshot(absoluteFilePath, updated, snapshot),
+        );
+        if (rejected !== null) return rejected;
       } catch (err) {
         return errorResult(formatWriteFileError(err));
       }
@@ -1070,7 +1202,9 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       }
 
       const cwd =
-        asNonEmptyString(rawArgs.cwd) ?? config.allowedPaths[0] ?? process.cwd();
+        asNonEmptyString(rawArgs.cwd) ??
+        config.allowedPaths[0] ??
+        process.cwd();
       if (isAgentNamespacePath(file_path)) {
         return errorResult(agentNamespacePathHint(file_path, cwd));
       }
@@ -1107,12 +1241,27 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
       }
 
-      if (!snapshot.exists && edits.length === 1 && firstEdit.old_string === "") {
+      if (
+        !snapshot.exists &&
+        edits.length === 1 &&
+        firstEdit.old_string === ""
+      ) {
         try {
-          await writeFileCreatingParents(absoluteFilePath, firstEdit.new_string);
+          const rejected = await coordinateFileWrite(
+            {
+              absolutePath: absoluteFilePath,
+              source: "file_multi_edit",
+              beforeText: "",
+              afterText: firstEdit.new_string,
+              rawArgs,
+              testHooks: config,
+            },
+            () =>
+              writeFileCreatingParents(absoluteFilePath, firstEdit.new_string),
+          );
+          if (rejected !== null) return rejected;
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          return errorResult(`Failed to create file: ${message}`);
+          return errorResult(formatCreateFileError(err));
         }
         await snapshotPostWrite(
           resolveSessionId(rawArgs),
@@ -1137,7 +1286,9 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
       }
 
-      const emptyOldStringIndex = edits.findIndex((edit) => edit.old_string === "");
+      const emptyOldStringIndex = edits.findIndex(
+        (edit) => edit.old_string === "",
+      );
       if (emptyOldStringIndex >= 0) {
         if (edits.length > 1) {
           return errorResult(
@@ -1186,15 +1337,32 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           return errorResult("Cannot create new file - file already exists.");
         }
         try {
-          await writeFilePreservingSnapshot(
-            absoluteFilePath,
-            firstEdit.new_string,
-            snapshot,
+          const rejected = await coordinateFileWrite(
+            {
+              absolutePath: absoluteFilePath,
+              source: "file_multi_edit",
+              beforeText: snapshot.content,
+              afterText: firstEdit.new_string,
+              rawArgs,
+              observedEncoding: snapshot.encoding,
+              testHooks: config,
+            },
+            () =>
+              writeFilePreservingSnapshot(
+                absoluteFilePath,
+                firstEdit.new_string,
+                snapshot,
+              ),
           );
+          if (rejected !== null) return rejected;
         } catch (err) {
           return errorResult(formatWriteFileError(err));
         }
-        await snapshotPostWrite(sessionId, absoluteFilePath, firstEdit.new_string);
+        await snapshotPostWrite(
+          sessionId,
+          absoluteFilePath,
+          firstEdit.new_string,
+        );
         notifyLspFileChanged(absoluteFilePath, firstEdit.new_string);
         return {
           content: multiEditSuccessText(file_path, 1, 1),
@@ -1248,7 +1416,20 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       }
 
       try {
-        await writeFilePreservingSnapshot(absoluteFilePath, updated, snapshot);
+        const rejected = await coordinateFileWrite(
+          {
+            absolutePath: absoluteFilePath,
+            source: "file_multi_edit",
+            beforeText: snapshot.content,
+            afterText: updated,
+            rawArgs,
+            observedEncoding: snapshot.encoding,
+            testHooks: config,
+          },
+          () =>
+            writeFilePreservingSnapshot(absoluteFilePath, updated, snapshot),
+        );
+        if (rejected !== null) return rejected;
       } catch (err) {
         return errorResult(formatWriteFileError(err));
       }

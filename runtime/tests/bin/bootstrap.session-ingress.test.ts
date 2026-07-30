@@ -31,10 +31,12 @@ vi.mock("./_deps/session-ingress-auth.js", () => ({
 import { bootstrapLocalRuntimeSession } from "./bootstrap.js";
 import { fetchStartupInternalEvents } from "./startup-internal-events.js";
 import { Session } from "../session/session.js";
+import { ConversationThreadManager } from "../conversation/thread-manager.js";
 
-type InternalEventReader = () => Promise<
-  Array<{ payload: Record<string, unknown>; agent_id?: string }> | null
->;
+type InternalEventReader = () => Promise<Array<{
+  payload: Record<string, unknown>;
+  agent_id?: string;
+}> | null>;
 
 type InternalEventWriter = (
   eventType: string,
@@ -127,13 +129,217 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
       expect(sessionStorageMocks.setRemoteIngressUrl).toHaveBeenCalledWith(
         "https://api.example.test/v1/session_ingress/session/cse_session_123",
       );
-      expect(sessionStorageMocks.setInternalEventReader).toHaveBeenCalledTimes(1);
-      expect(sessionStorageMocks.setInternalEventWriter).toHaveBeenCalledTimes(1);
+      expect(sessionStorageMocks.setInternalEventReader).toHaveBeenCalledTimes(
+        1,
+      );
+      expect(sessionStorageMocks.setInternalEventWriter).toHaveBeenCalledTimes(
+        1,
+      );
       expect(foregroundReader).toBeTypeOf("function");
       expect(subagentReader).toBeTypeOf("function");
       expect(internalWriter).toBeTypeOf("function");
     } finally {
       await shutdown?.().catch(() => {
+        /* best effort */
+      });
+    }
+  });
+
+  it("defers MCP and prewarm startup across Editor turns until ordinary Agent submit", async () => {
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    const sequence: string[] = [];
+    const mcpStart = vi
+      .spyOn(Session.prototype, "startMcpManager")
+      .mockImplementation(async () => {
+        sequence.push("mcp");
+      });
+    const prewarm = vi
+      .spyOn(ConversationThreadManager.prototype, "runStartupPrewarm")
+      .mockImplementation(async () => {
+        sequence.push("prewarm");
+        return "ready";
+      });
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId: "editor_deferred_startup",
+        deferAgentStartupSideEffects: true,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+      const submit = vi.fn(async (message: string) => {
+        sequence.push(`turn:${message}`);
+      });
+      boot.session.installTurnDriverHooks({ submit: submit as never });
+      const editorInteraction = {
+        interactionId: "interaction-bootstrap-effects-ask",
+        kind: "ask" as const,
+        policy: "read_only" as const,
+        editorInstanceId: "editor-bootstrap-effects",
+        bufferHandle: 13,
+        changedtick: 6,
+        contentSha256: "f".repeat(64),
+        path: join(workspace, "example.ts"),
+        range: {
+          start: { line: 1, column: 0 },
+          end: { line: 1, column: 1 },
+        },
+      };
+
+      expect(mcpStart).not.toHaveBeenCalled();
+      expect(prewarm).not.toHaveBeenCalled();
+      await boot.session.submit("editor", { editorInteraction });
+      expect(sequence).toEqual(["turn:editor"]);
+
+      await boot.session.submit("agent");
+      expect(sequence).toEqual(["turn:editor", "mcp", "turn:agent"]);
+      expect(prewarm).not.toHaveBeenCalled();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+    }
+  });
+
+  it("closes deferred startup admission synchronously through the bootstrap handle", async () => {
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    const mcpStart = vi
+      .spyOn(Session.prototype, "startMcpManager")
+      .mockResolvedValue(undefined);
+    const prewarm = vi
+      .spyOn(ConversationThreadManager.prototype, "runStartupPrewarm")
+      .mockResolvedValue("ready");
+    const boot = await bootstrapLocalRuntimeSession({
+      apiKey: "test-key",
+      conversationId: "editor_close_before_startup",
+      deferAgentStartupSideEffects: true,
+      env: {
+        ...process.env,
+        AGENC_HOME: home,
+        AGENC_WORKSPACE: workspace,
+        HOME: home,
+      },
+    });
+    const submit = vi.fn(async () => {});
+    boot.session.installTurnDriverHooks({ submit });
+
+    const closing = boot.shutdown();
+    const lateSubmit = boot.session.submit("late agent turn");
+
+    await expect(lateSubmit).rejects.toThrow("session is shutting down");
+    await closing;
+    expect(mcpStart).not.toHaveBeenCalled();
+    expect(prewarm).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("does not start cron or job recovery after shutdown wins an in-flight startup read", async () => {
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const cronTasks = await import("../utils/cronTasks.js");
+    const modelFacingTools = await import("./model-facing-tools.js");
+    let releaseCronRead: (() => void) | undefined;
+    let markCronReadStarted: (() => void) | undefined;
+    const cronReadStarted = new Promise<void>((resolve) => {
+      markCronReadStarted = resolve;
+    });
+    const cronReadGate = new Promise<void>((resolve) => {
+      releaseCronRead = resolve;
+    });
+    const readCronTasks = vi
+      .spyOn(cronTasks, "readCronTasks")
+      .mockImplementation(async () => {
+        markCronReadStarted?.();
+        await cronReadGate;
+        return [{}] as never;
+      });
+    const startCron = vi
+      .spyOn(modelFacingTools, "startCronSchedulerRunner")
+      .mockResolvedValue(undefined);
+    const resumeJobs = vi
+      .spyOn(modelFacingTools, "resumeInterruptedAgentJobs")
+      .mockResolvedValue(0);
+    const boot = await bootstrapLocalRuntimeSession({
+      apiKey: "test-key",
+      conversationId: "editor_shutdown_during_recovery_read",
+      deferAgentStartupSideEffects: true,
+      env: {
+        ...process.env,
+        AGENC_HOME: home,
+        AGENC_WORKSPACE: workspace,
+        HOME: home,
+      },
+    });
+    const submitDriver = vi.fn(async () => {});
+    boot.session.installTurnDriverHooks({ submit: submitDriver });
+
+    try {
+      const submitting = boot.session.submit("ordinary Agent turn");
+      await cronReadStarted;
+      const closing = boot.shutdown();
+      releaseCronRead?.();
+
+      await expect(submitting).rejects.toThrow("session startup was cancelled");
+      await closing;
+      expect(readCronTasks).toHaveBeenCalledTimes(1);
+      expect(startCron).not.toHaveBeenCalled();
+      expect(resumeJobs).not.toHaveBeenCalled();
+      expect(submitDriver).not.toHaveBeenCalled();
+    } finally {
+      releaseCronRead?.();
+      await boot.shutdown().catch(() => {
         /* best effort */
       });
     }
@@ -315,7 +521,8 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
 
     await expect(
       fetchStartupInternalEvents({
-        sessionBaseUrl: "https://api.example.test/v1/code/sessions/cse_session_123",
+        sessionBaseUrl:
+          "https://api.example.test/v1/code/sessions/cse_session_123",
         headers: { Authorization: "Bearer worker-jwt" },
       }),
     ).resolves.toBeNull();
@@ -332,7 +539,8 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
 
     await expect(
       fetchStartupInternalEvents({
-        sessionBaseUrl: "https://api.example.test/v1/code/sessions/cse_session_123",
+        sessionBaseUrl:
+          "https://api.example.test/v1/code/sessions/cse_session_123",
         headers: { Authorization: "Bearer worker-jwt" },
       }),
     ).resolves.toBeNull();
@@ -357,7 +565,8 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
 
     await expect(
       fetchStartupInternalEvents({
-        sessionBaseUrl: "https://api.example.test/v1/code/sessions/cse_session_123",
+        sessionBaseUrl:
+          "https://api.example.test/v1/code/sessions/cse_session_123",
         headers: { Authorization: "Bearer worker-jwt" },
       }),
     ).resolves.toBeNull();
@@ -401,7 +610,9 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
       shutdown = boot.shutdown;
 
       expect(sessionStorageMocks.setRemoteIngressUrl).toHaveBeenCalledTimes(1);
-      expect(sessionStorageMocks.setInternalEventReader).toHaveBeenCalledTimes(1);
+      expect(sessionStorageMocks.setInternalEventReader).toHaveBeenCalledTimes(
+        1,
+      );
       expect(sessionStorageMocks.setInternalEventWriter).not.toHaveBeenCalled();
     } finally {
       await shutdown?.().catch(() => {

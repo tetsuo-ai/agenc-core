@@ -316,7 +316,9 @@ function makeTopLevelRunner(opts: {
     shutdown,
   })) as unknown as ReturnType<typeof vi.fn> & AgenCBootstrapFunction;
   const runner = new AgenCDelegateBackgroundAgentRunner({
-    ...(opts.authBackend !== undefined ? { authBackend: opts.authBackend } : {}),
+    ...(opts.authBackend !== undefined
+      ? { authBackend: opts.authBackend }
+      : {}),
     bootstrap,
     ensureAgentControl: vi.fn(() => ({
       control,
@@ -453,14 +455,8 @@ describe("AgenC delegate background-agent runner", () => {
 
   it.each([
     ["agent_message_delta", { delta: "hello" }],
-    [
-      "tool_call_started",
-      { callId: "call-1", toolName: "Read", args: "{}" },
-    ],
-    [
-      "tool_call_completed",
-      { callId: "call-1", result: "ok", isError: false },
-    ],
+    ["tool_call_started", { callId: "call-1", toolName: "Read", args: "{}" }],
+    ["tool_call_completed", { callId: "call-1", result: "ok", isError: false }],
     ["turn_started", { turnId: "turn-1", startedAt: 1 }],
     [
       "turn_complete",
@@ -738,7 +734,9 @@ describe("AgenC delegate background-agent runner", () => {
 
     const journalEvents = rolloutItems
       .filter(
-        (item): item is {
+        (
+          item,
+        ): item is {
           readonly type: "event_msg";
           readonly payload: {
             readonly eventId: string;
@@ -868,7 +866,9 @@ describe("AgenC delegate background-agent runner", () => {
 
     const canonical = rolloutItems
       .filter(
-        (item): item is {
+        (
+          item,
+        ): item is {
           readonly payload: {
             readonly seq: number;
             readonly msg: {
@@ -963,7 +963,9 @@ describe("AgenC delegate background-agent runner", () => {
 
     const canonical = rolloutItems
       .filter(
-        (item): item is {
+        (
+          item,
+        ): item is {
           readonly payload: {
             readonly seq: number;
             readonly msg: { readonly type: string };
@@ -1058,7 +1060,9 @@ describe("AgenC delegate background-agent runner", () => {
 
     const canonical = rolloutItems
       .filter(
-        (item): item is {
+        (
+          item,
+        ): item is {
           readonly payload: {
             readonly msg: {
               readonly type: string;
@@ -1389,13 +1393,18 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it("starts agent.create through the managed-thread path and keeps it alive", async () => {
-    const { runner, bootstrap, permissionUpdates, permissionModeRegistry, shutdown } =
-      makeTopLevelRunner({
-        conversationId: "parent-session",
-        argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js"],
-        env: { AGENC_HOME: "/tmp/agenc-home" },
-        now: () => "2026-05-01T12:00:00.500Z",
-      });
+    const {
+      runner,
+      bootstrap,
+      permissionUpdates,
+      permissionModeRegistry,
+      shutdown,
+    } = makeTopLevelRunner({
+      conversationId: "parent-session",
+      argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js"],
+      env: { AGENC_HOME: "/tmp/agenc-home" },
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
 
     await expect(
       runner.startAgent({
@@ -1415,12 +1424,7 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(bootstrap).toHaveBeenCalledWith({
       env: { AGENC_HOME: "/tmp/agenc-home" },
-      argv: [
-        "/usr/bin/node",
-        "/opt/agenc/bin/agenc.js",
-        "--model",
-        "grok-4"
-      ],
+      argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--model", "grok-4"],
       cwd: "/workspace",
       executionAdmissionAutonomous: true,
     });
@@ -1482,7 +1486,9 @@ describe("AgenC delegate background-agent runner", () => {
     await runner.startAgent({ objective: "kernel-owned budget" });
     await Promise.resolve();
 
-    expect(await runner.getAgentSnapshot("kernel-budget-session")).toMatchObject({
+    expect(
+      await runner.getAgentSnapshot("kernel-budget-session"),
+    ).toMatchObject({
       status: "running",
     });
     expect(shutdown).not.toHaveBeenCalled();
@@ -1749,7 +1755,7 @@ describe("AgenC delegate background-agent runner", () => {
 
     const bootstrapOptions = vi.mocked(bootstrap).mock.calls[0]?.[0];
     expect(bootstrapOptions).toMatchObject({
-      argv: ["node", "agenc", ],
+      argv: ["node", "agenc"],
       executionAdmissionAutonomous: true,
     });
     expect(bootstrapOptions?.authBackend).not.toBe(authBackend);
@@ -1777,8 +1783,8 @@ describe("AgenC delegate background-agent runner", () => {
       unattendedAllow: [],
       unattendedDeny: [],
     });
-    const firstRuntimeAuthBackend = vi.mocked(bootstrap).mock.calls[0]?.[0]
-      .authBackend;
+    const firstRuntimeAuthBackend =
+      vi.mocked(bootstrap).mock.calls[0]?.[0].authBackend;
     if (firstRuntimeAuthBackend === undefined) {
       throw new Error("expected first daemon runtime auth backend");
     }
@@ -1798,8 +1804,8 @@ describe("AgenC delegate background-agent runner", () => {
       unattendedAllow: [],
       unattendedDeny: [],
     });
-    const secondRuntimeAuthBackend = vi.mocked(bootstrap).mock.calls[1]?.[0]
-      .authBackend;
+    const secondRuntimeAuthBackend =
+      vi.mocked(bootstrap).mock.calls[1]?.[0].authBackend;
     expect(secondRuntimeAuthBackend?.kind).toBe("remote");
     await expect(
       secondRuntimeAuthBackend?.vendKey("grok", "daemon-session"),
@@ -1860,6 +1866,61 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("[managed-thread] carries validated Editor policy into the atomic first turn", async () => {
+    const { runner, stub, session, bootstrap } = makeTopLevelRunner({
+      conversationId: "session-editor-first-turn",
+    });
+    const initialEditorInteraction = {
+      interactionId: "interaction-first-fix",
+      kind: "fix" as const,
+      policy: "proposal_only" as const,
+      editorInstanceId: "editor-first-turn",
+      bufferHandle: 7,
+      changedtick: 12,
+      contentSha256: "a".repeat(64),
+      path: "/workspace/src/main.ts",
+      range: {
+        start: { line: 2, column: 3 },
+        end: { line: 4, column: 0 },
+      },
+      selectionMode: "character" as const,
+    };
+
+    await runner.startAgent({
+      objective: "internal editor prompt",
+      initialContent: "internal editor prompt",
+      initialDisplayUserMessage: "Fix the selected code",
+      initialEditorInteraction,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    expect(stub.thread.submit).toHaveBeenCalledWith({
+      type: "user_input",
+      input: [{ type: "text", text: "internal editor prompt" }],
+      submitOptions: {
+        displayUserMessage: "Fix the selected code",
+        editorInteraction: initialEditorInteraction,
+      },
+    });
+    expect(bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deferSessionStartHooks: true,
+        deferAgentStartupSideEffects: true,
+      }),
+    );
+    expect(session.emit).toHaveBeenCalledWith({
+      id: "user-initial-session-editor-first-turn",
+      msg: {
+        type: "user_message",
+        payload: {
+          message: "internal editor prompt",
+          displayText: "Fix the selected code",
+        },
+      },
+    });
+  });
+
   it("[managed-thread] empty initialContent provisions a passive agent with no turn-1 submit", async () => {
     // The channel gateway (task 34) relies on this contract: agent.create
     // with `initialContent: []` bootstraps a live, runnable agent WITHOUT
@@ -1879,6 +1940,28 @@ describe("AgenC delegate background-agent runner", () => {
     expect(result.agentId).toBe("session-passive-gateway");
     expect(result.status).toBe("running");
     expect(stub.thread.submit).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] defers a cold Editor session without a model turn or Agent startup side effects", async () => {
+    const { runner, stub, bootstrap } = makeTopLevelRunner({
+      conversationId: "session-cold-editor-prediction",
+    });
+
+    const result = await runner.startAgent({
+      objective: "AgenC Editor workspace",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    expect(result.agentId).toBe("session-cold-editor-prediction");
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+    expect(bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deferSessionStartHooks: true,
+        deferAgentStartupSideEffects: true,
+      }),
+    );
   });
 
   it("[managed-thread] emits visible user message before routing attached input", async () => {
@@ -1974,8 +2057,11 @@ describe("AgenC delegate background-agent runner", () => {
         (event) =>
           typeof event === "object" &&
           event !== null &&
-          (event as { readonly params?: { readonly event?: { type?: string } } })
-            .params?.event?.type === "user_message",
+          (
+            event as {
+              readonly params?: { readonly event?: { type?: string } };
+            }
+          ).params?.event?.type === "user_message",
       ),
     ).toHaveLength(1);
 
@@ -2504,7 +2590,10 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.openThreadSpawnChildren).toHaveBeenCalledWith(
       "session-interrupt-subtree",
     );
-    expect(control.interrupt).toHaveBeenCalledWith("child-agent", "user_cancel");
+    expect(control.interrupt).toHaveBeenCalledWith(
+      "child-agent",
+      "user_cancel",
+    );
   });
 
   it("[managed-thread] stopAgent uses bootstrap lifecycle shutdown", async () => {

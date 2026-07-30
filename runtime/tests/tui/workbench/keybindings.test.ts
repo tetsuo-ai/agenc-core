@@ -10,6 +10,7 @@ import {
 import { descriptorForSurface } from "../../../src/tui/workbench/surfaces/ActiveWorkSurface.js";
 
 const WORKBENCH_CONTEXTS = [
+  "WorkspaceTabs",
   "Workbench",
   "Explorer",
   "Surface",
@@ -20,8 +21,12 @@ const WORKBENCH_CONTEXTS = [
 ] as const satisfies readonly KeybindingContextName[];
 
 const WORKBENCH_ACTIONS = [
+  "workspace:switchAgent",
+  "workspace:switchEditor",
+  "workspace:cycleView",
   "workbench:focusExplorer",
   "workbench:focusSurface",
+  "workbench:focusRail",
   "workbench:focusAgents",
   "workbench:focusComposer",
   "workbench:focusUp",
@@ -95,7 +100,9 @@ describe("workbench keybinding contract", () => {
   it("registers every workbench context and action with the global keybinding schema", () => {
     for (const context of WORKBENCH_CONTEXTS) {
       expect(KEYBINDING_CONTEXT_NAMES).toContain(context);
-      expect(DEFAULT_BINDINGS.some((block) => block.context === context)).toBe(true);
+      expect(DEFAULT_BINDINGS.some((block) => block.context === context)).toBe(
+        true,
+      );
     }
 
     for (const action of WORKBENCH_ACTIONS) {
@@ -104,13 +111,20 @@ describe("workbench keybinding contract", () => {
   });
 
   it("binds root, explorer, surface, and agent controls", () => {
-    const byContext = new Map(DEFAULT_BINDINGS.map((block) => [block.context, block.bindings]));
+    const byContext = new Map(
+      DEFAULT_BINDINGS.map((block) => [block.context, block.bindings]),
+    );
 
     expect(byContext.get("Workbench")).toMatchObject({
       "ctrl+w h": "workbench:focusExplorer",
       "ctrl+w j": "workbench:focusComposer",
       "ctrl+w k": "workbench:focusUp",
       "ctrl+w d": "workbench:openDiff",
+    });
+    expect(byContext.get("WorkspaceTabs")).toMatchObject({
+      "alt+1": "workspace:switchAgent",
+      "alt+2": "workspace:switchEditor",
+      "alt+`": "workspace:cycleView",
     });
     expect(byContext.get("Explorer")).toMatchObject({
       j: "explorer:down",
@@ -134,7 +148,7 @@ describe("workbench keybinding contract", () => {
       "shift+tab": "workbench:focusComposer",
       "ctrl+x h": "workbench:focusExplorer",
       "ctrl+x j": "workbench:focusComposer",
-      "ctrl+x l": "workbench:focusAgents",
+      "ctrl+x l": "workbench:focusRail",
       "ctrl+s": "buffer:save",
       "ctrl+x q": "buffer:close",
       "ctrl+x x": "buffer:closeDiscard",
@@ -150,7 +164,7 @@ describe("workbench keybinding contract", () => {
       "ctrl+g": "buffer:passthrough",
       "alt+h": "workbench:focusExplorer",
       "alt+j": "workbench:focusComposer",
-      "alt+l": "workbench:focusAgents",
+      "alt+l": "workbench:focusRail",
       "alt+r": "workbench:toggleFileRail",
       "alt+q": "buffer:close",
       "alt+e": "buffer:externalEditor",
@@ -168,7 +182,12 @@ describe("workbench keybinding contract", () => {
   });
 
   it("keeps TEST surface footer hints aligned with surface navigation bindings", () => {
-    const surfaceBindings = new Map(Object.entries(DEFAULT_BINDINGS.find((block) => block.context === "Surface")?.bindings ?? {}));
+    const surfaceBindings = new Map(
+      Object.entries(
+        DEFAULT_BINDINGS.find((block) => block.context === "Surface")
+          ?.bindings ?? {},
+      ),
+    );
     const testSurface = descriptorForSurface("test");
 
     expect(surfaceBindings.get("g")).toBe("surface:top");
@@ -179,24 +198,38 @@ describe("workbench keybinding contract", () => {
   });
 
   it("keeps SEARCH surface edit hints represented in descriptor key metadata", () => {
-    const surfaceBindings = new Map(Object.entries(DEFAULT_BINDINGS.find((block) => block.context === "Surface")?.bindings ?? {}));
+    const surfaceBindings = new Map(
+      Object.entries(
+        DEFAULT_BINDINGS.find((block) => block.context === "Surface")
+          ?.bindings ?? {},
+      ),
+    );
     const searchSurface = descriptorForSurface("search");
 
     expect(surfaceBindings.get("enter")).toBe("surface:open");
     expect(surfaceBindings.get("o")).toBe("surface:openKeepFocus");
     expect(searchSurface.footerHints).toContain("enter edit");
     expect(searchSurface.footerHints).toContain("o keep focus");
-    expect(searchSurface.keybindings).toEqual(expect.arrayContaining(["enter", "o"]));
+    expect(searchSurface.keybindings).toEqual(
+      expect.arrayContaining(["enter", "o"]),
+    );
   });
 
   it("keeps SHELL surface edit shortcuts represented in descriptor metadata", () => {
-    const surfaceBindings = new Map(Object.entries(DEFAULT_BINDINGS.find((block) => block.context === "Surface")?.bindings ?? {}));
+    const surfaceBindings = new Map(
+      Object.entries(
+        DEFAULT_BINDINGS.find((block) => block.context === "Surface")
+          ?.bindings ?? {},
+      ),
+    );
     const shellSurface = descriptorForSurface("shell");
 
     expect(surfaceBindings.get("g")).toBe("surface:top");
     expect(surfaceBindings.get("enter")).toBe("surface:open");
     expect(shellSurface.footerHints).toContain("g/enter edit");
-    expect(shellSurface.keybindings).toEqual(expect.arrayContaining(["g", "enter"]));
+    expect(shellSurface.keybindings).toEqual(
+      expect.arrayContaining(["g", "enter"]),
+    );
   });
 
   it("keeps action-bearing surface descriptor shortcuts represented in footer hints", () => {

@@ -39,14 +39,10 @@
  * @module
  */
 
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { resolve } from "node:path";
 
-import type {
-  Tool,
-  ToolExecutionInjectedArgs,
-  ToolResult,
-} from "../types.js";
+import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
@@ -64,6 +60,16 @@ import {
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
+import {
+  prepareWorkspaceMutation,
+  WorkspaceMutationCoordinatorError,
+  workspaceAuthoritativeRead,
+  workspaceMutationAdmissionToolResult,
+} from "../../workspace/mutation-coordinator.js";
+import {
+  executeWorkspaceFileMutation,
+  type WorkspaceFileMutationTestHooks,
+} from "../../workspace/file-mutation-transaction.js";
 
 export const FILE_WRITE_TOOL_NAME = "Write";
 
@@ -131,7 +137,7 @@ function shouldBypassSessionGuard(args: Record<string, unknown>): boolean {
   return args[TEST_BYPASS_SESSION_GUARD_ARG] === true;
 }
 
-export interface FileWriteToolConfig {
+export interface FileWriteToolConfig extends WorkspaceFileMutationTestHooks {
   /**
    * Allowed path prefixes — all writes must canonicalize inside one
    * of these. When omitted, falls back to `process.cwd()` so the tool
@@ -140,6 +146,14 @@ export interface FileWriteToolConfig {
   readonly allowedPaths?: readonly string[];
   /** Optional cap on the number of bytes the tool will write. */
   readonly maxWriteBytes?: number;
+  /**
+   * Fault-injection seam for the final check-to-open boundary. Production
+   * callers never set this.
+   */
+  readonly __testAfterPreWriteCheck?: (input: {
+    readonly path: string;
+    readonly targetExisted: boolean;
+  }) => Promise<void>;
 }
 
 interface FileWriteToolInput extends ToolExecutionInjectedArgs {
@@ -197,9 +211,7 @@ function buildSnapshot(
   };
 }
 
-export function createFileWriteTool(
-  config: FileWriteToolConfig = {},
-): Tool {
+export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
   const allowedPaths = config.allowedPaths ?? [process.cwd()];
   const maxWriteBytes = config.maxWriteBytes ?? DEFAULT_MAX_WRITE_BYTES;
 
@@ -242,7 +254,8 @@ export function createFileWriteTool(
           message: "file_path must be a non-empty string",
         };
       }
-      const cwd = asNonEmptyString(args.cwd) ?? allowedPaths[0] ?? process.cwd();
+      const cwd =
+        asNonEmptyString(args.cwd) ?? allowedPaths[0] ?? process.cwd();
       if (isAgentNamespacePath(filePath)) {
         return denyAgentNamespacePath(filePath, cwd);
       }
@@ -301,18 +314,21 @@ export function createFileWriteTool(
         (args[SESSION_ID_ARG] as string).trim().length > 0
           ? (args[SESSION_ID_ARG] as string)
           : undefined;
+      const editorRead = workspaceAuthoritativeRead(absolutePath);
 
       // Stat the target. ENOENT means we are creating a brand-new
       // file; any other failure is surfaced as a write error.
       let existed = false;
       let existingStat: { mtimeMs: number } | null = null;
       let existingContentForUi = "";
+      if (editorRead !== null) {
+        existed = true;
+        existingContentForUi = normalizeNewlines(editorRead.content);
+      }
       try {
         const result = await stat(absolutePath);
         if (result.isDirectory()) {
-          return errorResult(
-            `file_path resolves to a directory: ${filePath}`,
-          );
+          return errorResult(`file_path resolves to a directory: ${filePath}`);
         }
         existed = true;
         existingStat = { mtimeMs: result.mtimeMs };
@@ -320,7 +336,9 @@ export function createFileWriteTool(
         const code = (err as NodeJS.ErrnoException)?.code;
         if (code !== "ENOENT") {
           return errorResult(
-            code ? `${code}: stat failed for ${filePath}` : `stat failed for ${filePath}`,
+            code
+              ? `${code}: stat failed for ${filePath}`
+              : `stat failed for ${filePath}`,
           );
         }
       }
@@ -355,8 +373,12 @@ export function createFileWriteTool(
         if (isFullSnapshot) {
           let onDisk: string;
           try {
-            const buffer = await readFile(absolutePath);
-            onDisk = normalizeNewlines(buffer.toString("utf-8"));
+            onDisk =
+              editorRead !== null
+                ? normalizeNewlines(editorRead.content)
+                : normalizeNewlines(
+                    (await readFile(absolutePath)).toString("utf-8"),
+                  );
             existingContentForUi = onDisk;
           } catch (err) {
             const code = (err as NodeJS.ErrnoException)?.code;
@@ -384,8 +406,12 @@ export function createFileWriteTool(
           }
           // Populate the UI snapshot from disk best-effort.
           try {
-            const buffer = await readFile(absolutePath);
-            existingContentForUi = normalizeNewlines(buffer.toString("utf-8"));
+            existingContentForUi =
+              editorRead !== null
+                ? normalizeNewlines(editorRead.content)
+                : normalizeNewlines(
+                    (await readFile(absolutePath)).toString("utf-8"),
+                  );
           } catch {
             existingContentForUi = "";
           }
@@ -417,28 +443,56 @@ export function createFileWriteTool(
         );
       }
 
-      // Auto-create parent directories. Equivalent to the AgenC
-      // `mkdir -p` step at FileWriteTool.ts:254 — done before the
-      // write so a missing-directory ENOENT surfaces here cleanly.
       try {
-        await mkdir(dirname(absolutePath), { recursive: true });
+        const toolCallId =
+          typeof rawArgs.__callId === "string" ? rawArgs.__callId : undefined;
+        const admission = await prepareWorkspaceMutation({
+          path: absolutePath,
+          source: "file_write",
+          beforeText: existed ? existingContentForUi : "",
+          afterText: content,
+          ...(sessionId !== undefined ? { sessionId } : {}),
+          ...(toolCallId !== undefined ? { toolCallId } : {}),
+        });
+        const rejection = workspaceMutationAdmissionToolResult(admission);
+        if (rejection !== null) return rejection;
+        await executeWorkspaceFileMutation({
+          admission,
+          path: absolutePath,
+          afterText: content,
+          write: async (
+            assertCurrentPathState,
+            targetExisted,
+            boundMutation,
+          ) => {
+            // Revalidate immediately before the deterministic race seam. The
+            // actual effect then runs through a target descriptor (overwrite)
+            // or a pre-bound directory helper (create), so exchanging an
+            // ancestor after this check cannot redirect bytes outside the
+            // admitted workspace path.
+            await assertCurrentPathState();
+            await config.__testAfterPreWriteCheck?.({
+              path: absolutePath,
+              targetExisted,
+            });
+            await boundMutation.writeContent(data);
+          },
+          writeUsesBoundMutation: true,
+          metadata: {
+            ...(sessionId !== undefined ? { sessionId } : {}),
+            ...(toolCallId !== undefined ? { toolCallId } : {}),
+          },
+          testHooks: config,
+        });
       } catch (err) {
-        const code = (err as NodeJS.ErrnoException)?.code;
-        return errorResult(
-          code
-            ? `${code}: failed to create parent directory for ${filePath}`
-            : `failed to create parent directory for ${filePath}`,
-        );
-      }
-
-      try {
-        await writeFile(absolutePath, data);
-      } catch (err) {
+        if (err instanceof WorkspaceMutationCoordinatorError) {
+          return errorResult(err.message);
+        }
         const code = (err as NodeJS.ErrnoException)?.code;
         return errorResult(
           code
             ? `${code}: failed to write ${filePath}`
-          : `failed to write ${filePath}`,
+            : `failed to write ${filePath}`,
         );
       }
 

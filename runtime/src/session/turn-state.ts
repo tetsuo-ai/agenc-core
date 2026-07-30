@@ -26,10 +26,7 @@ import {
   provisionContentReplacementState,
   type ContentReplacementState,
 } from "./_deps/tool-result-storage.js";
-import type {
-  ProgressTrip,
-  StepRecord,
-} from "./behavioral-backstop.js";
+import type { ProgressTrip, StepRecord } from "./behavioral-backstop.js";
 
 /**
  * Continue — the 8 recovery re-entry reasons captured at each
@@ -397,6 +394,13 @@ export interface TurnState {
    *  resetIterationFields. */
   lastResponseUsage: LLMUsage | undefined;
 
+  /** Request-scoped Editor tools admitted before executor dispatch. */
+  editorToolCallsAdmitted: number;
+  /** IDs denied by the fixed Editor tool-call quota in this iteration. */
+  editorToolCallLimitDeniedIds: Set<string>;
+  /** Turn-scoped latch forcing a structured limit terminal after pairing. */
+  editorToolCallLimitExceeded: boolean;
+
   // ── Phase 6 — commit (AgenC query.ts:1192-1465) ──────────────
   /** Number of model turns consumed this session. Compared against
    *  `ctx.configSnapshot.maxTurns` for I-7 terminal abort.
@@ -505,6 +509,9 @@ export function buildInitialTurnState(
     preventContinuation: false,
     pendingBudgetDecision: undefined,
     lastResponseUsage: undefined,
+    editorToolCallsAdmitted: 0,
+    editorToolCallLimitDeniedIds: new Set(),
+    editorToolCallLimitExceeded: false,
     // Phase 6
     turnCount: 1,
     // Recovery transition
@@ -544,6 +551,7 @@ export interface TurnCheckpointSlice {
   readonly continuationNudgeCount: number;
   readonly stopHookBlockingCount: number;
   readonly planToolRequiredRetryCount?: number;
+  readonly editorToolCallsAdmitted?: number;
   readonly pendingAdmissionFallback?: PendingAdmissionFallback;
   readonly taskBudgetRemaining?: number;
   readonly autoCompactTracking?: AutoCompactTrackingState;
@@ -565,6 +573,7 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     continuationNudgeCount: number;
     stopHookBlockingCount: number;
     planToolRequiredRetryCount?: number;
+    editorToolCallsAdmitted?: number;
     pendingAdmissionFallback?: PendingAdmissionFallback;
     taskBudgetRemaining?: number;
     autoCompactTracking?: AutoCompactTrackingState;
@@ -580,6 +589,9 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     stopHookBlockingCount: state.stopHookBlockingCount,
     planToolRequiredRetryCount: state.planToolRequiredRetryCount,
   };
+  if (state.editorToolCallsAdmitted > 0) {
+    slice.editorToolCallsAdmitted = state.editorToolCallsAdmitted;
+  }
   if (state.pendingAdmissionFallback !== undefined) {
     slice.pendingAdmissionFallback = { ...state.pendingAdmissionFallback };
   }
@@ -648,6 +660,13 @@ export function restoreFromCheckpoint(
     Number.isFinite(slice.planToolRequiredRetryCount)
   ) {
     state.planToolRequiredRetryCount = slice.planToolRequiredRetryCount;
+  }
+  if (
+    slice.editorToolCallsAdmitted !== undefined &&
+    Number.isFinite(slice.editorToolCallsAdmitted) &&
+    slice.editorToolCallsAdmitted >= 0
+  ) {
+    state.editorToolCallsAdmitted = slice.editorToolCallsAdmitted;
   }
   if (
     slice.pendingAdmissionFallback !== undefined &&
@@ -723,6 +742,7 @@ export function resetIterationFields(state: TurnState): void {
   state.snipTokensFreed = 0;
   state.pendingBudgetDecision = undefined;
   state.lastResponseUsage = undefined;
+  state.editorToolCallLimitDeniedIds.clear();
   // pendingToolUseSummary + streamingToolExecutor intentionally NOT
   // cleared here — they are awaited in executeTools and cleared by
   // commit phase after their resolution.

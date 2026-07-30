@@ -18,13 +18,13 @@ vi.mock("../../../src/utils/task/framework.js", () => ({
 
 // Spy on logError while keeping the rest of the logging module intact.
 vi.mock("../../../src/utils/log.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../src/utils/log.js")>();
+  const actual =
+    await importOriginal<typeof import("../../../src/utils/log.js")>();
   return { ...actual, logError: vi.fn() };
 });
 
-const { backgroundExistingForegroundTask } = await import(
-  "../../../src/tasks/LocalShellTask/LocalShellTask.js"
-);
+const { backgroundExistingForegroundTask } =
+  await import("../../../src/tasks/LocalShellTask/LocalShellTask.js");
 const { logError } = await import("../../../src/utils/log.js");
 
 function fakeShellCommand(code = 0): ShellCommand {
@@ -38,9 +38,25 @@ function fakeShellCommand(code = 0): ShellCommand {
 
 describe("LocalShellTask background completion handler", () => {
   it("routes a throwing completion callback into logError, not an unhandled rejection", async () => {
-    let state: { tasks: Record<string, unknown> } = { tasks: {} };
+    let state: { tasks: Record<string, unknown> } = {
+      tasks: {
+        "task-1": {
+          id: "task-1",
+          type: "local_bash",
+          status: "running",
+          isBackgrounded: false,
+          queueOwner: {
+            kind: "session",
+            conversationId: "session-a",
+          },
+        },
+      },
+    };
     const setAppState = (fn: unknown) => {
-      state = typeof fn === "function" ? (fn as (p: typeof state) => typeof state)(state) : (fn as typeof state);
+      state =
+        typeof fn === "function"
+          ? (fn as (p: typeof state) => typeof state)(state)
+          : (fn as typeof state);
     };
 
     const ok = backgroundExistingForegroundTask(

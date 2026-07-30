@@ -9,16 +9,19 @@
  * @module
  */
 
-import { execFile, spawn } from "node:child_process";
+import {
+  execFile,
+  spawn,
+  type ChildProcessByStdio,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import { statSync, writeFileSync, unlinkSync } from "node:fs";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
+import type { Readable } from "node:stream";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
-import type {
-  BashToolConfig,
-  BashToolInput,
-} from "./types.js";
+import type { BashToolConfig, BashToolInput } from "./types.js";
 import {
   SHELL_COMMAND_SEPARATORS,
   SHELL_REDIRECT_OPERATORS,
@@ -42,6 +45,12 @@ import {
   type AgenCCodeHint,
 } from "../../errors/hints.js";
 import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
+import { hasCurrentWorkspaceOperationLifetime } from "../../workspace/tool-operation-lifetime.js";
+import {
+  signalProcessTree,
+  spawnContainedProcess,
+  terminateProcessTreeAndWait,
+} from "../../utils/supervisedProcess.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -124,7 +133,7 @@ function validateCommandShape(command: string): string | undefined {
   if (!SINGLE_EXECUTABLE_RE.test(command)) {
     return (
       `Invalid command "${command}". Use a direct executable path/name ` +
-      'matching `[A-Za-z0-9_./+-]+` and pass flags via `args`.'
+      "matching `[A-Za-z0-9_./+-]+` and pass flags via `args`."
     );
   }
   return undefined;
@@ -172,10 +181,11 @@ function normalizeDirectInvocation(params: {
 }
 
 function argsRequireShellSemantics(args: readonly string[]): boolean {
-  return args.some((arg) =>
-    SHELL_COMMAND_SEPARATORS.has(arg) ||
-    SHELL_REDIRECT_OPERATORS.has(arg) ||
-    SHELL_OPERATOR_RE.test(arg)
+  return args.some(
+    (arg) =>
+      SHELL_COMMAND_SEPARATORS.has(arg) ||
+      SHELL_REDIRECT_OPERATORS.has(arg) ||
+      SHELL_OPERATOR_RE.test(arg),
   );
 }
 
@@ -299,6 +309,7 @@ function runSpawnedCommand(params: {
   readonly metadataCommand: string;
   readonly metadataArgs: readonly string[];
   readonly shellMode: boolean;
+  readonly containDescendants?: boolean;
   readonly cleanupPath?: string;
   readonly signal?: AbortSignal;
   readonly onProgress?: ToolExecutionInjectedArgs["__onProgress"];
@@ -341,12 +352,45 @@ function runSpawnedCommand(params: {
       }
     };
 
-    const child = spawn(params.execCommand, [...params.execArgs], {
-      cwd: params.cwd,
-      env: params.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: true,
-    });
+    let child:
+      | ChildProcessWithoutNullStreams
+      | ChildProcessByStdio<null, Readable, Readable>;
+    try {
+      if (params.containDescendants === true) {
+        child = spawnContainedProcess(params.execCommand, params.execArgs, {
+          cwd: params.cwd,
+          env: params.env,
+        });
+        child.stdin.end();
+      } else {
+        child = spawn(params.execCommand, [...params.execArgs], {
+          cwd: params.cwd,
+          env: params.env,
+          stdio: ["ignore", "pipe", "pipe"],
+          detached: true,
+        });
+      }
+    } catch (error) {
+      cleanup("error");
+      const message = error instanceof Error ? error.message : String(error);
+      resolve({
+        content: message,
+        isError: true,
+        metadata: {
+          command: params.metadataCommand,
+          args: params.metadataArgs,
+          cwd: params.cwd,
+          shellMode: params.shellMode,
+          exitCode: null,
+          stdout: "",
+          stderr: message,
+          timedOut: false,
+          durationMs: Date.now() - params.startTime,
+          truncated: false,
+        },
+      });
+      return;
+    }
 
     child.unref();
 
@@ -374,33 +418,20 @@ function runSpawnedCommand(params: {
       });
     });
 
-    let timer: NodeJS.Timeout | null = null;
-    if (params.timeout !== undefined) {
-      timer = setTimeout(() => {
-        timedOut = true;
+    const terminateChild = (signalName: "SIGTERM" | "SIGKILL") => {
+      if (params.containDescendants === true) {
         try {
-          process.kill(-child.pid!, "SIGTERM");
+          signalProcessTree(child, signalName);
         } catch (error) {
           params.logger.debug(
-            "Bash tool process-group SIGTERM failed; falling back to child.kill",
+            `Bash tool contained process-tree ${signalName} failed`,
             {
               error: error instanceof Error ? error.message : String(error),
             },
           );
-          child.kill("SIGTERM");
         }
-        forceKillTimer = setTimeout(() => {
-          try {
-            process.kill(-child.pid!, "SIGKILL");
-          } catch {
-            child.kill("SIGKILL");
-          }
-        }, 500);
-        cleanup("timeout");
-      }, params.timeout);
-    }
-
-    const terminateChild = (signalName: "SIGTERM" | "SIGKILL") => {
+        return;
+      }
       try {
         process.kill(-child.pid!, signalName);
       } catch (error) {
@@ -413,6 +444,18 @@ function runSpawnedCommand(params: {
         child.kill(signalName);
       }
     };
+
+    let timer: NodeJS.Timeout | null = null;
+    if (params.timeout !== undefined) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        terminateChild("SIGTERM");
+        forceKillTimer = setTimeout(() => {
+          terminateChild("SIGKILL");
+        }, 500);
+        cleanup("timeout");
+      }, params.timeout);
+    }
 
     if (params.signal) {
       if (params.signal.aborted) {
@@ -469,7 +512,9 @@ function runSpawnedCommand(params: {
           `Bash tool timed out after ${durationMs}ms: ${params.logCmd}`,
         );
       } else if (aborted) {
-        params.logger.debug(`Bash tool aborted after ${durationMs}ms: ${params.logCmd}`);
+        params.logger.debug(
+          `Bash tool aborted after ${durationMs}ms: ${params.logCmd}`,
+        );
       } else if (isError) {
         params.logger.debug(
           `Bash tool error (exit ${exitCode}): ${params.logCmd}`,
@@ -508,35 +553,37 @@ function runSpawnedCommand(params: {
       });
     };
 
+    let settlementStarted = false;
+    const settleAfterExit = (code: number | null, spawnError?: Error): void => {
+      if (settlementStarted) return;
+      settlementStarted = true;
+      if (spawnError !== undefined) {
+        stderrChunks.push(Buffer.from(spawnError.message, "utf8"));
+      }
+      if (params.containDescendants !== true) {
+        setTimeout(() => doResolve(code), 50);
+        return;
+      }
+      void terminateProcessTreeAndWait(child, {
+        label: `Bash command ${params.metadataCommand}`,
+      }).then(
+        () => doResolve(code),
+        (error) => {
+          const message = `AgenC could not verify descendant process cleanup: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+          stderrChunks.push(Buffer.from(message, "utf8"));
+          doResolve(code === 0 ? 1 : code);
+        },
+      );
+    };
+
     child.on("exit", (code) => {
-      setTimeout(() => doResolve(code), 50);
+      settleAfterExit(code);
     });
 
-    child.on("error", (err) => {
-      if (resolved) return;
-      resolved = true;
-      if (timer !== null) clearTimeout(timer);
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-      }
-      cleanup("error");
-      const durationMs = Date.now() - params.startTime;
-      resolve({
-        content: err.message,
-        isError: true,
-        metadata: {
-          command: params.metadataCommand,
-          args: params.metadataArgs,
-          cwd: params.cwd,
-          shellMode: params.shellMode,
-          exitCode: null,
-          stdout: "",
-          stderr: err.message,
-          timedOut: false,
-          durationMs,
-          truncated: false,
-        },
-      });
+    child.on("error", (error) => {
+      settleAfterExit(1, error);
     });
   });
 }
@@ -680,10 +727,7 @@ function shouldSkipExecutableCandidate(token: string): boolean {
   return ENV_ASSIGNMENT_RE.test(token) || token === "$";
 }
 
-function consumeShellExecutable(
-  token: string,
-  executables: string[],
-): boolean {
+function consumeShellExecutable(token: string, executables: string[]): boolean {
   executables.push(token);
   return !SHELL_PREFIX_COMMANDS.has(token.toLowerCase());
 }
@@ -692,9 +736,10 @@ function consumeShellExecutable(
  * Extract executable candidates from a shell command string.
  * We validate every detected executable against deny/allow policy.
  */
-function extractShellExecutables(
-  command: string,
-): { executables: string[]; dynamicExecutableReason: string | null } {
+function extractShellExecutables(command: string): {
+  executables: string[];
+  dynamicExecutableReason: string | null;
+} {
   const tokens = tokenizeShellCommand(command);
   const executables: string[] = [];
   let expectCommand = true;
@@ -804,10 +849,12 @@ export function isCommandAllowed(
   return { allowed: true };
 }
 
-function bashRuleCandidate(input: Record<string, unknown>): {
-  readonly command: string;
-  readonly firstWord: string | null;
-} | undefined {
+function bashRuleCandidate(input: Record<string, unknown>):
+  | {
+      readonly command: string;
+      readonly firstWord: string | null;
+    }
+  | undefined {
   if (typeof input.command !== "string" || input.command.trim().length === 0) {
     return undefined;
   }
@@ -935,13 +982,18 @@ export function createBashTool(config?: BashToolConfig): Tool {
     },
 
     checkPermissions(input, context) {
-      return bashContentRulePermission(input as Record<string, unknown>, context);
+      return bashContentRulePermission(
+        input as Record<string, unknown>,
+        context,
+      );
     },
 
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
-      const input = rawArgs as unknown as BashToolInput & ToolExecutionInjectedArgs;
+      const input = rawArgs as unknown as BashToolInput &
+        ToolExecutionInjectedArgs;
       const abortSignal = input.__abortSignal;
       const onProgress = input.__onProgress;
+      const containDescendants = hasCurrentWorkspaceOperationLifetime();
 
       // Validate command
       if (
@@ -954,9 +1006,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
         return errorResult("args must be an array of strings");
       }
 
-      const directArgs = Array.isArray(input.args)
-        ? input.args
-        : undefined;
+      const directArgs = Array.isArray(input.args) ? input.args : undefined;
       const normalizedDirectInvocation = normalizeDirectInvocation({
         command: input.command.trim(),
         args: directArgs,
@@ -1000,12 +1050,12 @@ export function createBashTool(config?: BashToolConfig): Tool {
 
         // Enforce deny/allow policy for each executable discovered in shell mode.
         if (!unrestricted) {
-          const {
-            executables: shellExecutables,
-            dynamicExecutableReason,
-          } = extractShellExecutables(shellCommand);
+          const { executables: shellExecutables, dynamicExecutableReason } =
+            extractShellExecutables(shellCommand);
           if (dynamicExecutableReason) {
-            logger.warn(`Bash tool shell-mode denied: ${dynamicExecutableReason}`);
+            logger.warn(
+              `Bash tool shell-mode denied: ${dynamicExecutableReason}`,
+            );
             return errorResult(dynamicExecutableReason);
           }
           for (const shellExecutable of shellExecutables) {
@@ -1080,7 +1130,10 @@ export function createBashTool(config?: BashToolConfig): Tool {
           }
         }
 
-        const shellWrapperScript = extractShellWrapperInlineScript(command, args);
+        const shellWrapperScript = extractShellWrapperInlineScript(
+          command,
+          args,
+        );
         if (shellWrapperScript) {
           const shellCheck = validateShellCommand(shellWrapperScript);
           if (!shellCheck.allowed) {
@@ -1149,14 +1202,21 @@ export function createBashTool(config?: BashToolConfig): Tool {
       logger.debug(`Bash tool executing: ${logCmd}`);
       const startTime = Date.now();
       const useSpawnedWrapperMode =
-        !useShellMode && SHELL_WRAPPER_COMMANDS.has(basename(command).toLowerCase());
+        !useShellMode &&
+        SHELL_WRAPPER_COMMANDS.has(basename(command).toLowerCase());
 
       /** TOOL-03: wrap final spawn program/args when platform isolation is required. */
       const withSandbox = (
         program: string,
         args: readonly string[],
       ):
-        | { readonly ok: true; readonly program: string; readonly args: readonly string[]; readonly cwd: string; readonly env: Record<string, string> }
+        | {
+            readonly ok: true;
+            readonly program: string;
+            readonly args: readonly string[];
+            readonly cwd: string;
+            readonly env: Record<string, string>;
+          }
         | { readonly ok: false; readonly error: ToolResult } => {
         try {
           const sandboxed = applyRuntimeSandboxToSpawn({
@@ -1279,6 +1339,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           metadataCommand: command,
           metadataArgs: execArgs,
           shellMode: true,
+          containDescendants,
           cleanupPath: scriptPath,
           ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
           ...(onProgress !== undefined ? { onProgress } : {}),
@@ -1301,16 +1362,42 @@ export function createBashTool(config?: BashToolConfig): Tool {
           metadataCommand: command,
           metadataArgs: execArgs,
           shellMode: false,
+          containDescendants,
           ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
           ...(onProgress !== undefined ? { onProgress } : {}),
         }).then(emitEnd);
       }
 
-      // Direct mode: use execFile (waits for pipes — safe since no backgrounding)
       const sandboxedDirect = withSandbox(execCommand, execArgs);
       if (!sandboxedDirect.ok) {
         return Promise.resolve(emitEnd(sandboxedDirect.error));
       }
+      // A direct executable can still fork a detached writer. While a
+      // workspace-operation fence is active, keep it inside the same
+      // supervised boundary as shell/wrapper mode and verify the entire tree
+      // is gone before the fence may settle.
+      if (containDescendants) {
+        return runSpawnedCommand({
+          execCommand: sandboxedDirect.program,
+          execArgs: [...sandboxedDirect.args],
+          cwd: sandboxedDirect.cwd,
+          env: sandboxedDirect.env,
+          timeout,
+          maxOutputBytes,
+          logCmd,
+          logger,
+          startTime,
+          metadataCommand: command,
+          metadataArgs: execArgs,
+          shellMode: false,
+          containDescendants: true,
+          ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
+          ...(onProgress !== undefined ? { onProgress } : {}),
+        }).then(emitEnd);
+      }
+
+      // Outside a workspace fence direct mode keeps the long-standing
+      // execFile behavior.
       return new Promise<ToolResult>((outerResolve) => {
         const resolve = (result: ToolResult): void => {
           outerResolve(emitEnd(result));
@@ -1348,9 +1435,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
               const displayOutput = buildDisplayOutput({
                 stdout: stdoutText,
                 stderr:
-                  stderrText.trim().length > 0
-                    ? stderrText
-                    : fallbackErrorText,
+                  stderrText.trim().length > 0 ? stderrText : fallbackErrorText,
                 command: execObservedCommand,
                 maxOutputBytes,
               });
@@ -1360,9 +1445,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
                   `Bash tool timed out after ${durationMs}ms: ${logCmd}`,
                 );
               } else {
-                logger.debug(
-                  `Bash tool error (exit ${exitCode}): ${logCmd}`,
-                );
+                logger.debug(`Bash tool error (exit ${exitCode}): ${logCmd}`);
               }
 
               resolve({

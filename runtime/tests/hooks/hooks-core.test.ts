@@ -62,6 +62,10 @@ import {
   setCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+import {
+  getCommandQueue,
+  resetCommandQueue,
+} from "../../src/utils/messageQueueManager.js";
 
 const tempDirs: string[] = [];
 const sessionId = "00000000-0000-4000-8000-000000000901";
@@ -79,7 +83,10 @@ function restoreOptionalEnv(name: string, value: string | undefined): void {
   }
 }
 
-async function configureHookSession(): Promise<{ configDir: string; cwd: string }> {
+async function configureHookSession(): Promise<{
+  configDir: string;
+  cwd: string;
+}> {
   const configDir = await mkdtemp(join(tmpdir(), "agenc-hooks-core-"));
   tempDirs.push(configDir);
   process.env.AGENC_CONFIG_DIR = configDir;
@@ -87,6 +94,7 @@ async function configureHookSession(): Promise<{ configDir: string; cwd: string 
   resetStateForTests();
   clearCurrentRuntimeSession();
   setCurrentRuntimeSession({
+    conversationId: sessionId,
     services: {
       sandboxExecutionBroker: explicitDangerBroker,
       admissionRequired: false,
@@ -101,7 +109,9 @@ async function configureHookSession(): Promise<{ configDir: string; cwd: string 
   return { configDir, cwd };
 }
 
-async function collectAsyncGenerator<T>(generator: AsyncGenerator<T>): Promise<T[]> {
+async function collectAsyncGenerator<T>(
+  generator: AsyncGenerator<T>,
+): Promise<T[]> {
   const results: T[] = [];
   for await (const result of generator) {
     results.push(result);
@@ -131,13 +141,66 @@ function acceptInteractiveWorkspaceTrust(): void {
 }
 
 afterEach(async () => {
+  resetCommandQueue();
   clearCurrentRuntimeSession();
   resetStateForTests();
   restoreOptionalEnv("AGENC_CONFIG_DIR", originalConfigDir);
   restoreOptionalEnv("AGENC_HOME", originalAgenCHome);
-  restoreOptionalEnv("AGENC_SESSIONEND_HOOKS_TIMEOUT_MS", originalSessionEndTimeout);
-  restoreOptionalEnv("AGENC_ALLOW_UNTRUSTED_HOOKS", originalAllowUntrustedHooks);
-  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  restoreOptionalEnv(
+    "AGENC_SESSIONEND_HOOKS_TIMEOUT_MS",
+    originalSessionEndTimeout,
+  );
+  restoreOptionalEnv(
+    "AGENC_ALLOW_UNTRUSTED_HOOKS",
+    originalAllowUntrustedHooks,
+  );
+  await Promise.all(
+    tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
+
+test("async rewake completion retains the session that launched the hook", async () => {
+  await configureHookSession();
+  acceptInteractiveWorkspaceTrust();
+  const appState = { sessionHooks: new Map<string, unknown>() };
+  registerHookCallbacks({
+    Stop: [
+      {
+        matcher: "*",
+        hooks: [
+          {
+            type: "command",
+            command: nodeCommand(
+              "setTimeout(() => { process.stderr.write('origin blocked'); process.exit(2); }, 150)",
+            ),
+            asyncRewake: true,
+          },
+        ],
+      },
+    ],
+  } as never);
+
+  await collectAsyncGenerator(
+    executeStopHooks(
+      "default",
+      undefined,
+      hookCommandTimeoutMs,
+      false,
+      undefined,
+      toolUseContext(appState),
+      [],
+    ),
+  );
+
+  switchSession("00000000-0000-4000-8000-000000000902" as never, null);
+
+  await vi.waitFor(() => {
+    expect(getCommandQueue()).toHaveLength(1);
+  });
+  expect(getCommandQueue()[0]?.queueOwner).toEqual({
+    kind: "session",
+    conversationId: sessionId,
+  });
 });
 
 test("parses session end hook timeout from the environment", () => {
@@ -167,10 +230,14 @@ test("creates base hook input from session, cwd, permission, and agent state", a
   expect(base.transcript_path).toContain(configDir);
   expect(base.transcript_path.endsWith(`${sessionId}.jsonl`)).toBe(true);
 
-  const other = createBaseHookInput(undefined, "00000000-0000-4000-8000-000000000902", {
-    agentId: "agent-1",
-    agentType: "worker",
-  });
+  const other = createBaseHookInput(
+    undefined,
+    "00000000-0000-4000-8000-000000000902",
+    {
+      agentId: "agent-1",
+      agentType: "worker",
+    },
+  );
   expect(other).toMatchObject({
     session_id: "00000000-0000-4000-8000-000000000902",
     agent_id: "agent-1",
@@ -191,11 +258,16 @@ test("matches hook patterns for wildcards, exact names, lists, regex, and reject
 });
 
 test("formats blocking hook messages and detects blocked outside-repl results", () => {
-  const blockingError = { blockingError: "revise the output", command: "hook.sh" };
+  const blockingError = {
+    blockingError: "revise the output",
+    command: "hook.sh",
+  };
   expect(getPreToolHookBlockingMessage("PreToolUse", blockingError)).toBe(
     "PreToolUse hook error: revise the output",
   );
-  expect(getStopHookMessage(blockingError)).toBe("Stop hook feedback:\nrevise the output");
+  expect(getStopHookMessage(blockingError)).toBe(
+    "Stop hook feedback:\nrevise the output",
+  );
   expect(getTeammateIdleHookMessage(blockingError)).toBe(
     "TeammateIdle hook feedback:\nrevise the output",
   );
@@ -215,7 +287,11 @@ test("formats blocking hook messages and detects blocked outside-repl results", 
       { command: "b", succeeded: false, output: "blocked", blocked: true },
     ]),
   ).toBe(true);
-  expect(hasBlockingResult([{ command: "a", succeeded: true, output: "", blocked: false }])).toBe(false);
+  expect(
+    hasBlockingResult([
+      { command: "a", succeeded: true, output: "", blocked: false },
+    ]),
+  ).toBe(false);
 });
 
 test("matches registered hooks with filtering, deduplication, and plugin source context", async () => {
@@ -248,18 +324,13 @@ test("matches registered hooks with filtering, deduplication, and plugin source 
     ],
   } as never);
 
-  const matched = await getMatchingHooks(
-    undefined,
-    sessionId,
-    "PreToolUse",
-    {
-      ...createBaseHookInput(),
-      hook_event_name: "PreToolUse",
-      tool_name: "Bash",
-      tool_input: { command: "git status" },
-      tool_id: "tool-1",
-    } as never,
-  );
+  const matched = await getMatchingHooks(undefined, sessionId, "PreToolUse", {
+    ...createBaseHookInput(),
+    hook_event_name: "PreToolUse",
+    tool_name: "Bash",
+    tool_input: { command: "git status" },
+    tool_id: "tool-1",
+  } as never);
 
   expect(matched).toHaveLength(7);
   expect(matched.map((match) => match.hook.type).sort()).toEqual([
@@ -271,11 +342,14 @@ test("matches registered hooks with filtering, deduplication, and plugin source 
     "http",
     "prompt",
   ]);
-  expect(matched.some((match) => match.hookSource === "plugin:Plugin A")).toBe(true);
+  expect(matched.some((match) => match.hookSource === "plugin:Plugin A")).toBe(
+    true,
+  );
   expect(matched.some((match) => match.pluginId === "plugin-a")).toBe(true);
   expect(
     matched.filter(
-      (match) => match.hook.type === "command" && match.hook.command === "echo one",
+      (match) =>
+        match.hook.type === "command" && match.hook.command === "echo one",
     ),
   ).toHaveLength(3);
   expect(
@@ -307,16 +381,11 @@ test("filters HTTP hooks from startup events during matching", async () => {
     ],
   } as never);
 
-  const matched = await getMatchingHooks(
-    undefined,
-    sessionId,
-    "SessionStart",
-    {
-      ...createBaseHookInput(),
-      hook_event_name: "SessionStart",
-      source: "startup",
-    } as never,
-  );
+  const matched = await getMatchingHooks(undefined, sessionId, "SessionStart", {
+    ...createBaseHookInput(),
+    hook_event_name: "SessionStart",
+    source: "startup",
+  } as never);
   expect(matched).toEqual([
     expect.objectContaining({
       hook: { type: "command", command: "echo startup" },
@@ -358,7 +427,9 @@ test("executes registered callback hooks through the pre-tool generator", async 
     ),
   );
 
-  expect(results.some((result) => result.message?.type === "progress")).toBe(true);
+  expect(results.some((result) => result.message?.type === "progress")).toBe(
+    true,
+  );
   expect(
     results.some(
       (result) =>
@@ -420,20 +491,26 @@ test("executes command hooks through the pre-tool generator", async () => {
   );
 
   expect(
-    results.some((result) => JSON.stringify(result.message).includes("plain hook ok")),
+    results.some((result) =>
+      JSON.stringify(result.message).includes("plain hook ok"),
+    ),
   ).toBe(true);
   expect(
-    results.some((result) => JSON.stringify(result.message).includes("command system message")),
+    results.some((result) =>
+      JSON.stringify(result.message).includes("command system message"),
+    ),
   ).toBe(true);
   expect(
-    results.some((result) => result.additionalContexts?.includes("command context")),
+    results.some((result) =>
+      result.additionalContexts?.includes("command context"),
+    ),
   ).toBe(true);
   expect(
     results.some(
       (result) =>
         result.permissionBehavior === "ask" &&
         result.hookPermissionDecisionReason === "ask after command" &&
-      result.updatedInput?.command === "pwd",
+        result.updatedInput?.command === "pwd",
     ),
   ).toBe(true);
 });
@@ -524,9 +601,7 @@ test("legacy command hooks stop on the admitted lease signal", async () => {
     "hook_cancelled_after_dispatch",
   );
   expect(reconcile).not.toHaveBeenCalled();
-  expect(acknowledgeCompletion).toHaveBeenCalledWith(
-    "legacy-hook-reservation",
-  );
+  expect(acknowledgeCompletion).toHaveBeenCalledWith("legacy-hook-reservation");
 });
 
 test("executes blocking command hook output through the pre-tool generator", async () => {
@@ -660,7 +735,9 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
     PreCompact: [
       {
         matcher: "manual",
-        hooks: [{ type: "command", command: stdoutCommand("new instructions") }],
+        hooks: [
+          { type: "command", command: stdoutCommand("new instructions") },
+        ],
       },
     ],
     PostCompact: [
@@ -728,23 +805,40 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
     ],
   } as never);
 
-  const userConfig = await executeConfigChangeHooks("user_settings", "/tmp/user.json", hookCommandTimeoutMs);
+  const userConfig = await executeConfigChangeHooks(
+    "user_settings",
+    "/tmp/user.json",
+    hookCommandTimeoutMs,
+  );
   expect(hasBlockingResult(userConfig)).toBe(true);
-  const policyConfig = await executeConfigChangeHooks("policy_settings", "/tmp/policy.json", hookCommandTimeoutMs);
+  const policyConfig = await executeConfigChangeHooks(
+    "policy_settings",
+    "/tmp/policy.json",
+    hookCommandTimeoutMs,
+  );
   expect(hasBlockingResult(policyConfig)).toBe(false);
 
-  await expect(executeCwdChangedHooks("/old", "/new", hookCommandTimeoutMs)).resolves.toMatchObject({
+  await expect(
+    executeCwdChangedHooks("/old", "/new", hookCommandTimeoutMs),
+  ).resolves.toMatchObject({
     watchPaths: ["/tmp/agenc-cwd-watch"],
     systemMessages: ["cwd system message"],
   });
-  await expect(executeFileChangedHooks("/tmp/file.txt", "change", hookCommandTimeoutMs)).resolves.toMatchObject({
+  await expect(
+    executeFileChangedHooks("/tmp/file.txt", "change", hookCommandTimeoutMs),
+  ).resolves.toMatchObject({
     watchPaths: ["/tmp/agenc-file-watch"],
     systemMessages: ["file system message"],
   });
 
-  await executeInstructionsLoadedHooks("/tmp/AGENC.md", "Project", "session_start", {
-    timeoutMs: hookCommandTimeoutMs,
-  });
+  await executeInstructionsLoadedHooks(
+    "/tmp/AGENC.md",
+    "Project",
+    "session_start",
+    {
+      timeoutMs: hookCommandTimeoutMs,
+    },
+  );
   await executeNotificationHooks(
     { message: "hello", notificationType: "info", title: "Info" },
     hookCommandTimeoutMs,
@@ -799,7 +893,10 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
       timeoutMs: hookCommandTimeoutMs,
     }),
   ).resolves.toMatchObject({
-    elicitationResultResponse: { action: "decline", content: { declined: true } },
+    elicitationResultResponse: {
+      action: "decline",
+      content: { declined: true },
+    },
     blockingError: { blockingError: "result declined" },
   });
 });
@@ -857,7 +954,9 @@ test("executes session-scoped function hooks through stop hooks", async () => {
     ),
   );
 
-  expect(results.some((result) => result.message?.type === "progress")).toBe(true);
+  expect(results.some((result) => result.message?.type === "progress")).toBe(
+    true,
+  );
   expect(
     results.some(
       (result) =>
@@ -1071,7 +1170,9 @@ test("executes callback hooks across public generator event wrappers", async () 
   ).toBe(true);
   expect(
     post.some(
-      (result) => JSON.stringify(result.updatedMCPToolOutput) === JSON.stringify({ patched: true }),
+      (result) =>
+        JSON.stringify(result.updatedMCPToolOutput) ===
+        JSON.stringify({ patched: true }),
     ),
   ).toBe(true);
 
@@ -1096,7 +1197,9 @@ test("executes callback hooks across public generator event wrappers", async () 
     ),
   ).toBe(true);
   expect(
-    failure.some((result) => result.additionalContexts?.includes("failure context")),
+    failure.some((result) =>
+      result.additionalContexts?.includes("failure context"),
+    ),
   ).toBe(true);
 
   const denied = await collectAsyncGenerator(
@@ -1141,42 +1244,77 @@ test("executes callback hooks across public generator event wrappers", async () 
   const prompt = await collectAsyncGenerator(
     executeUserPromptSubmitHooks("hello", "default", ctx),
   );
-  expect(prompt.some((result) => result.additionalContexts?.includes("prompt context"))).toBe(true);
+  expect(
+    prompt.some((result) =>
+      result.additionalContexts?.includes("prompt context"),
+    ),
+  ).toBe(true);
 
   const sessionStart = await collectAsyncGenerator(
-    executeSessionStartHooks("resume", sessionId, "planner", "test-model", undefined, hookCommandTimeoutMs),
+    executeSessionStartHooks(
+      "resume",
+      sessionId,
+      "planner",
+      "test-model",
+      undefined,
+      hookCommandTimeoutMs,
+    ),
   );
   expect(
-    sessionStart.some(
-      (result) => result.additionalContexts?.includes("session context"),
+    sessionStart.some((result) =>
+      result.additionalContexts?.includes("session context"),
     ),
   ).toBe(true);
   expect(
     sessionStart.some((result) => result.initialUserMessage === "start here"),
   ).toBe(true);
   expect(
-    sessionStart.some((result) => result.watchPaths?.includes("/tmp/watch-session")),
+    sessionStart.some((result) =>
+      result.watchPaths?.includes("/tmp/watch-session"),
+    ),
   ).toBe(true);
 
   const setup = await collectAsyncGenerator(
     executeSetupHooks("init", undefined, hookCommandTimeoutMs),
   );
-  expect(setup.some((result) => result.additionalContexts?.includes("setup context"))).toBe(true);
+  expect(
+    setup.some((result) =>
+      result.additionalContexts?.includes("setup context"),
+    ),
+  ).toBe(true);
 
   const subagent = await collectAsyncGenerator(
-    executeSubagentStartHooks("agent-1", "worker", undefined, hookCommandTimeoutMs),
+    executeSubagentStartHooks(
+      "agent-1",
+      "worker",
+      undefined,
+      hookCommandTimeoutMs,
+    ),
   );
-  expect(subagent.some((result) => result.additionalContexts?.includes("subagent context"))).toBe(true);
+  expect(
+    subagent.some((result) =>
+      result.additionalContexts?.includes("subagent context"),
+    ),
+  ).toBe(true);
 
   const idle = await collectAsyncGenerator(
-    executeTeammateIdleHooks("Alice", "team", "default", undefined, hookCommandTimeoutMs),
+    executeTeammateIdleHooks(
+      "Alice",
+      "team",
+      "default",
+      undefined,
+      hookCommandTimeoutMs,
+    ),
   );
   expect(
     idle.some(
-      (result) => result.blockingError?.blockingError === "teammate should continue",
+      (result) =>
+        result.blockingError?.blockingError === "teammate should continue",
     ),
   ).toBe(true);
-  expect(idle.some((result) => result.permissionBehavior === "deny")).toBe(true);
+  expect(idle.some((result) => result.permissionBehavior === "deny")).toBe(
+    true,
+  );
 
   const created = await collectAsyncGenerator(
     executeTaskCreatedHooks(
@@ -1193,10 +1331,13 @@ test("executes callback hooks across public generator event wrappers", async () 
   );
   expect(
     created.some(
-      (result) => result.blockingError?.blockingError === "task creation blocked",
+      (result) =>
+        result.blockingError?.blockingError === "task creation blocked",
     ),
   ).toBe(true);
-  expect(created.some((result) => result.permissionBehavior === "deny")).toBe(true);
+  expect(created.some((result) => result.permissionBehavior === "deny")).toBe(
+    true,
+  );
 
   const completed = await collectAsyncGenerator(
     executeTaskCompletedHooks(
@@ -1280,7 +1421,9 @@ test("executes HTTP WorktreeCreate hook JSON output", async () => {
   });
 
   try {
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
     const address = server.address();
     if (!address || typeof address === "string") {
       throw new Error("Expected TCP server address");
@@ -1320,7 +1463,7 @@ test("reports malformed command hook JSON outside the REPL", async () => {
         hooks: [
           {
             type: "command",
-            command: stdoutCommand("{\"continue\":\"nope\"}"),
+            command: stdoutCommand('{"continue":"nope"}'),
           },
         ],
       },
@@ -1335,23 +1478,34 @@ test("reports malformed command hook JSON outside the REPL", async () => {
 test("returns empty results for public no-hook execution paths", async () => {
   await configureHookSession();
 
-  await expect(executeConfigChangeHooks("user_settings", "/tmp/settings.json", 1)).resolves.toEqual([]);
-  await expect(executeConfigChangeHooks("policy_settings", "/tmp/policy.json", 1)).resolves.toEqual([]);
+  await expect(
+    executeConfigChangeHooks("user_settings", "/tmp/settings.json", 1),
+  ).resolves.toEqual([]);
+  await expect(
+    executeConfigChangeHooks("policy_settings", "/tmp/policy.json", 1),
+  ).resolves.toEqual([]);
   await expect(executeCwdChangedHooks("/old", "/new", 1)).resolves.toEqual({
     results: [],
     watchPaths: [],
     systemMessages: [],
   });
-  await expect(executeFileChangedHooks("/tmp/file.txt", "change", 1)).resolves.toEqual({
+  await expect(
+    executeFileChangedHooks("/tmp/file.txt", "change", 1),
+  ).resolves.toEqual({
     results: [],
     watchPaths: [],
     systemMessages: [],
   });
   expect(hasInstructionsLoadedHook()).toBe(false);
   await expect(
-    executeInstructionsLoadedHooks("/tmp/AGENC.md", "Project", "session_start", {
-      timeoutMs: 1,
-    }),
+    executeInstructionsLoadedHooks(
+      "/tmp/AGENC.md",
+      "Project",
+      "session_start",
+      {
+        timeoutMs: 1,
+      },
+    ),
   ).resolves.toBeUndefined();
   await expect(
     executeElicitationHooks({
@@ -1368,8 +1522,12 @@ test("returns empty results for public no-hook execution paths", async () => {
       timeoutMs: 1,
     }),
   ).resolves.toEqual({});
-  await expect(executeStatusLineCommand({} as never, undefined, 1)).resolves.toBeUndefined();
-  await expect(executeFileSuggestionCommand({} as never, undefined, 1)).resolves.toEqual([]);
+  await expect(
+    executeStatusLineCommand({} as never, undefined, 1),
+  ).resolves.toBeUndefined();
+  await expect(
+    executeFileSuggestionCommand({} as never, undefined, 1),
+  ).resolves.toEqual([]);
   expect(hasWorktreeCreateHook()).toBe(false);
   await expect(executeWorktreeRemoveHook("/tmp/worktree")).resolves.toBe(false);
   await expect(executeWorktreeCreateHook("feature")).rejects.toThrow(

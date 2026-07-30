@@ -1,21 +1,22 @@
-import { z } from 'zod/v4'
-import { buildTool, type ToolDef } from '../Tool.js'
-import { cronToHuman } from '../../utils/cron.js'
-import { listAllCronTasks } from '../../utils/cronTasks.js'
-import { truncate } from '../../utils/format.js'
-import { lazySchema } from '../../utils/lazySchema.js'
-import { getTeammateContext } from '../../utils/teammateContext.js'
+import { z } from "zod/v4";
+import { getProjectRoot } from "../../bootstrap/state.js";
+import { buildTool, type ToolDef } from "../Tool.js";
+import { cronToHuman } from "../../utils/cron.js";
+import { listAllCronTasks } from "../../utils/cronTasks.js";
+import { truncate } from "../../utils/format.js";
+import { lazySchema } from "../../utils/lazySchema.js";
+import { getTeammateContext } from "../../utils/teammateContext.js";
 import {
   buildCronListPrompt,
   CRON_LIST_DESCRIPTION,
   CRON_LIST_TOOL_NAME,
   isDurableCronEnabled,
   isKairosCronEnabled,
-} from './prompt.js'
-import { renderListResultMessage, renderListToolUseMessage } from './UI.js'
+} from "./prompt.js";
+import { renderListResultMessage, renderListToolUseMessage } from "./UI.js";
 
-const inputSchema = lazySchema(() => z.strictObject({}))
-type InputSchema = ReturnType<typeof inputSchema>
+const inputSchema = lazySchema(() => z.strictObject({}));
+type InputSchema = ReturnType<typeof inputSchema>;
 
 const outputSchema = lazySchema(() =>
   z.object({
@@ -30,68 +31,72 @@ const outputSchema = lazySchema(() =>
       }),
     ),
   }),
-)
-type OutputSchema = ReturnType<typeof outputSchema>
-export type ListOutput = z.infer<OutputSchema>
+);
+type OutputSchema = ReturnType<typeof outputSchema>;
+export type ListOutput = z.infer<OutputSchema>;
 
 export const CronListTool = buildTool({
   name: CRON_LIST_TOOL_NAME,
-  searchHint: 'list active cron jobs',
+  searchHint: "list active cron jobs",
   maxResultSizeChars: 100_000,
   shouldDefer: true,
   get inputSchema(): InputSchema {
-    return inputSchema()
+    return inputSchema();
   },
   get outputSchema(): OutputSchema {
-    return outputSchema()
+    return outputSchema();
   },
   isEnabled() {
-    return isKairosCronEnabled()
+    return isKairosCronEnabled();
   },
   isConcurrencySafe() {
-    return true
+    return true;
   },
   isReadOnly() {
-    return true
+    return true;
   },
   async description() {
-    return CRON_LIST_DESCRIPTION
+    return CRON_LIST_DESCRIPTION;
   },
   async prompt() {
-    return buildCronListPrompt(isDurableCronEnabled())
+    return buildCronListPrompt(isDurableCronEnabled());
   },
-  async call() {
-    const allTasks = await listAllCronTasks()
+  async call(_input, context) {
+    const conversationId = context?.sessionId;
+    if (typeof conversationId !== "string" || conversationId.length === 0) {
+      throw new Error("CronList requires an active owning conversation");
+    }
+    const allTasks = await listAllCronTasks(getProjectRoot(), conversationId);
     // Teammates only see their own crons; team lead (no ctx) sees all.
-    const ctx = getTeammateContext()
+    const ctx = getTeammateContext();
     const tasks = ctx
-      ? allTasks.filter(t => t.agentId === ctx.agentId)
-      : allTasks
-    const jobs = tasks.map(t => ({
+      ? allTasks.filter((t) => t.agentId === ctx.agentId)
+      : allTasks;
+    const jobs = tasks.map((t) => ({
       id: t.id,
       cron: t.cron,
       humanSchedule: cronToHuman(t.cron),
       prompt: t.prompt,
       ...(t.recurring ? { recurring: true } : {}),
       ...(t.durable === false ? { durable: false } : {}),
-    }))
-    return { data: { jobs } }
+    }));
+    return { data: { jobs } };
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
     return {
       tool_use_id: toolUseID,
-      type: 'tool_result',
+      type: "tool_result",
       content:
         output.jobs.length > 0
           ? output.jobs
               .map(
-                j =>
-                  `${j.id} — ${j.humanSchedule}${j.recurring ? ' (recurring)' : ' (one-shot)'}${j.durable === false ? ' [session-only]' : ''}: ${truncate(j.prompt, 80, true)}`,
+                (j) =>
+                  `${j.id} — ${j.humanSchedule}${j.recurring ? " (recurring)" : " (one-shot)"}${j.durable === false ? " [session-only]" : ""}: ${truncate(j.prompt, 80, true)}`,
               )
-              .join('\n')
-          : 'No scheduled jobs.',
-    }
+              .join("\n")
+          : "No scheduled jobs.",
+    };
   },
   renderToolUseMessage: renderListToolUseMessage,
   renderToolResultMessage: renderListResultMessage,
-} satisfies ToolDef<InputSchema, ListOutput>)
+} satisfies ToolDef<InputSchema, ListOutput>);

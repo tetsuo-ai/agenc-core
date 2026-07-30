@@ -12,12 +12,26 @@ const explorerHarness = vi.hoisted(() => {
     deleteCalls: string[];
     synchronizeRenameCalls: Array<readonly [string, string]>;
     synchronizeDeleteCalls: string[];
-    synchronizeRenameResult: { readonly ok: false; readonly reason: string } | null;
-    synchronizeDeleteResult: { readonly ok: false; readonly reason: string } | null;
+    synchronizeRenameResult: {
+      readonly ok: false;
+      readonly reason: string;
+    } | null;
+    synchronizeDeleteResult: {
+      readonly ok: false;
+      readonly reason: string;
+    } | null;
     mutationSequence: string[];
     pathMutationLeaseCount: number;
     inFlightWithin: boolean;
     synchronizeDeleteSideEffect: (() => void) | null;
+    topologyEnabled: boolean;
+    topologyReserveError: unknown | null;
+    topologyReserveCalls: Array<{
+      readonly workspaceRoot: string;
+      readonly targets: readonly Record<string, unknown>[];
+    }>;
+    topologyCompleteCalls: Array<"applied" | "unknown_outcome">;
+    topologyReleaseCalls: number;
     storeCalls: Array<readonly [string, readonly unknown[]]>;
     activePathCalls: Array<string | null>;
     attachedPathCalls: string[][];
@@ -32,11 +46,16 @@ const explorerHarness = vi.hoisted(() => {
     renameResult: { readonly ok: false; readonly error: string } | null;
     rollbackRenameResult: { readonly ok: false; readonly error: string } | null;
     deleteResult: { readonly ok: false; readonly error: string } | null;
-    pendingCreateResolve: null | ((result: { readonly ok: true; readonly path: string }) => void);
-    pendingDeleteResolve: null | ((result: { readonly ok: true; readonly path: string }) => void);
+    pendingCreateResolve:
+      null | ((result: { readonly ok: true; readonly path: string }) => void);
+    pendingDeleteResolve:
+      null | ((result: { readonly ok: true; readonly path: string }) => void);
     bufferSnapshot: {
       readonly dirty: boolean;
       readonly filePath: string | null;
+      readonly provider?: { readonly kind: string };
+      readonly providerStatus?: string;
+      readonly workspaceAuthorityRequired?: boolean;
       readonly buffers: Array<{
         readonly handle: number;
         readonly name: string;
@@ -70,6 +89,11 @@ const explorerHarness = vi.hoisted(() => {
     pathMutationLeaseCount: 0,
     inFlightWithin: false,
     synchronizeDeleteSideEffect: null,
+    topologyEnabled: false,
+    topologyReserveError: null,
+    topologyReserveCalls: [],
+    topologyCompleteCalls: [],
+    topologyReleaseCalls: 0,
     storeCalls: [],
     activePathCalls: [],
     attachedPathCalls: [],
@@ -162,8 +186,8 @@ const explorerHarness = vi.hoisted(() => {
     },
     getFilePaths: () =>
       ((harness.snapshot.rows ?? []) as Array<Record<string, unknown>>)
-        .filter(row => row.kind === "file")
-        .map(row => String(row.path)),
+        .filter((row) => row.kind === "file")
+        .map((row) => String(row.path)),
     hasInFlightPathWithin: () => harness.inFlightWithin,
     move: (delta: number) => {
       harness.storeCalls.push(["move", [delta]]);
@@ -190,9 +214,15 @@ const explorerHarness = vi.hoisted(() => {
       harness.storeCalls.push(["toggle", [path]]);
     },
     getCursorRow: () => harness.cursorRow,
-    createFile: async (value: string) => {
+    createFile: async (
+      value: string,
+      options?: { readonly beforeCommit?: () => string | null },
+    ) => {
+      harness.mutationSequence.push(`disk:create:${value}`);
       harness.createCalls.push(value);
       if (harness.rejectCreateError) throw harness.rejectCreateError;
+      const refusal = options?.beforeCommit?.();
+      if (refusal) return { ok: false, error: refusal };
       if (harness.deferCreate) {
         return new Promise((resolve) => {
           harness.pendingCreateResolve = resolve;
@@ -261,37 +291,86 @@ vi.mock("../../../src/utils/log.js", () => ({
   logError: explorerHarness.logError,
 }));
 
-vi.mock("../../../src/tui/workbench/buffer/providers/BufferProviderController.js", () => ({
-  getWorkbenchBufferProviderController: () => ({
-    getSnapshot: () => explorerHarness.bufferSnapshot,
-    beginProjectPathMutation: () => {
-      if (explorerHarness.pathMutationLeaseCount !== 0) return false;
-      explorerHarness.pathMutationLeaseCount = 1;
-      explorerHarness.mutationSequence.push("nvim:lock");
-      return true;
-    },
-    endProjectPathMutation: () => {
-      explorerHarness.pathMutationLeaseCount = 0;
-      explorerHarness.mutationSequence.push("nvim:unlock");
-    },
-    synchronizePathRename: async (fromPath: string, toPath: string) => {
-      explorerHarness.mutationSequence.push(`nvim:rename:${fromPath}:${toPath}`);
-      explorerHarness.synchronizeRenameCalls.push([fromPath, toPath]);
-      return explorerHarness.synchronizeRenameResult ??
-        { ok: true as const, affectedBufferHandles: [] };
-    },
-    synchronizePathDelete: async (path: string) => {
-      explorerHarness.mutationSequence.push(`nvim:delete:${path}`);
-      explorerHarness.synchronizeDeleteCalls.push(path);
-      explorerHarness.synchronizeDeleteSideEffect?.();
-      return explorerHarness.synchronizeDeleteResult ??
-        { ok: true as const, affectedBufferHandles: [] };
-    },
+vi.mock(
+  "../../../src/tui/workbench/buffer/providers/BufferProviderController.js",
+  () => ({
+    getWorkbenchBufferProviderController: () => ({
+      getSnapshot: () => explorerHarness.bufferSnapshot,
+      beginProjectPathMutation: () => {
+        if (explorerHarness.pathMutationLeaseCount !== 0) return false;
+        explorerHarness.pathMutationLeaseCount = 1;
+        explorerHarness.mutationSequence.push("nvim:lock");
+        return true;
+      },
+      endProjectPathMutation: () => {
+        explorerHarness.pathMutationLeaseCount = 0;
+        explorerHarness.mutationSequence.push("nvim:unlock");
+      },
+      synchronizePathRename: async (fromPath: string, toPath: string) => {
+        explorerHarness.mutationSequence.push(
+          `nvim:rename:${fromPath}:${toPath}`,
+        );
+        explorerHarness.synchronizeRenameCalls.push([fromPath, toPath]);
+        return (
+          explorerHarness.synchronizeRenameResult ?? {
+            ok: true as const,
+            affectedBufferHandles: [],
+          }
+        );
+      },
+      synchronizePathDelete: async (path: string) => {
+        explorerHarness.mutationSequence.push(`nvim:delete:${path}`);
+        explorerHarness.synchronizeDeleteCalls.push(path);
+        explorerHarness.synchronizeDeleteSideEffect?.();
+        return (
+          explorerHarness.synchronizeDeleteResult ?? {
+            ok: true as const,
+            affectedBufferHandles: [],
+          }
+        );
+      },
+    }),
   }),
+);
+
+vi.mock("../../../src/tui/workbench/workspaceEditorLeaseSync.js", () => ({
+  bufferSnapshotRequiresWorkspaceEditorAuthority: (snapshot: {
+    readonly provider?: { readonly kind: string };
+    readonly workspaceAuthorityRequired?: boolean;
+  }) =>
+    snapshot.provider?.kind === "neovim" &&
+    snapshot.workspaceAuthorityRequired === true,
+  beginWorkspaceEditorTopologyMutation: async (
+    workspaceRoot: string,
+    targets: readonly Record<string, unknown>[],
+  ) => {
+    if (!explorerHarness.topologyEnabled) return null;
+    explorerHarness.mutationSequence.push("daemon:reserve");
+    explorerHarness.topologyReserveCalls.push({ workspaceRoot, targets });
+    if (explorerHarness.topologyReserveError !== null) {
+      throw explorerHarness.topologyReserveError;
+    }
+    return {
+      tokenId: "topology-test",
+      complete: async (status: "applied" | "unknown_outcome") => {
+        explorerHarness.mutationSequence.push(`daemon:complete:${status}`);
+        explorerHarness.topologyCompleteCalls.push(status);
+      },
+      release: async () => {
+        explorerHarness.mutationSequence.push("daemon:release");
+        explorerHarness.topologyReleaseCalls += 1;
+      },
+    };
+  },
 }));
 
 import { createRoot } from "../../../src/tui/ink.js";
-import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
+import {
+  AppStateProvider,
+  getDefaultAppState,
+  type AppState,
+  useSetAppState,
+} from "../../../src/tui/state/AppState.js";
 import { ProjectExplorer } from "../../../src/tui/workbench/project-tree/ProjectExplorer.js";
 import { useWorkbenchDispatch } from "../../../src/tui/workbench/state.js";
 import type { WorkbenchCommand } from "../../../src/tui/workbench/types.js";
@@ -314,18 +393,27 @@ function createStreams(): {
   stdin.ref = () => {};
   stdin.setRawMode = () => {};
   stdin.unref = () => {};
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).columns = 120;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).rows = 24;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).isTTY = true;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).columns = 120;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).rows = 24;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).isTTY = true;
 
   return { stdin, stdout };
 }
 
 function sleep(ms = 20): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function directoryRow(path: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function directoryRow(
+  path: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
   return {
     id: path,
     path,
@@ -366,11 +454,13 @@ function fileRow(
   };
 }
 
-async function renderExplorer(options: {
-  readonly focused?: boolean;
-  readonly width?: number;
-  readonly workbench?: Partial<NonNullable<AppState["workbench"]>>;
-} = {}): Promise<{
+async function renderExplorer(
+  options: {
+    readonly focused?: boolean;
+    readonly width?: number;
+    readonly workbench?: Partial<NonNullable<AppState["workbench"]>>;
+  } = {},
+): Promise<{
   readonly changes: AppState[];
   readonly stdin: TestStdin;
   readonly stdout: PassThrough;
@@ -381,7 +471,9 @@ async function renderExplorer(options: {
   const changes: AppState[] = [];
   const { stdin, stdout } = createStreams();
   let workbenchDispatch: ((command: WorkbenchCommand) => void) | null = null;
-  const captureDispatch = (dispatch: (command: WorkbenchCommand) => void): void => {
+  const captureDispatch = (
+    dispatch: (command: WorkbenchCommand) => void,
+  ): void => {
     workbenchDispatch = dispatch;
   };
   let output = "";
@@ -407,7 +499,10 @@ async function renderExplorer(options: {
       onChangeAppState={({ newState }) => changes.push(newState)}
     >
       <WorkbenchDispatchProbe onReady={captureDispatch} />
-      <ProjectExplorer focused={options.focused ?? true} width={options.width ?? 40} />
+      <ProjectExplorer
+        focused={options.focused ?? true}
+        width={options.width ?? 40}
+      />
     </AppStateProvider>,
   );
   await sleep();
@@ -418,7 +513,7 @@ async function renderExplorer(options: {
     stdout,
     root,
     output: () => output,
-    dispatch: command => {
+    dispatch: (command) => {
       if (workbenchDispatch === null) {
         throw new Error("Workbench dispatch probe was not ready");
       }
@@ -427,7 +522,11 @@ async function renderExplorer(options: {
   };
 }
 
-function cleanupExplorer(root: Awaited<ReturnType<typeof createRoot>>, stdin: TestStdin, stdout: PassThrough): void {
+function cleanupExplorer(
+  root: Awaited<ReturnType<typeof createRoot>>,
+  stdin: TestStdin,
+  stdout: PassThrough,
+): void {
   root.unmount();
   stdin.end();
   stdout.end();
@@ -448,6 +547,11 @@ describe("ProjectExplorer interactions", () => {
     explorerHarness.pathMutationLeaseCount = 0;
     explorerHarness.inFlightWithin = false;
     explorerHarness.synchronizeDeleteSideEffect = null;
+    explorerHarness.topologyEnabled = false;
+    explorerHarness.topologyReserveError = null;
+    explorerHarness.topologyReserveCalls = [];
+    explorerHarness.topologyCompleteCalls = [];
+    explorerHarness.topologyReleaseCalls = 0;
     explorerHarness.storeCalls = [];
     explorerHarness.activePathCalls = [];
     explorerHarness.attachedPathCalls = [];
@@ -490,21 +594,25 @@ describe("ProjectExplorer interactions", () => {
     const { root, stdin, stdout } = await renderExplorer({
       workbench: {
         activeFilePath: "src/app.ts",
-        attachments: [{
-          id: "file:src/app.ts",
-          kind: "file",
-          label: "src/app.ts",
-          path: "src/app.ts",
-        }, {
-          id: "file:src/stale.ts",
-          kind: "file",
-          label: "src/stale.ts",
-          path: "src/stale.ts",
-        }, {
-          id: "task:missing-path",
-          kind: "task-error",
-          label: "task without path",
-        }],
+        attachments: [
+          {
+            id: "file:src/app.ts",
+            kind: "file",
+            label: "src/app.ts",
+            path: "src/app.ts",
+          },
+          {
+            id: "file:src/stale.ts",
+            kind: "file",
+            label: "src/stale.ts",
+            path: "src/stale.ts",
+          },
+          {
+            id: "task:missing-path",
+            kind: "task-error",
+            label: "task without path",
+          },
+        ],
         composerAttachmentIds: ["file:src/app.ts", "task:missing-path"],
       },
     });
@@ -616,26 +724,35 @@ describe("ProjectExplorer interactions", () => {
     ["explorer:openKeepFocus", false],
     ["explorer:edit", true],
     ["explorer:editKeepFocus", false],
-  ] as const)("opens file rows from %s with the expected focus behavior", async (handlerName, shouldFocusSurface) => {
-    explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, { selected: true, focused: true });
-    const { changes, root, stdin, stdout } = await renderExplorer();
-
-    try {
-      explorerHarness.handlers[handlerName]?.();
-      await sleep();
-
-      expect(changes.at(-1)?.workbench).toMatchObject({
-        activeSurfaceMode: "buffer",
-        activeFilePath: "src/nested/app.ts",
-        focusedPane: shouldFocusSurface ? "surface" : "explorer",
+  ] as const)(
+    "opens file rows from %s with the expected focus behavior",
+    async (handlerName, shouldFocusSurface) => {
+      explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, {
+        selected: true,
+        focused: true,
       });
-    } finally {
-      cleanupExplorer(root, stdin, stdout);
-    }
-  });
+      const { changes, root, stdin, stdout } = await renderExplorer();
+
+      try {
+        explorerHarness.handlers[handlerName]?.();
+        await sleep();
+
+        expect(changes.at(-1)?.workbench).toMatchObject({
+          activeSurfaceMode: "buffer",
+          activeFilePath: "src/nested/app.ts",
+          focusedPane: shouldFocusSurface ? "surface" : "explorer",
+        });
+      } finally {
+        cleanupExplorer(root, stdin, stdout);
+      }
+    },
+  );
 
   it("attaches the selected file row from the explorer", async () => {
-    explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, { selected: true, focused: true });
+    explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, {
+      selected: true,
+      focused: true,
+    });
     const { changes, root, stdin, stdout } = await renderExplorer();
 
     try {
@@ -643,12 +760,14 @@ describe("ProjectExplorer interactions", () => {
       await sleep();
 
       expect(changes.at(-1)?.workbench).toMatchObject({
-        attachments: [{
-          id: "file:src/nested/app.ts",
-          kind: "file",
-          path: "src/nested/app.ts",
-          label: "src/nested/app.ts",
-        }],
+        attachments: [
+          {
+            id: "file:src/nested/app.ts",
+            kind: "file",
+            path: "src/nested/app.ts",
+            label: "src/nested/app.ts",
+          },
+        ],
         composerAttachmentIds: ["file:src/nested/app.ts"],
       });
     } finally {
@@ -680,11 +799,13 @@ describe("ProjectExplorer interactions", () => {
       explorerHarness.handlers["explorer:addFile"]?.();
       await sleep();
 
-      const submitCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      const submitCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
       submitCreate?.("src/new.ts");
       await sleep();
 
-      const submitWhileBusy = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      const submitWhileBusy = explorerHarness.textInputProps.at(-1)
+        ?.onSubmit as ((value: string) => void) | undefined;
       submitWhileBusy?.("src/duplicate.ts");
       await sleep();
 
@@ -704,8 +825,10 @@ describe("ProjectExplorer interactions", () => {
       explorerHarness.handlers["explorer:addFile"]?.();
       await sleep();
 
-      const onChange = explorerHarness.textInputProps.at(-1)?.onChange as ((value: string) => void) | undefined;
-      const onExit = explorerHarness.textInputProps.at(-1)?.onExit as (() => void) | undefined;
+      const onChange = explorerHarness.textInputProps.at(-1)?.onChange as
+        ((value: string) => void) | undefined;
+      const onExit = explorerHarness.textInputProps.at(-1)?.onExit as
+        (() => void) | undefined;
       onChange?.("src/typed.ts");
       await sleep();
 
@@ -716,14 +839,19 @@ describe("ProjectExplorer interactions", () => {
       onChange?.("src/after-close.ts");
       await sleep();
 
-      expect(explorerHarness.handlers["explorer:addFile"]).toEqual(expect.any(Function));
+      expect(explorerHarness.handlers["explorer:addFile"]).toEqual(
+        expect.any(Function),
+      );
     } finally {
       cleanupExplorer(root, stdin, stdout);
     }
   });
 
   it("uses file parents and empty selections as add-file prompt defaults", async () => {
-    explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, { selected: true, focused: true });
+    explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, {
+      selected: true,
+      focused: true,
+    });
     const fileSelection = await renderExplorer();
 
     try {
@@ -732,11 +860,18 @@ describe("ProjectExplorer interactions", () => {
 
       expect(explorerHarness.textInputProps.at(-1)?.value).toBe("src/nested/");
     } finally {
-      cleanupExplorer(fileSelection.root, fileSelection.stdin, fileSelection.stdout);
+      cleanupExplorer(
+        fileSelection.root,
+        fileSelection.stdin,
+        fileSelection.stdout,
+      );
     }
 
     explorerHarness.textInputProps = [];
-    explorerHarness.cursorRow = fileRow("README.md", "README.md", 1, { selected: true, focused: true });
+    explorerHarness.cursorRow = fileRow("README.md", "README.md", 1, {
+      selected: true,
+      focused: true,
+    });
     const rootFileSelection = await renderExplorer();
 
     try {
@@ -745,7 +880,11 @@ describe("ProjectExplorer interactions", () => {
 
       expect(explorerHarness.textInputProps.at(-1)?.value).toBe("");
     } finally {
-      cleanupExplorer(rootFileSelection.root, rootFileSelection.stdin, rootFileSelection.stdout);
+      cleanupExplorer(
+        rootFileSelection.root,
+        rootFileSelection.stdin,
+        rootFileSelection.stdout,
+      );
     }
 
     explorerHarness.textInputProps = [];
@@ -758,7 +897,11 @@ describe("ProjectExplorer interactions", () => {
 
       expect(explorerHarness.textInputProps.at(-1)?.value).toBe("");
     } finally {
-      cleanupExplorer(emptySelection.root, emptySelection.stdin, emptySelection.stdout);
+      cleanupExplorer(
+        emptySelection.root,
+        emptySelection.stdin,
+        emptySelection.stdout,
+      );
     }
   });
 
@@ -796,44 +939,66 @@ describe("ProjectExplorer interactions", () => {
   });
 
   it("keeps file-action prompts open when store mutations return validation errors", async () => {
-    explorerHarness.createResult = { ok: false, error: "create validation failed" };
+    explorerHarness.createResult = {
+      ok: false,
+      error: "create validation failed",
+    };
     const createSelection = await renderExplorer();
 
     try {
       explorerHarness.handlers["explorer:addFile"]?.();
       await sleep();
-      const submitCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      const submitCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
       submitCreate?.("src/new.ts");
       await sleep();
 
       expect(explorerHarness.createCalls).toEqual(["src/new.ts"]);
       expect(explorerHarness.textInputProps.at(-1)?.focus).toBe(true);
     } finally {
-      cleanupExplorer(createSelection.root, createSelection.stdin, createSelection.stdout);
+      cleanupExplorer(
+        createSelection.root,
+        createSelection.stdin,
+        createSelection.stdout,
+      );
     }
 
     explorerHarness.textInputProps = [];
     explorerHarness.createResult = null;
-    explorerHarness.renameResult = { ok: false, error: "rename validation failed" };
+    explorerHarness.renameResult = {
+      ok: false,
+      error: "rename validation failed",
+    };
     explorerHarness.cursorRow = directoryRow("src");
     const renameSelection = await renderExplorer();
 
     try {
       explorerHarness.handlers["explorer:rename"]?.();
       await sleep();
-      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
       submitRename?.("lib");
       await sleep();
 
       expect(explorerHarness.renameCalls).toEqual([["src", "lib"]]);
       expect(explorerHarness.textInputProps.at(-1)?.focus).toBe(true);
     } finally {
-      cleanupExplorer(renameSelection.root, renameSelection.stdin, renameSelection.stdout);
+      cleanupExplorer(
+        renameSelection.root,
+        renameSelection.stdin,
+        renameSelection.stdout,
+      );
     }
 
     explorerHarness.renameResult = null;
-    explorerHarness.deleteResult = { ok: false, error: "delete validation failed" };
-    explorerHarness.cursorRow = directoryRow("src");
+    explorerHarness.deleteResult = {
+      ok: false,
+      error: "delete validation failed",
+    };
+    explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, {
+      selected: true,
+      focused: true,
+    });
     const deleteSelection = await renderExplorer();
 
     try {
@@ -842,10 +1007,370 @@ describe("ProjectExplorer interactions", () => {
       explorerHarness.handlers["confirm:yes"]?.();
       await sleep();
 
-      expect(explorerHarness.deleteCalls).toEqual(["src"]);
-      expect(explorerHarness.handlers["confirm:yes"]).toEqual(expect.any(Function));
+      expect(explorerHarness.deleteCalls).toEqual(["src/nested/app.ts"]);
+      expect(explorerHarness.handlers["confirm:yes"]).toEqual(
+        expect.any(Function),
+      );
     } finally {
-      cleanupExplorer(deleteSelection.root, deleteSelection.stdin, deleteSelection.stdout);
+      cleanupExplorer(
+        deleteSelection.root,
+        deleteSelection.stdin,
+        deleteSelection.stdout,
+      );
+    }
+  });
+
+  it("runs directory deletion through Editor synchronization and the topology fence", async () => {
+    explorerHarness.topologyEnabled = true;
+    const { output, root, stdin, stdout } = await renderExplorer();
+
+    try {
+      explorerHarness.handlers["explorer:delete"]?.();
+      await sleep();
+      explorerHarness.handlers["confirm:yes"]?.();
+      await sleep();
+
+      expect(explorerHarness.deleteCalls).toEqual(["src"]);
+      expect(explorerHarness.synchronizeDeleteCalls).toEqual(["src"]);
+      expect(explorerHarness.topologyReserveCalls).toHaveLength(1);
+      expect(explorerHarness.mutationSequence).toEqual([
+        "nvim:lock",
+        "daemon:reserve",
+        "nvim:delete:src",
+        "disk:delete:src",
+        "daemon:complete:applied",
+        "nvim:unlock",
+      ]);
+      expect(output()).not.toContain("identity-bound");
+    } finally {
+      cleanupExplorer(root, stdin, stdout);
+    }
+  });
+
+  it("holds the daemon Editor topology fence across Project Explorer create", async () => {
+    explorerHarness.topologyEnabled = true;
+    explorerHarness.bufferSnapshot = {
+      dirty: false,
+      filePath: null,
+      provider: { kind: "neovim" },
+      providerStatus: "ready",
+      buffers: [],
+    };
+    const { changes, root, stdin, stdout } = await renderExplorer();
+
+    try {
+      explorerHarness.handlers["explorer:addFile"]?.();
+      await sleep();
+      const submitCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
+      submitCreate?.("src/new.ts");
+      await sleep();
+
+      expect(explorerHarness.topologyReserveCalls).toEqual([
+        {
+          workspaceRoot: "/repo",
+          targets: [
+            {
+              path: "src/new.ts",
+              includeDescendants: false,
+              allowOwnedClean: false,
+            },
+          ],
+        },
+      ]);
+      expect(explorerHarness.mutationSequence).toEqual([
+        "nvim:lock",
+        "daemon:reserve",
+        "disk:create:src/new.ts",
+        "daemon:complete:applied",
+        "nvim:unlock",
+      ]);
+      expect(explorerHarness.topologyCompleteCalls).toEqual(["applied"]);
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeFilePath: "src/new.ts",
+        activeSurfaceMode: "buffer",
+      });
+    } finally {
+      cleanupExplorer(root, stdin, stdout);
+    }
+  });
+
+  it.each(["loaded", "quarantined"] as const)(
+    "does not create a path rejected by %s Editor authority",
+    async (authority) => {
+      const reservationFailure = new Error(
+        `${authority} Editor path blocks create`,
+      );
+      explorerHarness.topologyEnabled = true;
+      explorerHarness.topologyReserveError = reservationFailure;
+      explorerHarness.bufferSnapshot = {
+        dirty: authority === "loaded",
+        filePath: "src/new.ts",
+        provider: { kind: "neovim" },
+        providerStatus: "ready",
+        buffers: [
+          providerBuffer("src/new.ts", {
+            current: true,
+            modified: authority === "loaded",
+          }),
+        ],
+      };
+      const { root, stdin, stdout } = await renderExplorer();
+
+      try {
+        explorerHarness.handlers["explorer:addFile"]?.();
+        await sleep();
+        const submitCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as
+          ((value: string) => void) | undefined;
+        submitCreate?.("src/new.ts");
+        await sleep();
+
+        expect(explorerHarness.mutationSequence).toEqual([
+          "nvim:lock",
+          "daemon:reserve",
+          "nvim:unlock",
+        ]);
+        expect(explorerHarness.createCalls).toEqual([]);
+        expect(explorerHarness.topologyCompleteCalls).toEqual([]);
+        expect(explorerHarness.topologyReleaseCalls).toBe(0);
+        expect(explorerHarness.logError).toHaveBeenCalledWith(
+          reservationFailure,
+        );
+      } finally {
+        cleanupExplorer(root, stdin, stdout);
+      }
+    },
+  );
+
+  it.each(["create", "rename", "delete"] as const)(
+    "fails closed for Project Explorer %s while the Neovim provider is in error",
+    async (mutation) => {
+      explorerHarness.bufferSnapshot = {
+        dirty: false,
+        filePath: "src/nested/app.ts",
+        provider: { kind: "neovim" },
+        providerStatus: "error",
+        workspaceAuthorityRequired: true,
+        buffers: [
+          providerBuffer("src/nested/app.ts", {
+            current: true,
+            modified: false,
+          }),
+        ],
+      };
+      if (mutation === "delete") {
+        explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, {
+          selected: true,
+          focused: true,
+        });
+      }
+      const { root, stdin, stdout } = await renderExplorer();
+
+      try {
+        if (mutation === "create") {
+          explorerHarness.handlers["explorer:addFile"]?.();
+          await sleep();
+          const submit = explorerHarness.textInputProps.at(-1)?.onSubmit as
+            ((value: string) => void) | undefined;
+          submit?.("src/new.ts");
+        } else if (mutation === "rename") {
+          explorerHarness.handlers["explorer:rename"]?.();
+          await sleep();
+          const submit = explorerHarness.textInputProps.at(-1)?.onSubmit as
+            ((value: string) => void) | undefined;
+          submit?.("lib");
+        } else {
+          explorerHarness.handlers["explorer:delete"]?.();
+          await sleep();
+          explorerHarness.handlers["confirm:yes"]?.();
+        }
+        await sleep();
+
+        expect(explorerHarness.createCalls).toEqual([]);
+        expect(explorerHarness.renameCalls).toEqual([]);
+        expect(explorerHarness.deleteCalls).toEqual([]);
+        expect(explorerHarness.mutationSequence).toEqual([
+          "nvim:lock",
+          "nvim:unlock",
+        ]);
+        expect(explorerHarness.logError).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: expect.stringContaining(
+              "authoritative Editor workspace fence is unavailable",
+            ),
+          }),
+        );
+      } finally {
+        cleanupExplorer(root, stdin, stdout);
+      }
+    },
+  );
+
+  it("allows Project Explorer writes after a cleanup-confirmed Neovim startup error", async () => {
+    explorerHarness.bufferSnapshot = {
+      dirty: false,
+      filePath: null,
+      provider: { kind: "neovim" },
+      providerStatus: "error",
+      workspaceAuthorityRequired: false,
+      buffers: [],
+    };
+    const { root, stdin, stdout } = await renderExplorer();
+
+    try {
+      explorerHarness.handlers["explorer:addFile"]?.();
+      await sleep();
+      const submit = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
+      submit?.("src/new.ts");
+      await sleep();
+
+      expect(explorerHarness.createCalls).toEqual(["src/new.ts"]);
+      expect(explorerHarness.mutationSequence).toEqual([
+        "nvim:lock",
+        "disk:create:src/new.ts",
+        "nvim:unlock",
+      ]);
+      expect(explorerHarness.logError).not.toHaveBeenCalled();
+    } finally {
+      cleanupExplorer(root, stdin, stdout);
+    }
+  });
+
+  it.each(["rename", "delete"] as const)(
+    "holds the daemon Editor topology fence across the Project Explorer %s disk and Neovim transaction",
+    async (mutation) => {
+      explorerHarness.topologyEnabled = true;
+      explorerHarness.bufferSnapshot = {
+        dirty: false,
+        filePath: "src/nested/app.ts",
+        provider: { kind: "neovim" },
+        providerStatus: "ready",
+        buffers: [
+          providerBuffer("src/nested/app.ts", {
+            current: true,
+            modified: false,
+          }),
+        ],
+      };
+      if (mutation === "delete") {
+        explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, {
+          selected: true,
+          focused: true,
+        });
+      }
+      const { root, stdin, stdout } = await renderExplorer({
+        workbench: {
+          activeSurfaceMode: "buffer",
+          activeFilePath: "src/nested/app.ts",
+        },
+      });
+
+      try {
+        if (mutation === "rename") {
+          explorerHarness.handlers["explorer:rename"]?.();
+          await sleep();
+          const submitRename = explorerHarness.textInputProps.at(-1)
+            ?.onSubmit as ((value: string) => void) | undefined;
+          submitRename?.("lib");
+        } else {
+          explorerHarness.handlers["explorer:delete"]?.();
+          await sleep();
+          explorerHarness.handlers["confirm:yes"]?.();
+        }
+        await sleep();
+
+        expect(explorerHarness.topologyReserveCalls).toEqual([
+          {
+            workspaceRoot: "/repo",
+            targets:
+              mutation === "rename"
+                ? [
+                    {
+                      path: "src",
+                      includeDescendants: true,
+                      allowOwnedClean: true,
+                    },
+                    {
+                      path: "lib",
+                      includeDescendants: true,
+                      allowOwnedClean: false,
+                    },
+                  ]
+                : [
+                    {
+                      path: "src/nested/app.ts",
+                      includeDescendants: true,
+                      allowOwnedClean: true,
+                    },
+                  ],
+          },
+        ]);
+        expect(explorerHarness.mutationSequence).toEqual(
+          mutation === "rename"
+            ? [
+                "nvim:lock",
+                "daemon:reserve",
+                "disk:rename:src:lib",
+                "nvim:rename:src:lib",
+                "daemon:complete:applied",
+                "nvim:unlock",
+              ]
+            : [
+                "nvim:lock",
+                "daemon:reserve",
+                "nvim:delete:src/nested/app.ts",
+                "disk:delete:src/nested/app.ts",
+                "daemon:complete:applied",
+                "nvim:unlock",
+              ],
+        );
+        expect(explorerHarness.topologyCompleteCalls).toEqual(["applied"]);
+        expect(explorerHarness.topologyReleaseCalls).toBe(0);
+      } finally {
+        cleanupExplorer(root, stdin, stdout);
+      }
+    },
+  );
+
+  it("does not touch disk or Neovim when the Project Explorer topology reservation is rejected", async () => {
+    const reservationFailure = new Error("workspace path is already fenced");
+    explorerHarness.topologyEnabled = true;
+    explorerHarness.topologyReserveError = reservationFailure;
+    explorerHarness.bufferSnapshot = {
+      dirty: false,
+      filePath: "src/nested/app.ts",
+      provider: { kind: "neovim" },
+      providerStatus: "ready",
+      buffers: [
+        providerBuffer("src/nested/app.ts", {
+          current: true,
+          modified: false,
+        }),
+      ],
+    };
+    const { root, stdin, stdout } = await renderExplorer();
+
+    try {
+      explorerHarness.handlers["explorer:rename"]?.();
+      await sleep();
+      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
+      submitRename?.("lib");
+      await sleep();
+
+      expect(explorerHarness.mutationSequence).toEqual([
+        "nvim:lock",
+        "daemon:reserve",
+        "nvim:unlock",
+      ]);
+      expect(explorerHarness.renameCalls).toEqual([]);
+      expect(explorerHarness.synchronizeRenameCalls).toEqual([]);
+      expect(explorerHarness.topologyCompleteCalls).toEqual([]);
+      expect(explorerHarness.topologyReleaseCalls).toBe(0);
+      expect(explorerHarness.logError).toHaveBeenCalledWith(reservationFailure);
+    } finally {
+      cleanupExplorer(root, stdin, stdout);
     }
   });
 
@@ -859,6 +1384,12 @@ describe("ProjectExplorer interactions", () => {
     async ({ dirtyBuffer, mutation }) => {
       const targetPath = "src/nested/app.ts";
       const activePath = dirtyBuffer === "active" ? targetPath : "other.ts";
+      if (mutation === "delete") {
+        explorerHarness.cursorRow = fileRow(targetPath, "app.ts", 3, {
+          selected: true,
+          focused: true,
+        });
+      }
       explorerHarness.bufferSnapshot = {
         dirty: true,
         filePath: activePath,
@@ -884,9 +1415,8 @@ describe("ProjectExplorer interactions", () => {
         if (mutation === "rename") {
           explorerHarness.handlers["explorer:rename"]?.();
           await sleep();
-          const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
-            | ((value: string) => void)
-            | undefined;
+          const submitRename = explorerHarness.textInputProps.at(-1)
+            ?.onSubmit as ((value: string) => void) | undefined;
           submitRename?.("lib");
         } else {
           explorerHarness.handlers["explorer:delete"]?.();
@@ -902,7 +1432,7 @@ describe("ProjectExplorer interactions", () => {
           pendingBlockedOverlay: {
             kind: "buffer-dirty",
             attemptedAction:
-              mutation === "rename" ? "renaming src" : "deleting src",
+              mutation === "rename" ? "renaming src" : `deleting ${targetPath}`,
             deferredCommand:
               mutation === "rename"
                 ? {
@@ -912,7 +1442,7 @@ describe("ProjectExplorer interactions", () => {
                   }
                 : {
                     type: "requestProjectPathDelete",
-                    path: "src",
+                    path: targetPath,
                   },
           },
         });
@@ -953,14 +1483,16 @@ describe("ProjectExplorer interactions", () => {
               activeSurfaceMode: "preview",
               activeFilePath: "src/nested/app.ts",
               activeFileLine: 12,
-              attachments: [{
-                id: "file-range:src/nested/app.ts:12-15",
-                kind: "file-range",
-                label: "src/nested/app.ts:12-15",
-                path: "src/nested/app.ts",
-                line: 12,
-                endLine: 15,
-              }],
+              attachments: [
+                {
+                  id: "file-range:src/nested/app.ts:12-15",
+                  kind: "file-range",
+                  label: "src/nested/app.ts:12-15",
+                  path: "src/nested/app.ts",
+                  line: 12,
+                  endLine: 15,
+                },
+              ],
               composerAttachmentIds: ["file-range:src/nested/app.ts:12-15"],
             },
           }}
@@ -974,7 +1506,8 @@ describe("ProjectExplorer interactions", () => {
       explorerHarness.handlers["explorer:rename"]?.();
       await sleep();
 
-      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
       expect(submitRename).toEqual(expect.any(Function));
       submitRename?.("lib/");
       await sleep();
@@ -988,19 +1521,27 @@ describe("ProjectExplorer interactions", () => {
         "nvim:unlock",
       ]);
       expect(changes.at(-1)?.workbench).toMatchObject({
+        activeWorkspaceView: "editor",
         focusedPane: "explorer",
         activeSurfaceMode: "buffer",
         activeFilePath: "lib/nested/app.ts",
         activeFileLine: 12,
-        attachments: [{
-          id: "file-range:lib/nested/app.ts:12-15",
-          kind: "file-range",
-          label: "lib/nested/app.ts:12-15",
-          path: "lib/nested/app.ts",
-          line: 12,
-          endLine: 15,
-        }],
-        composerAttachmentIds: ["file-range:lib/nested/app.ts:12-15"],
+        attachments: [
+          {
+            id: "file-range:lib/nested/app.ts:12-15",
+            kind: "file-range",
+            label: "lib/nested/app.ts:12-15",
+            path: "lib/nested/app.ts",
+            line: 12,
+            endLine: 15,
+          },
+        ],
+        // The renamed attachment remains in the Agent draft that owned it.
+        // Opening the renamed buffer crosses into Editor without leaking that
+        // draft's attachment into the Editor composer.
+        composerAttachmentIds: [],
+        agentComposerAttachmentIds: ["file-range:lib/nested/app.ts:12-15"],
+        editorComposerAttachmentIds: [],
       });
     } finally {
       root.unmount();
@@ -1012,11 +1553,34 @@ describe("ProjectExplorer interactions", () => {
   it.each(["rename", "delete"] as const)(
     "keeps disk and Redux references unchanged when %s buffer synchronization fails",
     async (mutation) => {
+      explorerHarness.topologyEnabled = true;
+      explorerHarness.bufferSnapshot = {
+        dirty: false,
+        filePath: "src/nested/app.ts",
+        provider: { kind: "neovim" },
+        providerStatus: "ready",
+        buffers: [
+          providerBuffer("src/nested/app.ts", {
+            current: true,
+            modified: false,
+          }),
+        ],
+      };
       const failure = `Neovim ${mutation} synchronization failed`;
       if (mutation === "rename") {
-        explorerHarness.synchronizeRenameResult = { ok: false, reason: failure };
+        explorerHarness.synchronizeRenameResult = {
+          ok: false,
+          reason: failure,
+        };
       } else {
-        explorerHarness.synchronizeDeleteResult = { ok: false, reason: failure };
+        explorerHarness.synchronizeDeleteResult = {
+          ok: false,
+          reason: failure,
+        };
+        explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, {
+          selected: true,
+          focused: true,
+        });
       }
       const { changes, root, stdin, stdout } = await renderExplorer({
         workbench: {
@@ -1030,9 +1594,8 @@ describe("ProjectExplorer interactions", () => {
         if (mutation === "rename") {
           explorerHarness.handlers["explorer:rename"]?.();
           await sleep();
-          const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
-            | ((value: string) => void)
-            | undefined;
+          const submitRename = explorerHarness.textInputProps.at(-1)
+            ?.onSubmit as ((value: string) => void) | undefined;
           submitRename?.("lib");
         } else {
           explorerHarness.handlers["explorer:delete"]?.();
@@ -1045,13 +1608,23 @@ describe("ProjectExplorer interactions", () => {
           mutation === "rename"
             ? [
                 "nvim:lock",
+                "daemon:reserve",
                 "disk:rename:src:lib",
                 "nvim:rename:src:lib",
                 "disk:rename:lib:src",
+                "daemon:release",
                 "nvim:unlock",
               ]
-            : ["nvim:lock", "nvim:delete:src", "nvim:unlock"],
+            : [
+                "nvim:lock",
+                "daemon:reserve",
+                "nvim:delete:src/nested/app.ts",
+                "daemon:release",
+                "nvim:unlock",
+              ],
         );
+        expect(explorerHarness.topologyCompleteCalls).toEqual([]);
+        expect(explorerHarness.topologyReleaseCalls).toBe(1);
         expect(changes.at(-1)?.workbench).toMatchObject({
           activeSurfaceMode: "preview",
           activeFilePath: "src/nested/app.ts",
@@ -1066,6 +1639,14 @@ describe("ProjectExplorer interactions", () => {
   );
 
   it("fails closed without clobbering a recreated source when rename rollback loses a race", async () => {
+    explorerHarness.topologyEnabled = true;
+    explorerHarness.bufferSnapshot = {
+      dirty: false,
+      filePath: null,
+      provider: { kind: "neovim" },
+      providerStatus: "ready",
+      buffers: [],
+    };
     explorerHarness.synchronizeRenameResult = {
       ok: false,
       reason: "Neovim rename synchronization failed",
@@ -1086,32 +1667,34 @@ describe("ProjectExplorer interactions", () => {
       explorerHarness.handlers["explorer:rename"]?.();
       await sleep();
       const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
-        | ((value: string) => void)
-        | undefined;
+        ((value: string) => void) | undefined;
       submitRename?.("lib");
-      await sleep();
+      await vi.waitFor(() => {
+        expect(explorerHarness.topologyCompleteCalls).toEqual([
+          "unknown_outcome",
+        ]);
+      });
 
       expect(explorerHarness.mutationSequence).toEqual([
         "nvim:lock",
+        "daemon:reserve",
         "disk:rename:src:lib",
         "nvim:rename:src:lib",
         "disk:rename:lib:src",
         "nvim:delete:src",
+        "nvim:delete:lib",
+        "daemon:complete:unknown_outcome",
         "nvim:unlock",
       ]);
       expect(explorerHarness.renameCalls).toEqual([
         ["src", "lib"],
         ["lib", "src"],
       ]);
-      expect(explorerHarness.synchronizeDeleteCalls).toEqual(["src"]);
+      expect(explorerHarness.synchronizeDeleteCalls).toEqual(["src", "lib"]);
       expect(changes.at(-1)?.workbench).toMatchObject({
         activeSurfaceMode: "buffer",
         activeFilePath: "src/nested/app.ts",
-        projectPathMutationRequest: {
-          kind: "rename",
-          fromPath: "src",
-          toPath: "lib",
-        },
+        projectPathMutationRequest: null,
       });
     } finally {
       cleanupExplorer(root, stdin, stdout);
@@ -1121,6 +1704,10 @@ describe("ProjectExplorer interactions", () => {
   it.each(["dirty-buffer", "agent-write"] as const)(
     "rechecks a late %s immediately after Neovim delete preparation and before disk removal",
     async (race) => {
+      explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, {
+        selected: true,
+        focused: true,
+      });
       explorerHarness.synchronizeDeleteSideEffect = () => {
         if (race === "agent-write") {
           explorerHarness.inFlightWithin = true;
@@ -1129,10 +1716,12 @@ describe("ProjectExplorer interactions", () => {
         explorerHarness.bufferSnapshot = {
           dirty: true,
           filePath: "src/nested/app.ts",
-          buffers: [providerBuffer("src/nested/app.ts", {
-            current: true,
-            modified: true,
-          })],
+          buffers: [
+            providerBuffer("src/nested/app.ts", {
+              current: true,
+              modified: true,
+            }),
+          ],
         };
       };
       const { changes, root, stdin, stdout } = await renderExplorer({
@@ -1148,11 +1737,13 @@ describe("ProjectExplorer interactions", () => {
         explorerHarness.handlers["confirm:yes"]?.();
         await sleep();
 
-        expect(explorerHarness.synchronizeDeleteCalls).toEqual(["src"]);
+        expect(explorerHarness.synchronizeDeleteCalls).toEqual([
+          "src/nested/app.ts",
+        ]);
         expect(explorerHarness.deleteCalls).toEqual([]);
         expect(explorerHarness.mutationSequence).toEqual([
           "nvim:lock",
-          "nvim:delete:src",
+          "nvim:delete:src/nested/app.ts",
           "nvim:unlock",
         ]);
         expect(changes.at(-1)?.workbench).toMatchObject({
@@ -1197,7 +1788,8 @@ describe("ProjectExplorer interactions", () => {
       explorerHarness.handlers["explorer:rename"]?.();
       await sleep();
 
-      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
       expect(submitRename).toEqual(expect.any(Function));
       submitRename?.("lib");
       await sleep();
@@ -1216,7 +1808,11 @@ describe("ProjectExplorer interactions", () => {
     }
   });
 
-  it("clears active and attached references when deleting a directory that contains them", async () => {
+  it("clears active and attached references when deleting their exact file", async () => {
+    explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, {
+      selected: true,
+      focused: true,
+    });
     const changes: AppState[] = [];
     const { stdin, stdout } = createStreams();
     const root = await createRoot({
@@ -1271,19 +1867,27 @@ describe("ProjectExplorer interactions", () => {
       explorerHarness.handlers["confirm:yes"]?.();
       await sleep();
 
-      expect(explorerHarness.deleteCalls).toEqual(["src"]);
+      expect(explorerHarness.deleteCalls).toEqual(["src/nested/app.ts"]);
       expect(changes.at(-1)?.workbench).toMatchObject({
+        activeWorkspaceView: "agent",
         focusedPane: "surface",
         activeSurfaceMode: "transcript",
         activeFilePath: null,
         activeFileLine: null,
-        attachments: [{
-          id: "file:src-old/app.ts",
-          kind: "file",
-          label: "src-old/app.ts",
-          path: "src-old/app.ts",
-        }],
-        composerAttachmentIds: ["file:src-old/app.ts"],
+        attachments: [
+          {
+            id: "file:src-old/app.ts",
+            kind: "file",
+            label: "src-old/app.ts",
+            path: "src-old/app.ts",
+          },
+        ],
+        // Closing the deleted Editor buffer returns to Agent. The surviving
+        // attachment stays with the Editor draft instead of appearing in the
+        // Agent composer.
+        composerAttachmentIds: [],
+        agentComposerAttachmentIds: [],
+        editorComposerAttachmentIds: ["file:src-old/app.ts"],
       });
     } finally {
       root.unmount();
@@ -1294,8 +1898,14 @@ describe("ProjectExplorer interactions", () => {
 
   it("does not close a newer active file when delete finishes after navigation moved away", async () => {
     explorerHarness.deferDelete = true;
+    explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, {
+      selected: true,
+      focused: true,
+    });
     const changes: AppState[] = [];
-    let setWorkbench: ((next: Partial<NonNullable<AppState["workbench"]>>) => void) | null = null;
+    let setWorkbench:
+      ((next: Partial<NonNullable<AppState["workbench"]>>) => void) | null =
+      null;
     const { stdin, stdout } = createStreams();
     const root = await createRoot({
       patchConsole: false,
@@ -1318,7 +1928,11 @@ describe("ProjectExplorer interactions", () => {
           }}
           onChangeAppState={({ newState }) => changes.push(newState)}
         >
-          <WorkbenchStateSetter onReady={(setter) => { setWorkbench = setter; }} />
+          <WorkbenchStateSetter
+            onReady={(setter) => {
+              setWorkbench = setter;
+            }}
+          />
           <ProjectExplorer focused={true} width={40} />
         </AppStateProvider>,
       );
@@ -1332,7 +1946,7 @@ describe("ProjectExplorer interactions", () => {
 
       explorerHarness.handlers["confirm:yes"]?.();
       await sleep();
-      expect(explorerHarness.deleteCalls).toEqual(["src"]);
+      expect(explorerHarness.deleteCalls).toEqual(["src/nested/app.ts"]);
 
       setWorkbench?.({
         activeSurfaceMode: "preview",
@@ -1341,10 +1955,13 @@ describe("ProjectExplorer interactions", () => {
       });
       await sleep();
 
-      explorerHarness.pendingDeleteResolve?.({ ok: true, path: "src" });
+      explorerHarness.pendingDeleteResolve?.({
+        ok: true,
+        path: "src/nested/app.ts",
+      });
       await sleep();
 
-      expect(explorerHarness.deleteCalls).toEqual(["src"]);
+      expect(explorerHarness.deleteCalls).toEqual(["src/nested/app.ts"]);
       expect(changes.at(-1)?.workbench).toMatchObject({
         activeSurfaceMode: "preview",
         activeFilePath: "other.ts",
@@ -1388,7 +2005,8 @@ describe("ProjectExplorer interactions", () => {
       explorerHarness.handlers["explorer:addFile"]?.();
       await sleep();
 
-      const submitCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      const submitCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
       expect(submitCreate).toEqual(expect.any(Function));
       submitCreate?.("src/new.ts");
       await sleep();
@@ -1397,7 +2015,8 @@ describe("ProjectExplorer interactions", () => {
       expect(explorerHarness.textInputProps.at(-1)?.focus).toBe(true);
 
       explorerHarness.rejectCreateError = null;
-      const retryCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      const retryCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
       retryCreate?.("src/new.ts");
       await sleep();
 
@@ -1421,11 +2040,14 @@ describe("ProjectExplorer interactions", () => {
       explorerHarness.handlers["explorer:addFile"]?.();
       await sleep();
 
-      const submitCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      const submitCreate = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
       submitCreate?.("src/new.ts");
       await sleep();
 
-      expect(explorerHarness.logError).toHaveBeenCalledWith("permission denied");
+      expect(explorerHarness.logError).toHaveBeenCalledWith(
+        "permission denied",
+      );
       expect(explorerHarness.textInputProps.at(-1)?.focus).toBe(true);
     } finally {
       cleanupExplorer(root, stdin, stdout);
@@ -1466,7 +2088,8 @@ describe("ProjectExplorer interactions", () => {
       explorerHarness.handlers["explorer:rename"]?.();
       await sleep();
 
-      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
       expect(submitRename).toEqual(expect.any(Function));
       submitRename?.("lib/");
       await sleep();
@@ -1475,11 +2098,15 @@ describe("ProjectExplorer interactions", () => {
       expect(explorerHarness.textInputProps.at(-1)?.focus).toBe(true);
 
       explorerHarness.rejectRenameError = null;
-      const retryRename = explorerHarness.textInputProps.at(-1)?.onSubmit as ((value: string) => void) | undefined;
+      const retryRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        ((value: string) => void) | undefined;
       retryRename?.("lib/");
       await sleep();
 
-      expect(explorerHarness.renameCalls).toEqual([["src", "lib/"], ["src", "lib/"]]);
+      expect(explorerHarness.renameCalls).toEqual([
+        ["src", "lib/"],
+        ["src", "lib/"],
+      ]);
       expect(changes.at(-1)?.workbench).toMatchObject({
         activeSurfaceMode: "buffer",
         activeFilePath: "lib/nested/app.ts",
@@ -1494,6 +2121,10 @@ describe("ProjectExplorer interactions", () => {
   it("logs rejected delete actions and restores the confirmation for retry", async () => {
     const deleteError = new Error("delete failed");
     explorerHarness.rejectDeleteError = deleteError;
+    explorerHarness.cursorRow = fileRow("src/nested/app.ts", "app.ts", 3, {
+      selected: true,
+      focused: true,
+    });
     const changes: AppState[] = [];
     const { stdin, stdout } = createStreams();
     const root = await createRoot({
@@ -1534,7 +2165,10 @@ describe("ProjectExplorer interactions", () => {
       explorerHarness.handlers["confirm:yes"]?.();
       await sleep();
 
-      expect(explorerHarness.deleteCalls).toEqual(["src", "src"]);
+      expect(explorerHarness.deleteCalls).toEqual([
+        "src/nested/app.ts",
+        "src/nested/app.ts",
+      ]);
       expect(changes.at(-1)?.workbench).toMatchObject({
         activeSurfaceMode: "transcript",
         activeFilePath: null,
@@ -1550,7 +2184,9 @@ describe("ProjectExplorer interactions", () => {
 function WorkbenchStateSetter({
   onReady,
 }: {
-  readonly onReady: (setWorkbench: (next: Partial<NonNullable<AppState["workbench"]>>) => void) => void;
+  readonly onReady: (
+    setWorkbench: (next: Partial<NonNullable<AppState["workbench"]>>) => void,
+  ) => void;
 }): null {
   const setAppState = useSetAppState();
   React.useEffect(() => {

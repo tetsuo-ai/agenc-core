@@ -8,6 +8,11 @@ export interface ElicitationSubmitTarget {
   submit(value: string): boolean;
 }
 
+export interface ComposerSubmitOptions {
+  readonly pastedContentsOverride?: Record<number, unknown>;
+  readonly onWorkbenchAttachmentsAdmitted?: () => void;
+}
+
 function clearComposer(helpers: ComposerSubmitHelpers): void {
   helpers.clearBuffer();
   helpers.resetHistory();
@@ -16,14 +21,10 @@ function clearComposer(helpers: ComposerSubmitHelpers): void {
 
 export async function submitViaElicitationPrompt(
   elicitation: ElicitationSubmitTarget,
-  submit: (value: string, options?: {
-    readonly pastedContentsOverride?: Record<number, unknown>;
-  }) => Promise<void>,
+  submit: (value: string, options?: ComposerSubmitOptions) => Promise<void>,
   value: string,
   helpers: ComposerSubmitHelpers,
-  options?: {
-    readonly pastedContentsOverride?: Record<number, unknown>;
-  },
+  options?: ComposerSubmitOptions,
 ): Promise<void> {
   const handledByElicitation = elicitation.submit(value);
   clearComposer(helpers);

@@ -70,6 +70,9 @@ describe("ExitFlow coverage", () => {
     expect(harness.gracefulShutdown).toHaveBeenLastCalledWith(
       0,
       "prompt_input_exit",
+      {
+        skipSessionEndHooks: true,
+      },
     );
 
     harness.sample.mockReturnValue(undefined);

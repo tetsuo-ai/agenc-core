@@ -14,7 +14,9 @@ const keybindingHarness = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../src/utils/fsOperations.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/utils/fsOperations.js")>()),
+  ...(await importOriginal<
+    typeof import("../../../src/utils/fsOperations.js")
+  >()),
   tailFile: vi.fn(async (path: string) => {
     const taskId = /\/tmp\/(.+)\.log$/u.exec(path)?.[1] ?? path;
     const readCount = (keybindingHarness.readCounts[taskId] ?? 0) + 1;
@@ -49,8 +51,16 @@ vi.mock("../../../src/utils/log.js", () => ({
 import { createRoot } from "../../../src/tui/ink.js";
 import { getInkInstance } from "../../../src/tui/ink/instances.js";
 import { cellAt } from "../../../src/tui/ink/screen.js";
-import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
-import { TestSurface, TestSurfaceView } from "../../../src/tui/workbench/surfaces/TestSurface.js";
+import {
+  AppStateProvider,
+  getDefaultAppState,
+  type AppState,
+  useSetAppState,
+} from "../../../src/tui/state/AppState.js";
+import {
+  TestSurface,
+  TestSurfaceView,
+} from "../../../src/tui/workbench/surfaces/TestSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
 type TestStdin = PassThrough & {
@@ -103,7 +113,8 @@ describe("TestSurface", () => {
       selectedShellTaskId: null,
       tasks: {},
     });
-    keybindingHarness.tails["shell-empty"] = "all tests passed\nno failure details";
+    keybindingHarness.tails["shell-empty"] =
+      "all tests passed\nno failure details";
     const emptyOutput = await renderTestSurface({
       selectedShellTaskId: "shell-empty",
       tasks: {
@@ -195,7 +206,7 @@ describe("TestSurface", () => {
     });
 
     keybindingHarness.handlers["workbench:closeSurface"]?.();
-    expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
+    expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("test");
   });
 
   it("normalizes test failure paths when opening buffers", async () => {
@@ -208,7 +219,11 @@ describe("TestSurface", () => {
     await renderTestSurface({
       selectedShellTaskId: "shell-windows",
       tasks: {
-        "shell-windows": shellTask("shell-windows", "windows path test", "completed"),
+        "shell-windows": shellTask(
+          "shell-windows",
+          "windows path test",
+          "completed",
+        ),
       },
       onChange: changes,
       workbench: {
@@ -242,7 +257,11 @@ describe("TestSurface", () => {
     const output = await renderTestSurface({
       selectedShellTaskId: "shell-no-location",
       tasks: {
-        "shell-no-location": shellTask("shell-no-location", "test without location", "completed"),
+        "shell-no-location": shellTask(
+          "shell-no-location",
+          "test without location",
+          "completed",
+        ),
       },
       onChange: changes,
     });
@@ -438,7 +457,11 @@ describe("TestSurface", () => {
           }}
           onChangeAppState={({ newState }) => changes.push(newState)}
         >
-          <TestTaskSelector onReady={(setter) => { selectTask = setter; }} />
+          <TestTaskSelector
+            onReady={(setter) => {
+              selectTask = setter;
+            }}
+          />
           <TestSurface focused={true} />
         </AppStateProvider>,
       );
@@ -448,7 +471,9 @@ describe("TestSurface", () => {
       await sleep(25);
 
       keybindingHarness.handlers["surface:open"]?.();
-      expect(changes.at(-1)?.workbench.activeFilePath).not.toBe("src/old-test.ts");
+      expect(changes.at(-1)?.workbench.activeFilePath).not.toBe(
+        "src/old-test.ts",
+      );
     } finally {
       root.unmount();
       stdin.end();
@@ -491,9 +516,13 @@ describe("TestSurface", () => {
 
       expect(compact(screenText(stdout))).toContain("firstfailure");
       expect(compact(screenText(stdout))).not.toContain("Noparsedtestfailures");
-      expect(keybindingHarness.logError.mock.calls.some(([error]) =>
-        error instanceof Error && error.message === "tail failed for shell-1"
-      )).toBe(true);
+      expect(
+        keybindingHarness.logError.mock.calls.some(
+          ([error]) =>
+            error instanceof Error &&
+            error.message === "tail failed for shell-1",
+        ),
+      ).toBe(true);
     } finally {
       root.unmount();
       stdin.end();
@@ -601,9 +630,15 @@ function createStreams(): {
   stdin.ref = () => {};
   stdin.setRawMode = () => {};
   stdin.unref = () => {};
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).columns = 120;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).rows = 24;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).isTTY = true;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).columns = 120;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).rows = 24;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).isTTY = true;
   stdout.resume();
 
   return {
@@ -613,7 +648,7 @@ function createStreams(): {
 }
 
 function sleep(ms = 200): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function compact(value: string): string {
@@ -622,7 +657,11 @@ function compact(value: string): string {
 
 function screenText(stdout: PassThrough): string {
   const instance = getInkInstance(stdout as unknown as NodeJS.WriteStream) as
-    | { readonly frontFrame?: { readonly screen?: { readonly width: number; readonly height: number } } }
+    | {
+        readonly frontFrame?: {
+          readonly screen?: { readonly width: number; readonly height: number };
+        };
+      }
     | undefined;
   const screen = instance?.frontFrame?.screen;
   if (!screen) return "";

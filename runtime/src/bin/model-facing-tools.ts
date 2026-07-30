@@ -1,16 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import {
-  readFile,
-  stat,
-} from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import {
-  extname,
-  isAbsolute,
-  join,
-  resolve,
-} from "node:path";
+import { extname, isAbsolute, join, resolve } from "node:path";
 import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
@@ -89,6 +81,7 @@ import {
   createStructuredOutputTool,
   createStructuredOutputToolForSchema,
 } from "./structured-output-tool.js";
+import { createEditorProposalTool } from "../tools/system/editor-proposal.js";
 import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { createRequestUserInputTool } from "../elicitation/request-user-input.js";
 import { createRequestLedgerTransferTool } from "../elicitation/request-ledger-transfer.js";
@@ -204,7 +197,10 @@ const WEB_FETCH_TOOL_NAMES = [
 ] as const;
 
 function json(content: unknown, isError?: boolean): ToolResult {
-  return { content: safeStringify(content), ...(isError ? { isError: true } : {}) };
+  return {
+    content: safeStringify(content),
+    ...(isError ? { isError: true } : {}),
+  };
 }
 
 function errorMessage(error: unknown): string {
@@ -242,7 +238,9 @@ function boolValue(value: unknown): boolean | undefined {
 }
 
 function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function optionalUnsignedIntegerArg(
@@ -319,8 +317,13 @@ async function readState(opts: ModelFacingToolOptions): Promise<ToolState> {
 // scheduler's own store (.agenc/scheduled_tasks.json via utils/cronTasks)
 // so registered jobs actually fire; the old file's entries never did.
 
-function resolveWorkspacePath(opts: ModelFacingToolOptions, input: string): string {
-  const resolved = isAbsolute(input) ? resolve(input) : resolve(opts.workspaceRoot, input);
+function resolveWorkspacePath(
+  opts: ModelFacingToolOptions,
+  input: string,
+): string {
+  const resolved = isAbsolute(input)
+    ? resolve(input)
+    : resolve(opts.workspaceRoot, input);
   const root = resolve(opts.workspaceRoot);
   if (resolved !== root && !resolved.startsWith(`${root}/`)) {
     throw new Error(`path is outside the workspace: ${input}`);
@@ -392,7 +395,10 @@ type LiveWebFetchDnsAllLookup = (
 ) => void;
 
 /** Default DNS: node dns.lookup({ all: true }). Overridable in tests. */
-let liveWebFetchDnsAllLookup: LiveWebFetchDnsAllLookup = (hostname, callback) => {
+let liveWebFetchDnsAllLookup: LiveWebFetchDnsAllLookup = (
+  hostname,
+  callback,
+) => {
   dnsLookup(hostname, { all: true }, callback);
 };
 
@@ -423,7 +429,8 @@ function liveWebFetchSsrfLookup(
     family?: number,
   ) => void,
 ): void {
-  const wantsAll = "all" in options && (options as { all?: boolean }).all === true;
+  const wantsAll =
+    "all" in options && (options as { all?: boolean }).all === true;
   const unwrapped =
     hostname.startsWith("[") && hostname.endsWith("]")
       ? hostname.slice(1, -1)
@@ -563,9 +570,7 @@ async function fetchWithTimeout(
     readonly signal?: AbortSignal;
   } = {},
 ): Promise<Response> {
-  const timeoutSignal = AbortSignal.timeout(
-    Math.max(1, Math.floor(timeoutMs)),
-  );
+  const timeoutSignal = AbortSignal.timeout(Math.max(1, Math.floor(timeoutMs)));
   const requestSignal = opts.signal
     ? AbortSignal.any([opts.signal, timeoutSignal])
     : timeoutSignal;
@@ -646,14 +651,20 @@ async function readResponseTextBounded(
   maxBytes: number,
 ): Promise<BoundedResponseText> {
   const byteLimit = Math.max(1, Math.floor(maxBytes));
-  const contentLength = parseContentLength(response.headers.get("content-length"));
+  const contentLength = parseContentLength(
+    response.headers.get("content-length"),
+  );
   const reader = response.body?.getReader();
   if (!reader) {
     if (contentLength !== undefined && contentLength > byteLimit) {
       throw new Error(`response body exceeds ${byteLimit} byte fetch limit`);
     }
     const text = await response.text();
-    return { text, bytesRead: new TextEncoder().encode(text).byteLength, truncated: false };
+    return {
+      text,
+      bytesRead: new TextEncoder().encode(text).byteLength,
+      truncated: false,
+    };
   }
 
   const decoder = new TextDecoder();
@@ -732,9 +743,7 @@ function webSearchConfigFromFilters(
     ...(filters.blockedDomains.length > 0
       ? { excludedDomains: filters.blockedDomains }
       : {}),
-    ...(fromLlm?.enableImageSearch === true
-      ? { enableImageSearch: true }
-      : {}),
+    ...(fromLlm?.enableImageSearch === true ? { enableImageSearch: true } : {}),
     ...(fromLlm?.enableImageUnderstanding === true
       ? { enableImageUnderstanding: true }
       : {}),
@@ -795,7 +804,9 @@ function arrayValue(value: unknown): readonly unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function webSearchResultFromSource(value: unknown): WebSearchResultEntry | undefined {
+function webSearchResultFromSource(
+  value: unknown,
+): WebSearchResultEntry | undefined {
   const record = recordValue(value);
   if (!record) return undefined;
   const url =
@@ -804,10 +815,7 @@ function webSearchResultFromSource(value: unknown): WebSearchResultEntry | undef
     stringValue(record.link);
   if (!url || !isUsableWebSearchUrl(url)) return undefined;
   return {
-    title:
-      stringValue(record.title) ??
-      stringValue(record.name) ??
-      url,
+    title: stringValue(record.title) ?? stringValue(record.name) ?? url,
     url,
     snippet:
       stringValue(record.snippet) ??
@@ -936,9 +944,7 @@ function buildGrokNativeWebSearchProvider(
     ...(factoryOptions.extra ?? {}),
     webSearch: true,
     searchMode: "on",
-    ...(webSearchOptions !== undefined
-      ? { webSearchOptions }
-      : {}),
+    ...(webSearchOptions !== undefined ? { webSearchOptions } : {}),
   };
   const providerFactory = opts.providerFactory ?? createProvider;
   try {
@@ -1049,12 +1055,16 @@ function xSearchOptionsFromArgs(
 ): LLMXSearchConfig | undefined {
   const allowed = Array.isArray(args.allowed_x_handles)
     ? args.allowed_x_handles
-        .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+        .filter(
+          (v): v is string => typeof v === "string" && v.trim().length > 0,
+        )
         .map((v) => v.trim())
     : undefined;
   const excluded = Array.isArray(args.excluded_x_handles)
     ? args.excluded_x_handles
-        .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+        .filter(
+          (v): v is string => typeof v === "string" && v.trim().length > 0,
+        )
         .map((v) => v.trim())
     : undefined;
   const fromDate =
@@ -1299,7 +1309,10 @@ function validateWebFetchFinalUrl(raw: string): string {
   return validateWebFetchUrl(raw, { upgradeHttp: false });
 }
 
-function normalizeWebFetchRedirectUrl(currentUrl: string, location: string): string {
+function normalizeWebFetchRedirectUrl(
+  currentUrl: string,
+  location: string,
+): string {
   const current = new URL(currentUrl);
   const next = new URL(location, currentUrl);
   const validated = validateWebFetchFinalUrl(next.toString());
@@ -1316,9 +1329,11 @@ function validateWebFetchUrl(
   raw: string,
   opts: { readonly upgradeHttp: boolean },
 ): string {
-  const input = opts.upgradeHttp && raw.slice(0, "http://".length).toLowerCase() === "http://"
-    ? `https://${raw.slice("http://".length)}`
-    : raw;
+  const input =
+    opts.upgradeHttp &&
+    raw.slice(0, "http://".length).toLowerCase() === "http://"
+      ? `https://${raw.slice("http://".length)}`
+      : raw;
   const url = new URL(input);
   if (url.protocol !== "https:") {
     throw new Error("URL must use https");
@@ -1403,7 +1418,9 @@ function expandWebFetchIPv6Groups(address: string): number[] | null {
     const octets = v4.split(".").map(Number);
     if (
       octets.length !== 4 ||
-      octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+      octets.some(
+        (octet) => !Number.isInteger(octet) || octet < 0 || octet > 255,
+      )
     ) {
       return null;
     }
@@ -1483,10 +1500,7 @@ function strictArgs(
   return null;
 }
 
-function callIdFromArgs(
-  args: Record<string, unknown>,
-  prefix: string,
-): string {
+function callIdFromArgs(args: Record<string, unknown>, prefix: string): string {
   return stringValue(args.__callId) ?? `${prefix}-${randomUUID()}`;
 }
 
@@ -1503,7 +1517,10 @@ function getCsvAgentJobsRepository(
   return repo;
 }
 
-function currentAgentContext(session: Session, args: Record<string, unknown>): {
+function currentAgentContext(
+  session: Session,
+  args: Record<string, unknown>,
+): {
   readonly threadId: ThreadId;
   readonly agentPath: AgentPath;
   readonly agentNickname?: string;
@@ -1536,11 +1553,16 @@ function getSessionOrError(opts: ModelFacingToolOptions): Session | ToolResult {
   return session;
 }
 
-function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly Tool[] {
+function createMultiAgentV2RuntimeTools(
+  opts: ModelFacingToolOptions,
+): readonly Tool[] {
   const roleWorkspace = createAgentRoleWorkspace(opts.workspaceRoot);
   loadMarkdownAgentRoles(roleWorkspace);
 
-  const emit = (session: Session, msg: Parameters<Session["emit"]>[0]["msg"]): void => {
+  const emit = (
+    session: Session,
+    msg: Parameters<Session["emit"]>[0]["msg"],
+  ): void => {
     session.emit({
       id: session.nextInternalSubId(),
       msg,
@@ -1582,7 +1604,10 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
     const csvPath = stringValue(args.csv_path)!;
     const idColumn = stringValue(args.id_column);
     const outputCsvPath = stringValue(args.output_csv_path);
-    const maxConcurrencyArg = optionalUnsignedIntegerArg(args, "max_concurrency");
+    const maxConcurrencyArg = optionalUnsignedIntegerArg(
+      args,
+      "max_concurrency",
+    );
     if (isToolResult(maxConcurrencyArg)) return maxConcurrencyArg;
     const maxWorkersArg = optionalUnsignedIntegerArg(args, "max_workers");
     if (isToolResult(maxWorkersArg)) return maxWorkersArg;
@@ -1845,77 +1870,77 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
 
 function createMcpResourceTools(opts: ModelFacingToolOptions): readonly Tool[] {
   const listTool = (name: string): Tool => ({
-      name,
-      description: "List available resources from configured MCP servers.",
-      metadata: toolMetadata("mcp", {
-        deferred: true,
-        keywords: ["mcp", "resource", "list"],
-      }),
-      isReadOnly: true,
-      recoveryCategory: "idempotent",
-      inputSchema: {
-        type: "object",
-        properties: { server: { type: "string" } },
-        additionalProperties: false,
-      },
-      execute: async (args) => {
-        const sessionOrError = getSessionOrError(opts);
-        if (!("conversationId" in sessionOrError)) return sessionOrError;
-        const server = stringValue(args.server);
-        const signal = abortSignalFromArgs(args);
-        const resources =
-          server !== undefined
-            ? await sessionOrError.services.mcpManager.getResourcesByServer?.(
-                server,
-                signal,
-              )
-            : await sessionOrError.services.mcpManager.getResources?.(signal);
-        if (resources === undefined) {
-          return json({ error: "MCP resource listing is not available" }, true);
-        }
-        return json({ resources });
-      },
-    });
+    name,
+    description: "List available resources from configured MCP servers.",
+    metadata: toolMetadata("mcp", {
+      deferred: true,
+      keywords: ["mcp", "resource", "list"],
+    }),
+    isReadOnly: true,
+    recoveryCategory: "idempotent",
+    inputSchema: {
+      type: "object",
+      properties: { server: { type: "string" } },
+      additionalProperties: false,
+    },
+    execute: async (args) => {
+      const sessionOrError = getSessionOrError(opts);
+      if (!("conversationId" in sessionOrError)) return sessionOrError;
+      const server = stringValue(args.server);
+      const signal = abortSignalFromArgs(args);
+      const resources =
+        server !== undefined
+          ? await sessionOrError.services.mcpManager.getResourcesByServer?.(
+              server,
+              signal,
+            )
+          : await sessionOrError.services.mcpManager.getResources?.(signal);
+      if (resources === undefined) {
+        return json({ error: "MCP resource listing is not available" }, true);
+      }
+      return json({ resources });
+    },
+  });
   const readTool = (name: string): Tool => ({
-      name,
-      description: "Read a specific MCP resource by server and URI.",
-      metadata: toolMetadata("mcp", {
-        deferred: true,
-        keywords: ["mcp", "resource", "read"],
-      }),
-      isReadOnly: true,
-      recoveryCategory: "idempotent",
-      inputSchema: {
-        type: "object",
-        properties: {
-          server: { type: "string" },
-          uri: { type: "string" },
-          resource: { type: "string" },
-        },
-        additionalProperties: false,
+    name,
+    description: "Read a specific MCP resource by server and URI.",
+    metadata: toolMetadata("mcp", {
+      deferred: true,
+      keywords: ["mcp", "resource", "read"],
+    }),
+    isReadOnly: true,
+    recoveryCategory: "idempotent",
+    inputSchema: {
+      type: "object",
+      properties: {
+        server: { type: "string" },
+        uri: { type: "string" },
+        resource: { type: "string" },
       },
-      execute: async (args) => {
-        const sessionOrError = getSessionOrError(opts);
-        if (!("conversationId" in sessionOrError)) return sessionOrError;
-        const server = stringValue(args.server);
-        const uri = stringValue(args.uri) ?? stringValue(args.resource);
-        if (!server || !uri) {
-          return json({ error: "server and uri are required" }, true);
-        }
-        const signal = abortSignalFromArgs(args);
-        const resource = await sessionOrError.services.mcpManager.readResource?.(
-          `mcp.${server}.${uri}`,
-          signal,
-        );
-        if (resource === undefined) {
-          return json({ error: "MCP resource reading is not available" }, true);
-        }
-        if (resource === null) {
-          return json({ error: `resource not found: ${server} ${uri}` }, true);
-        }
-        return json({ resource });
-      },
-    });
+      additionalProperties: false,
+    },
+    execute: async (args) => {
+      const sessionOrError = getSessionOrError(opts);
+      if (!("conversationId" in sessionOrError)) return sessionOrError;
+      const server = stringValue(args.server);
+      const uri = stringValue(args.uri) ?? stringValue(args.resource);
+      if (!server || !uri) {
+        return json({ error: "server and uri are required" }, true);
+      }
+      const signal = abortSignalFromArgs(args);
+      const resource = await sessionOrError.services.mcpManager.readResource?.(
+        `mcp.${server}.${uri}`,
+        signal,
+      );
+      if (resource === undefined) {
+        return json({ error: "MCP resource reading is not available" }, true);
+      }
+      if (resource === null) {
+        return json({ error: `resource not found: ${server} ${uri}` }, true);
+      }
+      return json({ resource });
+    },
+  });
   return [
     listTool("ListMcpResourcesTool"),
     readTool("ReadMcpResourceTool"),
@@ -1970,20 +1995,28 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
           sessionId: sessionOrError.conversationId,
         })) ?? null;
       if (!rendered) {
-        const outcome = await sessionOrError.services.skillsManager.skillsForConfig(
-          sessionOrError.services.configStore?.current?.() ?? {},
-          null,
+        const outcome =
+          await sessionOrError.services.skillsManager.skillsForConfig(
+            sessionOrError.services.configStore?.current?.() ?? {},
+            null,
+          );
+        return json(
+          {
+            error: `skill not found: ${skillName}`,
+            available:
+              outcome.availableSkills?.map((entry) => entry.name) ?? [],
+          },
+          true,
         );
-        return json({
-          error: `skill not found: ${skillName}`,
-          available: outcome.availableSkills?.map((entry) => entry.name) ?? [],
-        }, true);
       }
 
       if (rendered.skill.disableModelInvocation === true) {
-        return json({
-          error: `skill is not model-invocable: ${rendered.skill.name}`,
-        }, true);
+        return json(
+          {
+            error: `skill is not model-invocable: ${rendered.skill.name}`,
+          },
+          true,
+        );
       }
 
       const modelVisibleContent = isRepositoryControlledSkillSource(
@@ -2147,7 +2180,9 @@ function isSkillAutoAllowable(skill: {
   );
 }
 
-function skillPermissionSuggestions(skillName: string): readonly PermissionUpdate[] {
+function skillPermissionSuggestions(
+  skillName: string,
+): readonly PermissionUpdate[] {
   const rules: PermissionRuleValue[] = [
     { toolName: "Skill", ruleContent: skillName },
   ];
@@ -2405,7 +2440,10 @@ function createWebFetchTool(
       }
       const maxChars = Math.max(
         1_000,
-        Math.min(numberValue(args.max_chars) ?? MAX_FETCH_CHARS, MAX_FETCH_CHARS),
+        Math.min(
+          numberValue(args.max_chars) ?? MAX_FETCH_CHARS,
+          MAX_FETCH_CHARS,
+        ),
       );
       const maxBytes = Math.max(
         MIN_FETCH_BYTES,
@@ -2438,9 +2476,12 @@ function createWebFetchTool(
         );
         if (initialPreapproved && !preapproved) {
           await response.body?.cancel().catch(() => undefined);
-          return json({
-            error: "redirect target is outside the preapproved URL scope",
-          }, true);
+          return json(
+            {
+              error: "redirect target is outside the preapproved URL scope",
+            },
+            true,
+          );
         }
         const contentType = response.headers.get("content-type") ?? "";
         const raw = await readResponseTextBounded(response, maxBytes);
@@ -2487,9 +2528,8 @@ function createWebFetchTool(
           if (extracted !== undefined) {
             let fullContentPath: string | undefined;
             try {
-              const { persistToolResult } = await import(
-                "../utils/toolResultStorage.js"
-              );
+              const { persistToolResult } =
+                await import("../utils/toolResultStorage.js");
               const persisted = await persistToolResult(
                 textBody,
                 `webfetch-${randomUUID()}`,
@@ -2521,18 +2561,21 @@ function createWebFetchTool(
             });
           }
         }
-        return json({
-          status: response.status,
-          ok: response.ok,
-          url: normalized,
-          final_url: finalUrl,
-          content_type: contentType,
-          preapproved,
-          rendered_as: renderedAs,
-          truncated: raw.truncated || body.length > maxChars,
-          prompt,
-          content: textBody,
-        }, response.ok ? undefined : true);
+        return json(
+          {
+            status: response.status,
+            ok: response.ok,
+            url: normalized,
+            final_url: finalUrl,
+            content_type: contentType,
+            preapproved,
+            rendered_as: renderedAs,
+            truncated: raw.truncated || body.length > maxChars,
+            prompt,
+            content: textBody,
+          },
+          response.ok ? undefined : true,
+        );
       } catch (error) {
         effectSignal?.throwIfAborted();
         return json({ error: `fetch failed: ${errorMessage(error)}` }, true);
@@ -2655,18 +2698,22 @@ function parseDuckDuckGoInstantAnswer(
       if (!record) {
         return [];
       }
-      const topics = arrayValue(record.Topics)
-        .flatMap((topic): Array<Record<string, unknown>> => {
+      const topics = arrayValue(record.Topics).flatMap(
+        (topic): Array<Record<string, unknown>> => {
           const topicRecord = recordValue(topic);
           return topicRecord ? [topicRecord] : [];
-        });
+        },
+      );
       if (topics.length > 0) {
         return topics;
       }
       return [record];
     })
     .map((entry) => ({
-      title: stringValue(entry.Text)?.split(" - ")[0] ?? stringValue(entry.Result) ?? "",
+      title:
+        stringValue(entry.Text)?.split(" - ")[0] ??
+        stringValue(entry.Result) ??
+        "",
       url: stringValue(entry.FirstURL) ?? "",
       snippet: stringValue(entry.Text) ?? "",
     }))
@@ -2803,7 +2850,10 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           stringValue(opts.toolsConfig?.web_search_endpoint);
         const maxResults = Math.max(
           1,
-          Math.min(numberValue(args.max_results) ?? MAX_SEARCH_RESULTS, MAX_SEARCH_RESULTS),
+          Math.min(
+            numberValue(args.max_results) ?? MAX_SEARCH_RESULTS,
+            MAX_SEARCH_RESULTS,
+          ),
         );
         const nativeResult = await runGrokNativeWebSearch(
           opts,
@@ -2861,7 +2911,8 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           DEFAULT_TIMEOUT_MS,
           effectSignal === undefined ? {} : { signal: effectSignal },
         );
-        const raw = recordValue(await response.json().catch(() => undefined)) ?? {};
+        const raw =
+          recordValue(await response.json().catch(() => undefined)) ?? {};
         const results = filterWebSearchResults(
           parseDuckDuckGoInstantAnswer(raw),
           filters,
@@ -2929,11 +2980,14 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
 }
 
 function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
-  const fileReadTool = createFileReadTool({ allowedPaths: [opts.workspaceRoot] });
+  const fileReadTool = createFileReadTool({
+    allowedPaths: [opts.workspaceRoot],
+  });
   const mapNotebookReadInput = (input: unknown): Record<string, unknown> => {
-    const record = input && typeof input === "object" && !Array.isArray(input)
-      ? (input as Record<string, unknown>)
-      : {};
+    const record =
+      input && typeof input === "object" && !Array.isArray(input)
+        ? (input as Record<string, unknown>)
+        : {};
     return {
       ...record,
       file_path: record.notebook_path,
@@ -2959,7 +3013,8 @@ function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
         },
         offset: {
           type: "number",
-          description: "Optional. Rendered notebook line number to start from (1-indexed).",
+          description:
+            "Optional. Rendered notebook line number to start from (1-indexed).",
         },
         limit: {
           type: "number",
@@ -2980,16 +3035,21 @@ function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
           message: "NotebookRead has no path permission hook",
         };
       }
-      if (!("updatedInput" in decision) || decision.updatedInput === undefined) {
+      if (
+        !("updatedInput" in decision) ||
+        decision.updatedInput === undefined
+      ) {
         return decision;
       }
-      const record = input && typeof input === "object" && !Array.isArray(input)
-        ? (input as Record<string, unknown>)
-        : {};
-      const updatedInput = typeof decision.updatedInput === "object" &&
+      const record =
+        input && typeof input === "object" && !Array.isArray(input)
+          ? (input as Record<string, unknown>)
+          : {};
+      const updatedInput =
+        typeof decision.updatedInput === "object" &&
         !Array.isArray(decision.updatedInput)
-        ? (decision.updatedInput as Record<string, unknown>)
-        : undefined;
+          ? (decision.updatedInput as Record<string, unknown>)
+          : undefined;
       if (updatedInput === undefined) {
         return decision;
       }
@@ -3017,7 +3077,10 @@ function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
         );
       }
       if (extname(filePath).toLowerCase() !== ".ipynb") {
-        return json({ error: "File must be a Jupyter notebook (.ipynb)" }, true);
+        return json(
+          { error: "File must be a Jupyter notebook (.ipynb)" },
+          true,
+        );
       }
       return fileReadTool.execute({
         file_path: filePath,
@@ -3033,7 +3096,9 @@ function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
 }
 
 function createNotebookEditTool(opts: ModelFacingToolOptions): Tool {
-  const tool = createSystemNotebookEditTool({ workspaceRoot: opts.workspaceRoot });
+  const tool = createSystemNotebookEditTool({
+    workspaceRoot: opts.workspaceRoot,
+  });
   return {
     ...tool,
     metadata: toolMetadata("coding", {
@@ -3083,10 +3148,12 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
         if (!exists || !fileStat?.isFile()) {
           return json({
             file_path: resolved,
-            diagnostics: [{
-              severity: "error",
-              message: "File not found",
-            }],
+            diagnostics: [
+              {
+                severity: "error",
+                message: "File not found",
+              },
+            ],
           });
         }
 
@@ -3095,7 +3162,10 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
           opts.getSession()?.services.sandboxExecutionBroker;
         await waitForInitialization(lspScope);
         const status = getInitializationStatus(lspScope);
-        const pendingDiagnostics = peekLSPDiagnosticsForFile(resolved, lspScope);
+        const pendingDiagnostics = peekLSPDiagnosticsForFile(
+          resolved,
+          lspScope,
+        );
         if (status.status === "failed") {
           return json({
             file_path: resolved,
@@ -3126,7 +3196,8 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
 
         let serverName: string | null = null;
         try {
-          serverName = (await manager.ensureServerStarted(resolved))?.name ?? null;
+          serverName =
+            (await manager.ensureServerStarted(resolved))?.name ?? null;
         } catch (error) {
           return json({
             file_path: resolved,
@@ -3194,7 +3265,10 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
           query,
           references: references.map((entry) => ({
             ...entry,
-            filePath: toRelativeWorkspacePath(opts.workspaceRoot, entry.filePath),
+            filePath: toRelativeWorkspacePath(
+              opts.workspaceRoot,
+              entry.filePath,
+            ),
           })),
         });
       }
@@ -3217,14 +3291,19 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
         query,
         symbols: symbols.map((symbol) => ({
           ...symbol,
-          filePath: toRelativeWorkspacePath(opts.workspaceRoot, symbol.filePath),
+          filePath: toRelativeWorkspacePath(
+            opts.workspaceRoot,
+            symbol.filePath,
+          ),
         })),
       });
     },
   };
 }
 
-function createPlanAndMessageTools(opts: ModelFacingToolOptions): readonly Tool[] {
+function createPlanAndMessageTools(
+  opts: ModelFacingToolOptions,
+): readonly Tool[] {
   const sendMessage = (name: string): Tool => ({
     name,
     description:
@@ -3272,7 +3351,11 @@ function createPlanAndMessageTools(opts: ModelFacingToolOptions): readonly Tool[
       },
       execute: async (args) => {
         const session = opts.getSession();
-        const planPath = join(stateRoot(opts), "plans", `${session?.conversationId ?? "default"}.md`);
+        const planPath = join(
+          stateRoot(opts),
+          "plans",
+          `${session?.conversationId ?? "default"}.md`,
+        );
         let plan = "";
         try {
           plan = await readFile(planPath, "utf8");
@@ -3318,18 +3401,30 @@ function validateCron(schedule: string): boolean {
 export async function resumeInterruptedAgentJobs(opts: {
   readonly session: Session;
   readonly workspaceRoot: string;
+  readonly signal?: AbortSignal;
 }): Promise<number> {
+  opts.signal?.throwIfAborted();
   const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
   if (repository.listJobs({ status: "running" }).length === 0) {
     return 0;
   }
   const { control, registry } = ensureAgentControl(opts.session);
-  const { backgroundTaskLifecycle, registerAgentThreadTask } = await import(
-    "../tasks/index.js"
-  );
+  const { backgroundTaskLifecycle, registerAgentThreadTask } =
+    await import("../tasks/index.js");
+  opts.signal?.throwIfAborted();
   const outstandingThreadIds = new Set<string>();
+  const cancelOutstandingThreads = async (): Promise<void> => {
+    const ids = [...outstandingThreadIds];
+    outstandingThreadIds.clear();
+    await Promise.all(
+      ids.map((id) =>
+        control.shutdown(id, "agent_job_cancelled").catch(() => {}),
+      ),
+    );
+  };
   const spawn: AgentJobSpawn = {
     async spawn(ctx: AgentJobSpawnContext) {
+      opts.signal?.throwIfAborted();
       const outcome = await delegate({
         parent: opts.session,
         parentPath: ROOT_AGENT_PATH,
@@ -3339,6 +3434,14 @@ export async function resumeInterruptedAgentJobs(opts: {
         agentName: ctx.itemId,
         runInBackground: true,
       });
+      if (opts.signal?.aborted === true) {
+        if (outcome.kind !== "rejected") {
+          await control
+            .shutdown(outcome.thread.threadId, "session_shutdown")
+            .catch(() => {});
+        }
+        opts.signal.throwIfAborted();
+      }
       if (outcome.kind === "rejected") {
         throw new Error(
           `agent-jobs resume spawn rejected for item ${ctx.itemId}: ${outcome.reason}`,
@@ -3362,29 +3465,50 @@ export async function resumeInterruptedAgentJobs(opts: {
       return { threadId: thread.threadId, threadFinished };
     },
     async cancelOutstanding() {
-      const ids = [...outstandingThreadIds];
-      outstandingThreadIds.clear();
-      await Promise.all(
-        ids.map((id) =>
-          control.shutdown(id, "agent_job_cancelled").catch(() => {}),
-        ),
-      );
+      await cancelOutstandingThreads();
     },
   };
+  opts.signal?.throwIfAborted();
   const resumed = await resumeAgentJobsFromRepository({ repository, spawn });
+  if (opts.signal?.aborted === true) {
+    await cancelOutstandingThreads();
+    opts.signal.throwIfAborted();
+  }
   return resumed.length;
 }
 
-export async function startCronSchedulerRunner(): Promise<void> {
+export async function startCronSchedulerRunner(opts: {
+  readonly conversationId: string;
+  readonly workspaceRoot: string;
+  readonly signal?: AbortSignal;
+}): Promise<void> {
+  opts.signal?.throwIfAborted();
+  if (opts.conversationId.trim().length === 0) {
+    throw new Error("Cron scheduler requires an owning conversation");
+  }
+  if (opts.workspaceRoot.trim().length === 0) {
+    throw new Error("Cron scheduler requires an owning workspace root");
+  }
   const { setScheduledTasksEnabled } = await import("../bootstrap/state.js");
+  opts.signal?.throwIfAborted();
   const { getCronScheduler } = await import("../utils/cronScheduler.js");
+  opts.signal?.throwIfAborted();
   setScheduledTasksEnabled(true);
   const scheduler = getCronScheduler();
-  scheduler.start();
+  scheduler.start({
+    queueOwner: {
+      kind: "session",
+      conversationId: opts.conversationId,
+    },
+    workspaceRoot: opts.workspaceRoot,
+  });
   await scheduler.reschedule();
+  opts.signal?.throwIfAborted();
 }
 
-function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool[] {
+function createCronAndWorkflowTools(
+  opts: ModelFacingToolOptions,
+): readonly Tool[] {
   return [
     {
       name: "CronCreate",
@@ -3411,7 +3535,7 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
           announceChannel: {
             type: "string",
             description:
-              "Gateway channel id to deliver the result to (e.g. \"telegram\", \"stdio\"). Requires announceTo. The job then runs in an isolated gateway session, not this one.",
+              'Gateway channel id to deliver the result to (e.g. "telegram", "stdio"). Requires announceTo. The job then runs in an isolated gateway session, not this one.',
           },
           announceTo: {
             type: "string",
@@ -3428,6 +3552,13 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         additionalProperties: false,
       },
       execute: async (args) => {
+        const conversationId = opts.getSession()?.conversationId;
+        if (typeof conversationId !== "string" || conversationId.length === 0) {
+          return json(
+            { error: "CronCreate requires an active owning conversation" },
+            true,
+          );
+        }
         const schedule = stringValue(args.cron) ?? stringValue(args.schedule);
         const prompt = stringValue(args.prompt);
         if (!schedule || !prompt) {
@@ -3436,9 +3567,8 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         if (!validateCron(schedule)) {
           return json({ error: "cron expression must have five fields" }, true);
         }
-        const { addCronTask, nextCronRunMs, normalizeDelivery } = await import(
-          "../utils/cronTasks.js"
-        );
+        const { addCronTask, nextCronRunMs, normalizeDelivery } =
+          await import("../utils/cronTasks.js");
         if (nextCronRunMs(schedule, Date.now()) === null) {
           return json({ error: `invalid cron expression: ${schedule}` }, true);
         }
@@ -3468,11 +3598,16 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
           durable,
           undefined,
           deliver,
+          { kind: "session", conversationId },
+          opts.workspaceRoot,
         );
         // Arm the real runner: without this the definition is inert.
         // (Delivery-routed jobs are skipped by this in-session runner and
         // picked up by the gateway's cron-delivery scan.)
-        await startCronSchedulerRunner();
+        await startCronSchedulerRunner({
+          conversationId,
+          workspaceRoot: opts.workspaceRoot,
+        });
         return json({
           cron: {
             id,
@@ -3501,14 +3636,23 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         additionalProperties: false,
       },
       execute: async (args) => {
+        const conversationId = opts.getSession()?.conversationId;
+        if (typeof conversationId !== "string" || conversationId.length === 0) {
+          return json(
+            { error: "CronDelete requires an active owning conversation" },
+            true,
+          );
+        }
         const id = stringValue(args.id);
         if (!id) return json({ error: "id is required" }, true);
-        const { listAllCronTasks, removeCronTasks } = await import(
-          "../utils/cronTasks.js"
+        const { listAllCronTasks, removeCronTasks } =
+          await import("../utils/cronTasks.js");
+        const before = await listAllCronTasks(
+          opts.workspaceRoot,
+          conversationId,
         );
-        const before = await listAllCronTasks();
         const existed = before.some((task) => task.id === id);
-        await removeCronTasks([id]);
+        await removeCronTasks([id], opts.workspaceRoot, conversationId);
         const { getCronScheduler } = await import("../utils/cronScheduler.js");
         await getCronScheduler().reschedule();
         return json({ deleted: existed, id });
@@ -3530,8 +3674,18 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         additionalProperties: false,
       },
       execute: async () => {
+        const conversationId = opts.getSession()?.conversationId;
+        if (typeof conversationId !== "string" || conversationId.length === 0) {
+          return json(
+            { error: "CronList requires an active owning conversation" },
+            true,
+          );
+        }
         const { listAllCronTasks } = await import("../utils/cronTasks.js");
-        const tasks = await listAllCronTasks();
+        const tasks = await listAllCronTasks(
+          opts.workspaceRoot,
+          conversationId,
+        );
         return json({
           crons: tasks.map((task) => ({
             id: task.id,
@@ -3573,9 +3727,14 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
           join(opts.workspaceRoot, ".agenc", "workflows", `${name}.json`),
           join(stateRoot(opts), "workflows", `${name}.json`),
         ];
-        const workflowPath = candidates.find((candidate) => existsSync(candidate));
+        const workflowPath = candidates.find((candidate) =>
+          existsSync(candidate),
+        );
         if (!workflowPath) {
-          return json({ error: `workflow not found: ${name}`, searched: candidates }, true);
+          return json(
+            { error: `workflow not found: ${name}`, searched: candidates },
+            true,
+          );
         }
         const workflow = JSON.parse(await readFile(workflowPath, "utf8")) as {
           command?: string;
@@ -3591,10 +3750,8 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
             );
           }
           const { control, registry } = ensureAgentControl(session);
-          const {
-            runAgentWorkflow,
-            WorkflowValidationError,
-          } = await import("../agents/workflow-runner.js");
+          const { runAgentWorkflow, WorkflowValidationError } =
+            await import("../agents/workflow-runner.js");
           try {
             const run = await runAgentWorkflow({
               session,
@@ -3617,7 +3774,10 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
           }
         }
         if (!workflow.command) {
-          return json({ error: `workflow ${name} has no command or steps` }, true);
+          return json(
+            { error: `workflow ${name} has no command or steps` },
+            true,
+          );
         }
         if (!opts.unifiedExecManager) {
           return json({ error: "unified exec manager is not available" }, true);
@@ -3638,7 +3798,10 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         });
         return {
           content: formatUnifiedExecToolContent(output),
-          isError: output.exitCode !== null && output.exitCode !== 0 ? true : undefined,
+          isError:
+            output.exitCode !== null && output.exitCode !== 0
+              ? true
+              : undefined,
           codeModeResult: unifiedExecCodeModeResult(output),
         };
       },
@@ -3706,7 +3869,10 @@ function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
         });
         return {
           content: formatUnifiedExecToolContent(output),
-          isError: output.exitCode !== null && output.exitCode !== 0 ? true : undefined,
+          isError:
+            output.exitCode !== null && output.exitCode !== 0
+              ? true
+              : undefined,
           codeModeResult: unifiedExecCodeModeResult(output),
         };
       },
@@ -3738,7 +3904,9 @@ function createRemoteTriggerTool(opts: ModelFacingToolOptions): Tool {
       const state = await readState(opts);
       if (action === "get") {
         const id = stringValue(args.trigger_id);
-        return json({ trigger: state.crons.find((cron) => cron.id === id) ?? null });
+        return json({
+          trigger: state.crons.find((cron) => cron.id === id) ?? null,
+        });
       }
       return json({ triggers: state.crons });
     },
@@ -3789,6 +3957,7 @@ export function createModelFacingTools(
     ...createCronAndWorkflowTools(opts),
     createRemoteTriggerTool(opts),
     ...createPowerShellTool(opts),
+    createEditorProposalTool(),
     createSessionStructuredOutputTool(opts),
   ];
 }

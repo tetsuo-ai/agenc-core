@@ -143,6 +143,74 @@ describe("Session idle-input → mailbox merge", () => {
     expect(session.hasPendingInput()).toBe(false);
   });
 
+  it("keeps Editor-owned input invisible to Agent drains until the exact Editor interaction claims it", async () => {
+    const session = buildSession();
+    const editorOwnership = {
+      workspaceView: "editor" as const,
+      editorInteractionId: "editor-owned-input",
+    };
+    session.enqueueIdleInput(
+      { role: "user", content: "EDITOR_ONLY_SENTINEL" },
+      editorOwnership,
+    );
+    session.enqueueIdleInput({
+      role: "user",
+      content: "legacy Agent input",
+    });
+    session.mailbox.send({
+      author: "/root/worker",
+      recipient: "/root",
+      content: "peer receipt",
+      triggerTurn: true,
+    });
+
+    expect(session.hasPendingInput({ workspaceView: "agent" })).toBe(true);
+    const agentDrain = session.drainPendingInputMessages({
+      workspaceView: "agent",
+    });
+    expect(JSON.stringify(agentDrain)).not.toContain("EDITOR_ONLY_SENTINEL");
+    expect(agentDrain).toEqual([
+      { role: "user", content: "legacy Agent input" },
+      expect.objectContaining({
+        role: "user",
+        content: expect.stringContaining("peer receipt"),
+      }),
+    ]);
+    expect(session.hasPendingInput({ workspaceView: "agent" })).toBe(false);
+    expect(session.drainIdleInput()).toEqual([]);
+    await expect(
+      session.waitForMailboxChange(5, { workspaceView: "agent" }),
+    ).resolves.toBe(false);
+
+    expect(session.hasPendingInput(editorOwnership)).toBe(true);
+    expect(session.drainPendingInputMessages(editorOwnership)).toEqual([
+      { role: "user", content: "EDITOR_ONLY_SENTINEL" },
+    ]);
+    expect(session.hasPendingInput(editorOwnership)).toBe(false);
+  });
+
+  it("does not wake an Agent waiter for Editor-owned input", async () => {
+    const session = buildSession();
+    const waiting = session.waitForMailboxChange(20, {
+      workspaceView: "agent",
+    });
+    session.enqueueIdleInput(
+      { role: "user", content: "editor only" },
+      {
+        workspaceView: "editor",
+        editorInteractionId: "editor-wait",
+      },
+    );
+
+    await expect(waiting).resolves.toBe(false);
+    expect(
+      session.hasPendingInput({
+        workspaceView: "editor",
+        editorInteractionId: "editor-wait",
+      }),
+    ).toBe(true);
+  });
+
   it("waitForMailboxChange resolves when mailbox traffic arrives", async () => {
     const session = buildSession();
     const waiting = session.waitForMailboxChange(1_000);
@@ -157,10 +225,10 @@ describe("Session idle-input → mailbox merge", () => {
 
   it("waitForMailboxChange does not lose traffic arriving before its sequence snapshot", async () => {
     const session = buildSession();
-    const originalHasPending = session.mailbox.hasPending.bind(session.mailbox);
+    const originalHasPending = session.hasPendingInput.bind(session);
     let injected = false;
-    session.mailbox.hasPending = () => {
-      const pending = originalHasPending();
+    session.hasPendingInput = (ownership) => {
+      const pending = originalHasPending(ownership);
       if (!injected) {
         injected = true;
         session.mailbox.send({

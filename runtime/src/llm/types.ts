@@ -15,11 +15,7 @@ import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js"
  * Message role in a conversation
  */
 export type MessageRole =
-  | "system"
-  | "developer"
-  | "user"
-  | "assistant"
-  | "tool";
+  "system" | "developer" | "user" | "assistant" | "tool";
 
 /**
  * Local assistant message phase for long-running/tool-heavy flows.
@@ -277,9 +273,7 @@ export interface LLMRequestMetrics {
  * Provider-native compaction fallback reasons when an opaque server-side
  * compaction mode cannot stay enabled for a request.
  */
-export type LLMCompactionFallbackReason =
-  | "unsupported"
-  | "request_rejected";
+export type LLMCompactionFallbackReason = "unsupported" | "request_rejected";
 
 /**
  * Opaque provider-managed state item metadata.
@@ -316,8 +310,6 @@ export interface LLMCompactionDiagnostics {
   readonly fallbackReason?: LLMCompactionFallbackReason;
 }
 
-
-
 export type LLMContextWindowSource =
   | "explicit_config"
   | "grok_model_catalog"
@@ -351,7 +343,6 @@ export interface LLMProviderExecutionProfile {
    */
   readonly providerExecutionHandle?: object;
 }
-
 
 /**
  * Optional turn-time tool routing hints passed to provider calls.
@@ -575,9 +566,9 @@ export type LLMToolChoice =
   | "required"
   | "none"
   | {
-    readonly type: "function";
-    readonly name: string;
-  };
+      readonly type: "function";
+      readonly name: string;
+    };
 
 /**
  * Optional provider call options.
@@ -625,7 +616,7 @@ export interface LLMChatOptions {
    * prompt-cache routing hint (xAI `prompt_cache_key`, etc.). Pure
    * optimization — has no effect on correctness. No server-side
    * conversation state is implied.
-  */
+   */
   readonly promptCacheKey?: string;
   /**
    * For fire-and-forget fork turns, avoid writing the fork's tail into
@@ -884,6 +875,24 @@ export interface LLMProviderSessionForkOptions {
   readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
 }
 
+/** Provider-native fill-in-the-middle request for editor prediction. */
+export interface LLMCodePredictionRequest {
+  readonly prefix: string;
+  readonly suffix: string;
+  readonly language?: string;
+  readonly path: string;
+  readonly cursor: {
+    readonly line: number;
+    readonly byteColumn: number;
+  };
+}
+
+export interface LLMCodePredictionResponse {
+  readonly text: string;
+  readonly model?: string;
+  readonly usage?: LLMUsage;
+}
+
 /**
  * Core LLM provider interface that all adapters implement
  */
@@ -896,6 +905,14 @@ export interface LLMProvider {
    * unconfigured streams remain unbounded.
    */
   readonly suggestedStreamIdleTimeoutMs?: number;
+  /**
+   * Optional low-latency fill-in-the-middle path. Implementations must remain
+   * tool-free and transcript-free; callers fall back to `chat` when absent.
+   */
+  predictCode?(
+    request: LLMCodePredictionRequest,
+    options?: LLMChatOptions,
+  ): Promise<LLMCodePredictionResponse>;
   chat(messages: LLMMessage[], options?: LLMChatOptions): Promise<LLMResponse>;
   chatStream(
     messages: LLMMessage[],
@@ -1012,7 +1029,9 @@ function normalizeToolArguments(
     return finalizeParsed(JSON.parse(argumentsRaw) as unknown);
   } catch {
     try {
-      return finalizeParsed(JSON.parse(decodeHtmlEntities(argumentsRaw)) as unknown);
+      return finalizeParsed(
+        JSON.parse(decodeHtmlEntities(argumentsRaw)) as unknown,
+      );
     } catch {
       const decoded = decodeHtmlEntities(argumentsRaw);
       if (

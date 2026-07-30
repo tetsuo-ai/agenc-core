@@ -135,6 +135,48 @@ describe("evaluateStopHooks", () => {
     expect(state.stopHookBlockingCount).toBe(1);
   });
 
+  test("Editor interactions never execute configured Stop hooks", async () => {
+    const log = new EventLog();
+    let called = 0;
+    const session = mkSession(log, [
+      {
+        name: "unsafe-editor-stop",
+        run: async () => {
+          called += 1;
+          return {
+            shouldStop: false,
+            shouldBlock: true,
+            continuationFragments: ["must not run"],
+          };
+        },
+      },
+    ]);
+
+    const result = await evaluateStopHooks(
+      mkState(),
+      mkCtx({
+        editorInteraction: {
+          interactionId: "interaction-stop-ask",
+          kind: "ask",
+          policy: "read_only",
+          editorInstanceId: "editor-stop",
+          bufferHandle: 8,
+          changedtick: 2,
+          contentSha256: "a".repeat(64),
+          path: "/tmp/example.ts",
+          range: {
+            start: { line: 1, column: 0 },
+            end: { line: 1, column: 1 },
+          },
+        },
+      }),
+      session,
+    );
+
+    expect(called).toBe(0);
+    expect(result).toEqual({ allowStop: true, blocking: false });
+  });
+
   test("I-17: MAX_STOP_HOOK_BLOCKS reached → force terminate + error event", async () => {
     const log = new EventLog();
     const session = mkSession(log, [
@@ -151,7 +193,8 @@ describe("evaluateStopHooks", () => {
     const errors: string[] = [];
     log.subscribe((e) => {
       const p = e.msg.payload as { cause?: string };
-      if (e.msg.type === "error" && p.cause === "stop_hook_loop") errors.push(p.cause);
+      if (e.msg.type === "error" && p.cause === "stop_hook_loop")
+        errors.push(p.cause);
     });
     const result = await evaluateStopHooks(state, mkCtx(), session);
     expect(result.allowStop).toBe(true);
@@ -180,7 +223,8 @@ describe("evaluateStopHooks", () => {
     const errors: string[] = [];
     log.subscribe((e) => {
       const p = e.msg.payload as { cause?: string };
-      if (e.msg.type === "error" && p.cause === "stop_hook_threw") errors.push(p.cause);
+      if (e.msg.type === "error" && p.cause === "stop_hook_threw")
+        errors.push(p.cause);
     });
     const result = await evaluateStopHooks(mkState(), mkCtx(), session);
     expect(result.allowStop).toBe(true);
@@ -253,10 +297,16 @@ describe("evaluateStopHooks", () => {
         }),
       },
     ]);
-    const errors: Array<{ cause?: string; message?: string; stack?: string }> = [];
+    const errors: Array<{ cause?: string; message?: string; stack?: string }> =
+      [];
     log.subscribe((e) => {
-      const p = e.msg.payload as { cause?: string; message?: string; stack?: string };
-      if (e.msg.type === "error" && p.cause === "stop_hook_threw") errors.push(p);
+      const p = e.msg.payload as {
+        cause?: string;
+        message?: string;
+        stack?: string;
+      };
+      if (e.msg.type === "error" && p.cause === "stop_hook_threw")
+        errors.push(p);
     });
     const state = mkState();
     const result = await evaluateStopHooks(state, mkCtx(), session);
@@ -284,7 +334,8 @@ describe("evaluateStopHooks", () => {
     const errors: Array<{ cause?: string; stack?: string }> = [];
     log.subscribe((e) => {
       const p = e.msg.payload as { cause?: string; stack?: string };
-      if (e.msg.type === "error" && p.cause === "stop_hook_threw") errors.push(p);
+      if (e.msg.type === "error" && p.cause === "stop_hook_threw")
+        errors.push(p);
     });
     const state = mkState();
     const result = await evaluateStopHooks(state, mkCtx(), session);
@@ -492,5 +543,61 @@ describe("executeStopFailureHooks", () => {
     });
     await executeStopFailureHooks(state, mkCtx(), session);
     expect(called).toBe(1);
+  });
+
+  test("Editor interactions never execute configured StopFailure hooks", async () => {
+    const log = new EventLog();
+    let called = 0;
+    const session = mkSession(
+      log,
+      [],
+      [
+        {
+          name: "unsafe-editor-stop-failure",
+          run: async () => {
+            called += 1;
+            return {
+              shouldStop: true,
+              shouldBlock: false,
+              continuationFragments: [],
+            };
+          },
+        },
+      ],
+    );
+    const state = mkState({
+      assistantMessages: [
+        {
+          uuid: "a",
+          role: "assistant",
+          text: "",
+          toolCalls: [],
+          apiError: "context_window_exceeded",
+        },
+      ],
+    });
+
+    await executeStopFailureHooks(
+      state,
+      mkCtx({
+        editorInteraction: {
+          interactionId: "interaction-stop-failure-ask",
+          kind: "ask",
+          policy: "read_only",
+          editorInstanceId: "editor-stop-failure",
+          bufferHandle: 9,
+          changedtick: 2,
+          contentSha256: "b".repeat(64),
+          path: "/tmp/example.ts",
+          range: {
+            start: { line: 1, column: 0 },
+            end: { line: 1, column: 1 },
+          },
+        },
+      }),
+      session,
+    );
+
+    expect(called).toBe(0);
   });
 });

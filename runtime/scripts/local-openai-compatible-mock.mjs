@@ -1,6 +1,12 @@
+import { appendFile, mkdir } from "node:fs/promises";
 import { createServer } from "node:http";
+import { join } from "node:path";
 
 export const MOCK_MODEL = "local-pipeline-model";
+export const MOCK_CODE_PREDICTION_TRIGGER = "PREDICTION_E2E_PREFIX";
+export const MOCK_CODE_PREDICTION_TEXT = '"PREDICTION_E2E_ACCEPTED";';
+export const MOCK_CODE_PREDICTION_LOG_FILENAME =
+  "mock-code-prediction-requests.jsonl";
 
 export function buildMockProviderEnv(baseUrl, baseEnv = process.env) {
   const env = {
@@ -42,7 +48,7 @@ function userPromptFromMessages(messages) {
     if (typeof content === "string") return content;
     if (Array.isArray(content)) {
       return content
-        .map((part) => typeof part?.text === "string" ? part.text : "")
+        .map((part) => (typeof part?.text === "string" ? part.text : ""))
         .join(" ");
     }
   }
@@ -50,7 +56,137 @@ function userPromptFromMessages(messages) {
 }
 
 function toolResultCount(messages) {
-  return messages.filter((message) => message?.role === "tool").length;
+  let latestUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      latestUserIndex = index;
+      break;
+    }
+  }
+  return messages
+    .slice(latestUserIndex + 1)
+    .filter((message) => message?.role === "tool").length;
+}
+
+function messageText(message) {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => (typeof part?.text === "string" ? part.text : ""))
+    .join("\n");
+}
+
+export function isIsolatedCodePredictionRequest(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const systemMessages = messages.filter(
+    (message) => message?.role === "system",
+  );
+  const tools = Array.isArray(body?.tools) ? body.tools : [];
+  return (
+    messages.length === 2 &&
+    systemMessages.length === 1 &&
+    messageText(systemMessages[0]).includes(
+      "You are a low-latency code completion engine.",
+    ) &&
+    messages.every(
+      (message) => message?.role === "system" || message?.role === "user",
+    ) &&
+    tools.length === 0
+  );
+}
+
+export function codePredictionTextForRequest(body) {
+  if (!isIsolatedCodePredictionRequest(body)) return null;
+  const prompt = userPromptFromMessages(body.messages);
+  return prompt.includes(MOCK_CODE_PREDICTION_TRIGGER)
+    ? MOCK_CODE_PREDICTION_TEXT
+    : "OK";
+}
+
+async function recordCodePredictionRequest(body) {
+  if (
+    process.env.AGENC_TUI_E2E_RECORD_MOCK_PREDICTIONS !== "1" ||
+    typeof process.env.AGENC_HOME !== "string" ||
+    process.env.AGENC_HOME.length === 0
+  ) {
+    return;
+  }
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const tools = Array.isArray(body?.tools) ? body.tools : [];
+  const logPath = join(
+    process.env.AGENC_HOME,
+    MOCK_CODE_PREDICTION_LOG_FILENAME,
+  );
+  await mkdir(process.env.AGENC_HOME, { recursive: true, mode: 0o700 });
+  await appendFile(
+    logPath,
+    `${JSON.stringify({
+      kind: "code_prediction",
+      model: body?.model ?? null,
+      messageRoles: messages.map((message) => message?.role ?? null),
+      toolCount: tools.length,
+      hasTrigger: userPromptFromMessages(messages).includes(
+        MOCK_CODE_PREDICTION_TRIGGER,
+      ),
+    })}\n`,
+    { encoding: "utf8", mode: 0o600 },
+  );
+}
+
+export function editorInteractionIdentity(messages) {
+  const marker = "The immutable editor revision identity is:";
+  const policyMessage = [...messages].reverse().find((message) => {
+    if (message?.role !== "system" && message?.role !== "developer") {
+      return false;
+    }
+    const text = messageText(message);
+    return (
+      text.includes("<editor_interaction_policy>") && text.includes(marker)
+    );
+  });
+  const policyText = messageText(policyMessage);
+  const markerIndex = policyText.lastIndexOf(marker);
+  if (markerIndex < 0) return null;
+  const identityLine = policyText
+    .slice(markerIndex + marker.length)
+    .trimStart()
+    .split(/\r?\n/, 1)[0];
+  if (!identityLine) return null;
+  try {
+    const identity = JSON.parse(identityLine);
+    return identity && typeof identity === "object" ? identity : null;
+  } catch {
+    return null;
+  }
+}
+
+export function editorSnapshotLine(messages, needle, startLine) {
+  const latestUser = [...messages]
+    .reverse()
+    .find((message) => message?.role === "user");
+  const content = messageText(latestUser);
+  const lines = content.split(/\r?\n/);
+  const workspaceStart = lines.findIndex((line) =>
+    /^<workspace_data\b[^>]*\borigin="embedded editor /u.test(line),
+  );
+  if (workspaceStart < 0) return null;
+  const workspaceEnd = lines.findIndex(
+    (line, index) => index > workspaceStart && line === "</workspace_data>",
+  );
+  if (workspaceEnd < 0) return null;
+  const metadataIndex = lines.findIndex(
+    (line, index) =>
+      index > workspaceStart &&
+      index < workspaceEnd &&
+      (line.startsWith("Editor context metadata: ") ||
+        /\bExact editor range:\s*\{/u.test(line)),
+  );
+  if (metadataIndex < 0) return null;
+  const offset = lines
+    .slice(metadataIndex + 1, workspaceEnd)
+    .findIndex((line) => line === needle);
+  return offset < 0 ? null : startLine + offset;
 }
 
 function completionForPrompt(prompt) {
@@ -62,11 +198,13 @@ function completionForPrompt(prompt) {
     return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
   }
   const singleWord =
-    /\b(?:reply with|say only)\s+(?:the\s+)?(?:single\s+)?word\s+([A-Za-z0-9_-]+)/i
-      .exec(prompt)?.[1];
+    /\b(?:reply with|say only)\s+(?:the\s+)?(?:single\s+)?word\s+([A-Za-z0-9_-]+)/i.exec(
+      prompt,
+    )?.[1];
   if (singleWord) return singleWord;
-  const literalText =
-    /\breply with the literal text\s+([A-Za-z0-9_-]+)/i.exec(prompt)?.[1];
+  const literalText = /\breply with the literal text\s+([A-Za-z0-9_-]+)/i.exec(
+    prompt,
+  )?.[1];
   if (literalText) return literalText;
   if (/RECORDED/i.test(prompt)) return "RECORDED";
   if (/\bDONE\b/i.test(prompt)) return "DONE";
@@ -85,7 +223,9 @@ function selectTool(tools, preferred, fallbackPattern) {
     if (found) return found;
   }
   if (fallbackPattern) {
-    const found = candidates.find((tool) => fallbackPattern.test(toolName(tool)));
+    const found = candidates.find((tool) =>
+      fallbackPattern.test(toolName(tool)),
+    );
     if (found) return found;
   }
   return candidates[0];
@@ -107,19 +247,23 @@ function toolArgumentsFor(tool, args) {
 function shellCommandFromPrompt(prompt) {
   return /Use the Bash tool(?: exactly twice)?\.\s*First run/i.test(prompt)
     ? null
-    : /Use the Bash tool to run(?: exactly)?:\s*([\s\S]+)/i.exec(prompt)?.[1]
-      ?.trim() ?? null;
+    : (/Use the Bash tool to run(?: exactly)?:\s*([\s\S]+)/i
+        .exec(prompt)?.[1]
+        ?.trim() ?? null);
 }
 
 function pipelineCommandsFromPrompt(prompt) {
   const match =
-    /First run only:\s*(echo\s+\S+)\.\s*Then run only:\s*(echo\s+\S+)\./i.exec(prompt);
+    /First run only:\s*(echo\s+\S+)\.\s*Then run only:\s*(echo\s+\S+)\./i.exec(
+      prompt,
+    );
   return match ? [match[1], match[2]] : null;
 }
 
 function fileReadArgsFromPrompt(prompt) {
   const path =
-    /Use the Read tool to read\s+(.+?)(?:,?\s+then\b|\s+and\s+report\b|$)/i.exec(prompt)?.[1]
+    /Use the Read tool to read\s+(.+?)(?:,?\s+then\b|\s+and\s+report\b|$)/i
+      .exec(prompt)?.[1]
       ?.trim()
       .replace(/\s*\.$/, "");
   return path ? { file_path: path } : null;
@@ -127,7 +271,9 @@ function fileReadArgsFromPrompt(prompt) {
 
 function grepArgsFromPrompt(prompt) {
   const match =
-    /Use the Grep tool[\s\S]*?search\s+(.+?)\s+for the pattern\s+'([^']+)'/i.exec(prompt);
+    /Use the Grep tool[\s\S]*?search\s+(.+?)\s+for the pattern\s+'([^']+)'/i.exec(
+      prompt,
+    );
   return match
     ? { path: match[1].trim(), pattern: match[2], output_mode: "content" }
     : null;
@@ -135,28 +281,31 @@ function grepArgsFromPrompt(prompt) {
 
 function globArgsFromPrompt(prompt) {
   const match =
-    /Use the Glob tool[\s\S]*?in\s+(.+?)\s+matching the pattern\s+'([^']+)'/i.exec(prompt);
+    /Use the Glob tool[\s\S]*?in\s+(.+?)\s+matching the pattern\s+'([^']+)'/i.exec(
+      prompt,
+    );
   return match ? { path: match[1].trim(), pattern: match[2] } : null;
 }
 
 function writeArgsFromPrompt(prompt) {
   const match =
-    /Use the Write tool to write the exact text\s+"([^"]+)"\s+to the file\s+(.+)/i.exec(prompt);
+    /Use the Write tool to write the exact text\s+"([^"]+)"\s+to the file\s+(.+)/i.exec(
+      prompt,
+    );
   return match ? { content: match[1], file_path: match[2].trim() } : null;
 }
 
 function editArgsFromPrompt(prompt) {
-  const path =
-    /Use the Read tool to read\s+(.+?),\s+then use the Edit tool/i.exec(prompt)?.[1]
-      ?.trim();
-  const replacement =
-    /replace\s+"([^"]+)"\s+with\s+"([^"]+)"/i.exec(prompt);
+  const path = /Use the Read tool to read\s+(.+?),\s+then use the Edit tool/i
+    .exec(prompt)?.[1]
+    ?.trim();
+  const replacement = /replace\s+"([^"]+)"\s+with\s+"([^"]+)"/i.exec(prompt);
   return path && replacement
     ? {
-      file_path: path,
-      old_string: replacement[1],
-      new_string: replacement[2],
-    }
+        file_path: path,
+        old_string: replacement[1],
+        new_string: replacement[2],
+      }
     : null;
 }
 
@@ -189,13 +338,87 @@ function nextPipelineToolCall(tools, prompt, completedTools) {
   return null;
 }
 
+function nextEditorPolicyProbeToolCall(prompt, completedTools) {
+  if (
+    completedTools !== 0 ||
+    !/\bEDITOR-POLICY-WRITE-ATTEMPT\b/i.test(prompt)
+  ) {
+    return null;
+  }
+  // Deliberately request a mutating tool even when the model-facing tool list
+  // omits it. The unified-workspace E2E uses this to prove the daemon enforces
+  // a cold Editor Ask as read-only, rather than relying on model compliance.
+  return {
+    tool: { function: { name: "FileWrite" } },
+    args: {
+      file_path: ".agenc-editor-policy-forbidden",
+      content: "EDITOR_POLICY_WRITE_BYPASS\n",
+    },
+  };
+}
+
+function nextEditorProposalToolCall(tools, messages, prompt, completedTools) {
+  if (completedTools !== 0 || !/\bEDITOR-PROPOSAL-E2E\b/i.test(prompt)) {
+    return null;
+  }
+  const tool = (Array.isArray(tools) ? tools : []).find(
+    (candidate) => toolName(candidate) === "EditorProposal",
+  );
+  const identity = editorInteractionIdentity(messages);
+  const rangeStartLine = identity?.range?.start?.line;
+  const markerLine = Number.isSafeInteger(rangeStartLine)
+    ? editorSnapshotLine(messages, "SHARED_WORKSPACE_MARK", rangeStartLine)
+    : null;
+  if (
+    !tool ||
+    !identity ||
+    typeof identity.interaction_id !== "string" ||
+    typeof identity.path !== "string" ||
+    !Number.isSafeInteger(identity.buffer_handle) ||
+    !Number.isSafeInteger(identity.base_changedtick) ||
+    typeof identity.base_content_sha256 !== "string" ||
+    !Number.isSafeInteger(markerLine)
+  ) {
+    return null;
+  }
+  return {
+    tool,
+    args: {
+      version: 1,
+      interaction_id: identity.interaction_id,
+      path: identity.path,
+      buffer_handle: identity.buffer_handle,
+      base_changedtick: identity.base_changedtick,
+      base_content_sha256: identity.base_content_sha256,
+      summary: "Accept the unified workspace proposal",
+      edits: [
+        {
+          id: "e2e-shared-workspace-marker",
+          start_line: markerLine,
+          start_column: 0,
+          end_line: markerLine,
+          end_column: Buffer.byteLength("SHARED_WORKSPACE_MARK", "utf8"),
+          old_text: "SHARED_WORKSPACE_MARK",
+          new_text: "SHARED_WORKSPACE_ACCEPTED",
+        },
+      ],
+    },
+  };
+}
+
 function nextEditToolCall(tools, prompt, completedTools) {
   const editArgs = editArgsFromPrompt(prompt);
   if (editArgs && completedTools === 0) {
-    return { tool: selectTool(tools, ["FileRead", "Read"], /read/i), args: fileReadArgsFromPrompt(prompt) };
+    return {
+      tool: selectTool(tools, ["FileRead", "Read"], /read/i),
+      args: fileReadArgsFromPrompt(prompt),
+    };
   }
   if (editArgs && completedTools === 1) {
-    return { tool: selectTool(tools, ["Edit", "FileEdit"], /edit/i), args: editArgs };
+    return {
+      tool: selectTool(tools, ["Edit", "FileEdit"], /edit/i),
+      args: editArgs,
+    };
   }
 
   return null;
@@ -211,12 +434,18 @@ function nextSingleToolCall(tools, prompt, completedTools) {
 
   const readArgs = fileReadArgsFromPrompt(prompt);
   if (readArgs) {
-    return { tool: selectTool(tools, ["FileRead", "Read"], /read/i), args: readArgs };
+    return {
+      tool: selectTool(tools, ["FileRead", "Read"], /read/i),
+      args: readArgs,
+    };
   }
 
   const grepArgs = grepArgsFromPrompt(prompt);
   if (grepArgs) {
-    return { tool: selectTool(tools, ["Grep"], /grep|search/i), args: grepArgs };
+    return {
+      tool: selectTool(tools, ["Grep"], /grep|search/i),
+      args: grepArgs,
+    };
   }
 
   const globArgs = globArgsFromPrompt(prompt);
@@ -226,17 +455,24 @@ function nextSingleToolCall(tools, prompt, completedTools) {
 
   const writeArgs = writeArgsFromPrompt(prompt);
   if (writeArgs) {
-    return { tool: selectTool(tools, ["Write", "FileWrite"], /write/i), args: writeArgs };
+    return {
+      tool: selectTool(tools, ["Write", "FileWrite"], /write/i),
+      args: writeArgs,
+    };
   }
 
   return null;
 }
 
-function nextToolCall(body, prompt, completedTools) {
+function nextToolCall(body, messages, prompt, completedTools) {
   const tools = body.tools;
-  return nextPipelineToolCall(tools, prompt, completedTools)
-    ?? nextEditToolCall(tools, prompt, completedTools)
-    ?? nextSingleToolCall(tools, prompt, completedTools);
+  return (
+    nextEditorPolicyProbeToolCall(prompt, completedTools) ??
+    nextEditorProposalToolCall(tools, messages, prompt, completedTools) ??
+    nextPipelineToolCall(tools, prompt, completedTools) ??
+    nextEditToolCall(tools, prompt, completedTools) ??
+    nextSingleToolCall(tools, prompt, completedTools)
+  );
 }
 
 function writeSse(response, chunks) {
@@ -293,6 +529,29 @@ function respondWithText(response, body, text) {
   ]);
 }
 
+function respondWithJsonText(response, body, text) {
+  const tokenCount = Math.max(1, text.split(/\s+/).length);
+  response.writeHead(200, {
+    "Content-Type": "application/json; charset=utf-8",
+  });
+  response.end(
+    JSON.stringify({
+      id: `chatcmpl-${Date.now()}`,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model: body.model ?? MOCK_MODEL,
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: text },
+          finish_reason: "stop",
+        },
+      ],
+      usage: usage(64, tokenCount),
+    }),
+  );
+}
+
 function respondWithToolCall(response, body, call) {
   const selected = call.tool;
   const name = toolName(selected) || "exec_command";
@@ -331,9 +590,19 @@ function respondWithToolCall(response, body, call) {
 async function handleChatCompletions(request, response) {
   const body = await readRequestBody(request);
   const messages = Array.isArray(body.messages) ? body.messages : [];
+  const predictionText = codePredictionTextForRequest(body);
+  if (predictionText !== null) {
+    await recordCodePredictionRequest(body);
+    if (body.stream === true) {
+      respondWithText(response, body, predictionText);
+    } else {
+      respondWithJsonText(response, body, predictionText);
+    }
+    return;
+  }
   const prompt = userPromptFromMessages(messages);
   const completedTools = toolResultCount(messages);
-  const call = nextToolCall(body, prompt, completedTools);
+  const call = nextToolCall(body, messages, prompt, completedTools);
   if (call) {
     respondWithToolCall(response, body, call);
     return;
@@ -341,7 +610,9 @@ async function handleChatCompletions(request, response) {
   respondWithText(
     response,
     body,
-    completedTools > 0 ? "tool complete" : completionForPrompt(prompt),
+    completedTools > 0 && !/\bWORKBENCH-TRANSCRIPT-SCROLL\b/i.test(prompt)
+      ? "tool complete"
+      : completionForPrompt(prompt),
   );
 }
 
@@ -350,25 +621,31 @@ export async function startMockModelServer() {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/v1/models") {
       response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({
-        object: "list",
-        data: [{ id: MOCK_MODEL, object: "model", owned_by: "local" }],
-      }));
+      response.end(
+        JSON.stringify({
+          object: "list",
+          data: [{ id: MOCK_MODEL, object: "model", owned_by: "local" }],
+        }),
+      );
       return;
     }
     if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
       handleChatCompletions(request, response).catch((error) => {
         response.writeHead(500, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({
-          error: { message: String(error?.message ?? error) },
-        }));
+        response.end(
+          JSON.stringify({
+            error: { message: String(error?.message ?? error) },
+          }),
+        );
       });
       return;
     }
     response.writeHead(404, { "Content-Type": "application/json" });
-    response.end(JSON.stringify({
-      error: { message: `not found: ${url.pathname}` },
-    }));
+    response.end(
+      JSON.stringify({
+        error: { message: `not found: ${url.pathname}` },
+      }),
+    );
   });
   await new Promise((resolve, reject) => {
     const onError = (error) => reject(error);
@@ -384,8 +661,9 @@ export async function startMockModelServer() {
   }
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolve, reject) => {
-      server.close((error) => error ? reject(error) : resolve());
-    }),
+    close: () =>
+      new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
   };
 }

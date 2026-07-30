@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import { getCwd } from "../../../../utils/cwd.js";
 import { NeovimUi, type NeovimUiSize } from "./NeovimUi.js";
@@ -19,7 +20,15 @@ import type { NeovimRenderSnapshot } from "./NeovimGrid.js";
 import type {
   BufferCaptureRequest,
   BufferCapturedContext,
+  BufferCodePrediction,
+  BufferCodePredictionContext,
+  BufferCodePredictionFeedback,
+  BufferEditorProposal,
+  BufferEditorProposalResolution,
   BufferIntegrationIntent,
+  BufferProviderCleanupOptions,
+  BufferWorkspaceWriteDecision,
+  BufferWorkspaceWriteRequest,
 } from "../providers/types.js";
 
 export type StartEmbeddedNeovimOptions = {
@@ -44,7 +53,14 @@ export type StartEmbeddedNeovimOptions = {
   readonly onSnapshot: (snapshot: NeovimRenderSnapshot) => void;
   readonly onDirtyChange?: (dirty: boolean) => void;
   readonly onWorkspaceChange?: () => void;
+  readonly requireWorkspaceWriteAuthority?: boolean;
+  readonly onBeforeWorkspaceWrite?: (
+    request: BufferWorkspaceWriteRequest,
+  ) => Promise<BufferWorkspaceWriteDecision>;
   readonly onIntegrationIntent?: (intent: BufferIntegrationIntent) => void;
+  readonly onCodePredictionFeedback?: (
+    feedback: BufferCodePredictionFeedback,
+  ) => void;
   readonly onRecoveryDetected?: (recovery: {
     readonly swapFile: string;
     readonly filePath: string;
@@ -58,7 +74,10 @@ export type EmbeddedNeovimStartupContext = {
   readonly workspaceRoot: string;
   readonly agencHome?: string;
   readonly command: (command: string) => Promise<void>;
-  readonly execLua: (source: string, args?: readonly RpcValue[]) => Promise<RpcValue>;
+  readonly execLua: (
+    source: string,
+    args?: readonly RpcValue[],
+  ) => Promise<RpcValue>;
 };
 
 export type EmbeddedNeovimRecoveryInfo = {
@@ -86,6 +105,7 @@ export type NeovimExitInfo = {
 export type EmbeddedNeovimBuffer = {
   readonly handle: number;
   readonly changedtick: number | null;
+  readonly endOfLine: boolean | null;
   readonly name: string;
   readonly listed: boolean;
   readonly loaded: boolean;
@@ -119,6 +139,10 @@ export type EmbeddedNeovimBufferRename = {
   readonly toPath: string;
 };
 
+export type EmbeddedNeovimExternalReloadResult =
+  | { readonly ok: true; readonly reloaded: boolean }
+  | { readonly ok: false; readonly reason: string; readonly dirty?: boolean };
+
 export type EmbeddedNeovimBufferDelete = {
   readonly handle: number;
   readonly path: string;
@@ -135,7 +159,8 @@ export type NeovimCloseResult =
 const DEFAULT_CLEANUP_TIMEOUT_MS = 1000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 10_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
-const DIRTY_CLOSE_REASON = "Unsaved Neovim edits. Save or use force quit before closing BUFFER.";
+const DIRTY_CLOSE_REASON =
+  "Unsaved Neovim edits. Save or use force quit before closing BUFFER.";
 const DIRTY_STATE_UNAVAILABLE_CLOSE_REASON =
   "Unable to verify whether Neovim has unsaved edits. Retry or use force quit before closing BUFFER.";
 const SAFE_CLOSE_UNCONFIRMED_REASON =
@@ -148,6 +173,7 @@ const BUFFER_MANIFEST_PROBE = [
   "  if loaded then",
   "    local name = vim.api.nvim_buf_get_name(buffer)",
   "    local modified = vim.api.nvim_get_option_value('modified', { buf = buffer })",
+  "    local end_of_line = vim.api.nvim_get_option_value('eol', { buf = buffer })",
   "    local listed = vim.api.nvim_get_option_value('buflisted', { buf = buffer })",
   "    local buffer_type = vim.api.nvim_get_option_value('buftype', { buf = buffer })",
   "    local modifiable = vim.api.nvim_get_option_value('modifiable', { buf = buffer })",
@@ -155,6 +181,7 @@ const BUFFER_MANIFEST_PROBE = [
   "    table.insert(buffers, {",
   "      handle = buffer,",
   "      changedtick = vim.api.nvim_buf_get_changedtick(buffer),",
+  "      end_of_line = end_of_line,",
   "      name = name,",
   "      listed = listed,",
   "      loaded = loaded,",
@@ -216,7 +243,7 @@ const DISCARD_ALL_BUFFERS = [
   "  local name = vim.api.nvim_buf_get_name(buffer)",
   "  local buffer_type = vim.api.nvim_get_option_value('buftype', { buf = buffer })",
   "  if name ~= '' and buffer_type == '' then",
-      "      vim.api.nvim_buf_call(buffer, function() vim.cmd('silent keepalt noautocmd edit!') end)",
+  "      vim.api.nvim_buf_call(buffer, function() vim.cmd('silent keepalt noautocmd edit!') end)",
   "  else",
   "    vim.api.nvim_buf_call(buffer, function()",
   "      vim.cmd('silent noautocmd %delete _')",
@@ -379,6 +406,127 @@ const FINISH_RECOVERY = [
   "return replacement",
 ].join("\n");
 
+const PRESERVE_DIRTY_BUFFERS_FOR_ABNORMAL_EXIT = [
+  "local swaps = {}",
+  "for _, buffer in ipairs(vim.api.nvim_list_bufs()) do",
+  "  if vim.api.nvim_buf_is_loaded(buffer) and vim.api.nvim_get_option_value('modified', { buf = buffer }) then",
+  "    vim.api.nvim_buf_call(buffer, function()",
+  "      vim.api.nvim_set_option_value('swapfile', true, { buf = buffer })",
+  "      vim.cmd('silent preserve')",
+  "    end)",
+  "    local swap = vim.fn.swapname(buffer)",
+  "    if swap == '' then error('Neovim did not create a recovery swap for buffer ' .. buffer) end",
+  "    local size = vim.fn.getfsize(swap)",
+  "    if type(size) ~= 'number' or size <= 0 then",
+  "      error('Neovim did not durably write the recovery swap for buffer ' .. buffer)",
+  "    end",
+  "    table.insert(swaps, {",
+  "      handle = buffer,",
+  "      changedtick = vim.api.nvim_buf_get_changedtick(buffer),",
+  "      end_of_line = vim.api.nvim_get_option_value('eol', { buf = buffer }),",
+  "      swap = swap,",
+  "      size = size,",
+  "    })",
+  "  end",
+  "end",
+  "return swaps",
+].join("\n");
+
+const INSTALL_WORKSPACE_WRITE_GATE = String.raw`
+local agenc_rpc_channel = select(1, ...)
+if type(agenc_rpc_channel) ~= 'number' or agenc_rpc_channel <= 0 then
+  error('AgenC workspace write authority has no valid RPC channel')
+end
+
+local function agenc_capture_workspace_write(event)
+  local target = event.buf
+  local buffers = {}
+  for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(buffer) then
+      local name = vim.api.nvim_buf_get_name(buffer)
+      local buffer_type =
+        vim.api.nvim_get_option_value('buftype', { buf = buffer })
+      if name ~= '' and buffer_type == '' then
+        local end_of_line =
+          vim.api.nvim_get_option_value('eol', { buf = buffer })
+        local content = table.concat(
+          vim.api.nvim_buf_get_lines(buffer, 0, -1, true),
+          '\n'
+        )
+        if end_of_line then content = content .. '\n' end
+        table.insert(buffers, {
+          path = name,
+          buffer_handle = buffer,
+          changedtick = vim.api.nvim_buf_get_changedtick(buffer),
+          end_of_line = end_of_line,
+          dirty = vim.api.nvim_get_option_value('modified', { buf = buffer }),
+          content = content,
+        })
+      end
+    end
+  end
+  return {
+    target = {
+      path = event.file,
+      source_path = vim.api.nvim_buf_get_name(target),
+      kind = event.event == 'BufWritePre'
+          and 'buffer'
+        or event.event == 'FileAppendPre'
+          and 'append'
+        or 'file',
+      buffer_handle = target,
+      changedtick = vim.api.nvim_buf_get_changedtick(target),
+      end_of_line =
+        vim.api.nvim_get_option_value('eol', { buf = target }),
+      line_start = vim.fn.line("'["),
+      line_end = vim.fn.line("']"),
+    },
+    buffers = buffers,
+  }
+end
+
+vim.api.nvim_create_autocmd(
+  { 'BufWritePre', 'FileWritePre', 'FileAppendPre' },
+{
+  group = vim.api.nvim_create_augroup(
+    'AgenCWorkspaceWriteAuthority',
+    { clear = true }
+  ),
+  callback = function(event)
+    local request = agenc_capture_workspace_write(event)
+    local ok, response = pcall(
+      vim.rpcrequest,
+      agenc_rpc_channel,
+      'agenc_before_workspace_write',
+      request
+    )
+    if not ok then
+      error(
+        'AgenC blocked :write because workspace authority could not be verified: '
+          .. string.sub(tostring(response), 1, 512)
+      )
+    end
+    if type(response) ~= 'table' or response.allowed ~= true then
+      local reason = type(response) == 'table'
+          and type(response.reason) == 'string'
+          and response.reason
+        or 'the daemon did not acknowledge this exact buffer revision'
+      error('AgenC blocked :write: ' .. string.sub(reason, 1, 512))
+    end
+  end,
+})
+return true
+`;
+
+// --cmd runs before user init. This launch-time guard closes the interval
+// before the host RPC transport exists, when a vimrc/plugin could otherwise
+// perform an uncoordinated workspace write. The authoritative Lua gate clears
+// and replaces this augroup only after its request handler is registered.
+const EARLY_WORKSPACE_WRITE_GUARD_COMMAND =
+  "lua local group=vim.api.nvim_create_augroup('AgenCWorkspaceWriteAuthority',{clear=true});" +
+  "vim.api.nvim_create_autocmd({'BufWritePre','FileWritePre','FileAppendPre'}," +
+  "{group=group,callback=function() error('AgenC blocked :write until workspace authority is ready.') end})";
+
 class NeovimOperationTimeoutError extends Error {
   constructor(operation: string, timeoutMs: number) {
     super(`${operation} timed out after ${timeoutMs}ms.`);
@@ -431,6 +579,8 @@ export class EmbeddedNeovimSession {
   readonly #sessionOperations = new AbortController();
   #closed = false;
   #poisoned = false;
+  #recoveryPreservationRequired = false;
+  #recoveryPreservationProven = false;
   #cleanupComplete = false;
   #cleanupPromise: Promise<void> | null = null;
   #quitPromise: Promise<NeovimCloseResult> | null = null;
@@ -459,6 +609,10 @@ export class EmbeddedNeovimSession {
 
   get recovery(): EmbeddedNeovimRecoveryInfo | null {
     return this.#recovery;
+  }
+
+  get recoveryPreservationProven(): boolean {
+    return this.#recoveryPreservationProven;
   }
 
   /**
@@ -501,8 +655,7 @@ export class EmbeddedNeovimSession {
     await this.#runRpcOperation(
       "Embedded Neovim resize",
       true,
-      (signal, timeoutMs) =>
-        this.#ui.resize(size, { signal, timeoutMs }),
+      (signal, timeoutMs) => this.#ui.resize(size, { signal, timeoutMs }),
     );
   }
 
@@ -512,12 +665,7 @@ export class EmbeddedNeovimSession {
       "Embedded Neovim focus",
       true,
       async (signal, timeoutMs) => {
-        await this.#request(
-          "nvim_ui_set_focus",
-          [focused],
-          signal,
-          timeoutMs,
-        );
+        await this.#request("nvim_ui_set_focus", [focused], signal, timeoutMs);
       },
     );
   }
@@ -569,25 +717,22 @@ export class EmbeddedNeovimSession {
       "Embedded Neovim file navigation",
       true,
       async (signal, timeoutMs) => {
-        await editFile(
-          this.#rpc,
-          filePath,
-          line,
-          column,
-          signal,
-          timeoutMs,
-        );
+        await editFile(this.#rpc, filePath, line, column, signal, timeoutMs);
         return true;
       },
     );
   }
 
-  async inspectBuffers(timeoutMs = this.#operationTimeoutMs): Promise<EmbeddedNeovimBufferManifest> {
+  async inspectBuffers(
+    timeoutMs = this.#operationTimeoutMs,
+  ): Promise<EmbeddedNeovimBufferManifest> {
     if (this.#closed) {
       if (childHasExited(this.#handle.child)) {
         return { activeBufferHandle: null, buffers: [] };
       }
-      throw new Error("Embedded Neovim is still exiting; its buffer state is unavailable.");
+      throw new Error(
+        "Embedded Neovim is still exiting; its buffer state is unavailable.",
+      );
     }
     try {
       const value = await this.#runRpcOperation(
@@ -657,10 +802,7 @@ export class EmbeddedNeovimSession {
       async (signal, timeoutMs) => {
         await this.#request(
           "nvim_exec_lua",
-          [
-            SAVE_BUFFER,
-            [normalizedHandle, force, expectedChangedtick ?? null],
-          ],
+          [SAVE_BUFFER, [normalizedHandle, force, expectedChangedtick ?? null]],
           signal,
           timeoutMs,
         );
@@ -673,7 +815,9 @@ export class EmbeddedNeovimSession {
     changes: readonly EmbeddedNeovimBufferRename[],
   ): Promise<void> {
     if (this.#closed) {
-      throw new Error("Embedded Neovim is closed; file buffers cannot be rebased.");
+      throw new Error(
+        "Embedded Neovim is closed; file buffers cannot be rebased.",
+      );
     }
     const normalized = changes.map((change) => ({
       handle: normalizeBufferHandle(change.handle),
@@ -697,7 +841,9 @@ export class EmbeddedNeovimSession {
     deletions: readonly EmbeddedNeovimBufferDelete[],
   ): Promise<void> {
     if (this.#closed) {
-      throw new Error("Embedded Neovim is closed; deleted file buffers cannot be unloaded.");
+      throw new Error(
+        "Embedded Neovim is closed; deleted file buffers cannot be unloaded.",
+      );
     }
     const normalized = deletions.map((deletion) => ({
       handle: normalizeBufferHandle(deletion.handle),
@@ -718,7 +864,9 @@ export class EmbeddedNeovimSession {
 
   async readBufferText(handle: number): Promise<string> {
     if (this.#closed) {
-      throw new Error("Embedded Neovim is closed; its buffer content is unavailable.");
+      throw new Error(
+        "Embedded Neovim is closed; its buffer content is unavailable.",
+      );
     }
     const normalizedHandle = normalizeBufferHandle(handle);
     const [linesValue, eolValue] = await this.#runRpcOperation(
@@ -740,11 +888,66 @@ export class EmbeddedNeovimSession {
           ),
         ]),
     );
-    if (!Array.isArray(linesValue) || !linesValue.every((line) => typeof line === "string")) {
+    if (
+      !Array.isArray(linesValue) ||
+      !linesValue.every((line) => typeof line === "string")
+    ) {
       throw new Error(`Neovim returned invalid text for buffer ${handle}.`);
     }
     const content = linesValue.join("\n");
     return eolValue === true ? `${content}\n` : content;
+  }
+
+  async reloadCleanPath(
+    path: string,
+  ): Promise<EmbeddedNeovimExternalReloadResult> {
+    if (this.#closed) {
+      return { ok: false, reason: "Embedded Neovim is closed." };
+    }
+    const value = await this.#runRpcOperation(
+      `Embedded Neovim external reload for ${path}`,
+      true,
+      (signal, timeoutMs) =>
+        this.#request(
+          "nvim_exec_lua",
+          [
+            [
+              "local path = ...",
+              "for _, buffer in ipairs(vim.api.nvim_list_bufs()) do",
+              "  if vim.api.nvim_buf_is_loaded(buffer)",
+              "      and vim.api.nvim_buf_get_name(buffer) == path then",
+              "    if vim.api.nvim_get_option_value('modified', { buf = buffer }) then",
+              "      return { ok = false, dirty = true, reason = 'buffer has unsaved changes' }",
+              "    end",
+              "    local ok, failure = pcall(vim.api.nvim_buf_call, buffer, function()",
+              "      vim.cmd('silent edit!')",
+              "    end)",
+              "    if not ok then",
+              "      return { ok = false, reason = tostring(failure) }",
+              "    end",
+              "    return { ok = true, reloaded = true }",
+              "  end",
+              "end",
+              "return { ok = true, reloaded = false }",
+            ].join("\n"),
+            [path],
+          ],
+          signal,
+          timeoutMs,
+        ),
+    );
+    const record = rpcRecord(value);
+    if (record?.ok === true) {
+      return { ok: true, reloaded: record.reloaded === true };
+    }
+    return {
+      ok: false,
+      reason:
+        typeof record?.reason === "string" && record.reason.length > 0
+          ? record.reason
+          : "Neovim could not reload the externally changed file.",
+      ...(record?.dirty === true ? { dirty: true } : {}),
+    };
   }
 
   async captureContext(
@@ -759,17 +962,154 @@ export class EmbeddedNeovimSession {
           "nvim_exec_lua",
           [
             "return _G.AgenCBufferCaptureContext(...)",
-            [{
-              kind: request.kind,
-              max_lines: request.maxLines ?? 2000,
-              visual: request.kind === "selection",
-            }],
+            [
+              {
+                kind: request.kind,
+                max_lines: request.maxLines ?? 2000,
+                visual: request.kind === "selection",
+              },
+            ],
           ],
           signal,
           timeoutMs,
         ),
     );
     return capturedContextFromRpcValue(value, request);
+  }
+
+  async stageProposal(
+    proposal: BufferEditorProposal,
+  ): Promise<BufferEditorProposalResolution> {
+    if (this.#closed) {
+      return {
+        ok: false,
+        proposalId: editorProposalId(proposal),
+        reason: "Embedded Neovim is closed.",
+      };
+    }
+    const value = await this.#runRpcOperation(
+      "Embedded Neovim proposal staging",
+      true,
+      (signal, timeoutMs) =>
+        this.#request(
+          "nvim_exec_lua",
+          [
+            "return _G.AgenCStageEditorProposal(...)",
+            [editorProposalRpcValue(proposal)],
+          ],
+          signal,
+          timeoutMs,
+        ),
+    );
+    return editorProposalResolutionFromRpcValue(
+      value,
+      editorProposalId(proposal),
+      "staged",
+    );
+  }
+
+  async acceptProposal(
+    proposalId: string,
+  ): Promise<BufferEditorProposalResolution> {
+    if (this.#closed) {
+      return {
+        ok: false,
+        proposalId,
+        reason: "Embedded Neovim is closed.",
+      };
+    }
+    const value = await this.#runRpcOperation(
+      "Embedded Neovim proposal acceptance",
+      true,
+      (signal, timeoutMs) =>
+        this.#request(
+          "nvim_exec_lua",
+          ["return _G.AgenCAcceptEditorProposal(...)", [proposalId]],
+          signal,
+          timeoutMs,
+        ),
+    );
+    return editorProposalResolutionFromRpcValue(value, proposalId, "accepted");
+  }
+
+  async rejectProposal(
+    proposalId: string,
+  ): Promise<BufferEditorProposalResolution> {
+    if (this.#closed) {
+      return {
+        ok: false,
+        proposalId,
+        reason: "Embedded Neovim is closed.",
+      };
+    }
+    const value = await this.#runRpcOperation(
+      "Embedded Neovim proposal rejection",
+      true,
+      (signal, timeoutMs) =>
+        this.#request(
+          "nvim_exec_lua",
+          ["return _G.AgenCRejectEditorProposal(...)", [proposalId]],
+          signal,
+          timeoutMs,
+        ),
+    );
+    return editorProposalResolutionFromRpcValue(value, proposalId, "rejected");
+  }
+
+  async captureCodePredictionContext(): Promise<BufferCodePredictionContext | null> {
+    if (this.#closed) return null;
+    const value = await this.#runRpcOperation(
+      "Embedded Neovim code-prediction context capture",
+      false,
+      (signal, timeoutMs) =>
+        this.#request(
+          "nvim_exec_lua",
+          ["return _G.AgenCCaptureCodePredictionContext()", []],
+          signal,
+          timeoutMs,
+        ),
+    );
+    return codePredictionContextFromRpcValue(value);
+  }
+
+  async stageCodePrediction(
+    prediction: BufferCodePrediction,
+  ): Promise<boolean> {
+    if (this.#closed) return false;
+    const value = await this.#runRpcOperation(
+      "Embedded Neovim code-prediction staging",
+      true,
+      (signal, timeoutMs) =>
+        this.#request(
+          "nvim_exec_lua",
+          [
+            "return _G.AgenCStageCodePrediction(...)",
+            [codePredictionRpcValue(prediction)],
+          ],
+          signal,
+          timeoutMs,
+        ),
+    );
+    return value === true;
+  }
+
+  async clearCodePrediction(requestId?: string): Promise<boolean> {
+    if (this.#closed) return false;
+    const value = await this.#runRpcOperation(
+      "Embedded Neovim code-prediction dismissal",
+      true,
+      (signal, timeoutMs) =>
+        this.#request(
+          "nvim_exec_lua",
+          [
+            "return _G.AgenCDismissCodePrediction(...)",
+            [requestId ?? null, false],
+          ],
+          signal,
+          timeoutMs,
+        ),
+    );
+    return value === true;
   }
 
   async applyRecovery(
@@ -801,7 +1141,9 @@ export class EmbeddedNeovimSession {
     keepRecovered: boolean,
   ): Promise<string | null> {
     if (this.#closed) {
-      throw new Error("Embedded Neovim closed before recovery could be confirmed.");
+      throw new Error(
+        "Embedded Neovim closed before recovery could be confirmed.",
+      );
     }
     const value = await this.#runRpcOperation(
       "Embedded Neovim recovery finalization",
@@ -841,11 +1183,13 @@ export class EmbeddedNeovimSession {
       };
     }
     for (const buffer of dirtyBuffers) {
-      if (!await this.saveBuffer(
-        buffer.handle,
-        force,
-        buffer.changedtick ?? undefined,
-      )) {
+      if (
+        !(await this.saveBuffer(
+          buffer.handle,
+          force,
+          buffer.changedtick ?? undefined,
+        ))
+      ) {
         return {
           saved: false,
           reason: `Neovim buffer ${buffer.handle} closed before it could be written.`,
@@ -868,7 +1212,7 @@ export class EmbeddedNeovimSession {
     expectedBuffers?: readonly EmbeddedNeovimBuffer[],
   ): Promise<boolean> {
     if (this.#closed) return childHasExited(this.#handle.child);
-    const frozen = expectedBuffers ?? await this.inspectDirtyBuffers();
+    const frozen = expectedBuffers ?? (await this.inspectDirtyBuffers());
     if (frozen.some((buffer) => buffer.changedtick === null)) return false;
     const discarded = await this.#runRpcOperation(
       "Embedded Neovim Discard All",
@@ -878,11 +1222,13 @@ export class EmbeddedNeovimSession {
           "nvim_exec_lua",
           [
             DISCARD_ALL_BUFFERS,
-            [frozen.map((buffer) => ({
-              handle: buffer.handle,
-              name: buffer.name,
-              changedtick: buffer.changedtick,
-            }))],
+            [
+              frozen.map((buffer) => ({
+                handle: buffer.handle,
+                name: buffer.name,
+                changedtick: buffer.changedtick,
+              })),
+            ],
           ],
           signal,
           timeoutMs,
@@ -895,7 +1241,9 @@ export class EmbeddedNeovimSession {
   async isDirty(): Promise<boolean> {
     if (this.#closed) {
       if (childHasExited(this.#handle.child)) return false;
-      throw new Error("Embedded Neovim is still exiting; its dirty state is unavailable.");
+      throw new Error(
+        "Embedded Neovim is still exiting; its dirty state is unavailable.",
+      );
     }
     try {
       const value = await this.#runRpcOperation(
@@ -920,7 +1268,9 @@ export class EmbeddedNeovimSession {
     }
   }
 
-  async hasUnsavedBuffers(timeoutMs = this.#operationTimeoutMs): Promise<boolean> {
+  async hasUnsavedBuffers(
+    timeoutMs = this.#operationTimeoutMs,
+  ): Promise<boolean> {
     return (await this.inspectDirtyBuffers(timeoutMs)).length > 0;
   }
 
@@ -997,7 +1347,7 @@ export class EmbeddedNeovimSession {
       }
       if (
         !childHasExited(this.#handle.child) &&
-        !await waitForObservedExit(this.#handle.child, this.#cleanupTimeoutMs)
+        !(await waitForObservedExit(this.#handle.child, this.#cleanupTimeoutMs))
       ) {
         return {
           closed: false,
@@ -1010,7 +1360,12 @@ export class EmbeddedNeovimSession {
     return { closed: true };
   }
 
-  async cleanup(): Promise<void> {
+  async cleanup(options: BufferProviderCleanupOptions = {}): Promise<void> {
+    if (options.preserveRecovery === true) {
+      // Once abnormal cleanup is requested, a later retry may not silently
+      // downgrade to destructive cleanup after preservation failed.
+      this.#recoveryPreservationRequired = true;
+    }
     if (this.#cleanupComplete) return;
     if (this.#cleanupPromise) return this.#cleanupPromise;
     const attempt = this.#cleanupOnce();
@@ -1030,6 +1385,42 @@ export class EmbeddedNeovimSession {
     );
     if (!this.#poisoned) this.#ui.dispose();
     captureNeovimProcessDescendants(this.#handle.child);
+    if (this.#recoveryPreservationRequired) {
+      if (!this.#recoveryPreservationProven) {
+        if (childHasExited(this.#handle.child)) {
+          throw abnormalRecoveryPreservationError(
+            new Error(
+              "the Neovim process exited before preservation was acknowledged",
+            ),
+          );
+        }
+        try {
+          const manifest = await this.#rpc.request(
+            "nvim_exec_lua",
+            [PRESERVE_DIRTY_BUFFERS_FOR_ABNORMAL_EXIT, []],
+            { timeoutMs: this.#cleanupTimeoutMs },
+          );
+          assertAbnormalRecoveryManifest(manifest, this.#recovery?.swap);
+          this.#recoveryPreservationProven = true;
+        } catch (error) {
+          // The live process remains the only proven source authority. Do not
+          // close its transport, stdin, or process tree: callers may retry
+          // preservation, and ordered teardown must retain the daemon lease.
+          throw abnormalRecoveryPreservationError(error);
+        }
+      }
+      // Never send :qa! on an abnormal terminal loss: even after :preserve,
+      // a normal force-quit removes Neovim's swap. A supervised hard stop
+      // retains the exact swap bytes for the next startup recovery flow.
+      try {
+        this.#handle.kill("SIGKILL");
+        await waitForNeovimExit(this.#handle.child, this.#cleanupTimeoutMs);
+      } finally {
+        this.#rpc.close("abnormal session cleanup");
+        this.#handle.kill("SIGKILL");
+      }
+      return;
+    }
     // The force-quit request is best effort. Ending stdin immediately after the
     // queued frame preserves stream ordering while ensuring an unresponsive RPC
     // cannot postpone the supervised exit/SIGKILL deadline.
@@ -1060,7 +1451,8 @@ export class EmbeddedNeovimSession {
       controller.abort(sessionSignal.reason);
     };
     if (sessionSignal.aborted) abortFromSession();
-    else sessionSignal.addEventListener("abort", abortFromSession, { once: true });
+    else
+      sessionSignal.addEventListener("abort", abortFromSession, { once: true });
 
     try {
       // The transport deadline retires its request ID. The outer bound remains
@@ -1097,30 +1489,25 @@ export class EmbeddedNeovimSession {
 
   #poisonAfterMutatingTimeout(error: unknown): void {
     if (this.#closed) return;
-    const reason = error instanceof Error
-      ? error
-      : new Error(String(error));
+    const reason = error instanceof Error ? error : new Error(String(error));
     // Neovim may have applied a timed-out mutation without delivering its
     // reply. Continuing would make host and editor state diverge (and a late
-    // mouse press could otherwise advance into its release request), so sever
-    // the session while leaving supervised cleanup able to preserve recovery.
+    // mouse press could otherwise advance into its release request), so close
+    // the interactive session but retain the RPC/process boundary until a
+    // queued :preserve proves exact recovery.
     this.#poisoned = true;
     this.#closed = true;
     this.#sessionOperations.abort(reason);
     this.#ui.dispose();
-    this.#rpc.close(`mutating operation timed out: ${reason.message}`);
-    if (!this.#handle.child.stdin.writableEnded) {
-      this.#handle.child.stdin.end();
-    }
     try {
       this.#onFatalError?.(reason);
     } catch {
       // A UI observer cannot be allowed to prevent owned-process cleanup.
     }
-    void this.cleanup().catch((cleanupError) => {
+    void this.cleanup({ preserveRecovery: true }).catch((cleanupError) => {
       const fatal = new AggregateError(
         [reason, cleanupError],
-        `${reason.message}; supervised Neovim cleanup failed`,
+        `${reason.message}; exact Neovim recovery preservation failed`,
       );
       try {
         this.#onFatalError?.(fatal);
@@ -1174,7 +1561,10 @@ export async function startEmbeddedNeovim(
     startupAbort.signal.throwIfAborted();
     const handle = spawnNeovimProcess({
       executable: options.executable,
-      args: options.args,
+      args:
+        options.requireWorkspaceWriteAuthority === true
+          ? ["--cmd", EARLY_WORKSPACE_WRITE_GUARD_COMMAND, ...options.args]
+          : options.args,
       cwd: options.cwd ?? options.workspaceRoot ?? getCwd(),
       ...(options.linuxContainment !== undefined
         ? { linuxContainment: options.linuxContainment }
@@ -1194,6 +1584,44 @@ export async function startEmbeddedNeovim(
         options.onWorkspaceChange?.();
       });
     }
+    if (options.requireWorkspaceWriteAuthority === true) {
+      rpc.onRequest(
+        "agenc_before_workspace_write",
+        async (params): Promise<RpcValue> => {
+          const request = workspaceWriteRequestFromRpcParams(params);
+          if (request === null) {
+            return {
+              allowed: false,
+              reason: "Neovim supplied an invalid workspace write manifest.",
+            };
+          }
+          if (options.onBeforeWorkspaceWrite === undefined) {
+            return {
+              allowed: false,
+              reason: "The authoritative workspace synchronizer is not ready.",
+            };
+          }
+          try {
+            const decision = await options.onBeforeWorkspaceWrite(request);
+            if (decision.allowed) {
+              return { allowed: true };
+            }
+            return {
+              allowed: false,
+              reason: truncateUtf8(decision.reason, 512),
+            };
+          } catch (error) {
+            const failure =
+              error instanceof Error ? error : new Error(String(error));
+            options.onError(failure);
+            return {
+              allowed: false,
+              reason: truncateUtf8(failure.message, 512),
+            };
+          }
+        },
+      );
+    }
     if (options.onIntegrationIntent) {
       rpc.onNotification("agenc_buffer_integration", (params) => {
         const intent = integrationIntentFromRpcParams(params);
@@ -1206,6 +1634,12 @@ export async function startEmbeddedNeovim(
             ),
           );
         }
+      });
+    }
+    if (options.onCodePredictionFeedback) {
+      rpc.onNotification("agenc_editor_prediction_feedback", (params) => {
+        const feedback = codePredictionFeedbackFromRpcParams(params);
+        if (feedback) options.onCodePredictionFeedback?.(feedback);
       });
     }
     if (options.onRecoveryDetected) {
@@ -1232,6 +1666,9 @@ export async function startEmbeddedNeovim(
       try {
         await ui.attach();
         await configureEmbeddedEditing(rpc);
+        if (options.requireWorkspaceWriteAuthority === true) {
+          await installWorkspaceWriteGate(rpc);
+        }
         await installAgentBridge(rpc);
         preparation = await options.beforeOpenFile?.({
           workspaceRoot: options.workspaceRoot ?? options.cwd ?? getCwd(),
@@ -1324,7 +1761,9 @@ function createStartupAbort(
     ? Math.max(1, Math.floor(timeoutMs))
     : DEFAULT_STARTUP_TIMEOUT_MS;
   const timer = setTimeout(() => {
-    controller.abort(new Error(`Embedded Neovim startup timed out after ${safeTimeoutMs}ms.`));
+    controller.abort(
+      new Error(`Embedded Neovim startup timed out after ${safeTimeoutMs}ms.`),
+    );
   }, safeTimeoutMs);
   timer.unref();
 
@@ -1339,7 +1778,8 @@ function createStartupAbort(
 
 function startupAbortReason(signal: AbortSignal, fallback: unknown): Error {
   if (signal.reason instanceof Error) return signal.reason;
-  if (signal.reason !== undefined) return new Error(String(signal.reason), { cause: fallback });
+  if (signal.reason !== undefined)
+    return new Error(String(signal.reason), { cause: fallback });
   return new Error("Embedded Neovim startup was aborted.", { cause: fallback });
 }
 
@@ -1379,8 +1819,10 @@ function normalizeTimeout(timeoutMs: number, fallbackMs: number): number {
 }
 
 function isOperationTimeout(error: unknown): boolean {
-  return error instanceof NeovimOperationTimeoutError ||
-    error instanceof NeovimRpcRequestTimeoutError;
+  return (
+    error instanceof NeovimOperationTimeoutError ||
+    error instanceof NeovimRpcRequestTimeoutError
+  );
 }
 
 function errorMessage(error: unknown): string {
@@ -1395,22 +1837,20 @@ async function editFile(
   signal?: AbortSignal,
   timeoutMs?: number,
 ): Promise<void> {
-  const currentName = await rpc.request(
-    "nvim_buf_get_name",
-    [0],
-    { signal, timeoutMs },
-  );
+  const currentName = await rpc.request("nvim_buf_get_name", [0], {
+    signal,
+    timeoutMs,
+  });
   if (stringValue(currentName) !== filePath) {
     const escaped = await rpc.request(
       "nvim_call_function",
       ["fnameescape", [filePath]],
       { signal, timeoutMs },
     );
-    await rpc.request(
-      "nvim_command",
-      [`edit ${stringValue(escaped)}`],
-      { signal, timeoutMs },
-    );
+    await rpc.request("nvim_command", [`edit ${stringValue(escaped)}`], {
+      signal,
+      timeoutMs,
+    });
   }
   await rpc.request(
     "nvim_win_set_cursor",
@@ -1419,7 +1859,9 @@ async function editFile(
   );
 }
 
-async function configureEmbeddedEditing(rpc: NeovimRpcTransport): Promise<void> {
+async function configureEmbeddedEditing(
+  rpc: NeovimRpcTransport,
+): Promise<void> {
   for (const command of [
     "set termguicolors",
     "syntax enable",
@@ -1595,6 +2037,657 @@ local function notification_context(context)
   return context
 end
 
+local proposal_namespace = vim.api.nvim_create_namespace('agenc_editor_proposal')
+local active_proposal = nil
+
+local function proposal_id(proposal)
+  return tostring(proposal.interaction_id) .. ':' .. tostring(proposal.base_changedtick)
+end
+
+local function proposal_failure(proposal, reason, stale)
+  return {
+    ok = false,
+    proposal_id = proposal and proposal_id(proposal) or '',
+    reason = tostring(reason),
+    stale = stale == true,
+  }
+end
+
+local function proposal_position_before_or_equal(a_line, a_column, b_line, b_column)
+  return a_line < b_line or (a_line == b_line and a_column <= b_column)
+end
+
+local function sorted_proposal_edits(proposal)
+  local edits = vim.deepcopy(proposal.edits or {})
+  table.sort(edits, function(a, b)
+    if a.start_line ~= b.start_line then return a.start_line < b.start_line end
+    if a.start_column ~= b.start_column then return a.start_column < b.start_column end
+    if a.end_line ~= b.end_line then return a.end_line < b.end_line end
+    return a.end_column < b.end_column
+  end)
+  for index = 2, #edits do
+    local previous = edits[index - 1]
+    local current = edits[index]
+    local same_start = previous.start_line == current.start_line
+      and previous.start_column == current.start_column
+    if same_start or not proposal_position_before_or_equal(
+      previous.end_line,
+      previous.end_column,
+      current.start_line,
+      current.start_column
+    ) then
+      return nil, 'proposal edits overlap'
+    end
+  end
+  return edits, nil
+end
+
+local function proposal_range_text(buffer, edit)
+  local lines = vim.api.nvim_buf_get_text(
+    buffer,
+    edit.start_line - 1,
+    edit.start_column,
+    edit.end_line - 1,
+    edit.end_column,
+    {}
+  )
+  return table.concat(lines, '\n')
+end
+
+local function validate_proposal_revision(proposal)
+  local buffer = tonumber(proposal.buffer_handle)
+  if buffer == nil or not vim.api.nvim_buf_is_valid(buffer)
+      or not vim.api.nvim_buf_is_loaded(buffer) then
+    return nil, nil, 'proposal buffer is unavailable', true
+  end
+  if vim.api.nvim_buf_get_name(buffer) ~= tostring(proposal.path or '') then
+    return nil, nil, 'proposal path no longer identifies this buffer', true
+  end
+  if vim.api.nvim_buf_get_changedtick(buffer) ~= tonumber(proposal.base_changedtick) then
+    return nil, nil, 'buffer changed after the proposal was created', true
+  end
+  if proposal.base_end_of_line ~= nil
+      and vim.api.nvim_get_option_value('eol', { buf = buffer })
+        ~= proposal.base_end_of_line then
+    return nil, nil, 'buffer end-of-line state changed after the proposal was created', true
+  end
+  local edits, sort_error = sorted_proposal_edits(proposal)
+  if edits == nil then return nil, nil, sort_error, false end
+  for _, edit in ipairs(edits) do
+    local ok, actual = pcall(proposal_range_text, buffer, edit)
+    if not ok then
+      return nil, nil, 'proposal contains an invalid buffer range', false
+    end
+    if actual ~= tostring(edit.old_text or '') then
+      return nil, nil, 'buffer text no longer matches the proposal base', true
+    end
+  end
+  return buffer, edits, nil, false
+end
+
+local function clear_active_proposal()
+  if active_proposal ~= nil then
+    local buffer = tonumber(active_proposal.buffer_handle)
+    if buffer ~= nil and vim.api.nvim_buf_is_valid(buffer) then
+      pcall(vim.api.nvim_buf_clear_namespace, buffer, proposal_namespace, 0, -1)
+    end
+  end
+  active_proposal = nil
+end
+
+_G.AgenCStageEditorProposal = function(proposal)
+  if type(proposal) ~= 'table' then
+    return proposal_failure(nil, 'proposal must be an object', false)
+  end
+  if active_proposal ~= nil then
+    if proposal_id(active_proposal) == proposal_id(proposal) then
+      return {
+        ok = true,
+        proposal_id = proposal_id(proposal),
+        changedtick = vim.api.nvim_buf_get_changedtick(
+          tonumber(active_proposal.buffer_handle)
+        ),
+      }
+    end
+    return proposal_failure(
+      proposal,
+      'another editor proposal is already awaiting review',
+      false
+    )
+  end
+  local buffer, edits, failure, stale = validate_proposal_revision(proposal)
+  if buffer == nil then return proposal_failure(proposal, failure, stale) end
+  for _, edit in ipairs(edits) do
+    local start_row = edit.start_line - 1
+    local end_row = edit.end_line - 1
+    if start_row ~= end_row or edit.start_column ~= edit.end_column then
+      vim.api.nvim_buf_set_extmark(buffer, proposal_namespace, start_row, edit.start_column, {
+        end_row = end_row,
+        end_col = edit.end_column,
+        hl_group = 'DiffDelete',
+        priority = 210,
+      })
+    end
+    if edit.new_text ~= '' then
+      local virtual_lines = {}
+      for _, line in ipairs(vim.split(edit.new_text, '\n', {
+        plain = true,
+        trimempty = false,
+      })) do
+        table.insert(virtual_lines, { { '+ ' .. line, 'DiffAdd' } })
+      end
+      vim.api.nvim_buf_set_extmark(buffer, proposal_namespace, start_row, edit.start_column, {
+        virt_lines = virtual_lines,
+        virt_lines_above = true,
+        priority = 211,
+      })
+    end
+  end
+  active_proposal = proposal
+  return {
+    ok = true,
+    proposal_id = proposal_id(proposal),
+    changedtick = vim.api.nvim_buf_get_changedtick(buffer),
+  }
+end
+
+_G.AgenCAcceptEditorProposal = function(expected_id)
+  if active_proposal == nil or proposal_id(active_proposal) ~= tostring(expected_id) then
+    return {
+      ok = false,
+      proposal_id = tostring(expected_id),
+      reason = 'proposal is no longer active',
+      stale = true,
+    }
+  end
+  local proposal = active_proposal
+  local buffer, edits, failure, stale = validate_proposal_revision(proposal)
+  if buffer == nil then
+    clear_active_proposal()
+    return proposal_failure(proposal, failure, stale)
+  end
+  local applied = 0
+  for index = #edits, 1, -1 do
+    local edit = edits[index]
+    local replacement = {}
+    if edit.new_text ~= '' then
+      replacement = vim.split(edit.new_text, '\n', {
+        plain = true,
+        trimempty = false,
+      })
+    end
+    if applied > 0 then pcall(vim.cmd, 'undojoin') end
+    vim.api.nvim_buf_set_text(
+      buffer,
+      edit.start_line - 1,
+      edit.start_column,
+      edit.end_line - 1,
+      edit.end_column,
+      replacement
+    )
+    applied = applied + 1
+  end
+  if proposal.new_end_of_line ~= nil then
+    vim.api.nvim_set_option_value('eol', proposal.new_end_of_line, {
+      buf = buffer,
+    })
+  end
+  local accepted_id = proposal_id(proposal)
+  clear_active_proposal()
+  return {
+    ok = true,
+    proposal_id = accepted_id,
+    changedtick = vim.api.nvim_buf_get_changedtick(buffer),
+  }
+end
+
+_G.AgenCRejectEditorProposal = function(expected_id)
+  if active_proposal == nil or proposal_id(active_proposal) ~= tostring(expected_id) then
+    return {
+      ok = false,
+      proposal_id = tostring(expected_id),
+      reason = 'proposal is no longer active',
+      stale = true,
+    }
+  end
+  local rejected_id = proposal_id(active_proposal)
+  clear_active_proposal()
+  return { ok = true, proposal_id = rejected_id }
+end
+
+local prediction_namespace = vim.api.nvim_create_namespace('agenc_code_prediction')
+local active_prediction = nil
+local prediction_prefix_max_bytes = 20 * 1024
+local prediction_suffix_max_bytes = 8 * 1024
+
+local function clear_prediction()
+  if active_prediction ~= nil then
+    local buffer = tonumber(active_prediction.buffer_handle)
+    if buffer ~= nil and vim.api.nvim_buf_is_valid(buffer) then
+      pcall(vim.api.nvim_buf_clear_namespace, buffer, prediction_namespace, 0, -1)
+    end
+  end
+  active_prediction = nil
+end
+
+local function prediction_insert_mode()
+  local mode = vim.api.nvim_get_mode().mode
+  return mode == 'i' or mode == 'ic' or mode == 'ix'
+end
+
+local function prediction_is_current(prediction)
+  if type(prediction) ~= 'table' or type(prediction.cursor) ~= 'table'
+      or not prediction_insert_mode() then
+    return false
+  end
+  local buffer = tonumber(prediction.buffer_handle)
+  if buffer == nil or buffer ~= vim.api.nvim_get_current_buf()
+      or not vim.api.nvim_buf_is_valid(buffer)
+      or vim.api.nvim_buf_get_changedtick(buffer) ~= tonumber(prediction.changedtick) then
+    return false
+  end
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  return cursor[1] - 1 == tonumber(prediction.cursor.line)
+    and cursor[2] == tonumber(prediction.cursor.byte_column)
+end
+
+local function prediction_buffer_offset(buffer, row)
+  local ok, offset = pcall(vim.api.nvim_buf_get_offset, buffer, row)
+  if not ok or type(offset) ~= 'number' or offset < 0 then return nil end
+  return offset
+end
+
+local function prediction_position_for_offset(buffer, target, line_count, total_bytes, is_start)
+  if target <= 0 then return 0, 0 end
+  if target >= total_bytes then
+    local last_row = math.max(0, line_count - 1)
+    local last = vim.api.nvim_buf_get_lines(buffer, last_row, last_row + 1, false)[1] or ''
+    return last_row, #last
+  end
+  local low = 0
+  local high = math.max(0, line_count - 1)
+  while low < high do
+    local middle = math.floor((low + high + 1) / 2)
+    local offset = prediction_buffer_offset(buffer, middle)
+    if offset ~= nil and offset <= target then
+      low = middle
+    else
+      high = middle - 1
+    end
+  end
+  local row = low
+  local row_offset = prediction_buffer_offset(buffer, row) or 0
+  local line = vim.api.nvim_buf_get_lines(buffer, row, row + 1, false)[1] or ''
+  local column = target - row_offset
+  if column > #line and row + 1 < line_count then
+    return row + 1, 0
+  end
+  column = math.max(0, math.min(column, #line))
+  if is_start then
+    while column < #line do
+      local byte = string.byte(line, column + 1)
+      if byte == nil or byte < 0x80 or byte > 0xbf then break end
+      column = column + 1
+    end
+  else
+    while column > 0 do
+      local byte = string.byte(line, column + 1)
+      if byte == nil or byte < 0x80 or byte > 0xbf then break end
+      column = column - 1
+    end
+  end
+  return row, column
+end
+
+_G.AgenCCaptureCodePredictionContext = function()
+  if not prediction_insert_mode() then return nil end
+  local buffer = vim.api.nvim_get_current_buf()
+  if vim.api.nvim_get_option_value('buftype', { buf = buffer }) ~= ''
+      or not vim.api.nvim_get_option_value('modifiable', { buf = buffer }) then
+    return nil
+  end
+  local path = vim.api.nvim_buf_get_name(buffer)
+  if path == '' then return nil end
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local row = cursor[1] - 1
+  local column = cursor[2]
+  local line_count = vim.api.nvim_buf_line_count(buffer)
+  local row_offset = prediction_buffer_offset(buffer, row)
+  local total_bytes = prediction_buffer_offset(buffer, line_count)
+  if row_offset == nil or total_bytes == nil then return nil end
+  -- nvim_buf_get_offset(line_count) includes the final line break even when
+  -- 'eol' is false. Report the exact normalized UTF-8 buffer size so a file at
+  -- the privacy limit is not rejected merely because it has no final newline.
+  if total_bytes > 0
+      and not vim.api.nvim_get_option_value('eol', { buf = buffer }) then
+    total_bytes = total_bytes - 1
+  end
+  local cursor_offset = row_offset + column
+  local start_row, start_column = prediction_position_for_offset(
+    buffer,
+    math.max(0, cursor_offset - prediction_prefix_max_bytes),
+    line_count,
+    total_bytes,
+    true
+  )
+  local end_row, end_column = prediction_position_for_offset(
+    buffer,
+    math.min(total_bytes, cursor_offset + prediction_suffix_max_bytes),
+    line_count,
+    total_bytes,
+    false
+  )
+  local before = vim.api.nvim_buf_get_text(
+    buffer,
+    start_row,
+    start_column,
+    row,
+    column,
+    {}
+  )
+  local after = vim.api.nvim_buf_get_text(
+    buffer,
+    row,
+    column,
+    end_row,
+    end_column,
+    {}
+  )
+  return {
+    buffer_handle = buffer,
+    path = path,
+    changedtick = vim.api.nvim_buf_get_changedtick(buffer),
+    file_bytes = total_bytes,
+    cursor = { line = row, byte_column = column },
+    prefix = table.concat(before, '\n'),
+    suffix = table.concat(after, '\n'),
+    language = vim.bo[buffer].filetype,
+  }
+end
+
+_G.AgenCStageCodePrediction = function(prediction)
+  if type(prediction) ~= 'table' or type(prediction.text) ~= 'string'
+      or type(prediction.cursor) ~= 'table' or prediction.text == ''
+      or not prediction_insert_mode() then
+    return false
+  end
+  local buffer = tonumber(prediction.buffer_handle)
+  if buffer == nil or buffer ~= vim.api.nvim_get_current_buf()
+      or vim.api.nvim_buf_get_changedtick(buffer) ~= tonumber(prediction.changedtick) then
+    return false
+  end
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  if cursor[1] - 1 ~= tonumber(prediction.cursor.line)
+      or cursor[2] ~= tonumber(prediction.cursor.byte_column) then
+    return false
+  end
+  clear_prediction()
+  local lines = vim.split(prediction.text, '\n', {
+    plain = true,
+    trimempty = false,
+  })
+  local first = table.remove(lines, 1) or ''
+  vim.api.nvim_buf_set_extmark(buffer, prediction_namespace, cursor[1] - 1, cursor[2], {
+    virt_text = { { first, 'Comment' } },
+    virt_text_pos = 'inline',
+    virt_lines = vim.tbl_map(function(line)
+      return { { line, 'Comment' } }
+    end, lines),
+    priority = 205,
+  })
+  active_prediction = prediction
+  return true
+end
+
+local function insert_prediction_text(buffer, cursor, text)
+  local replacement = vim.split(text, '\n', {
+    plain = true,
+    trimempty = false,
+  })
+  vim.api.nvim_buf_set_text(
+    buffer,
+    cursor[1] - 1,
+    cursor[2],
+    cursor[1] - 1,
+    cursor[2],
+    replacement
+  )
+  local last = replacement[#replacement] or ''
+  local next_cursor = {
+    cursor[1] + #replacement - 1,
+    #replacement == 1 and cursor[2] + #last or #last,
+  }
+  vim.api.nvim_win_set_cursor(0, next_cursor)
+  return next_cursor
+end
+
+_G.AgenCDismissCodePrediction = function(expected_id, notify)
+  if active_prediction == nil then return false end
+  if expected_id ~= nil and tostring(expected_id) ~= tostring(active_prediction.request_id) then
+    return false
+  end
+  local dismissed = active_prediction
+  clear_prediction()
+  if notify == true then
+    vim.rpcnotify(
+      0,
+      'agenc_editor_prediction_feedback',
+      dismissed.request_id,
+      'dismissed',
+      0,
+      dismissed.latency_ms or 0
+    )
+  end
+  return true
+end
+
+_G.AgenCAcceptCodePrediction = function()
+  if active_prediction == nil then return false end
+  local prediction = active_prediction
+  if not prediction_is_current(prediction) then
+    clear_prediction()
+    return false
+  end
+  local buffer = tonumber(prediction.buffer_handle)
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  clear_prediction()
+  insert_prediction_text(buffer, cursor, prediction.text)
+  vim.rpcnotify(
+    0,
+    'agenc_editor_prediction_feedback',
+    prediction.request_id,
+    'accepted',
+    vim.fn.strchars(prediction.text),
+    prediction.latency_ms or 0
+  )
+  return true
+end
+
+local function next_prediction_segment(text)
+  local leading = string.match(text, '^%s*') or ''
+  local rest = string.sub(text, #leading + 1)
+  if rest == '' then return text end
+  local token = string.match(rest, '^[%w_]+')
+    or string.match(rest, '^[^%w_%s]+')
+    or vim.fn.strcharpart(rest, 0, 1)
+  return leading .. token
+end
+
+_G.AgenCAcceptCodePredictionSegment = function()
+  if active_prediction == nil then return false end
+  local prediction = active_prediction
+  if not prediction_is_current(prediction) then
+    clear_prediction()
+    return false
+  end
+  local segment = next_prediction_segment(prediction.text)
+  if segment == '' then return false end
+  local remaining = string.sub(prediction.text, #segment + 1)
+  local buffer = tonumber(prediction.buffer_handle)
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  clear_prediction()
+  local next_cursor = insert_prediction_text(buffer, cursor, segment)
+  vim.rpcnotify(
+    0,
+    'agenc_editor_prediction_feedback',
+    prediction.request_id,
+    'partially_accepted',
+    vim.fn.strchars(segment),
+    prediction.latency_ms or 0
+  )
+  if remaining ~= '' then
+    prediction.text = remaining
+    prediction.changedtick = vim.api.nvim_buf_get_changedtick(buffer)
+    prediction.cursor = {
+      line = next_cursor[1] - 1,
+      byte_column = next_cursor[2],
+    }
+    _G.AgenCStageCodePrediction(prediction)
+  end
+  return true
+end
+
+local prediction_keymap_description = 'AgenC code prediction'
+local prediction_keymap_state = {}
+local install_prediction_keymaps
+
+local function restore_buffer_mapping(buffer, lhs, mapping)
+  if type(mapping) ~= 'table' or next(mapping) == nil
+      or tonumber(mapping.buffer) ~= 1 then
+    return
+  end
+  local rhs = mapping.callback
+  if type(rhs) ~= 'function' then rhs = mapping.rhs end
+  if type(rhs) ~= 'function' and type(rhs) ~= 'string' then return end
+  vim.keymap.set('i', lhs, rhs, {
+    buffer = buffer,
+    expr = tonumber(mapping.expr) == 1,
+    silent = tonumber(mapping.silent) == 1,
+    nowait = tonumber(mapping.nowait) == 1,
+    remap = tonumber(mapping.noremap) ~= 1,
+    replace_keycodes = tonumber(mapping.replace_keycodes) == 1,
+    desc = type(mapping.desc) == 'string' and mapping.desc or nil,
+  })
+end
+
+local function replay_prediction_fallback(buffer, key, lhs)
+  local state = prediction_keymap_state[buffer] or {}
+  pcall(vim.keymap.del, 'i', lhs, { buffer = buffer })
+  restore_buffer_mapping(buffer, lhs, state[key])
+  vim.api.nvim_feedkeys(
+    vim.api.nvim_replace_termcodes(lhs, true, false, true),
+    'mi',
+    false
+  )
+  vim.schedule(function()
+    if vim.api.nvim_buf_is_valid(buffer) then install_prediction_keymaps(buffer) end
+  end)
+  return ''
+end
+
+local function capture_prediction_fallback(lhs)
+  local mapping = vim.fn.maparg(lhs, 'i', false, true)
+  if type(mapping) == 'table' and mapping.desc == prediction_keymap_description then
+    return nil
+  end
+  return mapping
+end
+
+install_prediction_keymaps = function(buffer)
+  if not vim.api.nvim_buf_is_valid(buffer)
+      or not vim.api.nvim_buf_is_loaded(buffer) then return end
+  local state = prediction_keymap_state[buffer] or {}
+  local tab = nil
+  local ctrl_right = nil
+  local captured = pcall(vim.api.nvim_buf_call, buffer, function()
+    tab = capture_prediction_fallback('<Tab>')
+    ctrl_right = capture_prediction_fallback('<C-Right>')
+  end)
+  if not captured then return end
+  if tab ~= nil then state.tab = tab end
+  if ctrl_right ~= nil then state.ctrl_right = ctrl_right end
+  prediction_keymap_state[buffer] = state
+
+  vim.keymap.set('i', '<Tab>', function()
+    if active_prediction ~= nil and vim.fn.pumvisible() == 0 then
+      local request_id = active_prediction.request_id
+      vim.schedule(function()
+        if active_prediction ~= nil
+            and tostring(active_prediction.request_id) == tostring(request_id) then
+          _G.AgenCAcceptCodePrediction()
+        end
+      end)
+      return ''
+    end
+    return replay_prediction_fallback(buffer, 'tab', '<Tab>')
+  end, {
+    buffer = buffer,
+    expr = true,
+    silent = true,
+    replace_keycodes = true,
+    desc = prediction_keymap_description,
+  })
+
+  vim.keymap.set('i', '<C-Right>', function()
+    if active_prediction ~= nil and vim.fn.pumvisible() == 0 then
+      local request_id = active_prediction.request_id
+      vim.schedule(function()
+        if active_prediction ~= nil
+            and tostring(active_prediction.request_id) == tostring(request_id) then
+          _G.AgenCAcceptCodePredictionSegment()
+        end
+      end)
+      return ''
+    end
+    return replay_prediction_fallback(buffer, 'ctrl_right', '<C-Right>')
+  end, {
+    buffer = buffer,
+    expr = true,
+    silent = true,
+    replace_keycodes = true,
+    desc = prediction_keymap_description,
+  })
+end
+
+install_prediction_keymaps(vim.api.nvim_get_current_buf())
+vim.api.nvim_create_autocmd({ 'FileType', 'BufEnter', 'BufWinEnter' }, {
+  group = vim.api.nvim_create_augroup('AgenCCodePredictionKeymaps', {
+    clear = true,
+  }),
+  callback = function(event)
+    vim.schedule(function()
+      if vim.api.nvim_buf_is_valid(event.buf) then
+        install_prediction_keymaps(event.buf)
+      end
+    end)
+  end,
+})
+vim.api.nvim_create_autocmd('BufDelete', {
+  group = 'AgenCCodePredictionKeymaps',
+  callback = function(event)
+    prediction_keymap_state[event.buf] = nil
+  end,
+})
+
+vim.api.nvim_create_autocmd({
+  'TextChangedI',
+  'CursorMovedI',
+  'InsertLeave',
+  'BufLeave',
+  'WinScrolled',
+}, {
+  group = vim.api.nvim_create_augroup('AgenCCodePrediction', { clear = true }),
+  callback = function(event)
+    if event.event ~= 'InsertLeave' and event.event ~= 'BufLeave'
+        and event.event ~= 'WinScrolled'
+        and active_prediction ~= nil
+        and prediction_is_current(active_prediction) then
+      return
+    end
+    _G.AgenCDismissCodePrediction(nil, true)
+  end,
+})
+
 _G.AgenCBufferCaptureContext = capture
 _G.AgenCBufferAction = function(action, prompt, visual, line1, line2)
   local selection_mode = nil
@@ -1619,6 +2712,8 @@ local actions = {
   Ask = 'ask',
   Fix = 'fix',
   Explain = 'explain',
+  Edit = 'edit',
+  Refactor = 'refactor',
   Review = 'review',
 }
 for suffix, action in pairs(actions) do
@@ -1646,6 +2741,19 @@ async function installAgentBridge(rpc: NeovimRpcTransport): Promise<void> {
   await rpc.request("nvim_exec_lua", [AGENT_BRIDGE_LUA, []]);
 }
 
+async function installWorkspaceWriteGate(
+  rpc: NeovimRpcTransport,
+): Promise<void> {
+  const apiInfo = await rpc.request("nvim_get_api_info", []);
+  const channel = Array.isArray(apiInfo) ? positiveInteger(apiInfo[0]) : null;
+  if (channel === null) {
+    throw new Error(
+      "Neovim did not report a valid embedded RPC channel for workspace write authority.",
+    );
+  }
+  await rpc.request("nvim_exec_lua", [INSTALL_WORKSPACE_WRITE_GATE, [channel]]);
+}
+
 async function installDirtyAutocmds(rpc: NeovimRpcTransport): Promise<void> {
   const publishState = [
     "function! AgenCBufferPublishState() abort",
@@ -1666,11 +2774,16 @@ async function installDirtyAutocmds(rpc: NeovimRpcTransport): Promise<void> {
   await rpc.request("nvim_command", [
     "autocmd BufAdd,BufDelete,BufEnter,BufModifiedSet,BufWritePost,FileChangedShellPost,TextChanged,TextChangedI,TextChangedP * call AgenCBufferPublishState()",
   ]);
+  await rpc.request("nvim_command", [
+    "autocmd OptionSet endofline call AgenCBufferPublishState()",
+  ]);
   await rpc.request("nvim_command", ["augroup END"]);
   await rpc.request("nvim_command", ["call AgenCBufferPublishState()"]);
 }
 
-export function dirtyFlagFromRpcNotificationParams(params: readonly RpcValue[]): boolean {
+export function dirtyFlagFromRpcNotificationParams(
+  params: readonly RpcValue[],
+): boolean {
   return params[0] === true;
 }
 
@@ -1686,19 +2799,157 @@ export function integrationIntentFromRpcParams(
     kind !== "ask" &&
     kind !== "fix" &&
     kind !== "explain" &&
+    kind !== "edit" &&
+    kind !== "refactor" &&
     kind !== "review"
   ) {
     return null;
   }
   const context = capturedContextFromRpcValue(params[2], {});
   if (!context) return null;
-  const prompt = typeof params[1] === "string"
-    ? truncateUtf8(params[1], 8192)
-    : "";
+  const prompt =
+    typeof params[1] === "string" ? truncateUtf8(params[1], 8192) : "";
   return {
     kind,
     ...(prompt.trim().length > 0 ? { prompt } : {}),
     context,
+  };
+}
+
+function editorProposalId(proposal: BufferEditorProposal): string {
+  return `${proposal.interaction_id}:${proposal.base_changedtick}`;
+}
+
+function editorProposalRpcValue(proposal: BufferEditorProposal): RpcValue {
+  return {
+    version: proposal.version,
+    interaction_id: proposal.interaction_id,
+    path: proposal.path,
+    buffer_handle: proposal.buffer_handle,
+    base_changedtick: proposal.base_changedtick,
+    base_content_sha256: proposal.base_content_sha256,
+    ...(proposal.base_end_of_line !== undefined
+      ? { base_end_of_line: proposal.base_end_of_line }
+      : {}),
+    ...(proposal.new_end_of_line !== undefined
+      ? { new_end_of_line: proposal.new_end_of_line }
+      : {}),
+    summary: proposal.summary,
+    edits: proposal.edits.map((edit) => ({
+      id: edit.id,
+      start_line: edit.start_line,
+      start_column: edit.start_column,
+      end_line: edit.end_line,
+      end_column: edit.end_column,
+      old_text: edit.old_text,
+      new_text: edit.new_text,
+    })),
+  };
+}
+
+function editorProposalResolutionFromRpcValue(
+  value: RpcValue,
+  fallbackProposalId: string,
+  action: "staged" | "accepted" | "rejected",
+): BufferEditorProposalResolution {
+  const record = rpcRecord(value);
+  const proposalId =
+    typeof record?.proposal_id === "string" && record.proposal_id.length > 0
+      ? record.proposal_id
+      : fallbackProposalId;
+  if (record?.ok === true) {
+    const changedtick = nonNegativeInteger(record.changedtick);
+    return {
+      ok: true,
+      action,
+      proposalId,
+      ...(changedtick !== null ? { changedtick } : {}),
+    };
+  }
+  return {
+    ok: false,
+    proposalId,
+    reason:
+      typeof record?.reason === "string" && record.reason.length > 0
+        ? record.reason
+        : "Neovim rejected the editor proposal.",
+    ...(record?.stale === true ? { stale: true } : {}),
+  };
+}
+
+function codePredictionContextFromRpcValue(
+  value: RpcValue,
+): BufferCodePredictionContext | null {
+  const record = rpcRecord(value);
+  const cursor = rpcRecord(record?.cursor);
+  const bufferHandle = positiveInteger(record?.buffer_handle);
+  const changedtick = nonNegativeInteger(record?.changedtick);
+  const line = nonNegativeInteger(cursor?.line);
+  const byteColumn = nonNegativeInteger(cursor?.byte_column);
+  const fileBytes = nonNegativeInteger(record?.file_bytes);
+  if (
+    bufferHandle === null ||
+    changedtick === null ||
+    fileBytes === null ||
+    line === null ||
+    byteColumn === null ||
+    typeof record?.path !== "string" ||
+    typeof record.prefix !== "string" ||
+    typeof record.suffix !== "string"
+  ) {
+    return null;
+  }
+  return {
+    bufferHandle,
+    path: record.path,
+    changedtick,
+    fileBytes,
+    cursor: { line, byteColumn },
+    prefix: record.prefix,
+    suffix: record.suffix,
+    ...(typeof record.language === "string" && record.language.length > 0
+      ? { language: record.language }
+      : {}),
+  };
+}
+
+function codePredictionRpcValue(prediction: BufferCodePrediction): RpcValue {
+  return {
+    request_id: prediction.requestId,
+    generation: prediction.generation,
+    buffer_handle: prediction.bufferHandle,
+    changedtick: prediction.changedtick,
+    cursor: {
+      line: prediction.cursor.line,
+      byte_column: prediction.cursor.byteColumn,
+    },
+    text: prediction.text,
+    latency_ms: prediction.latencyMs,
+  };
+}
+
+function codePredictionFeedbackFromRpcParams(
+  params: readonly RpcValue[],
+): BufferCodePredictionFeedback | null {
+  const requestId = params[0];
+  const kind = params[1];
+  if (
+    typeof requestId !== "string" ||
+    (kind !== "accepted" &&
+      kind !== "partially_accepted" &&
+      kind !== "dismissed")
+  ) {
+    return null;
+  }
+  const acceptedCharacters = nonNegativeInteger(params[2]);
+  const latencyMs = nonNegativeInteger(params[3]);
+  return {
+    requestId,
+    kind,
+    ...(acceptedCharacters !== null && acceptedCharacters > 0
+      ? { acceptedCharacters }
+      : {}),
+    ...(latencyMs !== null ? { latencyMs } : {}),
   };
 }
 
@@ -1730,32 +2981,35 @@ export function capturedContextFromRpcValue(
   ) {
     return null;
   }
-  const rawContent = typeof record?.content === "string"
-    ? record.content
-    : undefined;
+  const rawContent =
+    typeof record?.content === "string" ? record.content : undefined;
   if (captureExceedsLimits(value, request)) return null;
   const content = rawContent;
-  const selectionMode = record?.selection_mode === "line" ||
-      record?.selection_mode === "block" ||
-      record?.selection_mode === "character"
-    ? record.selection_mode
-    : undefined;
+  const selectionMode =
+    record?.selection_mode === "line" ||
+    record?.selection_mode === "block" ||
+    record?.selection_mode === "character"
+      ? record.selection_mode
+      : undefined;
   const rawDiagnostic = rpcRecord(record?.diagnostic);
   const diagnosticMessage = rawDiagnostic?.message;
-  const diagnostic = kind === "diagnostic" && typeof diagnosticMessage === "string"
-    ? {
-        message: truncateUtf8(diagnosticMessage, 8192),
-        severity: typeof rawDiagnostic?.severity === "number"
-          ? rawDiagnostic.severity
-          : null,
-        ...(typeof rawDiagnostic?.source === "string"
-          ? { source: truncateUtf8(rawDiagnostic.source, 256) }
-          : {}),
-        ...(typeof rawDiagnostic?.code === "string" || typeof rawDiagnostic?.code === "number"
-          ? { code: rawDiagnostic.code }
-          : {}),
-      }
-    : undefined;
+  const diagnostic =
+    kind === "diagnostic" && typeof diagnosticMessage === "string"
+      ? {
+          message: truncateUtf8(diagnosticMessage, 8192),
+          severity:
+            typeof rawDiagnostic?.severity === "number"
+              ? rawDiagnostic.severity
+              : null,
+          ...(typeof rawDiagnostic?.source === "string"
+            ? { source: truncateUtf8(rawDiagnostic.source, 256) }
+            : {}),
+          ...(typeof rawDiagnostic?.code === "string" ||
+          typeof rawDiagnostic?.code === "number"
+            ? { code: rawDiagnostic.code }
+            : {}),
+        }
+      : undefined;
   return {
     kind,
     bufferHandle,
@@ -1788,8 +3042,10 @@ function captureExceedsLimits(
     MAX_CAPTURE_BYTES,
     positiveInteger(request.maxBytes) ?? MAX_CAPTURE_BYTES,
   );
-  return content.split("\n").length > maxLines ||
-    Buffer.byteLength(content, "utf8") > maxBytes;
+  return (
+    content.split("\n").length > maxLines ||
+    Buffer.byteLength(content, "utf8") > maxBytes
+  );
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {
@@ -1809,6 +3065,142 @@ function positiveInteger(value: RpcValue | number | undefined): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0
     ? value
     : null;
+}
+
+function workspaceWriteRequestFromRpcParams(
+  params: RpcParams,
+): BufferWorkspaceWriteRequest | null {
+  if (params.length !== 1) return null;
+  const request = rpcRecord(params[0]);
+  const target = rpcRecord(request?.target);
+  const rawBuffers = request?.buffers;
+  const targetPath = typeof target?.path === "string" ? target.path : "";
+  const sourcePath =
+    typeof target?.source_path === "string" ? target.source_path : "";
+  const targetKind = target?.kind;
+  const targetBufferHandle = positiveInteger(target?.buffer_handle);
+  const targetChangedtick = nonNegativeInteger(target?.changedtick);
+  const lineStart = positiveInteger(target?.line_start);
+  const lineEnd = positiveInteger(target?.line_end);
+  if (
+    targetPath.length === 0 ||
+    targetPath.length > 32_768 ||
+    sourcePath.length === 0 ||
+    sourcePath.length > 32_768 ||
+    (targetKind !== "buffer" &&
+      targetKind !== "file" &&
+      targetKind !== "append") ||
+    targetBufferHandle === null ||
+    targetChangedtick === null ||
+    lineStart === null ||
+    lineEnd === null ||
+    lineEnd < lineStart ||
+    typeof target?.end_of_line !== "boolean" ||
+    !Array.isArray(rawBuffers) ||
+    rawBuffers.length > 512
+  ) {
+    return null;
+  }
+  const buffers: BufferWorkspaceWriteRequest["buffers"][number][] = [];
+  let totalBytes = 0;
+  for (const rawBuffer of rawBuffers) {
+    const buffer = rpcRecord(rawBuffer);
+    const path = typeof buffer?.path === "string" ? buffer.path : "";
+    const bufferHandle = positiveInteger(buffer?.buffer_handle);
+    const changedtick = nonNegativeInteger(buffer?.changedtick);
+    const content = typeof buffer?.content === "string" ? buffer.content : null;
+    if (
+      path.length === 0 ||
+      path.length > 32_768 ||
+      bufferHandle === null ||
+      changedtick === null ||
+      typeof buffer?.end_of_line !== "boolean" ||
+      typeof buffer?.dirty !== "boolean" ||
+      content === null
+    ) {
+      return null;
+    }
+    const contentBytes = Buffer.byteLength(content, "utf8");
+    if (contentBytes > 5 * 1024 * 1024) return null;
+    totalBytes += contentBytes;
+    if (totalBytes > 16 * 1024 * 1024) return null;
+    buffers.push({
+      path,
+      bufferHandle,
+      changedtick,
+      endOfLine: buffer.end_of_line,
+      dirty: buffer.dirty,
+      content,
+    });
+  }
+  return {
+    target: {
+      path: targetPath,
+      sourcePath,
+      kind: targetKind,
+      bufferHandle: targetBufferHandle,
+      changedtick: targetChangedtick,
+      endOfLine: target.end_of_line,
+      lineStart,
+      lineEnd,
+    },
+    buffers,
+  };
+}
+
+function assertAbnormalRecoveryManifest(
+  value: RpcValue,
+  expectedSwapRoot?: string,
+): void {
+  if (!Array.isArray(value)) {
+    throw new Error(
+      "Neovim returned an invalid abnormal-exit recovery manifest.",
+    );
+  }
+  const handles = new Set<number>();
+  const swaps = new Set<string>();
+  for (const rawEntry of value) {
+    const entry = rpcRecord(rawEntry);
+    const handle = positiveInteger(entry?.handle);
+    const changedtick = nonNegativeInteger(entry?.changedtick);
+    const swap = typeof entry?.swap === "string" ? entry.swap : "";
+    const size = positiveInteger(entry?.size);
+    if (
+      handle === null ||
+      changedtick === null ||
+      typeof entry?.end_of_line !== "boolean" ||
+      swap.length === 0 ||
+      size === null ||
+      handles.has(handle) ||
+      swaps.has(swap) ||
+      (expectedSwapRoot !== undefined &&
+        !pathIsAtOrWithin(swap, expectedSwapRoot))
+    ) {
+      throw new Error(
+        "Neovim returned an invalid abnormal-exit recovery manifest.",
+      );
+    }
+    handles.add(handle);
+    swaps.add(swap);
+  }
+}
+
+function pathIsAtOrWithin(path: string, root: string): boolean {
+  const relativePath = relative(resolve(root), resolve(path));
+  return (
+    relativePath === "" ||
+    (!relativePath.startsWith("..") && !isAbsolute(relativePath))
+  );
+}
+
+function abnormalRecoveryPreservationError(cause: unknown): Error {
+  return new Error(
+    "Embedded Neovim remains live because exact recovery preservation " +
+      `was not confirmed: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    { cause },
+  );
 }
 
 function nonNegativeInteger(value: RpcValue | undefined): number | null {
@@ -1845,7 +3237,9 @@ function stringValue(value: RpcValue): string {
   return String(value);
 }
 
-export function bufferManifestFromRpcValue(value: RpcValue): EmbeddedNeovimBufferManifest {
+export function bufferManifestFromRpcValue(
+  value: RpcValue,
+): EmbeddedNeovimBufferManifest {
   const record = rpcRecord(value);
   const active = finiteInteger(record?.active);
   const rawBuffers = Array.isArray(record?.buffers) ? record.buffers : [];
@@ -1855,13 +3249,17 @@ export function bufferManifestFromRpcValue(value: RpcValue): EmbeddedNeovimBuffe
     const handle = finiteInteger(buffer?.handle);
     if (handle === null) continue;
     const name = typeof buffer?.name === "string" ? buffer.name : "";
-    const bufferType = typeof buffer?.buffer_type === "string" ? buffer.buffer_type : "";
+    const bufferType =
+      typeof buffer?.buffer_type === "string" ? buffer.buffer_type : "";
     const changedtick = nonNegativeInteger(buffer?.changedtick);
+    const endOfLine =
+      typeof buffer?.end_of_line === "boolean" ? buffer.end_of_line : null;
     const loaded = buffer?.loaded === true;
     const modifiable = buffer?.modifiable === true;
     buffers.push({
       handle,
       changedtick,
+      endOfLine,
       name,
       listed: buffer?.listed === true,
       loaded,
@@ -1870,7 +3268,8 @@ export function bufferManifestFromRpcValue(value: RpcValue): EmbeddedNeovimBuffe
       bufferType,
       modifiable,
       readOnly: buffer?.read_only === true,
-      saveable: buffer?.saveable === true ||
+      saveable:
+        buffer?.saveable === true ||
         (name.length > 0 && bufferType.length === 0 && modifiable),
     });
   }
@@ -1888,10 +3287,14 @@ function normalizeBufferHandle(handle: number): number {
 }
 
 function finiteInteger(value: RpcValue | undefined): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+  return typeof value === "number" && Number.isSafeInteger(value)
+    ? value
+    : null;
 }
 
-function rpcRecord(value: RpcValue | undefined): { readonly [key: string]: RpcValue } | null {
+function rpcRecord(
+  value: RpcValue | undefined,
+): { readonly [key: string]: RpcValue } | null {
   if (
     value === undefined ||
     value === null ||

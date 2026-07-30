@@ -15,12 +15,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -73,7 +68,7 @@ import {
 import type { AuthBackend } from "../auth/backend.js";
 import { clearSession } from "../commands/clear.js";
 
-;(globalThis as Record<string, unknown>).MACRO ??= {
+(globalThis as Record<string, unknown>).MACRO ??= {
   VERSION: "test-version",
   DISPLAY_VERSION: "test-version",
   BUILD_TIME: "test-build-time",
@@ -465,7 +460,11 @@ describe("Session provider continuity hooks", () => {
         input: [
           { type: "message", role: "user", content: [] },
           { type: "message", role: "assistant", content: [] },
-          { type: "message", role: "user", content: [{ type: "input_text", text: "after compact" }] },
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "after compact" }],
+          },
         ],
         stream: false,
       },
@@ -495,7 +494,9 @@ describe("Session.setPendingWorktreeState", () => {
 
     session.setPendingWorktreeState(pending);
     expect(session.pendingWorktreeState).toEqual(pending);
-    expect(session.sessionConfiguration.cwd).toBe("/repo/.agenc-worktrees/feat");
+    expect(session.sessionConfiguration.cwd).toBe(
+      "/repo/.agenc-worktrees/feat",
+    );
     expect(session.roleWorkspace.id).toBe("/tmp");
 
     session.setPendingWorktreeState(null);
@@ -514,7 +515,9 @@ describe("Session permission-context sync", () => {
       services: { permissionModeRegistry: registry },
     });
 
-    expect(session.sessionConfiguration.permissionContext?.mode).toBe("default");
+    expect(session.sessionConfiguration.permissionContext?.mode).toBe(
+      "default",
+    );
 
     await registry.update(
       createEmptyToolPermissionContext({
@@ -582,9 +585,7 @@ describe("Session attachment exit-pulse wiring", () => {
       services: { permissionModeRegistry: registry },
     });
 
-    await registry.update(
-      createEmptyToolPermissionContext({ mode: "plan" }),
-    );
+    await registry.update(createEmptyToolPermissionContext({ mode: "plan" }));
 
     expect(
       getAttachmentTrackingState(session).needsPlanModeExitAttachment,
@@ -601,9 +602,7 @@ describe("Session attachment exit-pulse wiring", () => {
       services: { permissionModeRegistry: registry },
     });
 
-    await registry.update(
-      createEmptyToolPermissionContext({ mode: "plan" }),
-    );
+    await registry.update(createEmptyToolPermissionContext({ mode: "plan" }));
 
     expect(
       getAttachmentTrackingState(session).needsPlanModeExitAttachment,
@@ -702,7 +701,10 @@ describe("Session rollout persistence suspension", () => {
 
 describe("Session.consumePendingProviderSwitch", () => {
   it("resets ProviderHttpClient continuity state on provider/model switches and re-binds the session conversation id", async () => {
-    const bindSpy = vi.spyOn(ProviderHttpClient.prototype, "bindConversationId");
+    const bindSpy = vi.spyOn(
+      ProviderHttpClient.prototype,
+      "bindConversationId",
+    );
     const resetSpy = vi.spyOn(
       ProviderHttpClient.prototype,
       "resetResponsesContinuation",
@@ -750,9 +752,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       model: "grok-4.3",
     });
     expect(state.sessionConfiguration.provider).toEqual({ slug: "grok" });
-    expect(state.sessionConfiguration.collaborationMode.model).toBe(
-      "grok-4.3",
-    );
+    expect(state.sessionConfiguration.collaborationMode.model).toBe("grok-4.3");
     expect(session.config.model).toBe("grok-4.3");
     expect(session.modelInfo.slug).toBe("grok-4.3");
     expect(isFactoryProvider(session.services.provider)).toBe(true);
@@ -873,7 +873,9 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "gpt-5",
         });
         expect(readProviderIdentity(session.services.provider)).toBe("openai");
-        expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
+        expect(
+          readProviderFactoryOptions(session.services.provider),
+        ).toMatchObject({
           apiKey: "openai-target",
           baseURL: "http://127.0.0.1:8000/v1",
           model: "gpt-5",
@@ -955,7 +957,9 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "openrouter/openai/gpt-5-nano",
         });
         expect(calls).toEqual(["vendKey:openrouter:conv-test"]);
-        expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
+        expect(
+          readProviderFactoryOptions(session.services.provider),
+        ).toMatchObject({
           apiKey: "managed-openrouter-key",
           baseURL: "https://llm.agenc.tech",
           model: "openrouter/openai/gpt-5-nano",
@@ -1034,7 +1038,9 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "openai/gpt-5-nano",
         });
         expect(calls).toEqual(["vendKey:openrouter:conv-test"]);
-        expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
+        expect(
+          readProviderFactoryOptions(session.services.provider),
+        ).toMatchObject({
           apiKey: "managed-openrouter-key",
           model: "openai/gpt-5-nano",
           extra: {
@@ -1099,11 +1105,14 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "gpt-4o-mini",
         });
         expect(vendKey).not.toHaveBeenCalled();
-        expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
+        expect(
+          readProviderFactoryOptions(session.services.provider),
+        ).toMatchObject({
           model: "gpt-4o-mini",
         });
-        expect(readProviderFactoryOptions(session.services.provider).apiKey)
-          .toBeUndefined();
+        expect(
+          readProviderFactoryOptions(session.services.provider).apiKey,
+        ).toBeUndefined();
       },
     );
   });
@@ -1234,8 +1243,12 @@ describe("Session.consumePendingProviderSwitch", () => {
           provider: "openrouter",
           model: "openai/gpt-5",
         });
-        expect(readProviderIdentity(session.services.provider)).toBe("openrouter");
-        expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
+        expect(readProviderIdentity(session.services.provider)).toBe(
+          "openrouter",
+        );
+        expect(
+          readProviderFactoryOptions(session.services.provider),
+        ).toMatchObject({
           apiKey: "or-test",
           baseURL: "https://router.example/api/v1",
           model: "openai/gpt-5",
@@ -1323,6 +1336,121 @@ describe("Session turn-driver hooks", () => {
     await first;
     await second;
     expect(started).toEqual(["first", "second"]);
+  });
+
+  it("defers Agent startup work across Editor turns and flushes it before an ordinary submit", async () => {
+    const session = buildSession();
+    const sequence: string[] = [];
+    session.appendDeferredOrdinarySubmitHook(async () => {
+      sequence.push("agent-startup");
+    });
+    session.installTurnDriverHooks({
+      submit: vi.fn(async (message: string) => {
+        sequence.push(`turn:${message}`);
+      }),
+    });
+    const editorInteraction = {
+      interactionId: "interaction-deferred-startup-ask",
+      kind: "ask" as const,
+      policy: "read_only" as const,
+      editorInstanceId: "editor-deferred-startup",
+      bufferHandle: 12,
+      changedtick: 5,
+      contentSha256: "e".repeat(64),
+      path: "/tmp/example.ts",
+      range: {
+        start: { line: 1, column: 0 },
+        end: { line: 1, column: 1 },
+      },
+    };
+
+    await session.submit("editor", { editorInteraction });
+    expect(sequence).toEqual(["turn:editor"]);
+
+    await session.submit("agent");
+    expect(sequence).toEqual(["turn:editor", "agent-startup", "turn:agent"]);
+  });
+
+  it("discards never-started deferred work when shutdown wins", async () => {
+    const cancel = vi.fn();
+    const session = buildSession({
+      services: {
+        mcpStartupCancellationToken: {
+          signal: new AbortController().signal,
+          cancel,
+          isCancelled: () => cancel.mock.calls.length > 0,
+        },
+      },
+    });
+    const startup = vi.fn(async () => {});
+    const submit = vi.fn(async () => {});
+    session.appendDeferredOrdinarySubmitHook(startup);
+    session.installTurnDriverHooks({ submit });
+
+    await session.shutdown();
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(startup).not.toHaveBeenCalled();
+    await expect(session.submit("too late")).rejects.toThrow(
+      "session is shutting down",
+    );
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("cancels and drains an in-flight startup activation before shutdown completes", async () => {
+    const cancel = vi.fn();
+    const session = buildSession({
+      services: {
+        mcpStartupCancellationToken: {
+          signal: new AbortController().signal,
+          cancel,
+          isCancelled: () => cancel.mock.calls.length > 0,
+        },
+      },
+    });
+    let releaseStartup!: () => void;
+    const startupGate = new Promise<void>((resolve) => {
+      releaseStartup = resolve;
+    });
+    let markStarted!: () => void;
+    const startupStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const startup = vi.fn(async () => {
+      markStarted();
+      await startupGate;
+    });
+    const submitHook = vi.fn(async () => {});
+    session.appendDeferredOrdinarySubmitHook(startup);
+    session.installTurnDriverHooks({ submit: submitHook });
+
+    const submit = session.submit("agent");
+    await startupStarted;
+    const shutdown = session.shutdown();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(startup).toHaveBeenCalledOnce();
+    expect(submitHook).not.toHaveBeenCalled();
+
+    releaseStartup();
+    await shutdown;
+    await expect(submit).rejects.toThrow("session is shutting down");
+    expect(submitHook).not.toHaveBeenCalled();
+  });
+
+  it("retains a rejected startup activation without replaying side effects", async () => {
+    const session = buildSession();
+    const startup = vi.fn(async () => {
+      throw new Error("startup failed");
+    });
+    const submit = vi.fn(async () => {});
+    session.appendDeferredOrdinarySubmitHook(startup);
+    session.installTurnDriverHooks({ submit });
+
+    await expect(session.submit("first")).rejects.toThrow("startup failed");
+    await expect(session.submit("second")).rejects.toThrow("startup failed");
+
+    expect(startup).toHaveBeenCalledOnce();
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it("flushEventLog falls back to the rollout store when no hook is installed", async () => {
@@ -1624,7 +1752,9 @@ describe("Session.partialCompactFromMessage", () => {
         {
           role: "assistant",
           content: "assistant kept",
-          toolCalls: [{ id: "call-1", name: "Read", arguments: "{\"path\":\"a\"}" }],
+          toolCalls: [
+            { id: "call-1", name: "Read", arguments: '{"path":"a"}' },
+          ],
         },
         { role: "user", content: "summarize from here" },
         { role: "assistant", content: "assistant summarized" },
@@ -1649,7 +1779,7 @@ describe("Session.partialCompactFromMessage", () => {
           expect.objectContaining({
             role: "assistant",
             toolCalls: [
-              { id: "call-1", name: "Read", arguments: "{\"path\":\"a\"}" },
+              { id: "call-1", name: "Read", arguments: '{"path":"a"}' },
             ],
           }),
         ]),
@@ -1658,8 +1788,9 @@ describe("Session.partialCompactFromMessage", () => {
     const history = session.snapshotHistoryMessages();
     expect(history[0]?.role).toBe("user");
     expect(history[0]?.content).toEqual(expect.stringContaining("<compact>"));
-    expect(history.some((message) => message.content === "summarize from here"))
-      .toBe(false);
+    expect(
+      history.some((message) => message.content === "summarize from here"),
+    ).toBe(false);
   });
 
   it("preserves multimodal kept messages when compacting from a later message", async () => {
@@ -1702,7 +1833,11 @@ describe("Session.partialCompactFromMessage", () => {
       state.history = [
         {
           role: "user",
-          content: [{ type: "text", text: "keep this" }, documentPart, imagePart],
+          content: [
+            { type: "text", text: "keep this" },
+            documentPart,
+            imagePart,
+          ],
         },
         { role: "user", content: "summarize from here" },
         { role: "assistant", content: "assistant summarized" },
@@ -1738,10 +1873,12 @@ describe("Session.partialCompactFromMessage", () => {
           ...mkProvider(),
           chat: vi.fn(
             () =>
-              new Promise<Awaited<ReturnType<LLMProvider["chat"]>>>((resolve) => {
-                resolveChat = resolve;
-                markStarted();
-              }),
+              new Promise<Awaited<ReturnType<LLMProvider["chat"]>>>(
+                (resolve) => {
+                  resolveChat = resolve;
+                  markStarted();
+                },
+              ),
           ),
         },
       },
@@ -1763,9 +1900,12 @@ describe("Session.partialCompactFromMessage", () => {
     });
     await chatStarted;
 
-    expect(session.activeTurn.unsafePeek()?.tasks.values().next().value?.kind)
-      .toBe("compact");
-    await expect(clearSession(session)).rejects.toThrow("Cannot clear right now");
+    expect(
+      session.activeTurn.unsafePeek()?.tasks.values().next().value?.kind,
+    ).toBe("compact");
+    await expect(clearSession(session)).rejects.toThrow(
+      "Cannot clear right now",
+    );
     resolveChat({
       content: "summary",
       toolCalls: [],
@@ -1872,6 +2012,29 @@ describe("Session.shutdown dispatches SessionEnd hooks", () => {
       const session = buildSession();
       await session.shutdown();
       expect(seen).toEqual([{ reason: "exit", session_id: "conv-test" }]);
+    } finally {
+      resetLifecycleHookRegistry();
+    }
+  });
+
+  it("does not run unmatched lifecycle hooks for an Editor-only deferred session", async () => {
+    const { registerSessionEndHook, resetLifecycleHookRegistry } =
+      await import("../llm/hooks/registry.js");
+    const sessionStart = vi.fn(async () => {});
+    const sessionEnd = vi.fn(async () => ({
+      succeeded: true,
+      output: "",
+    }));
+    resetLifecycleHookRegistry();
+    registerSessionEndHook(sessionEnd);
+    try {
+      const session = buildSession();
+      session.installDeferredSessionStartHook(sessionStart);
+
+      await session.shutdown();
+
+      expect(sessionStart).not.toHaveBeenCalled();
+      expect(sessionEnd).not.toHaveBeenCalled();
     } finally {
       resetLifecycleHookRegistry();
     }

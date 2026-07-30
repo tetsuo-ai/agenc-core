@@ -11,14 +11,46 @@ import { describe, expect, it } from "vitest";
 // PTY scenario remains local, so do not treat this file as e2e coverage.
 describe("embedded Neovim BUFFER PTY gate files", () => {
   it("defines the workbench Neovim scenarios and wrapper command", async () => {
-    const scenario = await readFile("scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs", "utf8");
-    const missingFallback = await readFile("scripts/check-tui-e2e/scenarios/121-workbench-buffer-neovim-missing-fallback.mjs", "utf8");
-    const killCleanup = await readFile("scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs", "utf8");
-    const runtimeExit = await readFile("scripts/check-tui-e2e/scenarios/123-workbench-buffer-neovim-runtime-exit.mjs", "utf8");
-    const visualRender = await readFile("scripts/check-tui-e2e/scenarios/124-workbench-buffer-neovim-visual-render.mjs", "utf8");
-    const helpers = await readFile("scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs", "utf8");
-    const wrapper = await readFile("scripts/check-tui-workbench-buffer-neovim.mjs", "utf8");
-    const visualSmoke = await readFile("scripts/check-tui-workbench-visual-smoke.mjs", "utf8");
+    const scenario = await readFile(
+      "scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs",
+      "utf8",
+    );
+    const missingFallback = await readFile(
+      "scripts/check-tui-e2e/scenarios/121-workbench-buffer-neovim-missing-fallback.mjs",
+      "utf8",
+    );
+    const killCleanup = await readFile(
+      "scripts/check-tui-e2e/scenarios/122-workbench-buffer-neovim-kill-cleanup.mjs",
+      "utf8",
+    );
+    const runtimeExit = await readFile(
+      "scripts/check-tui-e2e/scenarios/123-workbench-buffer-neovim-runtime-exit.mjs",
+      "utf8",
+    );
+    const visualRender = await readFile(
+      "scripts/check-tui-e2e/scenarios/124-workbench-buffer-neovim-visual-render.mjs",
+      "utf8",
+    );
+    const unifiedWorkspace = await readFile(
+      "scripts/check-tui-e2e/scenarios/132-unified-agent-editor-workspace.mjs",
+      "utf8",
+    );
+    const codePrediction = await readFile(
+      "scripts/check-tui-e2e/scenarios/133-editor-code-prediction.mjs",
+      "utf8",
+    );
+    const helpers = await readFile(
+      "scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs",
+      "utf8",
+    );
+    const wrapper = await readFile(
+      "scripts/check-tui-workbench-buffer-neovim.mjs",
+      "utf8",
+    );
+    const visualSmoke = await readFile(
+      "scripts/check-tui-workbench-visual-smoke.mjs",
+      "utf8",
+    );
 
     expect(scenario).toContain("AGENC_TUI_WORKBENCH");
     expect(scenario).toContain("AGENC_BUFFER_PROVIDER");
@@ -43,19 +75,49 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(scenario).toContain("term.resize");
     expect(missingFallback).toContain("AGENC_BUFFER_NVIM");
     expect(missingFallback).toContain("missing Neovim fallback visible");
-    expect(missingFallback).toContain("Inline BUFFER is available as the basic fallback");
+    expect(missingFallback).toContain(
+      "Inline BUFFER is available as the basic fallback",
+    );
     expect(killCleanup).toContain("session.kill()");
     expect(killCleanup).toContain("KILL_DIRTY_MARK");
     expect(killCleanup).toContain("waitForFrameText");
     expect(killCleanup).toContain("TUI-killed embedded Neovim");
     expect(runtimeExit).toContain("jklh");
-    expect(runtimeExit).toContain("normal-mode movement keys modified the file");
-    expect(runtimeExit).toContain("Workbench composer after embedded Neovim :q!");
-    expect(runtimeExit).toContain("Workbench stayed on BUFFER after embedded Neovim :q!");
+    expect(runtimeExit).toContain(
+      "normal-mode movement keys modified the file",
+    );
+    expect(runtimeExit).toContain(
+      "Workbench composer after embedded Neovim :q!",
+    );
+    expect(runtimeExit).toContain(
+      "Workbench stayed on BUFFER after embedded Neovim :q!",
+    );
     expect(visualRender).toContain("visible selection highlight");
     expect(visualRender).toContain("visualChunk");
     expect(visualRender).toContain("full-screen clear/flicker");
     expect(visualRender).toContain("alpha beta gamma");
+    expect(unifiedWorkspace).toContain("AgenCAsk WORKBENCH-TRANSCRIPT-SCROLL");
+    expect(unifiedWorkspace).toContain("PgUp\\/PgDn scroll");
+    expect(unifiedWorkspace).toContain("SHARED_WORKSPACE_MARK");
+    expect(unifiedWorkspace).toContain("AgenCEdit EDITOR-PROPOSAL-E2E");
+    expect(unifiedWorkspace).toContain("bytesBeforeProposalAccept");
+    expect(unifiedWorkspace).toContain("SHARED_WORKSPACE_ACCEPTED");
+    expect(unifiedWorkspace).toContain('session.send("\\x1b1")');
+    expect(unifiedWorkspace).toContain('session.send("\\x1b2")');
+    expect(codePrediction).toContain("Enable editor code predictions\\?");
+    expect(codePrediction).toContain('session.send("\\x1by")');
+    expect(codePrediction).toContain("config.toml");
+    expect(codePrediction).toContain("daemonPidAfterConsent");
+    expect(codePrediction).toContain("MOCK_CODE_PREDICTION_LOG_FILENAME");
+    expect(codePrediction).toContain(
+      "prediction provider request before consent",
+    );
+    expect(codePrediction).toContain("toolCount !== 0");
+    expect(codePrediction).toContain("messageRoles");
+    expect(codePrediction).toContain("readRolloutItems");
+    expect(codePrediction).toContain("prediction text leaked");
+    expect(codePrediction).toContain('session.send("\\t")');
+    expect(codePrediction).toContain("accepted prediction saved from Neovim");
     expect(helpers).toContain("listDescendantNeovimPids");
     expect(helpers).toContain("waitForPidsGone");
     expect(helpers).toContain("waitForFrameText");

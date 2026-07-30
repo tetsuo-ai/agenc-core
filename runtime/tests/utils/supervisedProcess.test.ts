@@ -201,9 +201,10 @@ function linuxBrokerFaultEnvironment(
     ...process.env,
     ...extra,
     AGENC_TEST_BROKER_FAULT: fault,
-    LD_PRELOAD: process.env.LD_PRELOAD === undefined
-      ? libraryPath
-      : `${libraryPath}:${process.env.LD_PRELOAD}`,
+    LD_PRELOAD:
+      process.env.LD_PRELOAD === undefined
+        ? libraryPath
+        : `${libraryPath}:${process.env.LD_PRELOAD}`,
   };
 }
 
@@ -240,7 +241,10 @@ async function withFakeWindowsTaskkill(
     `#!/bin/sh\nsleep 0.05\nprintf '%s ' "$@" >> "$AGENC_TASKKILL_TEST_LOG"\nprintf '\\n' >> "$AGENC_TASKKILL_TEST_LOG"\nexit ${exitCode}\n`,
   );
   chmodSync(taskkill, 0o700);
-  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const platformDescriptor = Object.getOwnPropertyDescriptor(
+    process,
+    "platform",
+  )!;
   const previousSystemRoot = process.env.SystemRoot;
   const previousLog = process.env.AGENC_TASKKILL_TEST_LOG;
   Object.defineProperty(process, "platform", {
@@ -278,6 +282,60 @@ describe("runSupervisedProcess", () => {
     });
     expect(result.stopReason).toBeUndefined();
     expect(result.stdout.toString()).toBe("done");
+  });
+
+  it("delivers bounded stdin without copying source bytes into result metadata", async () => {
+    const source = "private-editor-source-雪\n";
+    const result = await runSupervisedProcess(
+      nodeCommand(
+        "const { createHash } = require('node:crypto');" +
+          "const chunks = [];" +
+          "process.stdin.on('data', chunk => chunks.push(chunk));" +
+          "process.stdin.on('end', () => {" +
+          "const bytes = Buffer.concat(chunks);" +
+          "process.stdout.write(JSON.stringify({" +
+          "bytes: bytes.length," +
+          "sha256: createHash('sha256').update(bytes).digest('hex')" +
+          "}));" +
+          "});",
+      ),
+      {
+        maxOutputBytes: 1_024,
+        stdin: source,
+      },
+    );
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      signal: null,
+      forced: false,
+      backstopExpired: false,
+    });
+    expect(JSON.parse(result.stdout.toString())).toMatchObject({
+      bytes: Buffer.byteLength(source, "utf8"),
+    });
+    expect(JSON.stringify(result)).not.toContain(source.trim());
+  });
+
+  it("unblocks a pending stdin writer when output limits stop the child", async () => {
+    const started = Date.now();
+    const result = await runSupervisedProcess(
+      nodeCommand(
+        "process.stdin.pause();" +
+          "process.stdout.write('x'.repeat(4096));" +
+          "setInterval(() => {}, 1000);",
+      ),
+      {
+        maxOutputBytes: 32,
+        stdin: Buffer.alloc(8 * 1024 * 1024, 0x61),
+        terminateGraceMs: 50,
+        settleBackstopMs: 500,
+      },
+    );
+
+    expect(result.stopReason).toBe("output_limit");
+    expect(result.stdout.byteLength).toBe(32);
+    expect(Date.now() - started).toBeLessThan(2_500);
   });
 
   it("does not spawn when the caller signal is already aborted", async () => {
@@ -393,7 +451,9 @@ describe("runSupervisedProcess", () => {
         );
 
         descendantPid = Number(result.stdout.toString());
-        expect(Number.isSafeInteger(descendantPid) && descendantPid > 0).toBe(true);
+        expect(Number.isSafeInteger(descendantPid) && descendantPid > 0).toBe(
+          true,
+        );
         expect(result).toMatchObject({
           exitCode: 0,
           stopReason: "residual_process",
@@ -464,7 +524,9 @@ describe("runSupervisedProcess", () => {
       });
       const ready = new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
-          reject(new Error(`Timed out waiting for contained processes: ${stderr}`));
+          reject(
+            new Error(`Timed out waiting for contained processes: ${stderr}`),
+          );
         }, 5_000);
         owner.stdout.on("data", (chunk: string) => {
           output += chunk;
@@ -473,10 +535,12 @@ describe("runSupervisedProcess", () => {
             if (newline < 0) break;
             const line = output.slice(0, newline);
             output = output.slice(newline + 1);
-            processes.push(JSON.parse(line) as {
-              leader: number;
-              descendant: number;
-            });
+            processes.push(
+              JSON.parse(line) as {
+                leader: number;
+                descendant: number;
+              },
+            );
           }
           if (processes.length < 4) return;
           clearTimeout(timer);
@@ -509,16 +573,18 @@ describe("runSupervisedProcess", () => {
           .map(Number)
           .filter((pid) => {
             try {
-              return readFileSync(`/proc/${pid}/cmdline`, "utf8")
-                .includes("agenc-cgroup-owner-watchdog");
+              return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(
+                "agenc-cgroup-owner-watchdog",
+              );
             } catch {
               return false;
             }
           });
         const hasPrivateCgroup = processes.every(({ descendant }) => {
           try {
-            return readFileSync(`/proc/${descendant}/cgroup`, "utf8")
-              .includes("/agenc-process-");
+            return readFileSync(`/proc/${descendant}/cgroup`, "utf8").includes(
+              "/agenc-process-",
+            );
           } catch {
             return false;
           }
@@ -607,8 +673,10 @@ describe("process-tree root safety", () => {
         `/usr/bin/setsid /usr/bin/touch "${escapedMarkerPath}" ` +
           "</dev/null >/dev/null 2>&1 &\n",
       );
-      const platformDescriptor =
-        Object.getOwnPropertyDescriptor(process, "platform")!;
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      )!;
       let child: ReturnType<typeof spawnContainedProcess> | undefined;
 
       try {
@@ -679,10 +747,7 @@ describe("process-tree root safety", () => {
     async () => {
       const child = spawnContainedProcess(
         process.execPath,
-        [
-          "-e",
-          "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)",
-        ],
+        ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
         {
           cwd: process.cwd(),
           env: process.env,
@@ -796,49 +861,49 @@ describe("process-tree root safety", () => {
   it.runIf(process.platform === "linux")(
     "does not lose a control signal delivered between reaping and waiting",
     async () => {
-      await withLinuxBrokerFaultLibrary(async (libraryPath, scratchDirectory) => {
-        const markerPath = join(scratchDirectory, "target-ready");
-        const child = spawnContainedProcess(
-          process.execPath,
-          [
-            "-e",
-            "require('node:fs').writeFileSync(" +
-              `${JSON.stringify(markerPath)}, 'ready');` +
-              "setInterval(() => {}, 1000)",
-          ],
-          {
-            cwd: process.cwd(),
-            env: linuxBrokerFaultEnvironment(
-              libraryPath,
-              "wait-signal",
-              { AGENC_TEST_BROKER_MARKER: markerPath },
-            ),
-            linuxContainment: "subreaper",
-          },
-        );
-        const processClosed = waitForChildClose(child, 1_500);
-        child.stdin.end();
+      await withLinuxBrokerFaultLibrary(
+        async (libraryPath, scratchDirectory) => {
+          const markerPath = join(scratchDirectory, "target-ready");
+          const child = spawnContainedProcess(
+            process.execPath,
+            [
+              "-e",
+              "require('node:fs').writeFileSync(" +
+                `${JSON.stringify(markerPath)}, 'ready');` +
+                "setInterval(() => {}, 1000)",
+            ],
+            {
+              cwd: process.cwd(),
+              env: linuxBrokerFaultEnvironment(libraryPath, "wait-signal", {
+                AGENC_TEST_BROKER_MARKER: markerPath,
+              }),
+              linuxContainment: "subreaper",
+            },
+          );
+          const processClosed = waitForChildClose(child, 1_500);
+          child.stdin.end();
 
-        try {
-          await expect(processClosed).resolves.toMatchObject({
-            code: null,
-            signal: "SIGTERM",
-          });
-          await expect(
-            terminateProcessTreeAndWait(child, {
-              terminateGraceMs: 50,
-              killGraceMs: 1_000,
-              label: "signal-wakeup process",
-            }),
-          ).resolves.toBeUndefined();
-          expect(isProcessTreeAlive(child)).toBe(false);
-        } finally {
-          if (processIsRunning(child.pid!)) {
-            signalProcessTree(child, "SIGKILL");
-            await waitForProcessExit(child.pid!, 1_000);
+          try {
+            await expect(processClosed).resolves.toMatchObject({
+              code: null,
+              signal: "SIGTERM",
+            });
+            await expect(
+              terminateProcessTreeAndWait(child, {
+                terminateGraceMs: 50,
+                killGraceMs: 1_000,
+                label: "signal-wakeup process",
+              }),
+            ).resolves.toBeUndefined();
+            expect(isProcessTreeAlive(child)).toBe(false);
+          } finally {
+            if (processIsRunning(child.pid!)) {
+              signalProcessTree(child, "SIGKILL");
+              await waitForProcessExit(child.pid!, 1_000);
+            }
           }
-        }
-      });
+        },
+      );
     },
   );
 
@@ -907,9 +972,7 @@ describe("process-tree root safety", () => {
             code: 125,
             signal: null,
           });
-          expect(stderr).toContain(
-            "child ownership enumeration unavailable",
-          );
+          expect(stderr).toContain("child ownership enumeration unavailable");
           await expect(
             terminateProcessTreeAndWait(child, {
               terminateGraceMs: 50,
@@ -1001,13 +1064,13 @@ describe("process-tree root safety", () => {
         "utf8",
       );
       const packageManifest = JSON.parse(
-        readFileSync(
-          new URL("../../package.json", import.meta.url),
-          "utf8",
-        ),
+        readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
       ) as { readonly agencExecutableFiles?: readonly string[] };
       const modeCanonicalizer = readFileSync(
-        new URL("../../../scripts/canonicalize-package-modes.mjs", import.meta.url),
+        new URL(
+          "../../../scripts/canonicalize-package-modes.mjs",
+          import.meta.url,
+        ),
         "utf8",
       );
 
@@ -1029,9 +1092,7 @@ describe("process-tree root safety", () => {
         childSetup.indexOf("setsid()"),
       );
       expect(brokerSource).toContain("sigwaitinfo(&wait_mask");
-      expect(brokerSource).toContain(
-        "child ownership enumeration unavailable",
-      );
+      expect(brokerSource).toContain("child ownership enumeration unavailable");
       expect(brokerSource).toContain("waitpid(-1");
       expect(brokerSource).toContain("signal_direct_children(SIGKILL)");
       expect(buildConfig).toContain("compileLinuxProcessBroker");
@@ -1063,16 +1124,10 @@ describe("process-tree root safety", () => {
       "utf8",
     );
     const packageManifest = JSON.parse(
-      readFileSync(
-        new URL("../../package.json", import.meta.url),
-        "utf8",
-      ),
+      readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
     ) as { readonly agencExecutableFiles?: readonly string[] };
     const entrypointCheck = readFileSync(
-      new URL(
-        "../../scripts/check-package-entrypoints.mjs",
-        import.meta.url,
-      ),
+      new URL("../../scripts/check-package-entrypoints.mjs", import.meta.url),
       "utf8",
     );
 
@@ -1108,23 +1163,19 @@ describe("process-tree root safety", () => {
     expect(supervisionSource).toContain(
       'resolve(moduleDirectory, "../../dist", WINDOWS_JOB_BROKER_NAME)',
     );
-    expect(supervisionSource).toContain(
-      'mkdtempSync(\n    join(tmpdir(), "agenc-process-job-broker-")',
+    expect(supervisionSource).toMatch(
+      /mkdtempSync\(\s*join\(tmpdir\(\), "agenc-process-job-broker-"\)\s*\)/u,
     );
     expect(supervisionSource).toContain(
       'process.once("exit", cleanupCompiledWindowsJobBroker)',
     );
     expect(supervisionSource).toContain("spawn(broker, [],");
     expect(supervisionSource).not.toContain("Add-Type -TypeDefinition");
-    expect(supervisionSource).not.toContain(
-      "WINDOWS_JOB_BROKER_SCRIPT",
-    );
+    expect(supervisionSource).not.toContain("WINDOWS_JOB_BROKER_SCRIPT");
     expect(packageManifest.agencExecutableFiles).toContain(
       "dist/agenc-process-job-broker.exe",
     );
-    expect(entrypointCheck).toContain(
-      '"dist/agenc-process-job-broker.exe"',
-    );
+    expect(entrypointCheck).toContain('"dist/agenc-process-job-broker.exe"');
     expect(discoverySource).toContain(
       'process.platform === "win32" ? 5_000 : 1200',
     );
@@ -1144,9 +1195,7 @@ describe("process-tree root safety", () => {
     expect(watchdogSource).toContain(
       "!Number.isSafeInteger(config.rootPid) || config.rootPid <= 1",
     );
-    expect(watchdogSource).toContain(
-      "!Number.isSafeInteger(pid) || pid <= 1",
-    );
+    expect(watchdogSource).toContain("!Number.isSafeInteger(pid) || pid <= 1");
     expect(watchdogSource).toContain("if (record.pid <= 1) continue;");
   });
 
@@ -1213,16 +1262,19 @@ describe("terminateProcessTreeAndWait on Windows", () => {
     await withFakeWindowsTaskkill(0, async (logPath) => {
       const directKill = vi.fn(() => true);
       await expect(
-        terminateProcessTreeAndWait({
-          pid: 1,
-          exitCode: 0,
-          signalCode: null,
-          kill: directKill,
-        }, {
-          terminateGraceMs: 1,
-          killGraceMs: 1,
-          label: "invalid Windows root",
-        }),
+        terminateProcessTreeAndWait(
+          {
+            pid: 1,
+            exitCode: 0,
+            signalCode: null,
+            kill: directKill,
+          },
+          {
+            terminateGraceMs: 1,
+            killGraceMs: 1,
+            label: "invalid Windows root",
+          },
+        ),
       ).resolves.toBeUndefined();
 
       expect(directKill).not.toHaveBeenCalled();

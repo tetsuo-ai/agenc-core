@@ -1,24 +1,25 @@
-import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
-import type { UUID } from 'crypto'
-import type React from 'react'
-import type { PermissionResult } from '../entrypoints/agentSdkTypes.js'
-import type { Key } from '../tui/ink.js'
-import type { PastedContent } from '../utils/config.js'
-import type { ImageDimensions } from '../utils/imageResizer.js'
-import type { TextHighlight } from '../utils/textHighlighting.js'
-import type { AgentId } from './ids.js'
-import type { AssistantMessage, MessageOrigin } from './message.js'
+import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/messages.mjs";
+import type { UUID } from "crypto";
+import type React from "react";
+import type { PermissionResult } from "../entrypoints/agentSdkTypes.js";
+import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
+import type { Key } from "../tui/ink.js";
+import type { PastedContent } from "../utils/config.js";
+import type { ImageDimensions } from "../utils/imageResizer.js";
+import type { TextHighlight } from "../utils/textHighlighting.js";
+import type { AgentId } from "./ids.js";
+import type { AssistantMessage, MessageOrigin } from "./message.js";
 /**
  * Inline ghost text for mid-input command autocomplete
  */
 export type InlineGhostText = {
   /** The ghost text to display (e.g., "mit" for /commit) */
-  readonly text: string
+  readonly text: string;
   /** The full command name (e.g., "commit") */
-  readonly fullCommand: string
+  readonly fullCommand: string;
   /** Position in the input where the ghost text should appear */
-  readonly insertPosition: number
-}
+  readonly insertPosition: number;
+};
 
 /**
  * Base props for text input components
@@ -27,68 +28,68 @@ export type BaseTextInputProps = {
   /**
    * Optional callback for handling history navigation on up arrow at start of input
    */
-  readonly onHistoryUp?: () => void
+  readonly onHistoryUp?: () => void;
 
   /**
    * Optional callback for handling history navigation on down arrow at end of input
    */
-  readonly onHistoryDown?: () => void
+  readonly onHistoryDown?: () => void;
 
   /**
    * Text to display when `value` is empty.
    */
-  readonly placeholder?: string
+  readonly placeholder?: string;
 
   /**
    * Allow multi-line input via line ending with backslash (default: `true`)
    */
-  readonly multiline?: boolean
+  readonly multiline?: boolean;
 
   /**
    * Listen to user's input. Useful in case there are multiple input components
    * at the same time and input must be "routed" to a specific component.
    */
-  readonly focus?: boolean
+  readonly focus?: boolean;
 
   /**
    * Replace all chars and mask the value. Useful for password inputs.
    */
-  readonly mask?: string
+  readonly mask?: string;
 
   /**
    * Whether to show cursor and allow navigation inside text input with arrow keys.
    */
-  readonly showCursor?: boolean
+  readonly showCursor?: boolean;
 
   /**
    * Highlight pasted text
    */
-  readonly highlightPastedText?: boolean
+  readonly highlightPastedText?: boolean;
 
   /**
    * Value to display in a text input.
    */
-  readonly value: string
+  readonly value: string;
 
   /**
    * Function to call when value updates.
    */
-  readonly onChange: (value: string) => void
+  readonly onChange: (value: string) => void;
 
   /**
    * Function to call when `Enter` is pressed, where first argument is a value of the input.
    */
-  readonly onSubmit?: (value: string) => void
+  readonly onSubmit?: (value: string) => void;
 
   /**
    * Function to call when Ctrl+C is pressed to exit.
    */
-  readonly onExit?: () => void
+  readonly onExit?: () => void;
 
   /**
    * Optional callback to show exit message
    */
-  readonly onExitMessage?: (show: boolean, key?: string) => void
+  readonly onExitMessage?: (show: boolean, key?: string) => void;
 
   /**
    * Optional callback to show custom message
@@ -98,23 +99,23 @@ export type BaseTextInputProps = {
   /**
    * Optional callback to reset history position
    */
-  readonly onHistoryReset?: () => void
+  readonly onHistoryReset?: () => void;
 
   /**
    * Optional callback when input is cleared (e.g., double-escape)
    */
-  readonly onClearInput?: () => void
+  readonly onClearInput?: () => void;
 
   /**
    * Number of columns to wrap text at
    */
-  readonly columns: number
+  readonly columns: number;
 
   /**
    * Maximum visible lines for the input viewport. When the wrapped input
    * exceeds this many lines, only lines around the cursor are rendered.
    */
-  readonly maxVisibleLines?: number
+  readonly maxVisibleLines?: number;
 
   /**
    * Optional callback when an image is pasted
@@ -125,22 +126,22 @@ export type BaseTextInputProps = {
     filename?: string,
     dimensions?: ImageDimensions,
     sourcePath?: string,
-  ) => void
+  ) => void;
 
   /**
    * Optional callback when a large text (over 800 chars) is pasted
    */
-  readonly onPaste?: (text: string) => void
+  readonly onPaste?: (text: string) => void;
 
   /**
    * Callback when the pasting state changes
    */
-  readonly onIsPastingChange?: (isPasting: boolean) => void
+  readonly onIsPastingChange?: (isPasting: boolean) => void;
 
   /**
    * Whether to disable cursor movement for up/down arrow keys
    */
-  readonly disableCursorMovementForUpDownKeys?: boolean
+  readonly disableCursorMovementForUpDownKeys?: boolean;
 
   /**
    * Skip the text-level double-press escape handler. Set this when a
@@ -148,57 +149,57 @@ export type BaseTextInputProps = {
    * stopImmediatePropagation can't shield the text input because child
    * effects register useInput listeners before parent effects.
    */
-  readonly disableEscapeDoublePress?: boolean
+  readonly disableEscapeDoublePress?: boolean;
 
   /**
    * The offset of the cursor within the text
    */
-  readonly cursorOffset: number
+  readonly cursorOffset: number;
 
   /**
    * Callback to set the offset of the cursor
    */
-  onChangeCursorOffset: (offset: number) => void
+  onChangeCursorOffset: (offset: number) => void;
 
   /**
    * Optional hint text to display after command input
    * Used for showing available arguments for commands
    */
-  readonly argumentHint?: string
+  readonly argumentHint?: string;
 
   /**
    * Optional callback for undo functionality
    */
-  readonly onUndo?: () => void
+  readonly onUndo?: () => void;
 
   /**
    * Whether to render the text with dim color
    */
-  readonly dimColor?: boolean
+  readonly dimColor?: boolean;
 
   /**
    * Optional text highlights for search results or other highlighting
    */
-  readonly highlights?: TextHighlight[]
+  readonly highlights?: TextHighlight[];
 
   /**
    * Optional custom React element to render as placeholder.
    * When provided, overrides the standard `placeholder` string rendering.
    */
-  readonly placeholderElement?: React.ReactNode
+  readonly placeholderElement?: React.ReactNode;
 
   /**
    * Optional inline ghost text for mid-input command autocomplete
    */
-  readonly inlineGhostText?: InlineGhostText
+  readonly inlineGhostText?: InlineGhostText;
 
   /**
    * Optional filter applied to raw input before key routing. Return the
    * (possibly transformed) input string; returning '' for a non-empty
    * input drops the event.
    */
-  readonly inputFilter?: (input: string, key: Key) => string
-}
+  readonly inputFilter?: (input: string, key: Key) => string;
+};
 
 /**
  * Extended props for VimTextInput
@@ -207,72 +208,69 @@ export type VimTextInputProps = BaseTextInputProps & {
   /**
    * Initial vim mode to use
    */
-  readonly initialMode?: VimMode
+  readonly initialMode?: VimMode;
 
   /**
    * Optional callback for mode changes
    */
-  readonly onModeChange?: (mode: VimMode) => void
-}
+  readonly onModeChange?: (mode: VimMode) => void;
+};
 
 /**
  * Vim editor modes
  */
-export type VimMode = 'INSERT' | 'NORMAL' | 'VISUAL'
+export type VimMode = "INSERT" | "NORMAL" | "VISUAL";
 
 /**
  * Common properties for input hook results
  */
 export type BaseInputState = {
-  onInput: (input: string, key: Key) => void
-  value: string
-  renderedValue: string
-  offset: number
-  setValue: (value: string, offset?: number) => void
-  setOffset: (offset: number) => void
+  onInput: (input: string, key: Key) => void;
+  value: string;
+  renderedValue: string;
+  offset: number;
+  setValue: (value: string, offset?: number) => void;
+  setOffset: (offset: number) => void;
   /** Caret line (0-indexed) within the rendered text, accounting for wrapping. */
-  cursorLine: number
+  cursorLine: number;
   /** Caret column (display-width) within the current line. */
-  cursorColumn: number
+  cursorColumn: number;
   /** Character offset in the full text where the viewport starts (0 when no windowing). */
-  viewportCharOffset: number
+  viewportCharOffset: number;
   /** Character offset in the full text where the viewport ends (text.length when no windowing). */
-  viewportCharEnd: number
+  viewportCharEnd: number;
 
   // For paste handling
-  isPasting?: boolean
+  isPasting?: boolean;
   pasteState?: {
-    chunks: string[]
-    timeoutId: ReturnType<typeof setTimeout> | null
-  }
-}
+    chunks: string[];
+    timeoutId: ReturnType<typeof setTimeout> | null;
+  };
+};
 
 /**
  * State for text input
  */
-export type TextInputState = BaseInputState
+export type TextInputState = BaseInputState;
 
 /**
  * State for vim input with mode
  */
 export type VimInputState = BaseInputState & {
-  mode: VimMode
-  setMode: (mode: VimMode) => void
-}
+  mode: VimMode;
+  setMode: (mode: VimMode) => void;
+};
 
 /**
  * Input modes for the prompt
  */
 export type PromptInputMode =
-  | 'bash'
-  | 'prompt'
-  | 'orphaned-permission'
-  | 'task-notification'
+  "bash" | "prompt" | "orphaned-permission" | "task-notification";
 
 export type EditablePromptInputMode = Exclude<
   PromptInputMode,
   `${string}-notification`
->
+>;
 
 /**
  * Queue priority levels. Same semantics in both normal and proactive mode.
@@ -292,33 +290,71 @@ export type EditablePromptInputMode = Exclude<
  * The SleepTool is only available in proactive mode, so "wakes SleepTool"
  * is a no-op in normal mode.
  */
-export type QueuePriority = 'now' | 'next' | 'later'
+export type QueuePriority = "now" | "next" | "later";
+
+/**
+ * Exact process-local owner of a queued command.
+ *
+ * The command queue is module-global, while a single CLI process can unmount
+ * one TUI session and mount another during `/resume`. Commands may therefore
+ * only be consumed by the exact mount that admitted them. `conversationId`
+ * also lets the runtime turn drain reject work from sibling sessions, and
+ * `workspaceRoot` freezes the authority root used by queued shell commands.
+ */
+export type QueuedCommandOwner =
+  | {
+      readonly kind: "tui_mount";
+      readonly mountId: string;
+      readonly conversationId: string;
+      readonly workspaceRoot: string;
+    }
+  | {
+      readonly kind: "session";
+      readonly conversationId: string;
+    };
 
 /**
  * Queued command type
  */
 export type QueuedCommand = {
-  value: string | Array<ContentBlockParam>
-  mode: PromptInputMode
+  value: string | Array<ContentBlockParam>;
+  mode: PromptInputMode;
+  /** Exact TUI/session mount that admitted this process-global command. */
+  queueOwner?: QueuedCommandOwner;
+  /**
+   * Frozen execution directory for queued Bash commands. It must equal the
+   * owning mount's workspace root at admission time.
+   */
+  executionCwd?: string;
+  /**
+   * Workspace composer that created this command. TUI queue drains may run
+   * after the user switches tabs, so ownership must travel with the prompt.
+   */
+  workspaceView?: "agent" | "editor";
+  /**
+   * Exact trusted editor metadata captured at enqueue time. Queue drains must
+   * never infer this from whichever editor attachment happens to be active.
+   */
+  editorInteraction?: SessionEditorInteraction;
   /** Defaults to the priority implied by `mode` when enqueued. */
-  priority?: QueuePriority
-  uuid?: UUID
-  orphanedPermission?: OrphanedPermission
+  priority?: QueuePriority;
+  uuid?: UUID;
+  orphanedPermission?: OrphanedPermission;
   /** Raw pasted contents including images. Images are resized at execution time. */
-  pastedContents?: Record<number, PastedContent>
+  pastedContents?: Record<number, PastedContent>;
   /**
    * The input string before [Pasted text #N] placeholders were expanded.
    * Preserves the user's original typed text before paste expansion.
    * Falls back to `value` when unset (bridge/UDS/MCP sources have no paste
    * expansion).
    */
-  preExpansionValue?: string
+  preExpansionValue?: string;
   /**
    * When true, the input is treated as plain text even if it starts with `/`.
    * Used for remotely-received messages (e.g. bridge/CCR) that should not
    * trigger local slash commands or skills.
    */
-  skipSlashCommands?: boolean
+  skipSlashCommands?: boolean;
   /**
    * When true, slash commands are dispatched but filtered through
    * isBridgeSafeCommand() — 'local-jsx' and terminal-only commands return
@@ -326,20 +362,20 @@ export type QueuedCommand = {
    * inbound path so mobile/web clients can run skills and benign commands
    * without re-exposing the PR #19134 bug (/model popping the local picker).
    */
-  bridgeOrigin?: boolean
+  bridgeOrigin?: boolean;
   /**
    * When true, the resulting UserMessage gets `isMeta: true` — hidden in the
    * transcript UI but visible to the model. Used by system-generated prompts
    * (proactive ticks, teammate messages, resource updates) that route through
    * the queue instead of calling `onQuery` directly.
    */
-  isMeta?: boolean
+  isMeta?: boolean;
   /**
    * Provenance of this command. Stamped onto the resulting UserMessage so the
    * transcript records origin structurally (not just via XML tags in content).
    * undefined = human (keyboard).
    */
-  origin?: MessageOrigin
+  origin?: MessageOrigin;
   /**
    * Workload tag threaded through to cc_workload= in the billing-header
    * attribution block. The queue is the async boundary between the cron
@@ -347,7 +383,7 @@ export type QueuedCommand = {
    * in between — so the tag rides on the QueuedCommand itself and is only
    * hoisted into bootstrap state when THIS command is dequeued.
    */
-  workload?: string
+  workload?: string;
   /**
    * Agent that should receive this notification. Undefined = main thread.
    * Subagents run in-process and share the module-level command queue; the
@@ -355,8 +391,8 @@ export type QueuedCommand = {
    * task notifications don't leak into the coordinator's context (PR #18453
    * unified the queue but lost the isolation the dual-queue accidentally had).
    */
-  agentId?: AgentId
-}
+  agentId?: AgentId;
+};
 
 /**
  * Type guard for image PastedContent with non-empty data. Empty-content
@@ -366,21 +402,21 @@ export type QueuedCommand = {
  * ID list stay in sync.
  */
 export function isValidImagePaste(c: PastedContent): boolean {
-  return c.type === 'image' && c.content.length > 0
+  return c.type === "image" && c.content.length > 0;
 }
 /** Extract image paste IDs from a QueuedCommand's pastedContents. */
 export function getImagePasteIds(
   pastedContents: Record<number, PastedContent> | undefined,
 ): number[] | undefined {
   if (!pastedContents) {
-    return undefined
+    return undefined;
   }
   const ids = Object.values(pastedContents)
     .filter(isValidImagePaste)
-    .map(c => c.id)
-  return ids.length > 0 ? ids : undefined
+    .map((c) => c.id);
+  return ids.length > 0 ? ids : undefined;
 }
 export type OrphanedPermission = {
-  permissionResult: PermissionResult
-  assistantMessage: AssistantMessage
-}
+  permissionResult: PermissionResult;
+  assistantMessage: AssistantMessage;
+};

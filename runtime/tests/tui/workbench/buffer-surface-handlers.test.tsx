@@ -5,18 +5,29 @@ import {
   registerPendingLSPDiagnostic,
   resetAllLSPDiagnosticState,
 } from "../../../src/services/lsp/LSPDiagnosticRegistry.js";
-import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
+import {
+  AppStateProvider,
+  getDefaultAppState,
+  type AppState,
+} from "../../../src/tui/state/AppState.js";
 import {
   type BufferProviderBuffer,
   INLINE_BUFFER_CAPABILITIES,
   type BufferProviderSnapshot,
 } from "../../../src/tui/workbench/buffer/providers/types.js";
-import { BufferSurface } from "../../../src/tui/workbench/surfaces/BufferSurface.js";
+import {
+  BufferSurface,
+  type BufferTopologyRecoveryUi,
+} from "../../../src/tui/workbench/surfaces/BufferSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
 type BufferSnapshot = BufferProviderSnapshot;
 type BufferStoreHarness = ReturnType<typeof createStoreHarness>;
-type CapturedInputHandler = (input: string, key: Record<string, unknown>, event: InputCaptureEvent) => boolean;
+type CapturedInputHandler = (
+  input: string,
+  key: Record<string, unknown>,
+  event: InputCaptureEvent,
+) => boolean;
 type InputCaptureEvent = {
   readonly key: Record<string, unknown>;
   readonly keypress: { readonly isPasted: boolean };
@@ -24,7 +35,11 @@ type InputCaptureEvent = {
 type VimCommand =
   | { readonly type: "save"; readonly force: boolean }
   | { readonly type: "quit"; readonly discard: boolean; readonly all: boolean }
-  | { readonly type: "saveQuit"; readonly force: boolean; readonly all: boolean };
+  | {
+      readonly type: "saveQuit";
+      readonly force: boolean;
+      readonly all: boolean;
+    };
 
 const bufferHarness = vi.hoisted(() => ({
   handlers: {} as Record<string, () => void | false | Promise<void>>,
@@ -41,7 +56,7 @@ const bufferHarness = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../src/utils/log.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../../src/utils/log.js")>(),
+  ...(await importOriginal<typeof import("../../../src/utils/log.js")>()),
   logError: bufferHarness.logError,
 }));
 
@@ -67,9 +82,12 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
   },
 }));
 
-vi.mock("../../../src/tui/workbench/buffer/providers/BufferProviderController.js", () => ({
-  getWorkbenchBufferProviderController: () => bufferHarness.store,
-}));
+vi.mock(
+  "../../../src/tui/workbench/buffer/providers/BufferProviderController.js",
+  () => ({
+    getWorkbenchBufferProviderController: () => bufferHarness.store,
+  }),
+);
 
 vi.mock("../../../src/tui/workbench/buffer/highlight.js", () => ({
   highlightBufferVisibleLines: bufferHarness.highlightBufferVisibleLines,
@@ -89,13 +107,24 @@ describe("BufferSurface handlers", () => {
 
     await renderBufferSurface({ changes, includeInFlightAgent: true });
 
-    expect(bufferHarness.keybindingOptions).toEqual({ context: "Buffer", isActive: true });
-    expect(bufferHarness.inputCaptureOptions).toEqual({ context: "Buffer", isActive: true });
+    expect(bufferHarness.keybindingOptions).toEqual({
+      context: "Buffer",
+      isActive: true,
+    });
+    expect(bufferHarness.inputCaptureOptions).toEqual({
+      context: "Buffer",
+      isActive: true,
+    });
     expect(bufferHarness.store?.open).toHaveBeenCalledWith("target.ts", 1);
-    expect(bufferHarness.store?.resize).toHaveBeenCalledWith({ rows: 1, columns: 44 });
+    expect(bufferHarness.store?.resize).toHaveBeenCalledWith({
+      rows: 1,
+      columns: 44,
+    });
 
     bufferHarness.handlers["buffer:save"]?.();
-    expect(bufferHarness.store?.save).toHaveBeenCalledWith({ hasInFlightAgent: true });
+    expect(bufferHarness.store?.save).toHaveBeenCalledWith({
+      hasInFlightAgent: true,
+    });
 
     bufferHarness.handlers["buffer:revert"]?.();
     bufferHarness.handlers["buffer:externalEditor"]?.();
@@ -215,7 +244,9 @@ describe("BufferSurface handlers", () => {
 
   it("contains rejected BUFFER open and command actions without tearing down the workspace provider", async () => {
     const changes: AppState[] = [];
-    bufferHarness.store?.open.mockRejectedValueOnce(new Error("open cleanup failed"));
+    bufferHarness.store?.open.mockRejectedValueOnce(
+      new Error("open cleanup failed"),
+    );
 
     await renderBufferSurface({ changes });
     await flushPromises();
@@ -249,7 +280,9 @@ describe("BufferSurface handlers", () => {
     await flushPromises();
     expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
 
-    bufferHarness.store?.save.mockRejectedValueOnce(new Error("command save failed"));
+    bufferHarness.store?.save.mockRejectedValueOnce(
+      new Error("command save failed"),
+    );
     execute?.({ type: "save", force: true, all: false });
     await flushPromises();
     expect(bufferHarness.logError).toHaveBeenCalledWith(
@@ -257,7 +290,9 @@ describe("BufferSurface handlers", () => {
     );
 
     const changesBeforeRejectedSaveQuit = changes.length;
-    bufferHarness.store?.save.mockRejectedValueOnce(new Error("save-quit save failed"));
+    bufferHarness.store?.save.mockRejectedValueOnce(
+      new Error("save-quit save failed"),
+    );
     execute?.({ type: "saveQuit", force: false, all: false });
     await flushPromises();
     expect(changes).toHaveLength(changesBeforeRejectedSaveQuit);
@@ -276,10 +311,55 @@ describe("BufferSurface handlers", () => {
       status: "idle",
     });
 
-    const output = await renderBufferSurface({ activeFilePath: null, columns: 100 });
+    const output = await renderBufferSurface({
+      activeFilePath: null,
+      columns: 100,
+    });
 
     expect(output).toContain("No file selected");
     expect(bufferHarness.store?.open).not.toHaveBeenCalled();
+  });
+
+  it("keeps the explicit crash-fence escape hatch visible with no active buffer", async () => {
+    bufferHarness.snapshot = baseSnapshot({
+      filePath: null,
+      status: "idle",
+    });
+    const onResolveUnknown = vi.fn(async () => {});
+    const topologyRecovery: BufferTopologyRecoveryUi = {
+      mutation: {
+        tokenId: "recovered-topology-no-buffer",
+        workspaceRoot: "/workspace",
+        targets: [
+          {
+            path: "/workspace/renamed",
+            includeDescendants: true,
+          },
+        ],
+        source: "editor",
+        createdAt: 123,
+      },
+      onResolveUnknown,
+    };
+
+    const output = await renderBufferSurface({
+      activeFilePath: null,
+      columns: 100,
+      topologyRecovery,
+    });
+
+    expect(output).not.toContain("No file selected");
+    expect(output).toContain(
+      "Interrupted Editor rename or delete needs reconciliation",
+    );
+    expect(output).toContain("renamed/…");
+
+    bufferHarness.inputCapture?.("u", {}, inputEvent());
+    await flushPromises();
+    expect(onResolveUnknown).not.toHaveBeenCalled();
+    bufferHarness.inputCapture?.("u", {}, inputEvent());
+    await flushPromises();
+    expect(onResolveUnknown).toHaveBeenCalledTimes(1);
   });
 
   it("renders the loading fallback when the active path is still unknown", async () => {
@@ -288,9 +368,14 @@ describe("BufferSurface handlers", () => {
       status: "loading",
     });
 
-    const output = await renderBufferSurface({ activeFilePath: null, columns: 100 });
+    const output = await renderBufferSurface({
+      activeFilePath: null,
+      columns: 100,
+    });
 
-    expect(output).toContain("loading [basic inline BUFFER fallback, normal, loading]");
+    expect(output).toContain(
+      "loading [basic inline BUFFER fallback, normal, loading]",
+    );
     expect(output).toContain("Loading...");
     expect(bufferHarness.store?.open).not.toHaveBeenCalled();
   });
@@ -299,19 +384,21 @@ describe("BufferSurface handlers", () => {
     const absolutePath = "/tmp/agenc-buffer-surface-target.ts";
     registerPendingLSPDiagnostic({
       serverName: "ts",
-      files: [{
-        uri: absolutePath,
-        diagnostics: [
-          { message: "no range" },
-          {
-            message: "current line",
-            range: {
-              start: { line: 0, character: 0 },
-              end: { line: 2, character: 0 },
+      files: [
+        {
+          uri: absolutePath,
+          diagnostics: [
+            { message: "no range" },
+            {
+              message: "current line",
+              range: {
+                start: { line: 0, character: 0 },
+                end: { line: 2, character: 0 },
+              },
             },
-          },
-        ],
-      }],
+          ],
+        },
+      ],
     });
     bufferHarness.snapshot = baseSnapshot({
       absolutePath,
@@ -348,7 +435,9 @@ describe("BufferSurface handlers", () => {
       },
     });
 
-    expect(output).toContain("target.ts [basic inline BUFFER fallback, visual, ready, dirty, agent, utf8, LF] 2:4");
+    expect(output).toContain(
+      "target.ts [basic inline BUFFER fallback, visual, ready, dirty, agent, utf8, LF] 2:4",
+    );
     expect(output).toContain("2 diagnostics - current line");
     expect(output).toContain("agent edit in flight: target.ts");
     expect(output).toContain("hover details");
@@ -362,7 +451,9 @@ describe("BufferSurface handlers", () => {
     });
 
     const commandOutput = await renderBufferSurface({ columns: 100 });
-    expect(commandOutput).toContain("target.ts [basic inline BUFFER fallback, command, ready]");
+    expect(commandOutput).toContain(
+      "target.ts [basic inline BUFFER fallback, command, ready]",
+    );
     expect(commandOutput).toContain(":wq");
 
     bufferHarness.snapshot = baseSnapshot({
@@ -370,7 +461,9 @@ describe("BufferSurface handlers", () => {
     });
 
     const insertOutput = await renderBufferSurface({ columns: 100 });
-    expect(insertOutput).toContain("target.ts [basic inline BUFFER fallback, insert, ready]");
+    expect(insertOutput).toContain(
+      "target.ts [basic inline BUFFER fallback, insert, ready]",
+    );
     expect(insertOutput).toContain("INSERT  esc normal");
   });
 
@@ -412,15 +505,12 @@ describe("BufferSurface handlers", () => {
       bufferHarness.store?.getShowTabsMode.mockReturnValue(mode);
 
       const output = await renderBufferSurface({ columns: 100 });
-      const activeLabelOccurrences =
-        output.match(/tab-one\.ts/gu)?.length ?? 0;
+      const activeLabelOccurrences = output.match(/tab-one\.ts/gu)?.length ?? 0;
 
       // The active buffer also appears in the surface header. A visible tab
       // row contributes the second occurrence.
       expect(activeLabelOccurrences > 1).toBe(visible);
-      expect(output.includes("tab-two.ts")).toBe(
-        visible && buffers.length > 1,
-      );
+      expect(output.includes("tab-two.ts")).toBe(visible && buffers.length > 1);
     },
   );
 
@@ -443,11 +533,11 @@ describe("BufferSurface handlers", () => {
     // none. A length-based overflow check leaves the active tab truncated at
     // the end; stringWidth detects the real overflow and rotates it first.
     const output = await renderBufferSurface({ columns: 41 });
-    const tabLine = output.split("\n").find(
-      line =>
-        line.includes("current-") &&
-        line.includes("e\u0301e\u0301"),
-    );
+    const tabLine = output
+      .split("\n")
+      .find(
+        (line) => line.includes("current-") && line.includes("e\u0301e\u0301"),
+      );
 
     expect(tabLine).toBeDefined();
     expect(tabLine).toContain("current-");
@@ -458,11 +548,13 @@ describe("BufferSurface handlers", () => {
   });
 
   it("ignores late syntax highlights after unmounting", async () => {
-    let resolveHighlights: ((value: ReadonlyMap<number, string>) => void) | null = null;
-    bufferHarness.highlightBufferVisibleLines.mockImplementationOnce(() =>
-      new Promise<ReadonlyMap<number, string>>((resolve) => {
-        resolveHighlights = resolve;
-      })
+    let resolveHighlights:
+      ((value: ReadonlyMap<number, string>) => void) | null = null;
+    bufferHarness.highlightBufferVisibleLines.mockImplementationOnce(
+      () =>
+        new Promise<ReadonlyMap<number, string>>((resolve) => {
+          resolveHighlights = resolve;
+        }),
     );
 
     await renderBufferSurface();
@@ -485,6 +577,7 @@ async function renderBufferSurface({
   columns = 44,
   includeInFlightAgent = false,
   tasks,
+  topologyRecovery,
 }: {
   readonly activeFileLine?: number | null;
   readonly activeFilePath?: string | null;
@@ -492,6 +585,7 @@ async function renderBufferSurface({
   readonly columns?: number;
   readonly includeInFlightAgent?: boolean;
   readonly tasks?: AppState["tasks"];
+  readonly topologyRecovery?: BufferTopologyRecoveryUi;
 } = {}): Promise<string> {
   bufferHarness.terminalSize = { rows: 12, columns };
   const defaultState = getDefaultAppState();
@@ -499,8 +593,9 @@ async function renderBufferSurface({
     <AppStateProvider
       initialState={{
         ...defaultState,
-        tasks: tasks ?? (
-          includeInFlightAgent
+        tasks:
+          tasks ??
+          (includeInFlightAgent
             ? {
                 "agent-1": {
                   id: "agent-1",
@@ -509,8 +604,7 @@ async function renderBufferSurface({
                   description: "editing target.ts",
                 } as any,
               }
-            : defaultState.tasks
-        ),
+            : defaultState.tasks),
         workbench: {
           ...defaultState.workbench,
           activeSurfaceMode: "buffer",
@@ -520,7 +614,7 @@ async function renderBufferSurface({
       }}
       onChangeAppState={({ newState }) => changes.push(newState)}
     >
-      <BufferSurface focused={true} />
+      <BufferSurface focused={true} topologyRecovery={topologyRecovery} />
     </AppStateProvider>,
     { columns, rows: 12 },
   );
@@ -539,10 +633,14 @@ function resetHarness(): void {
   bufferHarness.store = createStoreHarness();
   bufferHarness.terminalSize = { rows: 12, columns: 44 };
   bufferHarness.vimCommandExecutor = null;
-  bufferHarness.visibleLines = [{ number: 1, text: "const value = 1;", from: 0, to: 16 }];
+  bufferHarness.visibleLines = [
+    { number: 1, text: "const value = 1;", from: 0, to: 16 },
+  ];
 }
 
-function baseSnapshot(overrides: Partial<BufferProviderSnapshot> = {}): BufferProviderSnapshot {
+function baseSnapshot(
+  overrides: Partial<BufferProviderSnapshot> = {},
+): BufferProviderSnapshot {
   const status = overrides.status ?? "ready";
   return {
     activeBufferHandle: null,
@@ -591,16 +689,18 @@ function createStoreHarness() {
     getSnapshot: vi.fn(() => bufferHarness.snapshot),
     getVisibleLines: vi.fn(() => bufferHarness.visibleLines),
     goToDefinition: vi.fn(async () => false),
-    handleInput: vi.fn((
-      _input: string,
-      _key: Record<string, unknown>,
-      _context: Record<string, unknown>,
-      execute: (command: VimCommand) => void,
-      _isPasted: boolean,
-    ) => {
-      bufferHarness.vimCommandExecutor = execute;
-      return true;
-    }),
+    handleInput: vi.fn(
+      (
+        _input: string,
+        _key: Record<string, unknown>,
+        _context: Record<string, unknown>,
+        execute: (command: VimCommand) => void,
+        _isPasted: boolean,
+      ) => {
+        bufferHarness.vimCommandExecutor = execute;
+        return true;
+      },
+    ),
     move: vi.fn(),
     open: vi.fn(async () => {}),
     openExternalEditor: vi.fn(async () => true),
@@ -610,6 +710,7 @@ function createStoreHarness() {
     resize: vi.fn(),
     save: vi.fn(async () => true),
     selectBuffer: vi.fn(async () => true),
+    subscribeCodePredictionFeedback: vi.fn(() => () => {}),
     subscribeIntegrationIntents: vi.fn(() => () => {}),
     undo: vi.fn(),
   };
@@ -622,6 +723,7 @@ function tabBuffer(
 ): BufferProviderBuffer {
   return {
     handle,
+    changedtick: 1,
     name: `/workspace/${path}`,
     filePath: path,
     absolutePath: `/workspace/${path}`,

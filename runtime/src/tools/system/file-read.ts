@@ -44,13 +44,10 @@ import { open, readFile, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
-import type {
-  Tool,
-  ToolExecutionInjectedArgs,
-  ToolResult,
-} from "../types.js";
+import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
+import { readToolRuntimeContext } from "../runtimes/context.js";
 import { addLineNumbers } from "./_deps/line-numbers.js";
 import {
   recordSessionRead,
@@ -75,6 +72,17 @@ import { maybeResizeAndDownsampleImageBuffer } from "../../utils/imageResizer.js
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
+import {
+  workspaceAuthoritativeRead,
+  workspaceHasProtectedEditorPaths,
+  type WorkspaceAuthoritativeRead,
+} from "../../workspace/mutation-coordinator.js";
+import {
+  bindWorkspaceFileReadCapability,
+  WorkspaceBoundReadFileTooLargeError,
+  type WorkspaceBoundFileReadCapability,
+  type WorkspaceBoundReadFile,
+} from "../../workspace/file-mutation-transaction.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -136,32 +144,111 @@ const IMAGE_MIME_BY_EXT: Readonly<Record<string, string>> = {
  */
 const BINARY_EXTENSIONS: ReadonlySet<string> = new Set([
   // Images
-  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".tiff", ".tif",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".bmp",
+  ".ico",
+  ".webp",
+  ".tiff",
+  ".tif",
   // Videos
-  ".mp4", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".flv", ".m4v",
-  ".mpeg", ".mpg",
+  ".mp4",
+  ".mov",
+  ".avi",
+  ".mkv",
+  ".webm",
+  ".wmv",
+  ".flv",
+  ".m4v",
+  ".mpeg",
+  ".mpg",
   // Audio
-  ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".aiff", ".opus",
+  ".mp3",
+  ".wav",
+  ".ogg",
+  ".flac",
+  ".aac",
+  ".m4a",
+  ".wma",
+  ".aiff",
+  ".opus",
   // Archives
-  ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".xz", ".z", ".tgz", ".iso",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".bz2",
+  ".7z",
+  ".rar",
+  ".xz",
+  ".z",
+  ".tgz",
+  ".iso",
   // Executables / object code
-  ".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".obj", ".lib",
-  ".app", ".msi", ".deb", ".rpm",
+  ".exe",
+  ".dll",
+  ".so",
+  ".dylib",
+  ".bin",
+  ".o",
+  ".a",
+  ".obj",
+  ".lib",
+  ".app",
+  ".msi",
+  ".deb",
+  ".rpm",
   // Documents
-  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-  ".odt", ".ods", ".odp",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".odt",
+  ".ods",
+  ".odp",
   // Fonts
-  ".ttf", ".otf", ".woff", ".woff2", ".eot",
+  ".ttf",
+  ".otf",
+  ".woff",
+  ".woff2",
+  ".eot",
   // Bytecode
-  ".pyc", ".pyo", ".class", ".jar", ".war", ".ear", ".node", ".wasm", ".rlib",
+  ".pyc",
+  ".pyo",
+  ".class",
+  ".jar",
+  ".war",
+  ".ear",
+  ".node",
+  ".wasm",
+  ".rlib",
   // Database
-  ".sqlite", ".sqlite3", ".db", ".mdb", ".idx",
+  ".sqlite",
+  ".sqlite3",
+  ".db",
+  ".mdb",
+  ".idx",
   // Design / 3D
-  ".psd", ".ai", ".eps", ".sketch", ".fig", ".xd", ".blend", ".3ds", ".max",
+  ".psd",
+  ".ai",
+  ".eps",
+  ".sketch",
+  ".fig",
+  ".xd",
+  ".blend",
+  ".3ds",
+  ".max",
   // Flash
-  ".swf", ".fla",
+  ".swf",
+  ".fla",
   // Lock / profiling
-  ".lockb", ".dat", ".data",
+  ".lockb",
+  ".dat",
+  ".data",
 ]);
 
 const PDF_EXTENSION = ".pdf";
@@ -237,6 +324,8 @@ export interface FileReadToolConfig {
   readonly maxPdfBytes?: number;
   /** Raw byte cap for notebook reads before parsing (default: 16 MB). */
   readonly maxNotebookBytes?: number;
+  /** Deterministic test seam immediately after the final path check. */
+  readonly __testAfterFinalPathCheck?: () => void | Promise<void>;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -249,11 +338,7 @@ function parsePositiveIntArg(
   name: string,
 ): { value: number | undefined } | { err: ToolResult } {
   if (value === undefined) return { value: undefined };
-  if (
-    typeof value === "number" &&
-    Number.isSafeInteger(value) &&
-    value >= 1
-  ) {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 1) {
     return { value };
   }
   if (typeof value === "string" && /^[1-9]\d*$/.test(value.trim())) {
@@ -332,7 +417,11 @@ interface SliceResult {
   readonly isPartial: boolean;
 }
 
-function sliceLines(text: string, offset: number, limit: number | undefined): SliceResult {
+function sliceLines(
+  text: string,
+  offset: number,
+  limit: number | undefined,
+): SliceResult {
   const lines = text.length === 0 ? [] : text.split(/\r?\n/);
   const totalLines = lines.length;
   const startLine = Math.max(1, offset);
@@ -344,8 +433,7 @@ function sliceLines(text: string, offset: number, limit: number | undefined): Sl
       : lines.slice(startLine - 1, endLine);
   const explicitWindow = offset > 1 || limit !== undefined;
   const isPartial =
-    explicitWindow ||
-    !(startLine === 1 && selected.length === totalLines);
+    explicitWindow || !(startLine === 1 && selected.length === totalLines);
   return {
     content: selected.join("\n"),
     startLine,
@@ -385,10 +473,7 @@ async function sliceTextFileByLineStream(
   try {
     for await (const line of reader) {
       totalLines += 1;
-      if (
-        totalLines >= startLine &&
-        selected.length < effectiveLimit
-      ) {
+      if (totalLines >= startLine && selected.length < effectiveLimit) {
         selected.push(line);
       }
       if (selected.length >= effectiveLimit) {
@@ -403,7 +488,10 @@ async function sliceTextFileByLineStream(
   const endLine =
     selected.length > 0
       ? startLine + selected.length - 1
-      : Math.max(startLine, Math.min(totalLines, startLine + effectiveLimit - 1));
+      : Math.max(
+          startLine,
+          Math.min(totalLines, startLine + effectiveLimit - 1),
+        );
   return {
     content: selected.join("\n"),
     startLine,
@@ -445,9 +533,10 @@ function execFileNoThrow(
   }).then((result) => ({
     exitCode: result.stopReason === undefined ? (result.exitCode ?? 1) : 1,
     stdout: result.stdout.toString("utf8"),
-    stderr: result.stopReason === "output_limit"
-      ? "PDF helper output exceeded the 64 MiB limit"
-      : result.error?.message ?? result.stderr.toString("utf8"),
+    stderr:
+      result.stopReason === "output_limit"
+        ? "PDF helper output exceeded the 64 MiB limit"
+        : (result.error?.message ?? result.stderr.toString("utf8")),
   }));
 }
 
@@ -460,9 +549,11 @@ function parsePDFPageRangeArg(
   }
 
   const trimmed = pages.trim();
-  return parseSharedPDFPageRange(trimmed) ?? {
-    err: `Invalid PDF page range: ${trimmed}`,
-  };
+  return (
+    parseSharedPDFPageRange(trimmed) ?? {
+      err: `Invalid PDF page range: ${trimmed}`,
+    }
+  );
 }
 
 function pageRangeLength(range: PDFPageRange): number {
@@ -506,7 +597,7 @@ async function resolveAndCheck(
   const cwdArg =
     typeof args.cwd === "string" && args.cwd.trim().length > 0
       ? args.cwd
-      : config.allowedPaths[0] ?? process.cwd();
+      : (config.allowedPaths[0] ?? process.cwd());
   if (isAgentNamespacePath(rawPath)) {
     return { err: errorResult(agentNamespacePathHint(rawPath, cwdArg)) };
   }
@@ -538,35 +629,107 @@ async function readTextFile(
   resolvedPath: ResolvedPath,
   opts: TextReadOpts,
   sessionId: string | undefined,
+  editorRead: WorkspaceAuthoritativeRead | null,
+  boundRead?: WorkspaceBoundFileReadCapability,
+  notifyListeners = true,
 ): Promise<ToolResult> {
-  const fileStats = await stat(resolvedPath.canonical);
-  if (!fileStats.isFile()) {
+  const rawFileStats =
+    editorRead === null && boundRead === undefined
+      ? await stat(resolvedPath.canonical)
+      : null;
+  if (rawFileStats !== null && !rawFileStats.isFile()) {
     return errorResult("Path is not a regular file");
   }
+  let fileStats: {
+    readonly size: number;
+    readonly mtimeMs: number;
+  } | null = rawFileStats;
   const explicitWindow = opts.offset > 1 || opts.limit !== undefined;
-  if (!explicitWindow && fileStats.size > opts.maxTextBytes) {
+  let boundFile: WorkspaceBoundReadFile | undefined;
+  let boundWindow:
+    | Awaited<ReturnType<WorkspaceBoundFileReadCapability["readTextWindow"]>>
+    | undefined;
+  if (editorRead === null && boundRead !== undefined) {
+    if (explicitWindow) {
+      try {
+        boundWindow = await boundRead.readTextWindow(
+          opts.offset,
+          opts.limit ?? DEFAULT_LINE_LIMIT,
+          opts.maxTextBytes,
+        );
+      } catch (error) {
+        if (error instanceof WorkspaceBoundReadFileTooLargeError) {
+          return errorResult(
+            `File slice exceeds the text-read limit of ${formatBytes(
+              opts.maxTextBytes,
+            )}. Use a smaller offset and limit window.`,
+          );
+        }
+        throw error;
+      }
+      fileStats = boundWindow.stats;
+    } else {
+      try {
+        boundFile = await boundRead.readFile(opts.maxTextBytes);
+      } catch (error) {
+        if (error instanceof WorkspaceBoundReadFileTooLargeError) {
+          return errorResult(
+            `File size ${formatBytes(error.size)} exceeds the text-read limit of ${formatBytes(
+              opts.maxTextBytes,
+            )}. Use offset and limit to read a slice, or a different tool for large binary blobs.`,
+          );
+        }
+        throw error;
+      }
+      fileStats = boundFile.stats;
+    }
+  }
+  const authoritativeBytes =
+    editorRead !== null
+      ? Buffer.byteLength(editorRead.content, "utf8")
+      : (boundWindow?.stats.size ??
+        boundFile?.stats.size ??
+        fileStats?.size ??
+        0);
+  if (!explicitWindow && authoritativeBytes > opts.maxTextBytes) {
     return errorResult(
-      `File size ${formatBytes(fileStats.size)} exceeds the text-read limit of ${formatBytes(
+      `File size ${formatBytes(authoritativeBytes)} exceeds the text-read limit of ${formatBytes(
         opts.maxTextBytes,
       )}. Use offset and limit to read a slice, or a different tool for large binary blobs.`,
     );
   }
-  const shouldStreamWindow = explicitWindow && fileStats.size > opts.maxTextBytes;
-  const binarySample = shouldStreamWindow
-    ? await readInitialBytes(resolvedPath.canonical, 8192)
-    : await readFile(resolvedPath.canonical);
+  const shouldStreamWindow =
+    editorRead === null &&
+    boundRead === undefined &&
+    explicitWindow &&
+    authoritativeBytes > opts.maxTextBytes;
+  const binarySample =
+    boundWindow?.binarySample ??
+    boundFile?.content ??
+    (shouldStreamWindow
+      ? await readInitialBytes(resolvedPath.canonical, 8192)
+      : editorRead === null
+        ? await readFile(resolvedPath.canonical)
+        : Buffer.from(editorRead.content, "utf8"));
   if (isBinaryContent(binarySample)) {
     return errorResult(
       "This tool cannot read binary files. The file contains non-text bytes. Use a different tool (e.g. a hex viewer or shell tooling) for binary file analysis.",
     );
   }
 
-  const text = shouldStreamWindow
-    ? undefined
-    : binarySample.toString("utf-8");
-  const sliced = shouldStreamWindow
-    ? await sliceTextFileByLineStream(resolvedPath.canonical, opts.offset, opts.limit)
-    : sliceLines(text ?? "", opts.offset, opts.limit);
+  const text =
+    shouldStreamWindow || boundWindow !== undefined
+      ? undefined
+      : binarySample.toString("utf-8");
+  const sliced =
+    boundWindow ??
+    (shouldStreamWindow
+      ? await sliceTextFileByLineStream(
+          resolvedPath.canonical,
+          opts.offset,
+          opts.limit,
+        )
+      : sliceLines(text ?? "", opts.offset, opts.limit));
   const slicedBytes = Buffer.byteLength(sliced.content, "utf8");
   if (slicedBytes > opts.maxTextBytes) {
     return errorResult(
@@ -593,7 +756,9 @@ async function readTextFile(
   recordSessionRead(sessionId, resolvedPath.canonical, {
     content: sliced.content,
     timestamp:
-      typeof fileStats.mtimeMs === "number" && Number.isFinite(fileStats.mtimeMs)
+      fileStats !== null &&
+      typeof fileStats.mtimeMs === "number" &&
+      Number.isFinite(fileStats.mtimeMs)
         ? fileStats.mtimeMs
         : Date.now(),
     viewKind: sliced.isPartial ? "partial" : "full",
@@ -607,11 +772,13 @@ async function readTextFile(
     // there is nothing to diff against.
     ...(sliced.isPartial || text === undefined ? {} : { rawContent: text }),
   });
-  notifyFileReadListeners({
-    filePath: resolvedPath.canonical,
-    content: text ?? sliced.content,
-    ...(sessionId !== undefined ? { sessionId } : {}),
-  });
+  if (notifyListeners) {
+    notifyFileReadListeners({
+      filePath: resolvedPath.canonical,
+      content: text ?? sliced.content,
+      ...(sessionId !== undefined ? { sessionId } : {}),
+    });
+  }
 
   if (sliced.content.length === 0) {
     if (sliced.totalLines === 0) {
@@ -774,9 +941,7 @@ function renderNotebook(
         ? cell.cell_type
         : "unknown";
     const cellId =
-      typeof cell.id === "string" && cell.id.length > 0
-        ? ` id=${cell.id}`
-        : "";
+      typeof cell.id === "string" && cell.id.length > 0 ? ` id=${cell.id}` : "";
     const executionCount =
       typeof cell.execution_count === "number"
         ? ` execution_count=${cell.execution_count}`
@@ -794,12 +959,15 @@ function renderNotebook(
       return;
     }
 
-    const processedOutputs = outputs.map((rawOutput) => asRecord(rawOutput) ?? {});
+    const processedOutputs = outputs.map(
+      (rawOutput) => asRecord(rawOutput) ?? {},
+    );
     const totalTextOutputSize = processedOutputs.reduce(
       (total, output) => total + extractNotebookTextOutput(output).length,
       0,
     );
-    const omitTextOutputs = totalTextOutputSize > NOTEBOOK_LARGE_OUTPUT_THRESHOLD;
+    const omitTextOutputs =
+      totalTextOutputSize > NOTEBOOK_LARGE_OUTPUT_THRESHOLD;
     if (omitTextOutputs) {
       lines.push(
         `Text outputs are too large to include. Use a shell command with jq to inspect cells[${cellIndex}].outputs.`,
@@ -813,7 +981,8 @@ function renderNotebook(
           : "unknown";
       lines.push(`Output ${outputIndex + 1} [${outputType}]:`);
       const text = extractNotebookTextOutput(output);
-      if (!omitTextOutputs && text.length > 0) pushNotebookMultiline(lines, text);
+      if (!omitTextOutputs && text.length > 0)
+        pushNotebookMultiline(lines, text);
       const image = extractNotebookImageOutput(output);
       if (image) {
         const imageBytes = Buffer.byteLength(image.base64, "base64");
@@ -833,7 +1002,7 @@ function renderNotebook(
           });
         }
       }
-      if ((!omitTextOutputs && text.length === 0) && !image) {
+      if (!omitTextOutputs && text.length === 0 && !image) {
         lines.push("(empty output)");
       }
     });
@@ -853,21 +1022,50 @@ async function readNotebookFile(
   resolvedPath: ResolvedPath,
   opts: NotebookReadOpts,
   sessionId: string | undefined,
+  editorRead: WorkspaceAuthoritativeRead | null,
+  boundRead?: WorkspaceBoundFileReadCapability,
 ): Promise<ToolResult> {
-  const fileStats = await stat(resolvedPath.canonical);
-  if (!fileStats.isFile()) {
+  const rawFileStats =
+    editorRead === null && boundRead === undefined
+      ? await stat(resolvedPath.canonical)
+      : null;
+  if (rawFileStats !== null && !rawFileStats.isFile()) {
     return errorResult("Path is not a regular file");
   }
-  if (fileStats.size > opts.maxNotebookBytes) {
+  let boundFile: WorkspaceBoundReadFile | undefined;
+  if (editorRead === null && boundRead !== undefined) {
+    try {
+      boundFile = await boundRead.readFile(opts.maxNotebookBytes);
+    } catch (error) {
+      if (error instanceof WorkspaceBoundReadFileTooLargeError) {
+        return errorResult(
+          `Notebook size ${formatBytes(error.size)} exceeds the notebook-read limit of ${formatBytes(
+            opts.maxNotebookBytes,
+          )}. Use a shell command with jq to inspect specific cells without loading the whole notebook.`,
+        );
+      }
+      throw error;
+    }
+  }
+  const fileStats = boundFile?.stats ?? rawFileStats;
+  const rawText =
+    editorRead?.content ??
+    boundFile?.content.toString("utf8") ??
+    (await readFile(resolvedPath.canonical, "utf8"));
+  const rawBytes = Buffer.byteLength(rawText, "utf8");
+  if (rawBytes > opts.maxNotebookBytes) {
     return errorResult(
-      `Notebook size ${formatBytes(fileStats.size)} exceeds the notebook-read limit of ${formatBytes(
+      `Notebook size ${formatBytes(rawBytes)} exceeds the notebook-read limit of ${formatBytes(
         opts.maxNotebookBytes,
       )}. Use a shell command with jq to inspect specific cells without loading the whole notebook.`,
     );
   }
 
-  const rawText = await readFile(resolvedPath.canonical, "utf8");
-  const rendered = renderNotebook(rawText, opts.displayPath, opts.maxImageBytes);
+  const rendered = renderNotebook(
+    rawText,
+    opts.displayPath,
+    opts.maxImageBytes,
+  );
   if ("err" in rendered) return rendered.err;
 
   const sliced = sliceLines(rendered.ok.text, opts.offset, opts.limit);
@@ -890,7 +1088,9 @@ async function readNotebookFile(
   recordSessionRead(sessionId, resolvedPath.canonical, {
     content: sliced.content,
     timestamp:
-      typeof fileStats.mtimeMs === "number" && Number.isFinite(fileStats.mtimeMs)
+      fileStats !== null &&
+      typeof fileStats.mtimeMs === "number" &&
+      Number.isFinite(fileStats.mtimeMs)
         ? fileStats.mtimeMs
         : Date.now(),
     viewKind: sliced.isPartial ? "partial" : "full",
@@ -920,7 +1120,8 @@ async function readNotebookFile(
   const numbered = formatNumbered(sliced.content, sliced.startLine);
   const selectedImages = rendered.ok.images.filter(
     (image) =>
-      image.lineNumber >= sliced.startLine && image.lineNumber <= sliced.endLine,
+      image.lineNumber >= sliced.startLine &&
+      image.lineNumber <= sliced.endLine,
   );
   const contentItems: FunctionCallOutputContentItem[] = selectedImages.length
     ? [
@@ -1002,9 +1203,7 @@ async function readPDFFile(
   const pageCount = await getPDFPageCount(resolvedPath.canonical, toolArgs);
   const selectedRange =
     parsedRange ??
-    (pageCount === null
-      ? null
-      : { firstPage: 1, lastPage: pageCount });
+    (pageCount === null ? null : { firstPage: 1, lastPage: pageCount });
 
   if (
     pageCount !== null &&
@@ -1062,7 +1261,8 @@ async function readPDFFile(
   recordSessionRead(sessionId, resolvedPath.canonical, {
     content: sliced.content,
     timestamp:
-      typeof fileStats.mtimeMs === "number" && Number.isFinite(fileStats.mtimeMs)
+      typeof fileStats.mtimeMs === "number" &&
+      Number.isFinite(fileStats.mtimeMs)
         ? fileStats.mtimeMs
         : Date.now(),
     viewKind: isPartial ? "partial" : "full",
@@ -1074,8 +1274,8 @@ async function readPDFFile(
     ...(sliced.isPartial && opts.limit !== undefined
       ? { readLimit: opts.limit }
       : parsedRange && selectedRange && selectedRange.lastPage !== Infinity
-      ? { readLimit: pageRangeLength(selectedRange) }
-      : {}),
+        ? { readLimit: pageRangeLength(selectedRange) }
+        : {}),
     ...(isPartial ? {} : { rawContent: text }),
   });
 
@@ -1142,29 +1342,42 @@ async function readImageFile(
   resolvedPath: ResolvedPath,
   opts: ImageReadOpts,
   sessionId: string | undefined,
+  boundRead?: WorkspaceBoundFileReadCapability,
 ): Promise<ToolResult> {
-  const fileStats = await stat(resolvedPath.canonical);
-  if (!fileStats.isFile()) {
+  let boundFile: WorkspaceBoundReadFile | undefined;
+  if (boundRead !== undefined) {
+    try {
+      boundFile = await boundRead.readFile(opts.maxImageBytes);
+    } catch (error) {
+      if (error instanceof WorkspaceBoundReadFileTooLargeError) {
+        return errorResult(
+          `Image size ${formatBytes(error.size)} exceeds the image-read limit of ${formatBytes(
+            opts.maxImageBytes,
+          )}.`,
+        );
+      }
+      throw error;
+    }
+  }
+  const rawFileStats =
+    boundFile === undefined ? await stat(resolvedPath.canonical) : null;
+  if (rawFileStats !== null && !rawFileStats.isFile()) {
     return errorResult("Path is not a regular file");
   }
-  if (fileStats.size > opts.maxImageBytes) {
-    return errorResult(
-      `Image size ${formatBytes(fileStats.size)} exceeds the image-read limit of ${formatBytes(
-        opts.maxImageBytes,
-      )}.`,
-    );
-  }
+  const fileStats = boundFile?.stats ?? rawFileStats!;
   if (fileStats.size === 0) {
     return errorResult(`Image file is empty: ${opts.displayPath}`);
   }
 
-  const rawBuffer = await readFile(resolvedPath.canonical);
+  const rawBuffer =
+    boundFile?.content ?? (await readFile(resolvedPath.canonical));
   // Downsample/clamp to the provider image limits (~5MB base64, 1568px) before
   // encoding — a raw screenshot over ~3.7MB, or a small-but-high-DPI PNG over
   // 1568px, is otherwise emitted verbatim and rejected by the API with a 400 on
   // the common "read this screenshot" path. Mirrors BashTool/utils.ts and the MCP
   // image path. Falls back to the original bytes if the image cannot be processed.
-  const declaredMime = IMAGE_MIME_BY_EXT[opts.ext] ?? "application/octet-stream";
+  const declaredMime =
+    IMAGE_MIME_BY_EXT[opts.ext] ?? "application/octet-stream";
   let mime = declaredMime;
   let base64: string;
   try {
@@ -1191,7 +1404,8 @@ async function readImageFile(
   recordSessionRead(sessionId, resolvedPath.canonical, {
     content: null,
     timestamp:
-      typeof fileStats.mtimeMs === "number" && Number.isFinite(fileStats.mtimeMs)
+      typeof fileStats.mtimeMs === "number" &&
+      Number.isFinite(fileStats.mtimeMs)
         ? fileStats.mtimeMs
         : Date.now(),
     viewKind: "full",
@@ -1294,8 +1508,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
     },
     checkPermissions(input, context) {
       const args = input as FileReadInput;
-      const filePath =
-        typeof args.file_path === "string" ? args.file_path : "";
+      const filePath = typeof args.file_path === "string" ? args.file_path : "";
       if (filePath.trim().length === 0) {
         return {
           behavior: "ask",
@@ -1305,7 +1518,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       const cwd =
         typeof args.cwd === "string" && args.cwd.length > 0
           ? args.cwd
-          : config.allowedPaths[0] ?? process.cwd();
+          : (config.allowedPaths[0] ?? process.cwd());
       if (isAgentNamespacePath(filePath)) {
         return denyAgentNamespacePath(filePath, cwd);
       }
@@ -1326,7 +1539,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         !Array.isArray(decision.updatedInput)
           ? (decision.updatedInput as Record<string, unknown>)
           : (input as Record<string, unknown>);
-      const absolutePath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+      const absolutePath = isAbsolute(filePath)
+        ? filePath
+        : resolve(cwd, filePath);
       return {
         ...decision,
         updatedInput: withSignedAllowedRoots(currentInput, [
@@ -1366,16 +1581,36 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       const resolved = resolveResult.ok;
 
       const sessionId = resolveSessionId(rawArgs);
+      let boundRead: WorkspaceBoundFileReadCapability | undefined;
 
       try {
+        const trustedEditorInteraction =
+          readToolRuntimeContext(rawArgs)?.invocation.turn.editorInteraction !==
+          undefined;
+        const editorRead = workspaceAuthoritativeRead(resolved.canonical);
+        const protectedByEditor =
+          trustedEditorInteraction ||
+          workspaceHasProtectedEditorPaths(resolved.canonical);
+        const needsDiskCapability = isImage || isPdf || editorRead === null;
+        if (protectedByEditor && needsDiskCapability) {
+          boundRead = await bindWorkspaceFileReadCapability(resolved.canonical);
+        }
+        await config.__testAfterFinalPathCheck?.();
+
         if (isImage) {
           return await readImageFile(
             resolved,
             { displayPath: filePath, ext, maxImageBytes },
             sessionId,
+            boundRead,
           );
         }
         if (isPdf) {
+          if (boundRead !== undefined) {
+            return errorResult(
+              "PDF extraction is unavailable while Editor owns this workspace because the external Poppler process cannot consume AgenC's held file descriptor portably. Close Editor or copy the PDF outside the protected workspace before reading it.",
+            );
+          }
           return await readPDFFile(
             resolved,
             {
@@ -1403,6 +1638,8 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               maxNotebookBytes,
             },
             sessionId,
+            editorRead,
+            boundRead,
           );
         }
         return await readTextFile(
@@ -1415,6 +1652,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             displayPath: filePath,
           },
           sessionId,
+          editorRead,
+          boundRead,
+          !trustedEditorInteraction,
         );
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code;
@@ -1431,6 +1671,8 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         }
         const message = err instanceof Error ? err.message : String(err);
         return errorResult(`Read failed: ${message}`);
+      } finally {
+        await boundRead?.dispose();
       }
     },
   };

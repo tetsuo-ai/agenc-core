@@ -15,7 +15,16 @@
  *   - plain-text errors (no JSON wrap)
  */
 
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -47,6 +56,7 @@ import {
   getPlanFilePath,
   setPlanSlug,
 } from "../../planning/plan-files.js";
+import { workspaceMutationCoordinators } from "../../workspace/mutation-coordinator.js";
 
 const SESSION_ID = "edit-tool-test-session";
 
@@ -61,6 +71,7 @@ describe("Edit tool", () => {
   afterEach(async () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
+    workspaceMutationCoordinators.clearForTests();
     clearSessionReadState(SESSION_ID);
     clearAllPlanSlugs();
   });
@@ -160,7 +171,10 @@ describe("Edit tool", () => {
   test("edits the active session plan file outside the workspace root", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-plan-edit-home-"));
     try {
-      setPlanSlug({ agencHome, sessionId: SESSION_ID }, "ivory-bridge-aaed0227");
+      setPlanSlug(
+        { agencHome, sessionId: SESSION_ID },
+        "ivory-bridge-aaed0227",
+      );
       const planPath = getPlanFilePath({ agencHome, sessionId: SESSION_ID });
       const original = "# Plan\n\n- [ ] Verify allowlist\n";
       await writeFile(planPath, original, "utf8");
@@ -312,7 +326,9 @@ describe("Edit tool", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("All occurrences were successfully replaced");
+    expect(result.content).toContain(
+      "All occurrences were successfully replaced",
+    );
     expect(result.metadata).toMatchObject({
       ui: {
         kind: "file_mutation",
@@ -361,6 +377,58 @@ describe("Edit tool", () => {
     await expect(readFile(file, "utf8")).resolves.toBe("fresh content\n");
   });
 
+  test("Edit and MultiEdit report a completed create with failed audit truthfully", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-edit-audit-home-"));
+    const originalAgencHome = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = agencHome;
+    workspaceMutationCoordinators.clearForTests();
+    workspaceMutationCoordinators.getOrCreate(root);
+    const workspaceKey = createHash("sha256")
+      .update(root)
+      .digest("hex")
+      .slice(0, 32);
+    await mkdir(
+      join(agencHome, "workspace-mutations", workspaceKey, "ledger-v1.jsonl"),
+      { recursive: true },
+    );
+
+    const editPath = join(root, "edit-created.txt");
+    const multiEditPath = join(root, "multi-edit-created.txt");
+    try {
+      const edit = createFileEditTool({ allowedPaths: [root] });
+      const editResult = await edit.execute({
+        file_path: editPath,
+        old_string: "",
+        new_string: "created by Edit\n",
+        [SESSION_ID_ARG]: SESSION_ID,
+      });
+      const multiEdit = createFileMultiEditTool({ allowedPaths: [root] });
+      const multiEditResult = await multiEdit.execute({
+        file_path: multiEditPath,
+        edits: [{ old_string: "", new_string: "created by MultiEdit\n" }],
+        [SESSION_ID_ARG]: SESSION_ID,
+      });
+
+      for (const result of [editResult, multiEditResult]) {
+        expect(result.isError).toBe(true);
+        expect(String(result.content)).toContain("Disk mutation completed for");
+        expect(String(result.content)).toContain("outcome is marked unknown");
+        expect(String(result.content)).not.toContain("Failed to create file");
+      }
+      await expect(readFile(editPath, "utf8")).resolves.toBe(
+        "created by Edit\n",
+      );
+      await expect(readFile(multiEditPath, "utf8")).resolves.toBe(
+        "created by MultiEdit\n",
+      );
+    } finally {
+      workspaceMutationCoordinators.clearForTests();
+      if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = originalAgencHome;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   test("empty old_string on an existing nonempty file is rejected", async () => {
     const file = join(root, "existing.txt");
     await writeFile(file, "already here\n", "utf8");
@@ -379,7 +447,9 @@ describe("Edit tool", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content).toBe("Cannot create new file - file already exists.");
+    expect(result.content).toBe(
+      "Cannot create new file - file already exists.",
+    );
     // Untouched.
     await expect(readFile(file, "utf8")).resolves.toBe("already here\n");
   });

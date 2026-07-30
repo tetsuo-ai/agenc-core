@@ -1,19 +1,20 @@
-import type { Key } from '../ink.js'
-import { getKeyName, matchesBinding } from './match.js'
-import { chordToDisplayString, chordToString } from './parser.js'
+import type { Key } from "../ink.js";
+import { getKeyName, matchesBinding } from "./match.js";
+import { chordToDisplayString, chordToString } from "./parser.js";
 import type {
   KeybindingContextName,
   ParsedBinding,
   ParsedKeystroke,
-} from './types.js'
+} from "./types.js";
 
-const DEFAULT_CONTEXT_PRIORITY = 50
+const DEFAULT_CONTEXT_PRIORITY = 50;
 
 const CONTEXT_PRIORITY: Partial<Record<KeybindingContextName, number>> = {
   Modal: 1000,
   Global: 0,
   Scroll: 5,
   Workbench: 10,
+  WorkspaceTabs: 90,
   Explorer: 20,
   Surface: 20,
   Buffer: 30,
@@ -38,33 +39,33 @@ const CONTEXT_PRIORITY: Partial<Record<KeybindingContextName, number>> = {
   ModelPicker: 100,
   Select: 100,
   Plugin: 100,
-}
+};
 
-export function keybindingContextPriority(context: KeybindingContextName): number {
-  return CONTEXT_PRIORITY[context] ?? DEFAULT_CONTEXT_PRIORITY
+export function keybindingContextPriority(
+  context: KeybindingContextName,
+): number {
+  return CONTEXT_PRIORITY[context] ?? DEFAULT_CONTEXT_PRIORITY;
 }
 
 function shouldReplaceBinding(
   candidate: ParsedBinding,
   current: ParsedBinding | undefined,
 ): boolean {
-  if (!current) return true
-  const candidatePriority = keybindingContextPriority(candidate.context)
-  const currentPriority = keybindingContextPriority(current.context)
-  return candidatePriority >= currentPriority
+  if (!current) return true;
+  const candidatePriority = keybindingContextPriority(candidate.context);
+  const currentPriority = keybindingContextPriority(current.context);
+  return candidatePriority >= currentPriority;
 }
 
 export type ResolveResult =
-  | { type: 'match'; action: string }
-  | { type: 'none' }
-  | { type: 'unbound' }
+  { type: "match"; action: string } | { type: "none" } | { type: "unbound" };
 
 export type ChordResolveResult =
-  | { type: 'match'; action: string }
-  | { type: 'none' }
-  | { type: 'unbound' }
-  | { type: 'chord_started'; pending: ParsedKeystroke[] }
-  | { type: 'chord_cancelled' }
+  | { type: "match"; action: string }
+  | { type: "none" }
+  | { type: "unbound" }
+  | { type: "chord_started"; pending: ParsedKeystroke[] }
+  | { type: "chord_cancelled" };
 
 /**
  * Resolve a key input to an action.
@@ -85,28 +86,31 @@ export function resolveKey(
   // Find matching bindings. Higher-priority UI contexts win across contexts;
   // within the same priority, later parsed bindings still win so user
   // overrides for that context keep working.
-  let match: ParsedBinding | undefined
-  const ctxSet = new Set(activeContexts)
+  let match: ParsedBinding | undefined;
+  const ctxSet = new Set(activeContexts);
 
   for (const binding of bindings) {
     // Phase 1: Only single-keystroke bindings
-    if (binding.chord.length !== 1) continue
-    if (!ctxSet.has(binding.context)) continue
+    if (binding.chord.length !== 1) continue;
+    if (!ctxSet.has(binding.context)) continue;
 
-    if (matchesBinding(input, key, binding) && shouldReplaceBinding(binding, match)) {
-      match = binding
+    if (
+      matchesBinding(input, key, binding) &&
+      shouldReplaceBinding(binding, match)
+    ) {
+      match = binding;
     }
   }
 
   if (!match) {
-    return { type: 'none' }
+    return { type: "none" };
   }
 
   if (match.action === null) {
-    return { type: 'unbound' }
+    return { type: "unbound" };
   }
 
-  return { type: 'match', action: match.action }
+  return { type: "match", action: match.action };
 }
 
 /**
@@ -120,22 +124,22 @@ export function getBindingDisplayText(
 ): string | undefined {
   // Find the last binding for this action in this context
   const binding = bindings.findLast(
-    b => b.action === action && b.context === context,
-  )
-  return binding ? chordToDisplayString(binding.chord) : undefined
+    (b) => b.action === action && b.context === context,
+  );
+  return binding ? chordToDisplayString(binding.chord) : undefined;
 }
 
 /**
  * Build a ParsedKeystroke from Ink's input/key.
  */
 function buildKeystroke(input: string, key: Key): ParsedKeystroke | null {
-  const keyName = getKeyName(input, key)
-  if (!keyName) return null
+  const keyName = getKeyName(input, key);
+  if (!keyName) return null;
 
   // QUIRK: Ink sets key.meta=true when escape is pressed (see input-event.ts).
   // This is compatibility terminal behavior - we should NOT record this as a modifier
   // for the escape key itself, otherwise chord matching will fail.
-  const effectiveMeta = key.escape ? false : key.meta
+  const effectiveMeta = key.escape ? false : key.meta;
 
   return {
     key: keyName,
@@ -144,7 +148,7 @@ function buildKeystroke(input: string, key: Key): ParsedKeystroke | null {
     shift: key.shift,
     meta: effectiveMeta,
     super: key.super,
-  }
+  };
 }
 
 /**
@@ -163,7 +167,7 @@ export function keystrokesEqual(
     a.shift === b.shift &&
     (a.alt || a.meta) === (b.alt || b.meta) &&
     a.super === b.super
-  )
+  );
 }
 
 /**
@@ -173,14 +177,14 @@ function chordPrefixMatches(
   prefix: ParsedKeystroke[],
   binding: ParsedBinding,
 ): boolean {
-  if (prefix.length >= binding.chord.length) return false
+  if (prefix.length >= binding.chord.length) return false;
   for (let i = 0; i < prefix.length; i++) {
-    const prefixKey = prefix[i]
-    const bindingKey = binding.chord[i]
-    if (!prefixKey || !bindingKey) return false
-    if (!keystrokesEqual(prefixKey, bindingKey)) return false
+    const prefixKey = prefix[i];
+    const bindingKey = binding.chord[i];
+    if (!prefixKey || !bindingKey) return false;
+    if (!keystrokesEqual(prefixKey, bindingKey)) return false;
   }
-  return true
+  return true;
 }
 
 /**
@@ -190,14 +194,14 @@ function chordExactlyMatches(
   chord: ParsedKeystroke[],
   binding: ParsedBinding,
 ): boolean {
-  if (chord.length !== binding.chord.length) return false
+  if (chord.length !== binding.chord.length) return false;
   for (let i = 0; i < chord.length; i++) {
-    const chordKey = chord[i]
-    const bindingKey = binding.chord[i]
-    if (!chordKey || !bindingKey) return false
-    if (!keystrokesEqual(chordKey, bindingKey)) return false
+    const chordKey = chord[i];
+    const bindingKey = binding.chord[i];
+    if (!chordKey || !bindingKey) return false;
+    if (!keystrokesEqual(chordKey, bindingKey)) return false;
   }
-  return true
+  return true;
 }
 
 /**
@@ -221,90 +225,90 @@ export function resolveKeyWithChordState(
 ): ChordResolveResult {
   // Cancel chord on escape
   if (key.escape && pending !== null) {
-    return { type: 'chord_cancelled' }
+    return { type: "chord_cancelled" };
   }
 
   // Build current keystroke
-  const currentKeystroke = buildKeystroke(input, key)
+  const currentKeystroke = buildKeystroke(input, key);
   if (!currentKeystroke) {
     if (pending !== null) {
-      return { type: 'chord_cancelled' }
+      return { type: "chord_cancelled" };
     }
-    return { type: 'none' }
+    return { type: "none" };
   }
 
   // Build the full chord sequence to test
   const testChord = pending
     ? [...pending, currentKeystroke]
-    : [currentKeystroke]
+    : [currentKeystroke];
 
   // Filter bindings by active contexts (Set lookup: O(n) instead of O(n·m))
-  const ctxSet = new Set(activeContexts)
-  const contextBindings = bindings.filter(b => ctxSet.has(b.context))
+  const ctxSet = new Set(activeContexts);
+  const contextBindings = bindings.filter((b) => ctxSet.has(b.context));
 
   // Resolve an exact winner up front. A more-specific context can reserve a
   // native single stroke (for example BufferHost Ctrl+X passthrough) even
   // when a lower-priority context has a longer chord with that prefix.
   // Same-priority longer chords still win below, preserving ordinary
   // same-context chord behavior.
-  let exactMatch: ParsedBinding | undefined
+  let exactMatch: ParsedBinding | undefined;
   for (const binding of contextBindings) {
     if (
       chordExactlyMatches(testChord, binding) &&
       shouldReplaceBinding(binding, exactMatch)
     ) {
-      exactMatch = binding
+      exactMatch = binding;
     }
   }
   const exactPriority =
     exactMatch === undefined
       ? Number.NEGATIVE_INFINITY
-      : keybindingContextPriority(exactMatch.context)
+      : keybindingContextPriority(exactMatch.context);
 
   // Check if this could be a prefix for longer chords. Group by chord string
   // so a same-priority null-override shadows the default it unbinds; higher
   // priority contexts still win across contexts.
-  const chordWinners = new Map<string, ParsedBinding>()
+  const chordWinners = new Map<string, ParsedBinding>();
   for (const binding of contextBindings) {
     if (
       binding.chord.length > testChord.length &&
       chordPrefixMatches(testChord, binding)
     ) {
-      const key = chordToString(binding.chord)
-      const current = chordWinners.get(key)
+      const key = chordToString(binding.chord);
+      const current = chordWinners.get(key);
       if (shouldReplaceBinding(binding, current)) {
-        chordWinners.set(key, binding)
+        chordWinners.set(key, binding);
       }
     }
   }
-  let hasLongerChords = false
+  let hasLongerChords = false;
   for (const binding of chordWinners.values()) {
     if (
       binding.action !== null &&
       keybindingContextPriority(binding.context) >= exactPriority
     ) {
-      hasLongerChords = true
-      break
+      hasLongerChords = true;
+      break;
     }
   }
 
   // If this keystroke could start a longer chord, prefer that
   // (even if there's an exact single-key match)
   if (hasLongerChords) {
-    return { type: 'chord_started', pending: testChord }
+    return { type: "chord_started", pending: testChord };
   }
 
   if (exactMatch) {
     if (exactMatch.action === null) {
-      return { type: 'unbound' }
+      return { type: "unbound" };
     }
-    return { type: 'match', action: exactMatch.action }
+    return { type: "match", action: exactMatch.action };
   }
 
   // No match and no potential longer chords
   if (pending !== null) {
-    return { type: 'chord_cancelled' }
+    return { type: "chord_cancelled" };
   }
 
-  return { type: 'none' }
+  return { type: "none" };
 }

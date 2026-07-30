@@ -11,7 +11,9 @@ describe("embedded Neovim BUFFER docs and config", () => {
     expect(text).toContain("**not** quit Neovim");
     expect(text).toContain("`Alt+Z` maximizes or restores BUFFER");
     expect(text).toContain("`Ctrl+R` remains Neovim's native redo");
-    expect(text).toContain("Embedded Neovim receives `Ctrl+X`, `Ctrl+K`, `Ctrl+G`, and `Ctrl+R` unchanged");
+    expect(text).toContain(
+      "Embedded Neovim receives `Ctrl+X`, `Ctrl+K`, `Ctrl+G`, and `Ctrl+R` unchanged",
+    );
     expect(text).toContain("`ext_linegrid`");
     expect(text).toContain("native Neovim grid content");
     expect(text).toContain("exact row/column size");
@@ -73,6 +75,8 @@ describe("embedded Neovim BUFFER docs and config", () => {
       ":AgenCAsk",
       ":AgenCFix",
       ":AgenCExplain",
+      ":AgenCEdit",
+      ":AgenCRefactor",
       ":AgenCReview",
     ]) {
       expect(text).toContain(command);
@@ -108,10 +112,17 @@ describe("embedded Neovim BUFFER docs and config", () => {
   it("keeps the operator shortcut summary aligned", async () => {
     const text = await readFile("../docs/reference/tui-workbench.md", "utf8");
 
-    expect(text).toContain("| `Alt+Q` | Hide BUFFER");
-    expect(text).toContain("| `Alt+Z` | Maximize or restore");
-    expect(text).toContain("| `Ctrl+R` | Redo the last Neovim change natively");
-    expect(text).toContain("| `Alt+R` | Move the current file to the review rail");
+    expect(text).toMatch(/\|\s*`Alt\+Q`\s*\|\s*Hide BUFFER/u);
+    expect(text).toMatch(/\|\s*`Alt\+Z`\s*\|\s*Maximize or restore/u);
+    expect(text).toMatch(
+      /\|\s*`Ctrl\+R`\s*\|\s*Redo the last Neovim change natively/u,
+    );
+    expect(text).toMatch(
+      /\|\s*`Alt\+R`\s*\|\s*Move the current file to the review rail/u,
+    );
+    expect(text).toMatch(
+      /\|\s*`Alt\+L`\s*\|\s*Focus the open Editor AI\/proposal panel/u,
+    );
     expect(text).toContain("`BufferHost` context for embedded Neovim");
     expect(text).toContain("Save All");
     expect(text).toContain("Discard All");

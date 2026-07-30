@@ -167,6 +167,17 @@ export interface BootstrapSessionOptions extends SessionOpts {
   readonly onBeforeSessionConfigured?: (session: Session) => Promise<void>;
   readonly onAfterSessionConfigured?: (session: Session) => Promise<void>;
   readonly enablePrewarm?: boolean;
+  /**
+   * Defer arbitrary configured SessionStart commands until the first ordinary
+   * Agent submission. Used when the atomic first turn is governed by an Editor
+   * read-only/proposal-only policy that must exist before extension code runs.
+   */
+  readonly deferSessionStartHooks?: boolean;
+  /**
+   * Defer configured-process/background startup (MCP and skill watching) and
+   * skip redundant provider prewarm for an Editor-first session.
+   */
+  readonly deferOrdinaryStartup?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -174,9 +185,7 @@ export interface BootstrapSessionOptions extends SessionOpts {
 export class RequiredMcpStartupError extends Error {
   readonly failures: ReadonlyArray<{ server: string; error: string }>;
   constructor(failures: ReadonlyArray<{ server: string; error: string }>) {
-    const detail = failures
-      .map((f) => `${f.server}: ${f.error}`)
-      .join("; ");
+    const detail = failures.map((f) => `${f.server}: ${f.error}`).join("; ");
     super(`required MCP servers failed to initialize: ${detail}`);
     this.name = "RequiredMcpStartupError";
     this.failures = failures;
@@ -430,26 +439,39 @@ export async function bootstrapSession(
 
   throwIfAborted(opts.signal);
 
-  // 3. Parallel auth + MCP startup. Required-server failures fail
-  //    closed BEFORE SessionConfigured emits.
+  // 3. Parallel auth + MCP startup. An Editor-first session performs auth
+  //    now but retains MCP startup for the first ordinary Agent submit.
   const mcp = opts.mcp;
-  await startAuthAndMcpInParallel({
-    ...(opts.auth !== undefined ? { auth: opts.auth } : {}),
-    ...(mcp !== undefined
-      ? {
-          mcp: {
-            manager: mcp.manager,
-            startFn: (manager, startOpts) =>
-              session.startMcpManager(manager, startOpts),
-            ...(mcp.startOpts !== undefined ? { startOpts: mcp.startOpts } : {}),
-            ...(mcp.requiredServers !== undefined
-              ? { requiredServers: mcp.requiredServers }
-              : {}),
-          },
-        }
-      : {}),
-    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
-  });
+  const mcpStartup =
+    mcp === undefined
+      ? undefined
+      : {
+          manager: mcp.manager,
+          startFn: (manager: MCPManager, startOpts: MCPManagerStartOpts) =>
+            session.startMcpManager(manager, startOpts),
+          ...(mcp.startOpts !== undefined ? { startOpts: mcp.startOpts } : {}),
+          ...(mcp.requiredServers !== undefined
+            ? { requiredServers: mcp.requiredServers }
+            : {}),
+        };
+  if (opts.deferOrdinaryStartup === true && mcpStartup !== undefined) {
+    await startAuthAndMcpInParallel({
+      ...(opts.auth !== undefined ? { auth: opts.auth } : {}),
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    });
+    session.appendDeferredOrdinarySubmitHook(async () => {
+      await startAuthAndMcpInParallel({
+        mcp: mcpStartup,
+        signal: session.services.mcpStartupCancellationToken.signal,
+      });
+    });
+  } else {
+    await startAuthAndMcpInParallel({
+      ...(opts.auth !== undefined ? { auth: opts.auth } : {}),
+      ...(mcpStartup !== undefined ? { mcp: mcpStartup } : {}),
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    });
+  }
 
   throwIfAborted(opts.signal);
 
@@ -475,12 +497,27 @@ export async function bootstrapSession(
   //    agenc runtime ordering (`agenc-rs/core/src/session/session.rs:856-908`)
   //    starts the watcher/skills listener and the real
   //    `McpConnectionManager::new()` AFTER the SessionConfigured dispatch.
-  await patchedServices.skillsWatcher?.start?.();
-  await dispatchBootstrapSessionStart(session, {
-    source: opts.initialState.pendingSessionStartSource ?? "startup",
-    sessionConfigured: sessionConfiguredPayload,
-    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
-  });
+  if (
+    opts.deferOrdinaryStartup === true &&
+    patchedServices.skillsWatcher?.start !== undefined
+  ) {
+    session.appendDeferredOrdinarySubmitHook(async () => {
+      await patchedServices.skillsWatcher?.start?.();
+    });
+  } else {
+    await patchedServices.skillsWatcher?.start?.();
+  }
+  const dispatchSessionStart = () =>
+    dispatchBootstrapSessionStart(session, {
+      source: opts.initialState.pendingSessionStartSource ?? "startup",
+      sessionConfigured: sessionConfiguredPayload,
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    });
+  if (opts.deferSessionStartHooks === true) {
+    session.installDeferredSessionStartHook(dispatchSessionStart);
+  } else {
+    await dispatchSessionStart();
+  }
   if (opts.onAfterSessionConfigured) {
     await opts.onAfterSessionConfigured(session);
   }
@@ -490,7 +527,7 @@ export async function bootstrapSession(
   // 7. Startup prewarm. Awaited here for determinism in tests; upstream
   //    detaches via `tokio::spawn` but the gut body is cheap enough to
   //    run inline. Errors are swallowed inside the helper.
-  if (opts.enablePrewarm !== false) {
+  if (opts.enablePrewarm !== false && opts.deferOrdinaryStartup !== true) {
     await runStartupPrewarm(session, {
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     });
@@ -519,11 +556,12 @@ async function dispatchBootstrapSessionStart(
 ): Promise<void> {
   const processSessionStart = session.services.hooks?.processSessionStart;
   if (typeof processSessionStart !== "function") return;
-  const permissionMode = (
-    session.sessionConfiguration as {
-      readonly permissionContext?: { readonly mode?: string };
-    }
-  ).permissionContext?.mode ?? "default";
+  const permissionMode =
+    (
+      session.sessionConfiguration as {
+        readonly permissionContext?: { readonly mode?: string };
+      }
+    ).permissionContext?.mode ?? "default";
   const messages = await runWithCurrentRuntimeSession(session, () =>
     processSessionStart(
       {

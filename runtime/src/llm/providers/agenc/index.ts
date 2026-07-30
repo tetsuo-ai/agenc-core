@@ -21,10 +21,7 @@ import type {
   LLMResponse,
   StreamProgressCallback,
 } from "../../types.js";
-import type {
-  ProviderFactoryOptions,
-  ProviderName,
-} from "../../provider.js";
+import type { ProviderFactoryOptions, ProviderName } from "../../provider.js";
 
 type ConcreteProviderName = Exclude<ProviderName, "agenc">;
 
@@ -69,10 +66,7 @@ export class AgenCProvider implements LLMProvider {
 
   readonly #config: AgenCProviderConfig;
   readonly #delegates = new Map<string, Promise<ResolvedAgenCDelegate>>();
-  readonly #preparedExecutions = new WeakMap<
-    object,
-    ResolvedAgenCDelegate
-  >();
+  readonly #preparedExecutions = new WeakMap<object, ResolvedAgenCDelegate>();
 
   constructor(config: AgenCProviderConfig) {
     this.#config = config;
@@ -110,20 +104,89 @@ export class AgenCProvider implements LLMProvider {
     }
   }
 
+  /**
+   * Create a tool-free provider owned by the editor prediction service.
+   *
+   * This intentionally does not share delegate instances or provider-side
+   * conversation state with the primary Agent session. A concrete override
+   * vends its own short-lived credential through the same session-scoped auth
+   * backend; the default route remains hosted AgenC model inference.
+   */
+  async forkForCodePrediction(options: {
+    readonly provider?: ProviderName;
+    readonly model?: string;
+    readonly timeoutMs: number;
+    readonly maxOutputTokens: number;
+  }): Promise<LLMProvider> {
+    if (options.provider === undefined || options.provider === "agenc") {
+      return new AgenCProvider({
+        ...this.#config,
+        model: firstNonEmpty(options.model, this.#config.model) ?? "agenc",
+        tools: [],
+        timeoutMs: options.timeoutMs,
+        maxTokens: options.maxOutputTokens,
+        maxRetries: 0,
+        providerFallback: undefined,
+      });
+    }
+    const provider = concreteProviderName(options.provider);
+    const key = await this.#config.authBackend.vendKey(
+      provider,
+      this.#config.sessionId,
+    );
+    if (key.provider !== provider || key.sessionId !== this.#config.sessionId) {
+      throw new Error(`prediction credential route mismatch for ${provider}`);
+    }
+    const apiKey = firstNonEmpty(key.apiKey);
+    if (apiKey === undefined) {
+      throw new Error(
+        `prediction credential vending returned an empty key for ${provider}`,
+      );
+    }
+    const baseURL = firstNonEmpty(
+      key.baseUrl,
+      this.#config.providerOptions?.baseURL,
+    );
+    return this.#config.providerFactory(provider, {
+      apiKey,
+      ...(baseURL !== undefined ? { baseURL } : {}),
+      ...(options.model !== undefined ? { model: options.model } : {}),
+      tools: [],
+      timeoutMs: options.timeoutMs,
+      extra: {
+        ...(this.#config.providerOptions?.extra ?? {}),
+        maxTokens: options.maxOutputTokens,
+        maxRetries: 0,
+        temperature: 0,
+        ...(key.baseUrl !== undefined ? { managedGateway: true } : {}),
+      },
+    });
+  }
+
+  async dispose(): Promise<void> {
+    const delegates = [...this.#delegates.values()];
+    this.#delegates.clear();
+    await Promise.allSettled(
+      delegates.map(async (delegatePromise) => {
+        const delegate = await delegatePromise;
+        await delegate.instance.dispose?.();
+      }),
+    );
+  }
+
   async getExecutionProfile(
     options?: LLMChatOptions,
   ): Promise<LLMProviderExecutionProfile> {
     const delegate = await this.resolveDelegate(options);
-    const profile =
-      (await delegate.instance.getExecutionProfile?.({
-        ...withoutExecutionHandle(options),
-        model: delegate.model,
-      })) ?? {
-        provider: delegate.provider,
-        model: delegate.model,
-        usageReporting: "unavailable" as const,
-        supportsMaxOutputTokens: false,
-      };
+    const profile = (await delegate.instance.getExecutionProfile?.({
+      ...withoutExecutionHandle(options),
+      model: delegate.model,
+    })) ?? {
+      provider: delegate.provider,
+      model: delegate.model,
+      usageReporting: "unavailable" as const,
+      supportsMaxOutputTokens: false,
+    };
     const providerExecutionHandle = Object.freeze({});
     this.#preparedExecutions.set(providerExecutionHandle, delegate);
     return {
@@ -218,7 +281,9 @@ export class AgenCProvider implements LLMProvider {
     );
     const apiKey = firstNonEmpty(key.apiKey);
     if (apiKey === undefined) {
-      throw new Error("AgenCProvider managed key vending returned an empty key");
+      throw new Error(
+        "AgenCProvider managed key vending returned an empty key",
+      );
     }
     const baseURL = firstNonEmpty(key.baseUrl);
     const expiresAtMs =
@@ -280,9 +345,10 @@ function withoutExecutionHandle(
 }
 
 function concreteProviderName(provider: string): ConcreteProviderName {
-  const normalized = provider.trim().toLowerCase() === "xai"
-    ? "grok"
-    : provider.trim().toLowerCase();
+  const normalized =
+    provider.trim().toLowerCase() === "xai"
+      ? "grok"
+      : provider.trim().toLowerCase();
   if (normalized === "agenc") {
     throw new Error("AgenCProvider model inference returned provider agenc");
   }
@@ -294,7 +360,9 @@ function concreteProviderName(provider: string): ConcreteProviderName {
   );
 }
 
-function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+function firstNonEmpty(
+  ...values: Array<string | undefined>
+): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim().length > 0) {
       return value.trim();

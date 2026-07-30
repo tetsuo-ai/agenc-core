@@ -11,6 +11,7 @@ vi.mock("./components/App.js", () => ({
 import {
   handleStdinLoss,
   STDIN_LOSS_FLUSH_HARD_CAP_MS,
+  STDIN_LOSS_TEARDOWN_HARD_CAP_MS,
   type StdinLossSession,
 } from "./main.js";
 
@@ -74,6 +75,52 @@ describe("TUI main stdin loss coverage", () => {
       },
     });
     expect(unmountInk).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(130);
+  });
+
+  test("waits for registered TUI teardown after unmount and before exit", async () => {
+    const exit = vi.fn((code: number): never => {
+      throw new Error(`exit:${code}`);
+    });
+    let resolveTeardown!: () => void;
+    const beforeExit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveTeardown = resolve;
+        }),
+    );
+    const timers: Array<{
+      readonly callback: () => void;
+      readonly duration: number;
+    }> = [];
+    const setTimeoutMock = vi.fn((callback: () => void, duration: number) => {
+      timers.push({ callback, duration });
+      return { unref: vi.fn() } as unknown as NodeJS.Timeout;
+    });
+    const unmountInk = vi.fn();
+
+    const result = handleStdinLoss(
+      { flushEventLog: () => undefined } as StdinLossSession,
+      unmountInk,
+      {
+        exit,
+        beforeExit,
+        setTimeoutFn: setTimeoutMock as unknown as typeof setTimeout,
+      },
+    );
+    await vi.waitFor(() => {
+      expect(beforeExit).toHaveBeenCalledOnce();
+    });
+    expect(unmountInk).toHaveBeenCalledOnce();
+    expect(exit).not.toHaveBeenCalled();
+    expect(
+      timers.some(
+        (timer) => timer.duration === STDIN_LOSS_TEARDOWN_HARD_CAP_MS,
+      ),
+    ).toBe(true);
+
+    resolveTeardown();
+    await expect(result).rejects.toThrow("exit:130");
     expect(exit).toHaveBeenCalledWith(130);
   });
 });

@@ -136,9 +136,8 @@ function mkProvider(): LLMProvider {
   } as unknown as LLMProvider;
 }
 
-function mkServices(
-  overrides: Partial<SessionServices> = {},
-): SessionServices {
+function mkServices(overrides: Partial<SessionServices> = {}): SessionServices {
+  const mcpStartupAbort = new AbortController();
   return {
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
@@ -146,9 +145,9 @@ function mkServices(
       requiredStartupFailures: async () => [],
     },
     mcpStartupCancellationToken: {
-      signal: new AbortController().signal,
-      cancel: () => {},
-      isCancelled: () => false,
+      signal: mcpStartupAbort.signal,
+      cancel: () => mcpStartupAbort.abort("test shutdown"),
+      isCancelled: () => mcpStartupAbort.signal.aborted,
     },
     provider: mkProvider(),
     registry: {
@@ -160,9 +159,7 @@ function mkServices(
   } as unknown as SessionServices;
 }
 
-function mkSessionOpts(
-  overrides: Partial<SessionOpts> = {},
-): SessionOpts {
+function mkSessionOpts(overrides: Partial<SessionOpts> = {}): SessionOpts {
   return {
     conversationId: "conv-bootstrap",
     initialState: {
@@ -289,6 +286,139 @@ describe("bootstrapSession happy path", () => {
       (manager as unknown as { start: ReturnType<typeof vi.fn> }).start,
     ).toHaveBeenCalledTimes(1);
   });
+
+  it("defers SessionStart hooks across Editor turns and flushes before the first ordinary submit", async () => {
+    const sequence: string[] = [];
+    const processSessionStart = vi.fn(async () => {
+      sequence.push("session-start");
+      return [];
+    });
+    const opts = mkBootstrapOpts({
+      deferSessionStartHooks: true,
+      services: mkServices({
+        hooks: { processSessionStart } as never,
+      }),
+    });
+    const session = await bootstrapSession(opts);
+    const submit = vi.fn(async (message: string | readonly unknown[]) => {
+      sequence.push(
+        `turn:${typeof message === "string" ? message : "structured"}`,
+      );
+    });
+    session.installTurnDriverHooks({ submit: submit as never });
+    const editorInteraction = {
+      interactionId: "interaction-bootstrap-ask",
+      kind: "ask" as const,
+      policy: "read_only" as const,
+      editorInstanceId: "editor-bootstrap",
+      bufferHandle: 2,
+      changedtick: 1,
+      contentSha256: "f".repeat(64),
+      path: "/tmp/example.ts",
+      range: {
+        start: { line: 1, column: 0 },
+        end: { line: 1, column: 1 },
+      },
+    };
+
+    expect(processSessionStart).not.toHaveBeenCalled();
+    await session.submit("editor question", { editorInteraction });
+    expect(processSessionStart).not.toHaveBeenCalled();
+    await session.submit("ordinary agent turn");
+
+    expect(processSessionStart).toHaveBeenCalledOnce();
+    expect(sequence).toEqual([
+      "turn:editor question",
+      "session-start",
+      "turn:ordinary agent turn",
+    ]);
+  });
+
+  it("defers generic MCP and skill-watcher startup across Editor turns", async () => {
+    const sequence: string[] = [];
+    const auth = vi.fn(async () => {
+      sequence.push("auth");
+    });
+    const processSessionStart = vi.fn(async () => {
+      sequence.push("session-start");
+      return [];
+    });
+    const manager = mkStubMcpManager();
+    (manager.start as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      sequence.push("mcp");
+    });
+    const skillsWatcher = {
+      start: vi.fn(async () => {
+        sequence.push("skills-watcher");
+      }),
+    };
+    const session = await bootstrapSession(
+      mkBootstrapOpts({
+        auth,
+        mcp: { manager },
+        deferSessionStartHooks: true,
+        deferOrdinaryStartup: true,
+        services: mkServices({
+          hooks: { processSessionStart } as never,
+          skillsWatcher,
+        }),
+      }),
+    );
+    const submit = vi.fn(async (message: string | readonly unknown[]) => {
+      sequence.push(
+        `turn:${typeof message === "string" ? message : "structured"}`,
+      );
+    });
+    session.installTurnDriverHooks({ submit: submit as never });
+    const editorInteraction = {
+      interactionId: "interaction-generic-startup-ask",
+      kind: "ask" as const,
+      policy: "read_only" as const,
+      editorInstanceId: "editor-generic-startup",
+      bufferHandle: 14,
+      changedtick: 1,
+      contentSha256: "a".repeat(64),
+      path: "/tmp/example.ts",
+      range: {
+        start: { line: 1, column: 0 },
+        end: { line: 1, column: 1 },
+      },
+    };
+
+    expect(sequence).toEqual(["auth"]);
+    await session.submit("editor question", { editorInteraction });
+    expect(sequence).toEqual(["auth", "turn:editor question"]);
+
+    await session.submit("ordinary agent turn");
+    expect(sequence).toEqual([
+      "auth",
+      "turn:editor question",
+      "session-start",
+      "mcp",
+      "skills-watcher",
+      "turn:ordinary agent turn",
+    ]);
+    expect(manager.start).toHaveBeenCalledOnce();
+    expect(skillsWatcher.start).toHaveBeenCalledOnce();
+  });
+
+  it("close-before-ordinary discards generic deferred MCP and watcher startup", async () => {
+    const manager = mkStubMcpManager();
+    const skillsWatcher = { start: vi.fn(async () => {}) };
+    const session = await bootstrapSession(
+      mkBootstrapOpts({
+        mcp: { manager },
+        deferSessionStartHooks: true,
+        deferOrdinaryStartup: true,
+        services: mkServices({ skillsWatcher }),
+      }),
+    );
+
+    await session.shutdown();
+
+    expect(manager.start).not.toHaveBeenCalled();
+    expect(skillsWatcher.start).not.toHaveBeenCalled();
+  });
 });
 
 describe("bootstrapSession resume path", () => {
@@ -403,7 +533,7 @@ describe("bootstrapSession parallel auth + MCP", () => {
     const mcpStart = starts.find((s) => s.kind === "mcp");
     expect(authStart).toBeDefined();
     expect(mcpStart).toBeDefined();
-    expect(Math.abs((authStart!.at) - (mcpStart!.at))).toBeLessThan(80);
+    expect(Math.abs(authStart!.at - mcpStart!.at)).toBeLessThan(80);
   });
 });
 
@@ -475,7 +605,8 @@ describe("emitSessionConfigured helper", () => {
     const events = collectSessionEvents(session);
     const sc = events.filter((e) => e.msg.type === "session_configured");
     expect(sc).toHaveLength(1);
-    const payload = (sc[0]!.msg as { payload: Record<string, unknown> }).payload;
+    const payload = (sc[0]!.msg as { payload: Record<string, unknown> })
+      .payload;
     expect(payload.sessionId).toBe("conv-x");
     expect(payload.model).toBe("m-test");
     expect(payload.modelProviderId).toBe("prov-x");

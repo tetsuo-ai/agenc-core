@@ -15,15 +15,12 @@
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import type { PermissionResult } from "../../permissions/types.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
-import type {
-  Tool,
-  ToolExecutionInjectedArgs,
-  ToolResult,
-} from "../types.js";
+import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { SESSION_ID_ARG } from "../system/filesystem.js";
 import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
+import { WorkspaceMutationRejectedError } from "../../workspace/mutation-coordinator.js";
 import type { ApplyPatchHunk } from "./types.js";
 
 export const APPLY_PATCH_TOOL_NAME = "apply_patch";
@@ -222,6 +219,9 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
           metadata: result.metadata,
         };
       } catch (error) {
+        if (error instanceof WorkspaceMutationRejectedError) {
+          return error.toolResult;
+        }
         return errorResult(
           error instanceof Error ? error.message : String(error),
         );

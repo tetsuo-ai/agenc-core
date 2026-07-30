@@ -10,7 +10,10 @@ import {
   selectBufferEditorProvider,
   type BufferProviderSelection,
 } from "./selectBufferEditorProvider.js";
-import type { BufferConfig, BufferTabsMode } from "../../../../config/schema.js";
+import type {
+  BufferConfig,
+  BufferTabsMode,
+} from "../../../../config/schema.js";
 import type {
   EmbeddedNeovimStartupContext,
   EmbeddedNeovimStartupPreparation,
@@ -19,9 +22,16 @@ import type {
   BufferEditorProvider,
   BufferCaptureRequest,
   BufferCapturedContext,
+  BufferCodePrediction,
+  BufferCodePredictionContext,
+  BufferCodePredictionFeedback,
+  BufferEditorProposal,
+  BufferEditorProposalResolution,
+  BufferExternalChangeResolution,
   BufferIntegrationIntentListener,
   BufferProviderBuffer,
   BufferProviderCloseOptions,
+  BufferProviderCleanupOptions,
   BufferProviderInput,
   BufferProviderListener,
   BufferProviderOpenOptions,
@@ -33,6 +43,8 @@ import type {
   BufferProviderSaveAllResult,
   BufferProviderShutdownOptions,
   BufferProviderSnapshot,
+  BufferWorkspaceBufferCapture,
+  BufferWorkspaceWriteAuthorityHandler,
 } from "./types.js";
 import { emptyProviderSnapshot, INLINE_BUFFER_CAPABILITIES } from "./types.js";
 
@@ -41,6 +53,7 @@ type SelectionFactory = () => Promise<BufferProviderSelection>;
 export type BufferProviderRuntimeContext = {
   readonly workspaceRoot?: string;
   readonly agencHome?: string;
+  readonly requireWorkspaceWriteAuthority?: boolean;
   readonly beforeOpenFile?: (
     context: EmbeddedNeovimStartupContext,
   ) => Promise<EmbeddedNeovimStartupPreparation | void>;
@@ -55,10 +68,15 @@ const INITIAL_IDENTITY = {
 
 export class BufferProviderController {
   readonly #listeners = new Set<BufferProviderListener>();
-  readonly #integrationIntentListeners = new Set<BufferIntegrationIntentListener>();
+  readonly #integrationIntentListeners =
+    new Set<BufferIntegrationIntentListener>();
+  readonly #codePredictionFeedbackListeners = new Set<
+    (feedback: BufferCodePredictionFeedback) => void
+  >();
   #provider: BufferEditorProvider | null = null;
   #providerUnsubscribe: (() => void) | null = null;
   #providerIntegrationUnsubscribe: (() => void) | null = null;
+  #providerCodePredictionFeedbackUnsubscribe: (() => void) | null = null;
   #selectionFactory: SelectionFactory;
   #snapshot: BufferProviderSnapshot = emptyProviderSnapshot(INITIAL_IDENTITY);
   #lastOpen: BufferProviderOpenOptions | null = null;
@@ -74,16 +92,20 @@ export class BufferProviderController {
   #configurationGeneration = 0;
   #providerConfigurationGeneration = -1;
   #automaticInlineFallbackGeneration: number | null = null;
+  #workspaceWriteAuthorityHandler: BufferWorkspaceWriteAuthorityHandler | null =
+    null;
   #usesDefaultSelectionFactory: boolean;
 
   constructor(selectionFactory?: SelectionFactory) {
     this.#usesDefaultSelectionFactory = selectionFactory === undefined;
-    this.#selectionFactory = selectionFactory ??
-      (() => defaultSelectionFactory(
-        this.#configuredBuffer,
-        this.#configuredEnv,
-        this.#configuredRuntimeContext,
-      ));
+    this.#selectionFactory =
+      selectionFactory ??
+      (() =>
+        defaultSelectionFactory(
+          this.#configuredBuffer,
+          this.#configuredEnv,
+          this.#configuredRuntimeContext,
+        ));
   }
 
   setSelectionFactoryForTesting(selectionFactory: SelectionFactory): void {
@@ -149,7 +171,11 @@ export class BufferProviderController {
         await cleanupPromise;
       } catch (error) {
         if (generation === this.#openGeneration) {
-          this.#recordProviderFailure(this.#provider, error, "BUFFER provider cleanup failed");
+          this.#recordProviderFailure(
+            this.#provider,
+            error,
+            "BUFFER provider cleanup failed",
+          );
         }
         return;
       }
@@ -163,7 +189,11 @@ export class BufferProviderController {
         await replacementPromise;
       } catch (error) {
         if (generation === this.#openGeneration) {
-          this.#recordProviderFailure(this.#provider, error, "BUFFER provider replacement failed");
+          this.#recordProviderFailure(
+            this.#provider,
+            error,
+            "BUFFER provider replacement failed",
+          );
         }
         return;
       }
@@ -176,8 +206,8 @@ export class BufferProviderController {
     // every file.
     const automaticInlineProvider =
       this.#automaticInlineFallbackGeneration ===
-          this.#configurationGeneration &&
-        this.#provider?.identity.kind === "inline"
+        this.#configurationGeneration &&
+      this.#provider?.identity.kind === "inline"
         ? this.#provider
         : null;
     if (automaticInlineProvider) {
@@ -213,8 +243,8 @@ export class BufferProviderController {
     // before the live provider gets a chance to reject the open.
     const configuredInlineProvider =
       this.#usesDefaultSelectionFactory &&
-        this.#providerConfigurationGeneration === this.#configurationGeneration &&
-        this.#provider?.identity.kind === "inline"
+      this.#providerConfigurationGeneration === this.#configurationGeneration &&
+      this.#provider?.identity.kind === "inline"
         ? this.#provider
         : null;
     if (configuredInlineProvider) {
@@ -245,25 +275,35 @@ export class BufferProviderController {
 
     // A multi-buffer provider owns a workspace session. Reuse it directly so
     // navigation cannot rerun discovery or replace the live Neovim process.
-    const workspaceProvider = this.#provider?.identity.capabilities.multiBuffer &&
-        this.#provider.inspectDirtyBuffers &&
-        this.#provider.saveAll &&
-        (
-          this.#providerConfigurationGeneration === this.#configurationGeneration ||
-          this.#snapshot.providerStatus !== "closed"
-        )
-      ? this.#provider
-      : null;
+    const workspaceProvider =
+      this.#provider?.identity.capabilities.multiBuffer &&
+      this.#provider.inspectDirtyBuffers &&
+      this.#provider.saveAll &&
+      (this.#providerConfigurationGeneration ===
+        this.#configurationGeneration ||
+        this.#snapshot.providerStatus !== "closed")
+        ? this.#provider
+        : null;
     if (workspaceProvider) {
       try {
         await workspaceProvider.open({ filePath, line });
       } catch (error) {
-        if (generation === this.#openGeneration && this.#provider === workspaceProvider) {
-          this.#recordProviderFailure(workspaceProvider, error, "BUFFER provider open failed");
+        if (
+          generation === this.#openGeneration &&
+          this.#provider === workspaceProvider
+        ) {
+          this.#recordProviderFailure(
+            workspaceProvider,
+            error,
+            "BUFFER provider open failed",
+          );
         }
         return;
       }
-      if (generation === this.#openGeneration && this.#provider === workspaceProvider) {
+      if (
+        generation === this.#openGeneration &&
+        this.#provider === workspaceProvider
+      ) {
         this.#deferredOpen = null;
         this.#syncSnapshot();
       }
@@ -276,7 +316,11 @@ export class BufferProviderController {
       selection = await selectionFactory();
     } catch (error) {
       if (generation === this.#openGeneration) {
-        this.#recordProviderFailure(this.#provider, error, "BUFFER provider open failed");
+        this.#recordProviderFailure(
+          this.#provider,
+          error,
+          "BUFFER provider open failed",
+        );
       }
       return;
     }
@@ -291,9 +335,9 @@ export class BufferProviderController {
     const selectedProvider = selection.provider;
     const provider =
       this.#providerConfigurationGeneration === this.#configurationGeneration &&
-        this.#provider?.identity.kind === selectedProvider.identity.kind
-      ? this.#provider
-      : selectedProvider;
+      this.#provider?.identity.kind === selectedProvider.identity.kind
+        ? this.#provider
+        : selectedProvider;
     if (provider !== selectedProvider) {
       // Selection factories return controller-owned provider candidates. When
       // the installed same-kind provider is reused, release the unopened
@@ -312,20 +356,18 @@ export class BufferProviderController {
         return;
       }
       if (generation !== this.#openGeneration) return;
-      if (
-        selectionConfigurationGeneration !== this.#configurationGeneration
-      ) {
+      if (selectionConfigurationGeneration !== this.#configurationGeneration) {
         await this.#open(filePath, line, selectionFactory);
         return;
       }
     }
     try {
       if (
-        !await this.#replaceProvider(
+        !(await this.#replaceProvider(
           provider,
           generation,
           selectionConfigurationGeneration,
-        )
+        ))
       ) {
         if (
           generation === this.#openGeneration &&
@@ -340,7 +382,8 @@ export class BufferProviderController {
     } catch {
       return;
     }
-    if (generation !== this.#openGeneration || this.#provider !== provider) return;
+    if (generation !== this.#openGeneration || this.#provider !== provider)
+      return;
     this.#automaticInlineFallbackGeneration = null;
     let providerOpenFailed = false;
     let providerOpenError: unknown;
@@ -350,7 +393,8 @@ export class BufferProviderController {
       providerOpenFailed = true;
       providerOpenError = error;
     }
-    if (generation !== this.#openGeneration || this.#provider !== provider) return;
+    if (generation !== this.#openGeneration || this.#provider !== provider)
+      return;
 
     const startupFallback =
       selection.kind === "neovim"
@@ -374,11 +418,11 @@ export class BufferProviderController {
       }
       try {
         if (
-          !await this.#replaceProvider(
+          !(await this.#replaceProvider(
             inlineProvider,
             generation,
             selectionConfigurationGeneration,
-          )
+          ))
         ) {
           return;
         }
@@ -467,17 +511,24 @@ export class BufferProviderController {
     const provider = this.#provider;
     if (!provider) return { saved: true, buffers: [] };
     if (provider.saveAll) return provider.saveAll(options);
-    const dirtyBuffers = provider.getSnapshot().buffers.filter((buffer) => buffer.modified);
+    const dirtyBuffers = provider
+      .getSnapshot()
+      .buffers.filter((buffer) => buffer.modified);
     if (dirtyBuffers.length === 0) return { saved: true, buffers: [] };
     const saved = await provider.save(options);
     return saved
       ? {
           saved: true,
-          buffers: dirtyBuffers.map((buffer) => ({ ...buffer, modified: false })),
+          buffers: dirtyBuffers.map((buffer) => ({
+            ...buffer,
+            modified: false,
+          })),
         }
       : {
           saved: false,
-          reason: provider.getSnapshot().error ?? "The active BUFFER could not be saved.",
+          reason:
+            provider.getSnapshot().error ??
+            "The active BUFFER could not be saved.",
           blockedBuffers: dirtyBuffers,
         };
   }
@@ -528,23 +579,116 @@ export class BufferProviderController {
     return result;
   }
 
-  async shutdown(options: BufferProviderShutdownOptions = {}): Promise<boolean> {
+  async shutdown(
+    options: BufferProviderShutdownOptions = {},
+  ): Promise<boolean> {
     const provider = this.#provider;
     if (!provider) return true;
     if (provider.shutdown) return provider.shutdown(options);
     return provider.close({ discard: options.mode === "discard" });
   }
 
-  captureContext(request: BufferCaptureRequest): Promise<BufferCapturedContext | null> {
+  captureContext(
+    request: BufferCaptureRequest,
+  ): Promise<BufferCapturedContext | null> {
     return this.#provider?.captureContext?.(request) ?? Promise.resolve(null);
   }
 
-  resolveRecovery(action: BufferRecoveryAction): Promise<BufferRecoveryResult> {
-    return this.#provider?.resolveRecovery?.(action) ??
-      Promise.resolve({ ok: false, reason: "No BUFFER recovery is pending." });
+  captureWorkspaceBuffers(): Promise<readonly BufferWorkspaceBufferCapture[]> {
+    return this.#provider?.captureWorkspaceBuffers?.() ?? Promise.resolve([]);
   }
 
-  subscribeIntegrationIntents(listener: BufferIntegrationIntentListener): () => void {
+  setWorkspaceWriteAuthorityHandler(
+    handler: BufferWorkspaceWriteAuthorityHandler | null,
+  ): void {
+    this.#workspaceWriteAuthorityHandler = handler;
+    this.#provider?.setWorkspaceWriteAuthorityHandler?.(handler);
+  }
+
+  reloadCleanPath(path: string): Promise<BufferExternalChangeResolution> {
+    return (
+      this.#provider?.reloadCleanPath?.(path) ??
+      Promise.resolve({
+        ok: false,
+        path,
+        reason: "The active editor provider cannot reload external changes.",
+      })
+    );
+  }
+
+  stageProposal(
+    proposal: BufferEditorProposal,
+  ): Promise<BufferEditorProposalResolution> {
+    return (
+      this.#provider?.stageProposal?.(proposal) ??
+      Promise.resolve({
+        ok: false,
+        proposalId: `${proposal.interaction_id}:${proposal.base_changedtick}`,
+        reason: "The active editor provider cannot render AI proposals.",
+      })
+    );
+  }
+
+  acceptProposal(proposalId: string): Promise<BufferEditorProposalResolution> {
+    return (
+      this.#provider?.acceptProposal?.(proposalId) ??
+      Promise.resolve({
+        ok: false,
+        proposalId,
+        reason: "The active editor provider cannot accept AI proposals.",
+      })
+    );
+  }
+
+  rejectProposal(proposalId: string): Promise<BufferEditorProposalResolution> {
+    return (
+      this.#provider?.rejectProposal?.(proposalId) ??
+      Promise.resolve({
+        ok: false,
+        proposalId,
+        reason: "The active editor provider cannot reject AI proposals.",
+      })
+    );
+  }
+
+  captureCodePredictionContext(): Promise<BufferCodePredictionContext | null> {
+    return (
+      this.#provider?.captureCodePredictionContext?.() ?? Promise.resolve(null)
+    );
+  }
+
+  stageCodePrediction(prediction: BufferCodePrediction): Promise<boolean> {
+    return (
+      this.#provider?.stageCodePrediction?.(prediction) ??
+      Promise.resolve(false)
+    );
+  }
+
+  clearCodePrediction(requestId?: string): Promise<boolean> {
+    return (
+      this.#provider?.clearCodePrediction?.(requestId) ?? Promise.resolve(false)
+    );
+  }
+
+  subscribeCodePredictionFeedback(
+    listener: (feedback: BufferCodePredictionFeedback) => void,
+  ): () => void {
+    this.#codePredictionFeedbackListeners.add(listener);
+    return () => {
+      this.#codePredictionFeedbackListeners.delete(listener);
+    };
+  }
+
+  resolveRecovery(action: BufferRecoveryAction): Promise<BufferRecoveryResult> {
+    return (
+      this.#provider?.resolveRecovery?.(action) ??
+      Promise.resolve({ ok: false, reason: "No BUFFER recovery is pending." })
+    );
+  }
+
+  subscribeIntegrationIntents(
+    listener: BufferIntegrationIntentListener,
+  ): () => void {
     this.#integrationIntentListeners.add(listener);
     return () => {
       this.#integrationIntentListeners.delete(listener);
@@ -564,7 +708,11 @@ export class BufferProviderController {
         await replacementPromise;
       } catch (error) {
         if (generation === this.#openGeneration) {
-          this.#recordProviderFailure(this.#provider, error, "BUFFER provider replacement failed");
+          this.#recordProviderFailure(
+            this.#provider,
+            error,
+            "BUFFER provider replacement failed",
+          );
         }
         return false;
       }
@@ -576,15 +724,20 @@ export class BufferProviderController {
         await cleanupPromise;
       } catch (error) {
         if (generation === this.#openGeneration) {
-          this.#recordProviderFailure(this.#provider, error, "BUFFER provider cleanup failed");
+          this.#recordProviderFailure(
+            this.#provider,
+            error,
+            "BUFFER provider cleanup failed",
+          );
         }
         return false;
       }
       if (generation !== this.#openGeneration) return false;
     }
     const provider = this.#provider;
-    const closed = await provider?.close(options) ?? true;
-    if (generation !== this.#openGeneration || provider !== this.#provider) return false;
+    const closed = (await provider?.close(options)) ?? true;
+    if (generation !== this.#openGeneration || provider !== this.#provider)
+      return false;
     if (closed) this.#lastOpen = null;
     return closed;
   }
@@ -601,7 +754,10 @@ export class BufferProviderController {
     return this.#provider?.redo() ?? false;
   }
 
-  move(move: BufferMove, options: { readonly extend?: boolean; readonly pageSize?: number } = {}): boolean {
+  move(
+    move: BufferMove,
+    options: { readonly extend?: boolean; readonly pageSize?: number } = {},
+  ): boolean {
     return this.#provider?.move(move, options) ?? false;
   }
 
@@ -620,7 +776,15 @@ export class BufferProviderController {
     onInlineCommand?: (command: BufferVimCommand) => void,
     isPaste = false,
   ): boolean {
-    return this.#provider?.handleInput({ input, key, isPaste, context, onInlineCommand }) ?? false;
+    return (
+      this.#provider?.handleInput({
+        input,
+        key,
+        isPaste,
+        context,
+        onInlineCommand,
+      }) ?? false
+    );
   }
 
   click(row: number, column: number): boolean {
@@ -636,7 +800,7 @@ export class BufferProviderController {
     this.#provider?.focus(focused);
   }
 
-  async cleanup(): Promise<void> {
+  async cleanup(options: BufferProviderCleanupOptions = {}): Promise<void> {
     const generation = this.#openGeneration + 1;
     this.#openGeneration = generation;
     const replacementPromise = this.#replacementPromise;
@@ -654,21 +818,29 @@ export class BufferProviderController {
     const provider = this.#provider;
     const unsubscribe = this.#providerUnsubscribe;
     const unsubscribeIntegration = this.#providerIntegrationUnsubscribe;
+    const unsubscribeCodePrediction =
+      this.#providerCodePredictionFeedbackUnsubscribe;
     this.#cleanupPromise = (async () => {
       try {
-        await provider?.cleanup();
+        await provider?.cleanup(options);
       } catch (error) {
-        this.#recordProviderFailure(provider, error, "BUFFER provider cleanup failed");
+        this.#recordProviderFailure(
+          provider,
+          error,
+          "BUFFER provider cleanup failed",
+        );
         throw error;
       }
       if (this.#provider !== provider) return;
       if (generation === this.#openGeneration) this.#lastOpen = null;
       unsubscribe?.();
       unsubscribeIntegration?.();
+      unsubscribeCodePrediction?.();
       this.#provider = null;
       this.#automaticInlineFallbackGeneration = null;
       this.#providerUnsubscribe = null;
       this.#providerIntegrationUnsubscribe = null;
+      this.#providerCodePredictionFeedbackUnsubscribe = null;
       this.#snapshot = emptyProviderSnapshot(INITIAL_IDENTITY);
       this.#emit();
     })().finally(() => {
@@ -708,7 +880,10 @@ export class BufferProviderController {
 
     await this.cleanup();
     const base = this.#configuredBuffer
-      ? bufferProviderConfigFromSources(this.#configuredBuffer, this.#configuredEnv)
+      ? bufferProviderConfigFromSources(
+          this.#configuredBuffer,
+          this.#configuredEnv,
+        )
       : bufferProviderConfigFromEnv(this.#configuredEnv);
     const selectionFactory = async (): Promise<BufferProviderSelection> =>
       selectBufferEditorProvider({
@@ -746,7 +921,8 @@ export class BufferProviderController {
     try {
       return await replacement;
     } finally {
-      if (this.#replacementPromise === replacement) this.#replacementPromise = null;
+      if (this.#replacementPromise === replacement)
+        this.#replacementPromise = null;
     }
   }
 
@@ -758,6 +934,8 @@ export class BufferProviderController {
     const previousProvider = this.#provider;
     const previousUnsubscribe = this.#providerUnsubscribe;
     const previousIntegrationUnsubscribe = this.#providerIntegrationUnsubscribe;
+    const previousCodePredictionUnsubscribe =
+      this.#providerCodePredictionFeedbackUnsubscribe;
     if (previousProvider) {
       try {
         const closed = await previousProvider.close({ discard: false });
@@ -766,22 +944,32 @@ export class BufferProviderController {
           return false;
         }
       } catch (error) {
-        this.#recordProviderFailure(previousProvider, error, "BUFFER provider close failed");
+        this.#recordProviderFailure(
+          previousProvider,
+          error,
+          "BUFFER provider close failed",
+        );
         throw error;
       }
       try {
         await previousProvider.cleanup();
       } catch (error) {
-        this.#recordProviderFailure(previousProvider, error, "BUFFER provider cleanup failed");
+        this.#recordProviderFailure(
+          previousProvider,
+          error,
+          "BUFFER provider cleanup failed",
+        );
         throw error;
       }
     }
     if (this.#provider !== previousProvider) return false;
     previousUnsubscribe?.();
     previousIntegrationUnsubscribe?.();
+    previousCodePredictionUnsubscribe?.();
     this.#provider = null;
     this.#providerUnsubscribe = null;
     this.#providerIntegrationUnsubscribe = null;
+    this.#providerCodePredictionFeedbackUnsubscribe = null;
     if (
       generation !== this.#openGeneration ||
       configurationGeneration !== this.#configurationGeneration
@@ -792,13 +980,22 @@ export class BufferProviderController {
       return false;
     }
     this.#provider = provider;
+    provider.setWorkspaceWriteAuthorityHandler?.(
+      this.#workspaceWriteAuthorityHandler,
+    );
     this.#providerConfigurationGeneration = configurationGeneration;
     this.#providerUnsubscribe = provider.subscribe(() => this.#syncSnapshot());
-    this.#providerIntegrationUnsubscribe = provider.subscribeIntegrationIntents?.(
-      (intent) => {
-        for (const listener of this.#integrationIntentListeners) listener(intent);
-      },
-    ) ?? null;
+    this.#providerIntegrationUnsubscribe =
+      provider.subscribeIntegrationIntents?.((intent) => {
+        for (const listener of this.#integrationIntentListeners)
+          listener(intent);
+      }) ?? null;
+    this.#providerCodePredictionFeedbackUnsubscribe =
+      provider.subscribeCodePredictionFeedback?.((feedback) => {
+        for (const listener of this.#codePredictionFeedbackListeners) {
+          listener(feedback);
+        }
+      }) ?? null;
     if (this.#lastSize) provider.resize(this.#lastSize);
     this.#syncSnapshot();
     return true;
@@ -821,7 +1018,8 @@ export class BufferProviderController {
   }
 
   #publishDirtyOpenConflict(providerSnapshot: BufferProviderSnapshot): void {
-    const message = "Unsaved edits. Save, revert, or close-discard before opening another file.";
+    const message =
+      "Unsaved edits. Save, revert, or close-discard before opening another file.";
     this.#snapshot = {
       ...providerSnapshot,
       status: "conflict",
@@ -836,7 +1034,8 @@ export class BufferProviderController {
   #recordProviderCloseRefusal(provider: BufferEditorProvider): void {
     const snapshot = provider.getSnapshot();
     if (
-      (snapshot.providerStatus === "conflict" || snapshot.providerStatus === "error") &&
+      (snapshot.providerStatus === "conflict" ||
+        snapshot.providerStatus === "error") &&
       snapshot.error
     ) {
       this.#snapshot = snapshot;
@@ -860,7 +1059,10 @@ export class BufferProviderController {
     context: string,
   ): void {
     const providerSnapshot = provider?.getSnapshot();
-    if (providerSnapshot?.providerStatus === "error" && providerSnapshot.error) {
+    if (
+      providerSnapshot?.providerStatus === "error" &&
+      providerSnapshot.error
+    ) {
       this.#snapshot = providerSnapshot;
     } else {
       const message = error instanceof Error ? error.message : String(error);

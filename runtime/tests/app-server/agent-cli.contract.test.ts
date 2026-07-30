@@ -26,6 +26,7 @@ import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
+import { AGENC_STDIO_DEFAULT_MAX_LINE_BYTES } from "./transport/stdio.js";
 import type {
   AgentCreateParams,
   AgentLogsParams,
@@ -723,7 +724,7 @@ describe("agenc agent start CLI", () => {
       stderr: process.stderr,
     });
     expect(
-      ((calls[0] as { io?: { stdout?: NodeJS.WriteStream } }).io?.stdout),
+      (calls[0] as { io?: { stdout?: NodeJS.WriteStream } }).io?.stdout,
     ).not.toBe(process.stdout);
   });
 
@@ -1339,7 +1340,11 @@ autostart = false
             jsonrpc: "2.0",
             method: "event.message_chunk",
             sessionId: "session_buffered",
-            params: { sessionId: "session_buffered", index, delta: `d${index}` },
+            params: {
+              sessionId: "session_buffered",
+              index,
+              delta: `d${index}`,
+            },
           });
         }
       },
@@ -1365,9 +1370,97 @@ autostart = false
         method: "event.session_event",
         params: { event: { type: "user_message" } },
       });
-      expect(replayed.some((event) => event.method === "event.message_chunk")).toBe(
-        true,
+      expect(
+        replayed.some((event) => event.method === "event.message_chunk"),
+      ).toBe(true);
+    } finally {
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an escaped oversized workspace sync before writing it", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-sync-frame-cap-"));
+    const socketPath = join(dir, "daemon.sock");
+    const receivedMethods: string[] = [];
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        receivedMethods.push(String(message.method));
+        if (message.method === "initialize") {
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              type: "initialized",
+              protocolVersion: "1.0.0",
+              capabilities: {},
+            },
+          });
+          return;
+        }
+        if (message.method === "health.ping") {
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: { ok: true },
+          });
+        }
+      },
+    });
+
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "sync-frame-cap-cookie",
+    });
+    try {
+      const content = "\0".repeat(3 * 1024 * 1024);
+      const params = {
+        workspaceRoot: "/workspace",
+        editorInstanceId: "editor-frame-cap",
+        leaseToken: "lease-frame-cap",
+        epoch: 1,
+        sequence: 1,
+        buffers: [
+          {
+            path: "/workspace/control-bytes.ts",
+            bufferHandle: 1,
+            changedtick: 1,
+            contentSha256: "a".repeat(64),
+            contentBytes: Buffer.byteLength(content, "utf8"),
+            dirty: true,
+            content,
+          },
+        ],
+      };
+      const serializedRequestBytes = Buffer.byteLength(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "workspace.editor.sync",
+          params,
+        }),
+        "utf8",
       );
+      expect(serializedRequestBytes).toBeGreaterThan(
+        AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
+      );
+
+      await expect(
+        (
+          client.request as unknown as (
+            method: string,
+            params: typeof params,
+          ) => Promise<unknown>
+        )("workspace.editor.sync", params),
+      ).rejects.toThrow(/exceeding the 16777216-byte limit/u);
+      expect(receivedMethods).toEqual(["initialize"]);
+      await expect(client.request("health.ping", {})).resolves.toMatchObject({
+        ok: true,
+      });
+      expect(receivedMethods).toEqual(["initialize", "health.ping"]);
     } finally {
       await client.close();
       await server.close();

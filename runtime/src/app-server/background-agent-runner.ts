@@ -89,6 +89,12 @@ import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
 import type { McpServerMutationResult, Session } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
 import type { TurnContext } from "../session/turn-context.js";
+import type {
+  SessionEditorInteraction,
+  SessionSubmitOptions,
+} from "../session/autonomous-mode.js";
+import { editorInteractionSystemPrompt } from "../session/editor-interaction.js";
+import type { CodePredictionSource } from "../services/code-prediction/types.js";
 import {
   respondToSessionElicitation,
   type SessionElicitationResponseParams,
@@ -139,6 +145,9 @@ export interface AgenCBackgroundAgentStartParams {
   readonly provider?: string;
   readonly profile?: string;
   readonly initialContent?: MessageContent;
+  readonly deferInitialTurn?: boolean;
+  readonly initialDisplayUserMessage?: string | null;
+  readonly initialEditorInteraction?: SessionEditorInteraction;
   readonly metadata?: JsonObject;
   readonly unattendedAllow: readonly string[];
   readonly unattendedDeny: readonly string[];
@@ -225,6 +234,7 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly content: MessageContent;
   readonly originalContent: MessageContent;
   readonly displayUserMessage?: string | null;
+  readonly editorInteraction?: SessionEditorInteraction;
   readonly messageId: string;
   readonly streamId: string;
   readonly acceptedAt: string;
@@ -358,6 +368,10 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentMessageParams,
   ): Promise<void>;
+  /** Resolve the live route without exposing the primary provider to callers. */
+  resolveCodePredictionSource?(
+    agentId: string,
+  ): Promise<CodePredictionSource> | CodePredictionSource;
   clearAgentSession?(
     agentId: string,
     params: AgenCBackgroundAgentClearSessionParams,
@@ -846,6 +860,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // Daemon agents are unattended execution for budget policy, but this
       // hint deliberately does not enable autonomous keepalive ticks.
       executionAdmissionAutonomous: true,
+      ...(params.initialEditorInteraction !== undefined ||
+      params.deferInitialTurn === true
+        ? {
+            deferSessionStartHooks: true,
+            deferAgentStartupSideEffects: true,
+          }
+        : {}),
       ...(this.#requireSandboxReadyAtStartup
         ? { requireSandboxReadyAtStartup: true }
         : {}),
@@ -952,7 +973,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // session.submit(input) → runTurn. No directive, no fork, no
       // AgentTool dispatcher. This mirrors the upstream `turn_start`
       // shape for the first message.
-      const taskContent = messageContentToLlmParts(params.initialContent);
+      const taskContent =
+        params.deferInitialTurn === true
+          ? []
+          : messageContentToLlmParts(params.initialContent);
       const firstInput: string | readonly LLMContentPart[] =
         taskContent ?? params.objective;
       const hasFirstInput =
@@ -975,19 +999,45 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         // when the binding attaches, so it always reaches the
         // subscriber.
         const transcriptContent = params.initialContent ?? params.objective;
-        const displayText = messageContentDisplayText(transcriptContent);
-        if (displayText.length > 0) {
-          await this.#emitPersistedUserMessage(active, {
-            id: `user-initial-${managedThread.threadId}`,
-            type: "user_message",
-            payload: {
-              message: transcriptContent,
-              displayText,
-            },
-          });
+        if (params.initialDisplayUserMessage !== null) {
+          const displayText =
+            params.initialDisplayUserMessage ??
+            messageContentDisplayText(transcriptContent);
+          if (displayText.length > 0) {
+            await this.#emitPersistedUserMessage(active, {
+              id: `user-initial-${managedThread.threadId}`,
+              type: "user_message",
+              payload: {
+                message: transcriptContent,
+                displayText,
+              },
+            });
+          }
         }
+        const firstSubmitOptions =
+          params.initialDisplayUserMessage === undefined &&
+          params.initialEditorInteraction === undefined
+            ? undefined
+            : {
+                ...(params.initialDisplayUserMessage !== undefined
+                  ? {
+                      displayUserMessage: params.initialDisplayUserMessage,
+                    }
+                  : {}),
+                ...(params.initialEditorInteraction !== undefined
+                  ? {
+                      editorInteraction: params.initialEditorInteraction,
+                    }
+                  : {}),
+              };
         void managedThread
-          .submit({ type: "user_input", input: firstInput })
+          .submit({
+            type: "user_input",
+            input: firstInput,
+            ...(firstSubmitOptions !== undefined
+              ? { submitOptions: firstSubmitOptions }
+              : {}),
+          })
           .catch(() => {
             /* first-turn submission errors surface via session events */
           });
@@ -1412,14 +1462,42 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       });
     }
     if (typeof input === "string") {
-      await active.control.sendInput(agentId, input);
+      if (params.editorInteraction === undefined) {
+        await active.control.sendInput(agentId, input);
+      } else {
+        await active.control.sendInput(agentId, input, {
+          editorInteraction: params.editorInteraction,
+        });
+      }
     } else {
-      await submitStructuredAgentInput(
-        active,
-        input,
-        messageContentDisplayText(params.content),
-      );
+      if (params.editorInteraction === undefined) {
+        await submitStructuredAgentInput(
+          active,
+          input,
+          messageContentDisplayText(params.content),
+        );
+      } else {
+        await submitStructuredAgentInput(
+          active,
+          input,
+          messageContentDisplayText(params.content),
+          { editorInteraction: params.editorInteraction },
+        );
+      }
     }
+  }
+
+  resolveCodePredictionSource(agentId: string): CodePredictionSource {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    return {
+      // Model/provider switches replace this session service in place. Reading
+      // it at request time prevents predictions from following a stale route.
+      provider: active.bootstrap.session.services.provider,
+      workspaceRoot: active.bootstrap.workspaceRoot,
+    };
   }
 
   async clearAgentSession(
@@ -5361,9 +5439,14 @@ async function submitStructuredAgentInput(
   active: ActiveBackgroundAgent,
   input: readonly LLMContentPart[],
   _displayText: string,
+  submitOptions?: SessionSubmitOptions,
 ): Promise<void> {
   try {
-    await active.thread.submit({ type: "user_input", input });
+    await active.thread.submit({
+      type: "user_input",
+      input,
+      ...(submitOptions !== undefined ? { submitOptions } : {}),
+    });
   } catch (error) {
     if (error instanceof MailboxClosedError) {
       throw new Error(
@@ -5536,6 +5619,7 @@ function installDaemonTurnDriverHooks(
           opts?: {
             readonly source?: string;
             readonly displayUserMessage?: string | null;
+            readonly editorInteraction?: SessionEditorInteraction;
           },
         ) => Promise<void>;
         readonly flushEventLog?: () => Promise<void> | void;
@@ -5545,9 +5629,16 @@ function installDaemonTurnDriverHooks(
   if (typeof installer !== "function") return;
   installer.call(session, {
     submit: async (message, opts) => {
-      const ctx = (
+      const baseCtx = (
         session as unknown as { newDefaultTurn: () => unknown }
       ).newDefaultTurn();
+      const ctx =
+        opts?.editorInteraction === undefined
+          ? baseCtx
+          : {
+              ...(baseCtx as TurnContext),
+              editorInteraction: opts.editorInteraction,
+            };
       const rootHumanTurnText =
         opts?.source !== "autonomous_tick" && opts?.displayUserMessage !== null
           ? (opts?.displayUserMessage ??
@@ -5577,6 +5668,14 @@ function installDaemonTurnDriverHooks(
           querySource: "sdk",
           displayUserMessage: null,
           ...(rootHumanTurnText !== undefined ? { rootHumanTurnText } : {}),
+          ...(opts?.editorInteraction !== undefined
+            ? {
+                systemPrompt: editorInteractionSystemPrompt(
+                  opts.editorInteraction,
+                ),
+                systemPromptTrust: "trusted_internal" as const,
+              }
+            : {}),
         },
       )) {
         (

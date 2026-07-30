@@ -36,19 +36,37 @@ vi.mock("../../../src/tui/components/TextInput.js", async () => {
   };
 });
 
-import { renderToAnsiString, renderToString } from "../../../src/utils/staticRender.js";
+import {
+  renderToAnsiString,
+  renderToString,
+} from "../../../src/utils/staticRender.js";
 import { Box, Text } from "../../../src/tui/ink.js";
 import { nodeCache } from "../../../src/tui/ink/node-cache.js";
 import { stringWidth } from "../../../src/tui/ink/stringWidth.js";
-import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
+import {
+  AppStateProvider,
+  getDefaultAppState,
+} from "../../../src/tui/state/AppState.js";
 import { createNeovimRenderSnapshot } from "../../../src/tui/workbench/buffer/neovim/NeovimGrid.js";
-import { BufferLine, NeovimGridView, terminalAnsiLines, truncateByWidth } from "../../../src/tui/workbench/buffer/render.js";
+import {
+  BufferLine,
+  NeovimGridView,
+  terminalAnsiLines,
+  truncateByWidth,
+} from "../../../src/tui/workbench/buffer/render.js";
 import {
   getWorkbenchBufferProviderController,
   resetWorkbenchBufferProviderControllerForTesting,
 } from "../../../src/tui/workbench/buffer/providers/BufferProviderController.js";
-import type { BufferEditorProvider, BufferProviderIdentity, BufferProviderSnapshot } from "../../../src/tui/workbench/buffer/providers/types.js";
-import { emptyProviderSnapshot, NEOVIM_BUFFER_CAPABILITIES } from "../../../src/tui/workbench/buffer/providers/types.js";
+import type {
+  BufferEditorProvider,
+  BufferProviderIdentity,
+  BufferProviderSnapshot,
+} from "../../../src/tui/workbench/buffer/providers/types.js";
+import {
+  emptyProviderSnapshot,
+  NEOVIM_BUFFER_CAPABILITIES,
+} from "../../../src/tui/workbench/buffer/providers/types.js";
 import { useWorkbenchComposerFocus } from "../../../src/tui/workbench/composerFocusContext.js";
 import { WORKBENCH_SURFACES } from "../../../src/tui/workbench/surfaces/ActiveWorkSurface.js";
 import { wheelInputIsInsideNode } from "../../../src/tui/workbench/surfaces/BufferSurface.js";
@@ -115,18 +133,23 @@ describe("BUFFER workbench rendering", () => {
     const terminal = {
       ...createNeovimRenderSnapshot(1, 16),
       lines: ["const x = 1;"],
-      cells: [[
-        { text: "c", width: 1, highlightId: 3 },
-        { text: "o", width: 1, highlightId: 3 },
-        { text: "n", width: 1, highlightId: 3 },
-        { text: "s", width: 1, highlightId: 3 },
-        { text: "t", width: 1, highlightId: 3 },
-        { text: " ", width: 1, highlightId: 0 },
-        { text: "x", width: 1, highlightId: 4 },
-      ]],
+      cells: [
+        [
+          { text: "c", width: 1, highlightId: 3 },
+          { text: "o", width: 1, highlightId: 3 },
+          { text: "n", width: 1, highlightId: 3 },
+          { text: "s", width: 1, highlightId: 3 },
+          { text: "t", width: 1, highlightId: 3 },
+          { text: " ", width: 1, highlightId: 0 },
+          { text: "x", width: 1, highlightId: 4 },
+        ],
+      ],
       highlights: [
-        { id: 3, attributes: { foreground: 0xFF5F87, bold: true } },
-        { id: 4, attributes: { foreground: 0x5FD7FF, italic: true, underline: true } },
+        { id: 3, attributes: { foreground: 0xff5f87, bold: true } },
+        {
+          id: 4,
+          attributes: { foreground: 0x5fd7ff, italic: true, underline: true },
+        },
       ],
     };
 
@@ -147,14 +170,14 @@ describe("BUFFER workbench rendering", () => {
     const terminal = {
       ...createNeovimRenderSnapshot(1, 24),
       lines: [text],
-      cells: [[...text].map((cellText, index) => ({
-        text: cellText,
-        width: 1,
-        highlightId: index < "alpha beta".length ? 9 : 0,
-      }))],
-      highlights: [
-        { id: 9, attributes: { reverse: true } },
+      cells: [
+        [...text].map((cellText, index) => ({
+          text: cellText,
+          width: 1,
+          highlightId: index < "alpha beta".length ? 9 : 0,
+        })),
       ],
+      highlights: [{ id: 9, attributes: { reverse: true } }],
       mode: "visual",
     };
 
@@ -162,7 +185,9 @@ describe("BUFFER workbench rendering", () => {
 
     expect(renderedLine).toContain("\x1B[7m");
     expect(renderedLine).toContain("alpha beta");
-    expect(renderedLine.indexOf("\x1B[7m")).toBeLessThan(renderedLine.indexOf("alpha"));
+    expect(renderedLine.indexOf("\x1B[7m")).toBeLessThan(
+      renderedLine.indexOf("alpha"),
+    );
     expect(renderedLine).toContain("\x1B[0m gamma");
   });
 
@@ -170,18 +195,20 @@ describe("BUFFER workbench rendering", () => {
     const terminal = {
       ...createNeovimRenderSnapshot(1, 10),
       lines: ["A界e\u0301👩‍💻Z   "],
-      cells: [[
-        { text: "A", width: 1, highlightId: 0 },
-        { text: "界", width: 2, highlightId: 0 },
-        { text: "", width: 0, highlightId: 0 },
-        { text: "e\u0301", width: 1, highlightId: 0 },
-        { text: "👩‍💻", width: 2, highlightId: 0 },
-        { text: "", width: 0, highlightId: 0 },
-        { text: "Z", width: 1, highlightId: 0 },
-        { text: " ", width: 1, highlightId: 0 },
-        { text: " ", width: 1, highlightId: 0 },
-        { text: " ", width: 1, highlightId: 0 },
-      ]],
+      cells: [
+        [
+          { text: "A", width: 1, highlightId: 0 },
+          { text: "界", width: 2, highlightId: 0 },
+          { text: "", width: 0, highlightId: 0 },
+          { text: "e\u0301", width: 1, highlightId: 0 },
+          { text: "👩‍💻", width: 2, highlightId: 0 },
+          { text: "", width: 0, highlightId: 0 },
+          { text: "Z", width: 1, highlightId: 0 },
+          { text: " ", width: 1, highlightId: 0 },
+          { text: " ", width: 1, highlightId: 0 },
+          { text: " ", width: 1, highlightId: 0 },
+        ],
+      ],
     };
 
     const rendered = stripAnsi(terminalAnsiLines(terminal, false)[0] ?? "");
@@ -263,7 +290,9 @@ describe("BUFFER workbench rendering", () => {
   });
 
   it("clips long command-line text before it can spill into adjacent panes", () => {
-    expect(truncateByWidth("set number relativenumber wrapscan ignorecase", 12)).toBe("set number r");
+    expect(
+      truncateByWidth("set number relativenumber wrapscan ignorecase", 12),
+    ).toBe("set number r");
   });
 
   it("keeps BUFFER isolated inside the full workbench layout", async () => {
@@ -272,11 +301,15 @@ describe("BUFFER workbench rendering", () => {
       commandLine: `set number ${"z".repeat(240)} COMMAND_TAIL_SHOULD_NOT_RENDER`,
     });
 
-    const output = await renderWorkbench({ columns: 148, rows: 30, focusedPane: "surface" });
+    const output = await renderWorkbench({
+      columns: 148,
+      rows: 30,
+      focusedPane: "surface",
+    });
 
     expect(output).toContain("WORKSPACE");
     expect(output).toContain("BUFFER");
-    expect(output).toContain("AGENTS");
+    expect(output).not.toContain("AGENTS");
     expect(output).toContain("composer-inactive");
     expect(output).toContain("embedded Neovim test");
     expect(output).not.toContain("transcript-anchor");
@@ -284,7 +317,10 @@ describe("BUFFER workbench rendering", () => {
     expect(output).not.toContain("BUFFER_LINE_TAIL_SHOULD_NOT_RENDER");
     expect(output).not.toContain("COMMAND_TAIL_SHOULD_NOT_RENDER");
     expect(allRenderedLinesFit(output, 148)).toBe(true);
-    expect(provider.resize).toHaveBeenLastCalledWith({ rows: 14, columns: 89 });
+    expect(provider.resize).toHaveBeenLastCalledWith({
+      rows: 13,
+      columns: 116,
+    });
   });
 
   it("handles narrow and short workbench terminals without overlapping panes", async () => {
@@ -293,13 +329,21 @@ describe("BUFFER workbench rendering", () => {
       commandLine: "write " + "z".repeat(80),
     });
 
-    const narrow = await renderWorkbench({ columns: 80, rows: 20, focusedPane: "surface" });
+    const narrow = await renderWorkbench({
+      columns: 80,
+      rows: 20,
+      focusedPane: "surface",
+    });
     expect(narrow).toContain("BUFFER");
     expect(narrow).toContain("composer-inactive");
     expect(narrow).not.toContain("Agents");
     expect(allRenderedLinesFit(narrow, 80)).toBe(true);
 
-    const short = await renderWorkbench({ columns: 80, rows: 6, focusedPane: "surface" });
+    const short = await renderWorkbench({
+      columns: 80,
+      rows: 6,
+      focusedPane: "surface",
+    });
     expect(short).toContain("BUFFER");
     expect(short).toContain("composer-inactive");
     expect(allRenderedLinesFit(short, 80)).toBe(true);
@@ -311,7 +355,11 @@ describe("BUFFER workbench rendering", () => {
       commandLine: null,
     });
 
-    const output = await renderWorkbench({ columns: 120, rows: 24, focusedPane: "composer" });
+    const output = await renderWorkbench({
+      columns: 120,
+      rows: 24,
+      focusedPane: "composer",
+    });
 
     expect(output).toContain("BUFFER");
     expect(output).toContain("embedded Neovim test");
@@ -330,7 +378,11 @@ describe("BUFFER workbench rendering", () => {
       error: `provider error ${"e".repeat(180)} PROVIDER_ERROR_TAIL_SHOULD_NOT_RENDER`,
     });
 
-    const output = await renderWorkbench({ columns: 120, rows: 30, focusedPane: "surface" });
+    const output = await renderWorkbench({
+      columns: 120,
+      rows: 30,
+      focusedPane: "surface",
+    });
 
     expect(output).toContain("fallback reason");
     expect(output).toContain("provider message");
@@ -346,9 +398,18 @@ describe("BUFFER workbench rendering", () => {
     const bufferNode = {} as never;
     nodeCache.set(bufferNode, { x: 30, y: 2, width: 80, height: 18 });
     expect(wheelInputIsInsideNode(wheelEvent(""), bufferNode)).toBe(false);
-    expect(wheelInputIsInsideNode({ key: key(), keypress: { raw: "", sequence: "" } } as never, bufferNode)).toBe(true);
-    expect(wheelInputIsInsideNode(wheelEvent("\x1B[<65;40;10M"), null)).toBe(false);
-    expect(wheelInputIsInsideNode(wheelEvent("\x1B[<65;40;10M"), {} as never)).toBe(false);
+    expect(
+      wheelInputIsInsideNode(
+        { key: key(), keypress: { raw: "", sequence: "" } } as never,
+        bufferNode,
+      ),
+    ).toBe(true);
+    expect(wheelInputIsInsideNode(wheelEvent("\x1B[<65;40;10M"), null)).toBe(
+      false,
+    );
+    expect(
+      wheelInputIsInsideNode(wheelEvent("\x1B[<65;40;10M"), {} as never),
+    ).toBe(false);
     const explorerScroll = vi.fn();
     const bufferScroll = vi.fn();
 
@@ -372,14 +433,24 @@ describe("BUFFER workbench rendering", () => {
     routeWheel("\x1B[<65;10;10M");
     expect(explorerScroll).toHaveBeenCalledTimes(1);
 
-    expect(wheelInputIsInsideNode({
-      key: key({ wheelDown: true }),
-      keypress: { raw: undefined, sequence: "\x1B[<65;40;10M" },
-    } as never, bufferNode)).toBe(true);
-    expect(wheelInputIsInsideNode({
-      key: key({ wheelDown: true }),
-      keypress: { raw: undefined, sequence: undefined },
-    } as never, bufferNode)).toBe(false);
+    expect(
+      wheelInputIsInsideNode(
+        {
+          key: key({ wheelDown: true }),
+          keypress: { raw: undefined, sequence: "\x1B[<65;40;10M" },
+        } as never,
+        bufferNode,
+      ),
+    ).toBe(true);
+    expect(
+      wheelInputIsInsideNode(
+        {
+          key: key({ wheelDown: true }),
+          keypress: { raw: undefined, sequence: undefined },
+        } as never,
+        bufferNode,
+      ),
+    ).toBe(false);
   });
 
   it("rejects wheel input capture outside the BUFFER content bounds", async () => {
@@ -400,7 +471,9 @@ describe("BUFFER workbench rendering", () => {
   });
 
   it("keeps BUFFER footer hints focused on embedded provider actions", () => {
-    const descriptor = WORKBENCH_SURFACES.find((surface) => surface.mode === "buffer");
+    const descriptor = WORKBENCH_SURFACES.find(
+      (surface) => surface.mode === "buffer",
+    );
 
     expect(descriptor?.footerHints).toContain("embedded nvim");
     expect(descriptor?.footerHints).toContain("ctrl+s save");
@@ -409,6 +482,7 @@ describe("BUFFER workbench rendering", () => {
     expect(descriptor?.footerHints).toContain("alt+h explorer");
     expect(descriptor?.footerHints).toContain("alt+e external");
     expect(descriptor?.footerHints).toContain("alt+r rail");
+    expect(descriptor?.footerHints).toContain("alt+l AI panel");
     // The workspace-scoped provider remains alive when the center BUFFER
     // surface is hidden, so the hint must describe the actual non-destructive
     // action instead of implying that Neovim is closed.
@@ -416,7 +490,9 @@ describe("BUFFER workbench rendering", () => {
   });
 });
 
-type SnapshotOverrides = { [Key in keyof WorkbenchBufferSnapshot]?: WorkbenchBufferSnapshot[Key] };
+type SnapshotOverrides = {
+  [Key in keyof WorkbenchBufferSnapshot]?: WorkbenchBufferSnapshot[Key];
+};
 
 function snapshot(overrides: SnapshotOverrides = {}): WorkbenchBufferSnapshot {
   return {
@@ -465,7 +541,10 @@ async function renderWorkbench({
         },
       }}
     >
-      <WorkbenchLayout transcript={<Text>transcript-anchor</Text>} composer={<ComposerFocusProbe />} />
+      <WorkbenchLayout
+        transcript={<Text>transcript-anchor</Text>}
+        composer={<ComposerFocusProbe />}
+      />
     </AppStateProvider>,
     { columns, rows },
   );
@@ -477,8 +556,16 @@ async function installRenderedProvider({
   fallbackReason,
   providerMessage,
   error,
-}: RenderedProviderOptions): Promise<BufferEditorProvider & { readonly focus: ReturnType<typeof vi.fn> }> {
-  const provider = createRenderedProvider({ line, commandLine, fallbackReason, providerMessage, error });
+}: RenderedProviderOptions): Promise<
+  BufferEditorProvider & { readonly focus: ReturnType<typeof vi.fn> }
+> {
+  const provider = createRenderedProvider({
+    line,
+    commandLine,
+    fallbackReason,
+    providerMessage,
+    error,
+  });
   const controller = getWorkbenchBufferProviderController();
   controller.setSelectionFactoryForTesting(async () => ({
     kind: "neovim",
@@ -510,7 +597,9 @@ function createRenderedProvider({
   fallbackReason,
   providerMessage,
   error,
-}: RenderedProviderOptions): BufferEditorProvider & { readonly focus: ReturnType<typeof vi.fn> } {
+}: RenderedProviderOptions): BufferEditorProvider & {
+  readonly focus: ReturnType<typeof vi.fn>;
+} {
   const identity: BufferProviderIdentity = {
     kind: "neovim",
     label: "embedded Neovim test",

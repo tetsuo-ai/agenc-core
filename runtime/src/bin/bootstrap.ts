@@ -26,9 +26,7 @@ import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { isAutoModeGateEnabled } from "../permissions/classifier.js";
 import { resolveApprovalPolicy } from "../permissions/approval-policy.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
-import {
-  NetworkApprovalService as RuntimeNetworkApprovalService,
-} from "../permissions/network-approval.js";
+import { NetworkApprovalService as RuntimeNetworkApprovalService } from "../permissions/network-approval.js";
 import { initializeToolPermissionContext } from "../permissions/settings.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionState } from "../session/session.js";
@@ -66,10 +64,7 @@ import { AgentControl } from "../agents/control.js";
 import { ThreadManager } from "../agents/thread-manager.js";
 import { ConversationThreadManager } from "../conversation/thread-manager.js";
 import { AgentRegistry } from "../agents/registry.js";
-import {
-  createAgentRoleWorkspace,
-  listAgentRoles,
-} from "../agents/role.js";
+import { createAgentRoleWorkspace, listAgentRoles } from "../agents/role.js";
 import { loadFreshAgentDefinitions } from "../tools/AgentTool/loadAgentsDir.js";
 import {
   type BuildToolRegistryOptions,
@@ -88,16 +83,16 @@ import {
 } from "./_deps/current-session.js";
 import { resolveTransportMode } from "../transport/fallback-ladder.js";
 import { ConfigStore } from "../config/store.js";
-import { resolveAgencHome as resolveAgencHomeFromEnv, resolveWorkspace as resolveWorkspaceFromEnv } from "../config/env.js";
+import {
+  resolveAgencHome as resolveAgencHomeFromEnv,
+  resolveWorkspace as resolveWorkspaceFromEnv,
+} from "../config/env.js";
 import { resolveProviderSettings } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
 import { maybeMigratePersonality } from "../personality/migration.js";
 import type { ResolvedProviderSettings } from "../config/resolve-provider.js";
-import type {
-  AuthBackend,
-  AuthSubscriptionTier,
-} from "../auth/backend.js";
+import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { selectByokPrecedenceApiKey } from "../auth/byok-precedence.js";
 import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
@@ -111,10 +106,7 @@ export {
   PROVIDER_MODEL_CATALOG,
   resolveModelOrThrow,
 } from "./startup-selection.js";
-export type {
-  StartupCliFlags,
-  StartupSelection,
-} from "./startup-selection.js";
+export type { StartupCliFlags, StartupSelection } from "./startup-selection.js";
 import {
   buildBootstrapSessionServices,
   type BootstrapSessionServicesHandle,
@@ -152,7 +144,9 @@ function isHostedAgencProvider(provider: string): boolean {
   return provider.trim().toLowerCase() === "agenc";
 }
 
-function firstNonEmptyString(...values: Array<string | undefined>): string | undefined {
+function firstNonEmptyString(
+  ...values: Array<string | undefined>
+): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim().length > 0) {
       return value.trim();
@@ -195,9 +189,7 @@ async function resolveAuthSubscriptionTier(
   return authBackend.getSubscriptionTier({ sessionId });
 }
 
-function isRemoteAuthBackend(
-  authBackend: AuthBackend | undefined,
-): boolean {
+function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {
   return authBackend?.kind === "remote";
 }
 
@@ -205,7 +197,9 @@ function isSubscriptionEntitled(tier: AuthSubscriptionTier): boolean {
   return tier === "pro" || tier === "team" || tier === "enterprise";
 }
 
-function providerHasLiveManagedSubscriptionRoute(provider: ProviderName): boolean {
+function providerHasLiveManagedSubscriptionRoute(
+  provider: ProviderName,
+): boolean {
   return provider === "openrouter";
 }
 
@@ -228,9 +222,8 @@ async function buildBaseInstructionsForModel(params: {
   readonly coordinatorMode?: boolean;
 }): Promise<string> {
   if (params.coordinatorMode === true) {
-    const { getLiveCoordinatorSystemPrompt } = await import(
-      "../coordinator/coordinatorMode.js"
-    );
+    const { getLiveCoordinatorSystemPrompt } =
+      await import("../coordinator/coordinatorMode.js");
     return getLiveCoordinatorSystemPrompt();
   }
   const sections = await getSystemPrompt(
@@ -257,7 +250,8 @@ function enforceRemoteSubscriptionGate(params: {
       model: params.model,
       subscriptionTier: params.subscriptionTier,
     })
-  ) return;
+  )
+    return;
   if (requiresAuthModelInference(params.provider, params.model)) {
     throw new Error(
       "Hosted AgenC model routing requires an active AgenC subscription",
@@ -266,7 +260,8 @@ function enforceRemoteSubscriptionGate(params: {
   if (
     params.managedKeysEnabled &&
     params.byokApiKey === undefined &&
-    providerApiKeyEnvHint(params.provider, params.providerSettings) !== undefined
+    providerApiKeyEnvHint(params.provider, params.providerSettings) !==
+      undefined
   ) {
     throw new Error(
       "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
@@ -356,10 +351,10 @@ async function vendProviderKeyOrUndefined(params: {
     const baseURL = key.baseUrl?.trim();
     return apiKey.length > 0
       ? {
-        attempted: true,
-        apiKey,
-        ...(baseURL ? { baseURL } : {}),
-      }
+          attempted: true,
+          apiKey,
+          ...(baseURL ? { baseURL } : {}),
+        }
       : { attempted: true };
   } catch {
     return { attempted: true };
@@ -373,16 +368,17 @@ interface ManagedProviderKeyResult {
   readonly baseURL?: string;
 }
 
-const PROVIDER_API_KEY_ENV_HINTS: Readonly<Partial<Record<ProviderName, string>>> =
-  Object.freeze({
-    grok: "XAI_API_KEY",
-    openai: "OPENAI_API_KEY",
-    anthropic: "ANTHROPIC_API_KEY",
-    openrouter: "OPENROUTER_API_KEY",
-    groq: "GROQ_API_KEY",
-    deepseek: "DEEPSEEK_API_KEY",
-    gemini: "GEMINI_API_KEY",
-  });
+const PROVIDER_API_KEY_ENV_HINTS: Readonly<
+  Partial<Record<ProviderName, string>>
+> = Object.freeze({
+  grok: "XAI_API_KEY",
+  openai: "OPENAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  groq: "GROQ_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
+  gemini: "GEMINI_API_KEY",
+});
 
 function requireProviderApiKeyOrUndefined(params: {
   readonly provider: ProviderName;
@@ -391,15 +387,20 @@ function requireProviderApiKeyOrUndefined(params: {
   readonly managedKey: ManagedProviderKeyResult;
 }): string | undefined {
   if (params.apiKey !== undefined) return params.apiKey;
-  const envHint = providerApiKeyEnvHint(params.provider, params.providerSettings);
+  const envHint = providerApiKeyEnvHint(
+    params.provider,
+    params.providerSettings,
+  );
   if (envHint === undefined) return undefined;
-  const managedKeyHint = !providerHasLiveManagedSubscriptionRoute(params.provider)
+  const managedKeyHint = !providerHasLiveManagedSubscriptionRoute(
+    params.provider,
+  )
     ? "Subscription-managed access is currently live for OpenRouter only."
     : params.managedKey.disabled
-    ? "Managed key vending is disabled by auth.managedKeys.enabled."
-    : params.managedKey.attempted
-      ? "AuthBackend.vendKey() did not return a usable managed key."
-      : "No AuthBackend was configured to vend a managed key.";
+      ? "Managed key vending is disabled by auth.managedKeys.enabled."
+      : params.managedKey.attempted
+        ? "AuthBackend.vendKey() did not return a usable managed key."
+        : "No AuthBackend was configured to vend a managed key.";
   throw new Error(
     `${params.provider} provider requires an API key. ${managedKeyHint} Set ${envHint} or configure providers.${params.provider}.api_key_env for BYOK fallback.`,
   );
@@ -428,33 +429,41 @@ async function writeStartupInternalEvent(params: {
   readonly workerEpoch: number;
   readonly eventType: string;
   readonly payload: Record<string, unknown>;
-  readonly options?: { readonly isCompaction?: boolean; readonly agentId?: string };
+  readonly options?: {
+    readonly isCompaction?: boolean;
+    readonly agentId?: string;
+  };
 }): Promise<void> {
-  const response = await fetch(`${params.sessionBaseUrl}/worker/internal-events`, {
-    method: "POST",
-    headers: {
-      ...params.headers,
-      "Content-Type": "application/json",
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      worker_epoch: params.workerEpoch,
-      events: [
-        {
-          payload: {
-            type: params.eventType,
-            ...params.payload,
-            uuid:
-              typeof params.payload.uuid === "string"
-                ? params.payload.uuid
-                : randomUUID(),
+  const response = await fetch(
+    `${params.sessionBaseUrl}/worker/internal-events`,
+    {
+      method: "POST",
+      headers: {
+        ...params.headers,
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        worker_epoch: params.workerEpoch,
+        events: [
+          {
+            payload: {
+              type: params.eventType,
+              ...params.payload,
+              uuid:
+                typeof params.payload.uuid === "string"
+                  ? params.payload.uuid
+                  : randomUUID(),
+            },
+            ...(params.options?.isCompaction ? { is_compaction: true } : {}),
+            ...(params.options?.agentId
+              ? { agent_id: params.options.agentId }
+              : {}),
           },
-          ...(params.options?.isCompaction ? { is_compaction: true } : {}),
-          ...(params.options?.agentId ? { agent_id: params.options.agentId } : {}),
-        },
-      ],
-    }),
-  });
+        ],
+      }),
+    },
+  );
 
   if (!response.ok) {
     throw new Error(`startup internal event POST failed: ${response.status}`);
@@ -470,10 +479,7 @@ async function registerStartupSessionIngress(params: {
     return;
   }
 
-  const [
-    sessionIngressAuthMod,
-    sessionStorageMod,
-  ] = await Promise.all([
+  const [sessionIngressAuthMod, sessionStorageMod] = await Promise.all([
     import("./_deps/session-ingress-auth.js"),
     import("./_deps/session-storage.js"),
   ]);
@@ -491,7 +497,10 @@ async function registerStartupSessionIngress(params: {
     return;
   }
 
-  const sessionBaseUrl = buildCodeSessionBaseUrl(baseUrl, params.conversationId);
+  const sessionBaseUrl = buildCodeSessionBaseUrl(
+    baseUrl,
+    params.conversationId,
+  );
   sessionStorageMod.setInternalEventReader(
     () =>
       fetchStartupInternalEvents({
@@ -628,9 +637,7 @@ function buildDeferredConfig(
   sandboxStatus?: ReturnType<SandboxExecutionBroker["status"]>,
 ): Config {
   const modelReasoningEffort =
-    config.reasoning_effort === "minimal"
-      ? "low"
-      : config.reasoning_effort;
+    config.reasoning_effort === "minimal" ? "low" : config.reasoning_effort;
   const maxTurns = maxTurnsFromAgenCConfig(config);
   return {
     model,
@@ -640,9 +647,7 @@ function buildDeferredConfig(
     ...(config.model_verbosity !== undefined
       ? { modelVerbosity: config.model_verbosity }
       : {}),
-    ...(modelReasoningEffort !== undefined
-      ? { modelReasoningEffort }
-      : {}),
+    ...(modelReasoningEffort !== undefined ? { modelReasoningEffort } : {}),
     ...(config.reasoning_summary !== undefined
       ? { modelReasoningSummary: config.reasoning_summary }
       : {}),
@@ -670,7 +675,8 @@ function buildDeferredConfig(
     ...(sandboxStatus?.helperPath !== undefined
       ? { agencLinuxSandboxExe: sandboxStatus.helperPath }
       : {}),
-    ...(sandboxStatus?.kind === "unavailable" && sandboxStatus.reason !== undefined
+    ...(sandboxStatus?.kind === "unavailable" &&
+    sandboxStatus.reason !== undefined
       ? { sandboxUnavailableReason: sandboxStatus.reason }
       : {}),
     features: createManagedFeatures(config),
@@ -777,10 +783,10 @@ export function sessionConfigurationFromAgenCConfig(params: {
     windowsSandboxLevel: "none",
     ...(params.provider
       ? {
-        provider: {
-          slug: params.provider,
-        } as unknown as SessionConfiguration["provider"],
-      }
+          provider: {
+            slug: params.provider,
+          } as unknown as SessionConfiguration["provider"],
+        }
       : {}),
     collaborationMode: { model: params.model },
     dynamicTools: [],
@@ -824,7 +830,10 @@ export interface BootstrapLocalRuntimeSessionOptions {
   readonly cwd?: string;
   readonly conversationId?: string;
   readonly resumeConversation?: boolean;
-  readonly toolRegistryOptions?: Omit<BuildToolRegistryOptions, "workspaceRoot">;
+  readonly toolRegistryOptions?: Omit<
+    BuildToolRegistryOptions,
+    "workspaceRoot"
+  >;
   /** Production daemon entrypoints require a healthy boundary before startup. */
   readonly requireSandboxReadyAtStartup?: boolean;
   /** Shared daemon authority. Omit only for an independently owned session. */
@@ -836,6 +845,17 @@ export interface BootstrapLocalRuntimeSessionOptions {
    * the ordinary `--autonomous`/config mode.
    */
   readonly executionAdmissionAutonomous?: boolean;
+  /**
+   * Delay configured SessionStart commands until the first non-Editor submit.
+   * Daemon agents use this when their atomic first turn carries an Editor
+   * read-only/proposal-only policy.
+   */
+  readonly deferSessionStartHooks?: boolean;
+  /**
+   * Delay configured MCP processes, durable cron/job resumption, and startup
+   * prewarm until the first non-Editor submit.
+   */
+  readonly deferAgentStartupSideEffects?: boolean;
   /** Stable calendar-budget identity; daemon agents default to their run id. */
   readonly executionAdmissionBudgetIdentity?: string;
 }
@@ -935,7 +955,8 @@ export async function bootstrapLocalRuntimeSession(
   const conversationId =
     options.conversationId ?? `conv-${Date.now().toString(36)}`;
   const resumeConversation =
-    options.conversationId !== undefined && options.resumeConversation !== false;
+    options.conversationId !== undefined &&
+    options.resumeConversation !== false;
 
   const projectTrust = resolveProjectTrustStateSync({
     agencHome,
@@ -1058,7 +1079,10 @@ export async function bootstrapLocalRuntimeSession(
           provider: resolvedProvider,
           sessionId: conversationId,
         })
-      : { attempted: false, ...(!managedKeysEnabled ? { disabled: true } : {}) };
+      : {
+          attempted: false,
+          ...(!managedKeysEnabled ? { disabled: true } : {}),
+        };
   const selectedApiKey = requireProviderApiKeyOrUndefined({
     provider: resolvedProvider,
     providerSettings: runtimeProviderSettings,
@@ -1078,9 +1102,10 @@ export async function bootstrapLocalRuntimeSession(
   );
   const hasManagedCredential =
     managedKey.apiKey !== undefined || managedKey.baseURL !== undefined;
-  const selectedProviderModel = managedKey.baseURL !== undefined
-    ? normalizeManagedGatewayModel(resolvedProvider, providerModel)
-    : providerModel;
+  const selectedProviderModel =
+    managedKey.baseURL !== undefined
+      ? normalizeManagedGatewayModel(resolvedProvider, providerModel)
+      : providerModel;
   const mcpManager = await createSessionMcpManagerFromSources(
     configStore.current(),
     env,
@@ -1194,10 +1219,10 @@ export async function bootstrapLocalRuntimeSession(
         sandboxExecutionBroker,
         ...(options.authBackend !== undefined
           ? {
-            authBackend: options.authBackend,
-            sessionId: conversationId,
-            subscriptionTier: authSubscriptionTier,
-          }
+              authBackend: options.authBackend,
+              sessionId: conversationId,
+              subscriptionTier: authSubscriptionTier,
+            }
           : {}),
         ...(providerSettings?.contextWindowTokens !== undefined
           ? { contextWindowTokens: providerSettings.contextWindowTokens }
@@ -1391,9 +1416,7 @@ export async function bootstrapLocalRuntimeSession(
     buildBootstrapSessionServices({
       provider,
       providerName: resolvedProvider,
-      ...(selectedApiKey
-        ? { apiKey: selectedApiKey }
-        : {}),
+      ...(selectedApiKey ? { apiKey: selectedApiKey } : {}),
       ...(options.authBackend !== undefined
         ? { authBackend: options.authBackend }
         : {}),
@@ -1421,6 +1444,10 @@ export async function bootstrapLocalRuntimeSession(
   const shutdown = (): Promise<void> => {
     if (shutdownComplete) return Promise.resolve();
     if (shutdownTask !== null) return shutdownTask;
+    // Close startup admission synchronously. The task body intentionally
+    // begins on a microtask, and sidecar stop may await; neither may leave a
+    // window where a late submit can activate MCP/cron/job startup.
+    sessionForShutdown?.beginShutdown();
 
     const task = Promise.resolve().then(async (): Promise<void> => {
       const errors: unknown[] = [];
@@ -1487,9 +1514,7 @@ export async function bootstrapLocalRuntimeSession(
 
   try {
     const roleWorkspace = createAgentRoleWorkspace(workspaceRoot);
-    const agentDefinitions = await loadFreshAgentDefinitions(
-      roleWorkspace.cwd,
-    );
+    const agentDefinitions = await loadFreshAgentDefinitions(roleWorkspace.cwd);
     // Construct the session through `bootstrapSession` so shell
     // discovery, SessionConfigured emit, startup prewarm, and
     // resume-history recording all flow through the shared entry
@@ -1513,6 +1538,12 @@ export async function bootstrapLocalRuntimeSession(
       modelInfo,
       initialTranscriptEvents,
       enablePrewarm: false,
+      ...(options.deferSessionStartHooks === true
+        ? { deferSessionStartHooks: true }
+        : {}),
+      ...(options.deferAgentStartupSideEffects === true
+        ? { deferOrdinaryStartup: true }
+        : {}),
       // Lazy payload — `rolloutPath`, `initialMessages`, and
       // `historyEntryCount` are populated inside the before-hook when
       // the rollout store mounts and resume-history reconstruction
@@ -1635,16 +1666,17 @@ export async function bootstrapLocalRuntimeSession(
                 "index.json",
               ),
             );
-            const replay = await conversationThreadManager.replayRolloutIntoSession(
-              s,
-              existingItems,
-              {
-                emitSynthesized: true,
-                appendSynthesizedRollout: (item) =>
-                  rolloutStore.appendRollout(item),
-                ...(indexSnapshot ? { indexSnapshot } : {}),
-              },
-            );
+            const replay =
+              await conversationThreadManager.replayRolloutIntoSession(
+                s,
+                existingItems,
+                {
+                  emitSynthesized: true,
+                  appendSynthesizedRollout: (item) =>
+                    rolloutStore.appendRollout(item),
+                  ...(indexSnapshot ? { indexSnapshot } : {}),
+                },
+              );
             const reconstruction = replay.reconstruction;
             initialState = replay.appliedState;
             initialTranscriptEvents = transcriptEventsFromRollout([
@@ -1726,40 +1758,6 @@ export async function bootstrapLocalRuntimeSession(
         sidecarManager.register(new FileHistorySidecar({ fileHistory }));
         s.attachFileHistory(fileHistory);
 
-        // Re-arm persisted cron jobs across restarts: a durable schedule
-        // written by CronCreate must keep firing after the daemon/session
-        // restarts, not sit inert until the next CronCreate call.
-        void (async () => {
-          try {
-            const { readCronTasks } = await import("../utils/cronTasks.js");
-            const persisted = await readCronTasks(workspaceRoot);
-            if (persisted.length > 0) {
-              const { startCronSchedulerRunner } = await import(
-                "./model-facing-tools.js"
-              );
-              await startCronSchedulerRunner();
-            }
-          } catch {
-            /* cron re-arm is best-effort; tools re-arm on next CronCreate */
-          }
-        })();
-
-        // Resume CSV agent jobs orphaned by a daemon restart: rows left
-        // `running` in the DB are re-dispatched once a session exists to
-        // spawn workers from.
-        void (async () => {
-          try {
-            const { resumeInterruptedAgentJobs } = await import(
-              "./model-facing-tools.js"
-            );
-            await resumeInterruptedAgentJobs({
-              session: s,
-              workspaceRoot,
-            });
-          } catch {
-            /* resume is best-effort; jobs stay visible in the DB */
-          }
-        })();
         sidecarManager.register(
           new ErrorLogSidecar({
             projectDir,
@@ -1786,13 +1784,11 @@ export async function bootstrapLocalRuntimeSession(
             }),
         });
         await costSidecar.loadFromDisk();
-        (s.services as { costSidecar?: CostSidecar }).costSidecar =
-          costSidecar;
+        (s.services as { costSidecar?: CostSidecar }).costSidecar = costSidecar;
         clearActiveCostSidecar?.();
         clearActiveCostSidecar = bindActiveCostSidecar(costSidecar);
         sidecarManager.register(costSidecar);
         sidecarManager.register(createMemoryAutoSaveSidecar());
-
 
         ctxForReturn = buildTurnContext({
           conversationId,
@@ -1834,27 +1830,105 @@ export async function bootstrapLocalRuntimeSession(
           await sidecarManager.start(s.eventLog);
         }
 
-        // Start the MCP connection manager AFTER session_configured
-        // has been emitted + persisted to rollout. Mirrors agenc runtime
-        // ordering at
-        // `agenc-rs/core/src/session/session.rs:717-748, 766` where
-        // the SessionConfiguredEvent is dispatched before
-        // McpConnectionManager::new.
-        await s.startMcpManager(mcpManager, {
-          signal: s.services.mcpStartupCancellationToken.signal,
-        });
+        const activateAgentStartupSideEffects = async (): Promise<void> => {
+          const startupSignal = s.services.mcpStartupCancellationToken.signal;
+          const startupWasCancelled = (): boolean =>
+            s.abortController.signal.aborted ||
+            s.services.mcpStartupCancellationToken.isCancelled();
+          const assertStartupActive = (): void => {
+            if (startupWasCancelled()) {
+              throw new Error("session startup was cancelled");
+            }
+          };
 
-        const activeConversationManager = (
-          s.services as {
-            conversationThreadManager?: ConversationThreadManager;
+          // Start the MCP connection manager AFTER session_configured
+          // has been emitted + persisted to rollout. For an Editor-first
+          // daemon session this additionally waits for ordinary Agent
+          // authority, because configured stdio servers are processes.
+          assertStartupActive();
+          await s.startMcpManager(mcpManager, {
+            signal: startupSignal,
+          });
+          assertStartupActive();
+
+          // Re-arm persisted cron jobs across restarts only once ordinary
+          // Agent authority is active. These tasks are awaited so shutdown
+          // can drain the retained startup promise before child teardown.
+          const rearmPersistedCron = async (): Promise<void> => {
+            assertStartupActive();
+            try {
+              const { readCronTasks } = await import("../utils/cronTasks.js");
+              assertStartupActive();
+              const persisted = await readCronTasks(workspaceRoot);
+              assertStartupActive();
+              if (persisted.length > 0) {
+                const { startCronSchedulerRunner } =
+                  await import("./model-facing-tools.js");
+                assertStartupActive();
+                await startCronSchedulerRunner({
+                  conversationId: s.conversationId,
+                  workspaceRoot,
+                  signal: startupSignal,
+                });
+              }
+            } catch {
+              /* cron re-arm is best-effort; tools re-arm on next CronCreate */
+            }
+            assertStartupActive();
+          };
+
+          // Likewise, interrupted CSV jobs belong to the Agent surface, not
+          // to a read-only/proposal-only Editor request.
+          const resumeInterruptedJobs = async (): Promise<void> => {
+            assertStartupActive();
+            try {
+              const { resumeInterruptedAgentJobs } =
+                await import("./model-facing-tools.js");
+              assertStartupActive();
+              await resumeInterruptedAgentJobs({
+                session: s,
+                workspaceRoot,
+                signal: startupSignal,
+              });
+            } catch {
+              /* resume is best-effort; jobs stay visible in the DB */
+            }
+            assertStartupActive();
+          };
+          // Keep the two recovery paths ordered. Besides making startup
+          // deterministic, this leaves a cancellation checkpoint between
+          // persisted cron I/O and job recovery, so shutdown cannot start a
+          // new recovery branch after closing admission.
+          await rearmPersistedCron();
+          assertStartupActive();
+          await resumeInterruptedJobs();
+          assertStartupActive();
+
+          // An Editor-first request itself warms the selected provider. Do
+          // not run the redundant provider/task-registration prewarm later
+          // immediately before a real Agent request.
+          if (options.deferAgentStartupSideEffects !== true) {
+            const activeConversationManager = (
+              s.services as {
+                conversationThreadManager?: ConversationThreadManager;
+              }
+            ).conversationThreadManager;
+            if (activeConversationManager === undefined) {
+              throw new Error(
+                "bootstrap invariant: conversation thread manager not initialized",
+              );
+            }
+            assertStartupActive();
+            await activeConversationManager.runStartupPrewarm(s);
+            assertStartupActive();
           }
-        ).conversationThreadManager;
-        if (activeConversationManager === undefined) {
-          throw new Error(
-            "bootstrap invariant: conversation thread manager not initialized",
-          );
+        };
+
+        if (options.deferAgentStartupSideEffects === true) {
+          s.appendDeferredOrdinarySubmitHook(activateAgentStartupSideEffects);
+        } else {
+          await activateAgentStartupSideEffects();
         }
-        await activeConversationManager.runStartupPrewarm(s);
       },
     });
 
@@ -1903,7 +1977,10 @@ export async function bootstrapLocalRuntimeSession(
         { cause: err },
       );
     }
-    if (err instanceof SessionLockedError || err instanceof SchemaMismatchError) {
+    if (
+      err instanceof SessionLockedError ||
+      err instanceof SchemaMismatchError
+    ) {
       throw err;
     }
     throw err;

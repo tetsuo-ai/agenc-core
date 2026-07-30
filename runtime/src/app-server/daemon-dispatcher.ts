@@ -50,6 +50,13 @@ import {
   WorkspaceCwdError,
 } from "./workspace-cwd.js";
 import {
+  assertWorkspaceEditorProposalResponseFitsFrame,
+  assertWorkspaceEditorProposalStatusResponseFitsFrame,
+  canonicalWorkspaceRoot,
+  type WorkspaceMutationCoordinator,
+  workspaceMutationCoordinators,
+} from "../workspace/mutation-coordinator.js";
+import {
   AGENC_DAEMON_INTERNAL_METHODS,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   AGENC_DAEMON_METHODS,
@@ -86,6 +93,7 @@ import {
   type FuzzyFileSearchParams,
   type InitializeParams,
   type JsonObject,
+  type JsonValue,
   type MessageSendParams,
   type MessageStreamParams,
   type PermissionListParams,
@@ -98,6 +106,26 @@ import {
   type SessionClearParams,
   type SessionMcpAddServerParams,
   type SessionMcpServerByNameParams,
+  type WorkspaceEditorAcquireParams,
+  type WorkspaceEditorBufferSync,
+  type WorkspaceEditorChangesListParams,
+  type WorkspaceEditorHeartbeatParams,
+  type WorkspaceEditorCancelPredictionParams,
+  type WorkspaceEditorPredictParams,
+  type WorkspaceEditorPredictionDiagnostic,
+  type WorkspaceEditorPredictionFeedbackParams,
+  type WorkspaceEditorPredictionRelatedBuffer,
+  type WorkspaceEditorProposalApplyParams,
+  type WorkspaceEditorProposalParams,
+  type WorkspaceEditorProposalStatusParams,
+  type WorkspaceEditorReleaseParams,
+  type WorkspaceEditorRecoveredTopologyListParams,
+  type WorkspaceEditorRecoveredTopologyResolveParams,
+  type WorkspaceEditorSyncParams,
+  type WorkspaceEditorTopologyCompleteParams,
+  type WorkspaceEditorTopologyFinalizeParams,
+  type WorkspaceEditorTopologyReserveParams,
+  type WorkspaceEditorTopologyTarget,
   type SessionSnapshotParams,
   type SessionTranscriptParams,
   type SessionCreateParams,
@@ -124,6 +152,8 @@ import {
 import { isRecord } from "../utils/record.js";
 import { LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY } from "../elicitation/types.js";
 import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
+import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
+import type { CodePredictionService } from "../services/code-prediction/service.js";
 
 /**
  * Narrow daemon seam for the M5 verified-change workflow `run.start` method.
@@ -191,6 +221,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly realtime: AgenCRealtimeRpcHandlers;
   readonly runInspection: AgenCDaemonDispatcherOptions["runInspection"];
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
+  readonly codePrediction: AgenCDaemonDispatcherOptions["codePrediction"];
 }
 
 function buildServerCapabilities(
@@ -221,7 +252,10 @@ function buildServerCapabilities(
     "session.snapshot": hasMethod(agentManager, "snapshotSession"),
     "session.transcript": hasMethod(agentManager, "getSessionTranscript"),
     "session.cancelTurn": hasMethod(agentManager, "cancelSessionTurn"),
-    "session.resolveToolCall": hasMethod(agentManager, "resolveSessionToolCall"),
+    "session.resolveToolCall": hasMethod(
+      agentManager,
+      "resolveSessionToolCall",
+    ),
     "session.mcp.addServer": hasMethod(agentManager, "addMcpServerToSession"),
     "message.send": hasMethod(agentManager, "streamAgentMessage"),
     "message.stream": hasMethod(agentManager, "streamAgentMessage"),
@@ -253,6 +287,29 @@ function buildServerCapabilities(
     "auth.login": inputs.authHandlers !== undefined,
     "auth.whoami": inputs.authHandlers !== undefined,
     "auth.logout": inputs.authHandlers !== undefined,
+    "workspace.editor.acquire": true,
+    "workspace.editor.sync": true,
+    "workspace.editor.heartbeat": true,
+    "workspace.editor.release": true,
+    "workspace.editor.topology.reserve": true,
+    "workspace.editor.topology.complete": true,
+    "workspace.editor.topology.release": true,
+    "workspace.editor.topology.recovered.list": true,
+    "workspace.editor.topology.recovered.resolve": true,
+    "workspace.editor.proposal.get": true,
+    "workspace.editor.proposal.status": true,
+    "workspace.editor.proposal.apply": true,
+    "workspace.editor.proposal.discard": true,
+    "workspace.editor.changes.list": true,
+    "workspace.editor.predict": hasMethod(inputs.codePrediction, "complete"),
+    "workspace.editor.cancelPrediction": hasMethod(
+      inputs.codePrediction,
+      "cancel",
+    ),
+    "workspace.editor.predictionFeedback": hasMethod(
+      inputs.codePrediction,
+      "feedback",
+    ),
     "session.partialCompactFromMessage": hasMethod(
       agentManager,
       "partialCompactFromMessage",
@@ -353,8 +410,7 @@ export interface AgenCDaemonDispatcherOptions {
   readonly initializeAuthenticator?: (
     params: InitializeParams,
   ) =>
-    | AgenCDaemonInitializeAuthResult
-    | Promise<AgenCDaemonInitializeAuthResult>;
+    AgenCDaemonInitializeAuthResult | Promise<AgenCDaemonInitializeAuthResult>;
   readonly clientMultiplexer?: Pick<
     AgenCDaemonClientMultiplexer,
     | "attachClientToSession"
@@ -376,8 +432,7 @@ export interface AgenCDaemonDispatcherOptions {
   readonly fuzzyFileSearch?: AgenCFuzzyFileSearch;
   readonly commandExec?: AgenCCommandExec;
   /** Isolated contract-test seam; production must never provide this token. */
-  readonly unadmittedCommandExecStartOverride?:
-    typeof TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START;
+  readonly unadmittedCommandExecStartOverride?: typeof TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START;
   readonly authBackend?: AuthBackend;
   readonly daemonControl?: {
     reloadConfig(): DaemonReloadResult | Promise<DaemonReloadResult>;
@@ -390,15 +445,16 @@ export interface AgenCDaemonDispatcherOptions {
   >;
   /** M5 verified-change workflow `run.start` seam (omit = not implemented). */
   readonly workflow?: AgenCDaemonWorkflowStartService;
+  readonly codePrediction?: Pick<
+    CodePredictionService,
+    "complete" | "cancel" | "feedback"
+  >;
   readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
 
 export type AgenCDaemonInitializeAuthResult =
-  | boolean
-  | AuthDaemonSocketIdentity
-  | null
-  | undefined;
+  boolean | AuthDaemonSocketIdentity | null | undefined;
 
 export class AgenCDaemonJsonRpcDispatcher {
   readonly #agentManager: Pick<
@@ -482,6 +538,8 @@ export class AgenCDaemonJsonRpcDispatcher {
       >
     | undefined;
   readonly #workflow: AgenCDaemonWorkflowStartService | undefined;
+  readonly #codePrediction:
+    Pick<CodePredictionService, "complete" | "cancel" | "feedback"> | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
@@ -506,6 +564,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#realtime = options.realtime ?? new AgenCRealtimeRpcService();
     this.#runInspection = options.runInspection;
     this.#workflow = options.workflow;
+    this.#codePrediction = options.codePrediction;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -514,8 +573,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#serverCapabilities = buildServerCapabilities({
       agentManager: this.#agentManager,
       authHandlers: this.#authHandlers,
-      allowUnadmittedCommandExecStart:
-        this.#allowUnadmittedCommandExecStart,
+      allowUnadmittedCommandExecStart: this.#allowUnadmittedCommandExecStart,
       commandExec: this.#commandExec,
       daemonControl: this.#daemonControl,
       fuzzyFileSearch: this.#fuzzyFileSearch,
@@ -525,6 +583,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       runInspection: this.#runInspection,
       sessionManager: this.#sessionManager,
       workflow: this.#workflow,
+      codePrediction: this.#codePrediction,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
   }
@@ -830,6 +889,149 @@ export class AgenCDaemonJsonRpcDispatcher {
             ),
           ),
         );
+      case "workspace.editor.acquire":
+        return internalSuccessResponse(
+          id,
+          await acquireWorkspaceEditor(
+            validateWorkspaceEditorAcquireParams(params),
+          ),
+        );
+      case "workspace.editor.sync":
+        return internalSuccessResponse(
+          id,
+          await syncWorkspaceEditor(validateWorkspaceEditorSyncParams(params)),
+        );
+      case "workspace.editor.heartbeat":
+        return internalSuccessResponse(
+          id,
+          await heartbeatWorkspaceEditor(
+            validateWorkspaceEditorHeartbeatParams(
+              params,
+              "workspace.editor.heartbeat",
+            ),
+          ),
+        );
+      case "workspace.editor.release":
+        return internalSuccessResponse(
+          id,
+          await releaseWorkspaceEditor(
+            validateWorkspaceEditorReleaseParams(params),
+          ),
+        );
+      case "workspace.editor.topology.reserve":
+        return internalSuccessResponse(
+          id,
+          await reserveWorkspaceEditorTopology(
+            validateWorkspaceEditorTopologyReserveParams(params),
+          ),
+        );
+      case "workspace.editor.topology.complete":
+        return internalSuccessResponse(
+          id,
+          await completeWorkspaceEditorTopology(
+            validateWorkspaceEditorTopologyCompleteParams(params),
+          ),
+        );
+      case "workspace.editor.topology.release":
+        return internalSuccessResponse(
+          id,
+          await releaseWorkspaceEditorTopology(
+            validateWorkspaceEditorTopologyFinalizeParams(
+              params,
+              "workspace.editor.topology.release",
+            ),
+          ),
+        );
+      case "workspace.editor.topology.recovered.list":
+        return internalSuccessResponse(
+          id,
+          await listRecoveredWorkspaceEditorTopologies(
+            validateWorkspaceEditorHeartbeatParams(
+              params,
+              "workspace.editor.topology.recovered.list",
+            ),
+          ),
+        );
+      case "workspace.editor.topology.recovered.resolve":
+        return internalSuccessResponse(
+          id,
+          await resolveRecoveredWorkspaceEditorTopology(
+            validateWorkspaceEditorRecoveredTopologyResolveParams(params),
+          ),
+        );
+      case "workspace.editor.proposal.get": {
+        const proposal = await inspectWorkspaceEditorProposal(
+          validateWorkspaceEditorProposalParams(
+            params,
+            "workspace.editor.proposal.get",
+          ),
+          id,
+        );
+        return internalSuccessResponse(id, proposal);
+      }
+      case "workspace.editor.proposal.status":
+        return internalSuccessResponse(
+          id,
+          await statusWorkspaceEditorProposal(
+            validateWorkspaceEditorProposalStatusParams(params),
+            id,
+          ),
+        );
+      case "workspace.editor.proposal.apply":
+        return internalSuccessResponse(
+          id,
+          await applyWorkspaceEditorProposal(
+            validateWorkspaceEditorProposalApplyParams(params),
+          ),
+        );
+      case "workspace.editor.proposal.discard":
+        return internalSuccessResponse(
+          id,
+          await discardWorkspaceEditorProposal(
+            validateWorkspaceEditorProposalParams(
+              params,
+              "workspace.editor.proposal.discard",
+            ),
+          ),
+        );
+      case "workspace.editor.changes.list":
+        return internalSuccessResponse(
+          id,
+          await listWorkspaceEditorChanges(
+            validateWorkspaceEditorChangesListParams(params),
+          ),
+        );
+      case "workspace.editor.predict":
+        if (this.#codePrediction === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return internalSuccessResponse(
+          id,
+          await this.#codePrediction.complete(
+            validateWorkspaceEditorPredictParams(params),
+            signal,
+          ),
+        );
+      case "workspace.editor.cancelPrediction": {
+        if (this.#codePrediction === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        const validated = validateWorkspaceEditorCancelPredictionParams(params);
+        return internalSuccessResponse(id, {
+          ...(validated.requestId !== undefined
+            ? { requestId: validated.requestId }
+            : {}),
+          cancelled: this.#codePrediction.cancel(validated),
+        });
+      }
+      case "workspace.editor.predictionFeedback":
+        if (this.#codePrediction === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        this.#codePrediction.feedback(
+          validateWorkspaceEditorPredictionFeedbackParams(params),
+        );
+        return internalSuccessResponse(id, { recorded: true });
       case "session.partialCompactFromMessage":
         return successResponse(
           id,
@@ -850,7 +1052,10 @@ export class AgenCDaemonJsonRpcDispatcher {
         return successResponse(
           id,
           await this.#agentManager.previewFileRewind(
-            validateSessionFileRewindParams(params, "session.previewFileRewind"),
+            validateSessionFileRewindParams(
+              params,
+              "session.previewFileRewind",
+            ),
           ),
         );
       case "session.rewindFilesToMessage":
@@ -1117,7 +1322,9 @@ export class AgenCDaemonJsonRpcDispatcher {
     }
     return successResponse(
       id,
-      await this.#sessionManager.createSession(validateSessionCreateParams(params)),
+      await this.#sessionManager.createSession(
+        validateSessionCreateParams(params),
+      ),
     );
   }
 
@@ -1137,7 +1344,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     );
     return successResponse(
       id,
-      multiplexedResult ?? (await this.#sessionManager.attachSession(attachParams)),
+      multiplexedResult ??
+        (await this.#sessionManager.attachSession(attachParams)),
     );
   }
 
@@ -1229,8 +1437,12 @@ export class AgenCDaemonJsonRpcDispatcher {
           send: (message) => connection.sendNotification!(message),
         })
         .catch((error) => {
-          if ((error as { code?: string }).code === "CLIENT_ALREADY_REGISTERED") {
-            throw invalidParams(`daemon client is already registered: ${clientId}`);
+          if (
+            (error as { code?: string }).code === "CLIENT_ALREADY_REGISTERED"
+          ) {
+            throw invalidParams(
+              `daemon client is already registered: ${clientId}`,
+            );
           }
           throw error;
         });
@@ -1364,8 +1576,7 @@ let nextConnectionId = 0;
 export class AgenCDaemonJsonRpcConnection {
   readonly #dispatcher: AgenCDaemonJsonRpcDispatcher;
   readonly #sendNotification:
-    | ((message: JsonObject) => void | Promise<void>)
-    | undefined;
+    ((message: JsonObject) => void | Promise<void>) | undefined;
   readonly #cancellationScope: string;
   readonly #clientIds = new Set<string>();
   readonly #inFlightRequests = new Map<string, AbortController>();
@@ -1411,8 +1622,7 @@ export class AgenCDaemonJsonRpcConnection {
   }
 
   get sendNotification():
-    | ((message: JsonObject) => void | Promise<void>)
-    | undefined {
+    ((message: JsonObject) => void | Promise<void>) | undefined {
     return this.#sendNotification;
   }
 
@@ -1547,12 +1757,15 @@ class AgenCDaemonRequestCancelledError extends Error {
 
 const INERT_ABORT_SIGNAL = new AbortController().signal;
 
-function methodSupportsRequestCancellation(method: AgenCDaemonKnownMethod): boolean {
+function methodSupportsRequestCancellation(
+  method: AgenCDaemonKnownMethod,
+): boolean {
   return (
     method === "fs.fuzzy_search" ||
     method === "commandExec.start" ||
     method === "session.partialCompactFromMessage" ||
     method === "session.rewindConversationToMessage" ||
+    method === "workspace.editor.predict" ||
     method === "message.stream" ||
     method === "message.send"
   );
@@ -1670,12 +1883,10 @@ function validateRequestCancelParams(params: JsonObject): RequestCancelParams {
     valueFields: ["requestId"],
   });
   const requestId = validated.requestId;
-  if (
-    !(
-      (typeof requestId === "string" && requestId.trim().length > 0) ||
-      typeof requestId === "number"
-    )
-  ) {
+  if (!(
+    (typeof requestId === "string" && requestId.trim().length > 0) ||
+    typeof requestId === "number"
+  )) {
     throw invalidParams("request.cancel requires requestId");
   }
   return validated as RequestCancelParams;
@@ -1694,8 +1905,12 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "permissionMode",
     ],
     stringArrayFields: ["unattendedAllow", "unattendedDeny"],
-    objectFields: ["metadata", "envOverrides"],
-    valueFields: ["initialContent"],
+    objectFields: ["metadata", "envOverrides", "initialEditorInteraction"],
+    valueFields: [
+      "initialContent",
+      "deferInitialTurn",
+      "initialDisplayUserMessage",
+    ],
   });
   // DAE-02: absolute existing directory required (no daemon-side invent).
   let cwd: string;
@@ -1714,6 +1929,41 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       validated.initialContent,
     );
   }
+  if (
+    validated.deferInitialTurn !== undefined &&
+    typeof validated.deferInitialTurn !== "boolean"
+  ) {
+    throw invalidParams(
+      "agent.create param 'deferInitialTurn' must be a boolean",
+    );
+  }
+  if (
+    validated.deferInitialTurn === true &&
+    (validated.initialContent !== undefined ||
+      validated.initialDisplayUserMessage !== undefined ||
+      validated.initialEditorInteraction !== undefined)
+  ) {
+    throw invalidParams(
+      "agent.create param 'deferInitialTurn' cannot be combined with initial turn content or metadata",
+    );
+  }
+  if (
+    validated.initialDisplayUserMessage !== undefined &&
+    validated.initialDisplayUserMessage !== null &&
+    typeof validated.initialDisplayUserMessage !== "string"
+  ) {
+    throw invalidParams(
+      "agent.create param 'initialDisplayUserMessage' must be a string or null",
+    );
+  }
+  const initialEditorInteraction =
+    validated.initialEditorInteraction === undefined
+      ? undefined
+      : validateEditorInteractionMetadata(
+          "agent.create",
+          validated.initialEditorInteraction,
+          "param 'initialEditorInteraction'",
+        );
   if (validated.permissionMode !== undefined) {
     const value = validated.permissionMode;
     if (
@@ -1734,7 +1984,13 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "envOverrides",
     );
   }
-  return { ...validated, cwd } as AgentCreateParams;
+  return {
+    ...validated,
+    cwd,
+    ...(initialEditorInteraction !== undefined
+      ? { initialEditorInteraction }
+      : {}),
+  } as AgentCreateParams;
 }
 
 function validateAgentListParams(params: JsonObject): AgentListParams {
@@ -1841,7 +2097,12 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
     );
   }
   validatePositiveInteger(validated, "run.start", "maxTokens", false);
-  validatePositiveInteger(validated, "run.start", "maxImplementAttempts", false);
+  validatePositiveInteger(
+    validated,
+    "run.start",
+    "maxImplementAttempts",
+    false,
+  );
   const requiredVerification = validated.requiredVerification;
   if (requiredVerification !== undefined) {
     if (!Array.isArray(requiredVerification)) {
@@ -1995,11 +2256,10 @@ function validateSessionDetachParams(params: JsonObject): SessionDetachParams {
   validateRequiredString(validated, "session.detach", "sessionId");
   const attachmentId = validated.attachmentId;
   const clientId = validated.clientId;
-  if (
-    typeof attachmentId === "string" &&
-    attachmentId.trim().length === 0
-  ) {
-    throw invalidParams("session.detach param 'attachmentId' must be non-empty");
+  if (typeof attachmentId === "string" && attachmentId.trim().length === 0) {
+    throw invalidParams(
+      "session.detach param 'attachmentId' must be non-empty",
+    );
   }
   if (typeof clientId === "string" && clientId.trim().length === 0) {
     throw invalidParams("session.detach param 'clientId' must be non-empty");
@@ -2143,10 +2403,7 @@ function validateSessionPartialCompactFromMessageParams(
     "session.partialCompactFromMessage",
     "sessionId",
   );
-  if (
-    validated.direction !== "from" &&
-    validated.direction !== "up_to"
-  ) {
+  if (validated.direction !== "from" && validated.direction !== "up_to") {
     throw invalidParams(
       "session.partialCompactFromMessage direction must be from or up_to",
     );
@@ -2190,9 +2447,7 @@ function validateSessionRewindConversationToMessageParams(
 
 function validateSessionFileRewindParams(
   params: JsonObject,
-  methodName:
-    | "session.previewFileRewind"
-    | "session.rewindFilesToMessage",
+  methodName: "session.previewFileRewind" | "session.rewindFilesToMessage",
 ): SessionFileRewindParams {
   const validated = validateObjectShape(params, {
     methodName,
@@ -2331,7 +2586,9 @@ function validateMessageContent(
   content: unknown,
 ): void {
   if (typeof content !== "string" && !Array.isArray(content)) {
-    throw invalidParams(`${methodName} param '${fieldName}' must be a string or array`);
+    throw invalidParams(
+      `${methodName} param '${fieldName}' must be a string or array`,
+    );
   }
   if (Array.isArray(content)) {
     for (const [index, block] of content.entries()) {
@@ -2554,15 +2811,176 @@ function displayUserMessageFromMetadata(
   metadata: JsonObject | undefined,
 ): {
   readonly displayUserMessage?: string | null;
+  readonly editorInteraction?: SessionEditorInteraction;
 } {
-  if (metadata === undefined || !("displayUserMessage" in metadata)) return {};
-  const value = metadata.displayUserMessage;
-  if (value === null || typeof value === "string") {
-    return { displayUserMessage: value };
+  if (metadata === undefined) return {};
+  const result: {
+    displayUserMessage?: string | null;
+    editorInteraction?: SessionEditorInteraction;
+  } = {};
+  if ("displayUserMessage" in metadata) {
+    const value = metadata.displayUserMessage;
+    if (value !== null && typeof value !== "string") {
+      throw invalidParams(
+        `${methodName} metadata 'displayUserMessage' must be a string or null`,
+      );
+    }
+    result.displayUserMessage = value;
   }
-  throw invalidParams(
-    `${methodName} metadata 'displayUserMessage' must be a string or null`,
+  if ("editorInteraction" in metadata) {
+    result.editorInteraction = validateEditorInteractionMetadata(
+      methodName,
+      metadata.editorInteraction,
+    );
+  }
+  return result;
+}
+
+function validateEditorInteractionMetadata(
+  methodName: "agent.create" | "message.send" | "message.stream",
+  value: JsonValue | undefined,
+  field = "metadata 'editorInteraction'",
+): SessionEditorInteraction {
+  const prefix = `${methodName} ${field}`;
+  if (!isPlainJsonObject(value)) {
+    throw invalidParams(`${prefix} must be an object`);
+  }
+  const interactionId = requiredBoundedMetadataString(
+    value.interactionId,
+    `${prefix}.interactionId`,
   );
+  const editorInstanceId = requiredBoundedMetadataString(
+    value.editorInstanceId,
+    `${prefix}.editorInstanceId`,
+  );
+  const kind = value.kind;
+  if (
+    kind !== "ask" &&
+    kind !== "explain" &&
+    kind !== "fix" &&
+    kind !== "edit" &&
+    kind !== "refactor"
+  ) {
+    throw invalidParams(
+      `${prefix}.kind must be ask, explain, fix, edit, or refactor`,
+    );
+  }
+  const policy = value.policy;
+  if (policy !== "read_only" && policy !== "proposal_only") {
+    throw invalidParams(`${prefix}.policy must be read_only or proposal_only`);
+  }
+  const expectedPolicy =
+    kind === "ask" || kind === "explain" ? "read_only" : "proposal_only";
+  if (policy !== expectedPolicy) {
+    throw invalidParams(
+      `${prefix}.policy must be ${expectedPolicy} for ${kind}`,
+    );
+  }
+  const bufferHandle = positiveSafeIntegerMetadata(
+    value.bufferHandle,
+    `${prefix}.bufferHandle`,
+  );
+  const changedtick = nonNegativeSafeIntegerMetadata(
+    value.changedtick,
+    `${prefix}.changedtick`,
+  );
+  if (
+    typeof value.contentSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(value.contentSha256)
+  ) {
+    throw invalidParams(
+      `${prefix}.contentSha256 must be a lowercase SHA-256 hex digest`,
+    );
+  }
+  if (value.path !== undefined && typeof value.path !== "string") {
+    throw invalidParams(`${prefix}.path must be a string when provided`);
+  }
+  if (!isPlainJsonObject(value.range)) {
+    throw invalidParams(`${prefix}.range must be an object`);
+  }
+  const start = editorInteractionPosition(
+    value.range.start,
+    `${prefix}.range.start`,
+  );
+  const end = editorInteractionPosition(value.range.end, `${prefix}.range.end`);
+  if (
+    end.line < start.line ||
+    (end.line === start.line && end.column < start.column)
+  ) {
+    throw invalidParams(`${prefix}.range must not be inverted`);
+  }
+  const selectionMode = value.selectionMode;
+  if (
+    selectionMode !== undefined &&
+    selectionMode !== "character" &&
+    selectionMode !== "line" &&
+    selectionMode !== "block"
+  ) {
+    throw invalidParams(
+      `${prefix}.selectionMode must be character, line, or block when provided`,
+    );
+  }
+  return {
+    interactionId,
+    kind,
+    policy,
+    editorInstanceId,
+    bufferHandle,
+    changedtick,
+    contentSha256: value.contentSha256,
+    ...(value.path !== undefined ? { path: value.path } : {}),
+    range: { start, end },
+    ...(selectionMode !== undefined ? { selectionMode } : {}),
+  };
+}
+
+function requiredBoundedMetadataString(
+  value: JsonValue | undefined,
+  field: string,
+): string {
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.length > 256
+  ) {
+    throw invalidParams(
+      `${field} must be a non-empty string of at most 256 characters`,
+    );
+  }
+  return value;
+}
+
+function positiveSafeIntegerMetadata(
+  value: JsonValue | undefined,
+  field: string,
+): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw invalidParams(`${field} must be a positive safe integer`);
+  }
+  return value as number;
+}
+
+function nonNegativeSafeIntegerMetadata(
+  value: JsonValue | undefined,
+  field: string,
+): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw invalidParams(`${field} must be a non-negative safe integer`);
+  }
+  return value as number;
+}
+
+function editorInteractionPosition(
+  value: JsonValue | undefined,
+  field: string,
+): { readonly line: number; readonly column: number } {
+  if (!isPlainJsonObject(value)) {
+    throw invalidParams(`${field} must be an object`);
+  }
+  return {
+    line: positiveSafeIntegerMetadata(value.line, `${field}.line`),
+    column: nonNegativeSafeIntegerMetadata(value.column, `${field}.column`),
+  };
 }
 
 function isValidMessageContentBlock(block: unknown): boolean {
@@ -2618,6 +3036,915 @@ function validateToolApproveParams(params: JsonObject): ToolApproveParams {
   return validated as ToolApproveParams;
 }
 
+function validateWorkspaceEditorAcquireParams(
+  params: JsonObject,
+): WorkspaceEditorAcquireParams {
+  const validated = validateObjectShape(params, {
+    methodName: "workspace.editor.acquire",
+    stringFields: ["workspaceRoot", "editorInstanceId"],
+    valueFields: ["takeover", "requireUnprotectedWorkspace"],
+  });
+  validateRequiredString(
+    validated,
+    "workspace.editor.acquire",
+    "workspaceRoot",
+  );
+  validateRequiredString(
+    validated,
+    "workspace.editor.acquire",
+    "editorInstanceId",
+  );
+  if (
+    validated.takeover !== undefined &&
+    typeof validated.takeover !== "boolean"
+  ) {
+    throw invalidParams(
+      "workspace.editor.acquire param 'takeover' must be a boolean",
+    );
+  }
+  if (
+    validated.requireUnprotectedWorkspace !== undefined &&
+    typeof validated.requireUnprotectedWorkspace !== "boolean"
+  ) {
+    throw invalidParams(
+      "workspace.editor.acquire param 'requireUnprotectedWorkspace' must be a boolean",
+    );
+  }
+  return validated as WorkspaceEditorAcquireParams;
+}
+
+function validateWorkspaceEditorSyncParams(
+  params: JsonObject,
+): WorkspaceEditorSyncParams {
+  const validated = validateObjectShape(params, {
+    methodName: "workspace.editor.sync",
+    stringFields: ["workspaceRoot", "editorInstanceId", "leaseToken"],
+    numberFields: ["epoch", "sequence"],
+    valueFields: ["buffers"],
+  });
+  for (const field of [
+    "workspaceRoot",
+    "editorInstanceId",
+    "leaseToken",
+  ] as const) {
+    validateRequiredString(validated, "workspace.editor.sync", field);
+  }
+  for (const field of ["epoch", "sequence"] as const) {
+    if (
+      !Number.isSafeInteger(validated[field]) ||
+      (validated[field] as number) < 0
+    ) {
+      throw invalidParams(
+        `workspace.editor.sync param '${field}' must be a non-negative safe integer`,
+      );
+    }
+  }
+  if (!Array.isArray(validated.buffers)) {
+    throw invalidParams(
+      "workspace.editor.sync param 'buffers' must be an array",
+    );
+  }
+  const buffers = validated.buffers.map((value, index) =>
+    validateWorkspaceEditorBuffer(value, index),
+  );
+  return { ...validated, buffers } as unknown as WorkspaceEditorSyncParams;
+}
+
+function validateWorkspaceEditorBuffer(
+  value: unknown,
+  index: number,
+): WorkspaceEditorBufferSync {
+  if (!isPlainJsonObject(value)) {
+    throw invalidParams(
+      `workspace.editor.sync param 'buffers[${index}]' must be an object`,
+    );
+  }
+  const methodName = `workspace.editor.sync.buffers[${index}]`;
+  const validated = validateObjectShape(value, {
+    methodName,
+    stringFields: ["path", "contentSha256", "content"],
+    numberFields: ["bufferHandle", "changedtick", "contentBytes"],
+    valueFields: ["dirty"],
+  });
+  validateRequiredString(validated, methodName, "path");
+  validateRequiredString(validated, methodName, "contentSha256");
+  for (const field of [
+    "bufferHandle",
+    "changedtick",
+    "contentBytes",
+  ] as const) {
+    if (
+      !Number.isSafeInteger(validated[field]) ||
+      (validated[field] as number) < 0
+    ) {
+      throw invalidParams(
+        `${methodName} param '${field}' must be a non-negative safe integer`,
+      );
+    }
+  }
+  if (typeof validated.dirty !== "boolean") {
+    throw invalidParams(`${methodName} param 'dirty' must be a boolean`);
+  }
+  return validated as WorkspaceEditorBufferSync;
+}
+
+function validateWorkspaceEditorHeartbeatParams(
+  params: JsonObject,
+  methodName:
+    | "workspace.editor.heartbeat"
+    | "workspace.editor.release"
+    | "workspace.editor.proposal.get"
+    | "workspace.editor.proposal.status"
+    | "workspace.editor.proposal.apply"
+    | "workspace.editor.proposal.discard"
+    | "workspace.editor.changes.list"
+    | "workspace.editor.topology.reserve"
+    | "workspace.editor.topology.complete"
+    | "workspace.editor.topology.release"
+    | "workspace.editor.topology.recovered.list"
+    | "workspace.editor.topology.recovered.resolve",
+  extraStringFields: readonly string[] = [],
+  extraNumberFields: readonly string[] = [],
+  extraValueFields: readonly string[] = [],
+): WorkspaceEditorHeartbeatParams {
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: [
+      "workspaceRoot",
+      "editorInstanceId",
+      "leaseToken",
+      ...extraStringFields,
+    ],
+    numberFields: ["epoch", ...extraNumberFields],
+    valueFields: [
+      ...(methodName === "workspace.editor.release" ? ["abandonDirty"] : []),
+      ...extraValueFields,
+    ],
+  });
+  for (const field of [
+    "workspaceRoot",
+    "editorInstanceId",
+    "leaseToken",
+  ] as const) {
+    validateRequiredString(validated, methodName, field);
+  }
+  if (
+    !Number.isSafeInteger(validated.epoch) ||
+    (validated.epoch as number) < 0
+  ) {
+    throw invalidParams(
+      `${methodName} param 'epoch' must be a non-negative safe integer`,
+    );
+  }
+  return validated as unknown as WorkspaceEditorHeartbeatParams;
+}
+
+function validateWorkspaceEditorTopologyReserveParams(
+  params: JsonObject,
+): WorkspaceEditorTopologyReserveParams {
+  const methodName = "workspace.editor.topology.reserve";
+  const validated = validateWorkspaceEditorHeartbeatParams(
+    params,
+    methodName,
+    [],
+    [],
+    ["targets"],
+  );
+  if (!Array.isArray(validated.targets) || validated.targets.length === 0) {
+    throw invalidParams(
+      `${methodName} param 'targets' must be a non-empty array`,
+    );
+  }
+  if (validated.targets.length > 4) {
+    throw invalidParams(
+      `${methodName} param 'targets' must contain at most 4 paths`,
+    );
+  }
+  const targets = validated.targets.map((target, index) =>
+    validateWorkspaceEditorTopologyTarget(target, index),
+  );
+  return {
+    ...validated,
+    targets,
+  } as unknown as WorkspaceEditorTopologyReserveParams;
+}
+
+function validateWorkspaceEditorTopologyTarget(
+  value: unknown,
+  index: number,
+): WorkspaceEditorTopologyTarget {
+  if (!isPlainJsonObject(value)) {
+    throw invalidParams(
+      `workspace.editor.topology.reserve param 'targets[${index}]' must be an object`,
+    );
+  }
+  const methodName = `workspace.editor.topology.reserve.targets[${index}]`;
+  const validated = validateObjectShape(value, {
+    methodName,
+    stringFields: ["path"],
+    valueFields: ["includeDescendants", "allowOwnedClean"],
+  });
+  validateRequiredString(validated, methodName, "path");
+  for (const field of ["includeDescendants", "allowOwnedClean"] as const) {
+    if (
+      validated[field] !== undefined &&
+      typeof validated[field] !== "boolean"
+    ) {
+      throw invalidParams(`${methodName} param '${field}' must be a boolean`);
+    }
+  }
+  return validated as WorkspaceEditorTopologyTarget;
+}
+
+function validateWorkspaceEditorTopologyFinalizeParams(
+  params: JsonObject,
+  methodName:
+    "workspace.editor.topology.complete" | "workspace.editor.topology.release",
+  extraStringFields: readonly string[] = [],
+): WorkspaceEditorTopologyFinalizeParams {
+  const validated = validateWorkspaceEditorHeartbeatParams(
+    params,
+    methodName,
+    ["tokenId", ...extraStringFields],
+    ["sequence"],
+    ["buffers"],
+  );
+  validateRequiredString(validated, methodName, "tokenId");
+  if (
+    !Number.isSafeInteger(validated.sequence) ||
+    (validated.sequence as number) < 0
+  ) {
+    throw invalidParams(
+      `${methodName} param 'sequence' must be a non-negative safe integer`,
+    );
+  }
+  if (!Array.isArray(validated.buffers)) {
+    throw invalidParams(`${methodName} param 'buffers' must be an array`);
+  }
+  const buffers = validated.buffers.map((buffer, index) =>
+    validateWorkspaceEditorBuffer(buffer, index),
+  );
+  return {
+    ...validated,
+    buffers,
+  } as unknown as WorkspaceEditorTopologyFinalizeParams;
+}
+
+function validateWorkspaceEditorTopologyCompleteParams(
+  params: JsonObject,
+): WorkspaceEditorTopologyCompleteParams {
+  const methodName = "workspace.editor.topology.complete";
+  const validated = validateWorkspaceEditorTopologyFinalizeParams(
+    params,
+    methodName,
+    ["status"],
+  );
+  if (
+    validated.status !== "applied" &&
+    validated.status !== "unknown_outcome"
+  ) {
+    throw invalidParams(
+      `${methodName} param 'status' must be applied or unknown_outcome`,
+    );
+  }
+  return validated as WorkspaceEditorTopologyCompleteParams;
+}
+
+function validateWorkspaceEditorRecoveredTopologyResolveParams(
+  params: JsonObject,
+): WorkspaceEditorRecoveredTopologyResolveParams {
+  const methodName = "workspace.editor.topology.recovered.resolve";
+  const validated = validateWorkspaceEditorHeartbeatParams(params, methodName, [
+    "tokenId",
+  ]);
+  validateRequiredString(validated, methodName, "tokenId");
+  return validated as WorkspaceEditorRecoveredTopologyResolveParams;
+}
+
+function validateWorkspaceEditorReleaseParams(
+  params: JsonObject,
+): WorkspaceEditorReleaseParams {
+  const validated = validateWorkspaceEditorHeartbeatParams(
+    params,
+    "workspace.editor.release",
+  ) as WorkspaceEditorReleaseParams;
+  if (
+    validated.abandonDirty !== undefined &&
+    typeof validated.abandonDirty !== "boolean"
+  ) {
+    throw invalidParams(
+      "workspace.editor.release param 'abandonDirty' must be a boolean",
+    );
+  }
+  return validated;
+}
+
+function validateWorkspaceEditorProposalParams(
+  params: JsonObject,
+  methodName:
+    | "workspace.editor.proposal.get"
+    | "workspace.editor.proposal.status"
+    | "workspace.editor.proposal.discard",
+): WorkspaceEditorProposalParams {
+  const validated = validateWorkspaceEditorHeartbeatParams(params, methodName, [
+    "proposalId",
+  ]);
+  validateRequiredString(validated, methodName, "proposalId");
+  return validated as unknown as WorkspaceEditorProposalParams;
+}
+
+function validateWorkspaceEditorProposalStatusParams(
+  params: JsonObject,
+): WorkspaceEditorProposalStatusParams {
+  return validateWorkspaceEditorProposalParams(
+    params,
+    "workspace.editor.proposal.status",
+  );
+}
+
+function validateWorkspaceEditorProposalApplyParams(
+  params: JsonObject,
+): WorkspaceEditorProposalApplyParams {
+  const methodName = "workspace.editor.proposal.apply";
+  const validated = validateWorkspaceEditorHeartbeatParams(
+    params,
+    methodName,
+    ["proposalId", "contentSha256", "content"],
+    ["changedtick"],
+  );
+  for (const field of ["proposalId", "contentSha256"] as const) {
+    validateRequiredString(validated, methodName, field);
+  }
+  if (typeof validated.content !== "string") {
+    throw invalidParams(`${methodName} param 'content' must be a string`);
+  }
+  if (
+    !Number.isSafeInteger(validated.changedtick) ||
+    (validated.changedtick as number) < 0
+  ) {
+    throw invalidParams(
+      `${methodName} param 'changedtick' must be a non-negative safe integer`,
+    );
+  }
+  return validated as unknown as WorkspaceEditorProposalApplyParams;
+}
+
+function validateWorkspaceEditorChangesListParams(
+  params: JsonObject,
+): WorkspaceEditorChangesListParams {
+  const methodName = "workspace.editor.changes.list";
+  const validated = validateWorkspaceEditorHeartbeatParams(
+    params,
+    methodName,
+    [],
+    ["afterSequence"],
+  );
+  if (
+    validated.afterSequence !== undefined &&
+    (!Number.isSafeInteger(validated.afterSequence) ||
+      (validated.afterSequence as number) < 0)
+  ) {
+    throw invalidParams(
+      `${methodName} param 'afterSequence' must be a non-negative safe integer`,
+    );
+  }
+  return validated as unknown as WorkspaceEditorChangesListParams;
+}
+
+function validateWorkspaceEditorPredictParams(
+  params: JsonObject,
+): WorkspaceEditorPredictParams {
+  const methodName = "workspace.editor.predict";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: [
+      "requestId",
+      "sessionId",
+      "editorInstanceId",
+      "path",
+      "language",
+      "prefix",
+      "suffix",
+      "header",
+      "latestIntent",
+    ],
+    numberFields: ["bufferHandle", "generation", "changedtick", "fileBytes"],
+    objectFields: ["cursor"],
+    valueFields: ["diagnostics", "relatedBuffers"],
+  });
+  for (const field of [
+    "requestId",
+    "sessionId",
+    "editorInstanceId",
+    "path",
+  ] as const) {
+    validateRequiredString(validated, methodName, field);
+  }
+  for (const field of ["prefix", "suffix"] as const) {
+    if (typeof validated[field] !== "string") {
+      throw invalidParams(`${methodName} param '${field}' must be a string`);
+    }
+  }
+  for (const field of ["language"] as const) {
+    const value = validated[field];
+    if (typeof value === "string" && value.trim().length === 0) {
+      throw invalidParams(
+        `${methodName} param '${field}' must be non-empty when provided`,
+      );
+    }
+  }
+  if (
+    !Number.isSafeInteger(validated.bufferHandle) ||
+    (validated.bufferHandle as number) <= 0
+  ) {
+    throw invalidParams(
+      `${methodName} param 'bufferHandle' must be a positive safe integer`,
+    );
+  }
+  for (const field of ["generation", "changedtick"] as const) {
+    validatePredictionNonNegativeInteger(validated[field], methodName, field);
+  }
+  if (validated.fileBytes === undefined) {
+    throw invalidParams(`${methodName} param 'fileBytes' is required`);
+  }
+  validatePredictionNonNegativeInteger(
+    validated.fileBytes,
+    methodName,
+    "fileBytes",
+  );
+  const transmittedContextBytes =
+    Buffer.byteLength(validated.prefix as string, "utf8") +
+    Buffer.byteLength(validated.suffix as string, "utf8");
+  if ((validated.fileBytes as number) < transmittedContextBytes) {
+    throw invalidParams(
+      `${methodName} param 'fileBytes' must cover the transmitted prefix and suffix`,
+    );
+  }
+  const cursor = validated.cursor as JsonObject;
+  validatePredictionNonNegativeInteger(cursor.line, methodName, "cursor.line");
+  validatePredictionNonNegativeInteger(
+    cursor.byteColumn,
+    methodName,
+    "cursor.byteColumn",
+  );
+  const diagnostics = validateWorkspaceEditorPredictionDiagnostics(
+    validated.diagnostics,
+    methodName,
+  );
+  const relatedBuffers = validateWorkspaceEditorPredictionRelatedBuffers(
+    validated.relatedBuffers,
+    methodName,
+  );
+  return {
+    ...validated,
+    cursor: {
+      line: cursor.line as number,
+      byteColumn: cursor.byteColumn as number,
+    },
+    ...(diagnostics !== undefined ? { diagnostics } : {}),
+    ...(relatedBuffers !== undefined ? { relatedBuffers } : {}),
+  } as WorkspaceEditorPredictParams;
+}
+
+function validatePredictionNonNegativeInteger(
+  value: JsonValue | undefined,
+  methodName: string,
+  field: string,
+): void {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw invalidParams(
+      `${methodName} param '${field}' must be a non-negative safe integer`,
+    );
+  }
+}
+
+function validateWorkspaceEditorPredictionDiagnostics(
+  value: JsonValue | undefined,
+  methodName: string,
+): readonly WorkspaceEditorPredictionDiagnostic[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 8) {
+    throw invalidParams(
+      `${methodName} param 'diagnostics' must be an array of at most 8 entries`,
+    );
+  }
+  return value.map((entry, index) => {
+    if (!isPlainJsonObject(entry)) {
+      throw invalidParams(
+        `${methodName} param 'diagnostics[${index}]' must be an object`,
+      );
+    }
+    const item = validateObjectShape(entry, {
+      methodName: `${methodName}.diagnostics[${index}]`,
+      stringFields: ["message", "severity"],
+    });
+    validateRequiredString(item, methodName, "message");
+    if (
+      item.severity !== undefined &&
+      item.severity !== "error" &&
+      item.severity !== "warning" &&
+      item.severity !== "information" &&
+      item.severity !== "hint"
+    ) {
+      throw invalidParams(
+        `${methodName} param 'diagnostics[${index}].severity' is invalid`,
+      );
+    }
+    return item as WorkspaceEditorPredictionDiagnostic;
+  });
+}
+
+function validateWorkspaceEditorPredictionRelatedBuffers(
+  value: JsonValue | undefined,
+  methodName: string,
+): readonly WorkspaceEditorPredictionRelatedBuffer[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 2) {
+    throw invalidParams(
+      `${methodName} param 'relatedBuffers' must be an array of at most 2 entries`,
+    );
+  }
+  return value.map((entry, index) => {
+    if (!isPlainJsonObject(entry)) {
+      throw invalidParams(
+        `${methodName} param 'relatedBuffers[${index}]' must be an object`,
+      );
+    }
+    const item = validateObjectShape(entry, {
+      methodName: `${methodName}.relatedBuffers[${index}]`,
+      stringFields: ["path", "language", "content"],
+    });
+    validateRequiredString(item, methodName, "path");
+    if (typeof item.content !== "string") {
+      throw invalidParams(
+        `${methodName} param 'relatedBuffers[${index}].content' must be a string`,
+      );
+    }
+    return item as WorkspaceEditorPredictionRelatedBuffer;
+  });
+}
+
+function validateWorkspaceEditorCancelPredictionParams(
+  params: JsonObject,
+): WorkspaceEditorCancelPredictionParams {
+  const methodName = "workspace.editor.cancelPrediction";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["sessionId", "editorInstanceId", "requestId"],
+  });
+  for (const field of ["sessionId", "editorInstanceId"] as const) {
+    validateRequiredString(validated, methodName, field);
+  }
+  if (
+    typeof validated.requestId === "string" &&
+    validated.requestId.trim().length === 0
+  ) {
+    throw invalidParams(
+      `${methodName} param 'requestId' must be non-empty when provided`,
+    );
+  }
+  return validated as WorkspaceEditorCancelPredictionParams;
+}
+
+function validateWorkspaceEditorPredictionFeedbackParams(
+  params: JsonObject,
+): WorkspaceEditorPredictionFeedbackParams {
+  const methodName = "workspace.editor.predictionFeedback";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["sessionId", "editorInstanceId", "requestId", "kind"],
+    numberFields: ["acceptedCharacters", "latencyMs"],
+  });
+  for (const field of ["sessionId", "editorInstanceId", "requestId"] as const) {
+    validateRequiredString(validated, methodName, field);
+  }
+  if (
+    validated.kind !== "displayed" &&
+    validated.kind !== "accepted" &&
+    validated.kind !== "partially_accepted" &&
+    validated.kind !== "dismissed"
+  ) {
+    throw invalidParams(`${methodName} param 'kind' is invalid`);
+  }
+  for (const field of ["acceptedCharacters", "latencyMs"] as const) {
+    if (validated[field] !== undefined) {
+      validatePredictionNonNegativeInteger(validated[field], methodName, field);
+    }
+  }
+  if (
+    validated.acceptedCharacters !== undefined &&
+    validated.kind !== "accepted" &&
+    validated.kind !== "partially_accepted"
+  ) {
+    throw invalidParams(
+      `${methodName} param 'acceptedCharacters' requires accepted feedback`,
+    );
+  }
+  return validated as WorkspaceEditorPredictionFeedbackParams;
+}
+
+async function acquireWorkspaceEditor(params: WorkspaceEditorAcquireParams) {
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    return workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
+      workspaceRoot,
+      editorInstanceId: params.editorInstanceId,
+      ...(params.takeover !== undefined ? { takeover: params.takeover } : {}),
+      ...(params.requireUnprotectedWorkspace !== undefined
+        ? {
+            requireUnprotectedWorkspace: params.requireUnprotectedWorkspace,
+          }
+        : {}),
+    });
+  } catch (error) {
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function syncWorkspaceEditor(params: WorkspaceEditorSyncParams) {
+  let coordinator: WorkspaceMutationCoordinator | null = null;
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const result = coordinator.sync({
+      workspaceRoot,
+      editorInstanceId: params.editorInstanceId,
+      leaseToken: params.leaseToken,
+      epoch: params.epoch,
+      sequence: params.sequence,
+      buffers: params.buffers,
+    });
+    await coordinator.flushQuarantinePersistence();
+    return result;
+  } catch (error) {
+    // A rejected synchronization can still have recorded a durable topology
+    // contention. Do not let the client retry after the fence disappears
+    // until that record is safely on disk.
+    await coordinator?.flushQuarantinePersistence().catch(() => {});
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function heartbeatWorkspaceEditor(
+  params: WorkspaceEditorHeartbeatParams,
+) {
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    return workspaceMutationCoordinators.getOrCreate(workspaceRoot).heartbeat({
+      workspaceRoot,
+      editorInstanceId: params.editorInstanceId,
+      leaseToken: params.leaseToken,
+      epoch: params.epoch,
+    });
+  } catch (error) {
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function releaseWorkspaceEditor(params: WorkspaceEditorReleaseParams) {
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    const coordinator =
+      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const result = await coordinator.release({
+      workspaceRoot,
+      editorInstanceId: params.editorInstanceId,
+      leaseToken: params.leaseToken,
+      epoch: params.epoch,
+      ...(params.abandonDirty !== undefined
+        ? { abandonDirty: params.abandonDirty }
+        : {}),
+    });
+    await coordinator.flushQuarantinePersistence();
+    return result;
+  } catch (error) {
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function reserveWorkspaceEditorTopology(
+  params: WorkspaceEditorTopologyReserveParams,
+) {
+  let coordinator: WorkspaceMutationCoordinator | null = null;
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const token = await coordinator.reserveEditorTopologyMutation({
+      workspaceRoot,
+      editorInstanceId: params.editorInstanceId,
+      leaseToken: params.leaseToken,
+      epoch: params.epoch,
+      targets: params.targets,
+      source: "editor",
+    });
+    return {
+      tokenId: token.tokenId,
+      targets: token.targets,
+    };
+  } catch (error) {
+    await coordinator?.flushQuarantinePersistence().catch(() => {});
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function completeWorkspaceEditorTopology(
+  params: WorkspaceEditorTopologyCompleteParams,
+) {
+  let coordinator: WorkspaceMutationCoordinator | null = null;
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    return await coordinator.completeEditorTopologyMutation({
+      workspaceRoot,
+      editorInstanceId: params.editorInstanceId,
+      leaseToken: params.leaseToken,
+      epoch: params.epoch,
+      tokenId: params.tokenId,
+      sequence: params.sequence,
+      buffers: params.buffers,
+      status: params.status,
+    });
+  } catch (error) {
+    await coordinator?.flushQuarantinePersistence().catch(() => {});
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function releaseWorkspaceEditorTopology(
+  params: WorkspaceEditorTopologyFinalizeParams,
+) {
+  let coordinator: WorkspaceMutationCoordinator | null = null;
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    return await coordinator.releaseEditorTopologyMutation({
+      workspaceRoot,
+      editorInstanceId: params.editorInstanceId,
+      leaseToken: params.leaseToken,
+      epoch: params.epoch,
+      tokenId: params.tokenId,
+      sequence: params.sequence,
+      buffers: params.buffers,
+    });
+  } catch (error) {
+    await coordinator?.flushQuarantinePersistence().catch(() => {});
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function listRecoveredWorkspaceEditorTopologies(
+  params: WorkspaceEditorRecoveredTopologyListParams,
+) {
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    const coordinator =
+      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    return {
+      mutations: coordinator.listRecoveredEditorTopologyMutations({
+        workspaceRoot,
+        editorInstanceId: params.editorInstanceId,
+        leaseToken: params.leaseToken,
+        epoch: params.epoch,
+      }),
+    };
+  } catch (error) {
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function resolveRecoveredWorkspaceEditorTopology(
+  params: WorkspaceEditorRecoveredTopologyResolveParams,
+) {
+  let coordinator: WorkspaceMutationCoordinator | null = null;
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    return await coordinator.resolveRecoveredEditorTopologyMutation({
+      workspaceRoot,
+      editorInstanceId: params.editorInstanceId,
+      leaseToken: params.leaseToken,
+      epoch: params.epoch,
+      tokenId: params.tokenId,
+    });
+  } catch (error) {
+    await coordinator?.flushQuarantinePersistence().catch(() => {});
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function inspectWorkspaceEditorProposal(
+  params: WorkspaceEditorProposalParams,
+  requestId: RequestId,
+) {
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    const proposal = workspaceMutationCoordinators
+      .getOrCreate(workspaceRoot)
+      .inspectProposal({
+        workspaceRoot,
+        editorInstanceId: params.editorInstanceId,
+        leaseToken: params.leaseToken,
+        epoch: params.epoch,
+        proposalId: params.proposalId,
+      });
+    // Admission sizes against the daemon's numeric request IDs. Recheck with
+    // the actual caller-provided ID so a larger custom envelope cannot turn a
+    // valid proposal into an oversized success frame.
+    assertWorkspaceEditorProposalResponseFitsFrame(proposal, requestId);
+    return proposal;
+  } catch (error) {
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function statusWorkspaceEditorProposal(
+  params: WorkspaceEditorProposalStatusParams,
+  requestId: RequestId,
+) {
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    const status = await workspaceMutationCoordinators
+      .getOrCreate(workspaceRoot)
+      .proposalStatus({
+        workspaceRoot,
+        editorInstanceId: params.editorInstanceId,
+        leaseToken: params.leaseToken,
+        epoch: params.epoch,
+        proposalId: params.proposalId,
+      });
+    assertWorkspaceEditorProposalStatusResponseFitsFrame(status, requestId);
+    return status;
+  } catch (error) {
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function applyWorkspaceEditorProposal(
+  params: WorkspaceEditorProposalApplyParams,
+) {
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    return await workspaceMutationCoordinators
+      .getOrCreate(workspaceRoot)
+      .applyProposal({
+        workspaceRoot,
+        editorInstanceId: params.editorInstanceId,
+        leaseToken: params.leaseToken,
+        epoch: params.epoch,
+        proposalId: params.proposalId,
+        changedtick: params.changedtick,
+        contentSha256: params.contentSha256,
+        content: params.content,
+      });
+  } catch (error) {
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function discardWorkspaceEditorProposal(
+  params: WorkspaceEditorProposalParams,
+) {
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    return await workspaceMutationCoordinators
+      .getOrCreate(workspaceRoot)
+      .discardProposalForEditor({
+        workspaceRoot,
+        editorInstanceId: params.editorInstanceId,
+        leaseToken: params.leaseToken,
+        epoch: params.epoch,
+        proposalId: params.proposalId,
+      });
+  } catch (error) {
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function listWorkspaceEditorChanges(
+  params: WorkspaceEditorChangesListParams,
+) {
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    const coordinator =
+      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const result = coordinator.listChanges({
+      workspaceRoot,
+      editorInstanceId: params.editorInstanceId,
+      leaseToken: params.leaseToken,
+      epoch: params.epoch,
+      ...(params.afterSequence !== undefined
+        ? { afterSequence: params.afterSequence }
+        : {}),
+    });
+    // `afterSequence` acknowledges the prior delivery. Do not confirm that
+    // acknowledgement to the Editor until the pruned durable queue is synced.
+    await coordinator.flushQuarantinePersistence();
+    return result;
+  } catch (error) {
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
 function validateExitPlanApprovalPayload(exitPlan: JsonObject): void {
   if (exitPlan.action !== "approve" && exitPlan.action !== "revise") {
     throw invalidParams(
@@ -2649,7 +3976,10 @@ function validateExitPlanApprovalPayload(exitPlan: JsonObject): void {
       "tool.approve param 'exitPlan.clearContext' must be a boolean",
     );
   }
-  if (exitPlan.feedback !== undefined && typeof exitPlan.feedback !== "string") {
+  if (
+    exitPlan.feedback !== undefined &&
+    typeof exitPlan.feedback !== "string"
+  ) {
     throw invalidParams(
       "tool.approve param 'exitPlan.feedback' must be a string",
     );
@@ -2994,4 +4324,17 @@ function errorResponse(
     id,
     error,
   };
+}
+
+function internalSuccessResponse(
+  id: RequestId,
+  result: object,
+): AgenCDaemonResponse {
+  // Internal methods intentionally are not part of the public
+  // AgenCDaemonResponse success union, but use the same JSON-RPC envelope.
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    id,
+    result,
+  } as unknown as AgenCDaemonResponse;
 }

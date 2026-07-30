@@ -40,6 +40,39 @@ function sequence(values: readonly string[]): () => string {
 }
 
 describe("AgenC daemon session lifecycle", () => {
+  it("notifies resource owners exactly once when a session terminates", async () => {
+    const onSessionTerminated = vi.fn(async () => {});
+    const manager = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      now: sequence(["2026-05-01T09:00:00.000Z", "2026-05-01T09:01:00.000Z"]),
+      onSessionTerminated,
+    });
+    const cwd = await workspaces.create();
+    await manager.createSession({ cwd });
+
+    await expect(
+      manager.terminateSession({
+        sessionId: "session_1",
+        reason: "done",
+      }),
+    ).resolves.toMatchObject({
+      sessionId: "session_1",
+      terminated: true,
+    });
+    await expect(
+      manager.terminateSession({
+        sessionId: "session_1",
+        reason: "again",
+      }),
+    ).resolves.toMatchObject({
+      sessionId: "session_1",
+      terminated: false,
+    });
+
+    expect(onSessionTerminated).toHaveBeenCalledOnce();
+    expect(onSessionTerminated).toHaveBeenCalledWith("session_1");
+  });
+
   it("uses the indexed thread count for health instead of listing history", async () => {
     const listThreads = vi.fn(() => {
       throw new Error("health must not materialize persisted threads");
@@ -446,7 +479,10 @@ describe("AgenC daemon session lifecycle", () => {
     const { cwd: worktreeCwd, home, restoreEnv } = createThreadStoreTestDirs();
     const authorityCwd = mkdtempSync(join(tmpdir(), "agenc-role-authority-"));
     const rollout = openRollout(worktreeCwd, "stored-worktree-child");
-    const threadStore = new FileThreadStore({ cwd: worktreeCwd, agencHome: home });
+    const threadStore = new FileThreadStore({
+      cwd: worktreeCwd,
+      agencHome: home,
+    });
     try {
       threadStore.createThread({
         threadId: "stored-worktree-child",

@@ -22,12 +22,14 @@ import {
   resetCronSchedulerForTests,
 } from "../utils/cronScheduler.js";
 import { listAllCronTasks } from "../utils/cronTasks.js";
+import type { Session } from "../session/session.js";
 import {
   dequeueAll,
   getCommandQueueSnapshot,
 } from "../utils/messageQueueManager.js";
 
 let tempRoot: string;
+const conversationId = "cron-live-tools-session";
 
 /**
  * The scheduler tick awaits REAL fs I/O (loadTasks / lastFiredAt
@@ -64,7 +66,7 @@ async function advanceUntilQueued(maxMinutes: number): Promise<void> {
 function cronTools(): Map<string, Tool> {
   const tools = createModelFacingTools({
     workspaceRoot: tempRoot,
-    getSession: () => null,
+    getSession: () => ({ conversationId }) as Session,
   });
   return new Map(tools.map((tool) => [tool.name, tool]));
 }
@@ -161,7 +163,9 @@ describe("live Cron tools drive the real scheduler", () => {
           (command) =>
             typeof command.value === "string" &&
             command.value.includes("cron fired: run the check") &&
-            command.mode === "task-notification",
+            command.mode === "task-notification" &&
+            command.queueOwner?.kind === "session" &&
+            command.queueOwner.conversationId === conversationId,
         ),
       ).toBe(true);
     } finally {
@@ -193,10 +197,12 @@ describe("live Cron tools drive the real scheduler", () => {
 
       // …and the bootstrap re-arm path starts a fresh runner from the
       // persisted store.
-      const { startCronSchedulerRunner } = await import(
-        "./model-facing-tools.js"
-      );
-      await startCronSchedulerRunner();
+      const { startCronSchedulerRunner } =
+        await import("./model-facing-tools.js");
+      await startCronSchedulerRunner({
+        conversationId,
+        workspaceRoot: tempRoot,
+      });
       await advanceUntilQueued(20);
 
       const queued = getCommandQueueSnapshot();

@@ -4,7 +4,7 @@ import type { AppState } from "../state/AppStateStore.js";
 import { useAppState, useSetAppState } from "../state/AppState.js";
 import { getWorkbenchBufferProviderController } from "./buffer/providers/BufferProviderController.js";
 import type { BufferProviderSnapshot } from "./buffer/providers/types.js";
-import { ensureWorkbenchState, getDefaultWorkbenchState, workbenchReducer } from "./reducer.js";
+import { ensureWorkbenchState, workbenchReducer } from "./reducer.js";
 import { containsWorkspacePathReference } from "./pathReferences.js";
 import type {
   WorkbenchCommand,
@@ -17,9 +17,7 @@ type WorkbenchEnv = {
   readonly AGENC_TUI_WORKBENCH?: string;
 };
 
-export function isWorkbenchEnabled(
-  env: WorkbenchEnv = process.env,
-): boolean {
+export function isWorkbenchEnabled(env: WorkbenchEnv = process.env): boolean {
   const value = env[WORKBENCH_ENV_VAR];
   if (value === undefined) return true;
   return value !== "0" && value.toLowerCase() !== "false";
@@ -82,14 +80,15 @@ function blocksPendingRecoveryNavigation(
   if (state.activeSurfaceMode !== "buffer" || command.type !== "openBuffer") {
     return false;
   }
-  const recovery = getWorkbenchBufferProviderController().getSnapshot().recovery;
+  const recovery =
+    getWorkbenchBufferProviderController().getSnapshot().recovery;
   const recoveryPending =
     recovery?.status === "pending" || recovery?.status === "working";
   return recoveryPending && command.path !== state.activeFilePath;
 }
 
 export function useWorkbenchState(): WorkbenchState {
-  return useAppState((state: AppState) => state.workbench ?? getDefaultWorkbenchState());
+  return useAppState(getWorkbenchStateFromAppState);
 }
 
 export function useWorkbenchDispatch(): (command: WorkbenchCommand) => void {
@@ -107,10 +106,7 @@ function blockedSurfaceLeaveCommand(
   command: WorkbenchCommand,
 ): WorkbenchSurfaceLeaveCommand | null {
   const snapshot = getWorkbenchBufferProviderController().getSnapshot();
-  if (
-    command.type === "requestAppExit" &&
-    snapshot.dirty
-  ) {
+  if (command.type === "requestAppExit" && snapshot.dirty) {
     return command;
   }
   if (
@@ -120,27 +116,47 @@ function blockedSurfaceLeaveCommand(
   ) {
     return command;
   }
+  // In Editor, preview/open is ordinary file navigation inside the persistent
+  // Neovim workspace. The reducer keeps BUFFER active and schedules a new
+  // buffer open, so this is not a dirty-surface leave operation.
+  if (
+    state.activeWorkspaceView === "editor" &&
+    command.type === "openPreview" &&
+    snapshot.provider.capabilities.multiBuffer
+  ) {
+    return null;
+  }
   if (state.activeSurfaceMode !== "buffer") return null;
-  if (!isSurfaceLeaveCommand(command) || !commandLeavesBufferSurface(command)) return null;
+  if (!isSurfaceLeaveCommand(command) || !commandLeavesBufferSurface(command))
+    return null;
   return snapshot.dirty ? command : null;
 }
 
 export function projectMutationTouchesDirtyBuffer(
   command:
-    | Extract<WorkbenchSurfaceLeaveCommand, { readonly type: "requestProjectPathRename" }>
-    | Extract<WorkbenchSurfaceLeaveCommand, { readonly type: "requestProjectPathDelete" }>,
+    | Extract<
+        WorkbenchSurfaceLeaveCommand,
+        { readonly type: "requestProjectPathRename" }
+      >
+    | Extract<
+        WorkbenchSurfaceLeaveCommand,
+        { readonly type: "requestProjectPathDelete" }
+      >,
   snapshot: BufferProviderSnapshot,
 ): boolean {
-  const target = command.type === "requestProjectPathRename"
-    ? command.fromPath
-    : command.path;
+  const target =
+    command.type === "requestProjectPathRename"
+      ? command.fromPath
+      : command.path;
   const dirtyPaths = snapshot.buffers
     .filter((buffer) => buffer.modified)
     .flatMap((buffer) => buffer.filePath ?? buffer.absolutePath ?? []);
   if (dirtyPaths.length === 0 && snapshot.dirty && snapshot.filePath) {
     dirtyPaths.push(snapshot.filePath);
   }
-  return dirtyPaths.some((path) => containsWorkspacePathReference(path, target));
+  return dirtyPaths.some((path) =>
+    containsWorkspacePathReference(path, target),
+  );
 }
 
 function blockedActionLabel(command: WorkbenchSurfaceLeaveCommand): string {

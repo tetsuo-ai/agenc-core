@@ -19,9 +19,11 @@ import {
 import type {
   AgentCreateResult,
   AgentSummary,
+  EditorInteractionParams,
   JsonObject,
   MessageContentBlock,
 } from "../app-server/protocol/index.js";
+import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import { resolveAgencHome } from "../config/env.js";
 import { ConfigStore } from "../config/store.js";
 import { resolveStartupSelection } from "../bin/startup-selection.js";
@@ -63,13 +65,13 @@ export interface AgenCDaemonPromptAgentOptions {
   readonly provider?: string;
   readonly profile?: string;
   readonly initialContent?: string | readonly MessageContentBlock[];
+  readonly deferInitialTurn?: boolean;
+  readonly initialDisplayUserMessage?: string | null;
+  readonly initialEditorInteraction?: SessionEditorInteraction;
   readonly metadata?: JsonObject;
   /** See `AgentCreateParams.permissionMode`. Forwarded verbatim. */
   readonly permissionMode?:
-    | "default"
-    | "plan"
-    | "acceptEdits"
-    | "bypassPermissions";
+    "default" | "plan" | "acceptEdits" | "bypassPermissions";
 }
 
 export interface StopAgenCDaemonPromptAgentOptions {
@@ -99,6 +101,19 @@ export async function startAgenCDaemonPromptAgent(
     ...(options.initialContent !== undefined
       ? { initialContent: options.initialContent }
       : {}),
+    ...(options.deferInitialTurn !== undefined
+      ? { deferInitialTurn: options.deferInitialTurn }
+      : {}),
+    ...(options.initialDisplayUserMessage !== undefined
+      ? { initialDisplayUserMessage: options.initialDisplayUserMessage }
+      : {}),
+    ...(options.initialEditorInteraction !== undefined
+      ? {
+          initialEditorInteraction: editorInteractionParams(
+            options.initialEditorInteraction,
+          ),
+        }
+      : {}),
     ...(options.permissionMode !== undefined
       ? { permissionMode: options.permissionMode }
       : {}),
@@ -108,6 +123,34 @@ export async function startAgenCDaemonPromptAgent(
       ...(options.metadata ?? {}),
     },
   });
+}
+
+function editorInteractionParams(
+  interaction: SessionEditorInteraction,
+): EditorInteractionParams {
+  return {
+    interactionId: interaction.interactionId,
+    kind: interaction.kind,
+    policy: interaction.policy,
+    editorInstanceId: interaction.editorInstanceId,
+    bufferHandle: interaction.bufferHandle,
+    changedtick: interaction.changedtick,
+    contentSha256: interaction.contentSha256,
+    ...(interaction.path !== undefined ? { path: interaction.path } : {}),
+    range: {
+      start: {
+        line: interaction.range.start.line,
+        column: interaction.range.start.column,
+      },
+      end: {
+        line: interaction.range.end.line,
+        column: interaction.range.end.column,
+      },
+    },
+    ...(interaction.selectionMode !== undefined
+      ? { selectionMode: interaction.selectionMode }
+      : {}),
+  };
 }
 
 export async function stopAgenCDaemonPromptAgent(
@@ -179,10 +222,7 @@ export interface AgenCDaemonOnlyTuiContextOptions {
    * runtime authority instead of always claiming `default`.
    */
   readonly permissionMode?:
-    | "default"
-    | "plan"
-    | "acceptEdits"
-    | "bypassPermissions";
+    "default" | "plan" | "acceptEdits" | "bypassPermissions";
 }
 
 export interface AgenCDaemonOnlyTuiContext {
@@ -241,13 +281,14 @@ export async function createAgenCDaemonOnlyTuiContext(
   });
   await skillsServices.skillsWatcher.start();
   const sandboxExecutionBroker = new SandboxExecutionBroker({
-    mode: options.permissionMode === "bypassPermissions"
-      ? "danger_full_access"
-      : effectiveConfig.sandbox_mode === "read-only"
-        ? "read_only"
-        : effectiveConfig.sandbox_mode === "danger-full-access"
-          ? "danger_full_access"
-          : "workspace_write",
+    mode:
+      options.permissionMode === "bypassPermissions"
+        ? "danger_full_access"
+        : effectiveConfig.sandbox_mode === "read-only"
+          ? "read_only"
+          : effectiveConfig.sandbox_mode === "danger-full-access"
+            ? "danger_full_access"
+            : "workspace_write",
     // Role authority remains anchored to the canonical checkout, while
     // execution policy must follow the attached worktree/session cwd.
     cwd: options.cwd,
@@ -313,8 +354,7 @@ export async function createAgenCDaemonOnlyTuiContext(
     flushEventLog: () => {},
     emit: () => {},
     nextInternalSubId: () => `daemon-client-${++nextEventId}-${randomUUID()}`,
-    listMcpClients: () =>
-      projectMcpManagerToConnections(mcpService as never),
+    listMcpClients: () => projectMcpManagerToConnections(mcpService as never),
     listMcpTools: () => mcpService.getTools?.() ?? [],
   };
   return {

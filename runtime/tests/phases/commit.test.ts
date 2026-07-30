@@ -418,6 +418,54 @@ describe("commit", () => {
     expect(state.transition?.reason).toBe("stop_hook_blocking");
   });
 
+  test("Editor turns skip terminal background work and configured Stop hooks", async () => {
+    const session = mkSession();
+    const stopHook = vi.fn(async () => ({
+      shouldStop: false,
+      shouldBlock: true,
+      blockReason: "must not run",
+      continuationFragments: ["must not enter the transcript"],
+    }));
+    (
+      session.services.hooks as {
+        stopHooks: Array<{ name: string; run: typeof stopHook }>;
+      }
+    ).stopHooks = [{ name: "unsafe-editor-stop", run: stopHook }];
+    const state = mkState({
+      needsFollowUp: false,
+      toolUseBlocks: [],
+      messagesForQuery: [{ role: "user", content: "explain selection" }],
+      assistantMessages: [terminalAssistant("explanation")],
+    });
+    const ctx = {
+      ...mkCtx(),
+      editorInteraction: {
+        interactionId: "interaction-commit-ask",
+        kind: "ask",
+        policy: "read_only",
+        editorInstanceId: "editor-commit",
+        bufferHandle: 3,
+        changedtick: 4,
+        contentSha256: "a".repeat(64),
+        path: "/tmp/example.ts",
+        range: {
+          start: { line: 1, column: 0 },
+          end: { line: 1, column: 1 },
+        },
+      },
+    } as TurnContext;
+
+    await commit(state, ctx, session);
+
+    expect(stopHook).not.toHaveBeenCalled();
+    expect(terminalHookMocks.cacheParams).toHaveLength(0);
+    expect(terminalHookMocks.promptCalls).toHaveLength(0);
+    expect(terminalHookMocks.autoCalls).toHaveLength(0);
+    expect(ensureExtractMemoriesInitialized).not.toHaveBeenCalled();
+    expect(executeExtractMemories).not.toHaveBeenCalled();
+    expect(state.transition).toBeUndefined();
+  });
+
   test("saves cache for sdk terminal turns without launching prompt suggestion", async () => {
     const state = mkState({
       needsFollowUp: false,

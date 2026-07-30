@@ -50,6 +50,12 @@ import type { Event } from "./event-log.js";
 import type { RolloutItem } from "./rollout-item.js";
 import { isDegradedErrno } from "./session-store.js";
 import type { Sidecar } from "./sidecar.js";
+import {
+  completeWorkspaceTopologyMutation,
+  reserveWorkspaceTopologyMutation,
+  workspaceLoadedEditorPathConflict,
+  workspaceMutationPathConflict,
+} from "../workspace/mutation-coordinator.js";
 
 const MAX_SNAPSHOTS = 100;
 
@@ -160,7 +166,8 @@ export function computeDiffStats(prior: string, current: string): DiffStats {
   // Fast-path: large files — approximate via line-hash set diff.
   if (n > 10_000 || m > 10_000) {
     const priorSet = new Map<string, number>();
-    for (const line of priorLines) priorSet.set(line, (priorSet.get(line) ?? 0) + 1);
+    for (const line of priorLines)
+      priorSet.set(line, (priorSet.get(line) ?? 0) + 1);
     let common = 0;
     for (const line of currentLines) {
       const count = priorSet.get(line) ?? 0;
@@ -479,8 +486,7 @@ export class FileHistory {
     } catch (err) {
       this.emitDiagnostic({
         cause: "file_history_restore_failed",
-        message:
-          err instanceof Error ? err.message : String(err),
+        message: err instanceof Error ? err.message : String(err),
       });
       throw err;
     }
@@ -497,7 +503,9 @@ export class FileHistory {
    * touching anything. Returns `null` when no snapshot exists for
    * `messageId`.
    */
-  async previewRewind(messageId: string): Promise<FileHistoryRewindPreview | null> {
+  async previewRewind(
+    messageId: string,
+  ): Promise<FileHistoryRewindPreview | null> {
     if (!this.enabled) return null;
     const target = findSnapshotByMessageId(this.state, messageId);
     if (!target) return null;
@@ -850,7 +858,30 @@ export async function fileHistoryRewind(
       `FileHistory: Snapshot for messageId=${messageId} not found`,
     );
   }
+  for (const trackingPath of state.trackedFiles) {
+    const conflict = workspaceMutationPathConflict(trackingPath);
+    if (conflict !== null) {
+      throw new Error(
+        `Cannot rewind ${trackingPath}: ${conflict.path} has ${
+          conflict.authority === "editor_dirty"
+            ? "unsaved editor changes"
+            : "unreconciled editor changes"
+        }. Resolve the Editor buffer first.`,
+      );
+    }
+    const loadedConflict = workspaceLoadedEditorPathConflict(trackingPath);
+    if (loadedConflict !== null) {
+      throw new Error(
+        `Cannot rewind ${trackingPath}: ${loadedConflict.path} is loaded in Editor. Close that buffer before rewinding.`,
+      );
+    }
+  }
+  const reservation = await reserveWorkspaceTopologyMutation(
+    [...state.trackedFiles].map((path) => ({ path })),
+    "rewind",
+  );
   const changed: string[] = [];
+  let outcomeUnknown = false;
   for (const trackingPath of state.trackedFiles) {
     const targetBackup = target.trackedFileBackups[trackingPath];
     const origin = targetBackup ?? getOriginBackup(state, trackingPath);
@@ -862,8 +893,10 @@ export async function fileHistoryRewind(
         try {
           await rm(trackingPath);
           changed.push(trackingPath);
-        } catch {
-          /* already absent */
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            outcomeUnknown = true;
+          }
         }
         continue;
       }
@@ -873,9 +906,15 @@ export async function fileHistoryRewind(
         changed.push(trackingPath);
       }
     } catch {
-      /* best-effort — leave file untouched */
+      // Rewind is historically best-effort, but an attempted filesystem
+      // effect still has to be represented truthfully to a concurrent editor.
+      outcomeUnknown = true;
     }
   }
+  await completeWorkspaceTopologyMutation(
+    reservation,
+    outcomeUnknown ? "unknown_outcome" : "applied",
+  );
   return changed;
 }
 
@@ -1009,8 +1048,7 @@ export function fileHistoryRestoreStateFromLog(
     if (item.type !== "event_msg") continue;
     const payload = item.payload as Event | undefined;
     const msg = payload?.msg as
-      | { readonly type?: string; readonly snapshot?: unknown }
-      | undefined;
+      { readonly type?: string; readonly snapshot?: unknown } | undefined;
     if (!msg || msg.type !== "file_history_snapshot") continue;
     const candidate = msg.snapshot;
     if (!isPersistedSnapshot(candidate)) continue;
@@ -1062,7 +1100,10 @@ export function copyFileHistoryForResume(
         version: backup.version,
         backupTimeMs: backup.backupTimeMs,
         diffStats: backup.diffStats
-          ? { insertions: backup.diffStats.insertions, deletions: backup.diffStats.deletions }
+          ? {
+              insertions: backup.diffStats.insertions,
+              deletions: backup.diffStats.deletions,
+            }
           : undefined,
       };
     }

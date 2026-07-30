@@ -69,6 +69,7 @@ const NON_MENU_CONTEXTS = new Set<KeybindingContextName>([
   "Task",
   "Scroll",
   "Workbench",
+  "WorkspaceTabs",
   "Explorer",
   "Surface",
   "Buffer",
@@ -79,6 +80,7 @@ const NON_MENU_CONTEXTS = new Set<KeybindingContextName>([
 
 const WORKBENCH_CONTEXTS: readonly KeybindingContextName[] = [
   "Workbench",
+  "WorkspaceTabs",
   "Explorer",
   "Surface",
   "Buffer",
@@ -132,7 +134,8 @@ function eventForStroke(stroke: ParsedKeystroke): {
 
 describe("useKeybinding exports and resolver contract", () => {
   test("exports singular and aggregate hooks from the canonical module", async () => {
-    const { useKeybinding, useKeybindings } = await import("./useKeybinding.js");
+    const { useKeybinding, useKeybindings } =
+      await import("./useKeybinding.js");
 
     expect(typeof useKeybinding).toBe("function");
     expect(typeof useKeybindings).toBe("function");
@@ -282,11 +285,15 @@ describe("useKeybinding exports and resolver contract", () => {
     const bindings = parseBindings(DEFAULT_BINDINGS);
     const unclassifiedContexts = [
       ...new Set(DEFAULT_BINDINGS.map((block) => block.context)),
-    ].filter((context) => !MENU_CONTEXTS.has(context) && !NON_MENU_CONTEXTS.has(context));
-    const menuBindings = bindings.filter((binding) =>
-      MENU_CONTEXTS.has(binding.context) &&
-      binding.action !== null &&
-      binding.chord.length === 1
+    ].filter(
+      (context) =>
+        !MENU_CONTEXTS.has(context) && !NON_MENU_CONTEXTS.has(context),
+    );
+    const menuBindings = bindings.filter(
+      (binding) =>
+        MENU_CONTEXTS.has(binding.context) &&
+        binding.action !== null &&
+        binding.chord.length === 1,
     );
 
     expect(unclassifiedContexts).toEqual([]);

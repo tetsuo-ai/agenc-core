@@ -11,21 +11,14 @@
 
 import { randomInt } from "node:crypto";
 
-export type TaskType =
-  | "local_bash"
-  | "local_agent"
-  | "in_process_teammate";
+export type TaskType = "local_bash" | "local_agent" | "in_process_teammate";
 
 export type LifecycleOnlyTaskType = "monitor" | "generic";
 
 export type AgenCBackgroundTaskType = TaskType | LifecycleOnlyTaskType;
 
 export type TaskStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "killed";
+  "pending" | "running" | "completed" | "failed" | "killed";
 
 export type StoppableTaskStatus = Extract<TaskStatus, "pending" | "running">;
 
@@ -46,6 +39,10 @@ export interface TaskStateBase<T extends TaskType = TaskType> {
 export type BashTaskKind = "bash" | "monitor";
 
 export interface LocalShellTaskState extends TaskStateBase<"local_bash"> {
+  readonly queueOwner?: {
+    readonly kind: "session";
+    readonly conversationId: string;
+  };
   readonly command: string;
   readonly result?: {
     readonly code: number;
@@ -76,6 +73,10 @@ export interface AgentProgress {
 }
 
 export interface LocalAgentTaskState extends TaskStateBase<"local_agent"> {
+  readonly queueOwner?: {
+    readonly kind: "session";
+    readonly conversationId: string;
+  };
   readonly agentId: string;
   readonly prompt: string;
   readonly cwd?: string;
@@ -109,8 +110,7 @@ export interface TeammateIdentity {
   readonly parentSessionId: string;
 }
 
-export interface InProcessTeammateTaskState
-  extends TaskStateBase<"in_process_teammate"> {
+export interface InProcessTeammateTaskState extends TaskStateBase<"in_process_teammate"> {
   readonly identity: TeammateIdentity;
   readonly prompt: string;
   readonly model?: string;
@@ -136,9 +136,7 @@ export interface InProcessTeammateTaskState
 }
 
 export type TaskState =
-  | LocalShellTaskState
-  | LocalAgentTaskState
-  | InProcessTeammateTaskState;
+  LocalShellTaskState | LocalAgentTaskState | InProcessTeammateTaskState;
 
 export type BackgroundTaskState = TaskState;
 
@@ -168,7 +166,9 @@ export function isTerminalTaskStatus(status: TaskStatus): boolean {
   return status === "completed" || status === "failed" || status === "killed";
 }
 
-export function isStoppableTaskStatus(status: TaskStatus): status is StoppableTaskStatus {
+export function isStoppableTaskStatus(
+  status: TaskStatus,
+): status is StoppableTaskStatus {
   return status === "pending" || status === "running";
 }
 
@@ -230,10 +230,7 @@ export function isBackgroundTask(task: unknown): task is BackgroundTaskState {
   if (typeof candidate.type !== "string" || !isTaskType(candidate.type)) {
     return false;
   }
-  if (
-    candidate.status !== "running" &&
-    candidate.status !== "pending"
-  ) {
+  if (candidate.status !== "running" && candidate.status !== "pending") {
     return false;
   }
   return candidate.isBackgrounded !== false;

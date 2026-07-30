@@ -31,19 +31,40 @@ vi.mock("../../../src/tui/components/TextInput.js", async () => {
   };
 });
 
-import { PromptOverlayProvider, useSetPromptOverlay, useSetPromptOverlayDialog } from "../../../src/tui/context/promptOverlayContext.js";
+import {
+  PromptOverlayProvider,
+  useSetPromptOverlay,
+  useSetPromptOverlayDialog,
+} from "../../../src/tui/context/promptOverlayContext.js";
 import { useContentWidth } from "../../../src/tui/context/contentWidthContext.js";
 import { Box, Text } from "../../../src/tui/ink.js";
 import type { ScrollBoxHandle } from "../../../src/tui/ink/components/ScrollBox.js";
-import { AGENC_LOGO_MARK_COMPACT_LINES, WelcomeColdPanel } from "../../../src/tui/components/v2/primitives.js";
-import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
-import { ProjectExplorerRow, ProjectFileActionPrompt, projectTreeViewport } from "../../../src/tui/workbench/project-tree/ProjectExplorer.js";
+import {
+  AGENC_LOGO_MARK_COMPACT_LINES,
+  WelcomeColdPanel,
+} from "../../../src/tui/components/v2/primitives.js";
+import {
+  AppStateProvider,
+  getDefaultAppState,
+} from "../../../src/tui/state/AppState.js";
+import {
+  ProjectExplorerRow,
+  ProjectFileActionPrompt,
+  projectTreeViewport,
+} from "../../../src/tui/workbench/project-tree/ProjectExplorer.js";
 import { useWorkbenchComposerFocus } from "../../../src/tui/workbench/composerFocusContext.js";
 import { WORKBENCH_SURFACES } from "../../../src/tui/workbench/surfaces/ActiveWorkSurface.js";
 import { TranscriptSurface } from "../../../src/tui/workbench/surfaces/TranscriptSurface.js";
 import { WorkbenchFooter } from "../../../src/tui/workbench/WorkbenchFooter.js";
 import { WorkbenchStatusBar } from "../../../src/tui/workbench/WorkbenchStatusBar.js";
-import { layoutSizeForColumns, WorkbenchLayout } from "../../../src/tui/workbench/WorkbenchLayout.js";
+import {
+  layoutSizeForColumns,
+  WorkbenchLayout,
+} from "../../../src/tui/workbench/WorkbenchLayout.js";
+import {
+  clearEditorProposalRecords,
+  stageEditorProposalRecord,
+} from "../../../src/tui/workbench/editorProposalStore.js";
 import { workbenchReducer } from "../../../src/tui/workbench/reducer.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
@@ -100,38 +121,41 @@ function ComposerWidthProbe(): React.ReactNode {
 }
 
 describe("workbench render contract", () => {
-  it.each([28, 30, 44])("renders explorer rows within %i columns", async (width) => {
-    const output = await renderToString(
-      <ProjectExplorerRow
-        width={width}
-        row={{
-          id: "src/components/really-long-file-name.tsx",
-          path: "src/components/really-long-file-name.tsx",
-          label: "really-long-file-name.tsx",
-          kind: "file",
-          depth: 2,
-          expanded: false,
-          selected: true,
-          focused: width !== 30,
-          active: true,
-          attached: true,
-          searchHit: true,
-          inFlight: true,
-          gitState: "modified",
-          ancestorLast: [false],
-          isLast: true,
-          hasChildren: false,
-        }}
-      />,
-      width,
-    );
+  it.each([28, 30, 44])(
+    "renders explorer rows within %i columns",
+    async (width) => {
+      const output = await renderToString(
+        <ProjectExplorerRow
+          width={width}
+          row={{
+            id: "src/components/really-long-file-name.tsx",
+            path: "src/components/really-long-file-name.tsx",
+            label: "really-long-file-name.tsx",
+            kind: "file",
+            depth: 2,
+            expanded: false,
+            selected: true,
+            focused: width !== 30,
+            active: true,
+            attached: true,
+            searchHit: true,
+            inFlight: true,
+            gitState: "modified",
+            ancestorLast: [false],
+            isLast: true,
+            hasChildren: false,
+          }}
+        />,
+        width,
+      );
 
-    for (const line of output.split(/\r?\n/u)) {
-      expect(line.length).toBeLessThanOrEqual(width);
-    }
-    expect(output).toContain("@");
-    expect(output).toContain("~");
-  });
+      for (const line of output.split(/\r?\n/u)) {
+        expect(line.length).toBeLessThanOrEqual(width);
+      }
+      expect(output).toContain("@");
+      expect(output).toContain("~");
+    },
+  );
 
   it("renders deep explorer rows without connector rails that imply offscreen parents", async () => {
     const output = await renderToString(
@@ -172,21 +196,24 @@ describe("workbench render contract", () => {
     ["unmerged", "U"],
     ["untracked", "new"],
     ["ignored", "!"],
-  ] as const)("renders explorer git state %s with its badge", async (gitState, marker) => {
-    const output = await renderToString(
-      <ProjectExplorerRow
-        width={18}
-        row={{
-          ...row(`src/${gitState}.ts`, "clean", "file", 1),
-          gitState,
-        }}
-      />,
-      18,
-    );
+  ] as const)(
+    "renders explorer git state %s with its badge",
+    async (gitState, marker) => {
+      const output = await renderToString(
+        <ProjectExplorerRow
+          width={18}
+          row={{
+            ...row(`src/${gitState}.ts`, "clean", "file", 1),
+            gitState,
+          }}
+        />,
+        18,
+      );
 
-    expect(output).toContain(marker);
-    expect(output).toContain("clean");
-  });
+      expect(output).toContain(marker);
+      expect(output).toContain("clean");
+    },
+  );
 
   it("keeps file-state badges beside the filename instead of pinning them to the pane edge", async () => {
     const output = await renderToString(
@@ -200,7 +227,9 @@ describe("workbench render contract", () => {
       32,
     );
 
-    const rowLine = output.split(/\r?\n/u).find((line) => line.includes("game.cpp"));
+    const rowLine = output
+      .split(/\r?\n/u)
+      .find((line) => line.includes("game.cpp"));
     expect(rowLine).toBeDefined();
     expect(rowLine).toMatch(/game\.cpp {2}new/u);
     expect(rowLine).not.toMatch(/game\.cpp {3,}new/u);
@@ -453,7 +482,8 @@ describe("workbench render contract", () => {
       80,
     );
 
-    const inputFilter = projectExplorerHarness.textInputProps.at(-1)?.inputFilter as (
+    const inputFilter = projectExplorerHarness.textInputProps.at(-1)
+      ?.inputFilter as (
       input: string,
       key: { readonly escape?: boolean },
     ) => string;
@@ -510,7 +540,9 @@ describe("workbench render contract", () => {
       80,
     );
 
-    expect(projectExplorerHarness.keybindingCalls.at(-1)?.options).toMatchObject({
+    expect(
+      projectExplorerHarness.keybindingCalls.at(-1)?.options,
+    ).toMatchObject({
       context: "Confirmation",
       isActive: false,
     });
@@ -522,13 +554,21 @@ describe("workbench render contract", () => {
       row("runtime", "runtime", "directory", 1),
       row("runtime/src", "src", "directory", 2),
       ...Array.from({ length: 18 }, (_, index) =>
-        row(`runtime/src/child-${index}`, `child-${index}`, "directory", 3, index === 10),
+        row(
+          `runtime/src/child-${index}`,
+          `child-${index}`,
+          "directory",
+          3,
+          index === 10,
+        ),
       ),
     ];
 
     const viewport = projectTreeViewport(rows, 6);
     const paths = viewport.rows.map((item) => item.path);
-    const indexes = viewport.rows.map((item) => rows.findIndex((row) => row.path === item.path));
+    const indexes = viewport.rows.map((item) =>
+      rows.findIndex((row) => row.path === item.path),
+    );
 
     expect(paths).toContain("runtime/src/child-10");
     expect(indexes).toEqual([10, 11, 12, 13, 14, 15]);
@@ -547,17 +587,20 @@ describe("workbench render contract", () => {
         ...getDefaultAppState().workbench,
         focusedPane: "surface" as const,
         activeSurfaceMode: "preview" as const,
-        attachments: [{
-          id: "file:src/app.ts",
-          kind: "file" as const,
-          label: "src/app.ts",
-          path: "src/app.ts",
-        }, {
-          id: "file:src/stale.ts",
-          kind: "file" as const,
-          label: "src/stale.ts",
-          path: "src/stale.ts",
-        }],
+        attachments: [
+          {
+            id: "file:src/app.ts",
+            kind: "file" as const,
+            label: "src/app.ts",
+            path: "src/app.ts",
+          },
+          {
+            id: "file:src/stale.ts",
+            kind: "file" as const,
+            label: "src/stale.ts",
+            path: "src/stale.ts",
+          },
+        ],
         composerAttachmentIds: ["file:src/app.ts"],
       },
     };
@@ -701,11 +744,11 @@ describe("workbench render contract", () => {
       <AppStateProvider initialState={getDefaultAppState()}>
         <WorkbenchLayout
           transcript={longTranscript}
-          composer={(
+          composer={
             <Box flexDirection="column" flexGrow={1}>
               <Text>composer-anchor</Text>
             </Box>
-          )}
+          }
           scrollRef={scrollRef}
         />
       </AppStateProvider>,
@@ -726,6 +769,192 @@ describe("workbench render contract", () => {
   ] as const)("classifies %i columns as %s layout", (columns, size) => {
     expect(layoutSizeForColumns(columns)).toBe(size);
   });
+
+  it("keeps workspace tab bindings registered when short-terminal chrome is hidden", async () => {
+    projectExplorerHarness.keybindingCalls = [];
+    const changes: Array<ReturnType<typeof getDefaultAppState>> = [];
+
+    const output = await renderToString(
+      <AppStateProvider
+        initialState={getDefaultAppState()}
+        onChangeAppState={({ newState }) => changes.push(newState)}
+      >
+        <WorkbenchLayout
+          transcript={<Text>short transcript</Text>}
+          composer={<ComposerFocusProbe />}
+        />
+      </AppStateProvider>,
+      { columns: 80, rows: 6 },
+    );
+
+    expect(output).not.toContain("1 Agent");
+    expect(output).not.toContain("2 Editor");
+    const tabHandlers = projectExplorerHarness.keybindingCalls.find(
+      (call) => call.options?.context === "WorkspaceTabs",
+    )?.handlers;
+    expect(tabHandlers).toBeDefined();
+
+    tabHandlers?.["workspace:switchEditor"]?.();
+    expect(changes.at(-1)?.workbench.activeWorkspaceView).toBe("editor");
+    tabHandlers?.["workspace:switchAgent"]?.();
+    expect(changes.at(-1)?.workbench.activeWorkspaceView).toBe("agent");
+    tabHandlers?.["workspace:cycleView"]?.();
+    expect(changes.at(-1)?.workbench.activeWorkspaceView).toBe("editor");
+  });
+
+  it.each([148, 120, 80])(
+    "keeps the open Editor panel focusable at %i columns",
+    async (columns) => {
+      projectExplorerHarness.keybindingCalls = [];
+      const changes: Array<ReturnType<typeof getDefaultAppState>> = [];
+      const defaults = getDefaultAppState();
+      const editor = workbenchReducer(defaults.workbench, {
+        type: "switchWorkspaceView",
+        view: "editor",
+      });
+      const withPanel = workbenchReducer(editor, {
+        type: "setRail",
+        rail: { kind: "transcript" },
+      });
+
+      const output = await renderToString(
+        <AppStateProvider
+          initialState={{ ...defaults, workbench: withPanel }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <WorkbenchLayout
+            transcript={<Text>editor answer</Text>}
+            composer={<ComposerFocusProbe />}
+          />
+        </AppStateProvider>,
+        { columns, rows: 30 },
+      );
+
+      if (columns >= 148) {
+        expect(output).toContain("AI · Alt+L focus and scroll");
+      } else {
+        expect(output).not.toContain("AI · Alt+L focus and scroll");
+        expect(output).toContain("composer-inactive");
+      }
+      const workbenchHandlers = projectExplorerHarness.keybindingCalls.find(
+        (call) => call.options?.context === "Workbench",
+      )?.handlers;
+      workbenchHandlers?.["workbench:focusNext"]?.();
+
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeWorkspaceView: "editor",
+        focusedPane: "rail",
+        rail: { kind: "transcript" },
+      });
+    },
+  );
+
+  it.each([120, 80])(
+    "keeps a compact Editor transcript rail off the focused composer at %i columns",
+    async (columns) => {
+      const defaults = getDefaultAppState();
+      const withPanel = workbenchReducer(
+        workbenchReducer(
+          workbenchReducer(defaults.workbench, {
+            type: "switchWorkspaceView",
+            view: "editor",
+          }),
+          { type: "setRail", rail: { kind: "transcript" } },
+        ),
+        { type: "focus", pane: "composer" },
+      );
+      const output = await renderToString(
+        <AppStateProvider initialState={{ ...defaults, workbench: withPanel }}>
+          <WorkbenchLayout
+            transcript={<Text>compact-editor-answer</Text>}
+            composer={<ComposerFocusProbe />}
+          />
+        </AppStateProvider>,
+        { columns, rows: 30 },
+      );
+
+      expect(output).toContain("composer-active");
+      expect(output).not.toContain("compact-editor-answer");
+    },
+  );
+
+  it.each([120, 80])(
+    "shows a compact Editor proposal only while its rail owns focus at %i columns",
+    async (columns) => {
+      clearEditorProposalRecords();
+      const record = stageEditorProposalRecord({
+        version: 1,
+        interaction_id: `compact-proposal-${columns}`,
+        path: "src/value.ts",
+        buffer_handle: 1,
+        base_changedtick: 7,
+        base_content_sha256: "a".repeat(64),
+        summary: "Replace the value",
+        edits: [
+          {
+            id: "replace-value",
+            start_line: 1,
+            start_column: 0,
+            end_line: 1,
+            end_column: 5,
+            old_text: "value",
+            new_text: "answer",
+          },
+        ],
+      });
+      const defaults = getDefaultAppState();
+      const withProposal = workbenchReducer(
+        workbenchReducer(
+          workbenchReducer(defaults.workbench, {
+            type: "switchWorkspaceView",
+            view: "editor",
+          }),
+          {
+            type: "setRail",
+            rail: {
+              kind: "editor-proposal",
+              proposalId: record.id,
+            },
+          },
+        ),
+        { type: "focus", pane: "surface" },
+      );
+
+      try {
+        const surfaceOutput = await renderToString(
+          <AppStateProvider
+            initialState={{ ...defaults, workbench: withProposal }}
+          >
+            <WorkbenchLayout
+              transcript={<Text>unused transcript</Text>}
+              composer={<ComposerFocusProbe />}
+            />
+          </AppStateProvider>,
+          { columns, rows: 30 },
+        );
+        expect(surfaceOutput).not.toContain("EDITOR PROPOSAL");
+
+        const railFocused = workbenchReducer(withProposal, {
+          type: "focus",
+          pane: "rail",
+        });
+        const railOutput = await renderToString(
+          <AppStateProvider
+            initialState={{ ...defaults, workbench: railFocused }}
+          >
+            <WorkbenchLayout
+              transcript={<Text>unused transcript</Text>}
+              composer={<ComposerFocusProbe />}
+            />
+          </AppStateProvider>,
+          { columns, rows: 30 },
+        );
+        expect(railOutput).toContain("EDITOR PROPOSAL");
+      } finally {
+        clearEditorProposalRecords();
+      }
+    },
+  );
 
   it.each([
     {
@@ -774,43 +1003,55 @@ describe("workbench render contract", () => {
       name: "opens the diff surface",
       initialPane: "composer" as const,
       action: "workbench:openDiff",
-      expected: { activeSurfaceMode: "diff" as const, focusedPane: "surface" as const },
+      expected: {
+        activeSurfaceMode: "diff" as const,
+        focusedPane: "surface" as const,
+      },
     },
     {
       name: "opens the search surface",
       initialPane: "composer" as const,
       action: "workbench:openSearch",
-      expected: { activeSurfaceMode: "search" as const, focusedPane: "surface" as const },
+      expected: {
+        activeSurfaceMode: "search" as const,
+        focusedPane: "surface" as const,
+      },
     },
-  ])("wires WorkbenchLayout keybinding handler: $name", async ({ initialPane, action, expected }) => {
-    projectExplorerHarness.keybindingCalls = [];
-    const changes: Array<ReturnType<typeof getDefaultAppState>> = [];
+  ])(
+    "wires WorkbenchLayout keybinding handler: $name",
+    async ({ initialPane, action, expected }) => {
+      projectExplorerHarness.keybindingCalls = [];
+      const changes: Array<ReturnType<typeof getDefaultAppState>> = [];
 
-    await renderToString(
-      <AppStateProvider
-        initialState={{
-          ...getDefaultAppState(),
-          workbench: {
-            ...getDefaultAppState().workbench,
-            focusedPane: initialPane,
-          },
-        }}
-        onChangeAppState={({ newState }) => changes.push(newState)}
-      >
-        <WorkbenchLayout transcript={<Text>scroll body</Text>} composer={<ComposerFocusProbe />} />
-      </AppStateProvider>,
-      { columns: 148, rows: 30 },
-    );
+      await renderToString(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              focusedPane: initialPane,
+            },
+          }}
+          onChangeAppState={({ newState }) => changes.push(newState)}
+        >
+          <WorkbenchLayout
+            transcript={<Text>scroll body</Text>}
+            composer={<ComposerFocusProbe />}
+          />
+        </AppStateProvider>,
+        { columns: 148, rows: 30 },
+      );
 
-    const workbenchHandlers = projectExplorerHarness.keybindingCalls.find(
-      (call) => call.options?.context === "Workbench",
-    )?.handlers;
+      const workbenchHandlers = projectExplorerHarness.keybindingCalls.find(
+        (call) => call.options?.context === "Workbench",
+      )?.handlers;
 
-    expect(workbenchHandlers).toBeDefined();
-    workbenchHandlers?.[action]?.();
+      expect(workbenchHandlers).toBeDefined();
+      workbenchHandlers?.[action]?.();
 
-    expect(changes.at(-1)?.workbench).toMatchObject(expected);
-  });
+      expect(changes.at(-1)?.workbench).toMatchObject(expected);
+    },
+  );
 
   it("moves a file surface into the review rail in one ctrl+r transition", async () => {
     projectExplorerHarness.keybindingCalls = [];
@@ -830,7 +1071,10 @@ describe("workbench render contract", () => {
         }}
         onChangeAppState={({ newState }) => changes.push(newState)}
       >
-        <WorkbenchLayout transcript={<Text>scroll body</Text>} composer={<ComposerFocusProbe />} />
+        <WorkbenchLayout
+          transcript={<Text>scroll body</Text>}
+          composer={<ComposerFocusProbe />}
+        />
       </AppStateProvider>,
       { columns: 148, rows: 30 },
     );
@@ -980,7 +1224,10 @@ describe("workbench render contract", () => {
           },
         }}
       >
-        <WorkbenchLayout transcript={<Text>scroll body</Text>} composer={<ComposerFocusProbe />} />
+        <WorkbenchLayout
+          transcript={<Text>scroll body</Text>}
+          composer={<ComposerFocusProbe />}
+        />
       </AppStateProvider>,
       { columns: 120, rows: 30 },
     );
@@ -995,7 +1242,10 @@ describe("workbench render contract", () => {
           },
         }}
       >
-        <WorkbenchLayout transcript={<Text>scroll body</Text>} composer={<ComposerFocusProbe />} />
+        <WorkbenchLayout
+          transcript={<Text>scroll body</Text>}
+          composer={<ComposerFocusProbe />}
+        />
       </AppStateProvider>,
       { columns: 120, rows: 30 },
     );
@@ -1018,6 +1268,45 @@ describe("workbench render contract", () => {
     expect(output).toContain("composer-width:136");
   });
 
+  it("renders Agent and Editor as top-level views of one workbench", async () => {
+    const defaults = getDefaultAppState();
+    const editorState = workbenchReducer(defaults.workbench, {
+      type: "switchWorkspaceView",
+      view: "editor",
+    });
+    const agentOutput = await renderToString(
+      <AppStateProvider initialState={defaults}>
+        <WorkbenchLayout
+          transcript={<Text>agent-transcript</Text>}
+          composer={<Text>shared-composer</Text>}
+        />
+      </AppStateProvider>,
+      { columns: 120, rows: 30 },
+    );
+    const editorOutput = await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...defaults,
+          workbench: editorState,
+        }}
+      >
+        <WorkbenchLayout
+          transcript={<Text>editor-panel</Text>}
+          composer={<Text>shared-composer</Text>}
+        />
+      </AppStateProvider>,
+      { columns: 120, rows: 30 },
+    );
+
+    expect(agentOutput).toContain("1 Agent");
+    expect(agentOutput).toContain("2 Editor");
+    expect(agentOutput).toContain("agent-transcript");
+    expect(editorOutput).toContain("1 Agent");
+    expect(editorOutput).toContain("2 Editor");
+    expect(editorOutput).toContain("No file selected");
+    expect(editorOutput).toContain("shared-composer");
+  });
+
   it("does not render compact pane overlays when their panes are hidden", async () => {
     const hiddenAgentsOutput = await renderToString(
       <AppStateProvider
@@ -1030,7 +1319,10 @@ describe("workbench render contract", () => {
           },
         }}
       >
-        <WorkbenchLayout transcript={<Text>scroll body</Text>} composer={<ComposerFocusProbe />} />
+        <WorkbenchLayout
+          transcript={<Text>scroll body</Text>}
+          composer={<ComposerFocusProbe />}
+        />
       </AppStateProvider>,
       { columns: 120, rows: 30 },
     );
@@ -1046,7 +1338,10 @@ describe("workbench render contract", () => {
           },
         }}
       >
-        <WorkbenchLayout transcript={<Text>scroll body</Text>} composer={<ComposerFocusProbe />} />
+        <WorkbenchLayout
+          transcript={<Text>scroll body</Text>}
+          composer={<ComposerFocusProbe />}
+        />
       </AppStateProvider>,
       { columns: 80, rows: 30 },
     );
@@ -1064,7 +1359,7 @@ describe("workbench render contract", () => {
       "shell",
       "test",
       "search",
-      "agent",
+      "task-detail",
     ]);
     for (const surface of WORKBENCH_SURFACES) {
       expect(surface.footerHints.length).toBeGreaterThan(0);
@@ -1074,9 +1369,14 @@ describe("workbench render contract", () => {
   });
 
   it("keeps deprecated project-tree render code out of FullscreenLayout", () => {
-    const source = readFileSync("src/tui/components/FullscreenLayout.tsx", "utf8");
+    const source = readFileSync(
+      "src/tui/components/FullscreenLayout.tsx",
+      "utf8",
+    );
 
-    expect(source).not.toMatch(/readdirSync|getWorkspaceFileTreeRows|WorkspaceFileTreeGutter/u);
+    expect(source).not.toMatch(
+      /readdirSync|getWorkspaceFileTreeRows|WorkspaceFileTreeGutter/u,
+    );
   });
 
   it("renders the workbench title bar without leaking the viewport column count", async () => {

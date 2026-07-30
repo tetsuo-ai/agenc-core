@@ -12,7 +12,11 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
   },
 }));
 
-import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
+import {
+  AppStateProvider,
+  getDefaultAppState,
+  type AppState,
+} from "../../../src/tui/state/AppState.js";
 import { syncCollabAgentEventToAppState } from "../../../src/tui/state/collabAgentTaskSync.js";
 import { AgentsRail } from "../../../src/tui/workbench/agents/AgentsRail.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
@@ -66,7 +70,7 @@ describe("AgentsRail", () => {
 
     keybindingHarness.handlers["agents:open"]?.();
     expect(changes.at(-1)?.workbench).toMatchObject({
-      activeSurfaceMode: "agent",
+      activeSurfaceMode: "task-detail",
       focusedPane: "surface",
       selectedAgentTaskId: "agent-new",
     });
@@ -122,56 +126,58 @@ describe("AgentsRail", () => {
   });
 
   it("renders stable rows, selection, activity copy, and resilient text fallbacks", async () => {
-    const output = (await renderAgentsRail({
-      tasks: [
-        agentTask("agent-blank", "", {
-          description: " ",
-          progress: {
-            lastActivity: {
-              activityDescription: "",
-              toolName: "",
+    const output = (
+      await renderAgentsRail({
+        tasks: [
+          agentTask("agent-blank", "", {
+            description: " ",
+            progress: {
+              lastActivity: {
+                activityDescription: "",
+                toolName: "",
+              },
             },
-          },
-          startTime: 5_000,
-        }),
-        agentTask("", "failed", {
-          description: " ",
-          startTime: 4_500,
-        }),
-        agentTask("agent-pending", "pending", {
-          description: "pending agent",
-          progress: {
-            toolUseCount: 2,
-            tokenCount: 120,
-            diffCount: 3,
-            lastActivity: { toolName: "edit" },
-          },
-          pendingApproval: true,
-          startTime: 4_000,
-        }),
-        agentTask("agent-failed", "failed", {
-          description: "failed agent",
-          diffCount: 1,
-          startTime: 3_000,
-        }),
-        agentTask("agent-complete", "completed", {
-          description: "completed agent",
-          startTime: 2_000,
-        }),
-        agentTask("agent-killed", "killed", {
-          description: "killed agent",
-          startTime: 1_000,
-        }),
-        {
-          ...agentTask("shell-hidden", "running", {
-            description: "hidden shell",
+            startTime: 5_000,
           }),
-          type: "local_bash",
-        },
-      ],
-      selectedAgentTaskId: "agent-pending",
-      width: 90,
-    })).output;
+          agentTask("", "failed", {
+            description: " ",
+            startTime: 4_500,
+          }),
+          agentTask("agent-pending", "pending", {
+            description: "pending agent",
+            progress: {
+              toolUseCount: 2,
+              tokenCount: 120,
+              diffCount: 3,
+              lastActivity: { toolName: "edit" },
+            },
+            pendingApproval: true,
+            startTime: 4_000,
+          }),
+          agentTask("agent-failed", "failed", {
+            description: "failed agent",
+            diffCount: 1,
+            startTime: 3_000,
+          }),
+          agentTask("agent-complete", "completed", {
+            description: "completed agent",
+            startTime: 2_000,
+          }),
+          agentTask("agent-killed", "killed", {
+            description: "killed agent",
+            startTime: 1_000,
+          }),
+          {
+            ...agentTask("shell-hidden", "running", {
+              description: "hidden shell",
+            }),
+            type: "local_bash",
+          },
+        ],
+        selectedAgentTaskId: "agent-pending",
+        width: 90,
+      })
+    ).output;
 
     expect(output).not.toContain("Agent Swarm");
     expect(output).toContain("› pending agent");
@@ -220,11 +226,13 @@ describe("AgentsRail", () => {
     );
 
     const railTask = (synced.tasks as Record<string, any>)["fleet-agent"];
-    const output = (await renderAgentsRail({
-      tasks: [railTask],
-      selectedAgentTaskId: "fleet-agent",
-      width: 90,
-    })).output;
+    const output = (
+      await renderAgentsRail({
+        tasks: [railTask],
+        selectedAgentTaskId: "fleet-agent",
+        width: 90,
+      })
+    ).output;
 
     expect(output).toContain("9 tools · 73.2k tok");
     expect(output).not.toContain("0 tools · 0 tok");
@@ -233,14 +241,18 @@ describe("AgentsRail", () => {
   it("does not advertise stop shortcuts for stale task kinds without a stop action", async () => {
     // "remote_agent" was deleted as an unshipped scaffold; a stale record with
     // that kind must render view-only instead of advertising a fake stop.
-    const output = (await renderAgentsRail({
-      tasks: [{
-        ...agentTask("stale-running", "running", {
-          description: "stale running",
-        }),
-        type: "remote_agent",
-      }],
-    })).output;
+    const output = (
+      await renderAgentsRail({
+        tasks: [
+          {
+            ...agentTask("stale-running", "running", {
+              description: "stale running",
+            }),
+            type: "remote_agent",
+          },
+        ],
+      })
+    ).output;
 
     expect(output).toContain("› stale running");
     expect(output).toContain("running");
@@ -281,7 +293,7 @@ describe("AgentsRail", () => {
     keybindingHarness.handlers["agents:open"]?.();
 
     expect(changes.at(-1)?.workbench).toMatchObject({
-      activeSurfaceMode: "agent",
+      activeSurfaceMode: "task-detail",
       focusedPane: "surface",
       selectedAgentTaskId: "agent-live",
     });
@@ -333,7 +345,7 @@ describe("AgentsRail", () => {
     keybindingHarness.handlers["agents:open"]?.();
 
     expect(changes.at(-1)?.workbench).toMatchObject({
-      activeSurfaceMode: "agent",
+      activeSurfaceMode: "task-detail",
       focusedPane: "surface",
       selectedAgentTaskId: "agent-old",
     });
@@ -342,15 +354,26 @@ describe("AgentsRail", () => {
 
 describe("AgentsRail lifecycle legibility", () => {
   it("uses explicit lifecycle copy and one visible selection gutter", async () => {
-    const output = (await renderAgentsRail({
-      tasks: [
-        agentTask("agent-run", "running", { description: "scanning", startTime: Date.now() }),
-        agentTask("agent-ok", "completed", { description: "wrote tests", startTime: Date.now() }),
-        agentTask("agent-bad", "failed", { description: "crashed", startTime: Date.now() }),
-      ],
-      selectedAgentTaskId: "agent-ok",
-      width: 48,
-    })).output;
+    const output = (
+      await renderAgentsRail({
+        tasks: [
+          agentTask("agent-run", "running", {
+            description: "scanning",
+            startTime: Date.now(),
+          }),
+          agentTask("agent-ok", "completed", {
+            description: "wrote tests",
+            startTime: Date.now(),
+          }),
+          agentTask("agent-bad", "failed", {
+            description: "crashed",
+            startTime: Date.now(),
+          }),
+        ],
+        selectedAgentTaskId: "agent-ok",
+        width: 48,
+      })
+    ).output;
 
     expect(output).toContain("running");
     expect(output).toContain("completed");
@@ -360,16 +383,18 @@ describe("AgentsRail lifecycle legibility", () => {
   });
 
   it("surfaces approval as 'needs you' and pauses the activity scan", async () => {
-    const output = (await renderAgentsRail({
-      tasks: [
-        agentTask("agent-wait", "running", {
-          description: "awaiting decision",
-          pendingApproval: true,
-          startTime: Date.now(),
-        }),
-      ],
-      width: 48,
-    })).output;
+    const output = (
+      await renderAgentsRail({
+        tasks: [
+          agentTask("agent-wait", "running", {
+            description: "awaiting decision",
+            pendingApproval: true,
+            startTime: Date.now(),
+          }),
+        ],
+        width: 48,
+      })
+    ).output;
 
     expect(output).toContain("needs you");
     expect(output).not.toMatch(/[◆◇]/u);
@@ -406,7 +431,11 @@ describe("AgentsRail lifecycle legibility", () => {
   });
 });
 
-function agentTask(id: string, status: string, overrides: Record<string, unknown> = {}): any {
+function agentTask(
+  id: string,
+  status: string,
+  overrides: Record<string, unknown> = {},
+): any {
   return {
     id,
     type: "local_agent",
@@ -421,14 +450,16 @@ function agentTask(id: string, status: string, overrides: Record<string, unknown
   };
 }
 
-async function renderAgentsRail(options: {
-  readonly tasks?: readonly any[];
-  readonly rawTasks?: Record<string, any> | undefined;
-  readonly selectedAgentTaskId?: string | null;
-  readonly remoteBackgroundTaskCount?: number;
-  readonly focused?: boolean;
-  readonly width?: number;
-} = {}): Promise<{
+async function renderAgentsRail(
+  options: {
+    readonly tasks?: readonly any[];
+    readonly rawTasks?: Record<string, any> | undefined;
+    readonly selectedAgentTaskId?: string | null;
+    readonly remoteBackgroundTaskCount?: number;
+    readonly focused?: boolean;
+    readonly width?: number;
+  } = {},
+): Promise<{
   readonly output: string;
   readonly changes: AppState[];
 }> {
@@ -449,7 +480,10 @@ async function renderAgentsRail(options: {
       }}
       onChangeAppState={({ newState }) => changes.push(newState)}
     >
-      <AgentsRail focused={options.focused ?? true} width={options.width ?? 40} />
+      <AgentsRail
+        focused={options.focused ?? true}
+        width={options.width ?? 40}
+      />
     </AppStateProvider>,
     100,
   );

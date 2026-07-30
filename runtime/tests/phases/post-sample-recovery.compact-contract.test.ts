@@ -5,12 +5,10 @@ import {
   runContextCollapseOverflowRecovery,
 } from "./post-sample-recovery.js";
 import { findToolTurnValidationIssue } from "../llm/tool-turn-validator.js";
-import {
-  mkCtx,
-  mkSession,
-} from "../../tests/fixtures.js";
+import { mkCtx, mkSession } from "../../tests/fixtures.js";
 import type { LLMMessage } from "../llm/types.js";
 import type { Session } from "../session/session.js";
+import type { TurnContext } from "../session/turn-context.js";
 
 function seedMessages(): LLMMessage[] {
   return [
@@ -23,6 +21,62 @@ function seedMessages(): LLMMessage[] {
 }
 
 describe("post-sample context-collapse recovery contract", () => {
+  test("Editor interactions bypass collapse and clear resampling decisions", async () => {
+    const ctx = {
+      ...mkCtx(),
+      editorInteraction: {
+        interactionId: "editor-no-recovery",
+        kind: "explain",
+        policy: "read_only",
+        editorInstanceId: "editor-1",
+        bufferHandle: 7,
+        path: "src/value.ts",
+        changedtick: 11,
+        contentSha256: "a".repeat(64),
+        range: {
+          start: { line: 1, column: 0 },
+          end: { line: 1, column: 5 },
+        },
+      },
+    } as TurnContext;
+    const { session, events } = mkSession();
+    const messages = seedMessages();
+    const state = buildInitialTurnState(
+      ctx,
+      { role: "user", content: "continue" },
+      { priorMessages: messages },
+    );
+    state.messages = [...messages];
+    state.messagesForQuery = [...messages];
+    state.assistantMessages = [
+      {
+        uuid: "editor-asst-413",
+        role: "assistant",
+        text: "Prompt is too long: 200000 tokens > 128000",
+        apiError: "context_window_exceeded",
+        toolCalls: [],
+      },
+    ];
+    state.pendingBudgetDecision = {
+      kind: "stop",
+      reason: "continue spending tokens",
+    };
+    state.transition = { reason: "collapse_drain_retry" };
+
+    await postSampleRecovery(state, ctx, session);
+
+    expect(state.messages).toEqual(messages);
+    expect(state.messagesForQuery).toEqual(messages);
+    expect(state.pendingBudgetDecision).toBeUndefined();
+    expect(state.transition).toBeUndefined();
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "error" || event.msg.type === "context_compacted",
+      ),
+    ).toBe(false);
+  });
+
   test("withheld prompt-too-long routes through collapse once and then surfaces", async () => {
     const ctx = mkCtx();
     const { session, events } = mkSession();

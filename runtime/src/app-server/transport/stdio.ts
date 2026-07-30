@@ -82,7 +82,8 @@ export class AgenCStdioTransport {
       this.#options.maxLineBytes ?? AGENC_STDIO_DEFAULT_MAX_LINE_BYTES;
     let unterminatedBytes = 0;
     const onData = (chunk: Buffer | string): void => {
-      const data = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+      const data =
+        typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
       const lastNewline = data.lastIndexOf(0x0a);
       if (lastNewline === -1) {
         unterminatedBytes += data.length;
@@ -201,6 +202,26 @@ export function encodeJsonLine(message: JsonValue): string {
     throw new TypeError("AgenC stdio transport can only send JSON values");
   }
   return `${encoded}\n`;
+}
+
+/**
+ * Encode an outbound frame only when the peer can accept the complete
+ * serialized JSON line. The budget applies after JSON escaping and UTF-8
+ * encoding; measuring source strings is insufficient because a single
+ * control byte can expand to a six-byte `\u0000` escape.
+ */
+export function encodeBoundedJsonLine(
+  message: JsonValue,
+  maxLineBytes = AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
+): string {
+  const line = encodeJsonLine(message);
+  const lineBytes = Buffer.byteLength(line, "utf8") - 1;
+  if (lineBytes > maxLineBytes) {
+    throw new RangeError(
+      `AgenC stdio transport JSON line is ${lineBytes} bytes, exceeding the ${maxLineBytes}-byte limit`,
+    );
+  }
+  return line;
 }
 
 export function parseJsonObjectLine(line: string): JsonObject {

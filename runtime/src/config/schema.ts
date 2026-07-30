@@ -16,29 +16,16 @@ import { isAbsolute } from "node:path";
 // ─────────────────────────────────────────────────────────────────────
 
 export type ApprovalPolicy =
-  | "untrusted"
-  | "on-failure"
-  | "on-request"
-  | "never";
+  "untrusted" | "on-failure" | "on-request" | "never";
 
 export type PermissionDefaultMode = ApprovalPolicy;
 
 export type SandboxMode =
-  | "read-only"
-  | "workspace-write"
-  | "danger-full-access";
+  "read-only" | "workspace-write" | "danger-full-access";
 
-export type SandboxConfigMode =
-  | "off"
-  | "read-only"
-  | "workspace-write";
+export type SandboxConfigMode = "off" | "read-only" | "workspace-write";
 
-export type ReasoningEffort =
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh";
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 
@@ -127,7 +114,8 @@ export interface ToolsConfig {
    * `AGENC_WEB_SEARCH_KIND` env wins. Brave API keys come from
    * `AGENC_WEB_SEARCH_API_KEY` (secrets never live in config.toml).
    */
-  readonly web_search_endpoint_kind?: "duckduckgo" | "searxng" | "brave" | "json";
+  readonly web_search_endpoint_kind?:
+    "duckduckgo" | "searxng" | "brave" | "json";
   readonly view_image?: boolean | PerToolConfig;
   readonly enabled_tools?: readonly string[];
   readonly disabled_tools?: readonly string[];
@@ -412,6 +400,7 @@ export interface TuiConfig {
 export type BufferProviderMode = "auto" | "neovim" | "inline" | "external";
 export type BufferTabsMode = "auto" | "always" | "never";
 export type BufferNeovimInitMode = "auto" | "user" | "clean";
+export type BufferPredictionEnabledMode = "ask" | "on" | "off";
 
 export interface BufferNeovimConfig {
   readonly executable?: string;
@@ -422,11 +411,29 @@ export interface BufferNeovimConfig {
   readonly cleanup_timeout_ms?: number;
 }
 
+/**
+ * Low-latency, transcript-free code prediction for the embedded editor.
+ *
+ * `ask` is the safe default: the TUI must obtain one-time user consent before
+ * sending source context. Provider/model are optional owner-selected route
+ * overrides; when omitted the prediction service independently clones the
+ * active session route. RPC callers cannot override these trusted settings.
+ */
+export interface BufferPredictionConfig {
+  readonly enabled?: BufferPredictionEnabledMode;
+  readonly debounce_ms?: number;
+  readonly timeout_ms?: number;
+  readonly max_output_tokens?: number;
+  readonly provider?: string;
+  readonly model?: string;
+}
+
 /** Embedded editor configuration for the TUI BUFFER workspace. */
 export interface BufferConfig {
   readonly provider?: BufferProviderMode;
   readonly show_tabs?: BufferTabsMode;
   readonly neovim?: BufferNeovimConfig;
+  readonly prediction?: BufferPredictionConfig;
 }
 
 /**
@@ -728,7 +735,9 @@ export interface AgenCConfig {
   readonly autoUpdates?: boolean;
   readonly remoteControlAtStartup?: boolean;
   readonly bypassPermissionsModeAcceptedIn?: readonly string[];
-  readonly enabledPlugins?: Readonly<Record<string, boolean | PluginEntryConfig>>;
+  readonly enabledPlugins?: Readonly<
+    Record<string, boolean | PluginEntryConfig>
+  >;
   readonly experiments?: ExperimentsConfig;
   readonly ideConnector?: IdeConnectorConfig;
   readonly managedWorkspaces?: ManagedWorkspacesConfig;
@@ -1017,6 +1026,12 @@ export function defaultConfig(): AgenCConfig {
         operation_timeout_ms: 10_000,
         cleanup_timeout_ms: 1_000,
       }) as BufferNeovimConfig,
+      prediction: Object.freeze({
+        enabled: "ask",
+        debounce_ms: 160,
+        timeout_ms: 2_500,
+        max_output_tokens: 256,
+      }) as BufferPredictionConfig,
     }) as BufferConfig,
     tuiLayout: Object.freeze({
       mode: "single",
@@ -1118,11 +1133,13 @@ export function mergeConfigs(
 // This mapping lets users keep existing config.toml field names and have them
 // work. Aliases are applied BEFORE `normalizeRawConfig` so renamed fields
 // land on the `KNOWN_CONFIG_KEYS` fast path instead of `_unknown`.
-const AGENC_TOP_LEVEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
-  tools: "tools_config",
-  model_reasoning_effort: "reasoning_effort",
-  model_reasoning_summary: "reasoning_summary",
-});
+const AGENC_TOP_LEVEL_ALIASES: Readonly<Record<string, string>> = Object.freeze(
+  {
+    tools: "tools_config",
+    model_reasoning_effort: "reasoning_effort",
+    model_reasoning_summary: "reasoning_summary",
+  },
+);
 
 /**
  * Remap accepted TOML aliases onto canonical AgenC keys.
@@ -1152,11 +1169,7 @@ export function normalizeAgenCKeyAliases(
   // agents.max_threads → agent_max_threads
   // agents.max_depth → agent_max_depth
   const agents = out.agents;
-  if (
-    typeof agents === "object" &&
-    agents !== null &&
-    !Array.isArray(agents)
-  ) {
+  if (typeof agents === "object" && agents !== null && !Array.isArray(agents)) {
     const agentsObj = agents as Record<string, unknown>;
     if ("max_threads" in agentsObj && !("agent_max_threads" in out)) {
       out.agent_max_threads = agentsObj.max_threads;
@@ -1206,7 +1219,12 @@ export function normalizeRawConfig(raw: Record<string, unknown>): AgenCConfig {
 class InvalidNamedConfigError extends Error {
   readonly field: string;
 
-  constructor(blockName: string, errorName: string, field: string, detail: string) {
+  constructor(
+    blockName: string,
+    errorName: string,
+    field: string,
+    detail: string,
+  ) {
     const path = field.length > 0 ? `${blockName}.${field}` : blockName;
     super(`Invalid ${path}: ${detail}`);
     this.name = errorName;
@@ -1443,7 +1461,7 @@ export function validateAuthConfig(raw: unknown): AuthConfig | undefined {
     if (record.backend !== "local" && record.backend !== "remote") {
       throw new InvalidAuthConfigError(
         "backend",
-        "expected \"local\" or \"remote\"",
+        'expected "local" or "remote"',
       );
     }
     out.backend = record.backend;
@@ -1599,7 +1617,9 @@ function validateProviderFallback(
     (field, detail) => new InvalidProviderConfigError(field, detail),
     parent,
   );
-  const out: { -readonly [K in keyof ProviderFallbackConfig]: ProviderFallbackConfig[K] } = {};
+  const out: {
+    -readonly [K in keyof ProviderFallbackConfig]: ProviderFallbackConfig[K];
+  } = {};
   if (record.targets !== undefined) {
     if (!Array.isArray(record.targets)) {
       throw new InvalidProviderConfigError(
@@ -1637,7 +1657,10 @@ function validateProviderFallback(
   return Object.freeze(out as ProviderFallbackConfig);
 }
 
-function validateSingleProviderConfig(raw: unknown, providerId: string): ProviderConfig {
+function validateSingleProviderConfig(
+  raw: unknown,
+  providerId: string,
+): ProviderConfig {
   const record = requirePlainObject(
     raw,
     providerId,
@@ -1742,7 +1765,9 @@ function validateAgentBudget(raw: unknown): AgentBudgetConfig | undefined {
     (field, detail) => new InvalidAgentConfigError(field, detail),
     "budget",
   );
-  const out: { -readonly [K in keyof AgentBudgetConfig]: AgentBudgetConfig[K] } = {};
+  const out: {
+    -readonly [K in keyof AgentBudgetConfig]: AgentBudgetConfig[K];
+  } = {};
   const tokenCap = optionalPositiveInteger(
     record.token_cap,
     "budget.token_cap",
@@ -1764,7 +1789,9 @@ function validateAgentBudget(raw: unknown): AgentBudgetConfig | undefined {
   return Object.freeze(out as AgentBudgetConfig);
 }
 
-function validateAgentRetention(raw: unknown): AgentRunRetentionConfig | undefined {
+function validateAgentRetention(
+  raw: unknown,
+): AgentRunRetentionConfig | undefined {
   if (raw === undefined) return undefined;
   const record = requirePlainObject(
     raw,
@@ -1850,7 +1877,10 @@ function validatePerToolConfig(raw: unknown, field: string): PerToolConfig {
     (path, detail) => new InvalidPluginsConfigError(path, detail),
   );
   if (enabled !== undefined) out.enabled = enabled;
-  for (const key of ["default_permission_mode", "defaultPermissionMode"] as const) {
+  for (const key of [
+    "default_permission_mode",
+    "defaultPermissionMode",
+  ] as const) {
     if (record[key] !== undefined) {
       if (!isValidPermissionDefaultMode(record[key])) {
         throw new InvalidPluginsConfigError(
@@ -1869,7 +1899,7 @@ function validatePerToolConfig(raw: unknown, field: string): PerToolConfig {
     ) {
       throw new InvalidPluginsConfigError(
         fieldPath(field, "approval_mode"),
-        "expected \"auto\", \"prompt\", or \"approve\"",
+        'expected "auto", "prompt", or "approve"',
       );
     }
     out.approval_mode = record.approval_mode;
@@ -1958,7 +1988,10 @@ const PLUGIN_ENTRY_KEYS: ReadonlySet<string> = new Set([
   "mcp_servers",
 ]);
 
-function validatePluginEntryConfig(raw: unknown, field: string): PluginEntryConfig {
+function validatePluginEntryConfig(
+  raw: unknown,
+  field: string,
+): PluginEntryConfig {
   const record = requirePlainObject(
     raw,
     field,
@@ -1970,7 +2003,9 @@ function validatePluginEntryConfig(raw: unknown, field: string): PluginEntryConf
     (path, detail) => new InvalidPluginsConfigError(path, detail),
     field,
   );
-  const out: { -readonly [K in keyof PluginEntryConfig]: PluginEntryConfig[K] } = {};
+  const out: {
+    -readonly [K in keyof PluginEntryConfig]: PluginEntryConfig[K];
+  } = {};
   const enabled = optionalBoolean(
     record.enabled,
     fieldPath(field, "enabled"),
@@ -2069,7 +2104,8 @@ export function validatePluginsConfig(raw: unknown): PluginsConfig | undefined {
     (field, detail) => new InvalidPluginsConfigError(field, detail),
   );
   if (allowlist !== undefined) out.allowlist = allowlist;
-  let legacyEnabledPlugins: Readonly<Record<string, boolean | PluginEntryConfig>> | undefined;
+  let legacyEnabledPlugins:
+    Readonly<Record<string, boolean | PluginEntryConfig>> | undefined;
   if (record.enabled !== undefined) {
     if (typeof record.enabled === "boolean") {
       out.enabled = record.enabled;
@@ -2098,7 +2134,9 @@ const PROTOCOL_KEYS: ReadonlySet<string> = new Set([
  * Validate the `[protocol]` block (A1). Deny-by-default on nested
  * fields: a misspelled key can never silently enable a transport.
  */
-export function validateProtocolConfig(raw: unknown): ProtocolConfig | undefined {
+export function validateProtocolConfig(
+  raw: unknown,
+): ProtocolConfig | undefined {
   if (raw === undefined) return undefined;
   const record = requirePlainObject(
     raw,
@@ -2121,7 +2159,7 @@ export function validateProtocolConfig(raw: unknown): ProtocolConfig | undefined
     if (record.adapter !== "null" && record.adapter !== "marketplace-cli") {
       throw new InvalidProtocolConfigError(
         "adapter",
-        "expected \"null\" or \"marketplace-cli\"",
+        'expected "null" or "marketplace-cli"',
       );
     }
     out.adapter = record.adapter;
@@ -2157,7 +2195,9 @@ export function validateMcpServerModeConfig(
     MCP_SERVER_MODE_KEYS,
     (field, detail) => new InvalidMcpServerModeConfigError(field, detail),
   );
-  const out: { -readonly [K in keyof McpServerModeConfig]: McpServerModeConfig[K] } = {};
+  const out: {
+    -readonly [K in keyof McpServerModeConfig]: McpServerModeConfig[K];
+  } = {};
   const enabled = optionalBoolean(
     record.enabled,
     "enabled",
@@ -2168,7 +2208,7 @@ export function validateMcpServerModeConfig(
     if (record.transport !== "stdio" && record.transport !== "sse") {
       throw new InvalidMcpServerModeConfigError(
         "transport",
-        "expected \"stdio\" or \"sse\"",
+        'expected "stdio" or "sse"',
       );
     }
     out.transport = record.transport;
@@ -2372,7 +2412,7 @@ export function validateBufferConfig(raw: unknown): BufferConfig | undefined {
   const record = requirePlainObject(raw, "", makeError);
   rejectUnknownFields(
     record,
-    new Set(["provider", "show_tabs", "neovim"]),
+    new Set(["provider", "show_tabs", "neovim", "prediction"]),
     makeError,
   );
   const out: { -readonly [K in keyof BufferConfig]: BufferConfig[K] } = {};
@@ -2396,10 +2436,7 @@ export function validateBufferConfig(raw: unknown): BufferConfig | undefined {
       record.show_tabs !== "always" &&
       record.show_tabs !== "never"
     ) {
-      throw makeError(
-        "show_tabs",
-        'expected "auto", "always", or "never"',
-      );
+      throw makeError("show_tabs", 'expected "auto", "always", or "never"');
     }
     out.show_tabs = record.show_tabs;
   }
@@ -2438,10 +2475,7 @@ export function validateBufferConfig(raw: unknown): BufferConfig | undefined {
         neovim.init !== "user" &&
         neovim.init !== "clean"
       ) {
-        throw makeError(
-          "neovim.init",
-          'expected "auto", "user", or "clean"',
-        );
+        throw makeError("neovim.init", 'expected "auto", "user", or "clean"');
       }
       validated.init = neovim.init;
     }
@@ -2459,6 +2493,96 @@ export function validateBufferConfig(raw: unknown): BufferConfig | undefined {
       if (value !== undefined) validated[key] = value;
     }
     out.neovim = Object.freeze(validated as BufferNeovimConfig);
+  }
+  if (record.prediction !== undefined) {
+    const prediction = requirePlainObject(
+      record.prediction,
+      "prediction",
+      makeError,
+    );
+    rejectUnknownFields(
+      prediction,
+      new Set([
+        "enabled",
+        "debounce_ms",
+        "timeout_ms",
+        "max_output_tokens",
+        "provider",
+        "model",
+      ]),
+      makeError,
+      "prediction",
+    );
+    const validated: {
+      -readonly [K in keyof BufferPredictionConfig]: BufferPredictionConfig[K];
+    } = {};
+    if (prediction.enabled !== undefined) {
+      if (
+        prediction.enabled !== "ask" &&
+        prediction.enabled !== "on" &&
+        prediction.enabled !== "off"
+      ) {
+        throw makeError("prediction.enabled", 'expected "ask", "on", or "off"');
+      }
+      validated.enabled = prediction.enabled;
+    }
+    const debounceMs = optionalPositiveInteger(
+      prediction.debounce_ms,
+      "prediction.debounce_ms",
+      makeError,
+    );
+    if (debounceMs !== undefined) {
+      if (debounceMs < 25 || debounceMs > 5_000) {
+        throw makeError(
+          "prediction.debounce_ms",
+          "expected integer between 25 and 5000",
+        );
+      }
+      validated.debounce_ms = debounceMs;
+    }
+    const timeoutMs = optionalPositiveInteger(
+      prediction.timeout_ms,
+      "prediction.timeout_ms",
+      makeError,
+    );
+    if (timeoutMs !== undefined) {
+      if (timeoutMs < 100 || timeoutMs > 30_000) {
+        throw makeError(
+          "prediction.timeout_ms",
+          "expected integer between 100 and 30000",
+        );
+      }
+      validated.timeout_ms = timeoutMs;
+    }
+    const maxOutputTokens = optionalPositiveInteger(
+      prediction.max_output_tokens,
+      "prediction.max_output_tokens",
+      makeError,
+    );
+    if (maxOutputTokens !== undefined) {
+      if (maxOutputTokens > 2_048) {
+        throw makeError(
+          "prediction.max_output_tokens",
+          "expected integer between 1 and 2048",
+        );
+      }
+      validated.max_output_tokens = maxOutputTokens;
+    }
+    for (const key of ["provider", "model"] as const) {
+      const value = optionalString(
+        prediction[key],
+        `prediction.${key}`,
+        makeError,
+      );
+      if (value !== undefined) {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) {
+          throw makeError(`prediction.${key}`, "expected non-empty string");
+        }
+        validated[key] = trimmed;
+      }
+    }
+    out.prediction = Object.freeze(validated as BufferPredictionConfig);
   }
   return Object.freeze(out as BufferConfig);
 }
@@ -2483,7 +2607,11 @@ export function validateBrowserConfig(raw: unknown): BrowserConfig | undefined {
     throw new InvalidBrowserConfigError("", "expected plain object");
   }
   const out: { -readonly [K in keyof BrowserConfig]: BrowserConfig[K] } = {};
-  for (const key of ["headless", "allow_private_network", "no_sandbox"] as const) {
+  for (const key of [
+    "headless",
+    "allow_private_network",
+    "no_sandbox",
+  ] as const) {
     if (raw[key] !== undefined) {
       if (typeof raw[key] !== "boolean") {
         throw new InvalidBrowserConfigError(key, "expected boolean");
@@ -2678,7 +2806,9 @@ export function validateStatusLineConfig(
     throw new InvalidStatusLineConfigError("", "expected plain object");
   }
 
-  const out: { -readonly [K in keyof PartialStatusLineConfig]: PartialStatusLineConfig[K] } = {};
+  const out: {
+    -readonly [K in keyof PartialStatusLineConfig]: PartialStatusLineConfig[K];
+  } = {};
 
   if (raw.items !== undefined) {
     if (!Array.isArray(raw.items)) {
@@ -2712,7 +2842,11 @@ export function validateOutputStyleConfig(
     throw new InvalidOutputStyleConfigError("", "expected plain object");
   }
 
-  const out: { -readonly [K in keyof PartialOutputStyleConfig]: PartialOutputStyleConfig[K] } = {};
+  const out: {
+    -readonly [
+      K in keyof PartialOutputStyleConfig
+    ]: PartialOutputStyleConfig[K];
+  } = {};
 
   if (raw.theme !== undefined) {
     if (typeof raw.theme !== "string") {
@@ -2798,7 +2932,7 @@ function validateHookCommand(raw: unknown, field: string): HookCommand {
     throw new InvalidHooksConfigError(field, "expected command object");
   }
   if (raw.type !== "command") {
-    throw new InvalidHooksConfigError(`${field}.type`, "expected \"command\"");
+    throw new InvalidHooksConfigError(`${field}.type`, 'expected "command"');
   }
   if (typeof raw.command !== "string" || raw.command.trim().length === 0) {
     throw new InvalidHooksConfigError(
@@ -2809,9 +2943,7 @@ function validateHookCommand(raw: unknown, field: string): HookCommand {
   const timeout = raw.timeout_ms;
   if (
     timeout !== undefined &&
-    (typeof timeout !== "number" ||
-      !Number.isInteger(timeout) ||
-      timeout <= 0)
+    (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout <= 0)
   ) {
     throw new InvalidHooksConfigError(
       `${field}.timeout_ms`,

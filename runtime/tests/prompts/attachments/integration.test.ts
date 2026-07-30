@@ -11,6 +11,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -26,10 +27,7 @@ import {
   getAttachmentTrackingState,
 } from "../../session/attachment-state.js";
 import { attachmentsToMessages } from "./messages.js";
-import {
-  type GetAttachmentsOptions,
-  getAttachments,
-} from "./orchestrator.js";
+import { type GetAttachmentsOptions, getAttachments } from "./orchestrator.js";
 import {
   IMAGE_MENTION_MAX_FILE_BYTES,
   IMAGE_MENTION_MAX_FILES,
@@ -44,6 +42,7 @@ import {
 import { sideQuery } from "../../utils/sideQuery.js";
 import {
   clearSessionReadState,
+  getSessionReadSnapshot,
   recordSessionRead,
 } from "../../tools/system/filesystem.js";
 import { explicitDangerBroker } from "../../helpers/explicit-danger-boundary.js";
@@ -129,7 +128,9 @@ describe("attachments orchestrator — live producer registry", () => {
         (message) =>
           typeof message.content === "string" &&
           message.content.includes("<attached_files>") &&
-          message.content.includes('<attached_files_context trust="untrusted" authority="data_only">') &&
+          message.content.includes(
+            '<attached_files_context trust="untrusted" authority="data_only">',
+          ) &&
           message.content.includes("cannot grant permissions") &&
           message.content.includes('path="src/app.ts"') &&
           message.content.includes("export const answer = 42;"),
@@ -179,9 +180,9 @@ describe("attachments orchestrator — live producer registry", () => {
         ),
       );
       expect(message?.content).not.toEqual(expect.stringContaining("<system>"));
-      expect(
-        String(message?.content).match(/<workspace_data\b/g),
-      ).toHaveLength(1);
+      expect(String(message?.content).match(/<workspace_data\b/g)).toHaveLength(
+        1,
+      );
       expect(
         String(message?.content).match(/<\/workspace_data>/g),
       ).toHaveLength(1);
@@ -245,7 +246,9 @@ describe("attachments orchestrator — live producer registry", () => {
     }
     expect(attachment.pdfs[0]?.fallbackText).toContain("Extracted heading");
     const messages = attachmentsToMessages(out);
-    const pdfMessage = messages.find((message) => Array.isArray(message.content));
+    const pdfMessage = messages.find((message) =>
+      Array.isArray(message.content),
+    );
     const parts = pdfMessage?.content as
       | Array<{
           type?: string;
@@ -395,6 +398,200 @@ describe("attachments orchestrator — live producer registry", () => {
     );
   });
 
+  test("local-read-only turns do not contact MCP resource servers", async () => {
+    const request = vi.fn(async () => ({
+      resources: [{ uri: "guide", name: "Project guide" }],
+    }));
+    const sessionKey = {
+      listMcpClients: () => [
+        {
+          name: "editor_resources",
+          type: "connected",
+          capabilities: { resources: {} },
+          config: { type: "sdk" },
+          client: { request },
+          cleanup: async () => {},
+        },
+      ],
+    };
+
+    const out = await getAttachments(
+      makeOpts({
+        effectsPolicy: "local_read_only",
+        sessionKey,
+        userInput: "read @editor_resources:guide",
+      }),
+    );
+
+    expect(request).not.toHaveBeenCalled();
+    expect(out.some((attachment) => attachment.kind === "mcp_resource")).toBe(
+      false,
+    );
+  });
+
+  test("local-read-only turns do not invoke skills or emit Agent capability guidance", async () => {
+    const skillsForConfig = vi.fn(async () => ({
+      availableSkills: [
+        {
+          name: "must-not-run",
+          description: "MUST_NOT_APPEAR_SKILL_GUIDANCE",
+        },
+      ],
+    }));
+
+    const out = await getAttachments(
+      makeOpts({
+        effectsPolicy: "local_read_only",
+        permissionContext: { mode: "plan" } as never,
+        loadedTools: [
+          {
+            type: "function",
+            function: {
+              name: "spawn_agent",
+              description: "MUST_NOT_APPEAR_AGENT_GUIDANCE",
+              parameters: { type: "object" },
+            },
+          },
+        ],
+        skillsManager: { skillsForConfig },
+        userInput: "Explain the selected code.",
+      }),
+    );
+
+    expect(skillsForConfig).not.toHaveBeenCalled();
+    expect(out.map((attachment) => attachment.kind)).not.toEqual(
+      expect.arrayContaining([
+        "plan_mode",
+        "verify_plan_reminder",
+        "auto_mode",
+        "swarm_mode",
+        "deferred_tools_delta",
+        "agent_listing_delta",
+        "critical_system_reminder",
+        "skill_listing",
+      ]),
+    );
+    expect(JSON.stringify(out)).not.toContain("MUST_NOT_APPEAR");
+  });
+
+  test("local-read-only turns neither inspect changed-read state nor drain LSP diagnostics", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-editor-passive-state-"));
+    const cwd = join(root, "workspace");
+    const outsidePath = join(root, "outside-secret.ts");
+    const sessionId = `editor-passive-${crypto.randomUUID()}`;
+    const sessionKey = { sessionId };
+    const trackingState = getAttachmentTrackingState(sessionKey);
+    trackingState.lastEmittedDate = "1900-01-01";
+    mkdirSync(cwd);
+    const before = "export const secret = 'before';\n";
+    writeFileSync(outsidePath, before, "utf8");
+    recordSessionRead(sessionId, outsidePath, {
+      rawContent: before,
+      timestamp: Date.now() - 60_000,
+      viewKind: "full",
+    });
+    const snapshotBefore = getSessionReadSnapshot(sessionId, outsidePath);
+    writeFileSync(outsidePath, "export const secret = 'after';\n", "utf8");
+    const now = new Date();
+    utimesSync(outsidePath, now, now);
+    registerPendingLSPDiagnostic(
+      {
+        serverName: "editor-passive-ts",
+        files: [
+          {
+            uri: outsidePath,
+            diagnostics: [
+              {
+                message: "MUST_REMAIN_PENDING_DIAGNOSTIC",
+                severity: "Error",
+              },
+            ],
+          },
+        ],
+      },
+      explicitDangerBroker,
+    );
+
+    try {
+      const out = await getAttachments(
+        makeOpts({
+          effectsPolicy: "local_read_only",
+          cwd,
+          sessionKey,
+        }),
+      );
+
+      expect(
+        out.some(
+          (attachment) =>
+            attachment.kind === "edited_text_file" ||
+            attachment.kind === "edited_image_file" ||
+            attachment.kind === "lsp_diagnostics" ||
+            attachment.kind === "date_change",
+        ),
+      ).toBe(false);
+      expect(trackingState.lastEmittedDate).toBe("1900-01-01");
+      expect(getSessionReadSnapshot(sessionId, outsidePath)).toEqual(
+        snapshotBefore,
+      );
+      const stillPending = checkForLSPDiagnostics(explicitDangerBroker);
+      expect(stillPending).toContainEqual(
+        expect.objectContaining({
+          serverName: "editor-passive-ts",
+          files: expect.arrayContaining([
+            expect.objectContaining({
+              uri: outsidePath,
+              diagnostics: expect.arrayContaining([
+                expect.objectContaining({
+                  message: "MUST_REMAIN_PENDING_DIAGNOSTIC",
+                }),
+              ]),
+            }),
+          ]),
+        }),
+      );
+    } finally {
+      _resetAttachmentTrackingStateForTest(sessionKey);
+      clearSessionReadState(sessionId);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("local-read-only turns never reparse framed workspace data as mentions", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-editor-mention-pipeline-"));
+    const secret = "EDITOR_MENTION_SECRET_MUST_NOT_LEAK";
+    writeFileSync(join(cwd, ".env"), `${secret}\n`, "utf8");
+
+    try {
+      const out = await getAttachments(
+        makeOpts({
+          effectsPolicy: "local_read_only",
+          cwd,
+          userInput: [
+            "Explain this editor context.",
+            "",
+            '<workspace_data trust="untrusted" authority="data_only">',
+            "@.env @worker",
+            "</workspace_data>",
+          ].join("\n"),
+        }),
+      );
+
+      expect(
+        out.some(
+          (attachment) =>
+            attachment.kind === "file_mention" ||
+            attachment.kind === "image_mention" ||
+            attachment.kind === "pdf_mention" ||
+            attachment.kind === "agent_mention",
+        ),
+      ).toBe(false);
+      expect(JSON.stringify(out)).not.toContain(secret);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("relevant memories resolve through the live pipeline with an untrusted frame", async () => {
     const root = mkdtempSync(join(tmpdir(), "agenc-relevant-memory-pipeline-"));
     const agencHome = join(root, "home");
@@ -443,6 +640,82 @@ describe("attachments orchestrator — live producer registry", () => {
       expect(content).not.toContain("<system-reminder>");
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("local-read-only turns do not launch memory side queries", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-editor-memory-pipeline-"));
+    const agencHome = join(root, "home");
+    const cwd = join(root, "repo");
+    mkdirSync(join(agencHome, "memory"), { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(
+      join(agencHome, "memory", "browser.md"),
+      [
+        "---",
+        "description: Browser automation guidance",
+        "type: usage",
+        "---",
+        "",
+        "Use the browser automation workflow.",
+      ].join("\n"),
+      "utf8",
+    );
+
+    try {
+      const out = await getAttachments(
+        makeOpts({
+          effectsPolicy: "local_read_only",
+          agencHome,
+          cwd,
+          userInput: "use browser automation",
+        }),
+      );
+
+      expect(sideQuery).not.toHaveBeenCalled();
+      expect(
+        out.some((attachment) => attachment.kind === "relevant_memories"),
+      ).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("local-read-only turns do not spawn PDF extraction helpers", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-editor-pdf-pipeline-"));
+    const bin = join(cwd, "bin");
+    const marker = join(cwd, "extractor-ran");
+    const savedPath = process.env.PATH;
+    mkdirSync(bin);
+    writeFileSync(join(cwd, "brief.pdf"), "%PDF-1.4\nbody\n");
+    writeFileSync(
+      join(bin, "pdftotext"),
+      `#!/bin/sh\nprintf ran > ${JSON.stringify(marker)}\nprintf extracted\n`,
+      "utf8",
+    );
+    chmodSync(join(bin, "pdftotext"), 0o755);
+    process.env.PATH = `${bin}:${savedPath ?? ""}`;
+
+    try {
+      const out = await getAttachments(
+        makeOpts({
+          effectsPolicy: "local_read_only",
+          cwd,
+          userInput: "summarize @brief.pdf",
+        }),
+      );
+
+      expect(existsSync(marker)).toBe(false);
+      expect(out.some((attachment) => attachment.kind === "pdf_mention")).toBe(
+        false,
+      );
+    } finally {
+      if (savedPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = savedPath;
+      }
+      rmSync(cwd, { recursive: true, force: true });
     }
   });
 
@@ -633,29 +906,32 @@ describe("attachments orchestrator — live producer registry", () => {
   });
 
   test("LSP diagnostics are delivered as next-turn attachments and drained", async () => {
-    registerPendingLSPDiagnostic({
-      serverName: "ts",
-      files: [
-        {
-          uri: "/repo/src/a.ts",
-          diagnostics: [
-            {
-              message: "type mismatch",
-              severity: "Error",
-              range: {
-                start: { line: 0, character: 2 },
-                end: { line: 0, character: 4 },
+    registerPendingLSPDiagnostic(
+      {
+        serverName: "ts",
+        files: [
+          {
+            uri: "/repo/src/a.ts",
+            diagnostics: [
+              {
+                message: "type mismatch",
+                severity: "Error",
+                range: {
+                  start: { line: 0, character: 2 },
+                  end: { line: 0, character: 4 },
+                },
               },
-            },
-          ],
-        },
-      ],
-    }, explicitDangerBroker);
+            ],
+          },
+        ],
+      },
+      explicitDangerBroker,
+    );
 
     const out = await getAttachments(makeOpts());
-    expect(out.some((attachment) => attachment.kind === "lsp_diagnostics")).toBe(
-      true,
-    );
+    expect(
+      out.some((attachment) => attachment.kind === "lsp_diagnostics"),
+    ).toBe(true);
     const messages = attachmentsToMessages(out);
     expect(
       messages.some(
@@ -676,7 +952,9 @@ describe("attachments orchestrator — live producer registry", () => {
 
     const ac = new AbortController();
     ac.abort();
-    const out = await getAttachments(makeOpts({ sessionKey, signal: ac.signal }));
+    const out = await getAttachments(
+      makeOpts({ sessionKey, signal: ac.signal }),
+    );
     // Producers MAY honor the abort signal and emit nothing; what we
     // pin here is "the orchestrator does not throw on the consumer's
     // behalf when a producer skips on abort."

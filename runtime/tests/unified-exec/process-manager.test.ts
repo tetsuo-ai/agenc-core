@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { dirname } from "node:path";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, test, vi } from "vitest";
 
@@ -13,8 +15,20 @@ import {
 } from "../sandbox/engine/index.js";
 import { UnifiedExecError } from "./types.js";
 import { UnifiedExecProcessManager } from "./process-manager.js";
+import {
+  beginWorkspaceToolOperation,
+  endWorkspaceToolOperation,
+  workspaceMutationCoordinators,
+} from "../workspace/mutation-coordinator.js";
+import {
+  createWorkspaceOperationLifetime,
+  runWithWorkspaceOperationLifetime,
+} from "../workspace/tool-operation-lifetime.js";
 
-function passthroughSandboxManager(): Pick<SandboxManager, "selectInitial" | "transform"> {
+function passthroughSandboxManager(): Pick<
+  SandboxManager,
+  "selectInitial" | "transform"
+> {
   return {
     selectInitial: () => "linux_seccomp",
     transform: (request): SandboxExecRequest => ({
@@ -32,7 +46,10 @@ function passthroughSandboxManager(): Pick<SandboxManager, "selectInitial" | "tr
   };
 }
 
-function ptyCompatibleSandboxManager(): Pick<SandboxManager, "selectInitial" | "transform"> {
+function ptyCompatibleSandboxManager(): Pick<
+  SandboxManager,
+  "selectInitial" | "transform"
+> {
   return {
     selectInitial: () => "linux_seccomp",
     transform: (request): SandboxExecRequest => ({
@@ -60,34 +77,39 @@ function installFakePty(
     },
   ) => void,
 ): void {
-  (manager as unknown as {
-    loadPty: () => Promise<{
-      spawn(
-        file: string,
-        args: readonly string[],
-        options: {
-          readonly cwd?: string;
-          readonly env?: Record<string, string>;
-        },
-      ): {
-        readonly pid: number;
-        write(data: string): void;
-        resize(columns: number, rows: number): void;
-        kill(signal?: string): void;
-        onData(listener: (data: string) => void): { dispose(): void };
-        onExit(
-          listener: (event: {
-            readonly exitCode: number;
-            readonly signal?: number | string;
-          }) => void,
-        ): { dispose(): void };
-      };
-    }>;
-  }).loadPty = async () => ({
+  (
+    manager as unknown as {
+      loadPty: () => Promise<{
+        spawn(
+          file: string,
+          args: readonly string[],
+          options: {
+            readonly cwd?: string;
+            readonly env?: Record<string, string>;
+          },
+        ): {
+          readonly pid: number;
+          write(data: string): void;
+          resize(columns: number, rows: number): void;
+          kill(signal?: string): void;
+          onData(listener: (data: string) => void): { dispose(): void };
+          onExit(
+            listener: (event: {
+              readonly exitCode: number;
+              readonly signal?: number | string;
+            }) => void,
+          ): { dispose(): void };
+        };
+      }>;
+    }
+  ).loadPty = async () => ({
     spawn(file, args, options) {
       onSpawn?.(file, args, options);
       let exitListener:
-        | ((event: { readonly exitCode: number; readonly signal?: number | string }) => void)
+        | ((event: {
+            readonly exitCode: number;
+            readonly signal?: number | string;
+          }) => void)
         | null = null;
       return {
         pid: 0,
@@ -112,15 +134,13 @@ function markerPids(marker: string): number[] {
     const output = execFileSync("ps", ["-eo", "pid=,args="], {
       encoding: "utf8",
     });
-    return output
-      .split("\n")
-      .flatMap((line) => {
-        const match = line.trim().match(/^(\d+)\s+(.*)$/);
-        if (match === null) return [];
-        const pid = Number(match[1]);
-        const args = match[2] ?? "";
-        return pid !== process.pid && args.includes(marker) ? [pid] : [];
-      });
+    return output.split("\n").flatMap((line) => {
+      const match = line.trim().match(/^(\d+)\s+(.*)$/);
+      if (match === null) return [];
+      const pid = Number(match[1]);
+      const args = match[2] ?? "";
+      return pid !== process.pid && args.includes(marker) ? [pid] : [];
+    });
   } catch {
     return [];
   }
@@ -133,7 +153,7 @@ async function waitForMarker(
 ): Promise<boolean> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    if ((markerPids(marker).length > 0) === present) {
+    if (markerPids(marker).length > 0 === present) {
       return true;
     }
     await delay(50);
@@ -152,6 +172,146 @@ function killMarker(marker: string): void {
 }
 
 describe("UnifiedExecProcessManager", () => {
+  test("keeps Editor acquisition fenced until a yielded process exits", async () => {
+    if (process.platform === "win32") return;
+    const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-fence-"));
+    const target = join(root, "loaded.ts");
+    await writeFile(target, "before\n", "utf8");
+    const manager = new UnifiedExecProcessManager({ cwd: root });
+    const token = beginWorkspaceToolOperation(root, "exec_command");
+    const lifetime = createWorkspaceOperationLifetime(() => {
+      endWorkspaceToolOperation(token);
+    });
+    const script = [
+      "const fs=require('node:fs');",
+      `setTimeout(()=>fs.writeFileSync(${JSON.stringify(target)},'after\\n'),600);`,
+    ].join("");
+
+    try {
+      const result = await runWithWorkspaceOperationLifetime(lifetime, () =>
+        manager.execCommand({
+          cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+          yield_time_ms: 250,
+        }),
+      );
+      expect(result.process_id).toEqual(expect.any(Number));
+      await lifetime.release();
+
+      expect(() =>
+        workspaceMutationCoordinators.acquireEditor(root, {
+          workspaceRoot: root,
+          editorInstanceId: "editor-during-yielded-process",
+        }),
+      ).toThrow(/waiting for active tool 'exec_command'/u);
+
+      await lifetime.settled();
+      expect(await readFile(target, "utf8")).toBe("after\n");
+      expect(() =>
+        workspaceMutationCoordinators.acquireEditor(root, {
+          workspaceRoot: root,
+          editorInstanceId: "editor-after-yielded-process",
+        }),
+      ).not.toThrow();
+    } finally {
+      await manager.closeAll("test cleanup");
+      workspaceMutationCoordinators.clearForTests();
+    }
+  });
+
+  test("contains a detached delayed descendant before Editor acquisition can cross the fence", async () => {
+    if (process.platform === "win32") return;
+    const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-descendant-"));
+    const target = join(root, "loaded.ts");
+    const marker = `agenc-delayed-descendant-${process.pid}-${Date.now()}`;
+    await writeFile(target, "before\n", "utf8");
+    const manager = new UnifiedExecProcessManager({ cwd: root });
+    const token = beginWorkspaceToolOperation(root, "exec_command");
+    const lifetime = createWorkspaceOperationLifetime(() => {
+      endWorkspaceToolOperation(token);
+    });
+    const delayedWriter = [
+      `process.title=${JSON.stringify(marker)};`,
+      "const fs=require('node:fs');",
+      `setTimeout(()=>fs.writeFileSync(${JSON.stringify(target)},'after\\n'),700);`,
+    ].join("");
+    const detachedLauncher = [
+      "const {spawn}=require('node:child_process');",
+      `const child=spawn(${JSON.stringify(process.execPath)},['-e',${JSON.stringify(delayedWriter)}],{detached:true,stdio:'ignore'});`,
+      "child.unref();",
+    ].join("");
+
+    try {
+      const result = await runWithWorkspaceOperationLifetime(lifetime, () =>
+        manager.execCommand({
+          cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(detachedLauncher)}`,
+          yield_time_ms: 250,
+        }),
+      );
+      expect(result.exitCode).toBe(0);
+      await lifetime.release();
+      await lifetime.settled();
+
+      expect(() =>
+        workspaceMutationCoordinators.acquireEditor(root, {
+          workspaceRoot: root,
+          editorInstanceId: "editor-after-detached-launcher",
+        }),
+      ).not.toThrow();
+
+      await delay(900);
+      expect(await readFile(target, "utf8")).toBe("before\n");
+    } finally {
+      killMarker(marker);
+      await manager.closeAll("test cleanup");
+      workspaceMutationCoordinators.clearForTests();
+    }
+  });
+
+  test("rejects an uncontainable PTY before it can launch a delayed writer across the Editor fence", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-pty-"));
+    const target = join(root, "loaded.ts");
+    await writeFile(target, "before\n", "utf8");
+    const manager = new UnifiedExecProcessManager({ cwd: root });
+    const token = beginWorkspaceToolOperation(root, "exec_command");
+    const lifetime = createWorkspaceOperationLifetime(() => {
+      endWorkspaceToolOperation(token);
+    });
+    const delayedWriter = [
+      "const fs=require('node:fs');",
+      `setTimeout(()=>fs.writeFileSync(${JSON.stringify(target)},'after\\n'),500);`,
+    ].join("");
+    const detachedLauncher = [
+      "const {spawn}=require('node:child_process');",
+      `const child=spawn(${JSON.stringify(process.execPath)},['-e',${JSON.stringify(delayedWriter)}],{detached:true,stdio:'ignore'});`,
+      "child.unref();",
+    ].join("");
+
+    try {
+      await expect(
+        runWithWorkspaceOperationLifetime(lifetime, () =>
+          manager.execCommand({
+            cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(detachedLauncher)}`,
+            tty: true,
+          }),
+        ),
+      ).rejects.toThrow(/PTY descendants cannot be contained safely/u);
+      await lifetime.release();
+      await lifetime.settled();
+
+      expect(() =>
+        workspaceMutationCoordinators.acquireEditor(root, {
+          workspaceRoot: root,
+          editorInstanceId: "editor-after-rejected-pty",
+        }),
+      ).not.toThrow();
+      await delay(700);
+      expect(await readFile(target, "utf8")).toBe("before\n");
+    } finally {
+      await manager.closeAll("test cleanup");
+      workspaceMutationCoordinators.clearForTests();
+    }
+  });
+
   test("runs one-shot non-PTY commands without returning a session id", async () => {
     const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
 
@@ -195,8 +355,7 @@ describe("UnifiedExecProcessManager", () => {
             env: request.command.env,
             sandbox: request.sandbox,
             windowsSandboxLevel: request.windowsSandboxLevel,
-            windowsSandboxPrivateDesktop:
-              request.windowsSandboxPrivateDesktop,
+            windowsSandboxPrivateDesktop: request.windowsSandboxPrivateDesktop,
             permissionProfile: request.permissions,
             fileSystemSandboxPolicy: request.permissions.fileSystem,
             networkSandboxPolicy: request.permissions.network,
@@ -246,7 +405,9 @@ describe("UnifiedExecProcessManager", () => {
       readonly hasManagedNetworkRequirements: boolean;
       readonly preference: string;
     }> = [];
-    const networkPolicyDecider = { decide: () => ({ decision: "allow" as const }) };
+    const networkPolicyDecider = {
+      decide: () => ({ decision: "allow" as const }),
+    };
     const blockedRequestObserver = { onBlockedRequest: () => undefined };
     const manager = new UnifiedExecProcessManager({
       cwd: process.cwd(),
@@ -263,8 +424,7 @@ describe("UnifiedExecProcessManager", () => {
             env: request.command.env,
             sandbox: request.sandbox,
             windowsSandboxLevel: request.windowsSandboxLevel,
-            windowsSandboxPrivateDesktop:
-              request.windowsSandboxPrivateDesktop,
+            windowsSandboxPrivateDesktop: request.windowsSandboxPrivateDesktop,
             permissionProfile: request.permissions,
             fileSystemSandboxPolicy: request.permissions.fileSystem,
             networkSandboxPolicy: request.permissions.network,
@@ -334,39 +494,35 @@ describe("UnifiedExecProcessManager", () => {
     }
   });
 
-  test(
-    "persists PTY shell state across write_stdin calls",
-    async () => {
-      const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
-      try {
-        const started = await manager.execCommand({
-          cmd: "bash -i",
-          tty: true,
-          yield_time_ms: 250,
-        });
+  test("persists PTY shell state across write_stdin calls", async () => {
+    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+    try {
+      const started = await manager.execCommand({
+        cmd: "bash -i",
+        tty: true,
+        yield_time_ms: 250,
+      });
 
-        expect(started.process_id).toEqual(expect.any(Number));
-        const sessionId = started.process_id!;
+      expect(started.process_id).toEqual(expect.any(Number));
+      const sessionId = started.process_id!;
 
-        await manager.writeStdin({
-          session_id: sessionId,
-          chars: "export AGENC_UNIFIED_EXEC_TEST=ok\n",
-          yield_time_ms: 250,
-        });
-        const echoed = await manager.writeStdin({
-          session_id: sessionId,
-          chars: "printf \"$AGENC_UNIFIED_EXEC_TEST\\n\"\n",
-          yield_time_ms: 250,
-        });
+      await manager.writeStdin({
+        session_id: sessionId,
+        chars: "export AGENC_UNIFIED_EXEC_TEST=ok\n",
+        yield_time_ms: 250,
+      });
+      const echoed = await manager.writeStdin({
+        session_id: sessionId,
+        chars: 'printf "$AGENC_UNIFIED_EXEC_TEST\\n"\n',
+        yield_time_ms: 250,
+      });
 
-        expect(echoed.stdout).toContain("ok");
-        expect(echoed.process_id).toBe(sessionId);
-      } finally {
-        await manager.closeAll("test_cleanup");
-      }
-    },
-    10_000,
-  );
+      expect(echoed.stdout).toContain("ok");
+      expect(echoed.process_id).toBe(sessionId);
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  }, 10_000);
 
   test.skipIf(process.platform === "win32")(
     "aborting a yielded PTY poll terminates the foreground child process",
@@ -409,56 +565,52 @@ describe("UnifiedExecProcessManager", () => {
     10_000,
   );
 
-  test(
-    "rejects restricted write_stdin for a non-sandboxed PTY session",
-    async () => {
-      const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
-      const permissionProfile = permissionProfileFromRuntimePermissions(
-        restrictedFileSystemPolicy(),
-        "enabled",
-      );
-      try {
-        const started = await manager.execCommand({
-          cmd: "bash -i",
-          tty: true,
+  test("rejects restricted write_stdin for a non-sandboxed PTY session", async () => {
+    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy(),
+      "enabled",
+    );
+    try {
+      const started = await manager.execCommand({
+        cmd: "bash -i",
+        tty: true,
+        yield_time_ms: 250,
+      });
+
+      await expect(
+        manager.writeStdin({
+          session_id: started.process_id!,
+          chars: "",
           yield_time_ms: 250,
-        });
+          runtimeSandbox: {
+            permissionProfile,
+            sandboxPolicyCwd: process.cwd(),
+            preference: "require",
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: "write_stdin",
+      } satisfies Partial<UnifiedExecError>);
 
-        await expect(
-          manager.writeStdin({
-            session_id: started.process_id!,
-            chars: "",
-            yield_time_ms: 250,
-            runtimeSandbox: {
-              permissionProfile,
-              sandboxPolicyCwd: process.cwd(),
-              preference: "require",
-            },
-          }),
-        ).rejects.toMatchObject({
-          code: "write_stdin",
-        } satisfies Partial<UnifiedExecError>);
-
-        await expect(
-          manager.writeStdin({
-            session_id: started.process_id!,
-            chars: "printf denied\\n",
-            yield_time_ms: 250,
-            runtimeSandbox: {
-              permissionProfile,
-              sandboxPolicyCwd: process.cwd(),
-              preference: "require",
-            },
-          }),
-        ).rejects.toMatchObject({
-          code: "write_stdin",
-        } satisfies Partial<UnifiedExecError>);
-      } finally {
-        await manager.closeAll("test_cleanup");
-      }
-    },
-    10_000,
-  );
+      await expect(
+        manager.writeStdin({
+          session_id: started.process_id!,
+          chars: "printf denied\\n",
+          yield_time_ms: 250,
+          runtimeSandbox: {
+            permissionProfile,
+            sandboxPolicyCwd: process.cwd(),
+            preference: "require",
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: "write_stdin",
+      } satisfies Partial<UnifiedExecError>);
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  }, 10_000);
 
   test("preserves sandbox argv0 for restricted PTY sessions", async () => {
     const permissionProfile = permissionProfileFromRuntimePermissions(
@@ -470,8 +622,7 @@ describe("UnifiedExecProcessManager", () => {
       sandboxManager: passthroughSandboxManager(),
     });
     let spawned:
-      | { readonly file: string; readonly args: readonly string[] }
-      | undefined;
+      { readonly file: string; readonly args: readonly string[] } | undefined;
     installFakePty(manager, (file, args) => {
       spawned = { file, args };
     });
@@ -533,7 +684,9 @@ describe("UnifiedExecProcessManager", () => {
             preference: "auto",
           },
         }),
-      ).rejects.toMatchObject({ code: "write_stdin" } satisfies Partial<UnifiedExecError>);
+      ).rejects.toMatchObject({
+        code: "write_stdin",
+      } satisfies Partial<UnifiedExecError>);
       await expect(
         manager.writeStdin({
           session_id: sessionId,
@@ -544,7 +697,9 @@ describe("UnifiedExecProcessManager", () => {
             enforceManagedNetwork: true,
           },
         }),
-      ).rejects.toMatchObject({ code: "write_stdin" } satisfies Partial<UnifiedExecError>);
+      ).rejects.toMatchObject({
+        code: "write_stdin",
+      } satisfies Partial<UnifiedExecError>);
       await expect(
         manager.writeStdin({
           session_id: sessionId,
@@ -555,63 +710,67 @@ describe("UnifiedExecProcessManager", () => {
             network: { env: { HTTP_PROXY: "http://127.0.0.1:9" } },
           },
         }),
-      ).rejects.toMatchObject({ code: "write_stdin" } satisfies Partial<UnifiedExecError>);
+      ).rejects.toMatchObject({
+        code: "write_stdin",
+      } satisfies Partial<UnifiedExecError>);
     } finally {
       await manager.closeAll("test_cleanup");
     }
   });
 
-  test(
-    "allows restricted write_stdin for a compatible sandboxed PTY session",
-    async () => {
-      const startProfile = permissionProfileFromRuntimePermissions(
-        restrictedFileSystemPolicy([
-          { path: { kind: "special", value: { kind: "project_roots" } }, access: "write" },
-          { path: { kind: "path", path: "/repo/blocked" }, access: "read" },
-        ]),
-        "enabled",
-      );
-      const writeProfile = permissionProfileFromRuntimePermissions(
-        restrictedFileSystemPolicy([
-          { path: { kind: "path", path: "/repo/blocked" }, access: "read" },
-          { path: { kind: "special", value: { kind: "project_roots" } }, access: "write" },
-        ]),
-        "enabled",
-      );
-      const runtimeSandbox = {
-        permissionProfile: startProfile,
-        sandboxPolicyCwd: process.cwd(),
-        preference: "require" as const,
-      };
-      const writeRuntimeSandbox = {
-        ...runtimeSandbox,
-        permissionProfile: writeProfile,
-      };
-      const manager = new UnifiedExecProcessManager({
-        cwd: process.cwd(),
-        sandboxManager: ptyCompatibleSandboxManager(),
+  test("allows restricted write_stdin for a compatible sandboxed PTY session", async () => {
+    const startProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy([
+        {
+          path: { kind: "special", value: { kind: "project_roots" } },
+          access: "write",
+        },
+        { path: { kind: "path", path: "/repo/blocked" }, access: "read" },
+      ]),
+      "enabled",
+    );
+    const writeProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy([
+        { path: { kind: "path", path: "/repo/blocked" }, access: "read" },
+        {
+          path: { kind: "special", value: { kind: "project_roots" } },
+          access: "write",
+        },
+      ]),
+      "enabled",
+    );
+    const runtimeSandbox = {
+      permissionProfile: startProfile,
+      sandboxPolicyCwd: process.cwd(),
+      preference: "require" as const,
+    };
+    const writeRuntimeSandbox = {
+      ...runtimeSandbox,
+      permissionProfile: writeProfile,
+    };
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxManager: ptyCompatibleSandboxManager(),
+    });
+    try {
+      const started = await manager.execCommand({
+        cmd: "bash -i",
+        tty: true,
+        yield_time_ms: 250,
+        runtimeSandbox,
       });
-      try {
-        const started = await manager.execCommand({
-          cmd: "bash -i",
-          tty: true,
-          yield_time_ms: 250,
-          runtimeSandbox,
-        });
-        const echoed = await manager.writeStdin({
-          session_id: started.process_id!,
-          chars: "printf sandboxed-stdin\\n",
-          yield_time_ms: 250,
-          runtimeSandbox: writeRuntimeSandbox,
-        });
+      const echoed = await manager.writeStdin({
+        session_id: started.process_id!,
+        chars: "printf sandboxed-stdin\\n",
+        yield_time_ms: 250,
+        runtimeSandbox: writeRuntimeSandbox,
+      });
 
-        expect(echoed.stdout).toContain("sandboxed-stdin");
-      } finally {
-        await manager.closeAll("test_cleanup");
-      }
-    },
-    10_000,
-  );
+      expect(echoed.stdout).toContain("sandboxed-stdin");
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  }, 10_000);
 
   test("keeps non-tty processes alive when no timeoutMs was requested", async () => {
     const manager = new UnifiedExecProcessManager({
@@ -620,7 +779,7 @@ describe("UnifiedExecProcessManager", () => {
     });
     try {
       const started = await manager.execCommand({
-        cmd: "node -e \"setInterval(()=>{}, 1000)\"",
+        cmd: 'node -e "setInterval(()=>{}, 1000)"',
         yield_time_ms: 250,
       });
       expect(started.process_id).toEqual(expect.any(Number));
@@ -646,7 +805,7 @@ describe("UnifiedExecProcessManager", () => {
     });
     try {
       const started = await manager.execCommand({
-        cmd: "node -e \"setInterval(()=>{}, 1000)\"",
+        cmd: 'node -e "setInterval(()=>{}, 1000)"',
         yield_time_ms: 250,
         timeoutMs: 400,
       });

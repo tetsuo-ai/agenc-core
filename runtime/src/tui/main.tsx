@@ -2,7 +2,11 @@ import "../bootstrap/node-env.js";
 import { onExit } from "signal-exit";
 
 import { render as renderInk } from "./ink.js";
-import { DISABLE_MOUSE_TRACKING, EXIT_ALT_SCREEN, SHOW_CURSOR } from "./ink/termio/dec.js";
+import {
+  DISABLE_MOUSE_TRACKING,
+  EXIT_ALT_SCREEN,
+  SHOW_CURSOR,
+} from "./ink/termio/dec.js";
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -17,16 +21,21 @@ import type { Event } from "../session/event-log.js";
 import { FpsTracker } from "../utils/fpsTracker.js";
 import { recordTuiBackpressure } from "./backpressure.js";
 import { setIsInteractive } from "../bootstrap/state.js";
+import { TuiTeardownBarrier } from "./teardownBarrier.js";
 
 export interface StdinLossSession extends AgenCBridgeSession {
   readonly abortTerminal?: (reason: string) => void;
   readonly flushEventLog?: () => Promise<void> | void;
-  readonly emit?: (event: Event | {
-    readonly kind: string;
-    readonly cause?: string;
-    readonly timestamp?: number;
-    readonly [key: string]: unknown;
-  }) => void;
+  readonly emit?: (
+    event:
+      | Event
+      | {
+          readonly kind: string;
+          readonly cause?: string;
+          readonly timestamp?: number;
+          readonly [key: string]: unknown;
+        },
+  ) => void;
   nextInternalSubId?(): string;
 }
 
@@ -49,6 +58,7 @@ export interface BootTUIHandle {
 
 export const STDIN_LOSS_FLUSH_HARD_CAP_MS = 2_000;
 export const STDIN_LOSS_FLUSH_FALLBACK_MS = 200;
+export const STDIN_LOSS_TEARDOWN_HARD_CAP_MS = 10_000;
 export const RENDER_BACKPRESSURE_THRESHOLD_MS = 1_000;
 
 function restoreTerminal(stdout: NodeJS.WriteStream): void {
@@ -58,8 +68,7 @@ function restoreTerminal(stdout: NodeJS.WriteStream): void {
     stdout.write(DISABLE_KITTY_KEYBOARD);
     stdout.write(DISABLE_MODIFY_OTHER_KEYS);
     stdout.write(SHOW_CURSOR);
-  } catch {
-  }
+  } catch {}
 }
 
 type RawCapableStdin = NodeJS.ReadStream & {
@@ -79,8 +88,7 @@ function claimStartupRawMode(stdin: NodeJS.ReadStream): (() => void) | null {
   return () => {
     try {
       rawStdin.setRawMode?.(false);
-    } catch {
-    }
+    } catch {}
   };
 }
 
@@ -122,14 +130,14 @@ export async function handleStdinLoss(
   deps?: {
     readonly exit?: (code: number) => never;
     readonly setTimeoutFn?: typeof setTimeout;
+    readonly beforeExit?: () => Promise<void>;
   },
 ): Promise<never> {
   const exit = deps?.exit ?? ((code: number) => process.exit(code));
   const setTimeoutFn = deps?.setTimeoutFn ?? setTimeout;
   try {
     session.abortTerminal?.("stdin_lost");
-  } catch {
-  }
+  } catch {}
   try {
     if (typeof session.flushEventLog === "function") {
       const flushResult = session.flushEventLog();
@@ -148,8 +156,7 @@ export async function handleStdinLoss(
         (handle as { unref?: () => void }).unref?.();
       });
     }
-  } catch {
-  }
+  } catch {}
   try {
     emitSessionWarning(
       session,
@@ -157,11 +164,20 @@ export async function handleStdinLoss(
       "stdin was lost while the TUI was active; aborting the session",
       { timestamp: Date.now() },
     );
-  } catch {
-  }
+  } catch {}
   try {
     unmountInk();
-  } catch {
+  } catch {}
+  if (deps?.beforeExit !== undefined) {
+    try {
+      await Promise.race([
+        deps.beforeExit(),
+        new Promise<void>((resolve) => {
+          const handle = setTimeoutFn(resolve, STDIN_LOSS_TEARDOWN_HARD_CAP_MS);
+          (handle as { unref?: () => void }).unref?.();
+        }),
+      ]);
+    } catch {}
   }
   return exit(130) as never;
 }
@@ -171,6 +187,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const releaseStartupRawMode = claimStartupRawMode(stdin);
+  const teardownBarrier = new TuiTeardownBarrier();
   const unsubscribeExit = onExit(() => {
     restoreTerminal(stdout);
   });
@@ -179,12 +196,15 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
   const onStdinLoss = (): void => {
     if (firedStdinLoss) return;
     firedStdinLoss = true;
-    void handleStdinLoss(options.session, () => {
-      try {
-        unmountRef?.();
-      } catch {
-      }
-    });
+    void handleStdinLoss(
+      options.session,
+      () => {
+        try {
+          unmountRef?.();
+        } catch {}
+      },
+      { beforeExit: () => teardownBarrier.drain() },
+    );
   };
   stdin.once("close", onStdinLoss);
   stdin.once("end", onStdinLoss);
@@ -202,6 +222,8 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
       <AgenCTuiApp
         session={options.session}
         configStore={options.configStore}
+        registerTuiTeardown={(teardown) => teardownBarrier.register(teardown)}
+        shouldPreserveEditorRecoveryOnTeardown={() => firedStdinLoss}
         isInteractive={stdin.isTTY === true}
         model={options.model}
         initialPrompt={options.initialPrompt}
@@ -238,12 +260,29 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
   unmountRef = () => {
     try {
       instance.unmount();
-    } catch {
-    }
+    } catch {}
   };
+  let waitPromise: Promise<void> | null = null;
   return {
     unmount: unmountRef,
-    waitUntilExit: () => instance.waitUntilExit(),
+    waitUntilExit: () => {
+      if (waitPromise === null) {
+        waitPromise = (async () => {
+          try {
+            await instance.waitUntilExit();
+            await teardownBarrier.drain();
+          } finally {
+            stdin.removeListener("close", onStdinLoss);
+            stdin.removeListener("end", onStdinLoss);
+            stdin.removeListener("error", onStdinLoss);
+            releaseStartupRawMode?.();
+            unsubscribeExit();
+            restoreTerminal(stdout);
+          }
+        })();
+      }
+      return waitPromise;
+    },
   };
 }
 

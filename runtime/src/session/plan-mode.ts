@@ -86,7 +86,10 @@ export type PlanTurnItem =
 /** Minimal response item, mirroring agenc runtime `ResponseItem`. */
 export interface PlanResponseItem {
   readonly role?: string;
-  readonly content?: ReadonlyArray<{ readonly type?: string; readonly text?: string }>;
+  readonly content?: ReadonlyArray<{
+    readonly type?: string;
+    readonly text?: string;
+  }>;
 }
 
 /**
@@ -147,6 +150,14 @@ export function createPlanModeStreamState(turnId: string): PlanModeStreamState {
  * `/plan` slash command both flow through the registry).
  */
 export function isPlanMode(ctx: TurnContext): boolean {
+  // Editor interactions are request-scoped read/proposal operations, not
+  // Agent workflow turns. They may be launched while the shared workspace
+  // session remains in Plan mode, but must not inherit Plan's parser,
+  // required-tool choice, or finalization machinery. Keep the underlying
+  // permission configuration untouched so returning to the Agent surface
+  // resumes the exact mode the user selected.
+  if (ctx.editorInteraction !== undefined) return false;
+
   const withPermission = ctx as unknown as {
     sessionConfiguration?: {
       permissionContext?: { mode?: string };
@@ -168,10 +179,7 @@ export interface ParsedAssistantTextDelta {
 }
 
 function isEmptyParsed(parsed: ParsedAssistantTextDelta): boolean {
-  return (
-    parsed.visibleText.length === 0 &&
-    parsed.planSegments.length === 0
-  );
+  return parsed.visibleText.length === 0 && parsed.planSegments.length === 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -311,9 +319,11 @@ function resolvePlanTitle(state: PlanModeStreamState): string {
  *   stream boundary.
  */
 function emitLegacyPlanSignal(session: Session, msg: EventMsg): void {
-  const maybeEmit = (session as unknown as {
-    emit?: (ev: { id: string; msg: EventMsg }) => void;
-  }).emit;
+  const maybeEmit = (
+    session as unknown as {
+      emit?: (ev: { id: string; msg: EventMsg }) => void;
+    }
+  ).emit;
   if (typeof maybeEmit !== "function") return;
   emit(session, msg);
 }
@@ -330,9 +340,11 @@ function startPlanItem(
   const planItemId = state.planItemState.itemId;
 
   // Typed variant lands on TUI consumers (T12 Wave 4-C).
-  const maybeEmit = (session as unknown as {
-    emit?: (ev: { id: string; msg: EventMsg }) => void;
-  }).emit;
+  const maybeEmit = (
+    session as unknown as {
+      emit?: (ev: { id: string; msg: EventMsg }) => void;
+    }
+  ).emit;
   if (typeof maybeEmit === "function") {
     emit(session, {
       type: "plan_started",
@@ -366,9 +378,11 @@ function pushPlanDelta(
   const planItemId = state.planItemState.itemId;
 
   // Typed variant — streamed plan text for the TUI plan-progress panel.
-  const maybeEmit = (session as unknown as {
-    emit?: (ev: { id: string; msg: EventMsg }) => void;
-  }).emit;
+  const maybeEmit = (
+    session as unknown as {
+      emit?: (ev: { id: string; msg: EventMsg }) => void;
+    }
+  ).emit;
   if (typeof maybeEmit === "function") {
     emit(session, {
       type: "plan_delta",
@@ -402,9 +416,11 @@ function completePlanItemWithText(
 
   // Typed variant — carries the fully accumulated plan text for
   // rollout replay and archival rendering.
-  const maybeEmit = (session as unknown as {
-    emit?: (ev: { id: string; msg: EventMsg }) => void;
-  }).emit;
+  const maybeEmit = (
+    session as unknown as {
+      emit?: (ev: { id: string; msg: EventMsg }) => void;
+    }
+  ).emit;
   if (typeof maybeEmit === "function") {
     emit(session, {
       type: "plan_item_completed",
@@ -432,9 +448,11 @@ function completePlanItemWithText(
  * the tool already emits covers the compatibility signal.
  */
 export function emitPlanExited(session: Session, ctx: TurnContext): void {
-  const maybeEmit = (session as unknown as {
-    emit?: (ev: { id: string; msg: EventMsg }) => void;
-  }).emit;
+  const maybeEmit = (
+    session as unknown as {
+      emit?: (ev: { id: string; msg: EventMsg }) => void;
+    }
+  ).emit;
   if (typeof maybeEmit !== "function") return;
   emit(session, {
     type: "plan_exited",
@@ -465,7 +483,13 @@ export function emitStreamedAssistantTextDelta(
 
   if (planModeState) {
     if (parsed.planSegments.length > 0) {
-      handlePlanSegments(session, ctx, planModeState, itemId, parsed.planSegments);
+      handlePlanSegments(
+        session,
+        ctx,
+        planModeState,
+        itemId,
+        parsed.planSegments,
+      );
     }
     return;
   }
@@ -647,7 +671,11 @@ export function handleAssistantItemDoneInPlanMode(
     emitTurnItemInPlanMode(
       session,
       ctx,
-      { kind: "agent_message", id: state.planItemState.itemId, text: agentText },
+      {
+        kind: "agent_message",
+        id: state.planItemState.itemId,
+        text: agentText,
+      },
       previouslyActiveItem,
       state,
     );
@@ -673,12 +701,14 @@ export function realtimeTextForEvent(msg: EventMsg): string | undefined {
     case "agent_message_delta":
       return msg.payload.delta;
     case "user_message":
-      return msg.payload.displayText ??
+      return (
+        msg.payload.displayText ??
         (typeof msg.payload.message === "string"
           ? msg.payload.message
           : msg.payload.message
               .map((part) => (part.type === "text" ? part.text : "[image]"))
-              .join("\n"));
+              .join("\n"))
+      );
     default:
       return undefined;
   }

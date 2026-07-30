@@ -26,11 +26,13 @@ function selection(content: string) {
 
 describe("embedded Neovim agent bridge", () => {
   it("preserves exact unsaved Unicode context and intent metadata", () => {
-    expect(integrationIntentFromRpcParams([
-      "fix",
-      "keep behavior",
-      selection("界🙂"),
-    ])).toEqual({
+    expect(
+      integrationIntentFromRpcParams([
+        "fix",
+        "keep behavior",
+        selection("界🙂"),
+      ]),
+    ).toEqual({
       kind: "fix",
       prompt: "keep behavior",
       context: {
@@ -50,15 +52,17 @@ describe("embedded Neovim agent bridge", () => {
   });
 
   it("admits unnamed regular buffers without inventing a filesystem path", () => {
-    expect(integrationIntentFromRpcParams([
-      "attach",
-      "",
-      {
-        ...selection("unsaved scratch"),
-        buffer: 27,
-        path: "",
-      },
-    ])).toMatchObject({
+    expect(
+      integrationIntentFromRpcParams([
+        "attach",
+        "",
+        {
+          ...selection("unsaved scratch"),
+          buffer: 27,
+          path: "",
+        },
+      ]),
+    ).toMatchObject({
       kind: "attach",
       context: {
         bufferHandle: 27,
@@ -69,18 +73,24 @@ describe("embedded Neovim agent bridge", () => {
   });
 
   it("refuses partial captures instead of silently truncating them", () => {
-    expect(capturedContextFromRpcValue({
-      ...selection("x"),
-      truncated: true,
-    }, {})).toBeNull();
-    expect(capturedContextFromRpcValue(
-      selection("x".repeat(64 * 1024 + 1)),
-      {},
-    )).toBeNull();
-    expect(capturedContextFromRpcValue(
-      selection(Array.from({ length: 2001 }, () => "x").join("\n")),
-      {},
-    )).toBeNull();
+    expect(
+      capturedContextFromRpcValue(
+        {
+          ...selection("x"),
+          truncated: true,
+        },
+        {},
+      ),
+    ).toBeNull();
+    expect(
+      capturedContextFromRpcValue(selection("x".repeat(64 * 1024 + 1)), {}),
+    ).toBeNull();
+    expect(
+      capturedContextFromRpcValue(
+        selection(Array.from({ length: 2001 }, () => "x").join("\n")),
+        {},
+      ),
+    ).toBeNull();
   });
 
   it("installs every public command and matching user-owned Plug mapping", async () => {
@@ -96,6 +106,8 @@ describe("embedded Neovim agent bridge", () => {
       ["Ask", "ask"],
       ["Fix", "fix"],
       ["Explain", "explain"],
+      ["Edit", "edit"],
+      ["Refactor", "refactor"],
       ["Review", "review"],
     ]) {
       expect(source).toContain(`${suffix} = '${action}'`);

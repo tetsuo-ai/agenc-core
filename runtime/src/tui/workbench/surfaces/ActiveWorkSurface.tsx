@@ -10,13 +10,18 @@ import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { WorkbenchTranscriptLayoutProvider } from "../transcriptLayoutContext.js";
 import type { ActiveSurfaceMode, WorkbenchState } from "../types.js";
 import { AgentSurface } from "./AgentSurface.js";
-import { BufferSurface } from "./BufferSurface.js";
+import {
+  BufferSurface,
+  type BufferCodePredictionUi,
+  type BufferTopologyRecoveryUi,
+} from "./BufferSurface.js";
 import { DiffSurface } from "./DiffSurface.js";
 import { PreviewSurface } from "./PreviewSurface.js";
 import { SearchSurface } from "./SearchSurface.js";
 import { ShellSurface } from "./ShellSurface.js";
 import { TestSurface } from "./TestSurface.js";
 import { TranscriptSurface } from "./TranscriptSurface.js";
+import type { BufferIntegrationIntent } from "../buffer/providers/types.js";
 
 export type WorkbenchSurfaceRenderProps = {
   readonly focused: boolean;
@@ -24,6 +29,10 @@ export type WorkbenchSurfaceRenderProps = {
   readonly pendingApproval?: PendingRequest | null;
   readonly scrollRef?: RefObject<ScrollBoxHandle | null>;
   readonly atWelcome?: boolean;
+  readonly onEditorInteraction?: (intent: BufferIntegrationIntent) => void;
+  readonly codePrediction?: BufferCodePredictionUi;
+  readonly editorMutationBlockedReason?: string | null;
+  readonly editorTopologyRecovery?: BufferTopologyRecoveryUi;
 };
 
 export type WorkbenchSurfaceDescriptor = {
@@ -31,7 +40,9 @@ export type WorkbenchSurfaceDescriptor = {
   readonly title: (state: WorkbenchState) => string;
   readonly keybindings: readonly string[];
   readonly footerHints: string;
-  readonly renderBody: (props: WorkbenchSurfaceRenderProps) => React.ReactElement;
+  readonly renderBody: (
+    props: WorkbenchSurfaceRenderProps,
+  ) => React.ReactElement;
   readonly onCommand?: (command: string) => void;
 };
 
@@ -41,7 +52,11 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
     title: () => "TRANSCRIPT",
     keybindings: ["q"],
     footerHints: "Surface: ctrl+w h explorer  ctrl+w j composer  ctrl+w d diff",
-    renderBody: ({ transcript, scrollRef, atWelcome }) => <TranscriptSurface scrollRef={scrollRef} atWelcome={atWelcome}>{transcript}</TranscriptSurface>,
+    renderBody: ({ transcript, scrollRef, atWelcome }) => (
+      <TranscriptSurface scrollRef={scrollRef} atWelcome={atWelcome}>
+        {transcript}
+      </TranscriptSurface>
+    ),
   },
   {
     mode: "preview",
@@ -53,16 +68,45 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
   {
     mode: "buffer",
     title: (state) => state.activeFilePath ?? "BUFFER",
-    keybindings: ["ctrl+s", "ctrl+r", "shift+tab", "alt+r", "alt+h", "alt+j", "alt+z", "alt+e", "alt+q"],
-    footerHints: "Buffer: embedded nvim  ctrl+s save  ctrl+r redo  shift+tab composer  alt+r rail  alt+z maximize  alt+h explorer  alt+e external  alt+q hide",
-    renderBody: ({ focused }) => <BufferSurface focused={focused} />,
+    keybindings: [
+      "ctrl+s",
+      "ctrl+r",
+      "shift+tab",
+      "alt+r",
+      "alt+h",
+      "alt+j",
+      "alt+l",
+      "alt+z",
+      "alt+e",
+      "alt+q",
+    ],
+    footerHints:
+      "Buffer: embedded nvim  ctrl+s save  ctrl+r redo  alt+l AI panel  shift+tab composer  alt+r rail  alt+z maximize  alt+h explorer  alt+e external  alt+q hide",
+    renderBody: ({
+      focused,
+      onEditorInteraction,
+      codePrediction,
+      editorMutationBlockedReason,
+      editorTopologyRecovery,
+    }) => (
+      <BufferSurface
+        focused={focused}
+        onEditorInteraction={onEditorInteraction}
+        codePrediction={codePrediction}
+        mutationBlockedReason={editorMutationBlockedReason}
+        topologyRecovery={editorTopologyRecovery}
+      />
+    ),
   },
   {
     mode: "diff",
     title: () => "DIFF",
     keybindings: ["j", "k", "y", "n", "@", "enter", "q"],
-    footerHints: "Diff: j/k file  y/n approve or mark  enter edit  @ attach  q close",
-    renderBody: ({ focused, pendingApproval }) => <DiffSurface focused={focused} pendingApproval={pendingApproval} />,
+    footerHints:
+      "Diff: j/k file  y/n approve or mark  enter edit  @ attach  q close",
+    renderBody: ({ focused, pendingApproval }) => (
+      <DiffSurface focused={focused} pendingApproval={pendingApproval} />
+    ),
   },
   {
     mode: "shell",
@@ -75,18 +119,20 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
     mode: "test",
     title: () => "TEST",
     keybindings: ["j", "k", "enter", "o", "@", "q"],
-    footerHints: "Test: j/k failure  enter edit  o keep focus  @ attach  q close",
+    footerHints:
+      "Test: j/k failure  enter edit  o keep focus  @ attach  q close",
     renderBody: ({ focused }) => <TestSurface focused={focused} />,
   },
   {
     mode: "search",
     title: () => "SEARCH",
     keybindings: ["j", "k", "J", "K", "enter", "o", "@", "A", "q"],
-    footerHints: "Search: j/k match  J/K file  enter edit  o keep focus  @ attach  A attach all  q close",
+    footerHints:
+      "Search: j/k match  J/K file  enter edit  o keep focus  @ attach  A attach all  q close",
     renderBody: ({ focused }) => <SearchSurface focused={focused} />,
   },
   {
-    mode: "agent",
+    mode: "task-detail",
     title: () => "AGENT",
     keybindings: ["enter", "x", "q"],
     footerHints: "Agent: enter transcript  x stop where supported  q close",
@@ -94,8 +140,13 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
   },
 ];
 
-export function descriptorForSurface(mode: ActiveSurfaceMode): WorkbenchSurfaceDescriptor {
-  return WORKBENCH_SURFACES.find((surface) => surface.mode === mode) ?? WORKBENCH_SURFACES[0]!;
+export function descriptorForSurface(
+  mode: ActiveSurfaceMode,
+): WorkbenchSurfaceDescriptor {
+  return (
+    WORKBENCH_SURFACES.find((surface) => surface.mode === mode) ??
+    WORKBENCH_SURFACES[0]!
+  );
 }
 
 export function footerHintsForSurface(mode: ActiveSurfaceMode): string {
@@ -108,12 +159,20 @@ export function ActiveWorkSurface({
   pendingApproval,
   scrollRef,
   atWelcome,
+  onEditorInteraction,
+  codePrediction,
+  editorMutationBlockedReason,
+  editorTopologyRecovery,
 }: {
   readonly focused: boolean;
   readonly transcript: React.ReactNode;
   readonly pendingApproval?: PendingRequest | null;
   readonly scrollRef?: RefObject<ScrollBoxHandle | null>;
   readonly atWelcome?: boolean;
+  readonly onEditorInteraction?: (intent: BufferIntegrationIntent) => void;
+  readonly codePrediction?: BufferCodePredictionUi;
+  readonly editorMutationBlockedReason?: string | null;
+  readonly editorTopologyRecovery?: BufferTopologyRecoveryUi;
 }): React.ReactElement {
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
@@ -130,7 +189,13 @@ export function ActiveWorkSurface({
   );
 
   return (
-    <Box flexDirection="column" flexGrow={1} height="100%" overflow="hidden" backgroundColor="surfaceBackground">
+    <Box
+      flexDirection="column"
+      flexGrow={1}
+      height="100%"
+      overflow="hidden"
+      backgroundColor="surfaceBackground"
+    >
       {showSurfaceHeader ? (
         <Box
           height={1}
@@ -159,10 +224,30 @@ export function ActiveWorkSurface({
       >
         {isTranscript ? (
           <WorkbenchTranscriptLayoutProvider>
-            {descriptor.renderBody({ focused, transcript, pendingApproval, scrollRef, atWelcome })}
+            {descriptor.renderBody({
+              focused,
+              transcript,
+              pendingApproval,
+              scrollRef,
+              atWelcome,
+              onEditorInteraction,
+              codePrediction,
+              editorMutationBlockedReason,
+              editorTopologyRecovery,
+            })}
           </WorkbenchTranscriptLayoutProvider>
         ) : (
-          descriptor.renderBody({ focused, transcript, pendingApproval, scrollRef, atWelcome })
+          descriptor.renderBody({
+            focused,
+            transcript,
+            pendingApproval,
+            scrollRef,
+            atWelcome,
+            onEditorInteraction,
+            codePrediction,
+            editorMutationBlockedReason,
+            editorTopologyRecovery,
+          })
         )}
       </Box>
     </Box>

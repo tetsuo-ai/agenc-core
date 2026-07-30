@@ -1,6 +1,14 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { basename } from "node:path";
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { basename, relative } from "node:path";
 
+import type { WorkspaceEditorRecoveredTopologyMutation } from "../../../app-server/protocol/index.js";
 import { peekLSPDiagnosticsForFile } from "../../../services/lsp/LSPDiagnosticRegistry.js";
 import { peekAmbientRuntimeSession } from "../../../session/current-session.js";
 import type { DiagnosticEntry } from "../../../services/lsp/types.js";
@@ -12,7 +20,10 @@ import { stringWidth } from "../../ink/stringWidth.js";
 import { setClipboard } from "../../ink/termio/osc.js";
 import { Box, measureElement, Text } from "../../ink.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
-import { useInputCapture, useKeybindings } from "../../keybindings/useKeybinding.js";
+import {
+  useInputCapture,
+  useKeybindings,
+} from "../../keybindings/useKeybinding.js";
 import { useAppState } from "../../state/AppState.js";
 import { taskMayReferencePath } from "../agents/activity.js";
 import {
@@ -20,9 +31,7 @@ import {
   type BufferVisibleLine,
 } from "../buffer/BufferStore.js";
 import { highlightBufferVisibleLines } from "../buffer/highlight.js";
-import {
-  getWorkbenchBufferProviderController,
-} from "../buffer/providers/BufferProviderController.js";
+import { getWorkbenchBufferProviderController } from "../buffer/providers/BufferProviderController.js";
 import { BufferLine, NeovimGridView } from "../buffer/render.js";
 import { useBufferStore } from "../buffer/useBufferStore.js";
 import { bufferIntegrationIntentCommand } from "../commands.js";
@@ -31,6 +40,10 @@ import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
 import { wheelInputIsInsideNode as wheelInputIsInsideNodeImpl } from "./wheelInput.js";
 import type { WorkbenchCommand } from "../types.js";
 import type {
+  BufferCodePrediction,
+  BufferCodePredictionContext,
+  BufferCodePredictionFeedback,
+  BufferIntegrationIntent,
   BufferProviderBuffer,
   BufferProviderSnapshot,
 } from "../buffer/providers/types.js";
@@ -38,7 +51,36 @@ import type {
 const EMPTY_HIGHLIGHTS: ReadonlyMap<number, string> = new Map();
 const INITIAL_CONTENT_SIZE = { rows: 1, columns: 1 } as const;
 
-export function BufferSurface({ focused }: { readonly focused: boolean }): React.ReactElement {
+export type BufferCodePredictionUi = {
+  readonly enabled: boolean;
+  readonly debounceMs: number;
+  readonly complete: (
+    context: BufferCodePredictionContext,
+    generation: number,
+  ) => Promise<BufferCodePrediction | null>;
+  readonly cancel: () => void;
+  readonly onDisplayed: (prediction: BufferCodePrediction) => void;
+  readonly onFeedback: (feedback: BufferCodePredictionFeedback) => void;
+};
+
+export type BufferTopologyRecoveryUi = {
+  readonly mutation: WorkspaceEditorRecoveredTopologyMutation;
+  readonly onResolveUnknown: () => Promise<void>;
+};
+
+export function BufferSurface({
+  focused,
+  onEditorInteraction,
+  codePrediction,
+  mutationBlockedReason = null,
+  topologyRecovery,
+}: {
+  readonly focused: boolean;
+  readonly onEditorInteraction?: (intent: BufferIntegrationIntent) => void;
+  readonly codePrediction?: BufferCodePredictionUi;
+  readonly mutationBlockedReason?: string | null;
+  readonly topologyRecovery?: BufferTopologyRecoveryUi;
+}): React.ReactElement {
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
   const snapshot = useBufferStore();
@@ -56,18 +98,43 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
     inFlight: boolean;
   } | null>(null);
   const contentRef = useRef<DOMElement | null>(null);
-  const measuredContentSize = useRef<{ readonly rows: number; readonly columns: number } | null>(null);
-  const inputContentSize = useRef<{ readonly rows: number; readonly columns: number }>(INITIAL_CONTENT_SIZE);
-  const [contentSize, setContentSize] = useState<{ readonly rows: number; readonly columns: number }>(
-    INITIAL_CONTENT_SIZE,
-  );
+  const measuredContentSize = useRef<{
+    readonly rows: number;
+    readonly columns: number;
+  } | null>(null);
+  const inputContentSize = useRef<{
+    readonly rows: number;
+    readonly columns: number;
+  }>(INITIAL_CONTENT_SIZE);
+  const [contentSize, setContentSize] = useState<{
+    readonly rows: number;
+    readonly columns: number;
+  }>(INITIAL_CONTENT_SIZE);
   const [recoveryDiscardArmed, setRecoveryDiscardArmed] = useState(false);
+  const [topologyRecoveryArmed, setTopologyRecoveryArmed] = useState(false);
+  const [topologyRecoveryWorking, setTopologyRecoveryWorking] = useState(false);
+  const topologyRecoveryArmedRef = useRef(false);
+  const [predictionFeedbackRevision, setPredictionFeedbackRevision] =
+    useState(0);
+  const predictionGenerationRef = useRef(0);
+  const stagedPredictionRef = useRef<{
+    readonly requestId: string;
+    readonly generation: number;
+  } | null>(null);
+  const clearStagedPrediction = useCallback((): void => {
+    const stagedPrediction = stagedPredictionRef.current;
+    if (stagedPrediction === null) return;
+    stagedPredictionRef.current = null;
+    void store.clearCodePrediction(stagedPrediction.requestId).catch(logError);
+  }, [store]);
   const inFlightAgent = useMemo(
-    () => Object.values(tasks).find((task) =>
-      task.type !== "local_bash" &&
-      (task.status === "running" || task.status === "pending") &&
-      taskMayReferencePath(task, activeIdentity.referencePath)
-    ),
+    () =>
+      Object.values(tasks).find(
+        (task) =>
+          task.type !== "local_bash" &&
+          (task.status === "running" || task.status === "pending") &&
+          taskMayReferencePath(task, activeIdentity.referencePath),
+      ),
     [activeIdentity.referencePath, tasks],
   );
   const diagnostics = snapshot.absolutePath
@@ -78,22 +145,19 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
     : [];
   const visibleLines = store.getVisibleLines();
   const tabs = (snapshot.buffers ?? []).filter(
-    (buffer) =>
-      buffer.listed &&
-      buffer.loaded &&
-      buffer.bufferType === "",
+    (buffer) => buffer.listed && buffer.loaded && buffer.bufferType === "",
   );
   const tabLabels = bufferTabLabels(tabs);
   const tabCharacters = tabs.reduce(
     (total, buffer) =>
-      total + stringWidth(tabLabels.get(buffer.handle) ?? "") +
+      total +
+      stringWidth(tabLabels.get(buffer.handle) ?? "") +
       (buffer.modified ? 2 : 0) +
       2,
     0,
   );
-  const orderedTabs = tabCharacters > contentSize.columns
-    ? rotateActiveTabFirst(tabs)
-    : tabs;
+  const orderedTabs =
+    tabCharacters > contentSize.columns ? rotateActiveTabFirst(tabs) : tabs;
   const showTabsMode = store.getShowTabsMode();
   const showTabs =
     tabs.length > 0 &&
@@ -102,8 +166,8 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
     activeIdentity.referencePath,
     visibleLines,
   );
-  const currentLineDiagnostic = diagnostics.find(
-    (diagnostic) => diagnosticCoversLine(diagnostic, snapshot.position.line),
+  const currentLineDiagnostic = diagnostics.find((diagnostic) =>
+    diagnosticCoversLine(diagnostic, snapshot.position.line),
   );
   const crashed =
     snapshot.providerStatus === "closed" &&
@@ -118,20 +182,28 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
     (request: NonNullable<typeof pendingHostOpen.current>): void => {
       if (request.inFlight) return;
       request.inFlight = true;
-      void store.open(request.path, request.line).catch(logError).finally(() => {
-        if (pendingHostOpen.current !== request) return;
-        request.inFlight = false;
-        const current = store.getSnapshot();
-        if (current.filePath === request.path || !current.dirty) {
-          pendingHostOpen.current = null;
-        }
-      });
+      void store
+        .open(request.path, request.line)
+        .catch(logError)
+        .finally(() => {
+          if (pendingHostOpen.current !== request) return;
+          request.inFlight = false;
+          const current = store.getSnapshot();
+          if (current.filePath === request.path || !current.dirty) {
+            pendingHostOpen.current = null;
+          }
+        });
     },
     [store],
   );
   useEffect(() => {
     setRecoveryDiscardArmed(false);
   }, [snapshot.recovery?.status, snapshot.recovery?.swapFiles]);
+  useEffect(() => {
+    topologyRecoveryArmedRef.current = false;
+    setTopologyRecoveryArmed(false);
+    setTopologyRecoveryWorking(false);
+  }, [topologyRecovery?.mutation.tokenId]);
   const resolveRecovery = useCallback(
     (action: "recover" | "compare" | "save-copy" | "discard"): void => {
       if (snapshot.recovery?.status !== "pending") return;
@@ -152,6 +224,21 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
   const copyCrashDetails = useCallback((): void => {
     if (crashDetails) void setClipboard(crashDetails).catch(logError);
   }, [crashDetails]);
+  const resolveTopologyRecovery = useCallback((): void => {
+    if (topologyRecovery === undefined || topologyRecoveryWorking) return;
+    if (!topologyRecoveryArmedRef.current) {
+      topologyRecoveryArmedRef.current = true;
+      setTopologyRecoveryArmed(true);
+      return;
+    }
+    setTopologyRecoveryWorking(true);
+    void topologyRecovery
+      .onResolveUnknown()
+      .catch(logError)
+      .finally(() => {
+        setTopologyRecoveryWorking(false);
+      });
+  }, [topologyRecovery, topologyRecoveryWorking]);
 
   useEffect(() => {
     if (!activePath) return;
@@ -212,8 +299,7 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
     // Mark this provider-originated path as observed before updating host
     // state, otherwise the next render would mistake :edit/:bnext for a new
     // explorer request and reopen the previous file.
-    lastOpenRequest.current =
-      `${snapshot.filePath}\u0000${line}\u0000${activeOpenRequestId}`;
+    lastOpenRequest.current = `${snapshot.filePath}\u0000${line}\u0000${activeOpenRequestId}`;
     dispatch({
       type: "syncBufferPath",
       path: snapshot.filePath,
@@ -246,7 +332,8 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
       columns: Math.max(1, Math.floor(measured.width)),
     };
     const previous = measuredContentSize.current;
-    if (previous?.rows === next.rows && previous.columns === next.columns) return;
+    if (previous?.rows === next.rows && previous.columns === next.columns)
+      return;
     measuredContentSize.current = next;
     inputContentSize.current = next;
     setContentSize(next);
@@ -254,11 +341,11 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
   });
 
   useEffect(() => {
-    store.focus(focused);
+    store.focus(focused && mutationBlockedReason === null);
     return () => {
       if (focused) store.focus(false);
     };
-  }, [focused, store]);
+  }, [focused, mutationBlockedReason, store]);
 
   useEffect(() => {
     if (!focused) return;
@@ -276,16 +363,159 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
     workbench.activeSurfaceMode,
   ]);
 
-  useEffect(() => () => {
-    store.focus(false);
-  }, [store]);
+  useEffect(
+    () => () => {
+      store.focus(false);
+    },
+    [store],
+  );
 
   useEffect(
-    () => store.subscribeIntegrationIntents((intent) => {
-      dispatch(bufferIntegrationIntentCommand(intent));
-    }),
-    [dispatch, snapshot.provider.kind, store],
+    () =>
+      store.subscribeIntegrationIntents((intent) => {
+        if (mutationBlockedReason !== null) return;
+        const needsComposer =
+          intent.kind === "attach" ||
+          ((intent.kind === "ask" ||
+            intent.kind === "edit" ||
+            intent.kind === "refactor" ||
+            intent.kind === "review") &&
+            !intent.prompt?.trim());
+        if (!needsComposer && onEditorInteraction) {
+          onEditorInteraction(intent);
+          return;
+        }
+        dispatch(bufferIntegrationIntentCommand(intent));
+      }),
+    [
+      dispatch,
+      mutationBlockedReason,
+      onEditorInteraction,
+      snapshot.provider.kind,
+      store,
+    ],
   );
+
+  useEffect(
+    () =>
+      store.subscribeCodePredictionFeedback((feedback) => {
+        if (
+          feedback.kind !== "partially_accepted" &&
+          stagedPredictionRef.current?.requestId === feedback.requestId
+        ) {
+          stagedPredictionRef.current = null;
+          setPredictionFeedbackRevision((revision) => revision + 1);
+        }
+        codePrediction?.onFeedback(feedback);
+      }),
+    [codePrediction, snapshot.provider.kind, store],
+  );
+
+  const activePredictionBuffer = snapshot.buffers.find(
+    (buffer) => buffer.handle === snapshot.activeBufferHandle,
+  );
+  const activePredictionChangedtick =
+    activePredictionBuffer?.changedtick ?? null;
+  const predictionMode = snapshot.terminal?.mode ?? "";
+  const predictionEligible =
+    codePrediction?.enabled === true &&
+    mutationBlockedReason === null &&
+    focused &&
+    workbench.activeWorkspaceView === "editor" &&
+    workbench.activeSurfaceMode === "buffer" &&
+    snapshot.provider.kind === "neovim" &&
+    snapshot.providerStatus === "ready" &&
+    snapshot.activeBufferHandle !== null &&
+    activePredictionChangedtick !== null &&
+    isCodePredictionInsertMode(predictionMode);
+
+  useEffect(
+    () => () => {
+      clearStagedPrediction();
+    },
+    [clearStagedPrediction, codePrediction],
+  );
+
+  useEffect(() => {
+    if (predictionEligible) return;
+    clearStagedPrediction();
+  }, [clearStagedPrediction, predictionEligible]);
+
+  useEffect(() => {
+    const generation = predictionGenerationRef.current + 1;
+    predictionGenerationRef.current = generation;
+    codePrediction?.cancel();
+
+    if (!predictionEligible || codePrediction === undefined) return;
+    // Neovim owns the staged prediction's changedtick/cursor revision. A
+    // partial acceptance advances both while retaining the same request ID
+    // for the remaining ghost text, so ordinary snapshot updates must not
+    // clear or replace that remainder.
+    if (stagedPredictionRef.current !== null) return;
+
+    let disposed = false;
+    const timer = setTimeout(
+      () => {
+        void (async () => {
+          const context = await store.captureCodePredictionContext();
+          if (
+            disposed ||
+            predictionGenerationRef.current !== generation ||
+            context === null ||
+            context.bufferHandle !== snapshot.activeBufferHandle ||
+            context.changedtick !== activePredictionChangedtick
+          ) {
+            return;
+          }
+          const prediction = await codePrediction.complete(context, generation);
+          if (
+            disposed ||
+            predictionGenerationRef.current !== generation ||
+            prediction === null ||
+            prediction.bufferHandle !== context.bufferHandle ||
+            prediction.changedtick !== context.changedtick
+          ) {
+            return;
+          }
+          if (!(await store.stageCodePrediction(prediction))) return;
+          if (disposed || predictionGenerationRef.current !== generation) {
+            void store
+              .clearCodePrediction(prediction.requestId)
+              .catch(logError);
+            return;
+          }
+          stagedPredictionRef.current = {
+            requestId: prediction.requestId,
+            generation,
+          };
+          codePrediction.onDisplayed(prediction);
+        })().catch(logError);
+      },
+      Math.max(0, codePrediction.debounceMs),
+    );
+
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+      codePrediction.cancel();
+    };
+  }, [
+    activePredictionChangedtick,
+    codePrediction,
+    focused,
+    mutationBlockedReason,
+    predictionEligible,
+    predictionFeedbackRevision,
+    predictionMode,
+    snapshot.activeBufferHandle,
+    snapshot.position.column,
+    snapshot.position.line,
+    snapshot.provider.kind,
+    snapshot.providerStatus,
+    store,
+    workbench.activeSurfaceMode,
+    workbench.activeWorkspaceView,
+  ]);
 
   const keybindingContext = snapshot.provider.capabilities.terminalUi
     ? "BufferHost"
@@ -293,25 +523,39 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
   useRegisterKeybindingContext(keybindingContext, focused);
   const hasInFlightAgent = Boolean(inFlightAgent);
   const keyHandlers = useMemo(
-    () => createBufferSurfaceKeyHandlers({
-      store,
-      snapshot,
-      hasInFlightAgent,
+    () =>
+      createBufferSurfaceKeyHandlers({
+        store,
+        snapshot,
+        hasInFlightAgent,
+        dispatch,
+        railOpen: workbench.rail !== null,
+        mutationBlocked: mutationBlockedReason !== null,
+      }),
+    [
       dispatch,
-    }),
-    [dispatch, hasInFlightAgent, snapshot, store],
+      hasInFlightAgent,
+      mutationBlockedReason,
+      snapshot,
+      store,
+      workbench.rail,
+    ],
   );
-  useKeybindings(keyHandlers, { context: keybindingContext, isActive: focused });
+  useKeybindings(keyHandlers, {
+    context: keybindingContext,
+    isActive: focused,
+  });
 
   const executeVimCommand = useCallback(
     (command: BufferVimCommand): void => {
+      if (mutationBlockedReason !== null && command.type !== "quit") return;
       executeBufferVimCommand(command, {
         store,
         dispatch,
         hasInFlightAgent,
       });
     },
-    [dispatch, hasInFlightAgent, store],
+    [dispatch, hasInFlightAgent, mutationBlockedReason, store],
   );
 
   useInputCapture(
@@ -344,6 +588,11 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
             return true;
           }
         }
+        if (topologyRecovery !== undefined) {
+          if (input.toLowerCase() === "u") resolveTopologyRecovery();
+          return true;
+        }
+        if (mutationBlockedReason !== null) return true;
         // BufferHost normally resolves Ctrl+S before this capture. Keep the
         // save boundary here as well so a provider transition cannot expose a
         // one-render window where raw editor capture is registered before its
@@ -356,7 +605,10 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
           void store.save({ hasInFlightAgent }).catch(logError);
           return true;
         }
-        if ((key.wheelUp || key.wheelDown) && !wheelInputIsInsideNode(event, contentRef.current)) {
+        if (
+          (key.wheelUp || key.wheelDown) &&
+          !wheelInputIsInsideNode(event, contentRef.current)
+        ) {
           return false;
         }
         return store.handleInput(
@@ -372,22 +624,32 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
         crashed,
         executeVimCommand,
         hasInFlightAgent,
+        mutationBlockedReason,
         recoveryPending,
         resolveRecovery,
+        resolveTopologyRecovery,
         restartAfterCrash,
         snapshot.provider.capabilities.terminalUi,
         store,
+        topologyRecovery,
       ],
     ),
     { context: keybindingContext, isActive: focused },
   );
 
-  if (!activePath && snapshot.status === "idle") {
+  if (
+    !activePath &&
+    snapshot.status === "idle" &&
+    topologyRecovery === undefined
+  ) {
     return <EmptySurface title="BUFFER" message="No file selected" />;
   }
 
   const status = bufferStatusLabel(snapshot, Boolean(inFlightAgent));
-  const modeLabel = snapshot.vimCommandLine !== null ? "command" : snapshot.vimMode.toLowerCase();
+  const modeLabel =
+    snapshot.vimCommandLine !== null
+      ? "command"
+      : snapshot.vimMode.toLowerCase();
   const terminal = snapshot.terminal;
   return (
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
@@ -397,19 +659,59 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
         focused={focused}
       />
       {snapshot.provider.fallbackReason ? (
-        <Text color="warning" wrap="truncate-end">{snapshot.provider.fallbackReason}</Text>
+        <Box height={1} flexShrink={0}>
+          <Text color="warning" wrap="truncate-end">
+            {snapshot.provider.fallbackReason}
+          </Text>
+        </Box>
       ) : null}
       {snapshot.providerMessage ? (
-        <Text dimColor wrap="truncate-end">{snapshot.providerMessage}</Text>
+        <Box height={1} flexShrink={0}>
+          <Text dimColor wrap="truncate-end">
+            {snapshot.providerMessage}
+          </Text>
+        </Box>
       ) : null}
-      {snapshot.error ? <Text color={snapshot.status === "conflict" ? "warning" : "error"} wrap="truncate-end">{snapshot.error}</Text> : null}
+      {mutationBlockedReason !== null ? (
+        <Box minHeight={1} flexShrink={0}>
+          <Text color="error" wrap="wrap">
+            {mutationBlockedReason}
+          </Text>
+        </Box>
+      ) : null}
+      {snapshot.error ? (
+        <Box height={1} flexShrink={0}>
+          <Text
+            color={snapshot.status === "conflict" ? "warning" : "error"}
+            wrap="truncate-end"
+          >
+            {snapshot.error}
+          </Text>
+        </Box>
+      ) : null}
       {diagnostics.length > 0 ? (
-        <Text color="warning" wrap="truncate-end">{diagnostics.length} diagnostic{diagnostics.length === 1 ? "" : "s"}{currentLineDiagnostic ? ` - ${currentLineDiagnostic.message}` : ""}</Text>
+        <Box height={1} flexShrink={0}>
+          <Text color="warning" wrap="truncate-end">
+            {diagnostics.length} diagnostic{diagnostics.length === 1 ? "" : "s"}
+            {currentLineDiagnostic ? ` - ${currentLineDiagnostic.message}` : ""}
+          </Text>
+        </Box>
       ) : null}
       {inFlightAgent ? (
-        <Text color="warning" wrap="truncate-end">agent edit in flight: {inFlightAgent.description ?? inFlightAgent.id}</Text>
+        <Box height={1} flexShrink={0}>
+          <Text color="warning" wrap="truncate-end">
+            agent edit in flight:{" "}
+            {inFlightAgent.description ?? inFlightAgent.id}
+          </Text>
+        </Box>
       ) : null}
-      {snapshot.hoverText ? <Text dimColor wrap="truncate-end">{oneLine(snapshot.hoverText)}</Text> : null}
+      {snapshot.hoverText ? (
+        <Box height={1} flexShrink={0}>
+          <Text dimColor wrap="truncate-end">
+            {oneLine(snapshot.hoverText)}
+          </Text>
+        </Box>
+      ) : null}
       {showTabs ? (
         <Box height={1} flexShrink={0} overflow="hidden">
           {orderedTabs.map((buffer) => (
@@ -420,12 +722,19 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
               onClick={(event) => {
                 event.stopImmediatePropagation();
                 dispatch({ type: "focus", pane: "surface" });
+                if (mutationBlockedReason !== null) return;
                 void store.selectBuffer(buffer.handle).catch(logError);
               }}
             >
               <Text
                 bold={buffer.current}
-                color={buffer.modified ? "warning" : buffer.current ? "text" : "inactive"}
+                color={
+                  buffer.modified
+                    ? "warning"
+                    : buffer.current
+                      ? "text"
+                      : "inactive"
+                }
                 wrap="truncate-end"
               >
                 {`${buffer.modified ? "● " : ""}${tabLabels.get(buffer.handle) ?? "[No Name]"}`}
@@ -442,7 +751,8 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
         onClick={(event) => {
           event.stopImmediatePropagation();
           dispatch({ type: "focus", pane: "surface" });
-          if (recoveryPending || crashed) return;
+          if (recoveryPending || crashed || mutationBlockedReason !== null)
+            return;
           store.click(event.localRow, event.localCol);
         }}
       >
@@ -465,10 +775,23 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
             onUseInline={() => restartAfterCrash("inline")}
             onCopy={copyCrashDetails}
           />
-        ) : snapshot.status === "loading" ? <Text dimColor>Loading...</Text> : null}
-        {!recoveryPending && !crashed && terminal
-          ? <NeovimGridView terminal={terminal} focused={focused} />
-          : !recoveryPending && !crashed ? visibleLines.map((line) => (
+        ) : topologyRecovery ? (
+          <RecoveredTopologyCard
+            mutation={topologyRecovery.mutation}
+            armed={topologyRecoveryArmed}
+            working={topologyRecoveryWorking}
+            onResolve={resolveTopologyRecovery}
+          />
+        ) : snapshot.status === "loading" ? (
+          <Text dimColor>Loading...</Text>
+        ) : null}
+        {!recoveryPending && !crashed && !topologyRecovery && terminal ? (
+          <NeovimGridView
+            terminal={terminal}
+            focused={focused && mutationBlockedReason === null}
+          />
+        ) : !recoveryPending && !crashed && !topologyRecovery ? (
+          visibleLines.map((line) => (
             <BufferLine
               key={line.number}
               line={line}
@@ -477,7 +800,8 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
               focused={focused}
               highlightedText={highlightedLines.get(line.number)}
             />
-          )) : null}
+          ))
+        ) : null}
       </Box>
       <Box height={1}>
         <Text dimColor wrap="truncate-end">
@@ -486,20 +810,33 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
               ? "Press D again to discard recovery  R recover  C compare  S save copy"
               : "R recover  C compare  S save copy  D discard"
             : crashed
-            ? "R restart  K restart clean  I use inline  C copy details"
-            : terminal
-            ? `${terminal.mode.toUpperCase()}  ctrl+s save  ctrl+r redo  shift+tab composer  alt+r rail  alt+z ${workbench.surfaceMaximized ? "restore" : "maximize"}  alt+h explorer  alt+e external`
-            : snapshot.vimCommandLine !== null
-            ? `:${snapshot.vimCommandLine}`
-            : snapshot.vimMode === "VISUAL"
-              ? "VISUAL  h/j/k/l move  y yank  d delete  c change  p paste  esc normal"
-              : snapshot.vimMode === "NORMAL"
-                ? "BASIC FALLBACK  v visual  y/p register  : command  i/a/o insert  ctrl+r rail  esc composer"
-                : "INSERT  esc normal"}
+              ? "R restart  K restart clean  I use inline  C copy details"
+              : topologyRecovery
+                ? topologyRecoveryWorking
+                  ? "AUDITING UNKNOWN OUTCOME…"
+                  : topologyRecoveryArmed
+                    ? "Press U again to mark outcome unknown and resynchronize"
+                    : "U review and resolve interrupted path operation"
+                : mutationBlockedReason !== null
+                  ? "EDITOR READ-ONLY  alt+h explorer  shift+tab composer  alt+q hide"
+                  : terminal
+                    ? `${terminal.mode.toUpperCase()}  ctrl+s save  ctrl+r redo${workbench.rail !== null ? "  alt+l AI" : ""}  alt+r rail  shift+tab composer  alt+z ${workbench.surfaceMaximized ? "restore" : "maximize"}  alt+h explorer  alt+e external`
+                    : snapshot.vimCommandLine !== null
+                      ? `:${snapshot.vimCommandLine}`
+                      : snapshot.vimMode === "VISUAL"
+                        ? "VISUAL  h/j/k/l move  y yank  d delete  c change  p paste  esc normal"
+                        : snapshot.vimMode === "NORMAL"
+                          ? "BASIC FALLBACK  v visual  y/p register  : command  i/a/o insert  ctrl+r rail  esc composer"
+                          : "INSERT  esc normal"}
         </Text>
       </Box>
     </Box>
   );
+}
+
+export function isCodePredictionInsertMode(mode: string): boolean {
+  const normalized = mode.trim().toLowerCase();
+  return normalized === "i" || normalized.startsWith("insert");
 }
 
 export function bufferTabLabels(
@@ -513,17 +850,19 @@ export function bufferTabLabels(
   for (const label of baseLabels) {
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
-  return new Map(buffers.map((buffer, index) => {
-    const baseLabel = baseLabels[index] ?? "[No Name]";
-    if ((counts.get(baseLabel) ?? 0) <= 1) {
-      return [buffer.handle, baseLabel] as const;
-    }
-    const path = buffer.filePath ?? buffer.name;
-    return [
-      buffer.handle,
-      path.length > 0 ? path : `[No Name] #${buffer.handle}`,
-    ] as const;
-  }));
+  return new Map(
+    buffers.map((buffer, index) => {
+      const baseLabel = baseLabels[index] ?? "[No Name]";
+      if ((counts.get(baseLabel) ?? 0) <= 1) {
+        return [buffer.handle, baseLabel] as const;
+      }
+      const path = buffer.filePath ?? buffer.name;
+      return [
+        buffer.handle,
+        path.length > 0 ? path : `[No Name] #${buffer.handle}`,
+      ] as const;
+    }),
+  );
 }
 
 export function bufferSurfaceActiveIdentity(
@@ -536,9 +875,10 @@ export function bufferSurfaceActiveIdentity(
   readonly displayPath: string;
   readonly referencePath: string | null;
 } {
-  const active = snapshot.buffers.find(
-    (buffer) => buffer.handle === snapshot.activeBufferHandle,
-  ) ?? snapshot.buffers.find((buffer) => buffer.current);
+  const active =
+    snapshot.buffers.find(
+      (buffer) => buffer.handle === snapshot.activeBufferHandle,
+    ) ?? snapshot.buffers.find((buffer) => buffer.current);
   if (active) {
     const referencePath = active.filePath ?? active.absolutePath;
     if (referencePath) {
@@ -590,8 +930,12 @@ function NeovimCrashCard({
 }): React.ReactElement {
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
-      <Text color="error" bold>Embedded Neovim stopped unexpectedly</Text>
-      <Text dimColor wrap="wrap">{details}</Text>
+      <Text color="error" bold>
+        Embedded Neovim stopped unexpectedly
+      </Text>
+      <Text dimColor wrap="wrap">
+        {details}
+      </Text>
       <Box flexDirection="row" marginTop={1}>
         <Box borderStyle="single" paddingX={1} onClick={onRestart}>
           <Text>R Restart</Text>
@@ -605,6 +949,65 @@ function NeovimCrashCard({
         <Box borderStyle="single" paddingX={1} onClick={onCopy}>
           <Text>C Copy details</Text>
         </Box>
+      </Box>
+    </Box>
+  );
+}
+
+function RecoveredTopologyCard({
+  mutation,
+  armed,
+  working,
+  onResolve,
+}: {
+  readonly mutation: WorkspaceEditorRecoveredTopologyMutation;
+  readonly armed: boolean;
+  readonly working: boolean;
+  readonly onResolve: () => void;
+}): React.ReactElement {
+  const paths = mutation.targets
+    .map((target) => {
+      const workspacePath = relative(mutation.workspaceRoot, target.path);
+      const label = workspacePath.length > 0 ? workspacePath : ".";
+      return `${label}${target.includeDescendants === true ? "/…" : ""}`;
+    })
+    .join(", ");
+  return (
+    <Box flexDirection="column" paddingX={1} paddingY={1}>
+      <Text color="warning" bold>
+        Interrupted Editor rename or delete needs reconciliation
+      </Text>
+      <Text dimColor wrap="wrap">
+        {paths}
+      </Text>
+      {working ? (
+        <Text>Persisting an unknown-outcome audit and resynchronizing…</Text>
+      ) : armed ? (
+        <Text color="warning" wrap="wrap">
+          Press U again to record that the disk outcome is unknown. AgenC will
+          keep the operation audited, reload affected clean buffers, and then
+          resynchronize Editor authority.
+        </Text>
+      ) : (
+        <Text dimColor wrap="wrap">
+          AgenC cannot know whether this path operation reached disk before the
+          prior process stopped. Inspect the paths above, then explicitly
+          resolve the durable safety fence.
+        </Text>
+      )}
+      <Box
+        borderStyle="single"
+        paddingX={1}
+        marginTop={1}
+        onClick={working ? undefined : onResolve}
+      >
+        <Text color={armed ? "warning" : undefined}>
+          {working
+            ? "Resolving…"
+            : armed
+              ? "U Confirm unknown outcome"
+              : "U Resolve as unknown"}
+        </Text>
       </Box>
     </Box>
   );
@@ -631,15 +1034,23 @@ function NeovimRecoveryCard({
 }): React.ReactElement {
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
-      <Text color="warning" bold>Unresolved Neovim recovery data found</Text>
+      <Text color="warning" bold>
+        Unresolved Neovim recovery data found
+      </Text>
       <Text dimColor wrap="wrap">
         {swapFiles.map((path) => basename(path)).join(", ")}
       </Text>
-      {error ? <Text color="error" wrap="wrap">{error}</Text> : null}
+      {error ? (
+        <Text color="error" wrap="wrap">
+          {error}
+        </Text>
+      ) : null}
       {status === "working" ? (
         <Text>Applying recovery choice…</Text>
       ) : discardArmed ? (
-        <Text color="error">Press D again to permanently discard the recovery swap.</Text>
+        <Text color="error">
+          Press D again to permanently discard the recovery swap.
+        </Text>
       ) : (
         <Text dimColor>
           Recover restores edits in BUFFER. Compare opens recovered and disk
@@ -670,25 +1081,34 @@ export function formatProviderCrashDetails(exit: {
   readonly signal: NodeJS.Signals | null;
   readonly stderrTail: string;
 }): string {
-  const summary = [
-    exit.signal ? `signal ${exit.signal}` : null,
-    exit.code !== null ? `exit ${exit.code}` : null,
-  ].filter(Boolean).join(", ") || "exit status unavailable";
+  const summary =
+    [
+      exit.signal ? `signal ${exit.signal}` : null,
+      exit.code !== null ? `exit ${exit.code}` : null,
+    ]
+      .filter(Boolean)
+      .join(", ") || "exit status unavailable";
   return exit.stderrTail ? `${summary}\n${exit.stderrTail}` : summary;
 }
 
-export function wheelInputIsInsideNode(event: InputEvent, node: DOMElement | null): boolean {
+export function wheelInputIsInsideNode(
+  event: InputEvent,
+  node: DOMElement | null,
+): boolean {
   // Implementation moved to ./wheelInput.js (kept as a re-export so existing
   // imports from this module keep working).
   return wheelInputIsInsideNodeImpl(event, node);
 }
 
-export function isBufferHostSaveInput(input: string, key: {
-  readonly ctrl: boolean;
-  readonly shift: boolean;
-  readonly meta: boolean;
-  readonly super: boolean;
-}): boolean {
+export function isBufferHostSaveInput(
+  input: string,
+  key: {
+    readonly ctrl: boolean;
+    readonly shift: boolean;
+    readonly meta: boolean;
+    readonly super: boolean;
+  },
+): boolean {
   return (
     input.toLowerCase() === "s" &&
     key.ctrl &&
@@ -698,7 +1118,8 @@ export function isBufferHostSaveInput(input: string, key: {
   );
 }
 
-type BufferSurfaceStore = Pick<ReturnType<typeof getWorkbenchBufferProviderController>,
+type BufferSurfaceStore = Pick<
+  ReturnType<typeof getWorkbenchBufferProviderController>,
   | "save"
   | "revert"
   | "openExternalEditor"
@@ -714,6 +1135,10 @@ export type BufferSurfaceActionOptions = {
   readonly snapshot: ReturnType<typeof useBufferStore>;
   readonly hasInFlightAgent: boolean;
   readonly dispatch: (command: WorkbenchCommand) => void;
+  /** Whether the Editor currently has a transcript/proposal rail to focus. */
+  readonly railOpen?: boolean;
+  /** Fail-closed daemon authority gate for provider-mutating actions. */
+  readonly mutationBlocked?: boolean;
 };
 
 export function createBufferSurfaceKeyHandlers({
@@ -721,9 +1146,15 @@ export function createBufferSurfaceKeyHandlers({
   snapshot,
   hasInFlightAgent,
   dispatch,
-}: BufferSurfaceActionOptions): Record<string, () => void | false | Promise<void>> {
+  railOpen = false,
+  mutationBlocked = false,
+}: BufferSurfaceActionOptions): Record<
+  string,
+  () => void | false | Promise<void>
+> {
   return {
     "buffer:save": () => {
+      if (mutationBlocked) return;
       void store.save({ hasInFlightAgent }).catch(logError);
     },
     "workbench:focusExplorer": () => {
@@ -731,6 +1162,13 @@ export function createBufferSurfaceKeyHandlers({
     },
     "workbench:focusAgents": () => {
       dispatch({ type: "focus", pane: "agents" });
+    },
+    "workbench:focusRail": () => {
+      // Preserve Neovim's native Alt+L mapping when there is no host panel.
+      // Once Explain/Ask/a proposal opens the panel, Alt+L crosses the
+      // explicit host boundary and moves focus into its pager.
+      if (!railOpen) return false;
+      dispatch({ type: "focus", pane: "rail" });
     },
     "workbench:focusComposer": () => {
       dispatch({ type: "focus", pane: "composer" });
@@ -747,6 +1185,7 @@ export function createBufferSurfaceKeyHandlers({
       dispatch({ type: "moveFileToRail", path });
     },
     "buffer:revert": () => {
+      if (mutationBlocked) return;
       if (snapshot.provider.capabilities.terminalUi) return false;
       void store.revert().catch(logError);
     },
@@ -759,12 +1198,19 @@ export function createBufferSurfaceKeyHandlers({
       dispatch({ type: "closeSurface" });
     },
     "buffer:externalEditor": () => {
+      if (mutationBlocked) return;
       void store.openExternalEditor().catch(logError);
     },
-    "buffer:undo": () => snapshot.provider.capabilities.terminalUi ? false : store.undo(),
+    "buffer:undo": () => {
+      if (mutationBlocked) return;
+      return snapshot.provider.capabilities.terminalUi ? false : store.undo();
+    },
     // Inline fallback owns this host redo action. Embedded Neovim's native
     // Ctrl+R is deliberately passed through by BufferHost instead.
-    "buffer:redo": () => store.redo(),
+    "buffer:redo": () => {
+      if (mutationBlocked) return;
+      return store.redo();
+    },
     "buffer:hover": () => {
       if (snapshot.provider.capabilities.terminalUi) return false;
       void store.requestHover().catch(logError);
@@ -778,8 +1224,10 @@ export function createBufferSurfaceKeyHandlers({
     "buffer:down": () => store.move("down"),
     "buffer:left": () => store.move("left"),
     "buffer:right": () => store.move("right"),
-    "buffer:pageUp": () => store.move("up", { pageSize: Math.max(1, snapshot.viewportRows - 1) }),
-    "buffer:pageDown": () => store.move("down", { pageSize: Math.max(1, snapshot.viewportRows - 1) }),
+    "buffer:pageUp": () =>
+      store.move("up", { pageSize: Math.max(1, snapshot.viewportRows - 1) }),
+    "buffer:pageDown": () =>
+      store.move("down", { pageSize: Math.max(1, snapshot.viewportRows - 1) }),
     "buffer:lineStart": () => store.move("lineStart"),
     "buffer:lineEnd": () => store.move("lineEnd"),
     "buffer:top": () => store.move("top"),
@@ -795,25 +1243,40 @@ export function createBufferSurfaceKeyHandlers({
 
 export function executeBufferVimCommand(
   command: BufferVimCommand,
-  { store, dispatch, hasInFlightAgent }: Pick<BufferSurfaceActionOptions, "store" | "dispatch" | "hasInFlightAgent">,
+  {
+    store,
+    dispatch,
+    hasInFlightAgent,
+  }: Pick<
+    BufferSurfaceActionOptions,
+    "store" | "dispatch" | "hasInFlightAgent"
+  >,
 ): void {
   switch (command.type) {
     case "save":
-      void store.save({ hasInFlightAgent, force: command.force }).catch(logError);
+      void store
+        .save({ hasInFlightAgent, force: command.force })
+        .catch(logError);
       break;
     case "quit":
       dispatch({ type: "closeSurface" });
       break;
     case "saveQuit":
       void (async () => {
-        const saved = await store.save({ hasInFlightAgent, force: command.force });
+        const saved = await store.save({
+          hasInFlightAgent,
+          force: command.force,
+        });
         if (saved) dispatch({ type: "closeSurface" });
       })().catch(logError);
       break;
   }
 }
 
-export function bufferStatusLabel(snapshot: ReturnType<typeof useBufferStore>, hasInFlightAgent: boolean): string {
+export function bufferStatusLabel(
+  snapshot: ReturnType<typeof useBufferStore>,
+  hasInFlightAgent: boolean,
+): string {
   const parts = [snapshot.status];
   if (snapshot.dirty) parts.push("dirty");
   if (hasInFlightAgent) parts.push("agent");
@@ -826,7 +1289,10 @@ export function oneLine(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
 
-export function diagnosticCoversLine(diagnostic: DiagnosticEntry, line: number): boolean {
+export function diagnosticCoversLine(
+  diagnostic: DiagnosticEntry,
+  line: number,
+): boolean {
   const range = diagnostic.range;
   if (!range) return false;
   const targetLine = line - 1;
@@ -842,9 +1308,11 @@ function useBufferHighlightedLines(
   filePath: string | null,
   visibleLines: readonly BufferVisibleLine[],
 ): ReadonlyMap<number, string> {
-  const [highlightedLines, setHighlightedLines] = useState<ReadonlyMap<number, string>>(EMPTY_HIGHLIGHTS);
+  const [highlightedLines, setHighlightedLines] =
+    useState<ReadonlyMap<number, string>>(EMPTY_HIGHLIGHTS);
   const highlightKey = useMemo(
-    () => `${filePath ?? ""}\u0000${visibleLines.map((line) => `${line.number}:${line.text}`).join("\u0000")}`,
+    () =>
+      `${filePath ?? ""}\u0000${visibleLines.map((line) => `${line.number}:${line.text}`).join("\u0000")}`,
     [filePath, visibleLines],
   );
   const linesForHighlight = useMemo(
@@ -855,9 +1323,11 @@ function useBufferHighlightedLines(
   useEffect(() => {
     let active = true;
     setHighlightedLines(EMPTY_HIGHLIGHTS);
-    void highlightBufferVisibleLines(filePath, linesForHighlight).then((result) => {
-      if (active) setHighlightedLines(result);
-    });
+    void highlightBufferVisibleLines(filePath, linesForHighlight).then(
+      (result) => {
+        if (active) setHighlightedLines(result);
+      },
+    );
     return () => {
       active = false;
     };

@@ -49,6 +49,8 @@ export interface SupervisedProcessOptions {
   /** Optional caller-supplied deadline. Omitted means unbounded. */
   readonly timeoutMs?: number;
   readonly maxOutputBytes: number;
+  /** Optional bounded source bytes for native helpers that read stdin. */
+  readonly stdin?: string | Buffer;
   readonly signal?: AbortSignal;
   readonly terminateGraceMs?: number;
   readonly settleBackstopMs?: number;
@@ -393,9 +395,7 @@ type LinuxSubreaperControlSignal = "SIGTERM" | "SIGUSR2";
 
 type LinuxSubreaperBoundary = {
   readonly status: Readable;
-  readonly nativeKill: (
-    signal?: NodeJS.Signals | number,
-  ) => boolean;
+  readonly nativeKill: (signal?: NodeJS.Signals | number) => boolean;
   processClosed: boolean;
   statusClosed: boolean;
   closed: boolean;
@@ -406,8 +406,7 @@ type LinuxSubreaperBoundary = {
   protocolError?: Error;
 };
 
-const linuxSubreaperBoundaries =
-  new WeakMap<object, LinuxSubreaperBoundary>();
+const linuxSubreaperBoundaries = new WeakMap<object, LinuxSubreaperBoundary>();
 let compiledLinuxSubreaperBroker: string | undefined;
 let compiledLinuxSubreaperBrokerRoot: string | undefined;
 let compiledWindowsJobBroker: string | undefined;
@@ -435,8 +434,10 @@ type LinuxCgroupWatchdogRegistration = {
 
 let linuxCgroupOwnerWatchdog: LinuxCgroupWatchdogState | null = null;
 let linuxCgroupWatchdogRegistrationSequence = 0;
-const linuxCgroupWatchdogRegistrations =
-  new WeakMap<object, LinuxCgroupWatchdogRegistration>();
+const linuxCgroupWatchdogRegistrations = new WeakMap<
+  object,
+  LinuxCgroupWatchdogRegistration
+>();
 
 export interface ContainedProcessSpawnOptions {
   readonly cwd: string;
@@ -498,28 +499,27 @@ export function spawnContainedProcess(
     return spawnWindowsJobContainedProcess(program, args, options);
   }
   const cgroupPath =
-    process.platform === "linux" &&
-      options.linuxContainment !== "subreaper"
-    ? createPrivateLinuxCgroup()
-    : null;
+    process.platform === "linux" && options.linuxContainment !== "subreaper"
+      ? createPrivateLinuxCgroup()
+      : null;
   if (process.platform === "linux" && cgroupPath === null) {
     return spawnLinuxSubreaperContainedProcess(program, args, options);
   }
 
   let child: ChildProcessWithoutNullStreams | undefined;
   try {
-    const gatePayload = serializePosixProcessGatePayload(program, args, options);
-    child = spawn(
-      process.execPath,
-      ["-e", POSIX_PROCESS_GATE_SCRIPT],
-      {
-        cwd: options.cwd,
-        env: trustedPosixBootstrapEnvironment(),
-        stdio: ["pipe", "pipe", "pipe", "pipe"],
-        detached: true,
-        windowsHide: true,
-      },
-    ) as ChildProcessWithoutNullStreams;
+    const gatePayload = serializePosixProcessGatePayload(
+      program,
+      args,
+      options,
+    );
+    child = spawn(process.execPath, ["-e", POSIX_PROCESS_GATE_SCRIPT], {
+      cwd: options.cwd,
+      env: trustedPosixBootstrapEnvironment(),
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      detached: true,
+      windowsHide: true,
+    }) as ChildProcessWithoutNullStreams;
     if (child.pid === undefined || child.pid <= 0) {
       throw new Error("contained process did not publish a pid");
     }
@@ -543,13 +543,7 @@ export function spawnContainedProcess(
     // surface ECONNRESET on this private stream. It is not a user-visible I/O
     // failure and must not become an unhandled process-level exception.
     gate.on("error", () => {});
-    launchPosixOwnerWatchdog(
-      child,
-      gate,
-      gatePayload,
-      options.cwd,
-      cgroupPath,
-    );
+    launchPosixOwnerWatchdog(child, gate, gatePayload, options.cwd, cgroupPath);
     return child;
   } catch (error) {
     if (child !== undefined) {
@@ -591,7 +585,9 @@ function spawnLinuxSubreaperContainedProcess(
   ) as ChildProcessWithoutNullStreams;
   if (child.pid === undefined || child.pid <= 1) {
     safeKill(child, "SIGKILL");
-    throw new Error("Linux process containment broker did not publish a safe pid");
+    throw new Error(
+      "Linux process containment broker did not publish a safe pid",
+    );
   }
   const status = child.stdio[3];
   if (
@@ -601,7 +597,9 @@ function spawnLinuxSubreaperContainedProcess(
     !("readable" in status)
   ) {
     safeKill(child, "SIGKILL");
-    throw new Error("Linux process containment broker status FD is unavailable");
+    throw new Error(
+      "Linux process containment broker status FD is unavailable",
+    );
   }
   const readableStatus = status as Readable;
   const nativeKill = child.kill.bind(child);
@@ -626,9 +624,10 @@ function spawnLinuxSubreaperContainedProcess(
       !boundary.processClosed &&
       linuxSubreaperControlSignalPriority(translated) > 0
     ) {
-      const pendingPriority = boundary.pendingSignal === undefined
-        ? 0
-        : linuxSubreaperControlSignalPriority(boundary.pendingSignal);
+      const pendingPriority =
+        boundary.pendingSignal === undefined
+          ? 0
+          : linuxSubreaperControlSignalPriority(boundary.pendingSignal);
       if (
         boundary.pendingSignal === undefined ||
         linuxSubreaperControlSignalPriority(translated) > pendingPriority
@@ -759,9 +758,7 @@ function normalizeLinuxSubreaperControlSignal(
   );
 }
 
-function settleLinuxSubreaperStatus(
-  boundary: LinuxSubreaperBoundary,
-): void {
+function settleLinuxSubreaperStatus(boundary: LinuxSubreaperBoundary): void {
   if (boundary.statusClosed) return;
   boundary.statusClosed = true;
   if (!boundary.ready) {
@@ -819,9 +816,7 @@ function resolveLinuxSubreaperBroker(): string {
     );
   }
 
-  const buildRoot = mkdtempSync(
-    join(tmpdir(), "agenc-process-broker-"),
-  );
+  const buildRoot = mkdtempSync(join(tmpdir(), "agenc-process-broker-"));
   chmodSync(buildRoot, 0o700);
   const outputPath = join(buildRoot, LINUX_SUBREAPER_BROKER_NAME);
   try {
@@ -907,11 +902,14 @@ function launchPosixOwnerWatchdog(
   if (rootPid === undefined || rootPid <= 1) {
     throw new Error("contained process watchdog requires a root pid");
   }
-  const config = Buffer.from(JSON.stringify({
-    ownerPid: process.pid,
-    rootPid,
-    ...(cgroupPath === null ? {} : { cgroupPath }),
-  }), "utf8").toString("base64");
+  const config = Buffer.from(
+    JSON.stringify({
+      ownerPid: process.pid,
+      rootPid,
+      ...(cgroupPath === null ? {} : { cgroupPath }),
+    }),
+    "utf8",
+  ).toString("base64");
   const watchdog = spawn(
     process.execPath,
     ["-e", POSIX_OWNER_WATCHDOG_SCRIPT],
@@ -984,19 +982,18 @@ function launchLinuxCgroupOwnerWatchdog(
     failLinuxCgroupWatchdogRegistration(
       state,
       id,
-      new Error(`contained process watchdog registration timed out for ${cgroupPath}`),
+      new Error(
+        `contained process watchdog registration timed out for ${cgroupPath}`,
+      ),
     );
   }, 2_000);
   timer.unref?.();
   state.pending.set(id, { child, gate, gatePayload, timer });
   linuxCgroupWatchdogRegistrations.set(child, { state, id });
 
-  state.child.stdin.write(
-    `ADD ${id} ${cgroupPath}\n`,
-    (error) => {
-      if (error) failLinuxCgroupWatchdogRegistration(state, id, error);
-    },
-  );
+  state.child.stdin.write(`ADD ${id} ${cgroupPath}\n`, (error) => {
+    if (error) failLinuxCgroupWatchdogRegistration(state, id, error);
+  });
 }
 
 function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
@@ -1011,11 +1008,7 @@ function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
 
   const child = spawn(
     "/bin/bash",
-    [
-      "-c",
-      LINUX_CGROUP_OWNER_WATCHDOG_SCRIPT,
-      "agenc-cgroup-owner-watchdog",
-    ],
+    ["-c", LINUX_CGROUP_OWNER_WATCHDOG_SCRIPT, "agenc-cgroup-owner-watchdog"],
     {
       cwd: "/",
       // This is a trusted ownership boundary, not part of the supervised
@@ -1058,7 +1051,9 @@ function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
       state,
       new Error(
         "contained process watchdog exited unexpectedly" +
-          (code === null ? ` (signal ${signal ?? "unknown"})` : ` (exit ${code})`),
+          (code === null
+            ? ` (signal ${signal ?? "unknown"})`
+            : ` (exit ${code})`),
       ),
     );
   });
@@ -1080,7 +1075,9 @@ function handleLinuxCgroupWatchdogOutput(
     if (match === null) {
       failLinuxCgroupOwnerWatchdog(
         state,
-        new Error(`contained process watchdog emitted invalid response: ${line}`),
+        new Error(
+          `contained process watchdog emitted invalid response: ${line}`,
+        ),
       );
       return;
     }
@@ -1197,9 +1194,7 @@ function resolveWindowsJobBroker(): string {
     );
   }
 
-  const buildRoot = mkdtempSync(
-    join(tmpdir(), "agenc-process-job-broker-"),
-  );
+  const buildRoot = mkdtempSync(join(tmpdir(), "agenc-process-job-broker-"));
   chmodSync(buildRoot, 0o700);
   const outputPath = join(buildRoot, WINDOWS_JOB_BROKER_NAME);
   const sourceRoot = resolve(dirname(sourcePath), "..");
@@ -1293,10 +1288,7 @@ function trustedWindowsCSharpCompilerCandidates(): string[] {
         );
         for (const line of output.split(/\r?\n/u)) {
           const candidate = line.trim();
-          if (
-            candidate &&
-            isTrustedWindowsTool(candidate, visualStudioRoots)
-          ) {
+          if (candidate && isTrustedWindowsTool(candidate, visualStudioRoots)) {
             candidates.push(candidate);
           }
         }
@@ -1347,10 +1339,7 @@ function isTrustedRegularFile(path: string): boolean {
   if (!isRegularNonSymlinkFile(path)) return false;
   try {
     const metadata = lstatSync(path);
-    return (
-      process.platform === "win32" ||
-      (metadata.mode & 0o022) === 0
-    );
+    return process.platform === "win32" || (metadata.mode & 0o022) === 0;
   } catch {
     return false;
   }
@@ -1388,10 +1377,10 @@ function spawnWindowsJobContainedProcess(
     .join(" ");
   const env = {
     ...options.env,
-    AGENC_PROCESS_JOB_PROGRAM:
-      Buffer.from(program, "utf8").toString("base64"),
-    AGENC_PROCESS_JOB_COMMAND_LINE:
-      Buffer.from(commandLine, "utf8").toString("base64"),
+    AGENC_PROCESS_JOB_PROGRAM: Buffer.from(program, "utf8").toString("base64"),
+    AGENC_PROCESS_JOB_COMMAND_LINE: Buffer.from(commandLine, "utf8").toString(
+      "base64",
+    ),
     AGENC_PROCESS_JOB_OWNER_PID: String(process.pid),
   };
   const child = spawn(broker, [], {
@@ -1453,7 +1442,6 @@ export function runSupervisedProcess(
         env: command.env,
         ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
       });
-      child.stdin.end();
     } catch (error) {
       resolve({
         exitCode: null,
@@ -1494,9 +1482,10 @@ export function runSupervisedProcess(
     ): void => {
       if (settled) return;
       const remaining = options.maxOutputBytes - outputBytes;
-      const accepted = remaining > 0
-        ? chunk.subarray(0, Math.min(chunk.byteLength, remaining))
-        : Buffer.alloc(0);
+      const accepted =
+        remaining > 0
+          ? chunk.subarray(0, Math.min(chunk.byteLength, remaining))
+          : Buffer.alloc(0);
       if (accepted.byteLength > 0) {
         target.push(accepted);
         outputBytes += accepted.byteLength;
@@ -1524,20 +1513,22 @@ export function runSupervisedProcess(
       if (brokerBoundary?.protocolError !== undefined) {
         processError ??= brokerBoundary.protocolError;
       }
-      void releaseLinuxCgroupBoundary(child).catch((error) => {
-        processError ??= toError(error);
-      }).then(() => {
-        resolve({
-          exitCode,
-          signal: exitSignal,
-          stdout: Buffer.concat(stdout),
-          stderr: Buffer.concat(stderr),
-          ...(stopReason !== undefined ? { stopReason } : {}),
-          forced,
-          backstopExpired,
-          ...(processError !== undefined ? { error: processError } : {}),
+      void releaseLinuxCgroupBoundary(child)
+        .catch((error) => {
+          processError ??= toError(error);
+        })
+        .then(() => {
+          resolve({
+            exitCode,
+            signal: exitSignal,
+            stdout: Buffer.concat(stdout),
+            stderr: Buffer.concat(stderr),
+            ...(stopReason !== undefined ? { stopReason } : {}),
+            forced,
+            backstopExpired,
+            ...(processError !== undefined ? { error: processError } : {}),
+          });
         });
-      });
     };
 
     const maybeFinish = (): void => {
@@ -1548,8 +1539,15 @@ export function runSupervisedProcess(
 
     function requestStop(reason: SupervisedProcessStopReason): void {
       stopReason ??= reason;
+      // Unblock a pending stdin write before waiting on process-tree cleanup.
+      // This is idempotent for the common no-input path, whose stdin was
+      // already ended immediately after spawn.
+      child.stdin.destroy();
       signalProcessTree(child, "SIGTERM");
-      treeExitTimer ??= setInterval(() => maybeFinish(), PROCESS_TREE_POLL_INTERVAL_MS);
+      treeExitTimer ??= setInterval(
+        () => maybeFinish(),
+        PROCESS_TREE_POLL_INTERVAL_MS,
+      );
       treeExitTimer.unref?.();
       if (forceTimer !== undefined) return;
       forceTimer = setTimeout(() => {
@@ -1584,11 +1582,22 @@ export function runSupervisedProcess(
     if (options.signal?.aborted === true) onAbort();
 
     child.stdout.on("data", (chunk: Buffer) =>
-      append(stdout, chunk, options.onStdout)
+      append(stdout, chunk, options.onStdout),
     );
     child.stderr.on("data", (chunk: Buffer) =>
-      append(stderr, chunk, options.onStderr)
+      append(stderr, chunk, options.onStderr),
     );
+    child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+      // Search helpers such as `rg -l -` may deliberately stop reading once
+      // they have a conclusive answer. Their early close can race a final
+      // stdin write and surface EPIPE even though the process result is valid.
+      if (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED") {
+        return;
+      }
+      processError = error;
+      requestStop("spawn_error");
+    });
+    child.stdin.end(options.stdin);
     child.once("error", (error) => {
       processError = error;
       requestStop("spawn_error");
@@ -1619,7 +1628,9 @@ function validateLimits(options: SupervisedProcessOptions): void {
     throw new Error("supervised process timeoutMs must be finite and positive");
   }
   if (!Number.isFinite(options.maxOutputBytes) || options.maxOutputBytes <= 0) {
-    throw new Error("supervised process maxOutputBytes must be finite and positive");
+    throw new Error(
+      "supervised process maxOutputBytes must be finite and positive",
+    );
   }
 }
 
@@ -1660,8 +1671,10 @@ export function isProcessTreeAlive(
     // a leader which Node still reports as live as live, too, so teardown
     // fails closed instead of accepting a transiently empty process group.
     if (procState === false) {
-      return ownedDescendantAlive ||
-        (child.exitCode === null && child.signalCode === null);
+      return (
+        ownedDescendantAlive ||
+        (child.exitCode === null && child.signalCode === null)
+      );
     }
   }
   try {
@@ -1791,10 +1804,7 @@ export async function terminateProcessTreeAndWait(
   // result even when `exitCode` already says the leader is gone, and never
   // infer tree cleanup from the leader alone.
   if (process.platform === "win32" && child.pid !== undefined) {
-    await terminateWindowsProcessTree(
-      child.pid,
-      options,
-    );
+    await terminateWindowsProcessTree(child.pid, options);
     return;
   }
   if (!linuxCgroupBoundaries.has(child)) {
@@ -1931,7 +1941,9 @@ function runWindowsTaskkill(
       settle(
         new Error(
           `taskkill ${force ? "/T /F" : "/T"} failed for pid ${pid}` +
-            (code === null ? ` (signal ${signal ?? "unknown"})` : ` (exit ${code})`),
+            (code === null
+              ? ` (signal ${signal ?? "unknown"})`
+              : ` (exit ${code})`),
         ),
       );
     });
@@ -1946,7 +1958,10 @@ function createPrivateLinuxCgroup(): string | null {
       .find((line) => line.startsWith("0::"));
     if (membership === undefined) return null;
     const relativeMembership = membership.slice(3);
-    if (!relativeMembership.startsWith("/") || relativeMembership.includes("\0")) {
+    if (
+      !relativeMembership.startsWith("/") ||
+      relativeMembership.includes("\0")
+    ) {
       return null;
     }
     const cgroupRoot = resolve("/sys/fs/cgroup");
@@ -2004,7 +2019,9 @@ function signalLinuxCgroup(
       .split(/\s+/u)
       .filter(Boolean)
       .map((value) => Number.parseInt(value, 10))
-      .filter((pid) => Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid);
+      .filter(
+        (pid) => Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid,
+      );
   } catch {
     return;
   }
@@ -2037,7 +2054,10 @@ async function releaseLinuxCgroupBoundary(child: object): Promise<void> {
     await new Promise<void>((resolveDelay) => {
       setTimeout(resolveDelay, PROCESS_TREE_POLL_INTERVAL_MS);
     });
-  } while (Date.now() < deadline && linuxCgroupIsPopulated(boundary.path) === false);
+  } while (
+    Date.now() < deadline &&
+    linuxCgroupIsPopulated(boundary.path) === false
+  );
   throw new Error(
     `process containment cleanup could not remove empty cgroup ${boundary.path}`,
   );
@@ -2090,7 +2110,10 @@ function readLinuxProcessSnapshot(): NativeProcessSnapshot | undefined {
       complete = false;
       continue;
     }
-    const fields = stat.slice(closeParen + 2).trim().split(/\s+/);
+    const fields = stat
+      .slice(closeParen + 2)
+      .trim()
+      .split(/\s+/);
     const pid = Number.parseInt(entry, 10);
     const ppid = Number.parseInt(fields[1] ?? "", 10);
     const state = fields[0];
@@ -2117,16 +2140,12 @@ function readLinuxProcessSnapshot(): NativeProcessSnapshot | undefined {
 }
 
 function readPsProcessSnapshot(): NativeProcessSnapshot | undefined {
-  const result = spawnSync(
-    "/bin/ps",
-    ["-axo", "pid=,ppid=,state=,lstart="],
-    {
-      encoding: "utf8",
-      maxBuffer: MAX_PROCESS_TABLE_BYTES,
-      timeout: PROCESS_TABLE_TIMEOUT_MS,
-      windowsHide: true,
-    },
-  );
+  const result = spawnSync("/bin/ps", ["-axo", "pid=,ppid=,state=,lstart="], {
+    encoding: "utf8",
+    maxBuffer: MAX_PROCESS_TABLE_BYTES,
+    timeout: PROCESS_TABLE_TIMEOUT_MS,
+    windowsHide: true,
+  });
   if (
     result.error !== undefined ||
     result.signal !== null ||
@@ -2232,8 +2251,10 @@ function liveOwnedBoundaryPids(child: object): number[] {
 }
 
 function isLiveNativeProcess(record: NativeProcessRecord): boolean {
-  return record.state === null ||
-    (!record.state.startsWith("Z") && !record.state.startsWith("X"));
+  return (
+    record.state === null ||
+    (!record.state.startsWith("Z") && !record.state.startsWith("X"))
+  );
 }
 
 function assertObservedBoundarySnapshotUsable(
@@ -2250,11 +2271,9 @@ function assertObservedBoundarySnapshotUsable(
   }
   if (
     brokerBoundary !== undefined &&
-    (
-      !brokerBoundary.closed ||
+    (!brokerBoundary.closed ||
       !brokerBoundary.ready ||
-      !brokerBoundary.verified
-    )
+      !brokerBoundary.verified)
   ) {
     throw new Error(
       `${label} Linux subreaper cleanup could not be verified: ` +
@@ -2287,7 +2306,9 @@ export async function waitForProcessTreeExit(
   timeoutMs: number,
 ): Promise<boolean> {
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
-    throw new Error("process tree wait timeoutMs must be finite and non-negative");
+    throw new Error(
+      "process tree wait timeoutMs must be finite and non-negative",
+    );
   }
   const deadline = Date.now() + timeoutMs;
   while (isProcessTreeAlive(child)) {
@@ -2313,7 +2334,10 @@ function linuxProcessGroupHasLiveMember(pgid: number): boolean | undefined {
       }
       const closeParen = stat.lastIndexOf(")");
       if (closeParen < 0) continue;
-      const fields = stat.slice(closeParen + 2).trim().split(/\s+/);
+      const fields = stat
+        .slice(closeParen + 2)
+        .trim()
+        .split(/\s+/);
       const state = fields[0];
       const processGroup = Number.parseInt(fields[2] ?? "", 10);
       if (processGroup === pgid && state !== "Z" && state !== "X") return true;

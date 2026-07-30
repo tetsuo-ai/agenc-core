@@ -53,12 +53,23 @@ import {
   setAllowedSettingSources,
 } from "../bootstrap/state.js";
 import {
-  enqueue,
+  enqueue as enqueueCommand,
   getCommandQueueSnapshot,
   resetCommandQueue,
 } from "../utils/messageQueueManager.js";
+import type { QueuedCommand } from "../types/textInputTypes.js";
 import { setCommandLifecycleListener } from "../utils/commandLifecycle.js";
+
+function enqueue(command: QueuedCommand): void {
+  enqueueCommand({
+    ...command,
+    queueOwner: { kind: "session", conversationId: "conv-test" },
+  });
+}
 import {
+  EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS,
+  EDITOR_INTERACTION_MAX_QUERY_TOKENS,
+  EDITOR_INTERACTION_MAX_TOOL_CALLS,
   insertContextMessagesAfterLeadingSystem,
   isRetryableStreamError,
   maybeRunPreviousModelInlineCompact,
@@ -106,6 +117,7 @@ import { StreamModelError } from "../phases/stream-model.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
 import type { Tool } from "../tools/types.js";
+import { createEditorProposalTool } from "../tools/system/editor-proposal.js";
 import { BudgetTracker } from "../conversation/token-budget.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
@@ -115,9 +127,7 @@ import {
   runMagicDocsPostSamplingHook,
   setMagicDocsAgentRunnerForTests,
 } from "../services/MagicDocs/magicDocs.js";
-import {
-  REALTIME_CONVERSATION_OPEN_TAG,
-} from "../conversation/realtime/instructions/markers.js";
+import { REALTIME_CONVERSATION_OPEN_TAG } from "../conversation/realtime/instructions/markers.js";
 import {
   BASE_INSTRUCTIONS_PLACEHOLDER,
   PERSONALITY_PLACEHOLDER,
@@ -336,10 +346,75 @@ function mkRegistry(): ToolRegistry {
   } as unknown as ToolRegistry;
 }
 
+function mkReadOnlyEditorCtx(
+  interactionId: string,
+  modelInfoOverrides: Partial<ModelInfo> = {},
+): TurnContext {
+  return {
+    ...mkCtx(),
+    modelInfo: {
+      ...mkCtx().modelInfo,
+      ...modelInfoOverrides,
+    },
+    editorInteraction: {
+      interactionId,
+      kind: "explain",
+      policy: "read_only",
+      editorInstanceId: `editor-${interactionId}`,
+      bufferHandle: 7,
+      path: "src/value.ts",
+      changedtick: 17,
+      contentSha256: "a".repeat(64),
+      range: {
+        start: { line: 1, column: 0 },
+        end: { line: 1, column: 5 },
+      },
+    },
+  } as TurnContext;
+}
+
+function mkTrustedEditorReadRegistry(content = "trusted editor read result"): {
+  readonly registry: ToolRegistry;
+  readonly dispatch: ReturnType<typeof vi.fn>;
+} {
+  const dispatch = vi.fn(async () => ({ content, isError: false }));
+  const readTool: Tool = {
+    name: "FileRead",
+    description: "Read a workspace file",
+    inputSchema: { type: "object", properties: {} },
+    metadata: {
+      family: "filesystem",
+      source: "builtin",
+      mutating: false,
+    },
+    isReadOnly: true,
+    recoveryCategory: "idempotent",
+    execute: async () => dispatch(),
+  };
+  return {
+    dispatch,
+    registry: {
+      tools: [readTool],
+      toLLMTools: () => [
+        {
+          type: "function",
+          function: {
+            name: readTool.name,
+            description: readTool.description,
+            parameters: readTool.inputSchema,
+          },
+        },
+      ],
+      getTrustedEditorInteractionTool: (name: string) =>
+        name === readTool.name ? readTool : undefined,
+      dispatch: async () => dispatch(),
+    } as ToolRegistry,
+  };
+}
+
 function mkPersonalityModelMessages(): ModelMessages {
   return {
-    instructionsTemplate:
-      `${PERSONALITY_PLACEHOLDER}\n\n${BASE_INSTRUCTIONS_PLACEHOLDER}`,
+    instructionsTemplate: `${PERSONALITY_PLACEHOLDER}\n\n${BASE_INSTRUCTIONS_PLACEHOLDER}`,
     instructionsVariables: {
       personalityDefault: "",
       personalityFriendly: "friendly template",
@@ -364,6 +439,7 @@ function mkSession(opts: {
   };
   readonly configStore?: { current: () => unknown };
   readonly permissionModeRegistry?: PermissionModeRegistry;
+  readonly skillsManager?: SessionServices["skillsManager"];
   readonly querySource?: string;
   readonly postToolUseHooks?: ReadonlyArray<PostToolUseHook>;
 }): {
@@ -417,9 +493,12 @@ function mkSession(opts: {
     totalTokenUsage: number;
   } = {
     sessionConfiguration: mkSessionConfiguration({
-      provider: { slug: "stub-provider" } as unknown as SessionConfiguration["provider"],
+      provider: {
+        slug: "stub-provider",
+      } as unknown as SessionConfiguration["provider"],
       collaborationMode: { model: "stub-model" },
-      ...(opts.sessionConfiguration as Partial<SessionConfiguration> | undefined),
+      ...(opts.sessionConfiguration as
+        Partial<SessionConfiguration> | undefined),
     }),
     history: [],
     totalTokenUsage: 0,
@@ -438,7 +517,9 @@ function mkSession(opts: {
     },
     provider: opts.provider,
     registry: opts.registry,
-    ...(opts.querySource !== undefined ? { querySource: opts.querySource } : {}),
+    ...(opts.querySource !== undefined
+      ? { querySource: opts.querySource }
+      : {}),
     hooks: {
       executeStop: async () => ({}),
       postToolUseHooks: opts.postToolUseHooks ?? [],
@@ -449,6 +530,7 @@ function mkSession(opts: {
     ...(opts.permissionModeRegistry
       ? { permissionModeRegistry: opts.permissionModeRegistry }
       : {}),
+    ...(opts.skillsManager ? { skillsManager: opts.skillsManager } : {}),
     ...(opts.configStore ? { configStore: opts.configStore } : {}),
   } as unknown as SessionServices;
   const session = new Session({
@@ -538,13 +620,12 @@ function mkCodeModeNestedProbeService(
   };
 }
 
-async function drain(
-  gen: AsyncGenerator<unknown, unknown>,
-): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  for await (const _ of gen) {
-    // drain
+async function drain<T>(gen: AsyncGenerator<T, unknown>): Promise<T[]> {
+  const drained: T[] = [];
+  for await (const event of gen) {
+    drained.push(event);
   }
+  return drained;
 }
 
 function mkSingleToolFollowUpProvider(params: {
@@ -701,7 +782,9 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
   });
 
   test("routes exact @ledger transfers separately from Ledger Wallet CLI requests", async () => {
-    const captureSystemPrompt = async (rootHumanTurnText: string): Promise<string> => {
+    const captureSystemPrompt = async (
+      rootHumanTurnText: string,
+    ): Promise<string> => {
       let seenSystemPrompt = "";
       const provider: LLMProvider = {
         ...mkProvider({ content: "done" }),
@@ -723,11 +806,13 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       const ctx = mkCtx();
       (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
         "BASE_SYSTEM_INSTRUCTIONS";
-      await drain(runTurn(session, ctx, rootHumanTurnText, {
-        querySource: "sdk",
-        displayUserMessage: null,
-        rootHumanTurnText,
-      }));
+      await drain(
+        runTurn(session, ctx, rootHumanTurnText, {
+          querySource: "sdk",
+          displayUserMessage: null,
+          rootHumanTurnText,
+        }),
+      );
       return seenSystemPrompt;
     };
 
@@ -760,7 +845,9 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     const ctx = mkCtx();
     (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
       "LIVE_SYSTEM_SENTINEL";
-    sessionMemoryPostSamplingMockState.error = new Error("memory update failed");
+    sessionMemoryPostSamplingMockState.error = new Error(
+      "memory update failed",
+    );
     const { session, events } = mkSession({
       provider: mkProvider({ content: "done" }),
       registry: mkRegistry(),
@@ -1271,7 +1358,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(firstUserContent).toBe("<tick>12:00:00 PM</tick>");
   });
 
-  test("drains queued prompt into the post-tool follow-up and closes lifecycle", async () => {
+  test("drains only the exact session-owned prompt as an Agent post-tool follow-up", async () => {
     const seenMessages: LLMMessage[][] = [];
     const lifecycle: Array<{ uuid: string; state: string }> = [];
     const queuedUuid = crypto.randomUUID();
@@ -1285,6 +1372,15 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       value: unsafeQueuedValue,
       mode: "prompt",
       priority: "next",
+    });
+    enqueueCommand({
+      value: "sibling session prompt",
+      mode: "prompt",
+      priority: "next",
+      queueOwner: {
+        kind: "session",
+        conversationId: "conv-sibling",
+      },
     });
     let calls = 0;
     const provider: LLMProvider = {
@@ -1352,7 +1448,9 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(secondRequestText).toContain("<neutralized-system-reminder-tag>");
     expect(secondRequestText).not.toContain("context </system-reminder>");
     expect(secondRequestText).not.toContain("\u200B");
-    expect(getCommandQueueSnapshot()).toHaveLength(0);
+    expect(getCommandQueueSnapshot().map((command) => command.value)).toEqual([
+      "sibling session prompt",
+    ]);
     expect(lifecycle).toEqual([
       { uuid: queuedUuid, state: "started" },
       { uuid: queuedUuid, state: "completed" },
@@ -1403,6 +1501,181 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
         },
       }),
     ]);
+  });
+
+  test("Agent post-tool follow-ups preserve explicit Editor-owned queued prompts", async () => {
+    const queuedUuid = crypto.randomUUID();
+    const sentinel = "EDITOR_QUEUE_SENTINEL";
+    enqueue({
+      uuid: queuedUuid,
+      value: sentinel,
+      mode: "prompt",
+      priority: "next",
+      workspaceView: "editor",
+    });
+    const seenMessages: LLMMessage[][] = [];
+    const { provider, calls } = mkSingleToolFollowUpProvider({ seenMessages });
+    const append = vi.fn();
+    const appendRollout = vi.fn();
+    const { session, getState } = mkSession({
+      provider,
+      registry: mkStaticToolRegistry(),
+    });
+    session.rolloutStore = {
+      append,
+      appendRollout,
+      assertToolAdmissionAllowed: () => {},
+    } as unknown as Session["rolloutStore"];
+
+    const yielded = await drain(session.runTurn("start", { ctx: mkCtx() }));
+
+    expect(calls()).toBe(2);
+    expect(seenMessages.flat().map(testMessageText).join("\n")).not.toContain(
+      sentinel,
+    );
+    expect(getCommandQueueSnapshot()).toContainEqual(
+      expect.objectContaining({ uuid: queuedUuid, value: sentinel }),
+    );
+    expect(yielded.some((event) => event.type === "queued_command")).toBe(
+      false,
+    );
+    expect(JSON.stringify(append.mock.calls)).not.toContain(sentinel);
+    expect(JSON.stringify(appendRollout.mock.calls)).not.toContain(sentinel);
+    expect(
+      (getState().history as LLMMessage[]).map(testMessageText).join("\n"),
+    ).not.toContain(sentinel);
+  });
+
+  test("Editor tool follow-ups never consume, sample, emit, or persist the global Agent command queue", async () => {
+    const queuedUuid = crypto.randomUUID();
+    const sentinel = "AGENT_QUEUE_SENTINEL";
+    enqueue({
+      uuid: queuedUuid,
+      value: sentinel,
+      mode: "prompt",
+      priority: "next",
+      workspaceView: "agent",
+    });
+    const seenMessages: LLMMessage[][] = [];
+    let samples = 0;
+    const provider = mkProvider({});
+    provider.chatStream = async (messages) => {
+      samples += 1;
+      seenMessages.push(messages.map((message) => ({ ...message })));
+      return samples === 1
+        ? {
+            content: "",
+            toolCalls: [
+              {
+                id: "editor-queued-agent-read",
+                name: "FileRead",
+                arguments: JSON.stringify({
+                  file_path: "src/value.ts",
+                }),
+              },
+            ],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "tool_calls",
+          }
+        : {
+            content: "Editor answer",
+            toolCalls: [],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+    };
+    const { registry, dispatch } = mkTrustedEditorReadRegistry();
+    const append = vi.fn();
+    const appendRollout = vi.fn();
+    const { session, getState } = mkSession({ provider, registry });
+    session.rolloutStore = {
+      append,
+      appendRollout,
+      assertToolAdmissionAllowed: () => {},
+    } as unknown as Session["rolloutStore"];
+
+    const yielded = await drain(
+      session.runTurn("Explain this selection.", {
+        ctx: mkReadOnlyEditorCtx("editor-global-command-queue"),
+      }),
+    );
+
+    expect(samples).toBe(2);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(seenMessages.flat().map(testMessageText).join("\n")).not.toContain(
+      sentinel,
+    );
+    expect(getCommandQueueSnapshot()).toContainEqual(
+      expect.objectContaining({ uuid: queuedUuid, value: sentinel }),
+    );
+    expect(yielded.some((event) => event.type === "queued_command")).toBe(
+      false,
+    );
+    expect(JSON.stringify(append.mock.calls)).not.toContain(sentinel);
+    expect(JSON.stringify(appendRollout.mock.calls)).not.toContain(sentinel);
+    expect(
+      (getState().history as LLMMessage[]).map(testMessageText).join("\n"),
+    ).not.toContain(sentinel);
+  });
+
+  test("Editor turns admit only exact interaction-owned pending input and leave unowned or peer Editor input queued", async () => {
+    const interactionId = "editor-mailbox-exact";
+    const seenMessages: LLMMessage[][] = [];
+    const provider = mkProvider({});
+    provider.chatStream = async (messages) => {
+      seenMessages.push(messages.map((message) => ({ ...message })));
+      return {
+        content: "Editor mailbox answer",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const { session } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+    session.enqueueIdleInput({
+      role: "user",
+      content: "UNOWNED_AGENT_PENDING",
+    });
+    session.enqueueIdleInput(
+      { role: "user", content: "MATCHING_EDITOR_ATTACHMENT" },
+      {
+        workspaceView: "editor",
+        editorInteractionId: interactionId,
+      },
+    );
+    session.enqueueIdleInput(
+      { role: "user", content: "PEER_EDITOR_ATTACHMENT" },
+      {
+        workspaceView: "editor",
+        editorInteractionId: "different-editor-interaction",
+      },
+    );
+
+    await drain(
+      session.runTurn("Explain this.", {
+        ctx: mkReadOnlyEditorCtx(interactionId),
+      }),
+    );
+
+    const sampledText = (seenMessages[0] ?? []).map(testMessageText).join("\n");
+    expect(sampledText).toContain("MATCHING_EDITOR_ATTACHMENT");
+    expect(sampledText).not.toContain("UNOWNED_AGENT_PENDING");
+    expect(sampledText).not.toContain("PEER_EDITOR_ATTACHMENT");
+    expect(session.drainIdleInput({ workspaceView: "agent" })).toEqual([
+      { role: "user", content: "UNOWNED_AGENT_PENDING" },
+    ]);
+    expect(
+      session.drainIdleInput({
+        workspaceView: "editor",
+        editorInteractionId: "different-editor-interaction",
+      }),
+    ).toEqual([{ role: "user", content: "PEER_EDITOR_ATTACHMENT" }]);
   });
 
   test("post-tool preventContinuation stops before follow-up sampling", async () => {
@@ -1802,9 +2075,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       | Array<{ type?: string; image_url?: { url?: string }; text?: string }>
       | undefined;
     expect(parts?.[0]?.text).toContain("queued image prompt");
-    expect(parts?.[1]?.image_url?.url).toBe(
-      "data:image/png;base64,aW1hZ2U=",
-    );
+    expect(parts?.[1]?.image_url?.url).toBe("data:image/png;base64,aW1hZ2U=");
   });
 
   test("emits turn_complete on happy-path termination", async () => {
@@ -1824,6 +2095,734 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       expect(last.msg.payload.lastAgentMessage).toBe("final reply");
       expect(typeof last.msg.payload.durationMs).toBe("number");
     }
+  });
+
+  test("fails closed after the fixed Editor sampling cap when trusted reads never terminate", async () => {
+    const ctx = mkReadOnlyEditorCtx("editor-sampling-cap", {
+      contextWindow: 128_000,
+    });
+    const { registry, dispatch } = mkTrustedEditorReadRegistry(
+      "unchanged trusted read",
+    );
+    let samples = 0;
+    const provider = mkProvider({});
+    provider.chatStream = async () => {
+      samples += 1;
+      return {
+        content: "",
+        toolCalls: [
+          {
+            id: `editor-cap-read-${samples}`,
+            name: "FileRead",
+            arguments: JSON.stringify({ file_path: "src/value.ts" }),
+          },
+        ],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      };
+    };
+    const { session, events } = mkSession({ provider, registry });
+
+    const yielded = await drain(
+      session.runTurn("Keep reading forever.", { ctx }),
+    );
+
+    expect(samples).toBe(EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS);
+    expect(dispatch).toHaveBeenCalledTimes(
+      EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS,
+    );
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        stopReason: "error",
+        error: expect.objectContaining({
+          message: expect.stringContaining("editor_interaction_limit"),
+        }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "error",
+          payload: expect.objectContaining({
+            cause: "editor_interaction_limit",
+            message: expect.stringContaining("sampling_iterations"),
+          }),
+        },
+      }),
+    );
+  });
+
+  test("executes at most the fixed Editor tool quota and pairs an over-cap fanout", async () => {
+    const ctx = mkReadOnlyEditorCtx("editor-tool-cap");
+    const { registry, dispatch } = mkTrustedEditorReadRegistry();
+    const provider = mkProvider({
+      content: "",
+      toolCalls: Array.from(
+        { length: EDITOR_INTERACTION_MAX_TOOL_CALLS + 1 },
+        (_, index) => ({
+          id: `editor-fanout-${index}`,
+          name: "FileRead",
+          arguments: JSON.stringify({ file_path: `src/${index}.ts` }),
+        }),
+      ),
+      finishReason: "tool_calls",
+    });
+    const { session } = mkSession({ provider, registry });
+
+    const yielded = await drain(session.runTurn("Read every file.", { ctx }));
+
+    expect(dispatch).toHaveBeenCalledTimes(EDITOR_INTERACTION_MAX_TOOL_CALLS);
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        stopReason: "error",
+        error: expect.objectContaining({
+          message: expect.stringContaining("editor_interaction_limit"),
+        }),
+      }),
+    );
+    expect(
+      yielded.filter((event) => event.type === "tool_result"),
+    ).toHaveLength(EDITOR_INTERACTION_MAX_TOOL_CALLS + 1);
+    expect(
+      yielded.filter(
+        (event) =>
+          event.type === "tool_result" &&
+          event.result.isError === true &&
+          event.result.content.includes("editor_interaction_limit"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("enforces the cumulative Editor tool quota before streamed dispatch", async () => {
+    const ctx = mkReadOnlyEditorCtx("editor-streamed-tool-cap");
+    const { registry, dispatch } = mkTrustedEditorReadRegistry();
+    const calls: LLMToolCall[] = Array.from(
+      { length: EDITOR_INTERACTION_MAX_TOOL_CALLS + 1 },
+      (_, index) => ({
+        id: `editor-streamed-fanout-${index}`,
+        name: "FileRead",
+        arguments: JSON.stringify({ file_path: `src/${index}.ts` }),
+      }),
+    );
+    const provider = mkProvider({});
+    provider.chatStream = async (_messages, onChunk) => {
+      for (const call of calls) {
+        onChunk({
+          content: "",
+          done: false,
+          toolCalls: [call],
+        });
+      }
+      return {
+        content: "",
+        toolCalls: calls,
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      };
+    };
+    const { session } = mkSession({ provider, registry });
+
+    const yielded = await drain(session.runTurn("Stream every read.", { ctx }));
+
+    expect(dispatch).toHaveBeenCalledTimes(EDITOR_INTERACTION_MAX_TOOL_CALLS);
+    expect(
+      yielded.filter((event) => event.type === "tool_result"),
+    ).toHaveLength(EDITOR_INTERACTION_MAX_TOOL_CALLS + 1);
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        stopReason: "error",
+        error: expect.objectContaining({
+          message: expect.stringContaining("editor_interaction_limit"),
+        }),
+      }),
+    );
+  });
+
+  test("projects oversized plain and tool history locally without persistence, microcompaction, or shared-history rewrites", async () => {
+    const storage = await import("../utils/toolResultStorage.js");
+    const microCompact = await import("../services/compact/microCompact.js");
+    const persistSpy = vi.spyOn(storage, "persistToolResult");
+    const microCompactSpy = vi.spyOn(microCompact, "microcompactMessages");
+    const hugePlainHistory = `PLAIN_HISTORY_${"p".repeat(600_000)}`;
+    const hugeToolResult = `TOOL_HISTORY_${"t".repeat(300_000)}`;
+    const history: LLMMessage[] = [
+      { role: "user", content: hugePlainHistory },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "historical-read",
+            name: "FileRead",
+            arguments: JSON.stringify({ file_path: "src/old.ts" }),
+          },
+        ],
+      },
+      {
+        role: "tool",
+        toolCallId: "historical-read",
+        toolName: "FileRead",
+        content: hugeToolResult,
+      },
+    ];
+    const seenMessages: LLMMessage[][] = [];
+    const provider = mkProvider({});
+    provider.chatStream = async (messages) => {
+      seenMessages.push(messages.map((message) => ({ ...message })));
+      return {
+        content: "bounded Editor answer",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const ctx = mkReadOnlyEditorCtx("editor-query-purity", {
+      contextWindow: 32_000,
+    });
+    const { session, getState } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    await drain(
+      session.runTurn("Explain only the current selection.", {
+        ctx,
+        history,
+      }),
+    );
+
+    expect(persistSpy).not.toHaveBeenCalled();
+    expect(microCompactSpy).not.toHaveBeenCalled();
+    expect(seenMessages).toHaveLength(1);
+    const { roughTokenCountEstimationForMessages } =
+      await import("../llm/token-estimation.js");
+    const providerTokens = roughTokenCountEstimationForMessages(
+      seenMessages[0] ?? [],
+    );
+    expect(providerTokens).toBeLessThanOrEqual(
+      EDITOR_INTERACTION_MAX_QUERY_TOKENS,
+    );
+    expect(providerTokens).toBeLessThan(24_000);
+    const providerText = (seenMessages[0] ?? [])
+      .map(testMessageText)
+      .join("\n");
+    expect(providerText).not.toContain("PLAIN_HISTORY_");
+    expect(providerText).not.toContain("TOOL_HISTORY_");
+    expect(history[0]?.content).toBe(hugePlainHistory);
+    expect(history[2]?.content).toBe(hugeToolResult);
+    const sharedHistory = getState().history as LLMMessage[];
+    expect(sharedHistory[0]?.content).toBe(hugePlainHistory);
+    expect(sharedHistory[2]?.content).toBe(hugeToolResult);
+  });
+
+  test("repeated trusted Editor reads bypass the Agent behavioral backstop and can still complete a valid proposal", async () => {
+    const interactionId = "editor-repeated-read-proposal";
+    const contentSha256 = "b".repeat(64);
+    const ctx = {
+      ...mkReadOnlyEditorCtx(interactionId, {
+        contextWindow: 128_000,
+      }),
+      config: {
+        maxTurns: 100,
+        behavioralBackstop: true,
+        progressRepeatSoft: 2,
+        progressRepeatHard: 3,
+        progressLowGainStreak: 2,
+      },
+      editorInteraction: {
+        interactionId,
+        kind: "edit",
+        policy: "proposal_only",
+        editorInstanceId: "editor-repeated-read",
+        bufferHandle: 7,
+        path: "src/value.ts",
+        changedtick: 17,
+        contentSha256,
+        range: {
+          start: { line: 1, column: 0 },
+          end: { line: 1, column: 5 },
+        },
+      },
+    } as TurnContext;
+    const readTool: Tool = {
+      name: "FileRead",
+      description: "Read a workspace file",
+      inputSchema: { type: "object", properties: {} },
+      metadata: {
+        family: "filesystem",
+        source: "builtin",
+        mutating: false,
+      },
+      isReadOnly: true,
+      recoveryCategory: "idempotent",
+      execute: async () => ({ content: "same value every time" }),
+    };
+    const proposalTool = createEditorProposalTool();
+    const dispatch = vi.fn(async (call: LLMToolCall) =>
+      call.name === proposalTool.name
+        ? proposalTool.execute(
+            JSON.parse(call.arguments) as Record<string, unknown>,
+          )
+        : { content: "same value every time", isError: false },
+    );
+    const registry = {
+      tools: [readTool, proposalTool],
+      toLLMTools: () =>
+        [readTool, proposalTool].map((tool) => ({
+          type: "function" as const,
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.inputSchema,
+          },
+        })),
+      getTrustedEditorInteractionTool: (name: string) =>
+        name === readTool.name
+          ? readTool
+          : name === proposalTool.name
+            ? proposalTool
+            : undefined,
+      dispatch,
+    } as ToolRegistry;
+    const seenMessages: LLMMessage[][] = [];
+    let samples = 0;
+    const provider = mkProvider({});
+    provider.chatStream = async (messages) => {
+      samples += 1;
+      seenMessages.push(messages.map((message) => ({ ...message })));
+      if (samples <= 4) {
+        return {
+          content: "",
+          toolCalls: [
+            {
+              id: `repeated-read-${samples}`,
+              name: "FileRead",
+              arguments: JSON.stringify({
+                file_path: "src/value.ts",
+              }),
+            },
+          ],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "tool_calls",
+        };
+      }
+      if (samples === 5) {
+        return {
+          content: "",
+          toolCalls: [
+            {
+              id: "repeated-read-proposal",
+              name: "EditorProposal",
+              arguments: JSON.stringify({
+                version: 1,
+                interaction_id: interactionId,
+                path: "src/value.ts",
+                buffer_handle: 7,
+                base_changedtick: 17,
+                base_content_sha256: contentSha256,
+                summary: "Replace selected value",
+                edits: [
+                  {
+                    id: "edit-1",
+                    start_line: 1,
+                    start_column: 0,
+                    end_line: 1,
+                    end_column: 5,
+                    old_text: "value",
+                    new_text: "answer",
+                  },
+                ],
+              }),
+            },
+          ],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "tool_calls",
+        };
+      }
+      return {
+        content: "Proposal ready.",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const { session, events } = mkSession({ provider, registry });
+
+    const yielded = await drain(
+      session.runTurn("Replace the selected value.", { ctx }),
+    );
+
+    expect(samples).toBe(6);
+    expect(
+      yielded.filter((event) => event.type === "tool_result"),
+    ).toHaveLength(5);
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "warning" &&
+          (event.msg.payload.cause === "no_progress_warning" ||
+            event.msg.payload.cause === "no_progress_detected"),
+      ),
+    ).toBe(false);
+    expect(seenMessages.flat().map(testMessageText).join("\n")).not.toContain(
+      "You have repeated the same action",
+    );
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        stopReason: "completed",
+        content: "Proposal ready.",
+      }),
+    );
+  });
+
+  test("fails a proposal-only editor turn that ends without a validated proposal", async () => {
+    const provider = mkProvider({
+      content: "I changed the selected code.",
+    });
+    const chatStream = vi.fn(provider.chatStream);
+    const proposal = createEditorProposalTool();
+    const registry = {
+      ...mkRegistry(),
+      tools: [proposal],
+    } as ToolRegistry;
+    const ctx = {
+      ...mkCtx(),
+      editorInteraction: {
+        interactionId: "interaction-no-proposal",
+        kind: "edit",
+        policy: "proposal_only",
+        editorInstanceId: "editor-1",
+        bufferHandle: 7,
+        path: "src/value.ts",
+        changedtick: 17,
+        contentSha256: "a".repeat(64),
+        range: {
+          start: { line: 1, column: 0 },
+          end: { line: 1, column: 5 },
+        },
+      },
+    } as TurnContext;
+    const { session, events } = mkSession({
+      provider: { ...provider, chatStream },
+      registry,
+    });
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("replace value", { ctx })) {
+      yielded.push(event);
+    }
+
+    expect(chatStream).toHaveBeenCalledOnce();
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        content: expect.stringContaining("Editor edit request incomplete"),
+        stopReason: "error",
+        error: expect.objectContaining({
+          message: expect.stringContaining("editor_proposal_missing"),
+        }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "error",
+          payload: expect.objectContaining({
+            cause: "editor_proposal_missing",
+            message: expect.stringContaining("No buffer changes were made"),
+          }),
+        },
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_complete",
+          payload: expect.objectContaining({
+            lastAgentMessage: expect.stringContaining(
+              "Editor edit request incomplete",
+            ),
+          }),
+        },
+      }),
+    );
+  });
+
+  test("read-only Editor turns bypass shared Plan parsing and capability attachments without changing Plan mode", async () => {
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "plan" }),
+    );
+    const ctx = {
+      ...mkCtx(),
+      editorInteraction: {
+        interactionId: "interaction-plan-read",
+        kind: "explain",
+        policy: "read_only",
+        editorInstanceId: "editor-plan-read",
+        bufferHandle: 11,
+        path: "src/value.ts",
+        changedtick: 19,
+        contentSha256: "b".repeat(64),
+        range: {
+          start: { line: 1, column: 0 },
+          end: { line: 1, column: 5 },
+        },
+      },
+    } as TurnContext;
+    (
+      ctx as unknown as {
+        sessionConfiguration: {
+          permissionContext: { mode: string };
+        };
+      }
+    ).sessionConfiguration = {
+      permissionContext: { mode: "plan" },
+    };
+
+    const readTool: Tool = {
+      name: "FileRead",
+      description: "Read a workspace file",
+      inputSchema: { type: "object", properties: {} },
+      metadata: {
+        family: "filesystem",
+        source: "builtin",
+        mutating: false,
+      },
+      isReadOnly: true,
+      recoveryCategory: "idempotent",
+      execute: async () => ({ content: "not used" }),
+    };
+    const registry = {
+      ...mkRegistry(),
+      tools: [readTool],
+      toLLMTools: () => [
+        {
+          type: "function",
+          function: {
+            name: readTool.name,
+            description: readTool.description,
+            parameters: readTool.inputSchema,
+          },
+        },
+      ],
+      getTrustedEditorInteractionTool: (name: string) =>
+        name === readTool.name ? readTool : undefined,
+    } as ToolRegistry;
+    const skillsForConfig = vi.fn(async () => ({
+      availableSkills: [
+        {
+          name: "editor-plan-leak",
+          description: "MUST_NOT_APPEAR_SKILL_GUIDANCE",
+        },
+      ],
+    }));
+    const toolChoices: Array<LLMToolChoice | undefined> = [];
+    let providerPrompt = "";
+    const provider = mkProvider({});
+    provider.chatStream = async (messages, _onChunk, options) => {
+      toolChoices.push(options?.toolChoice);
+      providerPrompt = [
+        options?.systemPrompt ?? "",
+        ...messages.map(testMessageText),
+      ].join("\n");
+      return {
+        content:
+          "Literal editor answer\n<proposed_plan>\nSELECTED_LITERAL\n</proposed_plan>",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry,
+      permissionModeRegistry,
+      skillsManager: {
+        skillsForConfig,
+      } as unknown as SessionServices["skillsManager"],
+    });
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("Explain this selection.", {
+      ctx,
+      systemPrompt: "EDITOR_POLICY_SENTINEL",
+      systemPromptReplacesBase: true,
+    })) {
+      yielded.push(event);
+    }
+
+    expect(toolChoices).toEqual([undefined]);
+    expect(providerPrompt).toContain("EDITOR_POLICY_SENTINEL");
+    expect(providerPrompt).toContain("Explain this selection.");
+    expect(providerPrompt).not.toContain("Plan mode is active");
+    expect(providerPrompt).not.toContain("MUST_NOT_APPEAR_SKILL_GUIDANCE");
+    expect(skillsForConfig).not.toHaveBeenCalled();
+    expect(yielded.find((event) => event.type === "assistant_text")).toEqual(
+      expect.objectContaining({
+        content: expect.stringContaining("SELECTED_LITERAL"),
+      }),
+    );
+    expect(
+      events.some((event) => event.msg.type === "plan_item_completed"),
+    ).toBe(false);
+    expect(permissionModeRegistry.current().mode).toBe("plan");
+    expect(
+      (
+        ctx as unknown as {
+          sessionConfiguration: {
+            permissionContext: { mode: string };
+          };
+        }
+      ).sessionConfiguration.permissionContext.mode,
+    ).toBe("plan");
+  });
+
+  test("proposal-only Editor turns bypass Plan tool requirements while preserving the trusted proposal loop", async () => {
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "plan" }),
+    );
+    const interactionId = "interaction-plan-proposal";
+    const contentSha256 = "c".repeat(64);
+    const ctx = {
+      ...mkCtx(),
+      editorInteraction: {
+        interactionId,
+        kind: "edit",
+        policy: "proposal_only",
+        editorInstanceId: "editor-plan-proposal",
+        bufferHandle: 12,
+        path: "src/value.ts",
+        changedtick: 23,
+        contentSha256,
+        range: {
+          start: { line: 1, column: 0 },
+          end: { line: 1, column: 5 },
+        },
+      },
+    } as TurnContext;
+    (
+      ctx as unknown as {
+        sessionConfiguration: {
+          permissionContext: { mode: string };
+        };
+      }
+    ).sessionConfiguration = {
+      permissionContext: { mode: "plan" },
+    };
+
+    const proposalTool = createEditorProposalTool();
+    const registry = {
+      ...mkRegistry(),
+      tools: [proposalTool],
+      getTrustedEditorInteractionTool: (name: string) =>
+        name === proposalTool.name ? proposalTool : undefined,
+      dispatch: async (toolCall: LLMToolCall) =>
+        proposalTool.execute(
+          JSON.parse(toolCall.arguments) as Record<string, unknown>,
+        ),
+    } as ToolRegistry;
+    const toolChoices: Array<LLMToolChoice | undefined> = [];
+    const advertisedTools: string[][] = [];
+    let calls = 0;
+    const provider = mkProvider({});
+    provider.chatStream = async (_messages, _onChunk, options) => {
+      calls += 1;
+      toolChoices.push(options?.toolChoice);
+      advertisedTools.push(
+        options?.tools?.map((tool) => tool.function.name) ?? [],
+      );
+      if (calls === 1) {
+        return {
+          content: "",
+          toolCalls: [
+            {
+              id: "editor-proposal-plan-call",
+              name: "EditorProposal",
+              arguments: JSON.stringify({
+                version: 1,
+                interaction_id: interactionId,
+                path: "src/value.ts",
+                buffer_handle: 12,
+                base_changedtick: 23,
+                base_content_sha256: contentSha256,
+                summary: "Replace selected value",
+                edits: [
+                  {
+                    id: "edit-1",
+                    start_line: 1,
+                    start_column: 0,
+                    end_line: 1,
+                    end_column: 5,
+                    old_text: "value",
+                    new_text: "answer",
+                  },
+                ],
+              }),
+            },
+          ],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "tool_calls",
+        };
+      }
+      return {
+        content: "Proposal ready for review.",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry,
+      permissionModeRegistry,
+    });
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("Replace the selected value.", {
+      ctx,
+      systemPrompt: "EDITOR_PROPOSAL_POLICY_SENTINEL",
+      systemPromptReplacesBase: true,
+    })) {
+      yielded.push(event);
+    }
+
+    expect(calls).toBe(2);
+    expect(toolChoices).toEqual([undefined, undefined]);
+    expect(advertisedTools).toEqual([["EditorProposal"], ["EditorProposal"]]);
+    expect(
+      yielded.some(
+        (event) =>
+          event.type === "turn_complete" &&
+          event.stopReason === "completed" &&
+          event.content === "Proposal ready for review.",
+      ),
+    ).toBe(true);
+    expect(
+      events.some((event) => event.msg.type === "plan_item_completed"),
+    ).toBe(false);
+    expect(permissionModeRegistry.current().mode).toBe("plan");
+    expect(
+      (
+        ctx as unknown as {
+          sessionConfiguration: {
+            permissionContext: { mode: string };
+          };
+        }
+      ).sessionConfiguration.permissionContext.mode,
+    ).toBe("plan");
   });
 
   test("launches MagicDocs from main-thread idle completed turns", async () => {
@@ -1850,6 +2849,54 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       });
 
       expect(seen).toEqual([docPath]);
+    } finally {
+      resetMagicDocsForTests();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("Editor turns do not launch MagicDocs or session-memory post-sampling", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "agenc-editor-post-sampling-"));
+    const docPath = join(tempDir, "doc.md");
+    resetMagicDocsForTests();
+    try {
+      writeFileSync(docPath, "# MAGIC DOC: Editor Boundary\n\nBody\n", "utf8");
+      registerMagicDoc(docPath, "conv-test");
+      const seen: string[] = [];
+      setMagicDocsAgentRunnerForTests(async (request) => {
+        seen.push(request.docPath);
+      });
+      const { session } = mkSession({
+        provider: mkProvider({ content: "selection explanation" }),
+        registry: mkRegistry(),
+      });
+      const ctx = {
+        ...mkCtx(),
+        editorInteraction: {
+          interactionId: "interaction-post-sampling-ask",
+          kind: "ask",
+          policy: "read_only",
+          editorInstanceId: "editor-post-sampling",
+          bufferHandle: 10,
+          changedtick: 3,
+          contentSha256: "c".repeat(64),
+          path: docPath,
+          range: {
+            start: { line: 1, column: 0 },
+            end: { line: 1, column: 1 },
+          },
+        },
+      } as TurnContext;
+
+      await drain(session.runTurn("explain this selection", { ctx }));
+      await runMagicDocsPostSamplingHook({
+        messages: [],
+        querySource: "agent:flush",
+        sessionId: "conv-test",
+      });
+
+      expect(seen).toEqual([]);
+      expect(sessionMemoryPostSamplingMockState.calls).toHaveLength(0);
     } finally {
       resetMagicDocsForTests();
       rmSync(tempDir, { recursive: true, force: true });
@@ -1943,45 +2990,41 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     });
     const append = vi.fn();
     const appendRollout = vi.fn();
-    (session as Session & {
-      rolloutStore: {
-        append: typeof append;
-        appendRollout: typeof appendRollout;
-      };
-    }).rolloutStore = {
+    (
+      session as Session & {
+        rolloutStore: {
+          append: typeof append;
+          appendRollout: typeof appendRollout;
+        };
+      }
+    ).rolloutStore = {
       append,
       appendRollout,
     } as unknown as Session["rolloutStore"];
 
     await drain(session.runTurn("hello", { ctx: mkCtx() }));
 
-    expect(appendRollout).toHaveBeenCalledWith(
-      {
-        type: "turn_context",
-        payload: expect.objectContaining({
-          turnId: "turn-abc",
-          model: "test-model",
-        }),
-      },
-    );
-    expect(appendRollout).toHaveBeenCalledWith(
-      {
-        type: "response_item",
-        payload: expect.objectContaining({
-          role: "user",
-          content: "hello",
-        }),
-      },
-    );
-    expect(appendRollout).toHaveBeenCalledWith(
-      {
-        type: "response_item",
-        payload: expect.objectContaining({
-          role: "assistant",
-          content: "reply",
-        }),
-      },
-    );
+    expect(appendRollout).toHaveBeenCalledWith({
+      type: "turn_context",
+      payload: expect.objectContaining({
+        turnId: "turn-abc",
+        model: "test-model",
+      }),
+    });
+    expect(appendRollout).toHaveBeenCalledWith({
+      type: "response_item",
+      payload: expect.objectContaining({
+        role: "user",
+        content: "hello",
+      }),
+    });
+    expect(appendRollout).toHaveBeenCalledWith({
+      type: "response_item",
+      payload: expect.objectContaining({
+        role: "assistant",
+        content: "reply",
+      }),
+    });
   });
 
   test("cleans active turn when consumer stops after terminal event", async () => {
@@ -2095,11 +3138,12 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     await drain(session.runTurn("voice transcript", { ctx }));
 
     const firstRequest = seenMessages[0] ?? [];
-    const developerIndex = firstRequest.findIndex((message) =>
-      message.role === "developer"
+    const developerIndex = firstRequest.findIndex(
+      (message) => message.role === "developer",
     );
-    const userIndex = firstRequest.findIndex((message) =>
-      message.role === "user" && message.content === "voice transcript"
+    const userIndex = firstRequest.findIndex(
+      (message) =>
+        message.role === "user" && message.content === "voice transcript",
     );
     expect(developerIndex).toBeGreaterThan(1);
     expect(developerIndex).toBeLessThan(userIndex);
@@ -2108,15 +3152,15 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     );
 
     const persisted = getState().history as LLMMessage[];
-    const developerMessages = persisted.filter((message) =>
-      message.role === "developer"
+    const developerMessages = persisted.filter(
+      (message) => message.role === "developer",
     );
     expect(developerMessages).toHaveLength(1);
     expect(testMessageText(developerMessages[0]!)).toContain(
       REALTIME_CONVERSATION_OPEN_TAG,
     );
-    const persistedDeveloperIndex = persisted.findIndex((message) =>
-      message.role === "developer"
+    const persistedDeveloperIndex = persisted.findIndex(
+      (message) => message.role === "developer",
     );
     expect(persisted[persistedDeveloperIndex + 1]).toMatchObject({
       role: "user",
@@ -2177,7 +3221,9 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       (seenMessages[0] ?? []).some((message) => message.role === "developer"),
     ).toBe(false);
     const persisted = getState().history as LLMMessage[];
-    expect(persisted.some((message) => message.role === "developer")).toBe(false);
+    expect(persisted.some((message) => message.role === "developer")).toBe(
+      false,
+    );
     expect(persisted[0]).toMatchObject({
       role: "user",
       content: "continued voice",
@@ -2213,13 +3259,19 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       },
     } as TurnContext;
 
-    await drain(session.runTurn("hello", {
-      ctx,
-      systemPrompt: "base instructions",
-    }));
+    await drain(
+      session.runTurn("hello", {
+        ctx,
+        systemPrompt: "base instructions",
+      }),
+    );
 
-    expect(seenMessages[0]?.some((message) => message.role === "system")).toBe(false);
-    expect(seenSystemPrompts[0]).toBe("pragmatic template\n\nbase instructions");
+    expect(seenMessages[0]?.some((message) => message.role === "system")).toBe(
+      false,
+    );
+    expect(seenSystemPrompts[0]).toBe(
+      "pragmatic template\n\nbase instructions",
+    );
     expect(
       (seenMessages[0] ?? []).some((message) => message.role === "developer"),
     ).toBe(false);
@@ -2265,7 +3317,8 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       (message) => message.role === "developer",
     );
     const userIndex = firstRequest.findIndex(
-      (message) => message.role === "user" && message.content === "change style",
+      (message) =>
+        message.role === "user" && message.content === "change style",
     );
     expect(developerIndex).toBeGreaterThanOrEqual(0);
     expect(developerIndex).toBeLessThan(userIndex);
@@ -2370,9 +3423,9 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
           ...mkModelInfo(),
           ...(testCase.modelMessages !== undefined
             ? {
-              modelMessages: testCase.modelMessages,
-              supportsPersonality: true,
-            }
+                modelMessages: testCase.modelMessages,
+                supportsPersonality: true,
+              }
             : {}),
         },
       } as TurnContext;
@@ -2536,7 +3589,6 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       },
     ]);
   });
-
 });
 
 describe("runTurn — token budget tracker reset", () => {
@@ -2553,7 +3605,8 @@ describe("runTurn — token budget tracker reset", () => {
       }),
       registry: mkRegistry(),
     });
-    (session as unknown as { budgetTracker: BudgetTracker }).budgetTracker = tracker;
+    (session as unknown as { budgetTracker: BudgetTracker }).budgetTracker =
+      tracker;
 
     await drain(session.runTurn("fresh turn", { ctx }));
 
@@ -2623,8 +3676,7 @@ describe("runTurn — token budget tracker reset", () => {
     expect(
       events.some(
         (event) =>
-          event.type === "tool_result" &&
-          event.toolCall.id === "tool-budget-1",
+          event.type === "tool_result" && event.toolCall.id === "tool-budget-1",
       ),
     ).toBe(true);
     expect(seenMessages.length).toBeGreaterThanOrEqual(2);
@@ -2636,8 +3688,7 @@ describe("runTurn — token budget tracker reset", () => {
     );
     const toolIndex = secondRequest.findIndex(
       (message) =>
-        message.role === "tool" &&
-        message.toolCallId === "tool-budget-1",
+        message.role === "tool" && message.toolCallId === "tool-budget-1",
     );
     const continuationIndex = secondRequest.findIndex(
       (message) =>
@@ -2698,11 +3749,7 @@ describe("runTurn — A1 dead-guard fix (model-downshift inline compact)", () =>
       })),
     );
 
-    const ran = await maybeRunPreviousModelInlineCompact(
-      session,
-      ctx,
-      5_000,
-    );
+    const ran = await maybeRunPreviousModelInlineCompact(session, ctx, 5_000);
     expect(ran).toBe(true);
     setAutoCompactImplForTests(null);
   });
@@ -2735,11 +3782,7 @@ describe("runTurn — A1 dead-guard fix (model-downshift inline compact)", () =>
       }),
     };
 
-    const ran = await maybeRunPreviousModelInlineCompact(
-      session,
-      ctx,
-      5_000,
-    );
+    const ran = await maybeRunPreviousModelInlineCompact(session, ctx, 5_000);
     expect(ran).toBe(false);
   });
 });
@@ -2755,12 +3798,20 @@ describe("runTurn — D1 real provider usage in SamplingRequestResult", () => {
       registry: mkRegistry(),
     });
 
-    let finalUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined;
+    let finalUsage:
+      | { promptTokens: number; completionTokens: number; totalTokens: number }
+      | undefined;
     for await (const ev of session.runTurn("hi", { ctx })) {
       if ((ev as { type: string }).type === "turn_complete") {
-        finalUsage = (ev as unknown as {
-          usage: { promptTokens: number; completionTokens: number; totalTokens: number };
-        }).usage;
+        finalUsage = (
+          ev as unknown as {
+            usage: {
+              promptTokens: number;
+              completionTokens: number;
+              totalTokens: number;
+            };
+          }
+        ).usage;
       }
     }
 
@@ -2783,12 +3834,18 @@ describe("runTurn — live sampling request contract", () => {
       "Follow the local contract.";
     (ctx as TurnContext & { reasoningEffort?: "high" }).reasoningEffort =
       "high";
-    (ctx.modelInfo as TurnContext["modelInfo"] & {
-      supportsParallelToolCalls?: boolean;
-    }).supportsParallelToolCalls = true;
+    (
+      ctx.modelInfo as TurnContext["modelInfo"] & {
+        supportsParallelToolCalls?: boolean;
+      }
+    ).supportsParallelToolCalls = true;
     (
       ctx as TurnContext & {
-        dynamicTools: Array<{ name: string; description: string; deferLoading?: boolean }>;
+        dynamicTools: Array<{
+          name: string;
+          description: string;
+          deferLoading?: boolean;
+        }>;
       }
     ).dynamicTools = [
       { name: "visible_tool", description: "Visible tool" },
@@ -2861,9 +3918,13 @@ describe("runTurn — live sampling request contract", () => {
     await drain(session.runTurn("hello", { ctx, skipCacheWrite: true }));
 
     expect(seenMessages[0]).toEqual({ role: "user", content: "hello" });
-    expect(seenMessages.some((message) => message.role === "system")).toBe(false);
+    expect(seenMessages.some((message) => message.role === "system")).toBe(
+      false,
+    );
     expect(seenOptions?.systemPrompt).toContain("Follow the local contract.");
-    expect(seenOptions?.systemPrompt?.match(/Follow the local contract\./g)).toHaveLength(1);
+    expect(
+      seenOptions?.systemPrompt?.match(/Follow the local contract\./g),
+    ).toHaveLength(1);
     expect(seenOptions?.toolRouting?.allowedToolNames).toEqual([
       "visible_tool",
     ]);
@@ -2883,11 +3944,13 @@ describe("runTurn — live sampling request contract", () => {
       writeFileSync(join(repo, "package.json"), "{}", "utf8");
       writeFileSync(join(repo, "AGENC.md"), sentinel, "utf8");
       const ctx = mkCtx();
-      (ctx as TurnContext & { cwd: string; baseInstructions?: string }).cwd = repo;
+      (ctx as TurnContext & { cwd: string; baseInstructions?: string }).cwd =
+        repo;
       (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
         "BASE_SENTINEL_8c1d";
 
-      const requests: Array<{ messages: LLMMessage[]; systemPrompt: string }> = [];
+      const requests: Array<{ messages: LLMMessage[]; systemPrompt: string }> =
+        [];
       const provider = mkProvider({ content: "ok" });
       provider.chatStream = async (messages, _onChunk, options) => {
         requests.push({
@@ -2912,25 +3975,29 @@ describe("runTurn — live sampling request contract", () => {
       await drain(session.runTurn("second", { ctx }));
 
       expect(requests).toHaveLength(2);
-      expect(requests[0]!.messages.some((message) => message.role === "system")).toBe(false);
-      expect(requests[0]!.systemPrompt.match(new RegExp(sentinel, "g"))).toHaveLength(1);
-      expect(requests[0]!.systemPrompt.match(/BASE_SENTINEL_8c1d/g)).toHaveLength(1);
+      expect(
+        requests[0]!.messages.some((message) => message.role === "system"),
+      ).toBe(false);
+      expect(
+        requests[0]!.systemPrompt.match(new RegExp(sentinel, "g")),
+      ).toHaveLength(1);
+      expect(
+        requests[0]!.systemPrompt.match(/BASE_SENTINEL_8c1d/g),
+      ).toHaveLength(1);
       expect(requests[1]!.systemPrompt).not.toContain(sentinel);
-      expect(requests[1]!.systemPrompt.match(new RegExp(updated, "g"))).toHaveLength(1);
-      expect(requests[1]!.systemPrompt.match(/BASE_SENTINEL_8c1d/g)).toHaveLength(1);
+      expect(
+        requests[1]!.systemPrompt.match(new RegExp(updated, "g")),
+      ).toHaveLength(1);
+      expect(
+        requests[1]!.systemPrompt.match(/BASE_SENTINEL_8c1d/g),
+      ).toHaveLength(1);
       const turnContexts = events.flatMap((event) =>
         event.msg.type === "turn_context" ? [event.msg.payload] : [],
       );
       expect(turnContexts).toHaveLength(2);
       expect(turnContexts[0]?.instructionEvidence).toEqual({
         policy: "workspace_agent",
-        precedence: [
-          "managed",
-          "user",
-          "project",
-          "local",
-          "trusted_internal",
-        ],
+        precedence: ["managed", "user", "project", "local", "trusted_internal"],
         sources: [
           {
             tier: "project",
@@ -2956,8 +4023,10 @@ describe("runTurn — live sampling request contract", () => {
       writeFileSync(join(repo, "package.json"), "{}", "utf8");
       writeFileSync(join(repo, "AGENC.md"), "PROJECT_CUSTOM_SENTINEL", "utf8");
       const ctx = mkCtx();
-      (ctx as TurnContext & { cwd: string; baseInstructions?: string }).cwd = repo;
-      (ctx as TurnContext & { baseInstructions?: string }).baseInstructions = "BASE_CORE_SENTINEL";
+      (ctx as TurnContext & { cwd: string; baseInstructions?: string }).cwd =
+        repo;
+      (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
+        "BASE_CORE_SENTINEL";
       let systemPrompt = "";
       const provider = mkProvider({ content: "ok" });
       provider.chatStream = async (_messages, _onChunk, options) => {
@@ -2971,11 +4040,13 @@ describe("runTurn — live sampling request contract", () => {
         };
       };
       const { session } = mkSession({ provider, registry: mkRegistry() });
-      await drain(session.runTurn("review", {
-        ctx,
-        systemPrompt: "CUSTOM_REVIEW_SENTINEL",
-        instructionPolicy: "workspace_review",
-      }));
+      await drain(
+        session.runTurn("review", {
+          ctx,
+          systemPrompt: "CUSTOM_REVIEW_SENTINEL",
+          instructionPolicy: "workspace_review",
+        }),
+      );
 
       expect(systemPrompt.match(/CUSTOM_REVIEW_SENTINEL/g)).toHaveLength(1);
       expect(systemPrompt.match(/PROJECT_CUSTOM_SENTINEL/g)).toHaveLength(1);
@@ -3053,8 +4124,16 @@ describe("runTurn — live sampling request contract", () => {
         };
       };
       const { session } = mkSession({ provider, registry: mkRegistry() });
-      const ctxA = { ...mkCtx(), cwd: repoA, subId: "workspace-a" } as TurnContext;
-      const ctxB = { ...mkCtx(), cwd: repoB, subId: "workspace-b" } as TurnContext;
+      const ctxA = {
+        ...mkCtx(),
+        cwd: repoA,
+        subId: "workspace-a",
+      } as TurnContext;
+      const ctxB = {
+        ...mkCtx(),
+        cwd: repoB,
+        subId: "workspace-b",
+      } as TurnContext;
       await drain(session.runTurn("A", { ctx: ctxA }));
       await drain(session.runTurn("B", { ctx: ctxB }));
 
@@ -3081,7 +4160,11 @@ describe("runTurn — live sampling request contract", () => {
       mkdirSync(cwd, { recursive: true });
       mkdirSync(join(nested, ".git"));
       writeFileSync(join(root, "package.json"), "{}", "utf8");
-      writeFileSync(join(root, "AGENC.md"), "OUTER_REPOSITORY_SENTINEL", "utf8");
+      writeFileSync(
+        join(root, "AGENC.md"),
+        "OUTER_REPOSITORY_SENTINEL",
+        "utf8",
+      );
       writeFileSync(join(nested, "AGENC.md"), hostile, "utf8");
 
       let systemPrompt = "";
@@ -3101,7 +4184,8 @@ describe("runTurn — live sampling request contract", () => {
         registry: mkRegistry(),
       });
       const ctx = { ...mkCtx(), cwd } as TurnContext;
-      const permissionModeBefore = session.permissionModeRegistry.current().mode;
+      const permissionModeBefore =
+        session.permissionModeRegistry.current().mode;
 
       await drain(session.runTurn("inspect the nested checkout", { ctx }));
 
@@ -3188,16 +4272,19 @@ describe("runTurn — live sampling request contract", () => {
       expect(systemPrompt.match(/<\/workspace_instructions>/gu)).toHaveLength(
         1,
       );
-      expect(systemPrompt).toContain("<neutralized-workspace-instructions-tag>");
+      expect(systemPrompt).toContain(
+        "<neutralized-workspace-instructions-tag>",
+      );
       expect(systemPrompt).toContain("<neutralized-system-tag>");
       expect(systemPrompt).not.toContain("<system>");
 
       const turnContext = events.find(
         (event) => event.msg.type === "turn_context",
       );
-      const sources = turnContext?.msg.type === "turn_context"
-        ? turnContext.msg.payload.instructionEvidence?.sources
-        : undefined;
+      const sources =
+        turnContext?.msg.type === "turn_context"
+          ? turnContext.msg.payload.instructionEvidence?.sources
+          : undefined;
       expect(sources).toEqual([
         expect.objectContaining({
           tier: "project",
@@ -3247,7 +4334,8 @@ describe("runTurn — live sampling request contract", () => {
       await drain(session.runTurn("isolated sources", { ctx }));
 
       expect(prompts).toHaveLength(3);
-      for (const prompt of prompts) expect(prompt).not.toContain("REPO_POLICY_SENTINEL");
+      for (const prompt of prompts)
+        expect(prompt).not.toContain("REPO_POLICY_SENTINEL");
     } finally {
       delete process.env.AGENC_DISABLE_AGENC_MDS;
       delete process.env.AGENC_SIMPLE;
@@ -3264,7 +4352,11 @@ describe("runTurn — live sampling request contract", () => {
       mkdirSync(repo);
       mkdirSync(configHome);
       writeFileSync(join(repo, "package.json"), "{}", "utf8");
-      writeFileSync(join(configHome, "AGENC.md"), "CONFIG_HOME_SENTINEL", "utf8");
+      writeFileSync(
+        join(configHome, "AGENC.md"),
+        "CONFIG_HOME_SENTINEL",
+        "utf8",
+      );
       let prompt = "";
       const provider = mkProvider({ content: "ok" });
       provider.chatStream = async (_messages, _onChunk, options) => {
@@ -3279,7 +4371,11 @@ describe("runTurn — live sampling request contract", () => {
       };
       const restore = withEnvVar("AGENC_CONFIG_DIR", configHome);
       const { session } = mkSession({ provider, registry: mkRegistry() });
-      await drain(session.runTurn("profile", { ctx: { ...mkCtx(), cwd: repo } as TurnContext }));
+      await drain(
+        session.runTurn("profile", {
+          ctx: { ...mkCtx(), cwd: repo } as TurnContext,
+        }),
+      );
       restore();
       expect(prompt.match(/CONFIG_HOME_SENTINEL/g)).toHaveLength(1);
     } finally {
@@ -3309,21 +4405,30 @@ describe("runTurn — live sampling request contract", () => {
           finishReason: "stop",
         };
       };
-      const { session, events } = mkSession({ provider, registry: mkRegistry() });
-      await drain(session.runTurn("deny", { ctx: { ...mkCtx(), cwd: repo } as TurnContext }));
+      const { session, events } = mkSession({
+        provider,
+        registry: mkRegistry(),
+      });
+      await drain(
+        session.runTurn("deny", {
+          ctx: { ...mkCtx(), cwd: repo } as TurnContext,
+        }),
+      );
 
       expect(prompt).toContain("rejected: approval_required");
       expect(prompt).not.toContain("EXTERNAL_SECRET_SENTINEL");
       expect(prompt).not.toContain(target);
-      expect(events).toContainEqual(expect.objectContaining({
-        msg: expect.objectContaining({
-          type: "warning",
-          payload: expect.objectContaining({
-            cause: "project_instruction_rejected",
-            message: expect.stringContaining(target),
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          msg: expect.objectContaining({
+            type: "warning",
+            payload: expect.objectContaining({
+              cause: "project_instruction_rejected",
+              message: expect.stringContaining(target),
+            }),
           }),
         }),
-      }));
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -3331,11 +4436,13 @@ describe("runTurn — live sampling request contract", () => {
 
   test("plan mode sanitizes visible assistant text but still completes the raw proposed plan", async () => {
     const ctx = mkCtx();
-    (ctx as unknown as {
-      sessionConfiguration: {
-        permissionContext: { mode: string };
-      };
-    }).sessionConfiguration = {
+    (
+      ctx as unknown as {
+        sessionConfiguration: {
+          permissionContext: { mode: string };
+        };
+      }
+    ).sessionConfiguration = {
       permissionContext: { mode: "plan" },
     };
     const { session, events } = mkSession({
@@ -3372,11 +4479,13 @@ describe("runTurn — live sampling request contract", () => {
 
   test("plan mode retries when provider returns assistant text without a tool call", async () => {
     const ctx = mkCtx();
-    (ctx as unknown as {
-      sessionConfiguration: {
-        permissionContext: { mode: string };
-      };
-    }).sessionConfiguration = {
+    (
+      ctx as unknown as {
+        sessionConfiguration: {
+          permissionContext: { mode: string };
+        };
+      }
+    ).sessionConfiguration = {
       permissionContext: { mode: "plan" },
     };
 
@@ -3441,11 +4550,13 @@ describe("runTurn — live sampling request contract", () => {
       tools: [],
       toLLMTools: () => [exitPlanTool],
       dispatch: async (toolCall: LLMToolCall) => {
-        (ctx as unknown as {
-          sessionConfiguration: {
-            permissionContext: { mode: string };
-          };
-        }).sessionConfiguration.permissionContext.mode = "bypassPermissions";
+        (
+          ctx as unknown as {
+            sessionConfiguration: {
+              permissionContext: { mode: string };
+            };
+          }
+        ).sessionConfiguration.permissionContext.mode = "bypassPermissions";
         return { content: "exited", isError: false };
       },
     } as ToolRegistry;
@@ -3588,10 +4699,7 @@ describe("runTurn — model request context ordering", () => {
     try {
       const parallelTask =
         "Parallelize these independent checks:\n- API behavior\n- TUI behavior";
-      const rootRequest = await captureRequestText(
-        "turn-root",
-        parallelTask,
-      );
+      const rootRequest = await captureRequestText("turn-root", parallelTask);
       expect(rootRequest).toContain('"mode":"parallel"');
 
       // The model-visible internal prompt still contains parallel language,
@@ -3687,10 +4795,9 @@ describe("runTurn — model request context ordering", () => {
     updateSettingsForSource("userSettings", { swarmMode: true });
     try {
       await drain(
-        session.runTurn(
-          "Review these areas:\n- API behavior\n- TUI behavior",
-          { ctx: { ...mkCtx(), subId: "turn-enforced-swarm" } },
-        ),
+        session.runTurn("Review these areas:\n- API behavior\n- TUI behavior", {
+          ctx: { ...mkCtx(), subId: "turn-enforced-swarm" },
+        }),
       );
     } finally {
       updateSettingsForSource("userSettings", { swarmMode: false });
@@ -3818,7 +4925,10 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
           const developerMessage = messages.find(
             (message) => message.role === "developer",
           );
-          if (developerMessage && typeof developerMessage.content === "string") {
+          if (
+            developerMessage &&
+            typeof developerMessage.content === "string"
+          ) {
             developerMessage.content += "\nPROVIDER_LOCAL_MUTATION";
           }
           if (options) {
@@ -3874,15 +4984,21 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     expect(payloads[1]).toEqual(payloads[0]);
     expect(payloads[2]).toEqual(payloads[0]);
     for (const payload of payloads) {
-      expect(payload.messages.some((message) => message.role === "system")).toBe(false);
-      expect(payload.systemPrompt.match(new RegExp(systemSentinel, "g"))).toHaveLength(1);
+      expect(
+        payload.messages.some((message) => message.role === "system"),
+      ).toBe(false);
+      expect(
+        payload.systemPrompt.match(new RegExp(systemSentinel, "g")),
+      ).toHaveLength(1);
       const developerMessages = payload.messages.filter(
         (message) => message.role === "developer",
       );
       expect(developerMessages).toHaveLength(1);
-      expect(testMessageText(developerMessages[0]!).match(
-        new RegExp(developerSentinel, "g"),
-      )).toHaveLength(1);
+      expect(
+        testMessageText(developerMessages[0]!).match(
+          new RegExp(developerSentinel, "g"),
+        ),
+      ).toHaveLength(1);
     }
   });
 
@@ -4328,7 +5444,9 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
       ),
     });
 
-    await drain(session.runTurn("hello", { ctx: mkCtx(), signal: controller.signal }));
+    await drain(
+      session.runTurn("hello", { ctx: mkCtx(), signal: controller.signal }),
+    );
 
     const completed = events.filter(
       (event) =>
@@ -4376,9 +5494,8 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
       };
     });
     try {
-      const { runTurnKernel: runTurnWithCapRefusal } = await import(
-        "./run-turn.js"
-      );
+      const { runTurnKernel: runTurnWithCapRefusal } =
+        await import("./run-turn.js");
       let attempts = 0;
       const streamTool: Tool = {
         name: "stream_read",
@@ -5221,7 +6338,9 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     const applied = getState().sessionConfiguration;
     expect(applied.collaborationMode?.model).toBe("grok-4");
     expect(applied.provider?.slug).toBe("grok");
-    const turnContext = events.find((event) => event.msg.type === "turn_context");
+    const turnContext = events.find(
+      (event) => event.msg.type === "turn_context",
+    );
     expect(turnContext).toBeDefined();
     if (turnContext?.msg.type === "turn_context") {
       expect(turnContext.msg.payload.model).toBe("grok-4");
@@ -5247,52 +6366,48 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     expect(session.pendingProviderSwitch).toBeNull();
   });
 
-  test(
-    "mid-turn /model sets pending, aborts current turn, next turn applies the new model",
-    async () => {
-      const restoreApiKey = withEnvVar("XAI_API_KEY", "test-key");
-      // Simulate: a pending switch staged DURING turn N (the existing
-      // inner-loop safety net terminates turn N cleanly), then turn N+1
-      // is a fresh runTurn call that reads the marker and applies the
-      // switch to the session config BEFORE any model-dependent work.
-      const ctx = mkCtx();
-      const provider = attachProviderApiKey(mkProvider({ content: "first" }));
-      const { session, getState } = mkSession({
-        provider,
-        registry: mkRegistry(),
-        sessionConfiguration: {
-          provider: { slug: "xai" },
-          collaborationMode: { model: "grok-3" },
-        },
-      });
+  test("mid-turn /model sets pending, aborts current turn, next turn applies the new model", async () => {
+    const restoreApiKey = withEnvVar("XAI_API_KEY", "test-key");
+    // Simulate: a pending switch staged DURING turn N (the existing
+    // inner-loop safety net terminates turn N cleanly), then turn N+1
+    // is a fresh runTurn call that reads the marker and applies the
+    // switch to the session config BEFORE any model-dependent work.
+    const ctx = mkCtx();
+    const provider = attachProviderApiKey(mkProvider({ content: "first" }));
+    const { session, getState } = mkSession({
+      provider,
+      registry: mkRegistry(),
+      sessionConfiguration: {
+        provider: { slug: "xai" },
+        collaborationMode: { model: "grok-3" },
+      },
+    });
 
-      // Turn N: no pending switch yet. During the turn, simulate a
-      // `/model grok-4` invocation that stages the switch. We stage it
-      // by setting the marker directly on the session (same shape the
-      // safety net path would use). Since this mock turn's loop won't
-      // call abortTerminal here (we're not driving a phase loop), the
-      // first runTurn completes cleanly — the test's contract is that
-      // the NEXT runTurn applies the marker.
-      session.setPendingProviderSwitch({
-        provider: "xai",
-        model: "grok-4",
-      });
+    // Turn N: no pending switch yet. During the turn, simulate a
+    // `/model grok-4` invocation that stages the switch. We stage it
+    // by setting the marker directly on the session (same shape the
+    // safety net path would use). Since this mock turn's loop won't
+    // call abortTerminal here (we're not driving a phase loop), the
+    // first runTurn completes cleanly — the test's contract is that
+    // the NEXT runTurn applies the marker.
+    session.setPendingProviderSwitch({
+      provider: "xai",
+      model: "grok-4",
+    });
 
-      // Turn N+1: fresh runTurn call. The consumer at the top reads the
-      // marker, applies it, and clears it before sampling is needed.
-      try {
-        await drain(session.runTurn("", { ctx }));
-      } finally {
-        restoreApiKey();
-      }
+    // Turn N+1: fresh runTurn call. The consumer at the top reads the
+    // marker, applies it, and clears it before sampling is needed.
+    try {
+      await drain(session.runTurn("", { ctx }));
+    } finally {
+      restoreApiKey();
+    }
 
-      expect(session.pendingProviderSwitch).toBeNull();
-      expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
-        "grok-4",
-      );
-    },
-    60_000,
-  );
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
+      "grok-4",
+    );
+  }, 60_000);
 
   test("model_fallback consumes the pending switch and continues the same turn", async () => {
     const ctx = mkCtx();
@@ -5339,7 +6454,8 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
         }
         appliedSwitches += 1;
         session.setPendingProviderSwitch(null);
-        (session.services as { provider: LLMProvider }).provider = fallbackProvider;
+        (session.services as { provider: LLMProvider }).provider =
+          fallbackProvider;
         return {
           applied: true,
           provider: "stub-provider",
@@ -5354,11 +6470,111 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     expect(consumeSpy).toHaveBeenCalledTimes(2);
     expect(appliedSwitches).toBe(1);
     expect(session.pendingProviderSwitch).toBeNull();
-    const turnComplete = events.filter((event) => event.msg.type === "turn_complete").at(-1);
+    const turnComplete = events
+      .filter((event) => event.msg.type === "turn_complete")
+      .at(-1);
     expect(turnComplete).toBeDefined();
     if (turnComplete?.msg.type === "turn_complete") {
-      expect(turnComplete.msg.payload.lastAgentMessage).toBe("recovered on fallback");
+      expect(turnComplete.msg.payload.lastAgentMessage).toBe(
+        "recovered on fallback",
+      );
     }
+  });
+
+  test("Editor turns fail closed on cross-model fallback without mutating the shared route", async () => {
+    const ctx = {
+      ...mkCtx(),
+      editorInteraction: {
+        interactionId: "editor-no-model-fallback",
+        kind: "explain",
+        policy: "read_only",
+        editorInstanceId: "editor-route",
+        bufferHandle: 7,
+        path: "src/value.ts",
+        changedtick: 5,
+        contentSha256: "d".repeat(64),
+        range: {
+          start: { line: 1, column: 0 },
+          end: { line: 1, column: 5 },
+        },
+      },
+    } as TurnContext;
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+    const primaryProvider: LLMProvider = {
+      ...mkProvider({}),
+      name: "primary-provider",
+      chatStream: async () => {
+        primaryCalls += 1;
+        throw new FallbackTriggeredError("test-model", "fallback-model");
+      },
+    };
+    const fallbackProvider = mkProvider({
+      content: "must not be sampled",
+      model: "fallback-model",
+    });
+    fallbackProvider.chatStream = async (...args) => {
+      fallbackCalls += 1;
+      return mkProvider({
+        content: "must not be sampled",
+        model: "fallback-model",
+      }).chatStream(...args);
+    };
+    const { session, getState } = mkSession({
+      provider: primaryProvider,
+      registry: mkRegistry(),
+      sessionConfiguration: {
+        provider: { slug: "primary-provider" },
+        collaborationMode: { model: "test-model" },
+      },
+    });
+    let appliedSwitches = 0;
+    const consumeSpy = vi
+      .spyOn(session, "consumePendingProviderSwitch")
+      .mockImplementation(async () => {
+        if (session.pendingProviderSwitch === null) {
+          return {
+            applied: false,
+            reason: "no pending provider switch",
+          };
+        }
+        appliedSwitches += 1;
+        session.setPendingProviderSwitch(null);
+        (session.services as { provider: LLMProvider }).provider =
+          fallbackProvider;
+        return {
+          applied: true,
+          provider: "stub-provider",
+          model: "fallback-model",
+        };
+      });
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("Explain this.", { ctx })) {
+      yielded.push(event);
+    }
+
+    expect(primaryCalls).toBe(1);
+    expect(fallbackCalls).toBe(0);
+    expect(appliedSwitches).toBe(0);
+    expect(consumeSpy).toHaveBeenCalledOnce();
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(session.services.provider).toBe(primaryProvider);
+    expect(getState().sessionConfiguration.provider?.slug).toBe(
+      "primary-provider",
+    );
+    expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
+      "test-model",
+    );
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        stopReason: "error",
+        error: expect.objectContaining({
+          message: expect.stringContaining("fallback"),
+        }),
+      }),
+    );
   });
 
   test("profile switch via pendingProviderSwitch routes through configStore.resolveProfile when available", async () => {
@@ -5466,12 +6682,208 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     { role: "user", content: `old ${"x".repeat(chars)}` },
   ];
 
+  test.each(["read_only", "proposal_only"] as const)(
+    "never auto-compacts a %s Editor interaction",
+    async (policy) => {
+      const ctx = {
+        ...mkCtx(),
+        modelInfo: {
+          ...mkCtx().modelInfo,
+          autoCompactTokenLimit: 1,
+        },
+        editorInteraction: {
+          interactionId: `interaction-no-compact-${policy}`,
+          kind: policy === "read_only" ? "explain" : "edit",
+          policy,
+          editorInstanceId: "editor-no-compact",
+          bufferHandle: 7,
+          path: "src/value.ts",
+          changedtick: 17,
+          contentSha256: "a".repeat(64),
+          range: {
+            start: { line: 1, column: 0 },
+            end: { line: 1, column: 5 },
+          },
+        },
+      } as TurnContext;
+      const { session } = mkSession({
+        provider: mkProvider({ content: "editor response" }),
+        registry: mkRegistry(),
+      });
+      const history = compactPressureHistory(5_000);
+      (session as unknown as { state: unknown }).state = {
+        unsafePeek: () => ({ history, totalTokenUsage: 50_000 }),
+        with: async (fn: (s: unknown) => unknown) =>
+          fn({ history, totalTokenUsage: 50_000 }),
+      };
+      const compact = vi.fn<AutoCompactImpl>(async () => ({
+        wasCompacted: false,
+      }));
+      setAutoCompactImplForTests(compact);
+
+      await drain(session.runTurn("work on this selection", { ctx }));
+
+      expect(compact).not.toHaveBeenCalled();
+    },
+  );
+
+  test("completes an Editor read follow-up under compaction pressure without admitting unrelated Agent input", async () => {
+    const ctx = mkReadOnlyEditorCtx("editor-post-tool-no-compact", {
+      autoCompactTokenLimit: 1,
+    });
+    const seenMessages: LLMMessage[][] = [];
+    let samples = 0;
+    const provider = mkProvider({});
+    provider.chatStream = async (messages) => {
+      samples += 1;
+      seenMessages.push(messages.map((message) => ({ ...message })));
+      return samples === 1
+        ? {
+            content: "",
+            toolCalls: [
+              {
+                id: "editor-pressure-read",
+                name: "FileRead",
+                arguments: JSON.stringify({
+                  file_path: "src/value.ts",
+                }),
+              },
+            ],
+            usage: {
+              promptTokens: 100,
+              completionTokens: 1,
+              totalTokens: 101,
+            },
+            model: "test-model",
+            finishReason: "tool_calls",
+          }
+        : {
+            content: "Editor pressure answer",
+            toolCalls: [],
+            usage: {
+              promptTokens: 100,
+              completionTokens: 1,
+              totalTokens: 101,
+            },
+            model: "test-model",
+            finishReason: "stop",
+          };
+    };
+    const { registry, dispatch } = mkTrustedEditorReadRegistry();
+    const { session } = mkSession({ provider, registry });
+    session.enqueueIdleInput({
+      role: "user",
+      content: "UNRELATED_AGENT_COMPACTION_INPUT",
+    });
+    const compact = vi.fn<AutoCompactImpl>(async () => ({
+      wasCompacted: false,
+    }));
+    setAutoCompactImplForTests(compact);
+
+    const yielded = await drain(
+      session.runTurn("Explain under pressure.", { ctx }),
+    );
+
+    expect(samples).toBe(2);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(compact).not.toHaveBeenCalled();
+    expect(
+      yielded.some(
+        (event) =>
+          event.type === "turn_complete" && event.stopReason === "error",
+      ),
+    ).toBe(false);
+    expect(seenMessages.flat().map(testMessageText).join("\n")).not.toContain(
+      "UNRELATED_AGENT_COMPACTION_INPUT",
+    );
+    expect(session.drainIdleInput()).toEqual([
+      { role: "user", content: "UNRELATED_AGENT_COMPACTION_INPUT" },
+    ]);
+  });
+
+  test("fails a withheld 413 Editor response without compacting or resampling", async () => {
+    const ctx = {
+      ...mkCtx(),
+      editorInteraction: {
+        interactionId: "interaction-editor-413",
+        kind: "explain",
+        policy: "read_only",
+        editorInstanceId: "editor-413",
+        bufferHandle: 7,
+        path: "src/value.ts",
+        changedtick: 17,
+        contentSha256: "e".repeat(64),
+        range: {
+          start: { line: 1, column: 0 },
+          end: { line: 1, column: 5 },
+        },
+      },
+    } as TurnContext;
+    let calls = 0;
+    const provider = mkProvider({});
+    provider.chatStream = async () => {
+      calls += 1;
+      return {
+        content: "Prompt is too long: 200000 tokens > 128000",
+        toolCalls: [],
+        usage: {
+          promptTokens: 200_000,
+          completionTokens: 0,
+          totalTokens: 200_000,
+        },
+        model: "test-model",
+        finishReason: "error",
+      };
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+    const compact = vi.fn<AutoCompactImpl>(async () => ({
+      wasCompacted: true,
+    }));
+    setAutoCompactImplForTests(compact);
+    const history: LLMMessage[] = [
+      { role: "user", content: "old one" },
+      { role: "assistant", content: "old answer one" },
+      { role: "user", content: "old two" },
+      { role: "assistant", content: "old answer two" },
+      { role: "user", content: "old three" },
+    ];
+
+    const yielded: PhaseEvent[] = [];
+    for await (const event of session.runTurn("Explain the selection.", {
+      ctx,
+      history,
+    })) {
+      yielded.push(event);
+    }
+
+    expect(calls).toBe(1);
+    expect(compact).not.toHaveBeenCalled();
+    expect(events.some((event) => event.msg.type === "context_compacted")).toBe(
+      false,
+    );
+    expect(yielded).toContainEqual(
+      expect.objectContaining({
+        type: "turn_complete",
+        stopReason: "error",
+        error: expect.objectContaining({
+          message: expect.stringContaining(
+            "editor_interaction_recovery_blocked: context_window",
+          ),
+        }),
+      }),
+    );
+  });
+
   test("pre-sampling context-limit compact calls autoCompactIfNeeded when threshold is hit", async () => {
     // Inject an autoCompactTokenLimit low enough that active history
     // exceeds it, so runPreSamplingCompact picks the context-limit branch.
     const ctx = mkCtx();
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
-      .autoCompactTokenLimit = 10;
+    (
+      ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
+    ).autoCompactTokenLimit = 10;
 
     const { session } = mkSession({
       provider: mkProvider({ content: "ok" }),
@@ -5498,8 +6910,13 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     // detail (AgenC context adapter.ts Stage 6 may invoke it again inside
     // the phase loop), but >=1 proves the dispatcher was wired.
     expect(calls.length).toBeGreaterThanOrEqual(1);
-    const [firstMessages, firstCompactContext, firstTracking, firstSnipTokensFreed, firstInitialContextInjection] =
-      calls[0] ?? [];
+    const [
+      firstMessages,
+      firstCompactContext,
+      firstTracking,
+      firstSnipTokensFreed,
+      firstInitialContextInjection,
+    ] = calls[0] ?? [];
     expect(Array.isArray(firstMessages)).toBe(true);
     expect(firstCompactContext).toEqual(
       expect.objectContaining({
@@ -5515,8 +6932,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
   test("pre-sampling compact preserves the caller querySource", async () => {
     const ctx = mkCtx();
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
-      .autoCompactTokenLimit = 10;
+    (
+      ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
+    ).autoCompactTokenLimit = 10;
 
     const { session } = mkSession({
       provider: mkProvider({ content: "ok" }),
@@ -5548,8 +6966,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
   test("runTurn querySource option overrides the session default", async () => {
     const ctx = mkCtx();
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
-      .autoCompactTokenLimit = 10;
+    (
+      ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
+    ).autoCompactTokenLimit = 10;
 
     const { session } = mkSession({
       provider: mkProvider({ content: "ok" }),
@@ -5622,8 +7041,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
   test("autoCompactIfNeeded is NOT called when total usage is below the threshold", async () => {
     const ctx = mkCtx();
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
-      .autoCompactTokenLimit = 100;
+    (
+      ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
+    ).autoCompactTokenLimit = 100;
 
     const { session } = mkSession({
       provider: mkProvider({ content: "ok" }),
@@ -5648,8 +7068,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
   test("pre-sampling context-limit compact runs when active usage reaches the threshold", async () => {
     const ctx = mkCtx();
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
-      .autoCompactTokenLimit = 999;
+    (
+      ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
+    ).autoCompactTokenLimit = 999;
 
     const { session } = mkSession({
       provider: mkProvider({ content: "ok" }),
@@ -5674,8 +7095,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     const ctx = mkCtx();
     (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
       "CURRENT_CORE_INSTRUCTIONS";
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
-      .autoCompactTokenLimit = 10;
+    (
+      ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
+    ).autoCompactTokenLimit = 10;
     const appendRollout = vi.fn();
 
     // Return a compactionResult so the dispatcher splices messages
@@ -5777,8 +7199,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
   test("pre-sampling compact keeps the unsent image turn after compacted history", async () => {
     const ctx = mkCtx();
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
-      .autoCompactTokenLimit = 10;
+    (
+      ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
+    ).autoCompactTokenLimit = 10;
     const userContent: LLMContentPart[] = [
       { type: "text", text: "Describe it" },
       {
@@ -5836,8 +7259,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
   test("pre-sampling dispatcher errors emit warning and abort before sampling", async () => {
     const ctx = mkCtx();
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
-      .autoCompactTokenLimit = 10;
+    (
+      ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
+    ).autoCompactTokenLimit = 10;
     const baseProvider = mkProvider({ content: "still ok" });
     const provider = {
       ...baseProvider,
@@ -5918,11 +7342,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       return { wasCompacted: false };
     });
 
-    const ran = await maybeRunPreviousModelInlineCompact(
-      session,
-      ctx,
-      5_000,
-    );
+    const ran = await maybeRunPreviousModelInlineCompact(session, ctx, 5_000);
     expect(ran).toBe(false);
     // querySource is carried on the AgenC adapter context object.
     expect(calls.length).toBeGreaterThanOrEqual(1);
@@ -5982,11 +7402,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       return { wasCompacted: false };
     });
 
-    const ran = await maybeRunPreviousModelInlineCompact(
-      session,
-      ctx,
-      5_000,
-    );
+    const ran = await maybeRunPreviousModelInlineCompact(session, ctx, 5_000);
     expect(ran).toBe(false);
     expect(calls.length).toBeGreaterThanOrEqual(1);
     expect(calls[0]?.[1]).toEqual(
@@ -6002,7 +7418,6 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       }),
     );
   });
-
 });
 
 describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
@@ -6031,7 +7446,10 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     // Provider returns a terminal answer so the resumed turn completes
     // without issuing any new tool calls.
     const { session, events } = mkSession({
-      provider: mkProvider({ content: "acknowledged, not retrying", toolCalls: [] }),
+      provider: mkProvider({
+        content: "acknowledged, not retrying",
+        toolCalls: [],
+      }),
       registry,
     });
     session.rolloutStore = {
@@ -6088,7 +7506,9 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     );
     expect(haltWarning).toBeDefined();
     expect(
-      haltWarning?.msg.type === "warning" ? haltWarning.msg.payload.message : "",
+      haltWarning?.msg.type === "warning"
+        ? haltWarning.msg.payload.message
+        : "",
     ).toContain("settle");
     // The turn re-opened durably.
     expect(events.some((e) => e.msg.type === "turn_resumed")).toBe(true);

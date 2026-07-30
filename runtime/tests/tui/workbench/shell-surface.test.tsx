@@ -15,7 +15,9 @@ const shellHarness = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../src/utils/fsOperations.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/utils/fsOperations.js")>()),
+  ...(await importOriginal<
+    typeof import("../../../src/utils/fsOperations.js")
+  >()),
   tailFile: vi.fn(async (path: string) => {
     const taskId = /\/tmp\/(.+)\.log$/u.exec(path)?.[1] ?? path;
     const readCount = (shellHarness.readCounts[taskId] ?? 0) + 1;
@@ -51,7 +53,12 @@ vi.mock("../../../src/utils/log.js", () => ({
 import { createRoot } from "../../../src/tui/ink.js";
 import { getInkInstance } from "../../../src/tui/ink/instances.js";
 import { cellAt } from "../../../src/tui/ink/screen.js";
-import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
+import {
+  AppStateProvider,
+  getDefaultAppState,
+  type AppState,
+  useSetAppState,
+} from "../../../src/tui/state/AppState.js";
 import { ShellSurface } from "../../../src/tui/workbench/surfaces/ShellSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
@@ -253,7 +260,7 @@ describe("ShellSurface", () => {
     expect(changes.at(-1)?.tasks["shell-1"]?.status).toBe("killed");
 
     shellHarness.handlers["workbench:closeSurface"]?.();
-    expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
+    expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("shell");
   });
 
   it("does not dispatch location actions when no shell output location is parsed", async () => {
@@ -362,7 +369,11 @@ describe("ShellSurface", () => {
           }}
           onChangeAppState={({ newState }) => changes.push(newState)}
         >
-          <ShellTaskSelector onReady={(setter) => { selectTask = setter; }} />
+          <ShellTaskSelector
+            onReady={(setter) => {
+              selectTask = setter;
+            }}
+          />
           <ShellSurface focused={true} />
         </AppStateProvider>,
       );
@@ -379,7 +390,9 @@ describe("ShellSurface", () => {
       expect(compact(afterSwitch)).not.toContain("src/old-task.ts");
 
       shellHarness.handlers["surface:open"]?.();
-      expect(changes.at(-1)?.workbench.activeFilePath).not.toBe("src/old-task.ts");
+      expect(changes.at(-1)?.workbench.activeFilePath).not.toBe(
+        "src/old-task.ts",
+      );
     } finally {
       root.unmount();
       stdin.end();
@@ -426,9 +439,13 @@ describe("ShellSurface", () => {
 
       expect(compact(screenText(stdout))).toContain("src/current-task.ts:7");
       expect(compact(screenText(stdout))).not.toContain("(nooutput)");
-      expect(shellHarness.logError.mock.calls.some(([error]) =>
-        error instanceof Error && error.message === "tail failed for shell-1"
-      )).toBe(true);
+      expect(
+        shellHarness.logError.mock.calls.some(
+          ([error]) =>
+            error instanceof Error &&
+            error.message === "tail failed for shell-1",
+        ),
+      ).toBe(true);
     } finally {
       root.unmount();
       stdin.end();
@@ -488,10 +505,16 @@ function createStreams(): {
   stdin.ref = () => {};
   stdin.setRawMode = () => {};
   stdin.unref = () => {};
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).columns = 120;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).rows = 24;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).isTTY = true;
-  stdout.on("data", chunk => {
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).columns = 120;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).rows = 24;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).isTTY = true;
+  stdout.on("data", (chunk) => {
     output += chunk.toString();
   });
 
@@ -503,7 +526,7 @@ function createStreams(): {
 }
 
 function sleep(ms = 200): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function compact(value: string): string {
@@ -512,7 +535,11 @@ function compact(value: string): string {
 
 function screenText(stdout: PassThrough): string {
   const instance = getInkInstance(stdout as unknown as NodeJS.WriteStream) as
-    | { readonly frontFrame?: { readonly screen?: { readonly width: number; readonly height: number } } }
+    | {
+        readonly frontFrame?: {
+          readonly screen?: { readonly width: number; readonly height: number };
+        };
+      }
     | undefined;
   const screen = instance?.frontFrame?.screen;
   if (!screen) return "";

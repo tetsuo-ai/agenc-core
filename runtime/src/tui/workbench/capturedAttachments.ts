@@ -32,17 +32,31 @@ export function renderCapturedAttachment(
   attachment: WorkbenchAttachment,
 ): string {
   if (!isCapturedWorkbenchAttachment(attachment)) {
-    throw new Error(`Attachment ${attachment.id} is not a captured editor attachment.`);
+    throw new Error(
+      `Attachment ${attachment.id} is not a captured editor attachment.`,
+    );
   }
   const content = attachment.content ?? "";
   assertCaptureBounds(content);
   const path = attachment.path ?? "(unnamed buffer)";
   const startLine = Math.max(1, attachment.line ?? 1);
   const endLine = Math.max(startLine, attachment.endLine ?? startLine);
-  const range = startLine === endLine
-    ? `line ${startLine}`
-    : `lines ${startLine}-${endLine}`;
-  const dirty = attachment.dirty ? "unsaved live-buffer snapshot" : "live-buffer snapshot";
+  const startColumn = Math.max(0, attachment.startColumn ?? 0);
+  const endColumn = Math.max(0, attachment.endColumn ?? startColumn);
+  const exactRange = JSON.stringify({
+    start: { line: startLine, column: startColumn },
+    end: { line: endLine, column: endColumn },
+    ...(attachment.selectionMode !== undefined
+      ? { selection_mode: attachment.selectionMode }
+      : {}),
+    line_base: 1,
+    column_base: 0,
+    column_unit: "utf8_byte",
+    end_exclusive: true,
+  });
+  const dirty = attachment.dirty
+    ? "unsaved live-buffer snapshot"
+    : "live-buffer snapshot";
   const diagnostic = attachment.diagnostic
     ? [
         "",
@@ -53,10 +67,12 @@ export function renderCapturedAttachment(
   return renderUntrustedWorkspaceData(
     `embedded editor ${attachment.kind}: ${path}`,
     [
-      `${dirty} from ${path}, ${range}.`,
+      `${dirty} from ${path}. Exact editor range: ${exactRange}.`,
       content,
       diagnostic,
-    ].filter((part) => part.length > 0).join("\n"),
+    ]
+      .filter((part) => part.length > 0)
+      .join("\n"),
   );
 }
 

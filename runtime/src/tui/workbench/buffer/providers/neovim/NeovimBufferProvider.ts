@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 
-import { openFileInBufferExternalEditor, type BufferExternalEditorLauncher } from "../../externalEditor.js";
+import {
+  openFileInBufferExternalEditor,
+  type BufferExternalEditorLauncher,
+} from "../../externalEditor.js";
 import {
   BufferSaveConflictError,
   readBufferFileSnapshot,
@@ -21,7 +25,10 @@ import {
 } from "../../neovim/NeovimLifecycle.js";
 import type { NeovimDiscoveryResult } from "../../neovim/NeovimDiscovery.js";
 import { translateKeyToNeovimInput } from "../../neovim/NeovimInput.js";
-import { createNeovimRenderSnapshot, type NeovimRenderSnapshot } from "../../neovim/NeovimGrid.js";
+import {
+  createNeovimRenderSnapshot,
+  type NeovimRenderSnapshot,
+} from "../../neovim/NeovimGrid.js";
 import {
   canonicalNeovimPath,
   canonicalNeovimPathIsAtOrWithin,
@@ -37,12 +44,19 @@ import type {
   BufferEditorProvider,
   BufferCaptureRequest,
   BufferCapturedContext,
+  BufferCodePrediction,
+  BufferCodePredictionContext,
+  BufferCodePredictionFeedback,
+  BufferEditorProposal,
+  BufferEditorProposalResolution,
+  BufferExternalChangeResolution,
   BufferIntegrationIntent,
   BufferIntegrationIntentListener,
   BufferRecoveryAction,
   BufferRecoveryResult,
   BufferProviderBuffer,
   BufferProviderCloseOptions,
+  BufferProviderCleanupOptions,
   BufferProviderIdentity,
   BufferProviderInput,
   BufferProviderListener,
@@ -53,6 +67,10 @@ import type {
   BufferProviderSaveAllResult,
   BufferProviderShutdownOptions,
   BufferProviderSnapshot,
+  BufferWorkspaceBufferCapture,
+  BufferWorkspaceWriteAuthorityHandler,
+  BufferWorkspaceWriteDecision,
+  BufferWorkspaceWriteRequest,
 } from "../types.js";
 import {
   emptyProviderSnapshot,
@@ -64,7 +82,9 @@ export type NeovimBufferProviderOptions = {
   readonly discovery: Extract<NeovimDiscoveryResult, { readonly usable: true }>;
   readonly openExternalEditor?: BufferExternalEditorLauncher;
   readonly readFileSnapshot?: (filePath: string) => Promise<BufferFileSnapshot>;
-  readonly startSession?: (options: StartEmbeddedNeovimOptions) => Promise<EmbeddedNeovimSession>;
+  readonly startSession?: (
+    options: StartEmbeddedNeovimOptions,
+  ) => Promise<EmbeddedNeovimSession>;
   readonly startupTimeoutMs?: number;
   readonly operationTimeoutMs?: number;
   readonly cleanupTimeoutMs?: number;
@@ -72,6 +92,7 @@ export type NeovimBufferProviderOptions = {
   readonly sessionMode?: "workspace" | "file";
   readonly workspaceRoot?: string;
   readonly agencHome?: string;
+  readonly requireWorkspaceWriteAuthority?: boolean;
   readonly beforeOpenFile?: (
     context: EmbeddedNeovimStartupContext,
   ) => Promise<EmbeddedNeovimStartupPreparation | void>;
@@ -93,6 +114,14 @@ type NeovimFileOwnership = {
   readonly absolutePath: string | null;
 };
 
+type NeovimWorkspaceCaptureCandidate = {
+  readonly handle: number;
+  readonly path: string;
+  readonly changedtick: number;
+  readonly endOfLine: boolean;
+  readonly modified: boolean;
+};
+
 type NeovimPendingSessionStart = {
   readonly controller: AbortController;
   readonly promise: Promise<EmbeddedNeovimSession>;
@@ -111,23 +140,64 @@ type StartNeovimSession = (
   options: StartEmbeddedNeovimOptions,
 ) => Promise<EmbeddedNeovimSession>;
 
+const NEOVIM_EDITOR_SESSION_IDS = new WeakMap<EmbeddedNeovimSession, string>();
+
+function identifyIntegrationIntent(
+  intent: BufferIntegrationIntent,
+  editorSessionId: string,
+): BufferIntegrationIntent {
+  return {
+    ...intent,
+    context: {
+      ...intent.context,
+      editorSessionId,
+    },
+  };
+}
+
+async function startIdentifiedNeovimSession(
+  startSession: StartNeovimSession,
+  options: StartEmbeddedNeovimOptions,
+): Promise<EmbeddedNeovimSession> {
+  const editorSessionId = randomUUID();
+  const session = await startSession({
+    ...options,
+    onIntegrationIntent:
+      options.onIntegrationIntent === undefined
+        ? undefined
+        : (intent) => {
+            options.onIntegrationIntent?.(
+              identifyIntegrationIntent(intent, editorSessionId),
+            );
+          },
+  });
+  NEOVIM_EDITOR_SESSION_IDS.set(session, editorSessionId);
+  return session;
+}
+
 async function startUncommittedNeovimSession(
   startSession: StartNeovimSession,
   options: StartEmbeddedNeovimOptions,
 ): Promise<EmbeddedNeovimSession> {
+  const editorSessionId = randomUUID();
   let phase: "starting" | "committed" | "abandoned" = "starting";
-  let latestSnapshot: Parameters<StartEmbeddedNeovimOptions["onSnapshot"]>[0] | null = null;
+  let latestSnapshot:
+    Parameters<StartEmbeddedNeovimOptions["onSnapshot"]>[0] | null = null;
   let latestDirty: boolean | undefined;
   let workspaceChanged = false;
   const integrationIntents: Parameters<
     NonNullable<StartEmbeddedNeovimOptions["onIntegrationIntent"]>
+  >[0][] = [];
+  const codePredictionFeedback: Parameters<
+    NonNullable<StartEmbeddedNeovimOptions["onCodePredictionFeedback"]>
   >[0][] = [];
   const recoveries: Parameters<
     NonNullable<StartEmbeddedNeovimOptions["onRecoveryDetected"]>
   >[0][] = [];
   let startupError: Error | null = null;
   let fatalError: Error | null = null;
-  let earlyExit: Parameters<StartEmbeddedNeovimOptions["onExit"]>[0] | null = null;
+  let earlyExit: Parameters<StartEmbeddedNeovimOptions["onExit"]>[0] | null =
+    null;
 
   const attemptOptions: StartEmbeddedNeovimOptions = {
     ...options,
@@ -144,8 +214,22 @@ async function startUncommittedNeovimSession(
       else if (phase === "starting") workspaceChanged = true;
     },
     onIntegrationIntent: (intent) => {
-      if (phase === "committed") options.onIntegrationIntent?.(intent);
-      else if (phase === "starting") integrationIntents.push(intent);
+      const identifiedIntent = identifyIntegrationIntent(
+        intent,
+        editorSessionId,
+      );
+      if (phase === "committed") {
+        options.onIntegrationIntent?.(identifiedIntent);
+      } else if (phase === "starting") {
+        integrationIntents.push(identifiedIntent);
+      }
+    },
+    onCodePredictionFeedback: (feedback) => {
+      if (phase === "committed") {
+        options.onCodePredictionFeedback?.(feedback);
+      } else if (phase === "starting") {
+        codePredictionFeedback.push(feedback);
+      }
     },
     onRecoveryDetected: (recovery) => {
       if (phase === "committed") options.onRecoveryDetected?.(recovery);
@@ -170,6 +254,7 @@ async function startUncommittedNeovimSession(
   let session: EmbeddedNeovimSession;
   try {
     session = await startSession(attemptOptions);
+    NEOVIM_EDITOR_SESSION_IDS.set(session, editorSessionId);
   } catch (error) {
     phase = "abandoned";
     throw error;
@@ -177,15 +262,13 @@ async function startUncommittedNeovimSession(
 
   if (earlyExit !== null || fatalError !== null) {
     phase = "abandoned";
-    const failure = fatalError ??
-      startupExitFailure(earlyExit as NeovimExitInfo | null);
+    const failure =
+      fatalError ?? startupExitFailure(earlyExit as NeovimExitInfo | null);
     try {
       await session.cleanup();
     } catch (cleanupFailure) {
-      throw new NeovimStartupCleanupError(
-        failure,
-        cleanupFailure,
-        () => session.cleanup(),
+      throw new NeovimStartupCleanupError(failure, cleanupFailure, () =>
+        session.cleanup(),
       );
     }
     throw failure;
@@ -195,7 +278,11 @@ async function startUncommittedNeovimSession(
   if (latestSnapshot !== null) options.onSnapshot(latestSnapshot);
   if (latestDirty !== undefined) options.onDirtyChange?.(latestDirty);
   if (workspaceChanged) options.onWorkspaceChange?.();
-  for (const intent of integrationIntents) options.onIntegrationIntent?.(intent);
+  for (const intent of integrationIntents)
+    options.onIntegrationIntent?.(intent);
+  for (const feedback of codePredictionFeedback) {
+    options.onCodePredictionFeedback?.(feedback);
+  }
   for (const recovery of recoveries) options.onRecoveryDetected?.(recovery);
   if (startupError !== null) options.onError(startupError);
   return session;
@@ -204,19 +291,32 @@ async function startUncommittedNeovimSession(
 export class NeovimBufferProvider implements BufferEditorProvider {
   readonly identity: BufferProviderIdentity;
   readonly #listeners = new Set<BufferProviderListener>();
-  readonly #integrationIntentListeners = new Set<BufferIntegrationIntentListener>();
-  readonly #discovery: Extract<NeovimDiscoveryResult, { readonly usable: true }>;
+  readonly #integrationIntentListeners =
+    new Set<BufferIntegrationIntentListener>();
+  readonly #codePredictionFeedbackListeners = new Set<
+    (feedback: BufferCodePredictionFeedback) => void
+  >();
+  readonly #discovery: Extract<
+    NeovimDiscoveryResult,
+    { readonly usable: true }
+  >;
   readonly #startupTimeoutMs: number | undefined;
   readonly #operationTimeoutMs: number | undefined;
   readonly #cleanupTimeoutMs: number | undefined;
   readonly #sessionMode: "workspace" | "file";
   readonly #workspaceRoot: string | undefined;
   readonly #agencHome: string | undefined;
+  readonly #requireWorkspaceWriteAuthority: boolean;
   readonly #beforeOpenFile:
-    ((context: EmbeddedNeovimStartupContext) => Promise<EmbeddedNeovimStartupPreparation | void>) | undefined;
+    | ((
+        context: EmbeddedNeovimStartupContext,
+      ) => Promise<EmbeddedNeovimStartupPreparation | void>)
+    | undefined;
   readonly #openExternalEditor: BufferExternalEditorLauncher;
   readonly #readFileSnapshot: (filePath: string) => Promise<BufferFileSnapshot>;
-  readonly #startSession: (options: StartEmbeddedNeovimOptions) => Promise<EmbeddedNeovimSession>;
+  readonly #startSession: (
+    options: StartEmbeddedNeovimOptions,
+  ) => Promise<EmbeddedNeovimSession>;
   #session: EmbeddedNeovimSession | null = null;
   #snapshot: BufferProviderSnapshot;
   #terminal: NeovimRenderSnapshot = createNeovimRenderSnapshot(20, 80);
@@ -232,8 +332,14 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   #fileSnapshots = new Map<string, BufferFileSnapshot>();
   #providerExit: BufferProviderSnapshot["providerExit"] = null;
   #recovery: BufferProviderSnapshot["recovery"] = null;
-  #activeRecovery: { readonly swapFile: string; readonly filePath: string } | null = null;
-  #queuedRecoveries: Array<{ readonly swapFile: string; readonly filePath: string }> = [];
+  #activeRecovery: {
+    readonly swapFile: string;
+    readonly filePath: string;
+  } | null = null;
+  #queuedRecoveries: Array<{
+    readonly swapFile: string;
+    readonly filePath: string;
+  }> = [];
   #recoveryOperation: Promise<BufferRecoveryResult> | null = null;
   #exitExpected = false;
   #workspaceRefreshPromise: Promise<void> | null = null;
@@ -248,6 +354,11 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   #navigationPromise: Promise<void> | null = null;
   #sessionActionGate: NeovimSessionActionGate | null = null;
   #projectPathMutationLocked = false;
+  #workspaceAuthorityRequired = false;
+  #workspaceWriteAuthorityHandler: BufferWorkspaceWriteAuthorityHandler | null =
+    null;
+  #recoveryPreservationRequired = false;
+  #unconfirmedRecoveryExit: Error | null = null;
 
   constructor(options: NeovimBufferProviderOptions) {
     this.#discovery = options.discovery;
@@ -257,9 +368,13 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     this.#sessionMode = options.sessionMode ?? "workspace";
     this.#workspaceRoot = options.workspaceRoot;
     this.#agencHome = options.agencHome;
+    this.#requireWorkspaceWriteAuthority =
+      options.requireWorkspaceWriteAuthority === true;
     this.#beforeOpenFile = options.beforeOpenFile;
-    this.#openExternalEditor = options.openExternalEditor ?? openFileInBufferExternalEditor;
-    this.#readFileSnapshot = options.readFileSnapshot ??
+    this.#openExternalEditor =
+      options.openExternalEditor ?? openFileInBufferExternalEditor;
+    this.#readFileSnapshot =
+      options.readFileSnapshot ??
       ((filePath) =>
         readBufferFileSnapshot(filePath, {
           ...(this.#workspaceRoot !== undefined
@@ -297,14 +412,197 @@ export class NeovimBufferProvider implements BufferEditorProvider {
    * The controller uses this narrow signal for auto-mode inline fallback.
    */
   safeStartupFailureReason(): string | null {
-    if (this.#session !== null || this.#pendingSessionStart !== null) return null;
+    if (this.#session !== null || this.#pendingSessionStart !== null)
+      return null;
     return this.#safeStartupFailure;
   }
 
-  captureContext(
+  async captureContext(
     request: BufferCaptureRequest,
   ): Promise<BufferCapturedContext | null> {
-    return this.#session?.captureContext(request) ?? Promise.resolve(null);
+    const session = this.#session;
+    if (!session) return null;
+    const context = await session.captureContext(request);
+    if (context === null || this.#session !== session) return null;
+    const editorSessionId = NEOVIM_EDITOR_SESSION_IDS.get(session);
+    return editorSessionId === undefined
+      ? context
+      : {
+          ...context,
+          editorSessionId,
+        };
+  }
+
+  async captureWorkspaceBuffers(): Promise<
+    readonly BufferWorkspaceBufferCapture[]
+  > {
+    const session = this.#session;
+    if (!session) return [];
+    const ownership = this.#captureOperationOwnership(session);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const before = await this.#inspectSessionBuffers(session);
+      if (!this.#ownsOperation(ownership)) return [];
+      const candidates = this.#workspaceCaptureCandidates(before.buffers);
+      const contents = await Promise.all(
+        candidates.map((candidate) => session.readBufferText(candidate.handle)),
+      );
+      if (!this.#ownsOperation(ownership)) return [];
+      const after = await this.#inspectSessionBuffers(session);
+      if (!this.#ownsOperation(ownership)) return [];
+      const stable = this.#workspaceCaptureCandidates(after.buffers);
+
+      if (!sameWorkspaceCaptureManifest(candidates, stable)) continue;
+
+      return candidates.map((candidate, index) => ({
+        path: candidate.path,
+        bufferHandle: candidate.handle,
+        changedtick: candidate.changedtick,
+        endOfLine: candidate.endOfLine,
+        dirty: candidate.modified,
+        content: contents[index]!,
+      }));
+    }
+
+    throw new Error(
+      "Neovim buffers changed during workspace synchronization; retry.",
+    );
+  }
+
+  setWorkspaceWriteAuthorityHandler(
+    handler: BufferWorkspaceWriteAuthorityHandler | null,
+  ): void {
+    this.#workspaceWriteAuthorityHandler = handler;
+  }
+
+  async reloadCleanPath(path: string): Promise<BufferExternalChangeResolution> {
+    const session = this.#session;
+    if (!session) {
+      return {
+        ok: false,
+        path,
+        reason: "Embedded Neovim is not running.",
+      };
+    }
+    const ownership = this.#captureOperationOwnership(session);
+    const result = await session.reloadCleanPath(path);
+    if (!this.#ownsOperation(ownership)) {
+      return {
+        ok: false,
+        path,
+        reason: "The editor session changed during external reload.",
+      };
+    }
+    await this.#refreshWorkspace(ownership);
+    if (!this.#ownsOperation(ownership)) {
+      return {
+        ok: false,
+        path,
+        reason: "The editor session changed during external reload.",
+      };
+    }
+    this.#emitSnapshot();
+    return result.ok
+      ? { ok: true, path, reloaded: result.reloaded }
+      : {
+          ok: false,
+          path,
+          reason: result.reason,
+          ...(result.dirty === true ? { dirty: true } : {}),
+        };
+  }
+
+  stageProposal(
+    proposal: BufferEditorProposal,
+  ): Promise<BufferEditorProposalResolution> {
+    const proposalId = `${proposal.interaction_id}:${proposal.base_changedtick}`;
+    if (this.#projectPathMutationLocked) {
+      return Promise.resolve({
+        ok: false,
+        proposalId,
+        reason:
+          "Wait for the current project rename or delete before staging an Editor proposal.",
+      });
+    }
+    if (!this.#session) {
+      return Promise.resolve({
+        ok: false,
+        proposalId,
+        reason: "Embedded Neovim is not running.",
+      });
+    }
+    return this.#session.stageProposal({
+      ...proposal,
+      path:
+        proposal.path.length === 0 || isAbsolute(proposal.path)
+          ? proposal.path
+          : resolve(this.#workspaceRoot ?? process.cwd(), proposal.path),
+    });
+  }
+
+  acceptProposal(proposalId: string): Promise<BufferEditorProposalResolution> {
+    if (this.#projectPathMutationLocked) {
+      return Promise.resolve({
+        ok: false,
+        proposalId,
+        reason:
+          "Wait for the current project rename or delete before accepting an Editor proposal.",
+      });
+    }
+    return (
+      this.#session?.acceptProposal(proposalId) ??
+      Promise.resolve({
+        ok: false,
+        proposalId,
+        reason: "Embedded Neovim is not running.",
+      })
+    );
+  }
+
+  rejectProposal(proposalId: string): Promise<BufferEditorProposalResolution> {
+    if (this.#projectPathMutationLocked) {
+      return Promise.resolve({
+        ok: false,
+        proposalId,
+        reason:
+          "Wait for the current project rename or delete before rejecting an Editor proposal.",
+      });
+    }
+    return (
+      this.#session?.rejectProposal(proposalId) ??
+      Promise.resolve({
+        ok: false,
+        proposalId,
+        reason: "Embedded Neovim is not running.",
+      })
+    );
+  }
+
+  captureCodePredictionContext(): Promise<BufferCodePredictionContext | null> {
+    return (
+      this.#session?.captureCodePredictionContext() ?? Promise.resolve(null)
+    );
+  }
+
+  stageCodePrediction(prediction: BufferCodePrediction): Promise<boolean> {
+    return (
+      this.#session?.stageCodePrediction(prediction) ?? Promise.resolve(false)
+    );
+  }
+
+  clearCodePrediction(requestId?: string): Promise<boolean> {
+    return (
+      this.#session?.clearCodePrediction(requestId) ?? Promise.resolve(false)
+    );
+  }
+
+  subscribeCodePredictionFeedback(
+    listener: (feedback: BufferCodePredictionFeedback) => void,
+  ): () => void {
+    this.#codePredictionFeedbackListeners.add(listener);
+    return () => {
+      this.#codePredictionFeedbackListeners.delete(listener);
+    };
   }
 
   subscribeIntegrationIntents(
@@ -316,9 +614,14 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     };
   }
 
-  resolveRecovery(
-    action: BufferRecoveryAction,
-  ): Promise<BufferRecoveryResult> {
+  resolveRecovery(action: BufferRecoveryAction): Promise<BufferRecoveryResult> {
+    if (this.#projectPathMutationLocked) {
+      return Promise.resolve({
+        ok: false,
+        reason:
+          "Wait for the current project rename or delete before resolving BUFFER recovery.",
+      });
+    }
     if (this.#recoveryOperation) {
       return Promise.resolve({
         ok: false,
@@ -330,10 +633,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     void operation.finally(() => {
       if (this.#recoveryOperation !== operation) return;
       this.#recoveryOperation = null;
-      if (
-        this.#activeRecovery &&
-        this.#recovery?.status === "working"
-      ) {
+      if (this.#activeRecovery && this.#recovery?.status === "working") {
         this.#recovery = {
           status: "pending",
           swapFiles: [this.#activeRecovery.swapFile],
@@ -367,14 +667,18 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       const swapFile = activeRecovery.swapFile;
       await session.openFile(activeRecovery.filePath, 1, 0);
       if (!this.#ownsOperation(ownership)) {
-        return { ok: false, reason: "The Neovim workspace changed before recovery." };
+        return {
+          ok: false,
+          reason: "The Neovim workspace changed before recovery.",
+        };
       }
       let copyPath: string | undefined;
       let recoveredBufferHandle = 0;
       if (action !== "discard") {
-        copyPath = action === "save-copy"
-          ? recoveryCopyPath(paths, activeRecovery.filePath)
-          : undefined;
+        copyPath =
+          action === "save-copy"
+            ? recoveryCopyPath(paths, activeRecovery.filePath)
+            : undefined;
         recoveredBufferHandle = await session.applyRecovery(
           action,
           swapFile,
@@ -382,7 +686,10 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         );
       }
       if (!this.#ownsOperation(ownership)) {
-        return { ok: false, reason: "The Neovim workspace changed during recovery." };
+        return {
+          ok: false,
+          reason: "The Neovim workspace changed during recovery.",
+        };
       }
       const replacementSwap = await session.finishRecovery(
         recoveredBufferHandle,
@@ -392,7 +699,10 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         throw new Error("Neovim did not confirm its post-recovery swap state.");
       }
       if (!this.#ownsOperation(ownership)) {
-        return { ok: false, reason: "Neovim did not confirm recovery completion." };
+        return {
+          ok: false,
+          reason: "Neovim did not confirm recovery completion.",
+        };
       }
       // Only remove the old durable swap after Neovim has either persisted a
       // replacement for recovered edits or confirmed the clean disk/copy path.
@@ -401,29 +711,34 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       }
       await this.#refreshWorkspace(ownership);
       if (!this.#ownsOperation(ownership)) {
-        return { ok: false, reason: "The Neovim workspace changed after recovery." };
+        return {
+          ok: false,
+          reason: "The Neovim workspace changed after recovery.",
+        };
       }
       await this.#refreshFileSnapshot(this.#captureFileOwnership());
-      const completedRecovery: NonNullable<BufferProviderSnapshot["recovery"]> = {
-        status:
-          action === "recover"
-            ? "recovered"
-            : action === "compare"
-              ? "comparing"
-              : action === "save-copy"
-                ? "copy-saved"
-                : "recovered",
-        swapFiles: [],
-        ...(copyPath ? { copyPath } : {}),
-      };
+      const completedRecovery: NonNullable<BufferProviderSnapshot["recovery"]> =
+        {
+          status:
+            action === "recover"
+              ? "recovered"
+              : action === "compare"
+                ? "comparing"
+                : action === "save-copy"
+                  ? "copy-saved"
+                  : "recovered",
+          swapFiles: [],
+          ...(copyPath ? { copyPath } : {}),
+        };
       this.#activeRecovery = null;
-      const completionMessage = action === "save-copy"
-        ? `Recovered contents saved to ${copyPath}.`
-        : action === "discard"
-          ? "Recovery swap discarded; disk contents restored."
-          : action === "compare"
-            ? "Recovered contents opened beside the on-disk file."
-            : "Recovered contents restored as unsaved BUFFER changes.";
+      const completionMessage =
+        action === "save-copy"
+          ? `Recovered contents saved to ${copyPath}.`
+          : action === "discard"
+            ? "Recovery swap discarded; disk contents restored."
+            : action === "compare"
+              ? "Recovered contents opened beside the on-disk file."
+              : "Recovered contents restored as unsaved BUFFER changes.";
       const nextRecovery = this.#queuedRecoveries.shift() ?? null;
       if (nextRecovery) {
         this.#activeRecovery = nextRecovery;
@@ -431,8 +746,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
           status: "pending",
           swapFiles: [nextRecovery.swapFile],
         };
-        this.#statusMessage =
-          `${completionMessage} Recovery is also required for ${nextRecovery.filePath}.`;
+        this.#statusMessage = `${completionMessage} Recovery is also required for ${nextRecovery.filePath}.`;
       } else {
         this.#recovery = completedRecovery;
         this.#statusMessage = completionMessage;
@@ -480,6 +794,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         });
       }
       if (generation !== this.#openGeneration) return;
+      this.#workspaceAuthorityRequired = true;
       this.#setSnapshot("loading", null);
       const file = await this.#readFileSnapshot(options.filePath);
       if (generation !== this.#openGeneration) return;
@@ -547,13 +862,17 @@ export class NeovimBufferProvider implements BufferEditorProvider {
             options.line ?? 1,
             options.column ?? 0,
           );
-          if (!opened) throw new Error("Embedded Neovim exited before the file could be opened.");
+          if (!opened)
+            throw new Error(
+              "Embedded Neovim exited before the file could be opened.",
+            );
         })();
         this.#navigationPromise = navigation;
         try {
           await navigation;
         } finally {
-          if (this.#navigationPromise === navigation) this.#navigationPromise = null;
+          if (this.#navigationPromise === navigation)
+            this.#navigationPromise = null;
         }
         if (!this.#ownsOperation(ownership)) return;
         this.#setActiveFile(normalizedFile, wasAlreadyLoaded);
@@ -569,115 +888,159 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       }
 
       this.#resetFileState();
-      this.#terminal = createNeovimRenderSnapshot(this.#size.rows, this.#size.columns);
+      this.#terminal = createNeovimRenderSnapshot(
+        this.#size.rows,
+        this.#size.columns,
+      );
       this.#setActiveFile(normalizedFile);
       let exited = false;
       let fatalSessionFailure = false;
       let committedOwnership: NeovimProviderOwnership | null = null;
-      const isCurrentOpen = () => !exited && (
-        committedOwnership
+      const isCurrentOpen = () =>
+        !exited &&
+        (committedOwnership
           ? this.#owns(committedOwnership)
-          : generation === this.#openGeneration
-      );
+          : generation === this.#openGeneration);
       const startupController = new AbortController();
       let startupFallbackMessage: string | null = null;
       const startupOptions: StartEmbeddedNeovimOptions = {
         executable: this.#discovery.executable,
         args: this.#discovery.args,
-          filePath: normalizedFile.absolutePath,
-          line: options.line ?? 1,
-          column: options.column ?? 0,
-          size: this.#size,
-          workspaceRoot: this.#workspaceRoot,
-          agencHome: this.#agencHome,
-          beforeOpenFile: this.#beforeOpenFile,
-          signal: startupController.signal,
-          startupTimeoutMs: this.#startupTimeoutMs,
-          operationTimeoutMs: this.#operationTimeoutMs,
-          cleanupTimeoutMs: this.#cleanupTimeoutMs,
-          onSnapshot: (terminal) => {
-            if (!isCurrentOpen()) return;
-            this.#terminal = terminal;
-            if (generation === this.#openGeneration) {
-              this.#setSnapshot("ready", null);
-            } else {
-              this.#emitSnapshot();
-            }
-          },
-          onDirtyChange: (dirty) => {
-            if (!isCurrentOpen()) return;
-            this.#handleDirtyChange(dirty);
-          },
-          onWorkspaceChange: () => {
-            if (!isCurrentOpen() || !committedOwnership) return;
-            this.#scheduleWorkspaceRefresh(committedOwnership);
-          },
-          onIntegrationIntent: (intent) => {
-            if (!isCurrentOpen()) return;
-            this.#emitIntegrationIntent({
-              ...intent,
-              context: {
-                ...intent.context,
-                path: this.#workspaceDisplayPath(intent.context.path),
-              },
+        filePath: normalizedFile.absolutePath,
+        line: options.line ?? 1,
+        column: options.column ?? 0,
+        size: this.#size,
+        workspaceRoot: this.#workspaceRoot,
+        agencHome: this.#agencHome,
+        beforeOpenFile: this.#beforeOpenFile,
+        signal: startupController.signal,
+        startupTimeoutMs: this.#startupTimeoutMs,
+        operationTimeoutMs: this.#operationTimeoutMs,
+        cleanupTimeoutMs: this.#cleanupTimeoutMs,
+        onSnapshot: (terminal) => {
+          if (!isCurrentOpen()) return;
+          this.#terminal = terminal;
+          if (generation === this.#openGeneration) {
+            this.#setSnapshot("ready", null);
+          } else {
+            this.#emitSnapshot();
+          }
+        },
+        onDirtyChange: (dirty) => {
+          if (!isCurrentOpen()) return;
+          this.#handleDirtyChange(dirty);
+        },
+        onWorkspaceChange: () => {
+          if (!isCurrentOpen() || !committedOwnership) return;
+          this.#scheduleWorkspaceRefresh(committedOwnership);
+        },
+        requireWorkspaceWriteAuthority: this.#requireWorkspaceWriteAuthority,
+        onBeforeWorkspaceWrite: (request) => {
+          if (!isCurrentOpen() || !committedOwnership) {
+            return Promise.resolve({
+              allowed: false,
+              reason: "The embedded editor session is not committed yet.",
             });
-          },
-          onRecoveryDetected: (recovery) => {
-            if (!isCurrentOpen()) return;
-            this.#handleRecoveryDetected(recovery);
-          },
-          onError: (error) => {
-            if (!isCurrentOpen()) return;
-            this.#setSnapshot("error", error.message);
-          },
-          onFatalError: (error) => {
-            fatalSessionFailure = true;
-            if (!isCurrentOpen()) return;
-            this.#setSnapshot("error", error.message);
-          },
-          onExit: (exit) => {
-            if (!isCurrentOpen()) return;
-            exited = true;
-            const normalizedExit = exit ?? { code: null, signal: null, stderrTail: "" };
-            this.#providerExit = {
-              kind:
-                this.#exitExpected ||
-                (
-                  !fatalSessionFailure &&
-                  normalizedExit.code === 0 &&
-                  normalizedExit.signal === null
-                )
-                  ? "intentional"
-                  : "crash",
-              ...normalizedExit,
-            };
-            this.#exitExpected = false;
-            if (committedOwnership) this.#releaseSession(committedOwnership.session);
-            // Once the child is gone there is no live dirty authority left to
-            // save or discard. Retain file/recovery/crash metadata for the
-            // restart card, but never route an intentional :q! through a
-            // stale dirty-buffer approval overlay.
-            this.#dirty = false;
-            this.#buffers = [];
-            this.#activeBufferHandle = null;
-            const detail = normalizedExit.stderrTail || [
+          }
+          return this.#authorizeWorkspaceWrite(request);
+        },
+        onIntegrationIntent: (intent) => {
+          if (!isCurrentOpen()) return;
+          this.#emitIntegrationIntent({
+            ...intent,
+            context: {
+              ...intent.context,
+              path: this.#workspaceDisplayPath(intent.context.path),
+            },
+          });
+        },
+        onCodePredictionFeedback: (feedback) => {
+          if (!isCurrentOpen()) return;
+          this.#emitCodePredictionFeedback(feedback);
+        },
+        onRecoveryDetected: (recovery) => {
+          if (!isCurrentOpen()) return;
+          this.#handleRecoveryDetected(recovery);
+        },
+        onError: (error) => {
+          if (!isCurrentOpen()) return;
+          this.#setSnapshot("error", error.message);
+        },
+        onFatalError: (error) => {
+          fatalSessionFailure = true;
+          if (!isCurrentOpen()) return;
+          this.#setSnapshot("error", error.message);
+        },
+        onExit: (exit) => {
+          if (!isCurrentOpen()) return;
+          exited = true;
+          const hadDirtyBuffers =
+            this.#dirty || this.#buffers.some((buffer) => buffer.modified);
+          const normalizedExit = exit ?? {
+            code: null,
+            signal: null,
+            stderrTail: "",
+          };
+          const exitKind =
+            this.#exitExpected ||
+            (!fatalSessionFailure &&
+              normalizedExit.code === 0 &&
+              normalizedExit.signal === null)
+              ? "intentional"
+              : "crash";
+          this.#providerExit = {
+            kind: exitKind,
+            ...normalizedExit,
+          };
+          const preservationProven =
+            committedOwnership?.session.recoveryPreservationProven === true;
+          const recoveryStillUnproven =
+            !preservationProven &&
+            (this.#recoveryPreservationRequired ||
+              (exitKind === "crash" && hadDirtyBuffers));
+          if (recoveryStillUnproven) {
+            this.#unconfirmedRecoveryExit ??= new Error(
+              "Embedded Neovim exited before exact dirty-buffer recovery preservation was confirmed.",
+            );
+          }
+          this.#workspaceAuthorityRequired = recoveryStillUnproven;
+          this.#exitExpected = false;
+          if (committedOwnership)
+            this.#releaseSession(committedOwnership.session);
+          // Once the child is gone there is no live dirty authority left to
+          // save or discard. Retain file/recovery/crash metadata for the
+          // restart card, but never route an intentional :q! through a
+          // stale dirty-buffer approval overlay.
+          this.#dirty = false;
+          this.#buffers = [];
+          this.#activeBufferHandle = null;
+          const detail =
+            normalizedExit.stderrTail ||
+            [
               normalizedExit.signal ? `signal ${normalizedExit.signal}` : null,
               normalizedExit.code !== null && normalizedExit.code !== 0
                 ? `exit ${normalizedExit.code}`
                 : null,
-            ].filter(Boolean).join(", ");
-            this.#setSnapshot(
-              "closed",
-              detail ? `Embedded Neovim exited (${detail}).` : "Embedded Neovim exited.",
-            );
-          },
-        };
+            ]
+              .filter(Boolean)
+              .join(", ");
+          this.#setSnapshot(
+            "closed",
+            detail
+              ? `Embedded Neovim exited (${detail}).`
+              : "Embedded Neovim exited.",
+          );
+        },
+      };
       const pendingStart: NeovimPendingSessionStart = {
         controller: startupController,
         promise: Promise.resolve().then(async () => {
           const fallback = this.#discovery.fallback;
           if (fallback === undefined) {
-            return this.#startSession(startupOptions);
+            return startIdentifiedNeovimSession(
+              this.#startSession,
+              startupOptions,
+            );
           }
           let primaryError: unknown;
           try {
@@ -741,13 +1104,16 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       if (generation !== this.#openGeneration || exited) {
         await this.#disposePendingSessionStart(pendingStart).catch((error) => {
           throw cleanupError(
-            exited ? "after exiting during startup" : "after startup was superseded",
+            exited
+              ? "after exiting during startup"
+              : "after startup was superseded",
             error,
           );
         });
         return;
       }
-      if (this.#pendingSessionStart === pendingStart) this.#pendingSessionStart = null;
+      if (this.#pendingSessionStart === pendingStart)
+        this.#pendingSessionStart = null;
       this.#session = session;
       this.#safeStartupFailure = null;
       this.#ownershipGeneration += 1;
@@ -767,6 +1133,13 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       openSucceeded = true;
     } catch (error) {
       if (generation !== this.#openGeneration) return;
+      if (
+        this.#session === null &&
+        this.#pendingSessionStart === null &&
+        !(error instanceof NeovimStartupCleanupError)
+      ) {
+        this.#workspaceAuthorityRequired = false;
+      }
       const message = error instanceof Error ? error.message : String(error);
       this.#setSnapshot("error", message);
     } finally {
@@ -808,7 +1181,10 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       if (!this.#ownsOperation(ownership)) return false;
       const activeBufferHandle = this.#activeBufferHandle;
       if (activeBufferHandle === null) {
-        this.#setSnapshot("error", "Embedded Neovim has no active buffer to save.");
+        this.#setSnapshot(
+          "error",
+          "Embedded Neovim has no active buffer to save.",
+        );
         return false;
       }
       const fileSnapshot = this.#fileSnapshot;
@@ -825,9 +1201,13 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       const stableSession = session as EmbeddedNeovimSession & {
         saveBuffer?: (handle: number, force?: boolean) => Promise<boolean>;
       };
-      const saved = typeof stableSession.saveBuffer === "function"
-        ? await stableSession.saveBuffer(activeBufferHandle, options.force === true)
-        : await session.save(options.force === true);
+      const saved =
+        typeof stableSession.saveBuffer === "function"
+          ? await stableSession.saveBuffer(
+              activeBufferHandle,
+              options.force === true,
+            )
+          : await session.save(options.force === true);
       if (!this.#ownsOperation(ownership)) return false;
       if (!saved) {
         this.#restoreActionableSnapshot(
@@ -848,7 +1228,10 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         this.#setSnapshot("conflict", error.message, "disk");
         return false;
       }
-      this.#setSnapshot("error", error instanceof Error ? error.message : String(error));
+      this.#setSnapshot(
+        "error",
+        error instanceof Error ? error.message : String(error),
+      );
       return false;
     }
   }
@@ -871,12 +1254,13 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     if (!this.#ownsOperation(ownership)) return false;
     const buffer = this.#buffers.find(
       (candidate) =>
-        candidate.handle === handle &&
-        candidate.listed &&
-        candidate.loaded,
+        candidate.handle === handle && candidate.listed && candidate.loaded,
     );
     if (!buffer) {
-      this.#setSnapshot("error", `Neovim buffer ${handle} is no longer available.`);
+      this.#setSnapshot(
+        "error",
+        `Neovim buffer ${handle} is no longer available.`,
+      );
       return false;
     }
     const stableSession = session as EmbeddedNeovimSession & {
@@ -890,8 +1274,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       if (!selected || !this.#ownsOperation(ownership)) return false;
       await this.#refreshWorkspace(ownership);
       return (
-        this.#ownsOperation(ownership) &&
-        this.#activeBufferHandle === handle
+        this.#ownsOperation(ownership) && this.#activeBufferHandle === handle
       );
     } catch (error) {
       if (this.#ownsOperation(ownership)) {
@@ -928,14 +1311,21 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     const ownership = this.#captureOperationOwnership(session);
     await this.#refreshWorkspace(ownership);
     if (!this.#ownsOperation(ownership)) return false;
-    const buffer = this.#buffers.find((candidate) => candidate.handle === handle);
+    const buffer = this.#buffers.find(
+      (candidate) => candidate.handle === handle,
+    );
     if (!buffer) {
-      this.#setSnapshot("error", `Neovim buffer ${handle} is no longer loaded.`);
+      this.#setSnapshot(
+        "error",
+        `Neovim buffer ${handle} is no longer loaded.`,
+      );
       return false;
     }
     try {
       const baseline = buffer.absolutePath
-        ? this.#fileSnapshots.get(neovimFileSnapshotKey(buffer.absolutePath)) ?? null
+        ? (this.#fileSnapshots.get(
+            neovimFileSnapshotKey(buffer.absolutePath),
+          ) ?? null)
         : null;
       if (!baseline && options.force !== true) {
         this.#setSnapshot(
@@ -950,15 +1340,20 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       const stableSession = session as EmbeddedNeovimSession & {
         saveBuffer?: (handle: number, force?: boolean) => Promise<boolean>;
       };
-      const saved = typeof stableSession.saveBuffer === "function"
-        ? await stableSession.saveBuffer(handle, options.force === true)
-        : handle === this.#activeBufferHandle
-          ? await session.save(options.force === true)
-          : false;
+      const saved =
+        typeof stableSession.saveBuffer === "function"
+          ? await stableSession.saveBuffer(handle, options.force === true)
+          : handle === this.#activeBufferHandle
+            ? await session.save(options.force === true)
+            : false;
       if (!saved || !this.#ownsOperation(ownership)) return false;
       await this.#refreshWorkspace(ownership);
       if (buffer.absolutePath) {
-        await this.#captureBaseline(buffer.absolutePath, buffer.handle, session);
+        await this.#captureBaseline(
+          buffer.absolutePath,
+          buffer.handle,
+          session,
+        );
       }
       if (!this.#ownsOperation(ownership)) return false;
       this.#setSnapshot("ready", null);
@@ -968,15 +1363,21 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       if (error instanceof BufferSaveConflictError) {
         this.#setSnapshot("conflict", error.message, "disk");
       } else {
-        this.#setSnapshot("error", error instanceof Error ? error.message : String(error));
+        this.#setSnapshot(
+          "error",
+          error instanceof Error ? error.message : String(error),
+        );
       }
       return false;
     }
   }
 
-  async saveAll(options: BufferProviderSaveOptions = {}): Promise<BufferProviderSaveAllResult> {
+  async saveAll(
+    options: BufferProviderSaveOptions = {},
+  ): Promise<BufferProviderSaveAllResult> {
     if (this.#projectPathMutationLocked) {
-      const reason = "Wait for the current project rename or delete before Save All.";
+      const reason =
+        "Wait for the current project rename or delete before Save All.";
       this.#setSnapshot("conflict", reason);
       return {
         saved: false,
@@ -985,7 +1386,8 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       };
     }
     if (options.hasInFlightAgent) {
-      const reason = "An agent appears to be editing this workspace. Wait before Save All.";
+      const reason =
+        "An agent appears to be editing this workspace. Wait before Save All.";
       this.#setSnapshot("conflict", reason, "agent");
       return {
         saved: false,
@@ -1023,7 +1425,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         (buffer) => buffer.modified,
       );
       const dirtyBuffers = frozenDirtyBuffers.map((buffer) =>
-        this.#providerBuffer(buffer)
+        this.#providerBuffer(buffer),
       );
       const failClosed = (
         reason: string,
@@ -1042,7 +1444,8 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         );
       }
       const unsaveable = dirtyBuffers.filter(
-        (buffer) => !buffer.saveable || (buffer.readOnly && options.force !== true),
+        (buffer) =>
+          !buffer.saveable || (buffer.readOnly && options.force !== true),
       );
       if (unsaveable.length > 0) {
         return failClosed(
@@ -1059,7 +1462,10 @@ export class NeovimBufferProvider implements BufferEditorProvider {
           this.#setSnapshot("conflict", reason, "disk");
           return { saved: false, reason, blockedBuffers: [buffer] };
         }
-        await this.#assertNoDiskConflict(options.force === true, baseline ?? null);
+        await this.#assertNoDiskConflict(
+          options.force === true,
+          baseline ?? null,
+        );
         if (!this.#ownsOperation(ownership)) {
           return {
             saved: false,
@@ -1154,8 +1560,14 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       await Promise.all(
         dirtyBuffers.flatMap((buffer) =>
           buffer.absolutePath
-            ? [this.#captureBaseline(buffer.absolutePath, buffer.handle, session)]
-            : []
+            ? [
+                this.#captureBaseline(
+                  buffer.absolutePath,
+                  buffer.handle,
+                  session,
+                ),
+              ]
+            : [],
         ),
       );
       if (!this.#ownsOperation(ownership)) {
@@ -1210,9 +1622,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     try {
       const manifest = await this.#inspectSessionBuffers(session);
       if (!this.#ownsOperation(ownership)) return null;
-      const dirtyBuffers = manifest.buffers.filter(
-        (buffer) => buffer.modified,
-      );
+      const dirtyBuffers = manifest.buffers.filter((buffer) => buffer.modified);
       if (dirtyBuffers.some((buffer) => buffer.changedtick === null)) {
         this.#setSnapshot(
           "conflict",
@@ -1255,7 +1665,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         // must not show a clean workspace while asking the user to review a
         // newly changed dirty-buffer set.
         this.#buffers = manifest.buffers.map((buffer) =>
-          this.#providerBuffer(buffer)
+          this.#providerBuffer(buffer),
         );
         this.#activeBufferHandle = manifest.activeBufferHandle;
         this.#dirty = confirmedDirtyBuffers.length > 0;
@@ -1281,8 +1691,14 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       await Promise.all(
         this.#buffers.flatMap((buffer) =>
           buffer.absolutePath
-            ? [this.#captureBaseline(buffer.absolutePath, buffer.handle, session)]
-            : []
+            ? [
+                this.#captureBaseline(
+                  buffer.absolutePath,
+                  buffer.handle,
+                  session,
+                ),
+              ]
+            : [],
         ),
       );
       if (!this.#ownsOperation(ownership)) return false;
@@ -1304,14 +1720,21 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       return true;
     } catch (error) {
       if (this.#ownsOperation(ownership)) {
-        this.#setSnapshot("error", error instanceof Error ? error.message : String(error));
+        this.#setSnapshot(
+          "error",
+          error instanceof Error ? error.message : String(error),
+        );
       }
       return false;
     }
   }
 
   beginProjectPathMutation(): boolean {
-    if (this.#projectPathMutationLocked || this.#pendingTransitionGeneration !== null) {
+    if (
+      this.#projectPathMutationLocked ||
+      this.#pendingTransitionGeneration !== null ||
+      this.#recoveryOperation !== null
+    ) {
       return false;
     }
     this.#projectPathMutationLocked = true;
@@ -1340,8 +1763,14 @@ export class NeovimBufferProvider implements BufferEditorProvider {
           "the Neovim workspace changed before synchronization started",
         );
       }
-      const source = workspaceMutationAbsolutePath(this.#workspaceRoot, fromPath);
-      const destination = workspaceMutationAbsolutePath(this.#workspaceRoot, toPath);
+      const source = workspaceMutationAbsolutePath(
+        this.#workspaceRoot,
+        fromPath,
+      );
+      const destination = workspaceMutationAbsolutePath(
+        this.#workspaceRoot,
+        toPath,
+      );
       const affected = affectedFileBuffers(this.#buffers, source);
       const dirty = affected.filter((buffer) => buffer.modified);
       if (dirty.length > 0) {
@@ -1398,10 +1827,14 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         );
       }
       const mismatched = changes.find((change) => {
-        const buffer = this.#buffers.find((candidate) => candidate.handle === change.handle);
-        return !buffer?.loaded ||
+        const buffer = this.#buffers.find(
+          (candidate) => candidate.handle === change.handle,
+        );
+        return (
+          !buffer?.loaded ||
           buffer.absolutePath === null ||
-          !sameNeovimFilePath(buffer.absolutePath, change.toPath);
+          !sameNeovimFilePath(buffer.absolutePath, change.toPath)
+        );
       });
       if (mismatched) {
         return this.#pathMutationFailure(
@@ -1489,12 +1922,11 @@ export class NeovimBufferProvider implements BufferEditorProvider {
           "the Neovim workspace changed before synchronization could be verified",
         );
       }
-      const stale = this.#buffers.find((buffer) =>
-        deletions.some((deletion) => deletion.handle === buffer.handle) ||
-        (
-          buffer.absolutePath !== null &&
-          pathIsAtOrWithin(resolve(buffer.absolutePath), target)
-        )
+      const stale = this.#buffers.find(
+        (buffer) =>
+          deletions.some((deletion) => deletion.handle === buffer.handle) ||
+          (buffer.absolutePath !== null &&
+            pathIsAtOrWithin(resolve(buffer.absolutePath), target)),
       );
       if (stale) {
         return this.#pathMutationFailure(
@@ -1513,7 +1945,9 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     }
   }
 
-  async shutdown(options: BufferProviderShutdownOptions = {}): Promise<boolean> {
+  async shutdown(
+    options: BufferProviderShutdownOptions = {},
+  ): Promise<boolean> {
     return this.close({ discard: options.mode === "discard" });
   }
 
@@ -1541,6 +1975,13 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   }
 
   async close(options: BufferProviderCloseOptions = {}): Promise<boolean> {
+    if (this.#projectPathMutationLocked) {
+      this.#setSnapshot(
+        "conflict",
+        "Wait for the current project rename or delete before closing BUFFER.",
+      );
+      return false;
+    }
     if (this.#recoveryOperation) {
       this.#statusMessage =
         "Wait for the current recovery action before closing BUFFER.";
@@ -1556,13 +1997,17 @@ export class NeovimBufferProvider implements BufferEditorProvider {
           await this.#cancelPendingSessionStart();
         } catch (error) {
           if (generation !== this.#openGeneration) return false;
-          this.#setSnapshot("error", cleanupError("while closing BUFFER", error).message);
+          this.#setSnapshot(
+            "error",
+            cleanupError("while closing BUFFER", error).message,
+          );
           return false;
         }
       }
       if (generation !== this.#openGeneration) return false;
       const session = this.#session;
       if (!session) {
+        this.#workspaceAuthorityRequired = false;
         this.#resetFileState();
         this.#setSnapshot("idle", null);
         return true;
@@ -1574,7 +2019,10 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       } catch (error) {
         this.#exitExpected = false;
         if (generation !== this.#openGeneration) return false;
-        this.#setSnapshot("error", cleanupError("while closing BUFFER", error).message);
+        this.#setSnapshot(
+          "error",
+          cleanupError("while closing BUFFER", error).message,
+        );
         return false;
       }
       if (generation !== this.#openGeneration) return false;
@@ -1585,6 +2033,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         return false;
       }
       this.#releaseSession(session);
+      this.#workspaceAuthorityRequired = false;
       this.#resetFileState();
       this.#setSnapshot("idle", null);
       return true;
@@ -1596,13 +2045,25 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   }
 
   async openExternalEditor(): Promise<boolean> {
-    if (this.#pendingTransitionGeneration !== null || this.#pendingSessionStart !== null) {
+    if (this.#projectPathMutationLocked) {
+      this.#setSnapshot(
+        "conflict",
+        "Wait for the current project rename or delete before opening an external editor.",
+      );
+      return false;
+    }
+    if (
+      this.#pendingTransitionGeneration !== null ||
+      this.#pendingSessionStart !== null
+    ) {
       return false;
     }
     const session = this.#session;
     const fileOwnership = this.#captureFileOwnership();
     if (!fileOwnership.absolutePath) return false;
-    const sessionOwnership = session ? this.#captureOperationOwnership(session) : null;
+    const sessionOwnership = session
+      ? this.#captureOperationOwnership(session)
+      : null;
     let dirty = this.#dirty;
     if (sessionOwnership) {
       try {
@@ -1611,7 +2072,10 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         // another editor race unsaved in-memory state.
         dirty = await sessionOwnership.session.hasUnsavedBuffers();
       } catch (error) {
-        if (this.#ownsOperation(sessionOwnership) && this.#ownsFile(fileOwnership)) {
+        if (
+          this.#ownsOperation(sessionOwnership) &&
+          this.#ownsFile(fileOwnership)
+        ) {
           this.#setSnapshot(
             "error",
             `Unable to verify embedded Neovim dirty state: ${error instanceof Error ? error.message : String(error)}`,
@@ -1624,7 +2088,10 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     if (!this.#ownsFile(fileOwnership)) return false;
     this.#dirty = dirty;
     if (dirty) {
-      this.#setSnapshot("conflict", "Save or force quit embedded Neovim edits before opening an external editor.");
+      this.#setSnapshot(
+        "conflict",
+        "Save or force quit embedded Neovim edits before opening an external editor.",
+      );
       return false;
     }
     const line = this.#terminal.cursor.row + 1;
@@ -1633,36 +2100,49 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       opened = this.#openExternalEditor(fileOwnership.absolutePath, line);
     } catch (error) {
       if (this.#ownsFile(fileOwnership)) {
-        this.#setSnapshot("error", error instanceof Error ? error.message : String(error));
+        this.#setSnapshot(
+          "error",
+          error instanceof Error ? error.message : String(error),
+        );
       }
       return false;
     }
     if (!this.#ownsFile(fileOwnership)) return false;
     if (!opened) {
-      this.#setSnapshot("error", "No external editor is available for BUFFER. Set VISUAL or EDITOR.");
+      this.#setSnapshot(
+        "error",
+        "No external editor is available for BUFFER. Set VISUAL or EDITOR.",
+      );
       return false;
     }
     if (sessionOwnership) {
-      const reloaded = await sessionOwnership.session.input("<Esc>:edit!<CR>").catch(() => false);
+      const reloaded = await sessionOwnership.session
+        .input("<Esc>:edit!<CR>")
+        .catch(() => false);
       if (!reloaded || !this.#ownsOperation(sessionOwnership)) return false;
       this.#fileSnapshots.delete(
         neovimFileSnapshotKey(fileOwnership.absolutePath),
       );
     }
     await this.open({
-      filePath: reloadPathAfterExternalEditor(fileOwnership.filePath, fileOwnership.absolutePath),
+      filePath: reloadPathAfterExternalEditor(
+        fileOwnership.filePath,
+        fileOwnership.absolutePath,
+      ),
       line,
     });
     return true;
   }
 
   undo(): boolean {
+    if (this.#projectPathMutationLocked) return false;
     const session = this.#session;
     if (session) void this.#sendInput(session, "u");
     return true;
   }
 
   redo(): boolean {
+    if (this.#projectPathMutationLocked) return false;
     const session = this.#session;
     if (session) void this.#sendInput(session, "<C-r>");
     return true;
@@ -1708,15 +2188,20 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       columns: Math.max(1, Math.floor(size.columns)),
     };
     const session = this.#session;
-    if (session) void this.#runSessionAction(session, () => session.resize(this.#size));
+    if (session)
+      void this.#runSessionAction(session, () => session.resize(this.#size));
   }
 
   focus(focused: boolean): void {
     const session = this.#session;
-    if (session) void this.#runSessionAction(session, () => session.focus(focused));
+    if (session)
+      void this.#runSessionAction(session, () => session.focus(focused));
   }
 
-  async cleanup(): Promise<void> {
+  async cleanup(options: BufferProviderCleanupOptions = {}): Promise<void> {
+    if (options.preserveRecovery === true) {
+      this.#recoveryPreservationRequired = true;
+    }
     const recoveryOperation = this.#recoveryOperation;
     if (recoveryOperation) await recoveryOperation;
     const generation = this.#openGeneration + 1;
@@ -1726,12 +2211,16 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     try {
       if (this.#pendingSessionStart) await this.#cancelPendingSessionStart();
       if (generation !== this.#openGeneration) return;
+      if (this.#unconfirmedRecoveryExit !== null) {
+        throw this.#unconfirmedRecoveryExit;
+      }
       session = this.#session;
       this.#exitExpected = true;
-      await session?.cleanup();
+      await session?.cleanup(options);
     } catch (error) {
       const failure = cleanupError("while releasing BUFFER", error);
-      if (generation === this.#openGeneration) this.#setSnapshot("error", failure.message);
+      if (generation === this.#openGeneration)
+        this.#setSnapshot("error", failure.message);
       throw failure;
     } finally {
       if (this.#pendingTransitionGeneration === generation) {
@@ -1741,6 +2230,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     if (generation !== this.#openGeneration) return;
     if (session) this.#releaseSession(session);
     this.#exitExpected = false;
+    this.#workspaceAuthorityRequired = false;
     this.#resetFileState();
     this.#setSnapshot("idle", null);
   }
@@ -1748,12 +2238,18 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   async #cancelPendingSessionStart(): Promise<void> {
     const pendingStart = this.#pendingSessionStart;
     if (!pendingStart) return;
-    pendingStart.controller.abort(new Error("Embedded Neovim startup was superseded."));
+    pendingStart.controller.abort(
+      new Error("Embedded Neovim startup was superseded."),
+    );
     await this.#disposePendingSessionStart(pendingStart);
   }
 
-  async #disposePendingSessionStart(pendingStart: NeovimPendingSessionStart): Promise<void> {
-    pendingStart.controller.abort(new Error("Embedded Neovim startup was superseded."));
+  async #disposePendingSessionStart(
+    pendingStart: NeovimPendingSessionStart,
+  ): Promise<void> {
+    pendingStart.controller.abort(
+      new Error("Embedded Neovim startup was superseded."),
+    );
     if (pendingStart.disposalPromise) return pendingStart.disposalPromise;
 
     const attempt = (async () => {
@@ -1793,9 +2289,11 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     pendingStart.disposalPromise = attempt;
     try {
       await attempt;
-      if (this.#pendingSessionStart === pendingStart) this.#pendingSessionStart = null;
+      if (this.#pendingSessionStart === pendingStart)
+        this.#pendingSessionStart = null;
     } finally {
-      if (pendingStart.disposalPromise === attempt) pendingStart.disposalPromise = null;
+      if (pendingStart.disposalPromise === attempt)
+        pendingStart.disposalPromise = null;
     }
   }
 
@@ -1826,7 +2324,9 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     };
   }
 
-  #captureOperationOwnership(session: EmbeddedNeovimSession): NeovimOperationOwnership {
+  #captureOperationOwnership(
+    session: EmbeddedNeovimSession,
+  ): NeovimOperationOwnership {
     return {
       ...this.#captureOwnership(session),
       openGeneration: this.#openGeneration,
@@ -1843,19 +2343,25 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   }
 
   #owns(ownership: NeovimProviderOwnership): boolean {
-    return ownership.generation === this.#ownershipGeneration &&
-      ownership.session === this.#session;
+    return (
+      ownership.generation === this.#ownershipGeneration &&
+      ownership.session === this.#session
+    );
   }
 
   #ownsOperation(ownership: NeovimOperationOwnership): boolean {
-    return ownership.openGeneration === this.#openGeneration && this.#owns(ownership);
+    return (
+      ownership.openGeneration === this.#openGeneration && this.#owns(ownership)
+    );
   }
 
   #ownsFile(ownership: NeovimFileOwnership): boolean {
-    return ownership.generation === this.#fileGeneration &&
+    return (
+      ownership.generation === this.#fileGeneration &&
       ownership.openGeneration === this.#openGeneration &&
       ownership.filePath === this.#filePath &&
-      ownership.absolutePath === this.#absolutePath;
+      ownership.absolutePath === this.#absolutePath
+    );
   }
 
   #setActiveFile(file: BufferFileSnapshot, preserveBaseline = false): void {
@@ -1866,7 +2372,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     const normalizedFile = { ...file, absolutePath };
     const key = neovimFileSnapshotKey(absolutePath);
     const baseline = preserveBaseline
-      ? this.#fileSnapshots.get(key) ?? normalizedFile
+      ? (this.#fileSnapshots.get(key) ?? normalizedFile)
       : normalizedFile;
     this.#fileGeneration += 1;
     this.#filePath = baseline.filePath;
@@ -1877,7 +2383,10 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     this.#lineEndings = baseline.lineEndings;
   }
 
-  async #sendInput(session: EmbeddedNeovimSession, keys: string): Promise<void> {
+  async #sendInput(
+    session: EmbeddedNeovimSession,
+    keys: string,
+  ): Promise<void> {
     await this.#runSessionAction(session, () => session.input(keys));
   }
 
@@ -1925,7 +2434,10 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   }
 
   #setInputError(error: unknown): void {
-    this.#setSnapshot("error", error instanceof Error ? error.message : String(error));
+    this.#setSnapshot(
+      "error",
+      error instanceof Error ? error.message : String(error),
+    );
   }
 
   #restoreActionableSnapshot(
@@ -1934,7 +2446,8 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     fallbackMessage: string,
   ): void {
     if (
-      (snapshot.providerStatus === "error" || snapshot.providerStatus === "conflict") &&
+      (snapshot.providerStatus === "error" ||
+        snapshot.providerStatus === "conflict") &&
       snapshot.error
     ) {
       this.#snapshot = snapshot;
@@ -1952,25 +2465,26 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     diskRollbackSafe = true,
   ): Extract<BufferProviderPathMutationResult, { readonly ok: false }> {
     const detail = error instanceof Error ? error.message : String(error);
-    const reason =
-      `Embedded Neovim could not synchronize the project ${mutation} for ${path}: ${detail}.`;
+    const reason = `Embedded Neovim could not synchronize the project ${mutation} for ${path}: ${detail}.`;
     this.#setSnapshot("error", reason);
     return { ok: false, reason, diskRollbackSafe };
   }
 
-  #handleRecoveryDetected(
-    recovery: { readonly swapFile: string; readonly filePath: string },
-  ): void {
+  #handleRecoveryDetected(recovery: {
+    readonly swapFile: string;
+    readonly filePath: string;
+  }): void {
     const activeRecovery = this.#activeRecovery;
     if (activeRecovery) {
       if (activeRecovery.swapFile === recovery.swapFile) return;
-      if (!this.#queuedRecoveries.some(
-        (queued) => queued.swapFile === recovery.swapFile,
-      )) {
+      if (
+        !this.#queuedRecoveries.some(
+          (queued) => queued.swapFile === recovery.swapFile,
+        )
+      ) {
         this.#queuedRecoveries.push(recovery);
       }
-      this.#statusMessage =
-        `Resolve recovery for ${activeRecovery.filePath} first; recovery for ${recovery.filePath} remains queued.`;
+      this.#statusMessage = `Resolve recovery for ${activeRecovery.filePath} first; recovery for ${recovery.filePath} remains queued.`;
       this.#emitSnapshot();
       return;
     }
@@ -1980,8 +2494,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       status: "pending",
       swapFiles: [recovery.swapFile],
     };
-    this.#statusMessage =
-      `Unsaved Neovim recovery data was found for ${recovery.filePath}.`;
+    this.#statusMessage = `Unsaved Neovim recovery data was found for ${recovery.filePath}.`;
     this.#emitSnapshot();
   }
 
@@ -2006,18 +2519,23 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       this.#workspaceRefreshQueued = true;
       return;
     }
-    const refresh = this.#refreshWorkspace(ownership).catch((error) => {
-      if (this.#owns(ownership)) {
-        this.#setSnapshot("error", error instanceof Error ? error.message : String(error));
-      }
-    }).finally(() => {
-      if (this.#workspaceRefreshPromise !== refresh) return;
-      this.#workspaceRefreshPromise = null;
-      if (this.#workspaceRefreshQueued) {
-        this.#workspaceRefreshQueued = false;
-        this.#scheduleWorkspaceRefresh(ownership);
-      }
-    });
+    const refresh = this.#refreshWorkspace(ownership)
+      .catch((error) => {
+        if (this.#owns(ownership)) {
+          this.#setSnapshot(
+            "error",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      })
+      .finally(() => {
+        if (this.#workspaceRefreshPromise !== refresh) return;
+        this.#workspaceRefreshPromise = null;
+        if (this.#workspaceRefreshQueued) {
+          this.#workspaceRefreshQueued = false;
+          this.#scheduleWorkspaceRefresh(ownership);
+        }
+      });
     this.#workspaceRefreshPromise = refresh;
   }
 
@@ -2026,12 +2544,15 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   ): Promise<void> {
     const manifest = await this.#inspectSessionBuffers(ownership.session);
     if (!this.#owns(ownership)) return;
-    const buffers = manifest.buffers.map((buffer) => this.#providerBuffer(buffer));
+    const buffers = manifest.buffers.map((buffer) =>
+      this.#providerBuffer(buffer),
+    );
     this.#buffers = buffers;
     this.#activeBufferHandle = manifest.activeBufferHandle;
     this.#dirty = buffers.some((buffer) => buffer.modified);
 
-    const active = buffers.find((buffer) => buffer.handle === manifest.activeBufferHandle) ??
+    const active =
+      buffers.find((buffer) => buffer.handle === manifest.activeBufferHandle) ??
       buffers.find((buffer) => buffer.current);
     if (active) {
       const changedActivePath =
@@ -2042,9 +2563,9 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       this.#absolutePath = active.absolutePath;
       this.#filePath = active.filePath;
       const baseline = active.absolutePath
-        ? this.#fileSnapshots.get(
+        ? (this.#fileSnapshots.get(
             neovimFileSnapshotKey(active.absolutePath),
-          ) ?? null
+          ) ?? null)
         : null;
       this.#fileSnapshot = baseline;
       this.#encoding = baseline?.encoding ?? null;
@@ -2052,21 +2573,25 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     }
     this.#emitSnapshot();
 
-    const cleanUnknownBuffers = buffers
-      .filter((buffer) =>
+    const cleanUnknownBuffers = buffers.filter(
+      (buffer) =>
         !buffer.modified &&
         buffer.absolutePath !== null &&
-        !this.#fileSnapshots.has(neovimFileSnapshotKey(buffer.absolutePath))
-      );
-    await Promise.all(cleanUnknownBuffers.map((buffer) =>
-      this.#captureBaseline(buffer.absolutePath!, buffer.handle, ownership.session)
-    ));
+        !this.#fileSnapshots.has(neovimFileSnapshotKey(buffer.absolutePath)),
+    );
+    await Promise.all(
+      cleanUnknownBuffers.map((buffer) =>
+        this.#captureBaseline(
+          buffer.absolutePath!,
+          buffer.handle,
+          ownership.session,
+        ),
+      ),
+    );
     if (this.#owns(ownership)) this.#emitSnapshot();
   }
 
-  async #inspectSessionBuffers(
-    session: EmbeddedNeovimSession,
-  ): Promise<{
+  async #inspectSessionBuffers(session: EmbeddedNeovimSession): Promise<{
     readonly activeBufferHandle: number | null;
     readonly buffers: readonly EmbeddedNeovimBuffer[];
   }> {
@@ -2078,30 +2603,177 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     if (typeof stableSession.inspectBuffers === "function") {
       return stableSession.inspectBuffers();
     }
-    const dirty = typeof stableSession.hasUnsavedBuffers === "function"
-      ? await stableSession.hasUnsavedBuffers()
-      : typeof stableSession.isDirty === "function"
-        ? await stableSession.isDirty()
-        : this.#dirty;
+    const dirty =
+      typeof stableSession.hasUnsavedBuffers === "function"
+        ? await stableSession.hasUnsavedBuffers()
+        : typeof stableSession.isDirty === "function"
+          ? await stableSession.isDirty()
+          : this.#dirty;
     if (!this.#absolutePath && !this.#filePath) {
       return { activeBufferHandle: null, buffers: [] };
     }
     return {
       activeBufferHandle: 0,
-      buffers: [{
-        handle: 0,
-        changedtick: null,
-        name: this.#absolutePath ?? this.#filePath ?? "",
-        listed: true,
-        loaded: true,
-        modified: dirty,
-        current: true,
-        bufferType: "",
-        modifiable: true,
-        readOnly: false,
-        saveable: this.#absolutePath !== null,
-      }],
+      buffers: [
+        {
+          handle: 0,
+          changedtick: null,
+          endOfLine: null,
+          name: this.#absolutePath ?? this.#filePath ?? "",
+          listed: true,
+          loaded: true,
+          modified: dirty,
+          current: true,
+          bufferType: "",
+          modifiable: true,
+          readOnly: false,
+          saveable: this.#absolutePath !== null,
+        },
+      ],
     };
+  }
+
+  #workspaceCaptureCandidates(
+    buffers: readonly EmbeddedNeovimBuffer[],
+  ): readonly NeovimWorkspaceCaptureCandidate[] {
+    const candidates: NeovimWorkspaceCaptureCandidate[] = [];
+    const seenPaths = new Set<string>();
+    for (const buffer of buffers) {
+      if (
+        !buffer.loaded ||
+        buffer.bufferType !== "" ||
+        buffer.name.length === 0
+      ) {
+        continue;
+      }
+      const path = normalizeNeovimBufferPath(buffer.name, this.#workspaceRoot);
+      if (
+        this.#workspaceRoot !== undefined &&
+        !canonicalNeovimPathIsAtOrWithin(path, this.#workspaceRoot)
+      ) {
+        continue;
+      }
+      if (
+        buffer.changedtick === null ||
+        !Number.isSafeInteger(buffer.changedtick) ||
+        buffer.changedtick < 0
+      ) {
+        throw new Error(
+          `Neovim buffer ${buffer.handle} has no stable changedtick for workspace synchronization.`,
+        );
+      }
+      if (buffer.endOfLine === null) {
+        throw new Error(
+          `Neovim buffer ${buffer.handle} has no stable end-of-line state for workspace synchronization.`,
+        );
+      }
+      const pathKey = canonicalNeovimPathKey(path);
+      if (seenPaths.has(pathKey)) {
+        throw new Error(
+          `Neovim reports duplicate loaded buffers for ${path}; workspace synchronization is ambiguous.`,
+        );
+      }
+      seenPaths.add(pathKey);
+      candidates.push({
+        handle: buffer.handle,
+        path,
+        changedtick: buffer.changedtick,
+        endOfLine: buffer.endOfLine,
+        modified: buffer.modified,
+      });
+    }
+    return candidates.sort(
+      (left, right) =>
+        left.path.localeCompare(right.path) || left.handle - right.handle,
+    );
+  }
+
+  async #authorizeWorkspaceWrite(
+    request: BufferWorkspaceWriteRequest,
+  ): Promise<BufferWorkspaceWriteDecision> {
+    const handler = this.#workspaceWriteAuthorityHandler;
+    if (handler === null) {
+      return {
+        allowed: false,
+        reason: "The authoritative workspace synchronizer is not ready.",
+      };
+    }
+    const targetPath = normalizeNeovimBufferPath(
+      request.target.path,
+      this.#workspaceRoot,
+    );
+    const sourcePath = normalizeNeovimBufferPath(
+      request.target.sourcePath,
+      this.#workspaceRoot,
+    );
+    if (
+      this.#workspaceRoot !== undefined &&
+      !canonicalNeovimPathIsAtOrWithin(targetPath, this.#workspaceRoot)
+    ) {
+      // AgenC's daemon authority is scoped to the workspace. Do not claim or
+      // delay unrelated files opened deliberately from the same Neovim.
+      return { allowed: true };
+    }
+
+    const buffers: BufferWorkspaceBufferCapture[] = [];
+    const seenPaths = new Set<string>();
+    let targetMatched = false;
+    for (const buffer of request.buffers) {
+      const path = normalizeNeovimBufferPath(buffer.path, this.#workspaceRoot);
+      if (
+        this.#workspaceRoot !== undefined &&
+        !canonicalNeovimPathIsAtOrWithin(path, this.#workspaceRoot)
+      ) {
+        continue;
+      }
+      const pathKey = canonicalNeovimPathKey(path);
+      if (seenPaths.has(pathKey)) {
+        return {
+          allowed: false,
+          reason: `Neovim reported duplicate loaded buffers for ${path}.`,
+        };
+      }
+      seenPaths.add(pathKey);
+      const normalized = { ...buffer, path };
+      buffers.push(normalized);
+      if (
+        buffer.bufferHandle === request.target.bufferHandle &&
+        sameNeovimFilePath(path, sourcePath) &&
+        buffer.changedtick === request.target.changedtick &&
+        buffer.endOfLine === request.target.endOfLine
+      ) {
+        targetMatched = true;
+      }
+    }
+    if (!targetMatched) {
+      return {
+        allowed: false,
+        reason:
+          "The write target does not match the exact captured workspace manifest.",
+      };
+    }
+    if (
+      request.target.kind !== "buffer" ||
+      !sameNeovimFilePath(targetPath, sourcePath)
+    ) {
+      return {
+        allowed: false,
+        reason:
+          "Workspace range, alternate-path, and append writes are not supported because their destination bytes cannot yet be fenced exactly. Use :saveas for a full-buffer write.",
+      };
+    }
+    return handler({
+      target: {
+        ...request.target,
+        path: targetPath,
+        sourcePath,
+      },
+      buffers: buffers.sort(
+        (left, right) =>
+          left.path.localeCompare(right.path) ||
+          left.bufferHandle - right.bufferHandle,
+      ),
+    });
   }
 
   #providerBuffer(buffer: EmbeddedNeovimBuffer): BufferProviderBuffer {
@@ -2117,8 +2789,9 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       ? this.#fileSnapshots.get(neovimFileSnapshotKey(absolutePath))
       : undefined;
     const currentFilePath =
-      absolutePath && this.#absolutePath &&
-          sameNeovimFilePath(absolutePath, this.#absolutePath)
+      absolutePath &&
+      this.#absolutePath &&
+      sameNeovimFilePath(absolutePath, this.#absolutePath)
         ? this.#filePath
         : null;
     const displayPath = absolutePath
@@ -2126,9 +2799,12 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       : null;
     return {
       handle: buffer.handle,
+      changedtick: buffer.changedtick,
+      endOfLine: buffer.endOfLine,
       name: buffer.name,
-      filePath:
-        isFileBuffer ? baseline?.filePath ?? currentFilePath ?? displayPath : null,
+      filePath: isFileBuffer
+        ? (baseline?.filePath ?? currentFilePath ?? displayPath)
+        : null,
       absolutePath,
       listed: buffer.listed,
       loaded: buffer.loaded,
@@ -2160,11 +2836,14 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       if (
         handle !== undefined &&
         session &&
-        !await this.#bufferMatchesSnapshot(session, handle, file)
+        !(await this.#bufferMatchesSnapshot(session, handle, file))
       ) {
         return;
       }
-      this.#fileSnapshots.set(neovimFileSnapshotKey(normalizedAbsolutePath), file);
+      this.#fileSnapshots.set(
+        neovimFileSnapshotKey(normalizedAbsolutePath),
+        file,
+      );
       if (
         this.#absolutePath &&
         sameNeovimFilePath(this.#absolutePath, normalizedAbsolutePath)
@@ -2187,7 +2866,9 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     if (
       workspaceRelativePath.length === 0 ||
       workspaceRelativePath === ".." ||
-      workspaceRelativePath.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+      workspaceRelativePath.startsWith(
+        `..${process.platform === "win32" ? "\\" : "/"}`,
+      ) ||
       isAbsolute(workspaceRelativePath)
     ) {
       return absolutePath;
@@ -2200,16 +2881,24 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     snapshot: BufferFileSnapshot | null,
   ): Promise<void> {
     if (force || !snapshot) return;
-    const current = await this.#readFileSnapshot(snapshot.absolutePath).catch(() => {
-      throw new BufferSaveConflictError(snapshot.filePath);
-    });
-    if (current.mtimeMs !== snapshot.mtimeMs || current.content !== snapshot.content) {
+    const current = await this.#readFileSnapshot(snapshot.absolutePath).catch(
+      () => {
+        throw new BufferSaveConflictError(snapshot.filePath);
+      },
+    );
+    if (
+      current.mtimeMs !== snapshot.mtimeMs ||
+      current.content !== snapshot.content
+    ) {
       throw new BufferSaveConflictError(snapshot.filePath);
     }
   }
 
   async #refreshFileSnapshot(ownership: NeovimFileOwnership): Promise<void> {
-    const paths = refreshableFileSnapshotPaths(ownership.absolutePath, ownership.filePath);
+    const paths = refreshableFileSnapshotPaths(
+      ownership.absolutePath,
+      ownership.filePath,
+    );
     if (!paths) return;
     try {
       const file = await this.#readFileSnapshot(paths.absolutePath);
@@ -2229,14 +2918,15 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       if (
         session &&
         activeBufferHandle !== null &&
-        !await this.#bufferMatchesSnapshot(session, activeBufferHandle, normalized)
+        !(await this.#bufferMatchesSnapshot(
+          session,
+          activeBufferHandle,
+          normalized,
+        ))
       ) {
         if (!this.#ownsFile(ownership)) return;
         const previous = this.#fileSnapshots.get(key);
-        if (
-          previous &&
-          sameDiskSnapshot(previous, normalized)
-        ) {
+        if (previous && sameDiskSnapshot(previous, normalized)) {
           // A dirty or recovered buffer is expected to differ from disk. Keep
           // its pre-edit baseline while the disk snapshot itself is unchanged
           // so the next provider save can still perform a real conflict check.
@@ -2271,7 +2961,9 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     };
     if (typeof readableSession.readBufferText !== "function") return true;
     try {
-      return await readableSession.readBufferText(handle) === snapshot.content;
+      return (
+        (await readableSession.readBufferText(handle)) === snapshot.content
+      );
     } catch {
       return false;
     }
@@ -2280,13 +2972,16 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   #setSnapshot(
     status: BufferProviderSnapshot["providerStatus"],
     message: string | null,
-    conflictKind: BufferProviderSnapshot["conflictKind"] = status === "conflict" ? "disk" : null,
+    conflictKind: BufferProviderSnapshot["conflictKind"] = status === "conflict"
+      ? "disk"
+      : null,
   ): void {
     this.#statusMessage = message;
     this.#snapshot = {
       ...this.#snapshot,
       status: status === "closed" ? "idle" : status,
       providerStatus: status,
+      workspaceAuthorityRequired: this.#workspaceAuthorityRequired,
       providerMessage: message,
       error: status === "error" || status === "conflict" ? message : null,
       conflictKind,
@@ -2294,7 +2989,10 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       absolutePath: this.#absolutePath,
       dirty: this.#dirty,
       lineCount: this.#terminal.lines.length,
-      position: positionFromNeovimCursor(this.#terminal.cursor.row + 1, this.#terminal.cursor.column),
+      position: positionFromNeovimCursor(
+        this.#terminal.cursor.row + 1,
+        this.#terminal.cursor.column,
+      ),
       selection: { anchor: 0, head: 0 },
       viewportRows: this.#size.rows,
       encoding: this.#encoding,
@@ -2304,7 +3002,8 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       vimCommandLine: this.#terminal.commandLine,
       buffers: this.#buffers,
       activeBufferHandle: this.#activeBufferHandle,
-      dirtyBufferCount: this.#buffers.filter((buffer) => buffer.modified).length,
+      dirtyBufferCount: this.#buffers.filter((buffer) => buffer.modified)
+        .length,
       providerExit: this.#providerExit,
       recovery: this.#recovery,
     };
@@ -2319,14 +3018,18 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       encoding: this.#encoding,
       lineEndings: this.#lineEndings,
       lineCount: this.#terminal.lines.length,
-      position: positionFromNeovimCursor(this.#terminal.cursor.row + 1, this.#terminal.cursor.column),
+      position: positionFromNeovimCursor(
+        this.#terminal.cursor.row + 1,
+        this.#terminal.cursor.column,
+      ),
       viewportRows: this.#size.rows,
       terminal: this.#terminal,
       vimMode: neovimModeToVimMode(this.#terminal.mode),
       vimCommandLine: this.#terminal.commandLine,
       buffers: this.#buffers,
       activeBufferHandle: this.#activeBufferHandle,
-      dirtyBufferCount: this.#buffers.filter((buffer) => buffer.modified).length,
+      dirtyBufferCount: this.#buffers.filter((buffer) => buffer.modified)
+        .length,
       providerExit: this.#providerExit,
       recovery: this.#recovery,
     };
@@ -2335,6 +3038,12 @@ export class NeovimBufferProvider implements BufferEditorProvider {
 
   #emitIntegrationIntent(intent: BufferIntegrationIntent): void {
     for (const listener of this.#integrationIntentListeners) listener(intent);
+  }
+
+  #emitCodePredictionFeedback(feedback: BufferCodePredictionFeedback): void {
+    for (const listener of this.#codePredictionFeedbackListeners) {
+      listener(feedback);
+    }
   }
 
   #emit(): void {
@@ -2372,15 +3081,34 @@ function discardManifestFingerprint(
   return JSON.stringify(
     [...dirtyBuffers]
       .sort((left, right) => left.handle - right.handle)
-      .map((buffer) => [
-        buffer.handle,
-        buffer.name,
-        buffer.changedtick,
-      ]),
+      .map((buffer) => [buffer.handle, buffer.name, buffer.changedtick]),
   );
 }
 
-export function reloadPathAfterExternalEditor(filePath: string | null, absolutePath: string): string {
+function sameWorkspaceCaptureManifest(
+  left: readonly NeovimWorkspaceCaptureCandidate[],
+  right: readonly NeovimWorkspaceCaptureCandidate[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((buffer, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        buffer.handle === other.handle &&
+        buffer.path === other.path &&
+        buffer.changedtick === other.changedtick &&
+        buffer.endOfLine === other.endOfLine &&
+        buffer.modified === other.modified
+      );
+    })
+  );
+}
+
+export function reloadPathAfterExternalEditor(
+  filePath: string | null,
+  absolutePath: string,
+): string {
   return filePath ?? absolutePath;
 }
 
@@ -2431,7 +3159,9 @@ export function workspaceMutationAbsolutePath(
   const root = canonicalNeovimPath(workspaceRoot);
   const candidate = canonicalNeovimPath(candidatePath, root);
   if (!pathIsAtOrWithin(candidate, root)) {
-    throw new Error(`the project mutation path is outside the BUFFER workspace: ${candidatePath}`);
+    throw new Error(
+      `the project mutation path is outside the BUFFER workspace: ${candidatePath}`,
+    );
   }
   return candidate;
 }
@@ -2440,11 +3170,12 @@ function affectedFileBuffers(
   buffers: readonly BufferProviderBuffer[],
   targetPath: string,
 ): readonly BufferProviderBuffer[] {
-  return buffers.filter((buffer) =>
-    buffer.loaded &&
-    buffer.bufferType === "" &&
-    buffer.absolutePath !== null &&
-    pathIsAtOrWithin(resolve(buffer.absolutePath), targetPath)
+  return buffers.filter(
+    (buffer) =>
+      buffer.loaded &&
+      buffer.bufferType === "" &&
+      buffer.absolutePath !== null &&
+      pathIsAtOrWithin(resolve(buffer.absolutePath), targetPath),
   );
 }
 
@@ -2454,13 +3185,16 @@ function pathIsAtOrWithin(candidatePath: string, parentPath: string): boolean {
 
 function neovimModeToVimMode(mode: string): BufferProviderSnapshot["vimMode"] {
   if (mode.startsWith("insert")) return "INSERT";
-  if (mode.startsWith("visual") || mode === "v" || mode === "V") return "VISUAL";
+  if (mode.startsWith("visual") || mode === "v" || mode === "V")
+    return "VISUAL";
   return "NORMAL";
 }
 
 function cleanupError(context: string, error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
-  return new Error(`Embedded Neovim cleanup failed ${context}: ${message}`, { cause: error });
+  return new Error(`Embedded Neovim cleanup failed ${context}: ${message}`, {
+    cause: error,
+  });
 }
 
 function errorDetail(error: unknown): string {

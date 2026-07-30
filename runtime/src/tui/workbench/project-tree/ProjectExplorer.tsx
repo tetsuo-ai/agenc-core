@@ -1,18 +1,32 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { selectAgenCTuiGlyphs } from "../../glyphs.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { Box, Text } from "../../ink.js";
 import type { DOMElement } from "../../ink/dom.js";
 import { stringWidth } from "../../ink/stringWidth.js";
-import { useInputCapture, useKeybindings } from "../../keybindings/useKeybinding.js";
+import {
+  useInputCapture,
+  useKeybindings,
+} from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { useAppState } from "../../state/AppState.js";
 import TextInput from "../../components/TextInput.js";
 import { getGraphemeSegmenter } from "../../../utils/intl.js";
 import { logError } from "../../../utils/log.js";
 import { inFlightPathsFromTasks } from "../agents/activity.js";
-import { attachFileCommand, deletePathReferencesCommand, openBufferCommand, renamePathReferencesCommand } from "../commands.js";
+import {
+  attachFileCommand,
+  deletePathReferencesCommand,
+  openBufferCommand,
+  renamePathReferencesCommand,
+} from "../commands.js";
 import { getWorkbenchBufferProviderController } from "../buffer/providers/BufferProviderController.js";
 import { composerAttachmentsForState } from "../reducer.js";
 import {
@@ -24,6 +38,11 @@ import { wheelInputIsInsideNode } from "../surfaces/wheelInput.js";
 import type { ProjectTreeRow } from "../types.js";
 import { getProjectTreeStore } from "./ProjectTreeStore.js";
 import { useProjectTree } from "./useProjectTree.js";
+import {
+  beginWorkspaceEditorTopologyMutation,
+  bufferSnapshotRequiresWorkspaceEditorAuthority,
+  type WorkspaceEditorTopologyTransaction,
+} from "../workspaceEditorLeaseSync.js";
 
 type Props = {
   readonly focused: boolean;
@@ -40,7 +59,10 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   const [fileAction, setFileAction] = useState(null);
   const maxTreeRows = Math.max(1, terminalRows - 12);
   const attachedPaths = useMemo(
-    () => composerAttachmentsForState(workbench).flatMap((item) => item.path ? [item.path] : []),
+    () =>
+      composerAttachmentsForState(workbench).flatMap((item) =>
+        item.path ? [item.path] : [],
+      ),
     [workbench.attachments, workbench.composerAttachmentIds],
   );
 
@@ -58,7 +80,9 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
 
   useEffect(() => {
     const filePaths = store.getFilePaths();
-    store.setInFlightPaths(inFlightPathsFromTasks(Object.values(tasks), filePaths));
+    store.setInFlightPaths(
+      inFlightPathsFromTasks(Object.values(tasks), filePaths),
+    );
   }, [store, tasks, snapshot]);
 
   const closeFileAction = useCallback(() => setFileAction(null), []);
@@ -98,41 +122,166 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
     });
   }, [store]);
 
-  const submitFileAction = useCallback(async (value) => {
-    const action = fileAction;
-    if (!action || action.kind === "delete" || action.busy) return;
-    if (action.kind === "rename") {
-      if (store.hasInFlightPathWithin(action.path)) {
-        setFileAction({
-          ...action,
-          value,
-          error: `Cannot rename ${action.path} while an agent may be writing inside it.`,
+  const submitFileAction = useCallback(
+    async (value) => {
+      const action = fileAction;
+      if (!action || action.kind === "delete" || action.busy) return;
+      if (action.kind === "rename") {
+        if (store.hasInFlightPathWithin(action.path)) {
+          setFileAction({
+            ...action,
+            value,
+            error: `Cannot rename ${action.path} while an agent may be writing inside it.`,
+          });
+          return;
+        }
+        dispatch({
+          type: "requestProjectPathRename",
+          fromPath: action.path,
+          toPath: value,
         });
         return;
       }
-      dispatch({
-        type: "requestProjectPathRename",
-        fromPath: action.path,
-        toPath: value,
-      });
-      return;
-    }
-    setFileAction({ ...action, value, busy: true, error: null });
-    let result;
-    try {
-      result = await store.createFile(value);
-    } catch (error) {
-      logError(error);
-      setFileAction({ ...action, value, busy: false, error: fileActionFailureMessage(action, value, error) });
-      return;
-    }
-    if (!result.ok) {
-      setFileAction({ ...action, value, busy: false, error: result.error });
-      return;
-    }
-    setFileAction(null);
-    dispatch(openBufferCommand(result.path, undefined, true));
-  }, [dispatch, fileAction, store]);
+      setFileAction({ ...action, value, busy: true, error: null });
+      const controller = getWorkbenchBufferProviderController();
+      let pathMutationLease = false;
+      let retainPathMutationLease = false;
+      let diskMutationCommitted = false;
+      let topologyTransaction: WorkspaceEditorTopologyTransaction | null = null;
+      let topologyTransactionSettled = false;
+      let createdPath: string | null = null;
+      try {
+        if (store.hasInFlightPathWithin(value)) {
+          setFileAction({
+            ...action,
+            value,
+            busy: false,
+            error: `Cannot create ${value} while an agent may be writing to it.`,
+          });
+          return;
+        }
+        if (!controller.beginProjectPathMutation()) {
+          setFileAction({
+            ...action,
+            value,
+            busy: false,
+            error:
+              "Another BUFFER project-path mutation is already in progress.",
+          });
+          return;
+        }
+        pathMutationLease = true;
+        topologyTransaction = await beginWorkspaceEditorTopologyMutation(
+          snapshot.cwd,
+          [
+            {
+              path: value,
+              includeDescendants: false,
+              allowOwnedClean: false,
+            },
+          ],
+        );
+        const providerSnapshot = controller.getSnapshot();
+        if (
+          topologyTransaction === null &&
+          bufferSnapshotRequiresWorkspaceEditorAuthority(providerSnapshot)
+        ) {
+          throw new Error(
+            "The authoritative Editor workspace fence is unavailable. Restart AgenC before creating project files.",
+          );
+        }
+        const result = await store.createFile(value, {
+          beforeCommit: () =>
+            store.hasInFlightPathWithin(value)
+              ? `Cannot create ${value} while an agent may be writing to it.`
+              : null,
+        });
+        if (!result.ok) {
+          if (result.effect === "unknown") {
+            diskMutationCommitted = true;
+            if (topologyTransaction !== null) {
+              await topologyTransaction.complete("unknown_outcome");
+              topologyTransactionSettled = true;
+            }
+            setFileAction({
+              ...action,
+              value,
+              busy: false,
+              error:
+                `${result.error} The filesystem reported failure after file creation began, so its outcome is unknown. ` +
+                (topologyTransaction === null
+                  ? "Restart AgenC before reopening this path."
+                  : "The unknown outcome was recorded; restart AgenC before reopening this path."),
+            });
+            return;
+          }
+          setFileAction({ ...action, value, busy: false, error: result.error });
+          return;
+        }
+        diskMutationCommitted = true;
+        if (topologyTransaction !== null) {
+          await topologyTransaction.complete("applied");
+          topologyTransactionSettled = true;
+        }
+        createdPath = result.path;
+        setFileAction(null);
+      } catch (error) {
+        logError(error);
+        if (
+          diskMutationCommitted &&
+          topologyTransaction !== null &&
+          !topologyTransactionSettled
+        ) {
+          retainPathMutationLease = true;
+        }
+        setFileAction({
+          ...action,
+          value,
+          busy: false,
+          error: fileActionFailureMessage(action, value, error),
+        });
+      } finally {
+        if (
+          topologyTransaction !== null &&
+          !topologyTransactionSettled &&
+          !diskMutationCommitted
+        ) {
+          try {
+            await topologyTransaction.release();
+            topologyTransactionSettled = true;
+          } catch (error) {
+            logError(error);
+            retainPathMutationLease = true;
+            setFileAction((current) =>
+              current === null
+                ? current
+                : {
+                    ...current,
+                    busy: false,
+                    error:
+                      `${current.error ? `${current.error} ` : ""}` +
+                      "The daemon could not release the Editor workspace fence. BUFFER writes remain locked; restart AgenC to reconcile safely.",
+                  },
+            );
+          }
+        }
+        if (
+          topologyTransaction !== null &&
+          !topologyTransactionSettled &&
+          diskMutationCommitted
+        ) {
+          retainPathMutationLease = true;
+        }
+        if (pathMutationLease && !retainPathMutationLease) {
+          controller.endProjectPathMutation();
+        }
+      }
+      if (createdPath !== null) {
+        dispatch(openBufferCommand(createdPath, undefined, true));
+      }
+    },
+    [dispatch, fileAction, snapshot.cwd, store],
+  );
 
   const confirmDelete = useCallback(() => {
     const action = fileAction;
@@ -150,26 +299,25 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   const handledMutationRequestRef = useRef(0);
   useEffect(() => {
     const request = workbench.projectPathMutationRequest;
-    if (
-      request === null ||
-      handledMutationRequestRef.current === request.id
-    ) {
+    if (request === null || handledMutationRequestRef.current === request.id) {
       return;
     }
     handledMutationRequestRef.current = request.id;
     setFileAction((current) =>
-      current === null ? current : { ...current, busy: true, error: null }
+      current === null ? current : { ...current, busy: true, error: null },
     );
     void (async () => {
       let diskMutationCommitted = false;
       let editorSynchronizationCompleted = false;
       let pathMutationLease = false;
       let retainPathMutationLease = false;
+      let topologyTransaction: WorkspaceEditorTopologyTransaction | null = null;
+      let topologyTransactionSettled = false;
+      let retryMutationAfterTopologyRelease = false;
       const controller = getWorkbenchBufferProviderController();
       try {
-        const mutationPath = request.kind === "rename"
-          ? request.fromPath
-          : request.path;
+        const mutationPath =
+          request.kind === "rename" ? request.fromPath : request.path;
         if (store.hasInFlightPathWithin(mutationPath)) {
           setFileAction((current) =>
             current === null
@@ -177,22 +325,22 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
               : {
                   ...current,
                   busy: false,
-                  error:
-                    `Cannot ${request.kind} ${mutationPath} while an agent may be writing inside it.`,
-                }
+                  error: `Cannot ${request.kind} ${mutationPath} while an agent may be writing inside it.`,
+                },
           );
           return;
         }
-        const mutationCommand = request.kind === "rename"
-          ? {
-              type: "requestProjectPathRename" as const,
-              fromPath: request.fromPath,
-              toPath: request.toPath,
-            }
-          : {
-              type: "requestProjectPathDelete" as const,
-              path: request.path,
-            };
+        const mutationCommand =
+          request.kind === "rename"
+            ? {
+                type: "requestProjectPathRename" as const,
+                fromPath: request.fromPath,
+                toPath: request.toPath,
+              }
+            : {
+                type: "requestProjectPathDelete" as const,
+                path: request.path,
+              };
         if (
           projectMutationTouchesDirtyBuffer(
             mutationCommand,
@@ -216,23 +364,58 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
               : {
                   ...current,
                   busy: false,
-                  error: "Another BUFFER project-path mutation is already in progress.",
-                }
+                  error:
+                    "Another BUFFER project-path mutation is already in progress.",
+                },
           );
           return;
         }
         pathMutationLease = true;
+        topologyTransaction = await beginWorkspaceEditorTopologyMutation(
+          snapshot.cwd,
+          request.kind === "rename"
+            ? [
+                {
+                  path: request.fromPath,
+                  includeDescendants: true,
+                  allowOwnedClean: true,
+                },
+                {
+                  path: request.toPath,
+                  includeDescendants: true,
+                  allowOwnedClean: false,
+                },
+              ]
+            : [
+                {
+                  path: request.path,
+                  includeDescendants: true,
+                  allowOwnedClean: true,
+                },
+              ],
+        );
+        const providerSnapshot = controller.getSnapshot();
+        if (
+          topologyTransaction === null &&
+          bufferSnapshotRequiresWorkspaceEditorAuthority(providerSnapshot)
+        ) {
+          throw new Error(
+            "The authoritative Editor workspace fence is unavailable. Restart AgenC before renaming or deleting loaded project paths.",
+          );
+        }
         if (request.kind === "delete") {
           // Unload affected clean buffers before deleting disk state. If the
           // filesystem operation fails, reopening a still-existing file is
           // harmless; the reverse ordering could leave a live buffer able to
           // recreate a path which has already been deleted.
-          const synchronized = await controller.synchronizePathDelete(request.path);
+          const synchronized = await controller.synchronizePathDelete(
+            request.path,
+          );
           if (!synchronized.ok) {
             setFileAction((current) =>
               current === null
                 ? current
-                : { ...current, busy: false, error: synchronized.reason }
+                : { ...current, busy: false, error: synchronized.reason },
             );
             return;
           }
@@ -244,9 +427,8 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
                 : {
                     ...current,
                     busy: false,
-                    error:
-                      `Cannot delete ${request.path} while an agent may be writing inside it.`,
-                  }
+                    error: `Cannot delete ${request.path} while an agent may be writing inside it.`,
+                  },
             );
             return;
           }
@@ -262,18 +444,15 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
                 : {
                     ...current,
                     busy: false,
-                    error:
-                      `Cannot delete ${request.path} because an affected buffer became modified.`,
-                  }
+                    error: `Cannot delete ${request.path} because an affected buffer became modified.`,
+                  },
             );
             return;
           }
         }
-        const result = request.kind === "rename"
-          ? await store.renamePath(
-              request.fromPath,
-              request.toPath,
-              {
+        const result =
+          request.kind === "rename"
+            ? await store.renamePath(request.fromPath, request.toPath, {
                 beforeCommit: () => {
                   if (store.hasInFlightPathWithin(request.fromPath)) {
                     return `Cannot rename ${request.fromPath} while an agent may be writing inside it.`;
@@ -285,65 +464,116 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
                     ? `Cannot rename ${request.fromPath} while it contains unsaved editor changes.`
                     : null;
                 },
-              },
-            )
-          : await store.deletePath(request.path);
+              })
+            : await store.deletePath(request.path, {
+                beforeCommit: () => {
+                  if (store.hasInFlightPathWithin(request.path)) {
+                    return `Cannot delete ${request.path} while an agent may be writing inside it.`;
+                  }
+                  return projectMutationTouchesDirtyBuffer(
+                    mutationCommand,
+                    getWorkbenchBufferProviderController().getSnapshot(),
+                  )
+                    ? `Cannot delete ${request.path} while it contains unsaved editor changes.`
+                    : null;
+                },
+              });
         if (!result.ok) {
+          if (result.effect === "unknown") {
+            diskMutationCommitted = true;
+            const quarantines =
+              request.kind === "rename"
+                ? await Promise.all([
+                    controller.synchronizePathDelete(request.fromPath),
+                    controller.synchronizePathDelete(request.toPath),
+                  ])
+                : [{ ok: true as const, affectedBufferHandles: [] }];
+            const quarantineFailure = quarantines.find(
+              (candidate) => !candidate.ok,
+            );
+            if (
+              quarantineFailure === undefined &&
+              topologyTransaction !== null
+            ) {
+              await topologyTransaction.complete("unknown_outcome");
+              topologyTransactionSettled = true;
+              editorSynchronizationCompleted = true;
+            } else {
+              retainPathMutationLease = true;
+            }
+            setFileAction((current) =>
+              current === null
+                ? current
+                : {
+                    ...current,
+                    busy: false,
+                    error:
+                      `${result.error} The filesystem reported failure after the path mutation began, so its outcome is unknown. ` +
+                      (quarantineFailure !== undefined
+                        ? `${quarantineFailure.reason} BUFFER writes remain locked; restart AgenC to reconcile safely.`
+                        : topologyTransaction === null
+                          ? "The daemon workspace fence is unavailable; restart AgenC to reconcile safely."
+                          : "Affected buffers were unloaded and the unknown outcome was recorded; restart AgenC before reopening them."),
+                  },
+            );
+            return;
+          }
           if (
             projectMutationTouchesDirtyBuffer(
               mutationCommand,
               getWorkbenchBufferProviderController().getSnapshot(),
             )
           ) {
-            dispatch({
-              type: "completeProjectPathMutation",
-              requestId: request.id,
-            });
-            dispatch(mutationCommand);
+            retryMutationAfterTopologyRelease = true;
             return;
           }
           setFileAction((current) =>
             current === null
               ? current
-              : { ...current, busy: false, error: result.error }
+              : { ...current, busy: false, error: result.error },
           );
           return;
         }
         diskMutationCommitted = true;
         if (request.kind === "rename") {
-          const synchronized = await controller.synchronizePathRename(
-            request.fromPath,
-            result.path,
-          ).catch((error: unknown) => ({
-            ok: false as const,
-            reason:
-              `Embedded Neovim rename synchronization failed: ${
+          const synchronized = await controller
+            .synchronizePathRename(request.fromPath, result.path)
+            .catch((error: unknown) => ({
+              ok: false as const,
+              reason: `Embedded Neovim rename synchronization failed: ${
                 error instanceof Error ? error.message : String(error)
               }`,
-            diskRollbackSafe: false,
-          }));
+              diskRollbackSafe: false,
+            }));
           if (!synchronized.ok) {
             if (synchronized.diskRollbackSafe === false) {
-              const sourceQuarantine = await controller.synchronizePathDelete(
-                request.fromPath,
-              ).catch((error: unknown) => ({
-                ok: false as const,
-                reason:
-                  `Failed to unload source-path Neovim buffers: ${
+              const sourceQuarantine = await controller
+                .synchronizePathDelete(request.fromPath)
+                .catch((error: unknown) => ({
+                  ok: false as const,
+                  reason: `Failed to unload source-path Neovim buffers: ${
                     error instanceof Error ? error.message : String(error)
                   }`,
-              }));
-              const destinationQuarantine = await controller.synchronizePathDelete(
-                result.path,
-              ).catch((error: unknown) => ({
-                ok: false as const,
-                reason:
-                  `Failed to unload destination-path Neovim buffers: ${
+                }));
+              const destinationQuarantine = await controller
+                .synchronizePathDelete(result.path)
+                .catch((error: unknown) => ({
+                  ok: false as const,
+                  reason: `Failed to unload destination-path Neovim buffers: ${
                     error instanceof Error ? error.message : String(error)
                   }`,
-              }));
-              retainPathMutationLease =
-                !sourceQuarantine.ok || !destinationQuarantine.ok;
+                }));
+              if (
+                sourceQuarantine.ok &&
+                destinationQuarantine.ok &&
+                topologyTransaction !== null
+              ) {
+                await topologyTransaction.complete("unknown_outcome");
+                topologyTransactionSettled = true;
+                editorSynchronizationCompleted = true;
+              } else {
+                retainPathMutationLease = true;
+              }
               setFileAction((current) =>
                 current === null
                   ? current
@@ -352,12 +582,10 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
                       busy: false,
                       error:
                         `${synchronized.reason} The disk rename was not rolled back because Neovim's applied state is unknown. ` +
-                        (
-                          retainPathMutationLease
-                            ? "BUFFER writes remain locked; restart AgenC to reconcile safely."
-                            : "Affected buffers were unloaded; restart AgenC to reconcile project references safely."
-                        ),
-                    }
+                        (retainPathMutationLease
+                          ? "BUFFER writes remain locked; restart AgenC to reconcile safely."
+                          : "Affected buffers were unloaded and the unknown outcome was recorded; restart AgenC to reconcile project references safely."),
+                    },
               );
               return;
             }
@@ -365,7 +593,10 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
             // synchronization leaves the original buffer names intact. Move
             // disk state back before allowing the action to settle. The store
             // keeps its no-clobber and in-flight checks for this inverse move.
-            const rollback = await store.renamePath(result.path, request.fromPath);
+            const rollback = await store.renamePath(
+              result.path,
+              request.fromPath,
+            );
             if (rollback.ok) {
               diskMutationCommitted = false;
               setFileAction((current) =>
@@ -374,21 +605,26 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
                   : {
                       ...current,
                       busy: false,
-                      error:
-                        `${synchronized.reason} The disk rename was rolled back; no project references changed.`,
-                    }
+                      error: `${synchronized.reason} The disk rename was rolled back; no project references changed.`,
+                    },
               );
             } else {
-              const quarantine = await controller.synchronizePathDelete(
-                request.fromPath,
-              ).catch((error: unknown) => ({
-                ok: false as const,
-                reason:
-                  `Failed to unload stale Neovim buffers: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`,
-              }));
-              retainPathMutationLease = !quarantine.ok;
+              const [sourceQuarantine, destinationQuarantine] =
+                await Promise.all([
+                  controller.synchronizePathDelete(request.fromPath),
+                  controller.synchronizePathDelete(result.path),
+                ]);
+              if (
+                sourceQuarantine.ok &&
+                destinationQuarantine.ok &&
+                topologyTransaction !== null
+              ) {
+                await topologyTransaction.complete("unknown_outcome");
+                topologyTransactionSettled = true;
+                editorSynchronizationCompleted = true;
+              } else {
+                retainPathMutationLease = true;
+              }
               setFileAction((current) =>
                 current === null
                   ? current
@@ -397,36 +633,45 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
                       busy: false,
                       error:
                         `${synchronized.reason} Disk rollback also failed: ${rollback.error}. ` +
-                        (
-                          quarantine.ok
-                            ? "Affected stale buffers were unloaded; restart AgenC to reconcile project references safely."
-                            : `${quarantine.reason} Do not select or save the stale buffer; restart AgenC to reconcile safely.`
-                        ),
-                    }
+                        (!retainPathMutationLease
+                          ? "Affected stale buffers were unloaded and the unknown outcome was recorded; restart AgenC to reconcile project references safely."
+                          : `${!sourceQuarantine.ok ? sourceQuarantine.reason : !destinationQuarantine.ok ? destinationQuarantine.reason : "The daemon workspace fence could not be finalized."} Restart AgenC to reconcile safely.`),
+                    },
               );
             }
             return;
           }
           editorSynchronizationCompleted = true;
         }
+        if (topologyTransaction !== null) {
+          await topologyTransaction.complete("applied");
+          topologyTransactionSettled = true;
+        }
         setFileAction(null);
         if (request.kind === "rename") {
-          dispatch(renamePathReferencesCommand(
-            request.fromPath,
-            result.path,
-            { openAffectedBuffer: true },
-          ));
+          dispatch(
+            renamePathReferencesCommand(request.fromPath, result.path, {
+              openAffectedBuffer: true,
+            }),
+          );
         } else {
-          dispatch(deletePathReferencesCommand(
-            request.path,
-            { closeAffectedSurface: true },
-          ));
+          dispatch(
+            deletePathReferencesCommand(request.path, {
+              closeAffectedSurface: true,
+            }),
+          );
         }
       } catch (error) {
         logError(error);
-        const failedValue = request.kind === "rename"
-          ? request.toPath
-          : request.path;
+        if (
+          diskMutationCommitted &&
+          topologyTransaction !== null &&
+          !topologyTransactionSettled
+        ) {
+          retainPathMutationLease = true;
+        }
+        const failedValue =
+          request.kind === "rename" ? request.toPath : request.path;
         setFileAction((current) =>
           current === null
             ? current
@@ -434,13 +679,67 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
                 ...current,
                 busy: false,
                 error: fileActionFailureMessage(current, failedValue, error),
-              }
+              },
         );
       } finally {
+        if (
+          topologyTransaction !== null &&
+          !topologyTransactionSettled &&
+          !diskMutationCommitted
+        ) {
+          try {
+            await topologyTransaction.release();
+            topologyTransactionSettled = true;
+          } catch (error) {
+            logError(error);
+            retainPathMutationLease = true;
+            setFileAction((current) =>
+              current === null
+                ? current
+                : {
+                    ...current,
+                    busy: false,
+                    error:
+                      `${current.error ? `${current.error} ` : ""}` +
+                      "The daemon could not release the Editor workspace fence. BUFFER writes remain locked; restart AgenC to reconcile safely.",
+                  },
+            );
+          }
+        }
+        if (
+          topologyTransaction !== null &&
+          !topologyTransactionSettled &&
+          diskMutationCommitted
+        ) {
+          retainPathMutationLease = true;
+        }
         if (pathMutationLease && !retainPathMutationLease) {
           controller.endProjectPathMutation();
         }
-        if (!diskMutationCommitted || editorSynchronizationCompleted) {
+        if (
+          retryMutationAfterTopologyRelease &&
+          (topologyTransaction === null || topologyTransactionSettled)
+        ) {
+          dispatch({
+            type: "completeProjectPathMutation",
+            requestId: request.id,
+          });
+          dispatch(
+            request.kind === "rename"
+              ? {
+                  type: "requestProjectPathRename",
+                  fromPath: request.fromPath,
+                  toPath: request.toPath,
+                }
+              : {
+                  type: "requestProjectPathDelete",
+                  path: request.path,
+                },
+          );
+        } else if (
+          (!diskMutationCommitted || editorSynchronizationCompleted) &&
+          (topologyTransaction === null || topologyTransactionSettled)
+        ) {
           dispatch({
             type: "completeProjectPathMutation",
             requestId: request.id,
@@ -448,7 +747,7 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
         }
       }
     })();
-  }, [dispatch, store, workbench.projectPathMutationRequest]);
+  }, [dispatch, snapshot.cwd, store, workbench.projectPathMutationRequest]);
 
   useRegisterKeybindingContext("Explorer", focused);
   useKeybindings(
@@ -472,19 +771,23 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       },
       "explorer:openKeepFocus": () => {
         const row = store.getCursorRow();
-        if (row?.kind === "file" && row.path) dispatch(openBufferCommand(row.path, undefined, false));
+        if (row?.kind === "file" && row.path)
+          dispatch(openBufferCommand(row.path, undefined, false));
       },
       "explorer:edit": () => {
         const row = store.getCursorRow();
-        if (row?.kind === "file" && row.path) dispatch(openBufferCommand(row.path, undefined, true));
+        if (row?.kind === "file" && row.path)
+          dispatch(openBufferCommand(row.path, undefined, true));
       },
       "explorer:editKeepFocus": () => {
         const row = store.getCursorRow();
-        if (row?.kind === "file" && row.path) dispatch(openBufferCommand(row.path, undefined, false));
+        if (row?.kind === "file" && row.path)
+          dispatch(openBufferCommand(row.path, undefined, false));
       },
       "explorer:attach": () => {
         const row = store.getCursorRow();
-        if (row?.kind === "file" && row.path) dispatch(attachFileCommand(row.path));
+        if (row?.kind === "file" && row.path)
+          dispatch(attachFileCommand(row.path));
       },
       "explorer:addFile": beginCreateFile,
       "explorer:rename": beginRename,
@@ -492,31 +795,41 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       // A click on the tree hands it keyboard focus; esc is the way back to
       // the prompt. Without this the explorer swallowed focus with no visible
       // escape hatch (users were trapped out of the composer).
-      "explorer:backToComposer": () => dispatch({ type: "focus", pane: "composer" }),
+      "explorer:backToComposer": () =>
+        dispatch({ type: "focus", pane: "composer" }),
     },
     { context: "Explorer", isActive: focused && fileAction === null },
   );
 
   const viewport = projectTreeViewport(snapshot.rows, maxTreeRows);
-  const visibleRows = viewport.rows
-    .map((row) => row.selected ? { ...row, focused } : row);
+  const visibleRows = viewport.rows.map((row) =>
+    row.selected ? { ...row, focused } : row,
+  );
   // Mouse: click a row to select it AND take keyboard focus (a click on the
   // tree means the next arrow keys are meant for the tree). Directory clicks
   // also toggle expansion; file clicks open the buffer surface without moving
   // focus away from the explorer.
-  const handleRowClick = useCallback((row: ProjectTreeRow): void => {
-    if (row.kind !== "root" && row.kind !== "loading" && row.kind !== "empty" && row.kind !== "error") {
-      dispatch({ type: "focus", pane: "explorer" });
-    }
-    if (row.kind === "directory") {
-      store.toggle(row.path);
-      return;
-    }
-    if (row.kind === "file" && row.path) {
-      store.reveal(row.path);
-      dispatch(openBufferCommand(row.path, undefined, false));
-    }
-  }, [dispatch, store]);
+  const handleRowClick = useCallback(
+    (row: ProjectTreeRow): void => {
+      if (
+        row.kind !== "root" &&
+        row.kind !== "loading" &&
+        row.kind !== "empty" &&
+        row.kind !== "error"
+      ) {
+        dispatch({ type: "focus", pane: "explorer" });
+      }
+      if (row.kind === "directory") {
+        store.toggle(row.path);
+        return;
+      }
+      if (row.kind === "file" && row.path) {
+        store.reveal(row.path);
+        dispatch(openBufferCommand(row.path, undefined, false));
+      }
+    },
+    [dispatch, store],
+  );
   // Mouse wheel scrolls the tree (moves the cursor, the viewport window
   // follows it), scoped to the explorer pane's rect.
   const paneRef = useRef<DOMElement | null>(null);
@@ -542,23 +855,38 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   const directoryCount =
     snapshot.directoryCount ??
     snapshot.rows.filter((row) => row.kind === "directory").length;
-  const dirtyCount = snapshot.rows.filter((row) => row.gitState && row.gitState !== "clean").length;
+  const dirtyCount = snapshot.rows.filter(
+    (row) => row.gitState && row.gitState !== "clean",
+  ).length;
   const headerMeta = `${itemCount}${dirtyCount > 0 ? ` ${dirtyCount} changed` : ""}${snapshot.loading ? " sync" : ""}`;
   // Render the header as one measured row. Two independently shrinking Text
   // nodes can steal the last cell from WORKSPACE when the count exactly fills
   // the pane ("WORKSPAC380…").
   const headerContentWidth = Math.max(1, width - 4);
   const headerLabel = trim("WORKSPACE", headerContentWidth);
-  const headerMetaWidth = Math.max(0, headerContentWidth - stringWidth(headerLabel));
+  const headerMetaWidth = Math.max(
+    0,
+    headerContentWidth - stringWidth(headerLabel),
+  );
   const fittedHeaderMeta = trim(headerMeta, headerMetaWidth);
   const headerGap = Math.max(
     0,
-    headerContentWidth - stringWidth(headerLabel) - stringWidth(fittedHeaderMeta),
+    headerContentWidth -
+      stringWidth(headerLabel) -
+      stringWidth(fittedHeaderMeta),
   );
   const glyphs = selectAgenCTuiGlyphs();
 
   return (
-    <Box ref={paneRef} flexDirection="column" width={width} height="100%" borderRight borderColor="lineSoft" backgroundColor="#000000">
+    <Box
+      ref={paneRef}
+      flexDirection="column"
+      width={width}
+      height="100%"
+      borderRight
+      borderColor="lineSoft"
+      backgroundColor="#000000"
+    >
       <Box
         height={2}
         flexShrink={0}
@@ -570,14 +898,17 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
         borderBottomColor="lineSoft"
       >
         <Text color={focused ? "text" : "inactive"} wrap="truncate-end">
-          {headerLabel}{" ".repeat(headerGap)}
+          {headerLabel}
+          {" ".repeat(headerGap)}
           <Text color="inactive">{fittedHeaderMeta}</Text>
         </Text>
       </Box>
       <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
         {snapshot.error ? (
           <Box height={1} flexShrink={0}>
-            <Text color="error" wrap="truncate-end">{snapshot.error}</Text>
+            <Text color="error" wrap="truncate-end">
+              {snapshot.error}
+            </Text>
           </Box>
         ) : null}
         {fileAction ? (
@@ -585,7 +916,11 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
             focused={focused}
             action={fileAction}
             width={Math.max(8, width - 3)}
-            onChange={(value) => setFileAction((current) => current ? { ...current, value } : current)}
+            onChange={(value) =>
+              setFileAction((current) =>
+                current ? { ...current, value } : current,
+              )
+            }
             onSubmit={submitFileAction}
             onConfirmDelete={confirmDelete}
             onCancel={closeFileAction}
@@ -597,13 +932,24 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
                 sits from each end) instead of an ambiguous "N more". The
                 `inactive` tone is brighter than the prior dimColor so the
                 indicator is legible against the rows. */}
-            <Text color="inactive" wrap="truncate-end">{glyphs.arrowUp} {viewport.above} above</Text>
+            <Text color="inactive" wrap="truncate-end">
+              {glyphs.arrowUp} {viewport.above} above
+            </Text>
           </Box>
         ) : null}
-        {visibleRows.map((row) => <ProjectExplorerRow key={row.id} row={row} width={Math.max(8, width - 3)} onRowClick={handleRowClick} />)}
+        {visibleRows.map((row) => (
+          <ProjectExplorerRow
+            key={row.id}
+            row={row}
+            width={Math.max(8, width - 3)}
+            onRowClick={handleRowClick}
+          />
+        ))}
         {viewport.below > 0 ? (
           <Box height={1} flexShrink={0}>
-            <Text color="inactive" wrap="truncate-end">{glyphs.arrowDown} {viewport.below} below</Text>
+            <Text color="inactive" wrap="truncate-end">
+              {glyphs.arrowDown} {viewport.below} below
+            </Text>
           </Box>
         ) : null}
       </Box>
@@ -633,14 +979,18 @@ export function ProjectFileActionPrompt({
   onConfirmDelete,
   onCancel,
 }) {
-  const actionKey = action.kind === "create" ? action.kind : `${action.kind}:${action.path}`;
+  const actionKey =
+    action.kind === "create" ? action.kind : `${action.kind}:${action.path}`;
   const [cursorOffset, setCursorOffset] = useState(action.value?.length ?? 0);
 
   useEffect(() => {
     setCursorOffset(action.value?.length ?? 0);
   }, [actionKey]);
 
-  useRegisterKeybindingContext("Confirmation", focused && action.kind === "delete");
+  useRegisterKeybindingContext(
+    "Confirmation",
+    focused && action.kind === "delete",
+  );
   useKeybindings(
     {
       "confirm:yes": () => {
@@ -653,18 +1003,39 @@ export function ProjectFileActionPrompt({
 
   if (action.kind === "delete") {
     return (
-      <Box flexDirection="column" borderTop borderBottom borderColor="error" paddingY={0} flexShrink={0}>
+      <Box
+        flexDirection="column"
+        borderTop
+        borderBottom
+        borderColor="error"
+        paddingY={0}
+        flexShrink={0}
+      >
         <Text color="error" wrap="truncate-end">
-          Delete {action.rowKind === "directory" ? "directory" : "file"} {action.path}?
+          Delete {action.rowKind === "directory" ? "directory" : "file"}{" "}
+          {action.path}?
         </Text>
-        <Text dimColor wrap="truncate-end">{action.busy ? "deleting..." : "y/enter confirm  n/esc cancel"}</Text>
-        {action.error ? <Text color="error" wrap="truncate-end">{action.error}</Text> : null}
+        <Text dimColor wrap="truncate-end">
+          {action.busy ? "deleting..." : "y/enter confirm  n/esc cancel"}
+        </Text>
+        {action.error ? (
+          <Text color="error" wrap="truncate-end">
+            {action.error}
+          </Text>
+        ) : null}
       </Box>
     );
   }
 
   return (
-    <Box flexDirection="column" borderTop borderBottom borderColor="suggestion" paddingY={0} flexShrink={0}>
+    <Box
+      flexDirection="column"
+      borderTop
+      borderBottom
+      borderColor="suggestion"
+      paddingY={0}
+      flexShrink={0}
+    >
       <Text color="suggestion" wrap="truncate-end">
         {action.kind === "create" ? "Add file" : "Rename"}
       </Text>
@@ -692,8 +1063,14 @@ export function ProjectFileActionPrompt({
         columns={Math.max(8, width - 2)}
         placeholder="path/to/file"
       />
-      <Text dimColor wrap="truncate-end">{action.busy ? "working..." : "enter confirm  esc cancel"}</Text>
-      {action.error ? <Text color="error" wrap="truncate-end">{action.error}</Text> : null}
+      <Text dimColor wrap="truncate-end">
+        {action.busy ? "working..." : "enter confirm  esc cancel"}
+      </Text>
+      {action.error ? (
+        <Text color="error" wrap="truncate-end">
+          {action.error}
+        </Text>
+      ) : null}
     </Box>
   );
 }
@@ -701,16 +1078,21 @@ export function ProjectFileActionPrompt({
 export function projectTreeViewport(
   rows: readonly ProjectTreeRow[],
   maxRows: number,
-): { readonly rows: readonly ProjectTreeRow[]; readonly above: number; readonly below: number } {
+): {
+  readonly rows: readonly ProjectTreeRow[];
+  readonly above: number;
+  readonly below: number;
+} {
   const limit = Math.max(1, Math.floor(maxRows));
   if (rows.length <= limit) return { rows, above: 0, below: 0 };
 
   const selectedIndex = rows.findIndex((row) => row.selected);
   const targetIndex = selectedIndex < 0 ? 0 : selectedIndex;
   const halfWindow = Math.floor(limit / 2);
-  const start = targetIndex < limit
-    ? 0
-    : Math.min(Math.max(0, targetIndex - halfWindow), rows.length - limit);
+  const start =
+    targetIndex < limit
+      ? 0
+      : Math.min(Math.max(0, targetIndex - halfWindow), rows.length - limit);
   const end = Math.min(rows.length, start + limit);
 
   return {
@@ -742,20 +1124,35 @@ export function ProjectExplorerRow({
   const badgeGap = badges === "" ? "" : "  ";
   const labelWidth = Math.max(
     1,
-    width - stringWidth(prefix) - stringWidth(badgeGap) - stringWidth(badges) - (badges === "" ? 0 : 1),
+    width -
+      stringWidth(prefix) -
+      stringWidth(badgeGap) -
+      stringWidth(badges) -
+      (badges === "" ? 0 : 1),
   );
   const label = trim(rawLabel, labelWidth);
   const content = `${prefix}${label}${badgeGap}${badges}`;
   const trailingGap = Math.max(0, width - stringWidth(content));
   return (
-    <Box height={1} flexShrink={0} onClick={onRowClick !== undefined ? () => onRowClick(row) : undefined}>
+    <Box
+      height={1}
+      flexShrink={0}
+      onClick={onRowClick !== undefined ? () => onRowClick(row) : undefined}
+    >
       <Text
-        color={row.selected ? "#000000" : row.label.startsWith(".") ? "inactive" : "text"}
+        color={
+          row.selected
+            ? "#000000"
+            : row.label.startsWith(".")
+              ? "inactive"
+              : "text"
+        }
         backgroundColor={row.selected ? "#ffffff" : "#000000"}
         bold={row.selected || row.kind === "root"}
         wrap="truncate-end"
       >
-        {content}{" ".repeat(trailingGap)}
+        {content}
+        {" ".repeat(trailingGap)}
       </Text>
     </Box>
   );
@@ -769,7 +1166,10 @@ function indentPrefix(row: ProjectTreeRow): string {
   return "  ".repeat(Math.max(0, row.depth));
 }
 
-function markerForRow(row: ProjectTreeRow, glyphs: ReturnType<typeof selectAgenCTuiGlyphs>): string {
+function markerForRow(
+  row: ProjectTreeRow,
+  glyphs: ReturnType<typeof selectAgenCTuiGlyphs>,
+): string {
   if (row.kind === "root") return "▾";
   if (row.kind === "directory") return row.expanded ? "▾" : "▸";
   if (row.kind === "loading") return glyphs.ellipsis;
@@ -780,14 +1180,19 @@ function markerForRow(row: ProjectTreeRow, glyphs: ReturnType<typeof selectAgenC
   return " ";
 }
 
-function rowBadges(row: ProjectTreeRow, glyphs: ReturnType<typeof selectAgenCTuiGlyphs>): string {
+function rowBadges(
+  row: ProjectTreeRow,
+  glyphs: ReturnType<typeof selectAgenCTuiGlyphs>,
+): string {
   return [
     gitMarker(row.gitState),
     row.active ? glyphs.statusDot : "",
     row.attached ? "@" : "",
     row.searchHit ? "?" : "",
     row.inFlight ? "~" : "",
-  ].filter(Boolean).join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function gitMarker(state: ProjectTreeRow["gitState"]): string {
@@ -855,20 +1260,74 @@ function fileTypeColor(label: string): string | undefined {
 }
 
 const CODE_EXTENSIONS: ReadonlySet<string> = new Set([
-  "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs",
-  "rs", "py", "go", "rb", "java", "kt", "c", "h", "cc", "cpp", "hpp",
-  "cs", "swift", "sol", "sh", "bash", "zsh", "fish", "sql", "lua", "zig",
+  "ts",
+  "tsx",
+  "mts",
+  "cts",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "rs",
+  "py",
+  "go",
+  "rb",
+  "java",
+  "kt",
+  "c",
+  "h",
+  "cc",
+  "cpp",
+  "hpp",
+  "cs",
+  "swift",
+  "sol",
+  "sh",
+  "bash",
+  "zsh",
+  "fish",
+  "sql",
+  "lua",
+  "zig",
 ]);
 const DOC_EXTENSIONS: ReadonlySet<string> = new Set([
-  "md", "mdx", "txt", "rst", "adoc", "org",
+  "md",
+  "mdx",
+  "txt",
+  "rst",
+  "adoc",
+  "org",
 ]);
 const CONFIG_EXTENSIONS: ReadonlySet<string> = new Set([
-  "json", "jsonc", "json5", "yaml", "yml", "toml", "xml", "ini", "env",
-  "lock", "cfg", "conf", "properties",
+  "json",
+  "jsonc",
+  "json5",
+  "yaml",
+  "yml",
+  "toml",
+  "xml",
+  "ini",
+  "env",
+  "lock",
+  "cfg",
+  "conf",
+  "properties",
 ]);
 const MEDIA_EXTENSIONS: ReadonlySet<string> = new Set([
-  "png", "jpg", "jpeg", "gif", "svg", "webp", "ico",
-  "mp4", "webm", "mov", "mp3", "wav", "ogg", "pdf",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "svg",
+  "webp",
+  "ico",
+  "mp4",
+  "webm",
+  "mov",
+  "mp3",
+  "wav",
+  "ogg",
+  "pdf",
 ]);
 
 function trim(value: string, width: number): string {
@@ -900,9 +1359,14 @@ function defaultCreateFilePath(row: ProjectTreeRow | null): string {
   return "";
 }
 
-function fileActionFailureMessage(action, value: string, error: unknown): string {
+function fileActionFailureMessage(
+  action,
+  value: string,
+  error: unknown,
+): string {
   const detail = error instanceof Error ? error.message : String(error);
   if (action.kind === "create") return `Cannot create ${value}: ${detail}`;
-  if (action.kind === "rename") return `Cannot rename ${action.path}: ${detail}`;
+  if (action.kind === "rename")
+    return `Cannot rename ${action.path}: ${detail}`;
   return `Cannot delete ${action.path}: ${detail}`;
 }

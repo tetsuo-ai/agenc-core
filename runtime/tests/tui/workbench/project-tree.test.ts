@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
+import { renameSync, symlinkSync, writeFileSync } from "node:fs";
 import {
   lstat,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -19,7 +22,11 @@ import {
   getStructureBuildCountForTest,
   resetStructureBuildCountForTest,
 } from "../../../src/tui/workbench/project-tree/buildTree.js";
-import { collectGitStatus, listGitFiles, parseGitStatusPorcelain } from "../../../src/tui/workbench/project-tree/gitStatus.js";
+import {
+  collectGitStatus,
+  listGitFiles,
+  parseGitStatusPorcelain,
+} from "../../../src/tui/workbench/project-tree/gitStatus.js";
 import {
   ProjectTreeStore,
   renamePathNoClobber,
@@ -54,7 +61,11 @@ describe("project tree helpers", () => {
     expect(b.find((r) => r.path === "src/index.ts")?.selected).toBe(false);
 
     // A new paths array (file-list change) forces a rebuild.
-    buildProjectTreeRows({ ...base, paths: [...paths], cursorPath: "README.md" });
+    buildProjectTreeRows({
+      ...base,
+      paths: [...paths],
+      cursorPath: "README.md",
+    });
     expect(getStructureBuildCountForTest()).toBe(2);
   });
 
@@ -218,7 +229,7 @@ describe("project tree helpers", () => {
       const status = await collectGitStatus(repo);
 
       expect(status.get(fileName)).toBe("untracked");
-      expect([...status.keys()]).not.toContain("\"\\303\\251.ts\"");
+      expect([...status.keys()]).not.toContain('"\\303\\251.ts"');
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
@@ -247,12 +258,24 @@ describe("project tree helpers", () => {
 
     try {
       execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
-      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repo, stdio: "ignore" });
-      execFileSync("git", ["config", "user.name", "Test User"], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], {
+        cwd: repo,
+        stdio: "ignore",
+      });
+      execFileSync("git", ["config", "user.name", "Test User"], {
+        cwd: repo,
+        stdio: "ignore",
+      });
       await writeFile(join(repo, oldPath), "renamed\n", "utf8");
       execFileSync("git", ["add", oldPath], { cwd: repo, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "init"], { cwd: repo, stdio: "ignore" });
-      execFileSync("git", ["mv", oldPath, newPath], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "init"], {
+        cwd: repo,
+        stdio: "ignore",
+      });
+      execFileSync("git", ["mv", oldPath, newPath], {
+        cwd: repo,
+        stdio: "ignore",
+      });
 
       const status = await collectGitStatus(repo);
 
@@ -410,14 +433,20 @@ describe("project tree helpers", () => {
     try {
       await mkdir(join(repo, ".githooks"), { recursive: true });
       await mkdir(join(repo, "docs"), { recursive: true });
-      await writeFile(join(repo, ".githooks", "pre-commit"), "#!/bin/sh\n", "utf8");
+      await writeFile(
+        join(repo, ".githooks", "pre-commit"),
+        "#!/bin/sh\n",
+        "utf8",
+      );
       await writeFile(join(repo, "docs", "guide.md"), "guide\n", "utf8");
       execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
 
       await store.refresh();
 
       expect(store.getCursorPath()).toBe(".githooks");
-      expect(store.getSnapshot().rows.find((row) => row.path === ".githooks")).toMatchObject({
+      expect(
+        store.getSnapshot().rows.find((row) => row.path === ".githooks"),
+      ).toMatchObject({
         selected: true,
       });
 
@@ -437,8 +466,16 @@ describe("project tree helpers", () => {
     try {
       await mkdir(join(repo, "src", "nested"), { recursive: true });
       await mkdir(join(repo, "node_modules", "ignored"), { recursive: true });
-      await writeFile(join(repo, "src", "nested", "index.ts"), "export const value = 1;\n", "utf8");
-      await writeFile(join(repo, "node_modules", "ignored", "index.js"), "ignored\n", "utf8");
+      await writeFile(
+        join(repo, "src", "nested", "index.ts"),
+        "export const value = 1;\n",
+        "utf8",
+      );
+      await writeFile(
+        join(repo, "node_modules", "ignored", "index.js"),
+        "ignored\n",
+        "utf8",
+      );
 
       await store.refresh();
       store.reveal("src/nested/index.ts");
@@ -469,7 +506,9 @@ describe("project tree helpers", () => {
       store.setAttachedPaths(["src\\nested\\app.ts"]);
 
       const snapshot = store.getSnapshot();
-      const activeRow = snapshot.rows.find((row) => row.path === "src/nested/app.ts");
+      const activeRow = snapshot.rows.find(
+        (row) => row.path === "src/nested/app.ts",
+      );
 
       expect(snapshot.cursorPath).toBe("src/nested/app.ts");
       expect([...snapshot.expandedPaths].sort()).toEqual(["src", "src/nested"]);
@@ -506,7 +545,9 @@ describe("project tree helpers", () => {
       store.setInFlightPaths(["src/nested/app.ts"]);
 
       const snapshot = store.getSnapshot();
-      const row = snapshot.rows.find((item) => item.path === "src/nested/app.ts");
+      const row = snapshot.rows.find(
+        (item) => item.path === "src/nested/app.ts",
+      );
 
       expect(snapshots).toHaveLength(baselineEmits + 3);
       expect(row).toMatchObject({
@@ -542,7 +583,9 @@ describe("project tree helpers", () => {
       const snapshot = store.getSnapshot();
       expect(snapshot.expandedPaths).not.toContain("converters");
 
-      const visibleFileRows = snapshot.rows.filter((row) => row.kind === "file").length;
+      const visibleFileRows = snapshot.rows.filter(
+        (row) => row.kind === "file",
+      ).length;
       // Only README.md is a visible file row while converters/ stays collapsed.
       expect(visibleFileRows).toBe(1);
 
@@ -609,7 +652,9 @@ describe("project tree helpers", () => {
     // Preserve user control: auto-expand is a one-time reveal on a directory's
     // first appearance, not a persistent override. Once the user collapses an
     // agent-created directory, a later refresh must not fight them by re-expanding.
-    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-auto-expand-respect-"));
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-auto-expand-respect-"),
+    );
     const store = new ProjectTreeStore(repo, 0);
 
     try {
@@ -727,7 +772,11 @@ describe("project tree helpers", () => {
 
     try {
       await mkdir(join(repo, "node_modules", "ignored"), { recursive: true });
-      await writeFile(join(repo, "node_modules", "ignored", "index.js"), "ignored\n", "utf8");
+      await writeFile(
+        join(repo, "node_modules", "ignored", "index.js"),
+        "ignored\n",
+        "utf8",
+      );
 
       await store.refresh();
 
@@ -748,7 +797,9 @@ describe("project tree helpers", () => {
   });
 
   it("falls back to top-level paths when gitignore excludes scanner output", async () => {
-    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-top-level-fallback-"));
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-top-level-fallback-"),
+    );
     const store = new ProjectTreeStore(repo, 0);
 
     try {
@@ -794,13 +845,40 @@ describe("project tree helpers", () => {
     const store = new ProjectTreeStore(repo, 0);
 
     try {
+      await mkdir(join(repo, "src"));
       await store.refresh();
 
-      await expect(store.createFile("src/new-file.ts")).resolves.toEqual({ ok: true, path: "src/new-file.ts" });
+      await expect(store.createFile("src/new-file.ts")).resolves.toEqual({
+        ok: true,
+        path: "src/new-file.ts",
+      });
 
       expect(await readFile(join(repo, "src", "new-file.ts"), "utf8")).toBe("");
       expect(store.getCursorPath()).toBe("src/new-file.ts");
-      expect(store.getSnapshot().rows.map((row) => row.path)).toContain("src/new-file.ts");
+      expect(store.getSnapshot().rows.map((row) => row.path)).toContain(
+        "src/new-file.ts",
+      );
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("creates missing parent directories through the bound helper", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-create-parent-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await store.refresh();
+
+      await expect(store.createFile("missing/new-file.ts")).resolves.toEqual({
+        ok: true,
+        path: "missing/new-file.ts",
+      });
+
+      await expect(
+        readFile(join(repo, "missing", "new-file.ts"), "utf8"),
+      ).resolves.toBe("");
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
@@ -830,7 +908,9 @@ describe("project tree helpers", () => {
         ok: false,
         error: "Use a workspace-relative path, not an absolute path.",
       });
-      await expect(store.renamePath("../outside.ts", "inside.ts")).resolves.toEqual({
+      await expect(
+        store.renamePath("../outside.ts", "inside.ts"),
+      ).resolves.toEqual({
         ok: false,
         error: "Path must stay inside the workspace.",
       });
@@ -862,7 +942,9 @@ describe("project tree helpers", () => {
         ok: false,
         error: "Cannot create exists.ts: path already exists.",
       });
-      await expect(store.renamePath("missing.ts", "renamed.ts")).resolves.toEqual({
+      await expect(
+        store.renamePath("missing.ts", "renamed.ts"),
+      ).resolves.toEqual({
         ok: false,
         error: "Cannot rename missing.ts: path does not exist.",
       });
@@ -870,7 +952,9 @@ describe("project tree helpers", () => {
         ok: false,
         error: "Cannot delete missing.ts: path does not exist.",
       });
-      await expect(store.renamePath("exists.ts", "bad\0target.ts")).resolves.toMatchObject({
+      await expect(
+        store.renamePath("exists.ts", "bad\0target.ts"),
+      ).resolves.toMatchObject({
         ok: false,
         error: expect.stringContaining("Cannot rename exists.ts:"),
       });
@@ -882,8 +966,534 @@ describe("project tree helpers", () => {
     }
   });
 
+  it("refuses create, rename, and delete through a symlinked workspace ancestor", async () => {
+    if (process.platform === "win32") return;
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-symlink-root-"));
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-tree-symlink-outside-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await symlink(outside, join(repo, "escape"));
+      await writeFile(join(repo, "source.ts"), "source\n", "utf8");
+      await writeFile(join(outside, "outside.ts"), "outside\n", "utf8");
+      await store.refresh();
+
+      await expect(
+        store.createFile("escape/created.ts"),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining(
+          "resolves outside the workspace through a symbolic link",
+        ),
+      });
+      await expect(
+        store.renamePath("source.ts", "escape/moved.ts"),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining(
+          "resolves outside the workspace through a symbolic link",
+        ),
+      });
+      await expect(
+        store.deletePath("escape/outside.ts"),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining(
+          "resolves outside the workspace through a symbolic link",
+        ),
+      });
+
+      await expect(stat(join(outside, "created.ts"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(stat(join(outside, "moved.ts"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(readFile(join(repo, "source.ts"), "utf8")).resolves.toBe(
+        "source\n",
+      );
+      await expect(readFile(join(outside, "outside.ts"), "utf8")).resolves.toBe(
+        "outside\n",
+      );
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("does not create outside the workspace when an admitted parent becomes a symlink", async () => {
+    if (process.platform === "win32") return;
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-create-parent-race-"),
+    );
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-tree-create-parent-race-outside-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+    const admittedParent = join(repo, "src");
+    const displacedParent = join(repo, "src-original");
+
+    try {
+      await mkdir(admittedParent);
+      await store.refresh();
+
+      const result = await store.createFile("src/new.ts", {
+        beforeCommit: () => {
+          renameSync(admittedParent, displacedParent);
+          symlinkSync(outside, admittedParent, "dir");
+          return null;
+        },
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("filesystem path identity changed"),
+      });
+      expect(result).not.toHaveProperty("effect");
+      await expect(lstat(join(outside, "new.ts"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(
+        lstat(join(displacedParent, "new.ts")),
+      ).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the originally pinned workspace root when its pathname becomes an outside symlink", async () => {
+    if (process.platform === "win32") return;
+    const container = await mkdtemp(
+      join(tmpdir(), "agenc-tree-create-root-race-"),
+    );
+    const workspace = join(container, "workspace");
+    const displacedWorkspace = join(container, "workspace-original");
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-tree-create-root-race-outside-"),
+    );
+    await mkdir(workspace);
+    const store = new ProjectTreeStore(workspace, 0);
+
+    try {
+      await store.refresh();
+
+      const result = await store.createFile("new.ts", {
+        beforeCommit: () => {
+          renameSync(workspace, displacedWorkspace);
+          symlinkSync(outside, workspace, "dir");
+          return null;
+        },
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("filesystem path identity changed"),
+      });
+      expect(result).not.toHaveProperty("effect");
+      await expect(lstat(join(outside, "new.ts"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(
+        lstat(join(displacedWorkspace, "new.ts")),
+      ).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      store.dispose();
+      await rm(container, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("does not delete an outside file when an admitted parent becomes a symlink", async () => {
+    if (process.platform === "win32") return;
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-delete-parent-race-"),
+    );
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-tree-delete-parent-race-outside-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+    const admittedParent = join(repo, "src");
+    const displacedParent = join(repo, "src-original");
+
+    try {
+      await mkdir(admittedParent);
+      await writeFile(join(admittedParent, "victim.ts"), "inside\n", "utf8");
+      await writeFile(join(outside, "victim.ts"), "outside\n", "utf8");
+      await store.refresh();
+
+      const result = await store.deletePath("src/victim.ts", {
+        beforeCommit: () => {
+          renameSync(admittedParent, displacedParent);
+          symlinkSync(outside, admittedParent, "dir");
+          return null;
+        },
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("filesystem path identity changed"),
+      });
+      expect(result).not.toHaveProperty("effect");
+      await expect(readFile(join(outside, "victim.ts"), "utf8")).resolves.toBe(
+        "outside\n",
+      );
+      await expect(
+        readFile(join(displacedParent, "victim.ts"), "utf8"),
+      ).resolves.toBe("inside\n");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps final-boundary create inside the pre-bound parent after an ancestor exchange", async () => {
+    if (process.platform === "win32") return;
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-create-final-race-"));
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-tree-create-final-race-outside-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+    const admittedParent = join(repo, "src");
+    const displacedParent = join(repo, "src-original");
+
+    try {
+      await mkdir(admittedParent);
+      await store.refresh();
+      const result = await store.createFile("src/new.ts", {
+        __testAfterFinalPathCheck: () => {
+          renameSync(admittedParent, displacedParent);
+          symlinkSync(outside, admittedParent, "dir");
+        },
+      });
+
+      expect(result).toMatchObject({ ok: false, effect: "unknown" });
+      await expect(lstat(join(outside, "new.ts"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(
+        readFile(join(displacedParent, "new.ts"), "utf8"),
+      ).resolves.toBe("");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps final-boundary file delete inside the pre-bound parent after an ancestor exchange", async () => {
+    if (process.platform === "win32") return;
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-delete-final-race-"));
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-tree-delete-final-race-outside-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+    const admittedParent = join(repo, "src");
+    const displacedParent = join(repo, "src-original");
+
+    try {
+      await mkdir(admittedParent);
+      await writeFile(join(admittedParent, "victim.ts"), "inside\n", "utf8");
+      await writeFile(join(outside, "victim.ts"), "outside\n", "utf8");
+      await store.refresh();
+      const result = await store.deletePath("src/victim.ts", {
+        __testAfterFinalPathCheck: () => {
+          renameSync(admittedParent, displacedParent);
+          symlinkSync(outside, admittedParent, "dir");
+        },
+      });
+
+      expect(result).toMatchObject({ ok: false, effect: "unknown" });
+      await expect(readFile(join(outside, "victim.ts"), "utf8")).resolves.toBe(
+        "outside\n",
+      );
+      await expect(
+        lstat(join(displacedParent, "victim.ts")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("deletes a symlink entry without following its target", async () => {
+    if (process.platform === "win32") return;
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-delete-symlink-"));
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-tree-delete-symlink-outside-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+    const payload = join(outside, "payload.txt");
+
+    try {
+      await writeFile(payload, "outside payload\n", "utf8");
+      await symlink(payload, join(repo, "payload-link"));
+      await store.refresh();
+
+      await expect(store.deletePath("payload-link")).resolves.toEqual({
+        ok: true,
+        path: "payload-link",
+      });
+      await expect(lstat(join(repo, "payload-link"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(readFile(payload, "utf8")).resolves.toBe(
+        "outside payload\n",
+      );
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps final-boundary rename inside the pre-bound parent after an ancestor exchange", async () => {
+    if (process.platform === "win32") return;
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-final-race-"));
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-tree-rename-final-race-outside-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+    const admittedParent = join(repo, "src");
+    const displacedParent = join(repo, "src-original");
+
+    try {
+      await mkdir(admittedParent);
+      await writeFile(join(admittedParent, "old.ts"), "inside\n", "utf8");
+      await writeFile(join(outside, "old.ts"), "outside old\n", "utf8");
+      await writeFile(join(outside, "new.ts"), "outside new\n", "utf8");
+      await store.refresh();
+      const result = await store.renamePath("src/old.ts", "src/new.ts", {
+        __testAfterFinalPathCheck: () => {
+          renameSync(admittedParent, displacedParent);
+          symlinkSync(outside, admittedParent, "dir");
+        },
+      });
+
+      expect(result).toMatchObject({ ok: false, effect: "unknown" });
+      await expect(readFile(join(outside, "old.ts"), "utf8")).resolves.toBe(
+        "outside old\n",
+      );
+      await expect(readFile(join(outside, "new.ts"), "utf8")).resolves.toBe(
+        "outside new\n",
+      );
+      await expect(
+        lstat(join(displacedParent, "old.ts")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(
+        readFile(join(displacedParent, "new.ts"), "utf8"),
+      ).resolves.toBe("inside\n");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps final-boundary recursive delete inside the pre-bound parent after an ancestor exchange", async () => {
+    if (process.platform === "win32") return;
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-directory-delete-final-race-"),
+    );
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-tree-directory-delete-final-race-outside-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+    const admittedParent = join(repo, "src");
+    const displacedParent = join(repo, "src-original");
+
+    try {
+      await mkdir(join(admittedParent, "victim"), { recursive: true });
+      await writeFile(
+        join(admittedParent, "victim", "inside.txt"),
+        "inside\n",
+        "utf8",
+      );
+      await mkdir(join(outside, "victim"));
+      await writeFile(
+        join(outside, "victim", "outside.txt"),
+        "outside\n",
+        "utf8",
+      );
+      await store.refresh();
+      const result = await store.deletePath("src/victim", {
+        __testAfterFinalPathCheck: () => {
+          renameSync(admittedParent, displacedParent);
+          symlinkSync(outside, admittedParent, "dir");
+        },
+      });
+
+      expect(result).toMatchObject({ ok: false, effect: "unknown" });
+      await expect(
+        readFile(join(outside, "victim", "outside.txt"), "utf8"),
+      ).resolves.toBe("outside\n");
+      await expect(
+        lstat(join(displacedParent, "victim")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a competing file published after create admission", async () => {
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-create-target-race-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+    const target = join(repo, "new.ts");
+
+    try {
+      await store.refresh();
+
+      const result = await store.createFile("new.ts", {
+        beforeCommit: () => {
+          writeFileSync(target, "competitor\n", "utf8");
+          return null;
+        },
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Cannot create new.ts: path already exists.",
+      });
+      await expect(readFile(target, "utf8")).resolves.toBe("competitor\n");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves bytes changed after delete admission", async () => {
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-delete-content-race-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+    const target = join(repo, "victim.ts");
+
+    try {
+      await writeFile(target, "admitted\n", "utf8");
+      await store.refresh();
+
+      const result = await store.deletePath("victim.ts", {
+        beforeCommit: () => {
+          writeFileSync(target, "new owner bytes\n", "utf8");
+          return null;
+        },
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("filesystem path identity changed"),
+      });
+      expect(result).not.toHaveProperty("effect");
+      await expect(readFile(target, "utf8")).resolves.toBe("new owner bytes\n");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an unknown create outcome without rolling back through a post-effect alias", async () => {
+    if (process.platform === "win32") return;
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-create-post-effect-race-"),
+    );
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-tree-create-post-effect-race-outside-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+    const admittedParent = join(repo, "src");
+    const displacedParent = join(repo, "src-original");
+
+    try {
+      await mkdir(admittedParent);
+      await writeFile(join(outside, "new.ts"), "outside\n", "utf8");
+      await store.refresh();
+
+      const result = await store.createFile("src/new.ts", {
+        __testAfterPathEffect: async () => {
+          await rename(admittedParent, displacedParent);
+          await symlink(outside, admittedParent, "dir");
+        },
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("filesystem path identity changed"),
+        effect: "unknown",
+      });
+      await expect(readFile(join(outside, "new.ts"), "utf8")).resolves.toBe(
+        "outside\n",
+      );
+      await expect(
+        readFile(join(displacedParent, "new.ts"), "utf8"),
+      ).resolves.toBe("");
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an unknown delete outcome without touching a post-effect alias", async () => {
+    if (process.platform === "win32") return;
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-delete-post-effect-race-"),
+    );
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-tree-delete-post-effect-race-outside-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+    const admittedParent = join(repo, "src");
+    const displacedParent = join(repo, "src-original");
+
+    try {
+      await mkdir(admittedParent);
+      await writeFile(join(admittedParent, "victim.ts"), "inside\n", "utf8");
+      await writeFile(join(outside, "victim.ts"), "outside\n", "utf8");
+      await store.refresh();
+
+      const result = await store.deletePath("src/victim.ts", {
+        __testAfterPathEffect: async () => {
+          await rename(admittedParent, displacedParent);
+          await symlink(outside, admittedParent, "dir");
+        },
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("filesystem path identity changed"),
+        effect: "unknown",
+      });
+      await expect(readFile(join(outside, "victim.ts"), "utf8")).resolves.toBe(
+        "outside\n",
+      );
+      await expect(
+        lstat(join(displacedParent, "victim.ts")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it("refuses rename and delete while an agent may be writing inside the target subtree", async () => {
-    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-in-flight-mutation-"));
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-in-flight-mutation-"),
+    );
     const store = new ProjectTreeStore(repo, 0);
 
     try {
@@ -902,17 +1512,40 @@ describe("project tree helpers", () => {
         error: "Cannot delete src while an agent may be writing inside it.",
       });
 
-      await expect(readFile(join(repo, "src", "app.ts"), "utf8"))
-        .resolves.toBe("app\n");
-      await expect(readFile(join(repo, "lib", "app.ts"), "utf8"))
-        .rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(join(repo, "src", "app.ts"), "utf8")).resolves.toBe(
+        "app\n",
+      );
+      await expect(
+        readFile(join(repo, "lib", "app.ts"), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
     }
   });
 
-  it("rechecks in-flight writes after preparing a rename target directory", async () => {
+  it("refuses create while an agent owns the exact target path", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-create-in-flight-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await store.refresh();
+      store.setInFlightPaths(["src/new.ts"]);
+
+      await expect(store.createFile("src/new.ts")).resolves.toEqual({
+        ok: false,
+        error: "Cannot create src/new.ts while an agent may be writing to it.",
+      });
+      await expect(stat(join(repo, "src", "new.ts"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("rechecks in-flight writes without preparing a refused rename target", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-in-flight-race-"));
     const store = new ProjectTreeStore(repo, 0);
 
@@ -931,16 +1564,19 @@ describe("project tree helpers", () => {
         ok: false,
         error: "Cannot rename src while an agent may be writing inside it.",
       });
-      await expect(readFile(join(repo, "src", "app.ts"), "utf8"))
-        .resolves.toBe("app\n");
-      expect(await readdir(join(repo, "staging", "deep"))).toEqual([]);
+      await expect(readFile(join(repo, "src", "app.ts"), "utf8")).resolves.toBe(
+        "app\n",
+      );
+      await expect(lstat(join(repo, "staging"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
     }
   });
 
-  it("renames the selected workspace path without overwriting targets", async () => {
+  it("refuses file rename before creating a target or changing the source", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-"));
     const store = new ProjectTreeStore(repo, 0);
 
@@ -950,48 +1586,89 @@ describe("project tree helpers", () => {
       await writeFile(join(repo, "src", "exists.ts"), "exists\n", "utf8");
       await store.refresh();
 
-      await expect(store.renamePath("src/old.ts", "src/exists.ts")).resolves.toMatchObject({
+      await expect(
+        store.renamePath("src/old.ts", "src/exists.ts"),
+      ).resolves.toMatchObject({
         ok: false,
       });
-      await expect(store.renamePath("src/old.ts", "lib/new.ts")).resolves.toEqual({ ok: true, path: "lib/new.ts" });
+      await expect(
+        store.renamePath("src/old.ts", "lib/new.ts"),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining(
+          "Atomic identity-bound no-clobber rename",
+        ),
+      });
 
-      await expect(readFile(join(repo, "src", "old.ts"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-      expect(await readFile(join(repo, "lib", "new.ts"), "utf8")).toBe("old\n");
-      expect(store.getCursorPath()).toBe("lib/new.ts");
+      expect(await readFile(join(repo, "src", "old.ts"), "utf8")).toBe("old\n");
+      await expect(lstat(join(repo, "lib"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
     }
   });
 
-  it("uses an exclusive filesystem primitive when renaming a file", async () => {
-    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-exclusive-file-"));
+  it("renames a regular file without clobbering", async () => {
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-rename-exclusive-file-"),
+    );
     const source = join(repo, "source.ts");
     const target = join(repo, "target.ts");
 
     try {
       await writeFile(source, "source\n", "utf8");
-      await writeFile(target, "target\n", "utf8");
 
-      await expect(renamePathNoClobber(source, target))
-        .rejects.toMatchObject({ code: "EEXIST" });
-      expect(await readFile(source, "utf8")).toBe("source\n");
-      expect(await readFile(target, "utf8")).toBe("target\n");
-
-      await rm(target);
-      const sourceIdentity = await lstat(source);
-      await renamePathNoClobber(source, target);
-
+      await expect(
+        renamePathNoClobber(source, target),
+      ).resolves.toBeUndefined();
       await expect(lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(target, "utf8")).toBe("source\n");
-      expect((await lstat(target)).ino).toBe(sourceIdentity.ino);
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
   });
 
-  it("reserves a directory destination without overwriting a competing tree", async () => {
-    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-exclusive-directory-"));
+  it("does not touch source or target replacements that arrive after source inspection", async () => {
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-rename-source-race-"),
+    );
+    const source = join(repo, "source.ts");
+    const original = join(repo, "original.ts");
+    const target = join(repo, "target.ts");
+
+    try {
+      await writeFile(source, "source\n", "utf8");
+
+      await expect(
+        renamePathNoClobber(source, target, {
+          beforeRenameFailClosed: async () => {
+            await rename(source, original);
+            await writeFile(source, "source competitor\n", {
+              encoding: "utf8",
+              flag: "wx",
+            });
+            await writeFile(target, "competitor\n", {
+              encoding: "utf8",
+              flag: "wx",
+            });
+          },
+        }),
+      ).rejects.toMatchObject({ code: "ESTALE" });
+
+      expect(await readFile(original, "utf8")).toBe("source\n");
+      expect(await readFile(source, "utf8")).toBe("source competitor\n");
+      expect(await readFile(target, "utf8")).toBe("competitor\n");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("never overwrites a competing directory target", async () => {
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-rename-exclusive-directory-"),
+    );
     const source = join(repo, "source");
     const target = join(repo, "target");
 
@@ -1001,24 +1678,94 @@ describe("project tree helpers", () => {
       await mkdir(target);
       await writeFile(join(target, "competitor.txt"), "competitor\n", "utf8");
 
-      await expect(renamePathNoClobber(source, target))
-        .rejects.toMatchObject({ code: "EEXIST" });
-      expect(await readFile(join(source, "source.txt"), "utf8")).toBe("source\n");
-      expect(await readFile(join(target, "competitor.txt"), "utf8")).toBe("competitor\n");
+      await expect(renamePathNoClobber(source, target)).rejects.toMatchObject({
+        code: "ENOTSUP",
+      });
+      expect(await readFile(join(source, "source.txt"), "utf8")).toBe(
+        "source\n",
+      );
+      expect(await readFile(join(target, "competitor.txt"), "utf8")).toBe(
+        "competitor\n",
+      );
 
       await rm(target, { recursive: true });
-      await renamePathNoClobber(source, target);
-
-      await expect(lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
-      expect(await readFile(join(target, "source.txt"), "utf8")).toBe("source\n");
+      await expect(renamePathNoClobber(source, target)).rejects.toMatchObject({
+        code: "ENOTSUP",
+      });
+      expect(await readFile(join(source, "source.txt"), "utf8")).toBe(
+        "source\n",
+      );
+      await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
   });
 
-  it("recreates symlink names exclusively instead of touching their targets", async () => {
+  it("refuses directory rename before invoking the final mutation seam", async () => {
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-rename-directory-race-"),
+    );
+    const source = join(repo, "source");
+    const target = join(repo, "target");
+    const beforeRenameFailClosed = vi.fn();
+
+    try {
+      await mkdir(source);
+      await writeFile(join(source, "source.txt"), "source\n", "utf8");
+
+      await expect(
+        renamePathNoClobber(source, target, {
+          beforeRenameFailClosed,
+        }),
+      ).rejects.toMatchObject({ code: "ENOTSUP" });
+
+      expect(beforeRenameFailClosed).not.toHaveBeenCalled();
+      expect(await readFile(join(source, "source.txt"), "utf8")).toBe(
+        "source\n",
+      );
+      await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a nested directory rename before creating target parents", async () => {
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-rename-directory-preflight-"),
+    );
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "source"));
+      await writeFile(join(repo, "source", "source.txt"), "source\n", "utf8");
+      await store.refresh();
+
+      await expect(
+        store.renamePath("source", "nested/deep/target"),
+      ).resolves.toEqual({
+        ok: false,
+        error: expect.stringContaining(
+          "Atomic identity-bound no-clobber rename",
+        ),
+      });
+
+      expect(await readFile(join(repo, "source", "source.txt"), "utf8")).toBe(
+        "source\n",
+      );
+      await expect(lstat(join(repo, "nested"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed without touching a symlink source or competing target", async () => {
     if (process.platform === "win32") return;
-    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-exclusive-symlink-"));
+    const repo = await mkdtemp(
+      join(tmpdir(), "agenc-tree-rename-exclusive-symlink-"),
+    );
     const payload = join(repo, "payload.txt");
     const source = join(repo, "source-link");
     const target = join(repo, "target-link");
@@ -1028,17 +1775,18 @@ describe("project tree helpers", () => {
       await symlink("payload.txt", source);
       await writeFile(target, "competitor\n", "utf8");
 
-      await expect(renamePathNoClobber(source, target))
-        .rejects.toMatchObject({ code: "EEXIST" });
+      await expect(renamePathNoClobber(source, target)).rejects.toMatchObject({
+        code: "ENOTSUP",
+      });
       expect((await lstat(source)).isSymbolicLink()).toBe(true);
       expect(await readFile(target, "utf8")).toBe("competitor\n");
 
       await rm(target);
-      await renamePathNoClobber(source, target);
-
-      await expect(lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
-      expect((await lstat(target)).isSymbolicLink()).toBe(true);
-      expect(await readFile(target, "utf8")).toBe("payload\n");
+      await expect(renamePathNoClobber(source, target)).rejects.toMatchObject({
+        code: "ENOTSUP",
+      });
+      expect((await lstat(source)).isSymbolicLink()).toBe(true);
+      await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
@@ -1056,20 +1804,38 @@ describe("project tree helpers", () => {
       await writeFile(join(repo, trailing), "trailing\n", "utf8");
       await store.refresh();
 
-      await expect(store.renamePath(trailing, renamed)).resolves.toEqual({ ok: true, path: renamed });
-      await expect(store.deletePath(leading)).resolves.toEqual({ ok: true, path: leading });
+      await expect(store.renamePath(trailing, renamed)).resolves.toEqual({
+        ok: true,
+        path: renamed,
+      });
+      await expect(store.deletePath(leading)).resolves.toEqual({
+        ok: true,
+        path: leading,
+      });
 
+      await expect(lstat(join(repo, trailing))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
       expect(await readFile(join(repo, renamed), "utf8")).toBe("trailing\n");
-      await expect(readFile(join(repo, leading), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-      expect(store.getSnapshot().rows.map((row) => row.path)).toContain(renamed);
-      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain(leading);
+      await expect(readFile(join(repo, leading), "utf8")).rejects.toMatchObject(
+        { code: "ENOENT" },
+      );
+      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain(
+        trailing,
+      );
+      expect(store.getSnapshot().rows.map((row) => row.path)).toContain(
+        renamed,
+      );
+      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain(
+        leading,
+      );
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
     }
   });
 
-  it("returns canonical tree paths when renaming to a trailing slash target", async () => {
+  it("fails closed without creating a trailing-slash rename target", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-slash-"));
     const store = new ProjectTreeStore(repo, 0);
 
@@ -1078,22 +1844,26 @@ describe("project tree helpers", () => {
       await writeFile(join(repo, "src", "nested", "app.ts"), "app\n", "utf8");
       await store.refresh();
 
-      await expect(store.renamePath("src", "lib/")).resolves.toEqual({
-        ok: true,
-        path: "lib",
+      const result = await store.renamePath("src", "lib/");
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining(
+          "Atomic identity-bound no-clobber rename",
+        ),
       });
-
-      expect(await readFile(join(repo, "lib", "nested", "app.ts"), "utf8")).toBe("app\n");
-      expect(store.getCursorPath()).toBe("lib");
-      expect(store.getSnapshot().rows.map((row) => row.path)).toContain("lib");
-      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain("lib/");
+      expect(
+        await readFile(join(repo, "src", "nested", "app.ts"), "utf8"),
+      ).toBe("app\n");
+      await expect(lstat(join(repo, "lib"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
     }
   });
 
-  it("carries expanded directory state across renamed subtrees", async () => {
+  it("preserves expanded directory state after refusing a rename", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-expanded-"));
     const store = new ProjectTreeStore(repo, 0);
 
@@ -1106,22 +1876,29 @@ describe("project tree helpers", () => {
       store.reveal("docs/guide.md");
       store.reveal("src/nested/app.ts");
 
-      expect([...store.getSnapshot().expandedPaths].sort()).toEqual(["docs", "src", "src/nested"]);
+      expect([...store.getSnapshot().expandedPaths].sort()).toEqual([
+        "docs",
+        "src",
+        "src/nested",
+      ]);
 
-      await expect(store.renamePath("src", "lib")).resolves.toEqual({
-        ok: true,
-        path: "lib",
-      });
-
+      const result = await store.renamePath("src", "lib");
       const snapshot = store.getSnapshot();
       const rowPaths = snapshot.rows.map((row) => row.path);
 
-      expect([...snapshot.expandedPaths].sort()).toEqual(["docs", "lib", "lib/nested"]);
-      expect(rowPaths).toContain("docs/guide.md");
-      expect(rowPaths).toContain("lib/nested/app.ts");
-      expect(rowPaths).not.toContain("src");
-      expect(snapshot.expandedPaths).not.toContain("src");
-      expect(snapshot.expandedPaths).not.toContain("src/nested");
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining(
+          "Atomic identity-bound no-clobber rename",
+        ),
+      });
+      expect([...snapshot.expandedPaths].sort()).toEqual([
+        "docs",
+        "src",
+        "src/nested",
+      ]);
+      expect(rowPaths).toContain("src/nested/app.ts");
+      expect(rowPaths).not.toContain("lib");
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
@@ -1141,11 +1918,14 @@ describe("project tree helpers", () => {
 
       expect(result).toEqual({
         ok: false,
-        error: "Cannot rename src to src/nested/new-src: target is inside the source path.",
+        error:
+          "Cannot rename src to src/nested/new-src: target is inside the source path.",
       });
       expect(await readdir(join(repo, "src"))).toEqual(["app.ts"]);
       expect(await readFile(join(repo, "src", "app.ts"), "utf8")).toBe("app\n");
-      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain("src/nested");
+      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain(
+        "src/nested",
+      );
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
@@ -1165,10 +1945,17 @@ describe("project tree helpers", () => {
         ok: false,
         error: "Path must stay inside the workspace.",
       });
-      await expect(store.deletePath("src/gone.ts")).resolves.toEqual({ ok: true, path: "src/gone.ts" });
+      await expect(store.deletePath("src/gone.ts")).resolves.toEqual({
+        ok: true,
+        path: "src/gone.ts",
+      });
 
-      await expect(readFile(join(repo, "src", "gone.ts"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain("src/gone.ts");
+      await expect(
+        readFile(join(repo, "src", "gone.ts"), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      expect(store.getSnapshot().rows.map((row) => row.path)).not.toContain(
+        "src/gone.ts",
+      );
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
@@ -1183,11 +1970,15 @@ describe("project tree helpers", () => {
       await writeFile(join(repo, "source.ts"), "source\n", "utf8");
       await store.refresh();
 
-      await expect(store.createFile("C:\\Users\\me\\outside.ts")).resolves.toEqual({
+      await expect(
+        store.createFile("C:\\Users\\me\\outside.ts"),
+      ).resolves.toEqual({
         ok: false,
         error: "Use a workspace-relative path, not an absolute path.",
       });
-      await expect(store.renamePath("source.ts", "D:/tmp/renamed.ts")).resolves.toEqual({
+      await expect(
+        store.renamePath("source.ts", "D:/tmp/renamed.ts"),
+      ).resolves.toEqual({
         ok: false,
         error: "Use a workspace-relative path, not an absolute path.",
       });
@@ -1200,8 +1991,12 @@ describe("project tree helpers", () => {
         error: "Use a workspace-relative path, not an absolute path.",
       });
 
-      await expect(readFile(join(repo, "source.ts"), "utf8")).resolves.toBe("source\n");
-      await expect(readFile(join(repo, "C:", "Users", "me", "outside.ts"), "utf8")).rejects.toMatchObject({
+      await expect(readFile(join(repo, "source.ts"), "utf8")).resolves.toBe(
+        "source\n",
+      );
+      await expect(
+        readFile(join(repo, "C:", "Users", "me", "outside.ts"), "utf8"),
+      ).rejects.toMatchObject({
         code: "ENOENT",
       });
     } finally {
@@ -1210,7 +2005,7 @@ describe("project tree helpers", () => {
     }
   });
 
-  it("prunes expanded directory state when deleting a subtree", async () => {
+  it("recursively deletes a directory and prunes its tree state", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-delete-expanded-"));
     const store = new ProjectTreeStore(repo, 0);
 
@@ -1224,16 +2019,28 @@ describe("project tree helpers", () => {
       store.reveal("docs/guide.md");
       store.reveal("src/nested/app.ts");
 
-      expect([...store.getSnapshot().expandedPaths].sort()).toEqual(["docs", "src", "src/nested"]);
+      expect([...store.getSnapshot().expandedPaths].sort()).toEqual([
+        "docs",
+        "src",
+        "src/nested",
+      ]);
 
-      await expect(store.deletePath("src")).resolves.toEqual({ ok: true, path: "src" });
+      await expect(store.deletePath("src")).resolves.toEqual({
+        ok: true,
+        path: "src",
+      });
 
       const snapshot = store.getSnapshot();
 
-      expect(snapshot.expandedPaths).toEqual(["docs"]);
+      expect([...snapshot.expandedPaths].sort()).toEqual(["docs"]);
       expect(snapshot.rows.map((row) => row.path)).toContain("docs/guide.md");
       expect(snapshot.rows.map((row) => row.path)).not.toContain("src");
-      expect(snapshot.cursorPath).toBe("docs");
+      expect(snapshot.rows.map((row) => row.path)).not.toContain(
+        "src/nested/app.ts",
+      );
+      await expect(lstat(join(repo, "src"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
     } finally {
       store.dispose();
       await rm(repo, { recursive: true, force: true });
@@ -1250,9 +2057,14 @@ describe("project tree helpers", () => {
 
       expect(store.getCursorPath()).toBe("gone.ts");
 
-      await expect(store.deletePath("gone.ts")).resolves.toEqual({ ok: true, path: "gone.ts" });
+      await expect(store.deletePath("gone.ts")).resolves.toEqual({
+        ok: true,
+        path: "gone.ts",
+      });
 
-      const selectableRows = store.getSnapshot().rows.filter((row) => row.kind === "file" || row.kind === "directory");
+      const selectableRows = store
+        .getSnapshot()
+        .rows.filter((row) => row.kind === "file" || row.kind === "directory");
       expect(selectableRows).toHaveLength(0);
       expect(store.getCursorPath()).toBeNull();
       expect(store.getSnapshot().cursorPath).toBeNull();
@@ -1270,12 +2082,17 @@ async function waitForTreePaths(
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const snapshot = store.getSnapshot();
     const paths = snapshot.rows.map((row) => row.path);
-    if (!snapshot.loading && expectedPaths.every((path) => paths.includes(path))) {
+    if (
+      !snapshot.loading &&
+      expectedPaths.every((path) => paths.includes(path))
+    ) {
       return;
     }
     await delay(10);
   }
-  throw new Error(`Timed out waiting for project tree paths: ${expectedPaths.join(", ")}`);
+  throw new Error(
+    `Timed out waiting for project tree paths: ${expectedPaths.join(", ")}`,
+  );
 }
 
 describe("scanWorkspacePaths bounds (workspace-scan OOM regression)", () => {

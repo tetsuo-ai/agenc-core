@@ -207,9 +207,7 @@ describe("model-controlled helper process sandbox closure", () => {
     await writeFile(pdf, "%PDF-1.4\n", "utf8");
 
     const missing = await normalizeUserPdfInput(pdf, { cwd: root });
-    expect(missing?.fallbackTextError).toContain(
-      "[sandbox_surface_uncovered]",
-    );
+    expect(missing?.fallbackTextError).toContain("[sandbox_surface_uncovered]");
     await expectMarkerAbsent();
 
     const unavailable = await normalizeUserPdfInput(pdf, {
@@ -286,7 +284,7 @@ describe("model-controlled helper process sandbox closure", () => {
     const probeCapture = join(root, "grep-probe.json");
     const searchCapture = join(root, "grep-search.json");
     const broker = transformingDangerBroker((command) => {
-      const isProbe = command.args[0] === "--version";
+      const isProbe = command.args.includes("--version");
       return capturedNodeCommand({
         original: command,
         capturePath: isProbe ? probeCapture : searchCapture,

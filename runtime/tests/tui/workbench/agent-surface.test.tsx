@@ -15,7 +15,9 @@ const keybindingHarness = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../src/utils/fsOperations.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../src/utils/fsOperations.js")>()),
+  ...(await importOriginal<
+    typeof import("../../../src/utils/fsOperations.js")
+  >()),
   tailFile: vi.fn(async (path: string) => {
     const taskId = /\/tmp\/(.+)\.log$/u.exec(path)?.[1] ?? path;
     const readCount = (keybindingHarness.readCounts[taskId] ?? 0) + 1;
@@ -52,8 +54,16 @@ vi.mock("../../../src/utils/log.js", () => ({
 import { createRoot } from "../../../src/tui/ink.js";
 import { getInkInstance } from "../../../src/tui/ink/instances.js";
 import { cellAt } from "../../../src/tui/ink/screen.js";
-import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
-import { AgentSurface, canEnterAgentTranscript } from "../../../src/tui/workbench/surfaces/AgentSurface.js";
+import {
+  AppStateProvider,
+  getDefaultAppState,
+  type AppState,
+  useSetAppState,
+} from "../../../src/tui/state/AppState.js";
+import {
+  AgentSurface,
+  canEnterAgentTranscript,
+} from "../../../src/tui/workbench/surfaces/AgentSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
 type TestStdin = PassThrough & {
@@ -107,7 +117,7 @@ describe("AgentSurface", () => {
           },
           workbench: {
             ...getDefaultAppState().workbench,
-            activeSurfaceMode: "agent",
+            activeSurfaceMode: "task-detail",
             selectedAgentTaskId: "agent-gone",
           },
         }}
@@ -146,7 +156,7 @@ describe("AgentSurface", () => {
           tasks: { [teammateTask.id]: teammateTask },
           workbench: {
             ...getDefaultAppState().workbench,
-            activeSurfaceMode: "agent",
+            activeSurfaceMode: "task-detail",
             selectedAgentTaskId: teammateTask.id,
           },
         }}
@@ -183,7 +193,7 @@ describe("AgentSurface", () => {
             ...getDefaultAppState(),
             workbench: {
               ...getDefaultAppState().workbench,
-              activeSurfaceMode: "agent",
+              activeSurfaceMode: "task-detail",
               selectedAgentTaskId: "missing-agent",
             },
           }}
@@ -194,7 +204,9 @@ describe("AgentSurface", () => {
       );
       await sleep();
 
-      expect(compact(screenText(stdout))).toContain("Nobackgroundagentselected");
+      expect(compact(screenText(stdout))).toContain(
+        "Nobackgroundagentselected",
+      );
 
       keybindingHarness.handlers["surface:open"]?.();
       keybindingHarness.handlers["surface:stop"]?.();
@@ -225,7 +237,7 @@ describe("AgentSurface", () => {
           },
           workbench: {
             ...getDefaultAppState().workbench,
-            activeSurfaceMode: "agent",
+            activeSurfaceMode: "task-detail",
             selectedAgentTaskId: "agent-1",
           },
         }}
@@ -267,17 +279,31 @@ describe("AgentSurface", () => {
           initialState={{
             ...getDefaultAppState(),
             tasks: {
-              "agent-old": agentTask("agent-old", "old agent", "completed", 1_000),
-              "agent-new": agentTask("agent-new", "new agent", "running", 2_000),
+              "agent-old": agentTask(
+                "agent-old",
+                "old agent",
+                "completed",
+                1_000,
+              ),
+              "agent-new": agentTask(
+                "agent-new",
+                "new agent",
+                "running",
+                2_000,
+              ),
             },
             workbench: {
               ...getDefaultAppState().workbench,
-              activeSurfaceMode: "agent",
+              activeSurfaceMode: "task-detail",
               selectedAgentTaskId: "agent-old",
             },
           }}
         >
-          <AgentTaskSelector onReady={(setter) => { selectAgent = setter; }} />
+          <AgentTaskSelector
+            onReady={(setter) => {
+              selectAgent = setter;
+            }}
+          />
           <AgentSurface focused={true} />
         </AppStateProvider>,
       );
@@ -289,7 +315,9 @@ describe("AgentSurface", () => {
       await sleep(25);
 
       expect(compact(screenText(stdout))).toContain("running-newagent");
-      expect(compact(screenText(stdout))).not.toContain("staleoutputfromoldagent");
+      expect(compact(screenText(stdout))).not.toContain(
+        "staleoutputfromoldagent",
+      );
     } finally {
       root.unmount();
       stdin.end();
@@ -298,10 +326,16 @@ describe("AgentSurface", () => {
   });
 
   it("limits transcript entry to locally viewable agent task types", () => {
-    expect(canEnterAgentTranscript({ id: "local", type: "local_agent" })).toBe(true);
-    expect(canEnterAgentTranscript({ id: "team", type: "in_process_teammate" })).toBe(true);
+    expect(canEnterAgentTranscript({ id: "local", type: "local_agent" })).toBe(
+      true,
+    );
+    expect(
+      canEnterAgentTranscript({ id: "team", type: "in_process_teammate" }),
+    ).toBe(true);
     // Stale record with the deleted remote_agent scaffold kind stays view-only.
-    expect(canEnterAgentTranscript({ id: "stale", type: "remote_agent" })).toBe(false);
+    expect(canEnterAgentTranscript({ id: "stale", type: "remote_agent" })).toBe(
+      false,
+    );
     expect(canEnterAgentTranscript({ type: "local_agent" })).toBe(false);
     expect(canEnterAgentTranscript(null)).toBe(false);
   });
@@ -322,11 +356,16 @@ describe("AgentSurface", () => {
           initialState={{
             ...getDefaultAppState(),
             tasks: {
-              "agent-1": agentTask("agent-1", "current agent", "running", 1_000),
+              "agent-1": agentTask(
+                "agent-1",
+                "current agent",
+                "running",
+                1_000,
+              ),
             },
             workbench: {
               ...getDefaultAppState().workbench,
-              activeSurfaceMode: "agent",
+              activeSurfaceMode: "task-detail",
               selectedAgentTaskId: "agent-1",
             },
           }}
@@ -342,9 +381,13 @@ describe("AgentSurface", () => {
 
       expect(compact(screenText(stdout))).toContain("currentagentoutput");
       expect(compact(screenText(stdout))).not.toContain("(nooutput)");
-      expect(keybindingHarness.logError.mock.calls.some(([error]) =>
-        error instanceof Error && error.message === "tail failed for agent-1"
-      )).toBe(true);
+      expect(
+        keybindingHarness.logError.mock.calls.some(
+          ([error]) =>
+            error instanceof Error &&
+            error.message === "tail failed for agent-1",
+        ),
+      ).toBe(true);
     } finally {
       root.unmount();
       stdin.end();
@@ -354,7 +397,8 @@ describe("AgentSurface", () => {
 
   it("keeps the current agent tail visible while a same-task status refresh is pending", async () => {
     keybindingHarness.tails["agent-1"] = "current agent output";
-    let updateAgent: ((taskId: string, update: Record<string, unknown>) => void) | null = null;
+    let updateAgent:
+      ((taskId: string, update: Record<string, unknown>) => void) | null = null;
     const { stdin, stdout } = createStreams();
     const root = await createRoot({
       patchConsole: false,
@@ -368,16 +412,25 @@ describe("AgentSurface", () => {
           initialState={{
             ...getDefaultAppState(),
             tasks: {
-              "agent-1": agentTask("agent-1", "current agent", "running", 1_000),
+              "agent-1": agentTask(
+                "agent-1",
+                "current agent",
+                "running",
+                1_000,
+              ),
             },
             workbench: {
               ...getDefaultAppState().workbench,
-              activeSurfaceMode: "agent",
+              activeSurfaceMode: "task-detail",
               selectedAgentTaskId: "agent-1",
             },
           }}
         >
-          <AgentTaskUpdater onReady={(updater) => { updateAgent = updater; }} />
+          <AgentTaskUpdater
+            onReady={(updater) => {
+              updateAgent = updater;
+            }}
+          />
           <AgentSurface focused={true} />
         </AppStateProvider>,
       );
@@ -416,17 +469,31 @@ describe("AgentSurface", () => {
           initialState={{
             ...getDefaultAppState(),
             tasks: {
-              "agent-old": agentTask("agent-old", "old agent", "running", 1_000),
-              "agent-new": agentTask("agent-new", "new agent", "running", 2_000),
+              "agent-old": agentTask(
+                "agent-old",
+                "old agent",
+                "running",
+                1_000,
+              ),
+              "agent-new": agentTask(
+                "agent-new",
+                "new agent",
+                "running",
+                2_000,
+              ),
             },
             workbench: {
               ...getDefaultAppState().workbench,
-              activeSurfaceMode: "agent",
+              activeSurfaceMode: "task-detail",
               selectedAgentTaskId: "agent-old",
             },
           }}
         >
-          <AgentTaskSelector onReady={(setter) => { selectAgent = setter; }} />
+          <AgentTaskSelector
+            onReady={(setter) => {
+              selectAgent = setter;
+            }}
+          />
           <AgentSurface focused={true} />
         </AppStateProvider>,
       );
@@ -436,7 +503,9 @@ describe("AgentSurface", () => {
       selectAgent?.("agent-new");
       await sleep(25);
 
-      keybindingHarness.pendingRejects.get("agent-old")?.(new Error("old tail failed"));
+      keybindingHarness.pendingRejects.get("agent-old")?.(
+        new Error("old tail failed"),
+      );
       await sleep(25);
 
       expect(compact(screenText(stdout))).toContain("newagentoutput");
@@ -465,17 +534,31 @@ describe("AgentSurface", () => {
           initialState={{
             ...getDefaultAppState(),
             tasks: {
-              "agent-old": agentTask("agent-old", "old agent", "running", 1_000),
-              "agent-new": agentTask("agent-new", "new agent", "running", 2_000),
+              "agent-old": agentTask(
+                "agent-old",
+                "old agent",
+                "running",
+                1_000,
+              ),
+              "agent-new": agentTask(
+                "agent-new",
+                "new agent",
+                "running",
+                2_000,
+              ),
             },
             workbench: {
               ...getDefaultAppState().workbench,
-              activeSurfaceMode: "agent",
+              activeSurfaceMode: "task-detail",
               selectedAgentTaskId: "agent-old",
             },
           }}
         >
-          <AgentTaskSelector onReady={(setter) => { selectAgent = setter; }} />
+          <AgentTaskSelector
+            onReady={(setter) => {
+              selectAgent = setter;
+            }}
+          />
           <AgentSurface focused={true} />
         </AppStateProvider>,
       );
@@ -485,7 +568,9 @@ describe("AgentSurface", () => {
       selectAgent?.("agent-new");
       await sleep(25);
 
-      keybindingHarness.pendingReads.get("agent-old")?.({ content: "old stale output" });
+      keybindingHarness.pendingReads.get("agent-old")?.({
+        content: "old stale output",
+      });
       await sleep(25);
 
       expect(compact(screenText(stdout))).toContain("newagentoutput");
@@ -539,7 +624,7 @@ describe("AgentSurface", () => {
           },
           workbench: {
             ...getDefaultAppState().workbench,
-            activeSurfaceMode: "agent",
+            activeSurfaceMode: "task-detail",
             selectedAgentTaskId: "agent-1",
           },
         }}
@@ -585,7 +670,9 @@ function AgentTaskSelector({
 function AgentTaskUpdater({
   onReady,
 }: {
-  readonly onReady: (updateAgent: (taskId: string, update: Record<string, unknown>) => void) => void;
+  readonly onReady: (
+    updateAgent: (taskId: string, update: Record<string, unknown>) => void,
+  ) => void;
 }): null {
   const setAppState = useSetAppState();
   React.useEffect(() => {
@@ -634,9 +721,15 @@ function createStreams(): {
   stdin.ref = () => {};
   stdin.setRawMode = () => {};
   stdin.unref = () => {};
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).columns = 120;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).rows = 24;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).isTTY = true;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).columns = 120;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).rows = 24;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).isTTY = true;
   stdout.resume();
 
   return {
@@ -646,7 +739,7 @@ function createStreams(): {
 }
 
 function sleep(ms = 200): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function compact(value: string): string {
@@ -655,7 +748,11 @@ function compact(value: string): string {
 
 function screenText(stdout: PassThrough): string {
   const instance = getInkInstance(stdout as unknown as NodeJS.WriteStream) as
-    | { readonly frontFrame?: { readonly screen?: { readonly width: number; readonly height: number } } }
+    | {
+        readonly frontFrame?: {
+          readonly screen?: { readonly width: number; readonly height: number };
+        };
+      }
     | undefined;
   const screen = instance?.frontFrame?.screen;
   if (!screen) return "";

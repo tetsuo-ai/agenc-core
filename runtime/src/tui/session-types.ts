@@ -5,6 +5,7 @@ import type { Event } from "../session/event-log.js";
 import type { HistoryReplacedEvent } from "../session/transcript-replacement.js";
 import type {
   IdleInputAdmission,
+  IdleInputOwnership,
   SessionServices,
 } from "../session/session.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
@@ -21,6 +22,41 @@ import type {
 import type { AgenCRealtimeTuiControls } from "./realtime/controller.js";
 import type { FpsMetrics } from "../utils/fpsTracker.js";
 import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
+import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
+import type {
+  WorkspaceEditorAcquireParams,
+  WorkspaceEditorCancelPredictionSessionParams,
+  WorkspaceEditorCancelPredictionResult,
+  WorkspaceEditorChangesListParams,
+  WorkspaceEditorChangesListResult,
+  WorkspaceEditorHeartbeatParams,
+  WorkspaceEditorLeaseResult,
+  WorkspaceEditorProposalApplyParams,
+  WorkspaceEditorProposalApplyResult,
+  WorkspaceEditorProposalDiscardResult,
+  WorkspaceEditorProposalParams,
+  WorkspaceEditorProposalResult,
+  WorkspaceEditorProposalStatusParams,
+  WorkspaceEditorProposalStatusResult,
+  WorkspaceEditorPredictSessionParams,
+  WorkspaceEditorPredictionFeedbackSessionParams,
+  WorkspaceEditorPredictionFeedbackResult,
+  WorkspaceEditorPredictionResult,
+  WorkspaceEditorReleaseParams,
+  WorkspaceEditorReleaseResult,
+  WorkspaceEditorRecoveredTopologyListParams,
+  WorkspaceEditorRecoveredTopologyListResult,
+  WorkspaceEditorRecoveredTopologyResolveParams,
+  WorkspaceEditorRecoveredTopologyResolveResult,
+  WorkspaceEditorSyncParams,
+  WorkspaceEditorSyncResult,
+  WorkspaceEditorTopologyCompleteParams,
+  WorkspaceEditorTopologyCompleteResult,
+  WorkspaceEditorTopologyFinalizeParams,
+  WorkspaceEditorTopologyReleaseResult,
+  WorkspaceEditorTopologyReserveParams,
+  WorkspaceEditorTopologyReserveResult,
+} from "../app-server/protocol/index.js";
 
 export interface AgenCCompactProgressControls {
   setStreamMode?(mode: "requesting" | "responding" | null): void;
@@ -180,12 +216,70 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   readonly realtime?: AgenCRealtimeTuiControls;
   submit?(
     message: string,
-    opts?: { readonly displayUserMessage?: string | null },
+    opts?: {
+      readonly displayUserMessage?: string | null;
+      readonly editorInteraction?: SessionEditorInteraction;
+    },
   ): Promise<void>;
-  enqueueIdleInput?(input: LLMMessage): number;
-  enqueueIdleInputBatch?(inputs: readonly LLMMessage[]): number;
+  acquireWorkspaceEditor?(
+    params: WorkspaceEditorAcquireParams,
+  ): Promise<WorkspaceEditorLeaseResult>;
+  syncWorkspaceEditor?(
+    params: WorkspaceEditorSyncParams,
+  ): Promise<WorkspaceEditorSyncResult>;
+  heartbeatWorkspaceEditor?(
+    params: WorkspaceEditorHeartbeatParams,
+  ): Promise<WorkspaceEditorLeaseResult>;
+  releaseWorkspaceEditor?(
+    params: WorkspaceEditorReleaseParams,
+  ): Promise<WorkspaceEditorReleaseResult>;
+  reserveWorkspaceEditorTopology?(
+    params: WorkspaceEditorTopologyReserveParams,
+  ): Promise<WorkspaceEditorTopologyReserveResult>;
+  completeWorkspaceEditorTopology?(
+    params: WorkspaceEditorTopologyCompleteParams,
+  ): Promise<WorkspaceEditorTopologyCompleteResult>;
+  releaseWorkspaceEditorTopology?(
+    params: WorkspaceEditorTopologyFinalizeParams,
+  ): Promise<WorkspaceEditorTopologyReleaseResult>;
+  listRecoveredWorkspaceEditorTopologies?(
+    params: WorkspaceEditorRecoveredTopologyListParams,
+  ): Promise<WorkspaceEditorRecoveredTopologyListResult>;
+  resolveRecoveredWorkspaceEditorTopology?(
+    params: WorkspaceEditorRecoveredTopologyResolveParams,
+  ): Promise<WorkspaceEditorRecoveredTopologyResolveResult>;
+  getWorkspaceEditorProposal?(
+    params: WorkspaceEditorProposalParams,
+  ): Promise<WorkspaceEditorProposalResult>;
+  getWorkspaceEditorProposalStatus?(
+    params: WorkspaceEditorProposalStatusParams,
+  ): Promise<WorkspaceEditorProposalStatusResult>;
+  applyWorkspaceEditorProposal?(
+    params: WorkspaceEditorProposalApplyParams,
+  ): Promise<WorkspaceEditorProposalApplyResult>;
+  discardWorkspaceEditorProposal?(
+    params: WorkspaceEditorProposalParams,
+  ): Promise<WorkspaceEditorProposalDiscardResult>;
+  listWorkspaceEditorChanges?(
+    params: WorkspaceEditorChangesListParams,
+  ): Promise<WorkspaceEditorChangesListResult>;
+  predictEditorCode?(
+    params: WorkspaceEditorPredictSessionParams,
+  ): Promise<WorkspaceEditorPredictionResult>;
+  cancelEditorPrediction?(
+    params: WorkspaceEditorCancelPredictionSessionParams,
+  ): Promise<WorkspaceEditorCancelPredictionResult>;
+  reportEditorPredictionFeedback?(
+    params: WorkspaceEditorPredictionFeedbackSessionParams,
+  ): Promise<WorkspaceEditorPredictionFeedbackResult>;
+  enqueueIdleInput?(input: LLMMessage, ownership?: IdleInputOwnership): number;
+  enqueueIdleInputBatch?(
+    inputs: readonly LLMMessage[],
+    ownership?: IdleInputOwnership,
+  ): number;
   enqueueIdleInputBatchOwned?(
     inputs: readonly LLMMessage[],
+    ownership?: IdleInputOwnership,
   ): IdleInputAdmission;
   rollbackIdleInputAdmission?(token: string): boolean;
   commitIdleInputAdmission?(token: string): boolean;
@@ -299,6 +393,18 @@ export interface ConfigStoreLike {
 export interface AgenCTuiProps {
   readonly session: AgenCBridgeSession;
   readonly configStore: ConfigStoreLike;
+  /**
+   * bootTUI-owned awaitable lifecycle boundary. Components register
+   * idempotent cleanup here so waitUntilExit cannot outrun daemon/editor
+   * teardown.
+   */
+  readonly registerTuiTeardown?: (teardown: () => Promise<void>) => () => void;
+  /**
+   * Set by bootTUI before Ink unmounts on stdin/SSH loss. Providers use this
+   * to retain recovery state instead of treating transport loss as an
+   * operator-confirmed discard.
+   */
+  readonly shouldPreserveEditorRecoveryOnTeardown?: () => boolean;
   readonly isInteractive?: boolean;
   readonly model?: string;
   readonly initialPrompt?: string;

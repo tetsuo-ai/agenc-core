@@ -35,6 +35,11 @@ export function WorkbenchFooter(): React.ReactElement {
     bufferKeybindingContext,
     "shift+tab",
   );
+  const panelShortcut = useShortcutDisplay(
+    "workbench:focusRail",
+    bufferKeybindingContext,
+    buffer.provider.capabilities.terminalUi ? "alt+l" : "ctrl+x l",
+  );
   const maximizeShortcut = useShortcutDisplay(
     "workbench:toggleSurfaceMaximized",
     bufferKeybindingContext,
@@ -75,6 +80,7 @@ export function WorkbenchFooter(): React.ReactElement {
     ? [
         `BUFFER: ${saveShortcut} save`,
         `${redoShortcut} redo`,
+        ...(workbench.rail !== null ? [`${panelShortcut} AI panel`] : []),
         `${composerShortcut} composer`,
         `${maximizeShortcut} ${workbench.surfaceMaximized ? "restore" : "maximize"}`,
         `${closeShortcut} hide`,

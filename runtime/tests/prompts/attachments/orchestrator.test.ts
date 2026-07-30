@@ -10,6 +10,7 @@ import {
   getAttachmentTrackingState,
 } from "../../session/attachment-state.js";
 import {
+  __INTERNAL,
   type GetAttachmentsOptions,
   getAttachments,
 } from "./orchestrator.js";
@@ -33,6 +34,29 @@ function makeOpts(
 }
 
 describe("attachments orchestrator", () => {
+  test("keeps the Editor local-read-only producer surface explicit", () => {
+    expect(__INTERNAL.ordinaryProducerNames).toEqual([
+      "planModeProducer",
+      "verifyPlanReminderProducer",
+      "autoModeProducer",
+      "swarmModeProducer",
+      "deferredToolsDeltaProducer",
+      "agentListingDeltaProducer",
+      "mcpInstructionsDeltaProducer",
+      "dateChangeProducer",
+      "criticalReminderProducer",
+      "outputStyleProducer",
+      "relevantMemoriesProducer",
+      "changedFilesProducer",
+      "lspDiagnosticsProducer",
+      "agentMentionsProducer",
+      "mcpResourcesProducer",
+      "fileMentionsProducer",
+      "skillListingProducer",
+    ]);
+    expect(__INTERNAL.localReadOnlyProducerNames).toEqual([]);
+  });
+
   test("returns an empty list with no producers registered", async () => {
     const opts = makeOpts();
     const out = await getAttachments(opts);

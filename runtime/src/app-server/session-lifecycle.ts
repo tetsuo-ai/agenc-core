@@ -77,6 +77,7 @@ export interface AgenCSessionLifecycleOptions {
   readonly now?: () => string;
   readonly defaultAgentId?: string;
   readonly threadStore?: ThreadStore;
+  readonly onSessionTerminated?: (sessionId: string) => void | Promise<void>;
 }
 
 export interface AgenCSessionRestoreRecord {
@@ -137,6 +138,8 @@ export class AgenCDaemonSessionManager {
   readonly #now: () => string;
   readonly #defaultAgentId: string;
   readonly #threadStore: ThreadStore | undefined;
+  readonly #onSessionTerminated:
+    ((sessionId: string) => void | Promise<void>) | undefined;
 
   constructor(options: AgenCSessionLifecycleOptions = {}) {
     this.#createSessionId =
@@ -147,6 +150,7 @@ export class AgenCDaemonSessionManager {
     this.#defaultAgentId =
       options.defaultAgentId ?? DEFAULT_AGENC_DAEMON_AGENT_ID;
     this.#threadStore = options.threadStore;
+    this.#onSessionTerminated = options.onSessionTerminated;
   }
 
   async createSession(
@@ -229,7 +233,9 @@ export class AgenCDaemonSessionManager {
     });
   }
 
-  async listSessions(params: SessionListParams = {}): Promise<SessionListResult> {
+  async listSessions(
+    params: SessionListParams = {},
+  ): Promise<SessionListResult> {
     const cursor = parseSessionListCursor(params.cursor);
     const limit = normalizeLimit(params.limit);
     const agentId = nonEmptyString(params.agentId);
@@ -493,7 +499,7 @@ export class AgenCDaemonSessionManager {
   async terminateSession(
     params: SessionTerminateParams,
   ): Promise<SessionTerminateResult> {
-    return this.#state.with((state) => {
+    const result = await this.#state.with((state) => {
       const session = this.#requireSession(state, params.sessionId);
 
       if (session.status === "closed") {
@@ -504,10 +510,15 @@ export class AgenCDaemonSessionManager {
       session.status = "closed";
       session.closedAt = this.#now();
       session.attachments.clear();
-      if (params.reason !== undefined) session.terminationReason = params.reason;
+      if (params.reason !== undefined)
+        session.terminationReason = params.reason;
       this.#archiveRecoveredThread(session);
       return toTerminateResult(session, true);
     });
+    if (result.terminated) {
+      await this.#onSessionTerminated?.(result.sessionId);
+    }
+    return result;
   }
 
   #archiveRecoveredThread(session: MutableSession): void {
@@ -673,7 +684,9 @@ function toAttachResult(
   return {
     sessionId: session.sessionId,
     attachmentId: attachment.attachmentId,
-    ...(attachment.clientId !== undefined ? { clientId: attachment.clientId } : {}),
+    ...(attachment.clientId !== undefined
+      ? { clientId: attachment.clientId }
+      : {}),
     attachedAt: attachment.attachedAt,
     activeAttachmentIds: activeAttachmentIds(session),
   };
@@ -730,7 +743,9 @@ function storedThreadToSessionSummary(
   const roleWorkspace = roleWorkspaceFromThreadSource(thread.source);
   const metadata: JsonObject = {
     source:
-      thread.source === undefined ? undefined : threadSourceToJson(thread.source),
+      thread.source === undefined
+        ? undefined
+        : threadSourceToJson(thread.source),
     model: thread.model,
     modelProvider: thread.modelProvider,
     rolloutPath: thread.rolloutPath,

@@ -8,16 +8,9 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import {
-  basename,
-  dirname,
-  join,
-} from "node:path";
+import { basename, dirname, join } from "node:path";
 
-import type {
-  BufferConfig,
-  Personality,
-} from "./schema.js";
+import type { BufferConfig, Personality } from "./schema.js";
 import { readTextFile } from "./_deps/file-read.js";
 import {
   cloneRecord,
@@ -70,10 +63,7 @@ export class AgenCConfigEditsBuilder {
 
   constructor(private readonly agencHome: string) {}
 
-  setMcpServer(
-    name: string,
-    config: Readonly<Record<string, unknown>>,
-  ): this {
+  setMcpServer(name: string, config: Readonly<Record<string, unknown>>): this {
     this.edits.push((raw) => {
       const existing = isPlainRecord(raw.mcp_servers)
         ? cloneRecord(raw.mcp_servers)
@@ -108,15 +98,14 @@ export class AgenCConfigEditsBuilder {
       if (normalizedModel.length > 0) {
         raw.model = normalizedModel;
       }
-      if (
-        normalizedProvider.length > 0 &&
-        normalizedModel.length > 0
-      ) {
+      if (normalizedProvider.length > 0 && normalizedModel.length > 0) {
         const providers = isPlainRecord(raw.providers)
           ? cloneRecord(raw.providers)
           : {};
         const existing = isPlainRecord(providers[normalizedProvider])
-          ? cloneRecord(providers[normalizedProvider] as Record<string, unknown>)
+          ? cloneRecord(
+              providers[normalizedProvider] as Record<string, unknown>,
+            )
           : {};
         existing.default_model = normalizedModel;
         providers[normalizedProvider] = existing;
@@ -172,6 +161,30 @@ export class AgenCConfigEditsBuilder {
           neovim.cleanup_timeout_ms = config.neovim.cleanup_timeout_ms;
         }
         if (Object.keys(neovim).length > 0) buffer.neovim = neovim;
+      }
+      if (config.prediction !== undefined) {
+        const prediction: JsonRecord = {};
+        if (config.prediction.enabled !== undefined) {
+          prediction.enabled = config.prediction.enabled;
+        }
+        if (config.prediction.debounce_ms !== undefined) {
+          prediction.debounce_ms = config.prediction.debounce_ms;
+        }
+        if (config.prediction.timeout_ms !== undefined) {
+          prediction.timeout_ms = config.prediction.timeout_ms;
+        }
+        if (config.prediction.max_output_tokens !== undefined) {
+          prediction.max_output_tokens = config.prediction.max_output_tokens;
+        }
+        if (config.prediction.provider !== undefined) {
+          prediction.provider = config.prediction.provider;
+        }
+        if (config.prediction.model !== undefined) {
+          prediction.model = config.prediction.model;
+        }
+        if (Object.keys(prediction).length > 0) {
+          buffer.prediction = prediction;
+        }
       }
       raw.buffer = buffer;
     });
@@ -264,7 +277,7 @@ async function assertMigrationAllowsEdit(params: {
   readonly jsonExists: boolean;
 }): Promise<void> {
   const unsafeSkip = params.skipped.find((skip) =>
-    UNSAFE_MIGRATION_SKIPS.has(skip)
+    UNSAFE_MIGRATION_SKIPS.has(skip),
   );
   if (unsafeSkip !== undefined) {
     throw new Error(
@@ -292,12 +305,16 @@ async function readConfigTomlRaw(path: string): Promise<JsonRecord> {
     throw new Error(`invalid TOML at ${path}: ${errorMessage(error)}`);
   }
   if (sawDuplicateKey) {
-    throw new Error(`cannot edit ${path}: duplicate TOML keys must be resolved first`);
+    throw new Error(
+      `cannot edit ${path}: duplicate TOML keys must be resolved first`,
+    );
   }
   return cloneRecord(parsed);
 }
 
-function prepareRawConfigForWrite(raw: Readonly<Record<string, unknown>>): JsonRecord {
+function prepareRawConfigForWrite(
+  raw: Readonly<Record<string, unknown>>,
+): JsonRecord {
   const aliased = normalizeAgenCKeyAliases(cloneRecord(raw));
   const migrated = migrateRawAgenCConfig(aliased);
   migrated[CONFIG_FILE_VERSION_KEY] = CURRENT_CONFIG_FILE_VERSION;
@@ -317,8 +334,12 @@ async function validateAndWriteConfig(
   await writeTextAtomic(target.path, serialized, target.mode);
 }
 
-function validateRawConfigForWrite(raw: Readonly<Record<string, unknown>>): void {
-  const validated = validateAgenCConfigBlocks(normalizeRawConfig(cloneRecord(raw)));
+function validateRawConfigForWrite(
+  raw: Readonly<Record<string, unknown>>,
+): void {
+  const validated = validateAgenCConfigBlocks(
+    normalizeRawConfig(cloneRecord(raw)),
+  );
   validatePermissionsConfig(validated.permissions);
 }
 

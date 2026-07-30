@@ -28,10 +28,7 @@ function makeDelegateProvider(model: string): LLMProvider {
     name: "grok",
     chat: vi.fn(async () => response(model)),
     chatStream: vi.fn(
-      async (
-        _messages: LLMMessage[],
-        onChunk: StreamProgressCallback,
-      ) => {
+      async (_messages: LLMMessage[], onChunk: StreamProgressCallback) => {
         const chunk: LLMStreamChunk = {
           content: "ok",
           done: true,
@@ -52,6 +49,81 @@ function makeDelegateProvider(model: string): LLMProvider {
 }
 
 describe("AgenCProvider", () => {
+  it("forks an independently-owned, tool-free editor prediction route", async () => {
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "remote" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "remote" }),
+      vendKey: (provider, sessionId) => ({
+        provider,
+        sessionId,
+        apiKey: "prediction-key",
+      }),
+      inferAgencModel: () => ({
+        provider: "grok",
+        model: "grok-prediction",
+      }),
+      getLlmUsage: () => ({
+        managedModelsEnabled: true,
+        modelAllowance: {
+          allowedModelCount: 1,
+          duration: "month",
+          status: "active",
+        },
+        subscriptionTier: "team",
+      }),
+      getSubscriptionTier: () => "team",
+    };
+    const dispose = vi.fn(async () => {});
+    const delegate = {
+      ...makeDelegateProvider("grok-prediction"),
+      dispose,
+    };
+    const providerFactory = vi.fn(() => delegate);
+    const primary = new AgenCProvider({
+      authBackend,
+      sessionId: "session-prediction",
+      model: "agenc",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "must_not_leak",
+            description: "primary agent tool",
+            parameters: { type: "object" },
+          },
+        },
+      ],
+      providerFactory,
+    });
+
+    const prediction = await primary.forkForCodePrediction({
+      model: "agenc:fast",
+      timeoutMs: 2_500,
+      maxOutputTokens: 256,
+    });
+    expect(prediction).not.toBe(primary);
+    await expect(
+      prediction.chat([{ role: "user", content: "complete" }], {
+        tools: [],
+        toolChoice: "none",
+        singleWireAttempt: true,
+      }),
+    ).resolves.toMatchObject({
+      content: "ok",
+      model: "grok-prediction",
+    });
+    expect(providerFactory).toHaveBeenCalledWith(
+      "grok",
+      expect.objectContaining({
+        tools: [],
+        timeoutMs: 2_500,
+      }),
+    );
+    await prediction.dispose?.();
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   it("routes hosted model aliases through AuthBackend inference and key vending", async () => {
     const calls: string[] = [];
     const authBackend: AuthBackend = {

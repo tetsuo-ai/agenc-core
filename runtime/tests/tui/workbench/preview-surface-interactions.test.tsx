@@ -33,22 +33,24 @@ const previewHarness = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../src/utils/readFileInRange.js", () => ({
-  readFileInRange: vi.fn((
-    filePath: string,
-    offset: number,
-    _limit: number,
-    _encoding: unknown,
-    signal?: AbortSignal,
-  ) => {
-    let resolve!: (result: PreviewReadResult) => void;
-    let reject!: (error: unknown) => void;
-    const promise = new Promise((resolvePromise, rejectPromise) => {
-      resolve = (result: PreviewReadResult) => resolvePromise(result);
-      reject = rejectPromise;
-    });
-    previewHarness.calls.push({ filePath, offset, signal, resolve, reject });
-    return promise;
-  }),
+  readFileInRange: vi.fn(
+    (
+      filePath: string,
+      offset: number,
+      _limit: number,
+      _encoding: unknown,
+      signal?: AbortSignal,
+    ) => {
+      let resolve!: (result: PreviewReadResult) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise((resolvePromise, rejectPromise) => {
+        resolve = (result: PreviewReadResult) => resolvePromise(result);
+        reject = rejectPromise;
+      });
+      previewHarness.calls.push({ filePath, offset, signal, resolve, reject });
+      return promise;
+    },
+  ),
 }));
 
 vi.mock("../../../src/tui/workbench/project-tree/gitStatus.js", () => ({
@@ -92,10 +94,16 @@ function createStreams(): {
   stdin.ref = () => {};
   stdin.setRawMode = () => {};
   stdin.unref = () => {};
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).columns = 80;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).rows = 24;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).isTTY = true;
-  stdout.on("data", chunk => {
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).columns = 80;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).rows = 24;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).isTTY = true;
+  stdout.on("data", (chunk) => {
     output += chunk.toString();
   });
 
@@ -107,7 +115,7 @@ function createStreams(): {
 }
 
 function sleep(ms = 50): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function waitForPreviewRead(
@@ -136,7 +144,9 @@ function resolvePreviewRead(
 function PreviewTargetController({
   onReady,
 }: {
-  readonly onReady: (setPreviewTarget: (filePath: string, line: number) => void) => void;
+  readonly onReady: (
+    setPreviewTarget: (filePath: string, line: number) => void,
+  ) => void;
 }): null {
   const setAppState = useSetAppState();
   React.useEffect(() => {
@@ -168,13 +178,15 @@ describe("PreviewSurface interactions", () => {
   it("handles scroll, attach, edit, close, diagnostics, and in-flight agent states", async () => {
     registerPendingLSPDiagnostic({
       serverName: "ts",
-      files: [{
-        uri: path.resolve(process.cwd(), "target.ts"),
-        diagnostics: [
-          { message: "first", severity: "Warning" },
-          { message: "second", severity: "Error" },
-        ],
-      }],
+      files: [
+        {
+          uri: path.resolve(process.cwd(), "target.ts"),
+          diagnostics: [
+            { message: "first", severity: "Warning" },
+            { message: "second", severity: "Error" },
+          ],
+        },
+      ],
     });
 
     const changes: AppState[] = [];
@@ -254,7 +266,9 @@ describe("PreviewSurface interactions", () => {
         </AppStateProvider>,
       );
 
-      const initialRead = await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 24);
+      const initialRead = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("target.ts") && call.offset === 24,
+      );
       resolvePreviewRead(initialRead, {
         content: "line25\nline26\nline27",
         lineCount: 3,
@@ -269,35 +283,45 @@ describe("PreviewSurface interactions", () => {
 
       previewHarness.handlers["surface:pageDown"]?.();
       resolvePreviewRead(
-        await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 44),
+        await waitForPreviewRead(
+          (call) => call.filePath.endsWith("target.ts") && call.offset === 44,
+        ),
         { content: "line45\nline46\nline47", lineCount: 3, totalLines: 100 },
       );
       await sleep();
 
       previewHarness.handlers["surface:up"]?.();
       resolvePreviewRead(
-        await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 43),
+        await waitForPreviewRead(
+          (call) => call.filePath.endsWith("target.ts") && call.offset === 43,
+        ),
         { content: "line44\nline45\nline46", lineCount: 3, totalLines: 100 },
       );
       await sleep();
 
       previewHarness.handlers["surface:pageUp"]?.();
       resolvePreviewRead(
-        await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 23),
+        await waitForPreviewRead(
+          (call) => call.filePath.endsWith("target.ts") && call.offset === 23,
+        ),
         { content: "line24\nline25\nline26", lineCount: 3, totalLines: 100 },
       );
       await sleep();
 
       previewHarness.handlers["surface:top"]?.();
       resolvePreviewRead(
-        await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 0),
+        await waitForPreviewRead(
+          (call) => call.filePath.endsWith("target.ts") && call.offset === 0,
+        ),
         { content: "line1\nline2\nline3", lineCount: 3, totalLines: 100 },
       );
       await sleep();
 
       previewHarness.handlers["surface:down"]?.();
       resolvePreviewRead(
-        await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 1),
+        await waitForPreviewRead(
+          (call) => call.filePath.endsWith("target.ts") && call.offset === 1,
+        ),
         { content: "line2\nline3\nline4", lineCount: 3, totalLines: 100 },
       );
       await sleep();
@@ -322,7 +346,7 @@ describe("PreviewSurface interactions", () => {
 
       previewHarness.handlers["workbench:closeSurface"]?.();
       await sleep();
-      expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
+      expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("preview");
     } finally {
       root.unmount();
       stdin.end();
@@ -396,12 +420,20 @@ describe("PreviewSurface interactions", () => {
         </AppStateProvider>,
       );
 
-      const initialRead = await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 0);
+      const initialRead = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("target.ts") && call.offset === 0,
+      );
       previewHarness.handlers["surface:down"]?.();
-      const scrolledRead = await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 1);
+      const scrolledRead = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("target.ts") && call.offset === 1,
+      );
 
       expect(initialRead.signal?.aborted).toBe(true);
-      resolvePreviewRead(scrolledRead, { content: "line2", lineCount: 1, totalLines: 2 });
+      resolvePreviewRead(scrolledRead, {
+        content: "line2",
+        lineCount: 1,
+        totalLines: 2,
+      });
       await sleep();
     } finally {
       root.unmount();
@@ -411,7 +443,8 @@ describe("PreviewSurface interactions", () => {
   });
 
   it("ignores aborted preview read resolutions after switching targets", async () => {
-    let setPreviewTarget: ((filePath: string, line: number) => void) | null = null;
+    let setPreviewTarget: ((filePath: string, line: number) => void) | null =
+      null;
     const { stdin, stdout, output } = createStreams();
     const root = await createRoot({
       patchConsole: false,
@@ -432,21 +465,37 @@ describe("PreviewSurface interactions", () => {
             },
           }}
         >
-          <PreviewTargetController onReady={(setter) => { setPreviewTarget = setter; }} />
+          <PreviewTargetController
+            onReady={(setter) => {
+              setPreviewTarget = setter;
+            }}
+          />
           <PreviewSurface focused={false} />
         </AppStateProvider>,
       );
 
-      const oldRead = await waitForPreviewRead((call) => call.filePath.endsWith("old.ts") && call.offset === 0);
+      const oldRead = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("old.ts") && call.offset === 0,
+      );
       setPreviewTarget?.("new.ts", 1);
-      const newRead = await waitForPreviewRead((call) => call.filePath.endsWith("new.ts") && call.offset === 0);
+      const newRead = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("new.ts") && call.offset === 0,
+      );
 
       expect(oldRead.signal?.aborted).toBe(true);
-      resolvePreviewRead(oldRead, { content: "old stale body", lineCount: 1, totalLines: 1 });
+      resolvePreviewRead(oldRead, {
+        content: "old stale body",
+        lineCount: 1,
+        totalLines: 1,
+      });
       await sleep();
       expect(output()).not.toContain("old stale body");
 
-      resolvePreviewRead(newRead, { content: "new body", lineCount: 1, totalLines: 1 });
+      resolvePreviewRead(newRead, {
+        content: "new body",
+        lineCount: 1,
+        totalLines: 1,
+      });
       await sleep();
       expect(output()).toContain("new body");
     } finally {
@@ -457,7 +506,8 @@ describe("PreviewSurface interactions", () => {
   });
 
   it("ignores aborted preview read failures after switching targets", async () => {
-    let setPreviewTarget: ((filePath: string, line: number) => void) | null = null;
+    let setPreviewTarget: ((filePath: string, line: number) => void) | null =
+      null;
     const { stdin, stdout, output } = createStreams();
     const root = await createRoot({
       patchConsole: false,
@@ -478,21 +528,33 @@ describe("PreviewSurface interactions", () => {
             },
           }}
         >
-          <PreviewTargetController onReady={(setter) => { setPreviewTarget = setter; }} />
+          <PreviewTargetController
+            onReady={(setter) => {
+              setPreviewTarget = setter;
+            }}
+          />
           <PreviewSurface focused={false} />
         </AppStateProvider>,
       );
 
-      const oldRead = await waitForPreviewRead((call) => call.filePath.endsWith("old.ts") && call.offset === 0);
+      const oldRead = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("old.ts") && call.offset === 0,
+      );
       setPreviewTarget?.("new.ts", 1);
-      const newRead = await waitForPreviewRead((call) => call.filePath.endsWith("new.ts") && call.offset === 0);
+      const newRead = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("new.ts") && call.offset === 0,
+      );
 
       expect(oldRead.signal?.aborted).toBe(true);
       oldRead.reject(new Error("old read failed"));
       await sleep();
       expect(output()).not.toContain("old read failed");
 
-      resolvePreviewRead(newRead, { content: "new body", lineCount: 1, totalLines: 1 });
+      resolvePreviewRead(newRead, {
+        content: "new body",
+        lineCount: 1,
+        totalLines: 1,
+      });
       await sleep();
       expect(output()).toContain("new body");
     } finally {
@@ -527,7 +589,9 @@ describe("PreviewSurface interactions", () => {
         </AppStateProvider>,
       );
 
-      const read = await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 0);
+      const read = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("target.ts") && call.offset === 0,
+      );
       read.reject("plain failure");
       await sleep();
 
@@ -564,11 +628,19 @@ describe("PreviewSurface interactions", () => {
         </AppStateProvider>,
       );
 
-      const unclampedRead = await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 5);
+      const unclampedRead = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("target.ts") && call.offset === 5,
+      );
       resolvePreviewRead(unclampedRead, { content: "", lineCount: 2 });
 
-      const clampedRead = await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 1);
-      resolvePreviewRead(clampedRead, { content: "line2", lineCount: 1, totalLines: 2 });
+      const clampedRead = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("target.ts") && call.offset === 1,
+      );
+      resolvePreviewRead(clampedRead, {
+        content: "line2",
+        lineCount: 1,
+        totalLines: 2,
+      });
       await sleep();
 
       expect(previewHarness.calls.some((call) => call.offset === 1)).toBe(true);
@@ -604,7 +676,9 @@ describe("PreviewSurface interactions", () => {
         </AppStateProvider>,
       );
 
-      const read = await waitForPreviewRead((call) => call.filePath.endsWith("target.ts") && call.offset === 0);
+      const read = await waitForPreviewRead(
+        (call) => call.filePath.endsWith("target.ts") && call.offset === 0,
+      );
       resolvePreviewRead(read, { content: "" });
       await sleep();
 

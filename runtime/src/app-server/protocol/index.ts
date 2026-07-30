@@ -24,8 +24,7 @@ export const AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET = {
   schemaExport: AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
   schemaId: AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
 } as const;
-export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY =
-  "daemon.methods" as const;
+export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY = "daemon.methods" as const;
 /** Explicit opt-in for unsolicited, cross-session mobile agent-status notifications. */
 export const AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY =
   "portal.mobile.status.push.v1" as const;
@@ -93,6 +92,23 @@ export const AGENC_DAEMON_METHODS = [
 export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
 
 export const AGENC_DAEMON_INTERNAL_METHODS = [
+  "workspace.editor.acquire",
+  "workspace.editor.sync",
+  "workspace.editor.heartbeat",
+  "workspace.editor.release",
+  "workspace.editor.topology.reserve",
+  "workspace.editor.topology.complete",
+  "workspace.editor.topology.release",
+  "workspace.editor.topology.recovered.list",
+  "workspace.editor.topology.recovered.resolve",
+  "workspace.editor.proposal.get",
+  "workspace.editor.proposal.status",
+  "workspace.editor.proposal.apply",
+  "workspace.editor.proposal.discard",
+  "workspace.editor.changes.list",
+  "workspace.editor.predict",
+  "workspace.editor.cancelPrediction",
+  "workspace.editor.predictionFeedback",
   "session.partialCompactFromMessage",
   "session.rewindConversationToMessage",
   "session.previewFileRewind",
@@ -111,8 +127,7 @@ export type AgenCDaemonInternalMethod =
   (typeof AGENC_DAEMON_INTERNAL_METHODS)[number];
 
 export type AgenCDaemonKnownMethod =
-  | AgenCDaemonMethod
-  | AgenCDaemonInternalMethod;
+  AgenCDaemonMethod | AgenCDaemonInternalMethod;
 
 export type AgenCDaemonMethodCapabilities = JsonObject & {
   readonly [Method in AgenCDaemonKnownMethod]: boolean;
@@ -184,7 +199,9 @@ function defineMethodSpecs<
 
 function defineInternalMethodSpecs<
   const Spec extends {
-    readonly [Method in AgenCDaemonInternalMethod]: AgenCDaemonInternalMethodSpec<Method>;
+    readonly [
+      Method in AgenCDaemonInternalMethod
+    ]: AgenCDaemonInternalMethodSpec<Method>;
   },
 >(spec: Spec): Spec {
   return spec;
@@ -192,7 +209,9 @@ function defineInternalMethodSpecs<
 
 function defineNotificationSpecs<
   const Spec extends {
-    readonly [Method in AgenCDaemonNotificationMethod]: AgenCDaemonNotificationSpec<Method>;
+    readonly [
+      Method in AgenCDaemonNotificationMethod
+    ]: AgenCDaemonNotificationSpec<Method>;
   },
 >(spec: Spec): Spec {
   return spec;
@@ -552,6 +571,142 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
 });
 
 export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
+  "workspace.editor.acquire": {
+    method: "workspace.editor.acquire",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to acquire the single authoritative editor lease for a workspace.",
+  },
+  "workspace.editor.sync": {
+    method: "workspace.editor.sync",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to synchronize revisioned clean and dirty editor-buffer authority.",
+  },
+  "workspace.editor.heartbeat": {
+    method: "workspace.editor.heartbeat",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to keep an authoritative editor lease alive.",
+  },
+  "workspace.editor.release": {
+    method: "workspace.editor.release",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to release editor authority while quarantining unresolved dirty paths.",
+  },
+  "workspace.editor.topology.reserve": {
+    method: "workspace.editor.topology.reserve",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to fence an authenticated Editor project-path mutation.",
+  },
+  "workspace.editor.topology.complete": {
+    method: "workspace.editor.topology.complete",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to atomically publish post-mutation Editor revisions and complete a project-path fence.",
+  },
+  "workspace.editor.topology.release": {
+    method: "workspace.editor.topology.release",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to atomically publish Editor revisions and release a pre-effect project-path fence.",
+  },
+  "workspace.editor.topology.recovered.list": {
+    method: "workspace.editor.topology.recovered.list",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal authenticated discovery of durable orphaned Editor project-path fences after daemon recovery.",
+  },
+  "workspace.editor.topology.recovered.resolve": {
+    method: "workspace.editor.topology.recovered.resolve",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal explicit reconciliation of one recovered Editor project-path fence as an unknown outcome.",
+  },
+  "workspace.editor.proposal.get": {
+    method: "workspace.editor.proposal.get",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to inspect a revision-valid in-memory editor proposal.",
+  },
+  "workspace.editor.proposal.status": {
+    method: "workspace.editor.proposal.status",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal read-only recovery query for the durable state of one editor proposal.",
+  },
+  "workspace.editor.proposal.apply": {
+    method: "workspace.editor.proposal.apply",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal acknowledgement that a reviewed proposal was applied to its live Neovim buffer.",
+  },
+  "workspace.editor.proposal.discard": {
+    method: "workspace.editor.proposal.discard",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to discard a reviewed in-memory editor proposal.",
+  },
+  "workspace.editor.changes.list": {
+    method: "workspace.editor.changes.list",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request for a bounded content-free cursor page of workspace changes.",
+  },
+  "workspace.editor.predict": {
+    method: "workspace.editor.predict",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal, transcript-free request for a revision-bound editor code prediction.",
+  },
+  "workspace.editor.cancelPrediction": {
+    method: "workspace.editor.cancelPrediction",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to cancel the active prediction for an editor.",
+  },
+  "workspace.editor.predictionFeedback": {
+    method: "workspace.editor.predictionFeedback",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal content-free feedback for displayed, accepted, or dismissed predictions.",
+  },
   "session.partialCompactFromMessage": {
     method: "session.partialCompactFromMessage",
     direction: "client-to-server",
@@ -797,6 +952,29 @@ export interface AgentCreateParams extends JsonObject {
   readonly profile?: string;
   readonly instructions?: string;
   readonly initialContent?: MessageContent;
+  /**
+   * Provision a live daemon session without submitting an initial model turn.
+   *
+   * Startup hooks and ordinary Agent side effects remain deferred until the
+   * first non-Editor message arrives. This is used by the cold Editor
+   * prediction path, which needs the selected provider/model but must not
+   * manufacture a user turn or start tool-bearing background services.
+   */
+  readonly deferInitialTurn?: boolean;
+  /**
+   * Transcript-facing text for the atomic first turn. `undefined` renders
+   * `initialContent`, while `null` suppresses the initial user-message row.
+   *
+   * This is an explicit agent.create field rather than opaque metadata because
+   * the daemon must validate it before the first model turn is admitted.
+   */
+  readonly initialDisplayUserMessage?: string | null;
+  /**
+   * Trusted policy and immutable buffer identity for an Editor-originated
+   * atomic first turn. The daemon validates this before starting the agent and
+   * carries it into the first runTurn exactly as message.stream does later.
+   */
+  readonly initialEditorInteraction?: EditorInteractionParams;
   readonly unattendedAllow?: readonly string[];
   readonly unattendedDeny?: readonly string[];
   readonly metadata?: JsonObject;
@@ -810,10 +988,7 @@ export interface AgentCreateParams extends JsonObject {
    * dropped on the wire to the daemon.
    */
   readonly permissionMode?:
-    | "default"
-    | "plan"
-    | "acceptEdits"
-    | "bypassPermissions";
+    "default" | "plan" | "acceptEdits" | "bypassPermissions";
   /**
    * Per-invocation environment overrides for the spawned agent. Used by
    * the TUI to propagate `OPENAI_BASE_URL` (and similar provider-config
@@ -827,6 +1002,33 @@ export interface AgentCreateParams extends JsonObject {
    * leaking unrelated env into agent processes.
    */
   readonly envOverrides?: { readonly [key: string]: string };
+}
+
+export interface EditorInteractionPositionParams extends JsonObject {
+  readonly line: number;
+  readonly column: number;
+}
+
+export interface EditorInteractionRangeParams extends JsonObject {
+  readonly start: EditorInteractionPositionParams;
+  readonly end: EditorInteractionPositionParams;
+}
+
+/**
+ * JSON-wire mirror of SessionEditorInteraction. Keep this protocol-owned shape
+ * structurally aligned without importing runtime session internals.
+ */
+export interface EditorInteractionParams extends JsonObject {
+  readonly interactionId: string;
+  readonly kind: "ask" | "explain" | "fix" | "edit" | "refactor";
+  readonly policy: "read_only" | "proposal_only";
+  readonly editorInstanceId: string;
+  readonly bufferHandle: number;
+  readonly changedtick: number;
+  readonly contentSha256: string;
+  readonly path?: string;
+  readonly range: EditorInteractionRangeParams;
+  readonly selectionMode?: "character" | "line" | "block";
 }
 
 export interface DaemonProtocolInfo extends JsonObject {
@@ -921,10 +1123,7 @@ export interface RunStartParams extends JsonObject {
   readonly maxTokens?: number;
   readonly deadlineAt?: string;
   readonly permissionMode?:
-    | "default"
-    | "plan"
-    | "acceptEdits"
-    | "bypassPermissions";
+    "default" | "plan" | "acceptEdits" | "bypassPermissions";
   readonly unattendedAllow?: readonly string[];
   readonly unattendedDeny?: readonly string[];
   /** Required verification commands; the workflow demands at least one. */
@@ -1027,6 +1226,164 @@ export interface SessionSetModelParams extends JsonObject {
   readonly model?: string;
   readonly provider?: string;
 }
+
+export interface WorkspaceEditorAcquireParams extends JsonObject {
+  readonly workspaceRoot: string;
+  readonly editorInstanceId: string;
+  readonly takeover?: boolean;
+  readonly requireUnprotectedWorkspace?: boolean;
+}
+
+export interface WorkspaceEditorBufferSync extends JsonObject {
+  readonly path: string;
+  readonly bufferHandle: number;
+  readonly changedtick: number;
+  readonly contentSha256: string;
+  readonly contentBytes: number;
+  readonly dirty: boolean;
+  readonly content?: string;
+}
+
+export interface WorkspaceEditorSyncParams extends JsonObject {
+  readonly workspaceRoot: string;
+  readonly editorInstanceId: string;
+  readonly leaseToken: string;
+  readonly epoch: number;
+  readonly sequence: number;
+  readonly buffers: readonly WorkspaceEditorBufferSync[];
+}
+
+export interface WorkspaceEditorHeartbeatParams extends JsonObject {
+  readonly workspaceRoot: string;
+  readonly editorInstanceId: string;
+  readonly leaseToken: string;
+  readonly epoch: number;
+}
+
+export interface WorkspaceEditorTopologyTarget extends JsonObject {
+  readonly path: string;
+  readonly includeDescendants?: boolean;
+  readonly allowOwnedClean?: boolean;
+}
+
+export interface WorkspaceEditorTopologyReserveParams extends WorkspaceEditorHeartbeatParams {
+  readonly targets: readonly WorkspaceEditorTopologyTarget[];
+}
+
+export interface WorkspaceEditorTopologyFinalizeParams extends WorkspaceEditorHeartbeatParams {
+  readonly tokenId: string;
+  readonly sequence: number;
+  readonly buffers: readonly WorkspaceEditorBufferSync[];
+}
+
+export interface WorkspaceEditorTopologyCompleteParams extends WorkspaceEditorTopologyFinalizeParams {
+  readonly status: "applied" | "unknown_outcome";
+}
+
+export interface WorkspaceEditorRecoveredTopologyListParams extends WorkspaceEditorHeartbeatParams {}
+
+export interface WorkspaceEditorRecoveredTopologyResolveParams extends WorkspaceEditorHeartbeatParams {
+  readonly tokenId: string;
+}
+
+export interface WorkspaceEditorReleaseParams extends WorkspaceEditorHeartbeatParams {
+  readonly abandonDirty?: boolean;
+}
+
+export interface WorkspaceEditorProposalParams extends WorkspaceEditorHeartbeatParams {
+  readonly proposalId: string;
+}
+
+export interface WorkspaceEditorProposalStatusParams extends WorkspaceEditorProposalParams {}
+
+export interface WorkspaceEditorProposalApplyParams extends WorkspaceEditorProposalParams {
+  readonly changedtick: number;
+  readonly contentSha256: string;
+  readonly content: string;
+}
+
+export interface WorkspaceEditorChangesListParams extends WorkspaceEditorHeartbeatParams {
+  readonly afterSequence?: number;
+}
+
+export interface WorkspaceEditorPredictionCursor extends JsonObject {
+  readonly line: number;
+  readonly byteColumn: number;
+}
+
+export interface WorkspaceEditorPredictionDiagnostic extends JsonObject {
+  readonly message: string;
+  readonly severity?: "error" | "warning" | "information" | "hint";
+}
+
+export interface WorkspaceEditorPredictionRelatedBuffer extends JsonObject {
+  readonly path: string;
+  readonly language?: string;
+  readonly content: string;
+}
+
+export interface WorkspaceEditorPredictParams extends JsonObject {
+  readonly requestId: string;
+  readonly sessionId: string;
+  readonly editorInstanceId: string;
+  readonly bufferHandle: number;
+  readonly generation: number;
+  readonly changedtick: number;
+  readonly path: string;
+  readonly fileBytes: number;
+  readonly language?: string;
+  readonly cursor: WorkspaceEditorPredictionCursor;
+  readonly prefix: string;
+  readonly suffix: string;
+  readonly header?: string;
+  readonly diagnostics?: readonly WorkspaceEditorPredictionDiagnostic[];
+  readonly latestIntent?: string;
+  readonly relatedBuffers?: readonly WorkspaceEditorPredictionRelatedBuffer[];
+}
+
+export type WorkspaceEditorPredictSessionParams = Pick<
+  WorkspaceEditorPredictParams,
+  | "requestId"
+  | "editorInstanceId"
+  | "bufferHandle"
+  | "generation"
+  | "changedtick"
+  | "path"
+  | "fileBytes"
+  | "language"
+  | "cursor"
+  | "prefix"
+  | "suffix"
+  | "header"
+  | "diagnostics"
+  | "latestIntent"
+  | "relatedBuffers"
+>;
+
+export interface WorkspaceEditorCancelPredictionParams extends JsonObject {
+  readonly sessionId: string;
+  readonly editorInstanceId: string;
+  readonly requestId?: string;
+}
+
+export type WorkspaceEditorCancelPredictionSessionParams = Pick<
+  WorkspaceEditorCancelPredictionParams,
+  "editorInstanceId" | "requestId"
+>;
+
+export interface WorkspaceEditorPredictionFeedbackParams extends JsonObject {
+  readonly sessionId: string;
+  readonly editorInstanceId: string;
+  readonly requestId: string;
+  readonly kind: "displayed" | "accepted" | "partially_accepted" | "dismissed";
+  readonly acceptedCharacters?: number;
+  readonly latencyMs?: number;
+}
+
+export type WorkspaceEditorPredictionFeedbackSessionParams = Pick<
+  WorkspaceEditorPredictionFeedbackParams,
+  "editorInstanceId" | "requestId" | "kind" | "acceptedCharacters" | "latencyMs"
+>;
 
 export interface SessionSetPermissionModeParams extends JsonObject {
   readonly sessionId: string;
@@ -1148,8 +1505,7 @@ export interface ThreadRealtimeWebrtcTransport extends JsonObject {
 }
 
 export type ThreadRealtimeStartTransport =
-  | ThreadRealtimeWebsocketTransport
-  | ThreadRealtimeWebrtcTransport;
+  ThreadRealtimeWebsocketTransport | ThreadRealtimeWebrtcTransport;
 
 export interface ThreadRealtimeStartParams extends JsonObject {
   readonly threadId: string;
@@ -1273,16 +1629,17 @@ interface CommandExecStartBase extends JsonObject {
   readonly size?: CommandExecTerminalSize | null;
 }
 
-export type CommandExecStartParams = CommandExecStartBase & (
-  | {
-      readonly permissionProfile: string;
-      readonly sandboxPolicy?: null;
-    }
-  | {
-      readonly sandboxPolicy: JsonObject;
-      readonly permissionProfile?: null;
-    }
-);
+export type CommandExecStartParams = CommandExecStartBase &
+  (
+    | {
+        readonly permissionProfile: string;
+        readonly sandboxPolicy?: null;
+      }
+    | {
+        readonly sandboxPolicy: JsonObject;
+        readonly permissionProfile?: null;
+      }
+  );
 
 export interface CommandExecResponse extends JsonObject {
   readonly exitCode: number;
@@ -1583,8 +1940,14 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
   | AgenCDaemonRequestWithParams<"session.transcript", SessionTranscriptParams>
   | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
-  | AgenCDaemonRequestWithParams<"session.resolveToolCall", SessionResolveToolCallParams>
-  | AgenCDaemonRequestWithParams<"session.mcp.addServer", SessionMcpAddServerParams>
+  | AgenCDaemonRequestWithParams<
+      "session.resolveToolCall",
+      SessionResolveToolCallParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "session.mcp.addServer",
+      SessionMcpAddServerParams
+    >
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
   | AgenCDaemonRequestWithParams<
@@ -1888,9 +2251,7 @@ export interface RunResultResult extends JsonObject {
   readonly outcome: RunTerminalOutcome;
   readonly epoch?: number;
   readonly durableRun?: RunDurableRecord;
-  readonly output:
-    | RunTerminalPersistedOutput
-    | RunTerminalOutputAvailability;
+  readonly output: RunTerminalPersistedOutput | RunTerminalOutputAvailability;
   readonly source: RunStateSource;
 }
 
@@ -1956,8 +2317,7 @@ export interface RunAdmissionJournalEvent extends JsonObject {
 export interface RunReplaySourceUnavailableGap extends JsonObject {
   readonly kind: "source_unavailable";
   readonly reason:
-    | "execution_admission_journal_not_present"
-    | "run_journal_not_present";
+    "execution_admission_journal_not_present" | "run_journal_not_present";
 }
 
 export interface RunReplayRetentionGap extends JsonObject {
@@ -1998,9 +2358,7 @@ export interface RunAdmissionReplaySource extends JsonObject {
   readonly projectDir: string;
 }
 
-export type RunReplaySource =
-  | RunJournalReplaySource
-  | RunAdmissionReplaySource;
+export type RunReplaySource = RunJournalReplaySource | RunAdmissionReplaySource;
 
 export interface RunReplayResult extends JsonObject {
   readonly runId: string;
@@ -2218,6 +2576,198 @@ export interface SessionMcpServerMutationResult extends JsonObject {
   readonly success: boolean;
   readonly toolCount: number;
   readonly error?: string;
+}
+
+export interface WorkspaceEditorLeaseResult extends JsonObject {
+  readonly workspaceRoot: string;
+  readonly editorInstanceId: string;
+  readonly leaseToken: string;
+  readonly epoch: number;
+  readonly sequence: number;
+  readonly expiresAt: number;
+}
+
+export interface WorkspaceEditorSyncResult extends JsonObject {
+  readonly accepted: true;
+  readonly sequence: number;
+  readonly expiresAt: number;
+  readonly dirtyPaths: readonly string[];
+  readonly stalePaths: readonly string[];
+}
+
+export interface WorkspaceEditorReleaseResult extends JsonObject {
+  readonly released: true;
+  readonly stalePaths: readonly string[];
+}
+
+export interface WorkspaceEditorTopologyReserveResult extends JsonObject {
+  readonly tokenId: string;
+  readonly targets: readonly WorkspaceEditorTopologyTarget[];
+}
+
+export interface WorkspaceEditorTopologyReleaseResult extends JsonObject {
+  readonly released: true;
+  readonly tokenId: string;
+  readonly sync: WorkspaceEditorSyncResult;
+}
+
+export interface WorkspaceEditorTopologyCompleteResult extends JsonObject {
+  readonly completed: true;
+  readonly tokenId: string;
+  readonly status: "applied" | "unknown_outcome";
+  readonly sync: WorkspaceEditorSyncResult;
+}
+
+export interface WorkspaceEditorRecoveredTopologyMutation extends JsonObject {
+  readonly tokenId: string;
+  readonly workspaceRoot: string;
+  readonly targets: readonly WorkspaceEditorTopologyTarget[];
+  readonly source: string;
+  readonly createdAt: number;
+}
+
+export interface WorkspaceEditorRecoveredTopologyListResult extends JsonObject {
+  readonly mutations: readonly WorkspaceEditorRecoveredTopologyMutation[];
+}
+
+export interface WorkspaceEditorRecoveredTopologyResolveResult extends JsonObject {
+  readonly resolved: true;
+  readonly tokenId: string;
+  readonly status: "unknown_outcome";
+}
+
+export interface WorkspaceEditorProposalResult extends JsonObject {
+  readonly proposalId: string;
+  readonly workspaceRoot: string;
+  readonly path: string;
+  readonly beforeText: string;
+  readonly afterText: string;
+  readonly baseContentSha256: string;
+  readonly baseChangedtick: number;
+  readonly bufferHandle: number;
+  readonly acceptedChangedtick?: number;
+  readonly source: string;
+}
+
+export type WorkspaceEditorProposalStatusResult =
+  | (JsonObject & {
+      readonly status: "reviewable";
+      readonly proposal: WorkspaceEditorProposalResult;
+    })
+  | (JsonObject & {
+      readonly status: "committed";
+      readonly proposalId: string;
+      readonly path: string;
+      readonly source: string;
+      readonly baseContentSha256: string;
+      readonly afterContentSha256: string;
+      readonly baseChangedtick: number;
+      readonly bufferHandle: number;
+      readonly acceptedChangedtick?: number;
+    })
+  | (JsonObject & {
+      readonly status: "applied";
+      readonly proposalId: string;
+      readonly path: string;
+      readonly changedtick: number;
+      readonly contentSha256: string;
+    })
+  | (JsonObject & {
+      readonly status: "discarded";
+      readonly proposalId: string;
+      readonly path: string;
+    })
+  | (JsonObject & {
+      readonly status: "missing";
+      readonly proposalId: string;
+    });
+
+export interface WorkspaceEditorProposalApplyResult extends JsonObject {
+  readonly applied: true;
+  readonly proposalId: string;
+  readonly path: string;
+  readonly changedtick: number;
+  readonly contentSha256: string;
+}
+
+export interface WorkspaceEditorProposalDiscardResult extends JsonObject {
+  readonly discarded: true;
+  readonly proposalId: string;
+  readonly path: string;
+}
+
+export interface WorkspaceEditorChangeResult extends JsonObject {
+  readonly sequence: number;
+  readonly timestamp: string;
+  readonly workspaceRoot: string;
+  readonly path: string;
+  readonly source: string;
+  readonly status:
+    "applied" | "proposed" | "blocked" | "discarded" | "unknown_outcome";
+  readonly beforeSha256: string;
+  readonly afterSha256?: string;
+  readonly proposalId?: string;
+}
+
+export interface WorkspaceEditorChangesListResult extends JsonObject {
+  readonly sequence: number;
+  readonly changes: readonly WorkspaceEditorChangeResult[];
+}
+
+export interface WorkspaceEditorPredictionUsage extends JsonObject {
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly totalTokens: number;
+  readonly cachedInputTokens?: number;
+  readonly cacheCreationInputTokens?: number;
+  readonly reasoningOutputTokens?: number;
+}
+
+export interface WorkspaceEditorPredictionCompletedResult extends JsonObject {
+  readonly status: "completed";
+  readonly requestId: string;
+  readonly generation: number;
+  readonly changedtick: number;
+  readonly text: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly latencyMs: number;
+  readonly cached: boolean;
+  readonly usage?: WorkspaceEditorPredictionUsage;
+}
+
+export interface WorkspaceEditorPredictionSuppressedResult extends JsonObject {
+  readonly status: "suppressed";
+  readonly requestId: string;
+  readonly generation: number;
+  readonly changedtick: number;
+  readonly reason:
+    | "cancelled"
+    | "consent_required"
+    | "disabled"
+    | "outside_workspace"
+    | "sensitive_path"
+    | "binary_content"
+    | "file_too_large"
+    | "payload_too_large"
+    | "output_too_large"
+    | "rate_limited"
+    | "admission_timeout"
+    | "stale"
+    | "empty";
+}
+
+export type WorkspaceEditorPredictionResult =
+  | WorkspaceEditorPredictionCompletedResult
+  | WorkspaceEditorPredictionSuppressedResult;
+
+export interface WorkspaceEditorCancelPredictionResult extends JsonObject {
+  readonly requestId?: string;
+  readonly cancelled: boolean;
+}
+
+export interface WorkspaceEditorPredictionFeedbackResult extends JsonObject {
+  readonly recorded: true;
 }
 
 export interface SessionPartialCompactFromMessageResult extends JsonObject {
@@ -2488,6 +3038,23 @@ export interface AgenCDaemonResultByMethod {
 }
 
 export interface AgenCDaemonInternalResultByMethod {
+  readonly "workspace.editor.acquire": WorkspaceEditorLeaseResult;
+  readonly "workspace.editor.sync": WorkspaceEditorSyncResult;
+  readonly "workspace.editor.heartbeat": WorkspaceEditorLeaseResult;
+  readonly "workspace.editor.release": WorkspaceEditorReleaseResult;
+  readonly "workspace.editor.topology.reserve": WorkspaceEditorTopologyReserveResult;
+  readonly "workspace.editor.topology.complete": WorkspaceEditorTopologyCompleteResult;
+  readonly "workspace.editor.topology.release": WorkspaceEditorTopologyReleaseResult;
+  readonly "workspace.editor.topology.recovered.list": WorkspaceEditorRecoveredTopologyListResult;
+  readonly "workspace.editor.topology.recovered.resolve": WorkspaceEditorRecoveredTopologyResolveResult;
+  readonly "workspace.editor.proposal.get": WorkspaceEditorProposalResult;
+  readonly "workspace.editor.proposal.status": WorkspaceEditorProposalStatusResult;
+  readonly "workspace.editor.proposal.apply": WorkspaceEditorProposalApplyResult;
+  readonly "workspace.editor.proposal.discard": WorkspaceEditorProposalDiscardResult;
+  readonly "workspace.editor.changes.list": WorkspaceEditorChangesListResult;
+  readonly "workspace.editor.predict": WorkspaceEditorPredictionResult;
+  readonly "workspace.editor.cancelPrediction": WorkspaceEditorCancelPredictionResult;
+  readonly "workspace.editor.predictionFeedback": WorkspaceEditorPredictionFeedbackResult;
   readonly "session.partialCompactFromMessage": SessionPartialCompactFromMessageResult;
   readonly "session.rewindConversationToMessage": SessionRewindConversationToMessageResult;
   readonly "session.previewFileRewind": SessionPreviewFileRewindResult;
@@ -2502,8 +3069,7 @@ export interface AgenCDaemonInternalResultByMethod {
   readonly "session.mcp.disableServer": SessionMcpServerMutationResult;
 }
 
-export type AgenCDaemonKnownResultByMethod =
-  AgenCDaemonResultByMethod &
+export type AgenCDaemonKnownResultByMethod = AgenCDaemonResultByMethod &
   AgenCDaemonInternalResultByMethod;
 
 export type AgenCDaemonSuccessResponse<
@@ -2517,12 +3083,7 @@ export type AgenCDaemonSuccessResponse<
 }[Method];
 
 export type AgenCDaemonErrorCode =
-  | -32700
-  | -32600
-  | -32601
-  | -32602
-  | -32603
-  | -32000;
+  -32700 | -32600 | -32601 | -32602 | -32603 | -32000;
 
 export interface AgenCDaemonErrorObject extends JsonObject {
   readonly code: AgenCDaemonErrorCode;
@@ -2537,5 +3098,4 @@ export interface AgenCDaemonErrorResponse extends JsonObject {
 }
 
 export type AgenCDaemonResponse =
-  | AgenCDaemonSuccessResponse
-  | AgenCDaemonErrorResponse;
+  AgenCDaemonSuccessResponse | AgenCDaemonErrorResponse;

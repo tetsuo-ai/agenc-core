@@ -82,11 +82,7 @@ describe("ExitFlow", () => {
     const onDone = vi.fn();
 
     const output = await renderToString(
-      <RerenderExitFlow
-        onCancel={onCancel}
-        onDone={onDone}
-        showWorktree
-      />,
+      <RerenderExitFlow onCancel={onCancel} onDone={onDone} showWorktree />,
       80,
     );
 
@@ -96,7 +92,9 @@ describe("ExitFlow", () => {
     await mocks.dialogProps?.onDone("Saved transcript");
 
     expect(onDone).toHaveBeenCalledWith("Saved transcript");
-    expect(gracefulShutdown).toHaveBeenCalledWith(0, "prompt_input_exit");
+    expect(gracefulShutdown).toHaveBeenCalledWith(0, "prompt_input_exit", {
+      skipSessionEndHooks: true,
+    });
   });
 
   test("forwards the exact pre-mutation safety callback to the worktree dialog", async () => {
@@ -121,7 +119,9 @@ describe("ExitFlow", () => {
     await mocks.dialogProps?.onDone();
 
     expect(onDone).toHaveBeenCalledWith("See ya!");
-    expect(gracefulShutdown).toHaveBeenCalledWith(0, "prompt_input_exit");
+    expect(gracefulShutdown).toHaveBeenCalledWith(0, "prompt_input_exit", {
+      skipSessionEndHooks: true,
+    });
   });
 
   test("does not shut down when the pre-exit safety check refuses", async () => {
@@ -142,6 +142,8 @@ describe("ExitFlow", () => {
     await mocks.dialogProps?.onDone();
 
     expect(onDone).toHaveBeenCalledWith("Goodbye!");
-    expect(gracefulShutdown).toHaveBeenCalledWith(0, "prompt_input_exit");
+    expect(gracefulShutdown).toHaveBeenCalledWith(0, "prompt_input_exit", {
+      skipSessionEndHooks: true,
+    });
   });
 });

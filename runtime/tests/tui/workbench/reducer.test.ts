@@ -13,6 +13,10 @@ import {
 describe("workbenchReducer", () => {
   it("provides stable defaults", () => {
     expect(getDefaultWorkbenchState()).toMatchObject({
+      activeWorkspaceView: "agent",
+      agentSurfaceMode: "transcript",
+      agentFocusedPane: "composer",
+      editorFocusedPane: "surface",
       focusedPane: "composer",
       explorerVisible: true,
       agentsVisible: true,
@@ -20,6 +24,93 @@ describe("workbenchReducer", () => {
       activeFilePath: null,
       composerAttachmentIds: [],
       attachments: [],
+    });
+  });
+
+  it("switches Agent and Editor without destroying either view's navigation state", () => {
+    const agent = workbenchReducer(
+      workbenchReducer(
+        workbenchReducer(undefined, {
+          type: "openPreview",
+          path: "README.md",
+          focus: false,
+        }),
+        { type: "focus", pane: "explorer" },
+      ),
+      {
+        type: "toggleFileRail",
+        path: "docs/INDEX.md",
+      },
+    );
+    const editor = workbenchReducer(agent, {
+      type: "switchWorkspaceView",
+      view: "editor",
+    });
+    const editedFile = workbenchReducer(editor, {
+      type: "openBuffer",
+      path: "src/editor.ts",
+      line: 12,
+    });
+    const configuredEditor = workbenchReducer(
+      workbenchReducer(editedFile, { type: "focus", pane: "composer" }),
+      { type: "setRail", rail: { kind: "transcript" } },
+    );
+    const restoredAgent = workbenchReducer(configuredEditor, {
+      type: "switchWorkspaceView",
+      view: "agent",
+    });
+    const restoredEditor = workbenchReducer(restoredAgent, {
+      type: "switchWorkspaceView",
+      view: "editor",
+    });
+
+    expect(editor).toMatchObject({
+      activeWorkspaceView: "editor",
+      activeSurfaceMode: "buffer",
+      focusedPane: "surface",
+      rail: null,
+    });
+    expect(restoredAgent).toMatchObject({
+      activeWorkspaceView: "agent",
+      activeSurfaceMode: "preview",
+      focusedPane: "explorer",
+      activeFilePath: "README.md",
+      rail: { kind: "file", path: "docs/INDEX.md" },
+    });
+    expect(restoredEditor).toMatchObject({
+      activeWorkspaceView: "editor",
+      activeSurfaceMode: "buffer",
+      activeFilePath: "src/editor.ts",
+      activeFileLine: 12,
+      focusedPane: "composer",
+      rail: { kind: "transcript" },
+    });
+  });
+
+  it("opens editable files in Editor while preserving the Agent surface", () => {
+    const search = workbenchReducer(undefined, {
+      type: "openSearch",
+      query: "needle",
+    });
+    const editor = workbenchReducer(search, {
+      type: "openBuffer",
+      path: "src/index.ts",
+      line: 7,
+    });
+    const agent = workbenchReducer(editor, {
+      type: "switchWorkspaceView",
+      view: "agent",
+    });
+
+    expect(editor).toMatchObject({
+      activeWorkspaceView: "editor",
+      activeSurfaceMode: "buffer",
+      activeFilePath: "src/index.ts",
+    });
+    expect(agent).toMatchObject({
+      activeWorkspaceView: "agent",
+      activeSurfaceMode: "search",
+      searchQuery: "needle",
     });
   });
 
@@ -127,15 +218,16 @@ describe("workbenchReducer", () => {
       { kind: "file" as const, path: "src/index.ts" },
       { kind: "change-review" as const, changeId: "change-1" },
     ]) {
-      expect(
-        workbenchReducer(
-          {
-            ...buffer,
-            rail,
-          },
-          { type: "closeSurface" },
-        ).rail,
-      ).toEqual(rail);
+      const next = workbenchReducer(
+        {
+          ...buffer,
+          rail,
+          editorRail: rail,
+        },
+        { type: "closeSurface" },
+      );
+      expect(next.rail).toBeNull();
+      expect(next.editorRail).toEqual(rail);
     }
   });
 
@@ -180,36 +272,45 @@ describe("workbenchReducer", () => {
   it.each([
     ["explorer" as const, { explorerVisible: false }],
     ["agents" as const, { agentsVisible: false }],
-  ])("cycles from the visible fallback pane when hidden %s focus is stale", (focusedPane, visibility) => {
-    const hiddenSidePaneFocus = {
-      ...getDefaultWorkbenchState(),
-      focusedPane,
-      ...visibility,
-    };
-    const next = workbenchReducer(hiddenSidePaneFocus, {
-      type: "focusNext",
-      visiblePanes: ["surface", "composer"],
-    });
+  ])(
+    "cycles from the visible fallback pane when hidden %s focus is stale",
+    (focusedPane, visibility) => {
+      const hiddenSidePaneFocus = {
+        ...getDefaultWorkbenchState(),
+        focusedPane,
+        ...visibility,
+      };
+      const next = workbenchReducer(hiddenSidePaneFocus, {
+        type: "focusNext",
+        visiblePanes: ["surface", "composer"],
+      });
 
-    expect(visibleWorkbenchPane(hiddenSidePaneFocus)).toBe("surface");
-    expect(next.focusedPane).toBe("composer");
-  });
+      expect(visibleWorkbenchPane(hiddenSidePaneFocus)).toBe("surface");
+      expect(next.focusedPane).toBe("composer");
+    },
+  );
 
   it("falls back to the surface when hidden panes have stale focus", () => {
-    expect(visibleWorkbenchPane({
-      ...getDefaultWorkbenchState(),
-      focusedPane: "agents",
-      agentsVisible: false,
-    })).toBe("surface");
-    expect(visibleWorkbenchPane({
-      ...getDefaultWorkbenchState(),
-      focusedPane: "explorer",
-      explorerVisible: false,
-    })).toBe("surface");
-    expect(visibleWorkbenchPane({
-      ...getDefaultWorkbenchState(),
-      focusedPane: "composer",
-    })).toBe("composer");
+    expect(
+      visibleWorkbenchPane({
+        ...getDefaultWorkbenchState(),
+        focusedPane: "agents",
+        agentsVisible: false,
+      }),
+    ).toBe("surface");
+    expect(
+      visibleWorkbenchPane({
+        ...getDefaultWorkbenchState(),
+        focusedPane: "explorer",
+        explorerVisible: false,
+      }),
+    ).toBe("surface");
+    expect(
+      visibleWorkbenchPane({
+        ...getDefaultWorkbenchState(),
+        focusedPane: "composer",
+      }),
+    ).toBe("composer");
   });
 
   it("stores attachment payloads and ids together", () => {
@@ -225,6 +326,160 @@ describe("workbenchReducer", () => {
 
     expect(next.composerAttachmentIds).toEqual(["file:README.md"]);
     expect(next.attachments).toHaveLength(1);
+  });
+
+  it("keeps Agent and Editor attachment drafts isolated while switching tabs", () => {
+    const agent = workbenchReducer(undefined, {
+      type: "attach",
+      attachment: {
+        id: "file:README.md",
+        kind: "file",
+        label: "README.md",
+        path: "README.md",
+      },
+    });
+    const editor = workbenchReducer(
+      workbenchReducer(agent, {
+        type: "switchWorkspaceView",
+        view: "editor",
+      }),
+      {
+        type: "attach",
+        attachment: {
+          id: "editor-selection:src/app.ts:1:0:1:5:4",
+          kind: "editor-selection",
+          label: "src/app.ts:1",
+          path: "src/app.ts",
+          line: 1,
+          endLine: 1,
+          startColumn: 0,
+          endColumn: 5,
+          selectionMode: "character",
+          changedtick: 4,
+          dirty: true,
+          content: "value",
+        },
+      },
+    );
+
+    expect(editor.composerAttachmentIds).toEqual([
+      "editor-selection:src/app.ts:1:0:1:5:4",
+    ]);
+    expect(editor.attachments).toHaveLength(2);
+
+    const restoredAgent = workbenchReducer(editor, {
+      type: "switchWorkspaceView",
+      view: "agent",
+    });
+    expect(restoredAgent.composerAttachmentIds).toEqual(["file:README.md"]);
+
+    const restoredEditor = workbenchReducer(restoredAgent, {
+      type: "switchWorkspaceView",
+      view: "editor",
+    });
+    const clearedEditor = workbenchReducer(restoredEditor, {
+      type: "clearAttachments",
+    });
+    expect(clearedEditor.composerAttachmentIds).toEqual([]);
+    expect(
+      clearedEditor.attachments.map((attachment) => attachment.id),
+    ).toEqual(["file:README.md"]);
+    expect(
+      workbenchReducer(clearedEditor, {
+        type: "switchWorkspaceView",
+        view: "agent",
+      }).composerAttachmentIds,
+    ).toEqual(["file:README.md"]);
+  });
+
+  it("removes a shared attachment id only from the active workspace draft", () => {
+    const attachment = {
+      id: "file:README.md",
+      kind: "file" as const,
+      label: "README.md",
+      path: "README.md",
+    };
+    const agent = workbenchReducer(undefined, {
+      type: "attach",
+      attachment,
+    });
+    const editor = workbenchReducer(
+      workbenchReducer(agent, {
+        type: "switchWorkspaceView",
+        view: "editor",
+      }),
+      {
+        type: "attach",
+        attachment,
+      },
+    );
+
+    const removedFromEditor = workbenchReducer(editor, {
+      type: "removeAttachment",
+      id: attachment.id,
+    });
+
+    expect(removedFromEditor.composerAttachmentIds).toEqual([]);
+    expect(removedFromEditor.editorComposerAttachmentIds).toEqual([]);
+    expect(removedFromEditor.agentComposerAttachmentIds).toEqual([
+      attachment.id,
+    ]);
+    expect(removedFromEditor.attachments).toEqual([attachment]);
+
+    const restoredAgent = workbenchReducer(removedFromEditor, {
+      type: "switchWorkspaceView",
+      view: "agent",
+    });
+    expect(restoredAgent.composerAttachmentIds).toEqual([attachment.id]);
+    expect(restoredAgent.attachments).toEqual([attachment]);
+
+    const removedFromAgent = workbenchReducer(restoredAgent, {
+      type: "removeAttachment",
+      id: attachment.id,
+    });
+    expect(removedFromAgent.agentComposerAttachmentIds).toEqual([]);
+    expect(removedFromAgent.attachments).toEqual([]);
+  });
+
+  it("clears only the submitted tab snapshot after an async tab switch", () => {
+    const agent = workbenchReducer(undefined, {
+      type: "attach",
+      attachment: {
+        id: "file:src/agent.ts",
+        kind: "file",
+        label: "src/agent.ts",
+        path: "src/agent.ts",
+      },
+    });
+    const editor = workbenchReducer(
+      workbenchReducer(agent, {
+        type: "switchWorkspaceView",
+        view: "editor",
+      }),
+      {
+        type: "attach",
+        attachment: {
+          id: "file:src/editor.ts",
+          kind: "file",
+          label: "src/editor.ts",
+          path: "src/editor.ts",
+        },
+      },
+    );
+
+    const settled = workbenchReducer(editor, {
+      type: "clearAttachments",
+      workspaceView: "agent",
+      ids: ["file:src/agent.ts"],
+    });
+
+    expect(settled.activeWorkspaceView).toBe("editor");
+    expect(settled.agentComposerAttachmentIds).toEqual([]);
+    expect(settled.editorComposerAttachmentIds).toEqual(["file:src/editor.ts"]);
+    expect(settled.composerAttachmentIds).toEqual(["file:src/editor.ts"]);
+    expect(settled.attachments.map((attachment) => attachment.id)).toEqual([
+      "file:src/editor.ts",
+    ]);
   });
 
   it("deduplicates repeated attachments by id before prompt submission", () => {
@@ -263,6 +518,16 @@ describe("workbenchReducer", () => {
           path: "src/nested/app.ts",
           line: 12,
           endLine: 15,
+          editorInteraction: {
+            kind: "explain" as const,
+            bufferHandle: 7,
+            path: "src/nested/app.ts",
+            changedtick: 11,
+            range: {
+              start: { line: 12, column: 0 },
+              end: { line: 15, column: 4 },
+            },
+          },
         },
         {
           id: "file:src-old/app.ts",
@@ -291,6 +556,16 @@ describe("workbenchReducer", () => {
         path: "lib/nested/app.ts",
         line: 12,
         endLine: 15,
+        editorInteraction: {
+          kind: "explain",
+          bufferHandle: 7,
+          path: "lib/nested/app.ts",
+          changedtick: 11,
+          range: {
+            start: { line: 12, column: 0 },
+            end: { line: 15, column: 4 },
+          },
+        },
       },
       {
         id: "file:src-old/app.ts",
@@ -376,12 +651,15 @@ describe("workbenchReducer", () => {
       undefined,
       openBufferCommand("./test/foo.test.tsx", 8, true),
     );
-    const state = workbenchReducer(opened, attachTaskErrorCommand({
-      taskId: "test-1",
-      file: "./test/foo.test.tsx",
-      line: 8,
-      label: "./test/foo.test.tsx failure",
-    }));
+    const state = workbenchReducer(
+      opened,
+      attachTaskErrorCommand({
+        taskId: "test-1",
+        file: "./test/foo.test.tsx",
+        line: 8,
+        label: "./test/foo.test.tsx failure",
+      }),
+    );
     const next = workbenchReducer(state, {
       type: "renamePathReferences",
       fromPath: "test",
@@ -399,34 +677,42 @@ describe("workbenchReducer", () => {
         taskId: "test-1",
       },
     ]);
-    expect(next.composerAttachmentIds).toEqual(["task-error:test-1:spec/foo.test.tsx:8"]);
+    expect(next.composerAttachmentIds).toEqual([
+      "task-error:test-1:spec/foo.test.tsx:8",
+    ]);
   });
 
   it("opens the buffer only when rename changes the current active path", () => {
-    const affected = workbenchReducer({
-      ...getDefaultWorkbenchState(),
-      focusedPane: "explorer",
-      activeSurfaceMode: "preview",
-      activeFilePath: "src/nested/app.ts",
-      activeFileLine: 12,
-    }, {
-      type: "renamePathReferences",
-      fromPath: "src",
-      toPath: "lib",
-      openAffectedBuffer: true,
-    });
-    const unaffected = workbenchReducer({
-      ...getDefaultWorkbenchState(),
-      focusedPane: "explorer",
-      activeSurfaceMode: "preview",
-      activeFilePath: "other.ts",
-      activeFileLine: 5,
-    }, {
-      type: "renamePathReferences",
-      fromPath: "src",
-      toPath: "lib",
-      openAffectedBuffer: true,
-    });
+    const affected = workbenchReducer(
+      {
+        ...getDefaultWorkbenchState(),
+        focusedPane: "explorer",
+        activeSurfaceMode: "preview",
+        activeFilePath: "src/nested/app.ts",
+        activeFileLine: 12,
+      },
+      {
+        type: "renamePathReferences",
+        fromPath: "src",
+        toPath: "lib",
+        openAffectedBuffer: true,
+      },
+    );
+    const unaffected = workbenchReducer(
+      {
+        ...getDefaultWorkbenchState(),
+        focusedPane: "explorer",
+        activeSurfaceMode: "preview",
+        activeFilePath: "other.ts",
+        activeFileLine: 5,
+      },
+      {
+        type: "renamePathReferences",
+        fromPath: "src",
+        toPath: "lib",
+        openAffectedBuffer: true,
+      },
+    );
 
     expect(affected).toMatchObject({
       focusedPane: "explorer",
@@ -535,11 +821,14 @@ describe("workbenchReducer", () => {
       undefined,
       openBufferCommand("./test/foo.test.tsx", 8, true),
     );
-    const state = workbenchReducer(opened, attachTaskErrorCommand({
-      taskId: "test-1",
-      file: "./test/foo.test.tsx",
-      line: 8,
-    }));
+    const state = workbenchReducer(
+      opened,
+      attachTaskErrorCommand({
+        taskId: "test-1",
+        file: "./test/foo.test.tsx",
+        line: 8,
+      }),
+    );
     const next = workbenchReducer(state, {
       type: "deletePathReferences",
       path: "test",
@@ -552,26 +841,32 @@ describe("workbenchReducer", () => {
   });
 
   it("closes the active surface only when delete clears the current active path", () => {
-    const affected = workbenchReducer({
-      ...getDefaultWorkbenchState(),
-      activeSurfaceMode: "buffer",
-      activeFilePath: "src/nested/app.ts",
-      activeFileLine: 12,
-    }, {
-      type: "deletePathReferences",
-      path: "src",
-      closeAffectedSurface: true,
-    });
-    const unaffected = workbenchReducer({
-      ...getDefaultWorkbenchState(),
-      activeSurfaceMode: "preview",
-      activeFilePath: "other.ts",
-      activeFileLine: 5,
-    }, {
-      type: "deletePathReferences",
-      path: "src",
-      closeAffectedSurface: true,
-    });
+    const affected = workbenchReducer(
+      {
+        ...getDefaultWorkbenchState(),
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/nested/app.ts",
+        activeFileLine: 12,
+      },
+      {
+        type: "deletePathReferences",
+        path: "src",
+        closeAffectedSurface: true,
+      },
+    );
+    const unaffected = workbenchReducer(
+      {
+        ...getDefaultWorkbenchState(),
+        activeSurfaceMode: "preview",
+        activeFilePath: "other.ts",
+        activeFileLine: 5,
+      },
+      {
+        type: "deletePathReferences",
+        path: "src",
+        closeAffectedSurface: true,
+      },
+    );
 
     expect(affected).toMatchObject({
       focusedPane: "surface",
@@ -606,14 +901,23 @@ describe("workbenchReducer", () => {
     });
     const transcript = workbenchReducer(agent, { type: "closeSurface" });
 
-    expect(diff).toMatchObject({ activeSurfaceMode: "diff", openDiffId: "approval-1" });
+    expect(diff).toMatchObject({
+      activeSurfaceMode: "diff",
+      openDiffId: "approval-1",
+    });
     expect(search).toMatchObject({
       activeSurfaceMode: "search",
       searchQuery: "needle",
       selectedSearchMatchId: "src/app.ts:4:needle",
     });
-    expect(shell).toMatchObject({ activeSurfaceMode: "shell", selectedShellTaskId: "shell-1" });
-    expect(agent).toMatchObject({ activeSurfaceMode: "agent", selectedAgentTaskId: "agent-1" });
+    expect(shell).toMatchObject({
+      activeSurfaceMode: "shell",
+      selectedShellTaskId: "shell-1",
+    });
+    expect(agent).toMatchObject({
+      activeSurfaceMode: "task-detail",
+      selectedAgentTaskId: "agent-1",
+    });
     expect(transcript.activeSurfaceMode).toBe("transcript");
   });
 
@@ -739,6 +1043,7 @@ describe("moveFileToRail (atomic ctrl+r handoff)", () => {
       }),
       focusedPane: "surface" as const,
       rail: { kind: "transcript" as const },
+      editorRail: { kind: "transcript" as const },
       surfaceMaximized: true,
     };
     const moved = workbenchReducer(buffer, {
@@ -764,7 +1069,7 @@ describe("moveFileToRail (atomic ctrl+r handoff)", () => {
 
     expect(moved).toMatchObject({
       activeSurfaceMode: "transcript",
-      activeFilePath: "src/index.ts",
+      activeFilePath: null,
       focusedPane: "composer",
       rail: { kind: "file", path: "src/index.ts" },
       surfaceMaximized: false,

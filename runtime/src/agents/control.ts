@@ -36,6 +36,7 @@ import { emitError, emitWarning } from "../session/event-log.js";
 import type { LLMMessage, LLMUsage } from "../llm/types.js";
 import type { ThreadSpawnEdgeStatus } from "../session/rollout-store.js";
 import type { Session } from "../session/session.js";
+import type { SessionSubmitOptions } from "../session/autonomous-mode.js";
 import {
   Mailbox,
   MailboxCapacityError,
@@ -998,11 +999,16 @@ export class AgentControl {
    * message to a live child via its `downInbox` with triggerTurn=true,
    * and records the preview for `ListedAgent.lastTaskMessage`.
    */
-  async sendInput(threadId: ThreadId, input: string): Promise<void> {
+  async sendInput(
+    threadId: ThreadId,
+    input: string,
+    submitOptions?: SessionSubmitOptions,
+  ): Promise<void> {
     if (this.threadManager?.hasThread(threadId)) {
       await this.threadManager.sendOp(threadId, {
         type: "user_input",
         input,
+        ...(submitOptions !== undefined ? { submitOptions } : {}),
       });
       this.registry.updateLastTaskMessage(threadId, renderInputPreview(input));
       return;
@@ -2026,8 +2032,7 @@ export class AgentControl {
           typeof deferredMailboxProbe === "function" &&
           deferredMailboxProbe.call(this.session);
         const retryAcceptedMailboxTrigger =
-          retryableFailure &&
-          this.session.mailbox.hasPendingTriggerTurn();
+          retryableFailure && this.session.mailbox.hasPendingTriggerTurn();
         if (
           !this.rootFollowupRequested &&
           !hasDeferredMailboxProjection &&

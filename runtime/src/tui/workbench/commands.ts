@@ -1,6 +1,17 @@
-import type { SearchMatch, WorkbenchAttachment, WorkbenchCommand } from "./types.js";
+import { createHash, randomUUID } from "node:crypto";
+
+import type {
+  SearchMatch,
+  WorkbenchAttachment,
+  WorkbenchCommand,
+} from "./types.js";
 import { normalizeWorkspacePathForReferences } from "./pathReferences.js";
-import type { BufferIntegrationIntent } from "./buffer/providers/types.js";
+import type {
+  BufferCapturedContext,
+  BufferIntegrationIntent,
+} from "./buffer/providers/types.js";
+
+const CAPTURE_ATTACHMENT_PROCESS_SALT = randomUUID();
 
 export function openPreviewCommand(
   path: string,
@@ -74,7 +85,10 @@ export function attachFileRangeCommand(
   };
 }
 
-export function attachSearchMatchCommand(query: string, match: SearchMatch): WorkbenchCommand {
+export function attachSearchMatchCommand(
+  query: string,
+  match: SearchMatch,
+): WorkbenchCommand {
   return {
     type: "attach",
     attachment: searchMatchAttachment(query, match),
@@ -129,7 +143,10 @@ export function attachDiffHunkCommand(input: {
   };
 }
 
-export function searchMatchAttachment(query: string, match: SearchMatch): WorkbenchAttachment {
+export function searchMatchAttachment(
+  query: string,
+  match: SearchMatch,
+): WorkbenchAttachment {
   const file = normalizeCommandPath(match.file);
   return {
     id: `search-result:${replaceFirst(match.id, match.file, file)}`,
@@ -141,7 +158,9 @@ export function searchMatchAttachment(query: string, match: SearchMatch): Workbe
   };
 }
 
-export function attachmentPromptMention(attachment: WorkbenchAttachment): string | null {
+export function attachmentPromptMention(
+  attachment: WorkbenchAttachment,
+): string | null {
   if (!attachment.path) return null;
   const path = normalizeCommandPath(attachment.path);
   switch (attachment.kind) {
@@ -165,12 +184,16 @@ export function materializeAttachmentMentions(
   input: string,
   attachments: readonly WorkbenchAttachment[],
 ): string {
-  const existingMentions = new Set(input.split(/\s+/u).filter((token) => token.startsWith("@")));
+  const existingMentions = new Set(
+    input.split(/\s+/u).filter((token) => token.startsWith("@")),
+  );
   const mentions = attachments
     .map(attachmentPromptMention)
     .filter((mention): mention is string => mention !== null)
-    .filter((mention, index, allMentions) =>
-      allMentions.indexOf(mention) === index && !existingMentions.has(mention)
+    .filter(
+      (mention, index, allMentions) =>
+        allMentions.indexOf(mention) === index &&
+        !existingMentions.has(mention),
     );
   if (mentions.length === 0) return input;
   return `${mentions.join(" ")}\n\n${input}`;
@@ -185,9 +208,8 @@ export function bufferIntegrationIntentCommand(
   const attachmentIdentity = path || `buffer-${context.bufferHandle}`;
   const startLine = Math.max(1, context.range.start.line);
   const endLine = Math.max(startLine, context.range.end.line);
-  const kind = context.kind === "diagnostic"
-    ? "editor-diagnostic"
-    : "editor-selection";
+  const kind =
+    context.kind === "diagnostic" ? "editor-diagnostic" : "editor-selection";
   const attachment: WorkbenchAttachment = {
     id: [
       kind,
@@ -195,6 +217,7 @@ export function bufferIntegrationIntentCommand(
       `${startLine}:${Math.max(0, context.range.start.column)}`,
       `${endLine}:${Math.max(0, context.range.end.column)}`,
       context.changedtick,
+      capturedAttachmentFingerprint(context, intent.kind),
     ].join(":"),
     kind,
     label: `${displayPath}:${startLine}${endLine === startLine ? "" : `-${endLine}`}`,
@@ -221,6 +244,17 @@ export function bufferIntegrationIntentCommand(
             : {}),
         }
       : undefined,
+    ...(intent.kind !== "attach"
+      ? {
+          editorInteraction: {
+            kind: intent.kind === "review" ? "refactor" : intent.kind,
+            bufferHandle: context.bufferHandle,
+            path,
+            changedtick: context.changedtick,
+            range: context.range,
+          },
+        }
+      : {}),
   };
   return {
     type: "handoffToComposer",
@@ -228,6 +262,32 @@ export function bufferIntegrationIntentCommand(
     draftText: integrationDraft(intent),
     openTranscriptRail: intent.kind !== "attach",
   };
+}
+
+function capturedAttachmentFingerprint(
+  context: BufferCapturedContext,
+  intentKind: BufferIntegrationIntent["kind"],
+): string {
+  // The process-scoped random editor identity salts private source before
+  // hashing. Only the digest enters durable workbench state.
+  const identity = JSON.stringify([
+    "agenc-captured-attachment-v2",
+    context.editorSessionId ?? CAPTURE_ATTACHMENT_PROCESS_SALT,
+    intentKind,
+    context.kind,
+    context.content ?? null,
+    context.dirty,
+    context.selectionMode ?? null,
+    context.diagnostic
+      ? [
+          context.diagnostic.message,
+          context.diagnostic.severity,
+          context.diagnostic.source ?? null,
+          context.diagnostic.code ?? null,
+        ]
+      : null,
+  ]);
+  return createHash("sha256").update(identity, "utf8").digest("hex");
 }
 
 function integrationDraft(intent: BufferIntegrationIntent): string | undefined {
@@ -242,6 +302,10 @@ function integrationDraft(intent: BufferIntegrationIntent): string | undefined {
       return "Fix the attached issue.";
     case "explain":
       return "Explain the attached code.";
+    case "edit":
+      return "Edit the attached code.";
+    case "refactor":
+      return "Refactor the attached code.";
     case "review":
       return "Review the attached editor context.";
   }
@@ -261,7 +325,11 @@ function normalizePathBackedLabel(
   return replaceFirst(label, originalPath, normalizedPath);
 }
 
-function replaceFirst(value: string, needle: string, replacement: string): string {
+function replaceFirst(
+  value: string,
+  needle: string,
+  replacement: string,
+): string {
   if (!needle || needle === replacement) return value;
   const index = value.indexOf(needle);
   if (index < 0) return value;

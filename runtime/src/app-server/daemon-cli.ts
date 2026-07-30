@@ -9,7 +9,13 @@
 import { spawn } from "node:child_process";
 import { createDaemonWorkflowController } from "./workflow/daemon-wiring.js";
 import { DaemonWorkflowStartService } from "./workflow/run-start-service.js";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, isIP } from "node:net";
 import { homedir } from "node:os";
@@ -80,9 +86,7 @@ import {
   createAgenCDaemonPeerUidIdentity,
   ensureAgenCDaemonCookie,
 } from "./transport/auth.js";
-import type {
-  AgenCNativePeerCredentialBinding,
-} from "./transport/peer-credentials.js";
+import type { AgenCNativePeerCredentialBinding } from "./transport/peer-credentials.js";
 import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protocol/index.js";
 import { AgenCDaemonHealthService } from "./health.js";
 import { AgenCDaemonRunInspectionService } from "./run-inspection.js";
@@ -98,6 +102,7 @@ import { createPermissionAuditFileLogger } from "../permissions/permission-audit
 import { loadConfig } from "../config/loader.js";
 import { resolveProviderBaseURL } from "../config/env.js";
 import type { AgenCConfig, AgentRunRetentionConfig } from "../config/schema.js";
+import { CodePredictionService } from "../services/code-prediction/service.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../llm/registry/provider-info.js";
 import {
   prepareMcpSseServerReconfigurationFromConfig,
@@ -218,8 +223,7 @@ const AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK_ENV =
   "AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK";
 export const AGENC_DAEMON_WEBSOCKET_PORT_ENV = "AGENC_DAEMON_WEBSOCKET_PORT";
 const AGENC_DAEMON_WEBSOCKET_PATH_ENV = "AGENC_DAEMON_WEBSOCKET_PATH";
-const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV =
-  "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
+const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV = "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_DAEMON_STOP_TIMEOUT_MS = 10_000;
 /**
@@ -230,7 +234,8 @@ const DEFAULT_DAEMON_STOP_TIMEOUT_MS = 10_000;
  * {@link resolveAgenCDaemonReadyTimeoutMs} so both budgets stay in sync from
  * one resolved value.
  */
-export const AGENC_DAEMON_READY_TIMEOUT_MS_ENV = "AGENC_DAEMON_READY_TIMEOUT_MS";
+export const AGENC_DAEMON_READY_TIMEOUT_MS_ENV =
+  "AGENC_DAEMON_READY_TIMEOUT_MS";
 /**
  * Bound for how long the daemon readiness waits block for the detached daemon
  * to bind and accept on its control socket before giving up.
@@ -279,12 +284,7 @@ export const AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH =
   DEFAULT_DAEMON_WEBSOCKET_URL.pathname;
 
 export type AgenCDaemonCliAction =
-  | "reload"
-  | "restart"
-  | "run"
-  | "start"
-  | "status"
-  | "stop";
+  "reload" | "restart" | "run" | "start" | "status" | "stop";
 
 export type AgenCDaemonCliCommand =
   | { readonly kind: "command"; readonly action: AgenCDaemonCliAction }
@@ -448,18 +448,19 @@ function isLoopbackHostname(hostname: string): boolean {
 }
 
 function isLoopbackListenHost(host: string): boolean {
-  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  const normalized = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
   if (normalized === "localhost" || normalized === "::1") return true;
   const ipFamily = isIP(normalized);
   if (ipFamily === 4) return normalized.startsWith("127.");
   return false;
 }
 
-function allowsNonLoopbackDaemonWebSocketHost(
-  env: NodeJS.ProcessEnv,
-): boolean {
-  const value = env[AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK_ENV]?.trim()
-    .toLowerCase();
+function allowsNonLoopbackDaemonWebSocketHost(env: NodeJS.ProcessEnv): boolean {
+  const value =
+    env[AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK_ENV]?.trim().toLowerCase();
   return value === "1" || value === "true";
 }
 
@@ -527,7 +528,10 @@ export function readAgenCDaemonSpawnStderrTail(
       .toString("utf8")
       .trim();
     if (tail.length === 0) return "";
-    const lines = tail.split("\n").map((line) => line.trim()).filter(Boolean);
+    const lines = tail
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
     return lines.slice(-4).join(" | ");
   } catch {
     return "";
@@ -604,9 +608,7 @@ export function installAgenCDaemonLogSink(options: {
   };
   const format = (args: unknown[]): string =>
     `${args
-      .map((arg) =>
-        typeof arg === "string" ? arg : safeStringifyLogArg(arg),
-      )
+      .map((arg) => (typeof arg === "string" ? arg : safeStringifyLogArg(arg)))
       .join(" ")}\n`;
   target.log = (...args: unknown[]) => sink.write(format(args));
   target.info = (...args: unknown[]) => sink.write(format(args));
@@ -756,8 +758,7 @@ async function runAgenCDaemonAction(
         beforeDaemonReady: options.beforeDaemonReady,
         runner: options.runner,
         nativePeerCredentialBinding: options.nativePeerCredentialBinding,
-        nativePeerCredentialAddonPath:
-          options.nativePeerCredentialAddonPath,
+        nativePeerCredentialAddonPath: options.nativePeerCredentialAddonPath,
         requireNativePeerCredentialForConnections:
           options.requireNativePeerCredentialForConnections,
         snapshotPeriodicIntervalMs: options.snapshotPeriodicIntervalMs,
@@ -917,7 +918,9 @@ async function stopAgenCDaemon(
       AGENC_DAEMON_FORCE_STOP_GRACE_MS,
     );
     if (!forceStopped) {
-      io.stderr.write(`agenc: daemon did not stop before timeout (pid ${pid})\n`);
+      io.stderr.write(
+        `agenc: daemon did not stop before timeout (pid ${pid})\n`,
+      );
       return 1;
     }
   }
@@ -983,26 +986,30 @@ async function requestAgenCDaemonHealthStats(
   const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
   const authCookie = await readAgenCDaemonCookie(cookiePath);
   const timeoutMs = resolveAgenCDaemonRequestTimeoutMs(host.env);
-  const responses = await sendAgenCDaemonJsonLineRequests(socketPath, timeoutMs, [
-    {
-      jsonrpc: JSON_RPC_VERSION,
-      id: 1,
-      method: "initialize",
-      params: {
-        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
-        clientName: "agenc-daemon-cli",
-        authCookie,
-        capabilities: {},
+  const responses = await sendAgenCDaemonJsonLineRequests(
+    socketPath,
+    timeoutMs,
+    [
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+          protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+          clientName: "agenc-daemon-cli",
+          authCookie,
+          capabilities: {},
+        },
       },
-    },
-    {
-      jsonrpc: JSON_RPC_VERSION,
-      id: 2,
-      method: "health.stats",
-      params: {},
-    },
-  ]);
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 2,
+        method: "health.stats",
+        params: {},
+      },
+    ],
+  );
   const initializeResponse = responses[0];
   if (initializeResponse === undefined) {
     throw new Error("daemon did not return an initialize response");
@@ -1164,26 +1171,30 @@ async function requestAgenCDaemonReload(
   const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
   const authCookie = await readAgenCDaemonCookie(cookiePath);
   const timeoutMs = resolveAgenCDaemonRequestTimeoutMs(host.env);
-  const responses = await sendAgenCDaemonJsonLineRequests(socketPath, timeoutMs, [
-    {
-      jsonrpc: JSON_RPC_VERSION,
-      id: 1,
-      method: "initialize",
-      params: {
-        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
-        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
-        clientName: "agenc-daemon-cli",
-        authCookie,
-        capabilities: {},
+  const responses = await sendAgenCDaemonJsonLineRequests(
+    socketPath,
+    timeoutMs,
+    [
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+          protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+          clientName: "agenc-daemon-cli",
+          authCookie,
+          capabilities: {},
+        },
       },
-    },
-    {
-      jsonrpc: JSON_RPC_VERSION,
-      id: 2,
-      method: "daemon.reload",
-      params: {},
-    },
-  ]);
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 2,
+        method: "daemon.reload",
+        params: {},
+      },
+    ],
+  );
   const initializeResponse = responses[0];
   if (initializeResponse === undefined) {
     throw new Error("daemon did not return an initialize response");
@@ -1390,7 +1401,12 @@ async function runAgenCDaemonForeground(
     primaryCwd,
     agencHome: authStartup.daemonHome,
   });
-  const sessionManager = new AgenCDaemonSessionManager({ threadStore });
+  let codePrediction: CodePredictionService | undefined;
+  const sessionManager = new AgenCDaemonSessionManager({
+    threadStore,
+    onSessionTerminated: (sessionId) =>
+      codePrediction?.disposeSession(sessionId),
+  });
   // Forward declaration: set once the connection registry below exists. Lets
   // the multiplexer ask the transport to tear down a slow consumer's socket
   // when that client's pending delivery backlog trips the per-client cap.
@@ -1585,6 +1601,17 @@ async function runAgenCDaemonForeground(
       return voided;
     },
   });
+  codePrediction =
+    runner.resolveCodePredictionSource === undefined
+      ? undefined
+      : new CodePredictionService({
+          resolveSource: (sessionId) =>
+            agentManager.resolveCodePredictionSource(sessionId),
+          config: activeConfig.buffer?.prediction,
+        });
+  if (codePrediction !== undefined) {
+    cleanup.register("daemon-code-prediction", () => codePrediction.dispose());
+  }
   // Wire the runner's terminal-status hook into the lifecycle so a
   // completed/errored agent's status transitions out of `running` in
   // `agent.list` immediately, instead of being lost in the race
@@ -1719,6 +1746,7 @@ async function runAgenCDaemonForeground(
             }),
           );
           activeConfig = next.config;
+          await codePrediction?.updateConfig(next.config.buffer?.prediction);
           activeMcpServer = preparedMcpChange.adopt();
           adopted = true;
         } finally {
@@ -1764,6 +1792,7 @@ async function runAgenCDaemonForeground(
       agencHome: authStartup.daemonHome,
     }),
     workflow: workflowStartService,
+    ...(codePrediction !== undefined ? { codePrediction } : {}),
     initializeAuthenticator: (params) =>
       cookieAuthenticator.authenticateInitializeParams(params),
   });
@@ -1836,7 +1865,9 @@ async function runAgenCDaemonForeground(
       if (fatalPeerCredentialFailure !== null) return;
       fatalPeerCredentialFailure = error;
       shuttingDown = true;
-      io.stderr.write(`agenc: fatal daemon socket authentication failure: ${error.message}\n`);
+      io.stderr.write(
+        `agenc: fatal daemon socket authentication failure: ${error.message}\n`,
+      );
       resolveFatalPeerCredentialFailure(error);
     },
     nativePeerCredentialBinding: options.nativePeerCredentialBinding,
@@ -2148,7 +2179,10 @@ function inactiveDaemonMcpServerHandle(
   status: "disabled" | "unsupported" = "disabled",
 ): AgenCDaemonMcpServerHandle {
   return {
-    fingerprint: config === undefined ? "unconfigured" : daemonMcpServerFingerprint(config),
+    fingerprint:
+      config === undefined
+        ? "unconfigured"
+        : daemonMcpServerFingerprint(config),
     bindingFingerprint:
       config === undefined
         ? "unconfigured"
@@ -3079,9 +3113,7 @@ function appendRecoveredCompletedToolMessages(
   return next;
 }
 
-function recoveredCompletedToolCalls(
-  toolState: unknown,
-): Array<{
+function recoveredCompletedToolCalls(toolState: unknown): Array<{
   readonly callId: string;
   readonly toolName: string;
   readonly args?: unknown;
@@ -3427,10 +3459,13 @@ export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
     pid: process.pid,
     spawnDetachedDaemon: (env) => {
       if (!hasOperatorHeapSnapshotOption(env)) {
-        mkdirSync(join(resolveAgenCDaemonHome(env, userHome), "oom-snapshots"), {
-          recursive: true,
-          mode: 0o700,
-        });
+        mkdirSync(
+          join(resolveAgenCDaemonHome(env, userHome), "oom-snapshots"),
+          {
+            recursive: true,
+            mode: 0o700,
+          },
+        );
       }
       // Capture the child's raw stderr until its log sink takes over: a
       // crash before the sink installs (loader failure, fatal V8 error,
@@ -3523,7 +3558,9 @@ function assertExpectedDaemonResponse(
   }
 }
 
-function isDaemonReloadResult(value: JsonValue | undefined): value is DaemonReloadResult {
+function isDaemonReloadResult(
+  value: JsonValue | undefined,
+): value is DaemonReloadResult {
   if (!isJsonObject(value)) return false;
   if (value.reloaded !== true || typeof value.configReloadedAt !== "string") {
     return false;

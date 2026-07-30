@@ -107,6 +107,23 @@ const expectedNotifications = [
 ] as const;
 
 const expectedInternalMethods = [
+  "workspace.editor.acquire",
+  "workspace.editor.sync",
+  "workspace.editor.heartbeat",
+  "workspace.editor.release",
+  "workspace.editor.topology.reserve",
+  "workspace.editor.topology.complete",
+  "workspace.editor.topology.release",
+  "workspace.editor.topology.recovered.list",
+  "workspace.editor.topology.recovered.resolve",
+  "workspace.editor.proposal.get",
+  "workspace.editor.proposal.status",
+  "workspace.editor.proposal.apply",
+  "workspace.editor.proposal.discard",
+  "workspace.editor.changes.list",
+  "workspace.editor.predict",
+  "workspace.editor.cancelPrediction",
+  "workspace.editor.predictionFeedback",
   "session.partialCompactFromMessage",
   "session.rewindConversationToMessage",
   "session.previewFileRewind",
@@ -191,21 +208,35 @@ describe("AgenC daemon protocol surface", () => {
   });
 
   it("keeps internal TUI method result contracts typed", () => {
-    const partial: AgenCDaemonInternalResultByMethod["session.partialCompactFromMessage"] = {
-      sessionId: "session_contract",
-      ok: true,
-      eventAlreadyEmitted: true,
-    };
-    const rewind: AgenCDaemonInternalResultByMethod["session.rewindConversationToMessage"] = {
-      sessionId: "session_contract",
-      ok: false,
-      eventAlreadyEmitted: false,
-      code: "MESSAGE_NOT_FOUND",
-      message: "missing",
-    };
+    const partial: AgenCDaemonInternalResultByMethod["session.partialCompactFromMessage"] =
+      {
+        sessionId: "session_contract",
+        ok: true,
+        eventAlreadyEmitted: true,
+      };
+    const rewind: AgenCDaemonInternalResultByMethod["session.rewindConversationToMessage"] =
+      {
+        sessionId: "session_contract",
+        ok: false,
+        eventAlreadyEmitted: false,
+        code: "MESSAGE_NOT_FOUND",
+        message: "missing",
+      };
+    const proposalStatus: AgenCDaemonInternalResultByMethod["workspace.editor.proposal.status"] =
+      {
+        status: "committed",
+        proposalId: "proposal-contract",
+        path: "/workspace/main.ts",
+        source: "file_edit",
+        baseContentSha256: "a".repeat(64),
+        afterContentSha256: "b".repeat(64),
+        baseChangedtick: 4,
+        bufferHandle: 7,
+      };
 
     expect(partial.ok).toBe(true);
     expect(rewind.message).toBe("missing");
+    expect(proposalStatus.status).toBe("committed");
   });
 
   it("publishes a schema with the same method list and package target", () => {
@@ -257,7 +288,8 @@ describe("AgenC daemon protocol surface", () => {
         id: 2,
         method: "agent.create",
         params: {
-          cwd: process.cwd(), objective: "Inspect daemon status",
+          cwd: process.cwd(),
+          objective: "Inspect daemon status",
           model: "grok-4",
           unattendedAllow: ["FileRead", "Grep"],
           unattendedDeny: ["exec_command"],

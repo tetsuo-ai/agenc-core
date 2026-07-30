@@ -30,6 +30,7 @@ import type {
 } from "../sandbox/network-policy.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
+import type { SessionEditorInteraction } from "./autonomous-mode.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep structural types. Keep these narrow so TurnContext can carry
@@ -49,12 +50,7 @@ import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js"
  * OAuth provider.
  */
 export type AuthProviderId =
-  | "chatgpt"
-  | "openai"
-  | "openrouter"
-  | "xai"
-  | "azure"
-  | "other";
+  "chatgpt" | "openai" | "openrouter" | "xai" | "azure" | "other";
 
 export interface AuthManager {
   readonly mode: "bearer_key" | "oauth" | "local_no_auth";
@@ -119,18 +115,11 @@ export interface Constrained<T> {
 
 /** agenc runtime `AskForApproval` enum. T11 (permissions) lands real values. */
 export type ApprovalPolicy =
-  | "never"
-  | "on_failure"
-  | "on_request"
-  | "granular"
-  | "untrusted";
+  "never" | "on_failure" | "on_request" | "granular" | "untrusted";
 
 /** agenc runtime `SandboxPolicy` enum. T11 lands real shape. */
 export type SandboxPolicy =
-  | "danger_full_access"
-  | "read_only"
-  | "workspace_write"
-  | "external_sandbox";
+  "danger_full_access" | "read_only" | "workspace_write" | "external_sandbox";
 
 /** agenc runtime `FileSystemSandboxPolicy`. T11 lands real shape. */
 export interface FileSystemSandboxPolicy {
@@ -724,6 +713,9 @@ export interface TurnContext {
    * the live registry value.
    */
   readonly permissionMode: PermissionMode;
+
+  /** Trusted editor context and mutation policy for an editor-originated turn. */
+  readonly editorInteraction?: SessionEditorInteraction;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -762,7 +754,9 @@ export function toTurnContextItem(ctx: TurnContext): TurnContextItem {
     autoCompactTokenLimit: (ctx.modelInfo as { autoCompactTokenLimit?: number })
       .autoCompactTokenLimit,
     modelProviderId: ctx.modelProviderId,
-    personality: normalizePersonality(ctx.personality ?? ctx.config.personality),
+    personality: normalizePersonality(
+      ctx.personality ?? ctx.config.personality,
+    ),
     collaborationMode: ctx.collaborationMode,
     realtimeActive: ctx.realtimeActive,
     effort: ctx.reasoningEffort,
@@ -1069,8 +1063,7 @@ export function applySessionConfiguration(
     next.windowsSandboxLevel = updates.windowsSandboxLevel;
   }
 
-  const cwdChanged =
-    updates.cwd !== undefined && updates.cwd !== current.cwd;
+  const cwdChanged = updates.cwd !== undefined && updates.cwd !== current.cwd;
   if (updates.cwd !== undefined) {
     next.cwd = updates.cwd;
   }
@@ -1193,7 +1186,10 @@ function fileSystemSandboxPolicyEquals(
   );
 }
 
-function readonlyArrayEquals<T>(a: ReadonlyArray<T>, b: ReadonlyArray<T>): boolean {
+function readonlyArrayEquals<T>(
+  a: ReadonlyArray<T>,
+  b: ReadonlyArray<T>,
+): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
@@ -1241,8 +1237,9 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     sc.modelReasoningSummary ?? opts.modelInfo.defaultReasoningSummary;
   const { currentDate, timezone } = opts.clock ?? localTimeContext();
 
-  const skillsOutcome: SkillLoadOutcome =
-    opts.skillsOutcome ?? { invokedSkills: [] };
+  const skillsOutcome: SkillLoadOutcome = opts.skillsOutcome ?? {
+    invokedSkills: [],
+  };
 
   const turnMetadataState: TurnMetadataState = {
     conversationId: opts.conversationId,

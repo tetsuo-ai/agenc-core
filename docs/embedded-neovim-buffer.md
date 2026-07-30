@@ -9,6 +9,17 @@ unsaved changes.
 
 The important operator model is:
 
+- **Agent** and **Editor** are sibling views of one workspace and one daemon
+  session, not separate agents. `Alt+1` opens Agent, `Alt+2` opens Editor, and
+  the `Alt`+backtick chord cycles between them; the tab labels are also
+  clickable. Agent keeps the normal conversation/task surface while Editor
+  keeps the live Neovim workspace. Each view restores its own focus, side rail,
+  active file, in-progress composer draft, and captured attachment set.
+- Both views submit to the same canonical conversation through the same
+  composer mechanism, while drafts and attachments remain owned by the view
+  where they were created. Submitting from Editor leaves Neovim mounted and
+  opens the transcript beside it, so the response is visible without replacing
+  the buffer.
 - The default is one multi-buffer Neovim session for the workspace, not a new
   process for every file. Opening another file changes the active Neovim buffer
   while preserving hidden buffers, registers, undo state, and plugins.
@@ -23,6 +34,9 @@ The important operator model is:
   the embedded grid follows the actual center-pane size.
 - `Ctrl+R` remains Neovim's native redo. `Alt+R` moves the current file to the
   workbench review rail.
+- `Alt+L` focuses the Editor's open AI/proposal panel. Page Up, Page Down,
+  mouse wheel, Ctrl+Home, and Ctrl+End scroll that panel; `Ctrl+W H` returns
+  focus to Neovim. With no panel open, `Alt+L` remains available to Neovim.
 - `Ctrl+S` is the deliberate host-save exception: it runs AgenC's disk and
   agent-conflict checks before writing the active buffer.
 
@@ -64,30 +78,38 @@ init = "auto"           # auto | user | clean
 startup_timeout_ms = 10000
 operation_timeout_ms = 10000
 cleanup_timeout_ms = 1000
+
+[buffer.prediction]
+enabled = "ask"         # ask | on | off
+debounce_ms = 160
+timeout_ms = 2500
+max_output_tokens = 256
+# provider = "grok"      # optional user-selected prediction route
+# model = "grok-4.5"
 ```
 
 Provider modes:
 
-| Mode | Behavior |
-| --- | --- |
-| `auto` (default) | Prefer embedded Neovim; fall back to basic inline BUFFER when discovery fails or every configured startup attempt fails with cleanup confirmed |
-| `neovim` | Request embedded Neovim; discovery failure keeps BUFFER usable through inline fallback, but a discovered executable that fails startup remains an explicit Neovim error |
-| `inline` | Use the basic in-process editor; it does not claim exact Vim behavior |
-| `external` | Use the explicit external-editor handoff provider |
+| Mode             | Behavior                                                                                                                                                                |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auto` (default) | Prefer embedded Neovim; fall back to basic inline BUFFER when discovery fails or every configured startup attempt fails with cleanup confirmed                          |
+| `neovim`         | Request embedded Neovim; discovery failure keeps BUFFER usable through inline fallback, but a discovered executable that fails startup remains an explicit Neovim error |
+| `inline`         | Use the basic in-process editor; it does not claim exact Vim behavior                                                                                                   |
+| `external`       | Use the explicit external-editor handoff provider                                                                                                                       |
 
 Environment variables override `config.toml` for the current AgenC process:
 
-| Environment variable | Config equivalent / effect |
-| --- | --- |
-| `AGENC_BUFFER_PROVIDER` | `[buffer].provider` |
-| `AGENC_BUFFER_NVIM` | `[buffer.neovim].executable` |
-| `AGENC_BUFFER_NVIM_USE_INIT=1` | Force user init (`init = "user"`) |
-| `AGENC_BUFFER_NVIM_USE_INIT=0` | Force clean mode (`init = "clean"`) |
-| `AGENC_BUFFER_NVIM_TIMEOUT_MS` | `discovery_timeout_ms` |
-| `AGENC_BUFFER_NVIM_STARTUP_TIMEOUT_MS` | `startup_timeout_ms` |
-| `AGENC_BUFFER_NVIM_OPERATION_TIMEOUT_MS` | `operation_timeout_ms` |
-| `AGENC_BUFFER_NVIM_CLEANUP_TIMEOUT_MS` | `cleanup_timeout_ms` |
-| `AGENC_BUFFER_NVIM_SESSION=file` | Temporary rollback to the legacy per-file process lifetime for this session |
+| Environment variable                     | Config equivalent / effect                                                  |
+| ---------------------------------------- | --------------------------------------------------------------------------- |
+| `AGENC_BUFFER_PROVIDER`                  | `[buffer].provider`                                                         |
+| `AGENC_BUFFER_NVIM`                      | `[buffer.neovim].executable`                                                |
+| `AGENC_BUFFER_NVIM_USE_INIT=1`           | Force user init (`init = "user"`)                                           |
+| `AGENC_BUFFER_NVIM_USE_INIT=0`           | Force clean mode (`init = "clean"`)                                         |
+| `AGENC_BUFFER_NVIM_TIMEOUT_MS`           | `discovery_timeout_ms`                                                      |
+| `AGENC_BUFFER_NVIM_STARTUP_TIMEOUT_MS`   | `startup_timeout_ms`                                                        |
+| `AGENC_BUFFER_NVIM_OPERATION_TIMEOUT_MS` | `operation_timeout_ms`                                                      |
+| `AGENC_BUFFER_NVIM_CLEANUP_TIMEOUT_MS`   | `cleanup_timeout_ms`                                                        |
+| `AGENC_BUFFER_NVIM_SESSION=file`         | Temporary rollback to the legacy per-file process lifetime for this session |
 
 Provider, executable, init, and deadline changes apply the next time AgenC
 safely starts an editor provider. Saving `/config` never tears down a live
@@ -97,6 +119,43 @@ Unset values use the defaults shown above. Invalid environment values do not
 become partial configuration: unknown provider values resolve to `auto`,
 unrecognized init booleans leave init selection automatic, and non-positive
 deadlines are ignored.
+
+Predictive completion is consent-gated by default. With `enabled = "ask"`, the
+first eligible insert-mode request opens a modal before any source is sent:
+`Alt+Y` persists `enabled = "on"`, `Alt+N` persists `enabled = "off"`, and
+`Esc` dismisses the question without changing configuration. Ordinary editor
+typing and Enter pass through unchanged while the question is visible, so an
+in-flight edit cannot accidentally grant consent. `/config` can change the
+choice later. Provider and model selection come only from the owner's trusted
+`[buffer.prediction]` configuration; file contents and daemon RPC callers
+cannot change the route. When no override is configured, prediction
+independently uses the active session route.
+
+After the configured debounce, an eligible regular, modifiable Neovim buffer
+sends a bounded source prefix/suffix to a separate, tool-free prediction
+provider. The request never enters the conversation transcript. AgenC filters
+ignored, binary, credential, and secret-bearing files, and cancels stale work
+when the buffer, revision, cursor, insert mode, or viewport changes. A result
+appears as dim inline/multiline ghost text without changing the buffer.
+
+The first eligible prediction in a cold workspace provisions the same daemon
+session that later Editor and Agent turns use, but leaves it turn-free: it
+creates no user message or conversation model call and keeps hooks, MCP,
+recovery, watchers, and other Agent startup work staged. The first real
+submission reuses that attached session and preserves any context queued before
+prediction began. Closing before a real submission stops the idle session
+instead of leaving a background agent behind.
+
+- `Tab` accepts the whole visible prediction when Neovim's completion popup is
+  closed.
+- `Ctrl+Right` accepts the next whitespace/token segment and leaves the
+  remainder visible.
+- `Esc`, leaving insert mode, editing, moving away, or scrolling dismisses it.
+- With no current ghost, AgenC replays the buffer's previous mapping or native
+  Neovim behavior for `Tab` and `Ctrl+Right`.
+
+Displayed/accepted/dismissed feedback is content-free; source text is not
+included in feedback events.
 
 `init = "auto"` runs one contained, bounded `nvim --version` discovery probe,
 then starts the real editor with the user's normal Neovim init exactly once.
@@ -123,11 +182,11 @@ current without replacing the workspace process.
 
 `buffer.show_tabs` controls visibility:
 
-| Value | Behavior |
-| --- | --- |
-| `auto` (default) | Show the strip when at least two eligible buffers exist |
-| `always` | Show it whenever at least one eligible buffer exists |
-| `never` | Hide the host strip; Neovim's own `:buffer`, `:bnext`, plugins, and mappings still work |
+| Value            | Behavior                                                                                |
+| ---------------- | --------------------------------------------------------------------------------------- |
+| `auto` (default) | Show the strip when at least two eligible buffers exist                                 |
+| `always`         | Show it whenever at least one eligible buffer exists                                    |
+| `never`          | Hide the host strip; Neovim's own `:buffer`, `:bnext`, plugins, and mappings still work |
 
 Unlisted and unloaded buffers stay in Neovim's safety manifest but are not
 rendered as host tabs. Regular unnamed buffers are the exception: they appear
@@ -135,30 +194,36 @@ as `[No Name]` (with the buffer handle added when disambiguation is needed).
 Hiding a tab therefore never means a hidden buffer is omitted from dirty-state
 or exit checks.
 
-## Neovim-to-composer bridge
+## Neovim-to-Agent bridge
 
-Embedded sessions install five AgenC user commands after user init:
+Embedded sessions install six primary AgenC commands after user init:
 
-| Neovim command | Default handoff |
-| --- | --- |
-| `:AgenCAttach [prompt]` | Attach live editor context and focus the composer without forcing open the transcript rail |
-| `:AgenCAsk [question]` | Attach context, open the transcript rail beside BUFFER, and focus an empty composer or the supplied question |
-| `:AgenCFix [instruction]` | Same handoff with the default draft `Fix the attached issue.` |
-| `:AgenCExplain [instruction]` | Same handoff with the default draft `Explain the attached code.` |
-| `:AgenCReview [instruction]` | Same handoff with the default draft `Review the attached editor context.` |
+| Neovim command                 | Policy and handoff                                                                                                                                  |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `:AgenCAttach [prompt]`        | Capture live context and focus the shared composer. An argument pre-fills the draft; it never submits by itself or forces open the transcript rail. |
+| `:AgenCAsk [question]`         | Read-only AI turn. A supplied question submits immediately; without one, AgenC opens the transcript rail and waits in the composer.                 |
+| `:AgenCExplain [instruction]`  | Read-only AI turn submitted immediately, using `Explain this editor context.` when no instruction is supplied.                                      |
+| `:AgenCFix [instruction]`      | Proposal-only AI turn submitted immediately, using `Fix this editor context.` by default.                                                           |
+| `:AgenCEdit [instruction]`     | Proposal-only AI turn. A supplied instruction submits immediately; without one, AgenC waits in the composer.                                        |
+| `:AgenCRefactor [instruction]` | Proposal-only AI turn. A supplied instruction submits immediately; without one, AgenC waits in the composer.                                        |
+
+`:AgenCReview` remains a compatibility alias for the proposal-only Refactor
+flow; new mappings should use `AgenCRefactor`.
 
 Without a range, a command captures the current buffer. An Ex range captures
-those complete lines, for example `:'<,'>AgenCExplain`. A supplied argument
-replaces the default draft. Regular unnamed buffers are captured as `[No Name]`
-live snapshots without inventing a filesystem path.
+those complete lines, for example `:'<,'>AgenCExplain`. Regular unnamed
+buffers are captured as `[No Name]` live snapshots without inventing a
+filesystem path.
 
 Matching `<Plug>` mappings are installed for user configuration:
 
 - `<Plug>(AgenCAttach)`
 - `<Plug>(AgenCAsk)`
-- `<Plug>(AgenCFix)`
 - `<Plug>(AgenCExplain)`
-- `<Plug>(AgenCReview)`
+- `<Plug>(AgenCFix)`
+- `<Plug>(AgenCEdit)`
+- `<Plug>(AgenCRefactor)`
+- `<Plug>(AgenCReview)` (compatibility alias)
 
 In normal mode a `<Plug>` action captures the current buffer; in visual mode
 it captures the exact characterwise, linewise, or blockwise selection. No
@@ -167,29 +232,110 @@ default key mappings are installed. For example:
 ```lua
 vim.keymap.set({ "n", "x" }, "<leader>aa", "<Plug>(AgenCAttach)")
 vim.keymap.set({ "n", "x" }, "<leader>ae", "<Plug>(AgenCExplain)")
+vim.keymap.set({ "n", "x" }, "<leader>af", "<Plug>(AgenCFix)")
 ```
 
 ### Exact unsaved attachment semantics
 
-An editor attachment records the live buffer's path, range, selection mode,
-text, dirty flag, and Neovim `changedtick` at capture time. If the buffer is
-modified, the composer labels it an **unsaved live-buffer snapshot**. AgenC
-wraps captured text as untrusted workspace data and sends that same live text
-as pasted content when the prompt is submitted.
+An editor capture records the live buffer's path, range, selection mode, text,
+dirty flag, buffer handle, and Neovim `changedtick`. If the buffer is modified,
+the composer labels it an **unsaved live-buffer snapshot**. AgenC wraps
+captured text as untrusted workspace data and sends those exact live bytes,
+not a later disk read, when the prompt is submitted.
+
+Capture and proposal ranges use one explicit coordinate contract: lines are
+1-based, columns are 0-based UTF-8 byte offsets, and the end position is
+exclusive. Characterwise, linewise, and blockwise selections retain their
+selection mode across the TUI, daemon, policy prompt, and proposal validation
+boundary.
 
 These captures deliberately do not materialize as a stale `@path` reference:
 resolving `@path` later would read disk and could silently replace unsaved
-editor bytes with older content. The attachment chip can be removed directly;
-Backspace removes the last chip when the composer is empty, and a successful
-submission clears the captured attachments.
+editor bytes with older content. Text inside the framed Editor request is
+never reparsed as `@file` or `@agent` syntax either: a buffer line such as
+`@.env` remains untrusted text and cannot create a second attachment. Only
+chips the user explicitly captured before submission are admitted. An
+attachment chip can be removed directly; Backspace removes the last chip when
+the composer is empty, and a successful submission clears the captured
+attachments.
 
 Exact capture is bounded to **64 KiB** and **2,000 lines**. AgenC refuses a
 larger buffer or selection with an actionable “select a smaller range” error;
 it never labels a truncated prefix as exact.
 
-`AgenCAsk`, `AgenCFix`, `AgenCExplain`, and `AgenCReview` keep BUFFER in the
-center and open the transcript rail beside it, so the editor, draft, and chat
-remain visible as one handoff.
+Every Ask, Explain, Fix, Edit, or Refactor handoff keeps BUFFER mounted, opens
+the transcript rail beside it, and focuses that rail so the response is
+immediately visible and scrollable, including in compact overlay layouts.
+`Ctrl+W H` returns focus to Neovim. Attach deliberately stops at the composer.
+
+### Read-only turns and shadow proposals
+
+Editor interactions are request-scoped and daemon-enforced:
+
+- Ask and Explain are **read-only**. The model may use explicitly read-only
+  tools, but cannot call the editor proposal tool or mutate files, processes,
+  tasks, configuration, or git state.
+- Fix, Edit, and Refactor are **proposal-only**. The model may inspect with
+  read-only tools and must return the requested change through one validated
+  `EditorProposal`; ordinary mutating tools are unavailable for that turn.
+- Attach only captures context. What happens next is determined by the prompt
+  the user submits through the normal composer.
+
+This policy also covers work that normally surrounds an Agent turn. An Editor
+request may start the selected primary model, perform audited local text/image
+reads, and record the normal private transcript, rollout, cost, error,
+file-history, proposal, and lease metadata needed to make the request
+recoverable. Its captured attachments are resolved in local-read-only mode:
+they cannot invoke MCP resources, memory lookup, or PDF helper processes, and
+`FileRead` refuses PDFs for the same reason. Grep and file discovery use the
+lockfile-pinned ripgrep binary by absolute path and pass `--no-config`; an
+Editor query therefore cannot select a PATH executable or activate an
+operator-configured `rg --pre` command.
+
+An Editor request does **not** initiate configured lifecycle or prompt hooks,
+MCP startup or discovery, cron/job recovery, skill-watcher configuration
+hooks, prompt suggestions, memory or documentation learning, tool summaries,
+or any secondary model call. A cold daemon session stages those Agent
+facilities without starting them. The first ordinary submission without an
+Editor read-only/proposal policy activates them in their normal order,
+beginning with the matching
+`SessionStart`; closing an Editor-only session discards the staged work and
+does not emit an unmatched `SessionEnd`. Shutdown closes turn admission
+synchronously, cancels startup in flight, and cleans up a daemon attachment
+that finishes after the TUI has already closed.
+
+The boundary is an initiation guarantee for the Editor request. Work already
+running elsewhere in the shared daemon, and unsolicited notifications from
+that work, may still overlap in time. User Neovim configuration remains
+trusted executable code when `init = "user"` or the default automatic
+user-init attempt is selected; use clean mode for an untrusted workspace.
+
+A proposal is a shadow edit: Neovim highlights replaced text and renders added
+lines virtually, while the real buffer remains unchanged. The proposal rail
+shows each edit and its old/new text. Use `j`/`k` to inspect changes, Page Up /
+Page Down or the mouse wheel to scroll the selected change, `y`/`Enter` to
+accept, or `n`/`q` to reject.
+
+Editor admits one review at a time. The gate begins as soon as a proposal is
+announced and remains active while Neovim stages it and while the resulting
+shadow proposal is unresolved. Another Editor submission remains in its
+originating draft instead of replacing the proposal rail or creating an
+unreviewable second edit. Accept or reject the current proposal first; the
+Agent tab remains available for normal conversation.
+
+That review boundary also owns shutdown and session switching. `/exit`,
+`/quit`, `Ctrl+D`, and `/resume` cancel their transition and return to Editor
+while a proposal-only model turn is active, its result is being staged, or its
+shadow proposal still needs a decision. Once the proposal is accepted or
+rejected, the requested transition can be repeated normally.
+
+The daemon validates the captured path, buffer handle, content hash, and
+`changedtick` when the model returns a proposal. Neovim then validates the
+path, handle, `changedtick`, ranges, and exact `old_text` when staging and again
+at acceptance. If the buffer, path, revision, or replaced text changed,
+acceptance fails as stale instead of applying to newer work. Accepted edits
+join into one Neovim undo step and leave the buffer modified but unsaved;
+rejection only clears the shadow proposal.
 
 ## Multi-buffer save and leave safety
 
@@ -225,6 +371,86 @@ agent appears to be editing that file or when the on-disk bytes no longer match
 the baseline read when BUFFER opened. Resolve the competing edit, reload, or
 make an intentional force decision inside Neovim; AgenC does not silently
 overwrite the newer disk file.
+
+### Daemon workspace mutation lease
+
+While embedded Neovim is live, the TUI holds one renewable daemon lease for
+the workspace and synchronizes the exact handle, path, hash, `changedtick`, and
+dirty state of every loaded file buffer. Clean buffers send revision metadata
+only; dirty buffers send their live content to the in-memory lease so agent
+reads see the editor's current bytes instead of stale disk.
+
+Coordinated file writes use a fail-closed admission protocol:
+
+- A path that is not loaded in Editor receives a one-use mutation token. The
+  daemon rechecks editor authority immediately before commit.
+- Every loaded path—clean or dirty—is protected by Editor authority. An Agent
+  write becomes a reviewable proposal bound to the exact buffer hash and
+  `changedtick`. This closes the publication race where the user starts typing
+  after a tool read but before the next debounced editor sync.
+- A dirty path whose editor lease expired, crashed, or stopped reporting is
+  quarantined as stale and all reads/writes are blocked until the editor
+  reconnects and proves its revision or the user deliberately resolves it.
+
+Heartbeats renew the lease; editor close and TUI cleanup release it without
+silently abandoning dirty authority. The same coordinator covers direct file
+edits, file writes, and apply-patch operations, and records whether each
+attempt was applied, proposed, blocked, or discarded.
+
+Native full-buffer writes use the same authority boundary. Before Neovim runs
+user init, AgenC installs a fail-closed launch guard. Once the embedded RPC
+channel is ready, `BufWritePre` synchronously publishes the exact manifest and
+waits for the daemon acknowledgement; an executing Agent mutation therefore
+aborts `:write` before disk changes. `:saveas` is supported because Neovim
+adopts the new buffer path before that check. Workspace range/alternate-path
+writes (`:[range]write path`) and append writes (`:write >> path`) are also
+intercepted, but refused because their destination bytes cannot be represented
+as one exact loaded-buffer revision. Write those forms outside the workspace,
+or use a full-buffer `:saveas` inside it.
+
+Project Explorer create and file-delete operations reserve an authenticated
+topology fence before touching disk. The fence spans the disk change and the
+matching Neovim buffer update, then publishes the complete post-operation
+buffer manifest atomically. They pin the admitted workspace-parent and target
+identity, recheck exact file contents immediately before deletion, and never
+roll back through a pathname whose identity changed. A pre-effect identity
+exchange releases the fence without touching the new path; a post-effect
+identity mismatch stays quarantined as unknown instead of releasing the path
+as clean.
+
+Explorer and Agent file transactions share a supervised private-Node helper.
+It binds its working directory to the captured parent before the final
+caller-controlled check, verifies that cwd identity before every command, and
+accepts only validated path segments and basenames. Existing-file rewrites stay
+on a verified file descriptor. Missing create parents are traversed or created
+one segment at a time, and file/symlink deletes run inside the bound parent.
+An ancestor rename or symlink exchange can therefore move the intended
+directory but cannot redirect bytes outside it; helper startup is the
+capability probe, and failure refuses the operation instead of falling back to
+a raw pathname.
+
+Recursive Explorer directory deletion first moves the verified directory to a
+cryptographically random same-parent quarantine name, verifies that the moved
+inode is the admitted directory, then removes that private subtree. Same-parent
+regular-file rename uses the same quarantine step, publishes the destination
+with an exclusive hard link, and removes the private name, so it cannot
+overwrite a competing destination. Cross-parent, directory, and symlink rename
+remain intentionally unsupported because portable Node exposes no
+identity-bound atomic no-clobber destination primitive; the rename prompt keeps
+the actionable error visible so the user can choose another name or close
+Editor and use trusted external tooling.
+
+Node does not expose an identity-matched `unlinkat`, so a hostile
+same-directory actor can still exchange the source leaf name in the final
+unlink/quarantine-rename syscall boundary. The helper rechecks identity at the
+last available point and the bound parent prevents that known leaf race from
+escaping the admitted directory.
+
+MCP, plugin, dynamically discovered, code-mode, and other uncoordinated tools
+are not allowed to execute while Editor owns loaded workspace buffers.
+Operator pre/post/failure hooks are also suppressed across coordinated editor
+writes, because extension code cannot participate in the revision protocol.
+Close Editor first when an external mutation tool is intentionally required.
 
 ## Private crash recovery
 
@@ -335,6 +561,10 @@ their corresponding cleanup if the TUI itself is killed, including
 The startup and cleanup deadlines are configurable with the env knobs above;
 unknown dirty state is never treated as safe permission to exit or launch an
 external editor.
+Normal TUI teardown waits for a final exact workspace sync and daemon-lease
+release before destroying the Neovim provider. If either step cannot be
+confirmed, teardown fails visibly and leaves the provider available for
+recovery instead of claiming the editor was safely detached.
 Hosted Linux, Darwin, and Windows gates launch a detached, TERM-resistant
 Neovim job, ensure it has entered the platform's tracked boundary, kill the
 TUI, and require the editor, observed job, owner watchdog/broker, and temporary

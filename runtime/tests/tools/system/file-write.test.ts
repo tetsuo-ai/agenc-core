@@ -2,8 +2,10 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   stat,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -331,6 +333,86 @@ describe("Write tool", () => {
     await expect(stat(join(root, "nested", "deeper"))).resolves.toBeTruthy();
   });
 
+  test("never creates outside the workspace when the parent is exchanged after the final check", async () => {
+    const outsideRoot = await mkdtemp(
+      join(tmpdir(), "agenc-file-write-outside-"),
+    );
+    const admittedParent = join(root, "admitted-parent");
+    const displacedParent = join(root, "displaced-parent");
+    const target = join(admittedParent, "escape.txt");
+    const displacedTarget = join(displacedParent, "escape.txt");
+    const outsideTarget = join(outsideRoot, "escape.txt");
+    await mkdir(admittedParent);
+
+    try {
+      const tool = createFileWriteTool({
+        allowedPaths: [root],
+        __testAfterPreWriteCheck: async ({ path, targetExisted }) => {
+          expect(path).toBe(target);
+          expect(targetExisted).toBe(false);
+          await rename(admittedParent, displacedParent);
+          await symlink(outsideRoot, admittedParent);
+        },
+      });
+
+      const result = await tool.execute({
+        file_path: target,
+        content: "must stay inside\n",
+        __agencSessionId: sessionId,
+      });
+
+      expect(result.isError).toBe(true);
+      await expect(stat(outsideTarget)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(readFile(displacedTarget, "utf8")).resolves.toBe(
+        "must stay inside\n",
+      );
+    } finally {
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("never overwrites an outside lookalike when an existing file's parent is exchanged after the final check", async () => {
+    const outsideRoot = await mkdtemp(
+      join(tmpdir(), "agenc-file-write-outside-existing-"),
+    );
+    const admittedParent = join(root, "admitted-existing");
+    const displacedParent = join(root, "displaced-existing");
+    const target = join(admittedParent, "value.txt");
+    const displacedTarget = join(displacedParent, "value.txt");
+    const outsideTarget = join(outsideRoot, "value.txt");
+    const original = "identical original bytes\n";
+    await mkdir(admittedParent);
+    await writeFile(target, original, "utf8");
+    await writeFile(outsideTarget, original, "utf8");
+    seedSessionReadState(sessionId, [
+      { path: target, content: original, viewKind: "full" },
+    ]);
+
+    try {
+      const tool = createFileWriteTool({
+        allowedPaths: [root],
+        __testAfterPreWriteCheck: async ({ targetExisted }) => {
+          expect(targetExisted).toBe(true);
+          await rename(admittedParent, displacedParent);
+          await symlink(outsideRoot, admittedParent);
+        },
+      });
+      const result = await tool.execute({
+        file_path: target,
+        content: "replacement\n",
+        __agencSessionId: sessionId,
+      });
+
+      expect(result.isError).toBe(true);
+      await expect(readFile(outsideTarget, "utf8")).resolves.toBe(original);
+      await expect(readFile(displacedTarget, "utf8")).resolves.toBe(original);
+    } finally {
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
   test("rejects file_path outside the allowed directories", async () => {
     const otherRoot = await mkdtemp(join(tmpdir(), "agenc-file-write-other-"));
     try {
@@ -489,8 +571,8 @@ describe("Write tool", () => {
       __agencSessionId: sessionId,
     });
     expect(result.isError).toBeUndefined();
-    await expect(readFile(join(root, "rel/relative.txt"), "utf8")).resolves.toBe(
-      "rel-ok\n",
-    );
+    await expect(
+      readFile(join(root, "rel/relative.txt"), "utf8"),
+    ).resolves.toBe("rel-ok\n");
   });
 });

@@ -33,10 +33,7 @@ import { emitError, emitWarning } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
-import type {
-  AssistantMessage,
-  TurnState,
-} from "../session/turn-state.js";
+import type { AssistantMessage, TurnState } from "../session/turn-state.js";
 import type { Message } from "../types/message.js";
 import { asRecord } from "../utils/record.js";
 
@@ -122,6 +119,13 @@ export async function evaluateStopHooks(
   session: Session,
   _signal?: AbortSignal,
 ): Promise<StopResult> {
+  // Configured Stop hooks are arbitrary operator commands. Editor
+  // interactions have their own read-only/proposal-only contract and must
+  // never widen that authority by entering the ordinary Agent hook ladder.
+  if (ctx.editorInteraction !== undefined) {
+    return { allowStop: true, blocking: false };
+  }
+
   // Build a consistent request for every registered hook.
   const lastAssistant = state.assistantMessages.at(-1);
   const hookMessages = buildHookMessages(state);
@@ -290,7 +294,10 @@ function buildHookMessages(state: TurnState): Message[] {
 
 function buildCompletedToolResultLookup(
   state: TurnState,
-): ReadonlyMap<string, { readonly content: string; readonly isError: boolean }> {
+): ReadonlyMap<
+  string,
+  { readonly content: string; readonly isError: boolean }
+> {
   return new Map(
     (state.completedToolResults ?? []).map((result) => [
       result.callId,
@@ -309,9 +316,7 @@ function lastLlmAssistantMatches(
   return (
     text === (assistant.text ?? "") &&
     toolCalls.length === assistant.toolCalls.length &&
-    toolCalls.every(
-      (call, index) => call.id === assistant.toolCalls[index]?.id,
-    )
+    toolCalls.every((call, index) => call.id === assistant.toolCalls[index]?.id)
   );
 }
 
@@ -350,9 +355,10 @@ function hookMessageFromLlm(
   }
 
   if (message.role === "tool") {
-    const completed = message.toolCallId !== undefined
-      ? completedToolResults.get(message.toolCallId)
-      : undefined;
+    const completed =
+      message.toolCallId !== undefined
+        ? completedToolResults.get(message.toolCallId)
+        : undefined;
     return {
       type: "user",
       uuid,
@@ -462,6 +468,11 @@ export async function executeStopFailureHooks(
   ctx: TurnContext,
   session: Session,
 ): Promise<void> {
+  // Keep the same authority boundary as normal Stop hooks. This central
+  // guard covers every recovery callsite.
+  if (ctx.editorInteraction !== undefined) {
+    return;
+  }
   const lastAssistant = state.assistantMessages.at(-1);
   if (!isApiErrorAssistantMessage(lastAssistant)) {
     return;
@@ -499,7 +510,9 @@ export async function executeStopFailureHooks(
 // Hook registry bridge (T10 wires real hook config)
 // ─────────────────────────────────────────────────────────────────────
 
-function listConfiguredStopHooks(session: Session): ReadonlyArray<StopHookHandler> {
+function listConfiguredStopHooks(
+  session: Session,
+): ReadonlyArray<StopHookHandler> {
   const hooks = session.services.hooks as unknown as {
     readonly stopHooks?: ReadonlyArray<StopHookHandler>;
   };

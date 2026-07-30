@@ -43,10 +43,7 @@ import {
   EXIT_ALT_SCREEN,
   SHOW_CURSOR,
 } from "./ink/termio/dec.js";
-import {
-  bootTUI,
-  RENDER_BACKPRESSURE_THRESHOLD_MS,
-} from "./main.js";
+import { bootTUI, RENDER_BACKPRESSURE_THRESHOLD_MS } from "./main.js";
 import { AgenCTuiApp } from "./components/App.js";
 
 class TestReadStream extends EventEmitter {
@@ -72,6 +69,7 @@ type RenderedTuiElement = {
     readonly model?: unknown;
     readonly initialPrompt?: string;
     readonly initialComposerText?: string;
+    readonly registerTuiTeardown: (teardown: () => Promise<void>) => () => void;
     readonly getFpsMetrics: () => unknown;
   };
 };
@@ -120,8 +118,10 @@ describe("TUI main coverage", () => {
     expect(stdin.listenerCount("error")).toBe(1);
 
     expect(harness.renderInk).toHaveBeenCalledTimes(1);
-    const [element, renderOptions] = harness.renderInk.mock
-      .calls[0] as [RenderedTuiElement, RenderOptions];
+    const [element, renderOptions] = harness.renderInk.mock.calls[0] as [
+      RenderedTuiElement,
+      RenderOptions,
+    ];
     expect(element.type).toBe(AgenCTuiApp);
     expect(element.props.session).toBe(session);
     expect(element.props.configStore).toBe(configStore);
@@ -167,5 +167,48 @@ describe("TUI main coverage", () => {
     expect(stdout.write).toHaveBeenNthCalledWith(3, DISABLE_KITTY_KEYBOARD);
     expect(stdout.write).toHaveBeenNthCalledWith(4, DISABLE_MODIFY_OTHER_KEYS);
     expect(stdout.write).toHaveBeenNthCalledWith(5, SHOW_CURSOR);
+  });
+
+  test("waitUntilExit drains registered editor teardown before resolving", async () => {
+    const stdin = new TestReadStream();
+    const stdout = new TestWriteStream();
+    const stderr = new TestWriteStream();
+    let resolveTeardown!: () => void;
+    const teardown = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveTeardown = resolve;
+        }),
+    );
+    harness.renderInk.mockResolvedValue({
+      unmount: vi.fn(),
+      waitUntilExit: vi.fn(async () => undefined),
+    });
+
+    const handle = await bootTUI({
+      session: {} as never,
+      configStore: {} as never,
+      stdin: stdin as never,
+      stdout: stdout as never,
+      stderr: stderr as never,
+    });
+    const [element] = harness.renderInk.mock.calls[0] as [RenderedTuiElement];
+    element.props.registerTuiTeardown(teardown);
+
+    let settled = false;
+    const waiting = handle.waitUntilExit().then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => {
+      expect(teardown).toHaveBeenCalledOnce();
+    });
+    expect(settled).toBe(false);
+
+    resolveTeardown();
+    await waiting;
+    expect(settled).toBe(true);
+    expect(stdin.listenerCount("close")).toBe(0);
+    expect(stdin.listenerCount("end")).toBe(0);
+    expect(stdin.listenerCount("error")).toBe(0);
   });
 });

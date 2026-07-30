@@ -29,10 +29,7 @@ import { Session, type SessionServices } from "../session/session.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { runTurnCompat } from "../session/turn-compat.js";
 import { startBackgroundSession } from "../tasks/LocalMainSessionTask.js";
-import {
-  enqueue,
-  resetCommandQueue,
-} from "../utils/messageQueueManager.js";
+import { enqueue, resetCommandQueue } from "../utils/messageQueueManager.js";
 import { execAgentHook } from "../utils/hooks/execAgentHook.js";
 import type { Tool, ToolUseContext } from "../tools/Tool.js";
 import type { Message } from "../types/message.js";
@@ -41,10 +38,7 @@ import {
   createAssistantAPIErrorMessage,
   createUserMessage,
 } from "../utils/messages.js";
-import {
-  extractResultText,
-  runForkedAgent,
-} from "../utils/forkedAgent.js";
+import { extractResultText, runForkedAgent } from "../utils/forkedAgent.js";
 import {
   createFileStateCacheWithSizeLimit,
   READ_FILE_STATE_CACHE_SIZE,
@@ -253,10 +247,11 @@ describe("execAgentHook run-turn integration", () => {
         }),
       }),
     );
-    expect(spawnReconcile).toHaveBeenCalledWith(
-      "hook-spawn-reservation",
-      { inputTokens: 0, outputTokens: 0, costUsd: 0 },
-    );
+    expect(spawnReconcile).toHaveBeenCalledWith("hook-spawn-reservation", {
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+    });
     expect(spawnVoid).not.toHaveBeenCalled();
     expect(
       childAcquire.mock.calls.some(
@@ -683,7 +678,9 @@ describe("execAgentHook run-turn integration", () => {
 
     await runWithCwdOverride(childDir, async () => {
       for await (const _event of runTurnCompat(parent, {
-        messages: [createUserMessage({ content: "explain @src/child-only.ts" })],
+        messages: [
+          createUserMessage({ content: "explain @src/child-only.ts" }),
+        ],
         systemPrompt: asSystemPrompt(["system"]),
         userContext: {},
         systemContext: {},
@@ -697,8 +694,7 @@ describe("execAgentHook run-turn integration", () => {
     });
 
     const firstRequest = provider.chatStream.mock.calls[0]?.[0] as
-      | LLMMessage[]
-      | undefined;
+      LLMMessage[] | undefined;
     const rendered = firstRequest
       ?.map((message) =>
         typeof message.content === "string" ? message.content : "",
@@ -1000,6 +996,7 @@ describe("execAgentHook run-turn integration", () => {
       value: "side prompt",
       mode: "prompt",
       priority: "next",
+      queueOwner: { kind: "session", conversationId: "parent-test" },
     });
     const provider = providerWithResponses([
       {
@@ -1026,19 +1023,23 @@ describe("execAgentHook run-turn integration", () => {
     const canUseTool = vi.fn(async () => ({ behavior: "allow" as const }));
 
     const events = [];
-    for await (const event of runTurnCompat(parent, {
-      messages: [createUserMessage({ content: "start" })],
-      systemPrompt: asSystemPrompt(["system"]),
-      userContext: {},
-      systemContext: {},
-      canUseTool,
-      toolUseContext: createToolUseContext({
-        roleWorkspace: parent.roleWorkspace,
-        tools: [echoTool()],
-      }),
-      querySource: "sdk",
-      maxTurns: 3,
-    })) {
+    for await (const event of runTurnCompat(
+      parent,
+      {
+        messages: [createUserMessage({ content: "start" })],
+        systemPrompt: asSystemPrompt(["system"]),
+        userContext: {},
+        systemContext: {},
+        canUseTool,
+        toolUseContext: createToolUseContext({
+          roleWorkspace: parent.roleWorkspace,
+          tools: [echoTool()],
+        }),
+        querySource: "sdk",
+        maxTurns: 3,
+      },
+      { conversationId: "parent-test" },
+    )) {
       events.push(event);
     }
 
@@ -1501,13 +1502,13 @@ describe("execAgentHook run-turn integration", () => {
         forkLabel: "test",
         maxTurns: 1,
         skipTranscript: true,
-        onMessage: message => seenMessages.push(message),
+        onMessage: (message) => seenMessages.push(message),
       }),
     ).rejects.toThrow("provider exploded");
 
     expect(
       seenMessages.some(
-        message =>
+        (message) =>
           typeof message === "object" &&
           message !== null &&
           "isApiErrorMessage" in message &&
@@ -1529,10 +1530,7 @@ describe("execAgentHook run-turn integration", () => {
     const providerA: LLMProvider = {
       ...providerWithResponses([]),
       chatStream: vi.fn(
-        async (
-          _messages: LLMMessage[],
-          onChunk: (chunk: unknown) => void,
-        ) => {
+        async (_messages: LLMMessage[], onChunk: (chunk: unknown) => void) => {
           providerACalls += 1;
           if (providerACalls === 1) {
             await runForkedAgent({
@@ -1621,7 +1619,7 @@ describe("execAgentHook run-turn integration", () => {
       forkLabel: "test",
       maxTurns: 1,
       skipTranscript: true,
-      onMessage: message => seenMessages.push(message),
+      onMessage: (message) => seenMessages.push(message),
     });
 
     // Did NOT throw; returned accumulated partial result.
@@ -1629,13 +1627,13 @@ describe("execAgentHook run-turn integration", () => {
     // Partial work (the Echo tool turn) survives.
     expect(
       result.messages.some(
-        message => message.type === "user" || message.type === "assistant",
+        (message) => message.type === "user" || message.type === "assistant",
       ),
     ).toBe(true);
     // The max_turns_reached attachment is delivered, not an API-error message.
     expect(
       result.messages.some(
-        message =>
+        (message) =>
           message.type === "attachment" &&
           (message as { attachment?: { type?: string } }).attachment?.type ===
             "max_turns_reached",
@@ -1643,7 +1641,7 @@ describe("execAgentHook run-turn integration", () => {
     ).toBe(true);
     expect(
       seenMessages.some(
-        message =>
+        (message) =>
           (message as { isApiErrorMessage?: boolean }).isApiErrorMessage ===
           true,
       ),
@@ -1718,13 +1716,15 @@ function allowAdmissionLease(
 function providerWithToolCall(
   toolCall: LLMResponse["toolCalls"][number],
 ): LLMProvider & { chatStream: ReturnType<typeof vi.fn> } {
-  return providerWithResponses([{
-    content: "checking",
-    toolCalls: [toolCall],
-    usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-    model: "test-model",
-    finishReason: "tool_calls",
-  }]);
+  return providerWithResponses([
+    {
+      content: "checking",
+      toolCalls: [toolCall],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "test-model",
+      finishReason: "tool_calls",
+    },
+  ]);
 }
 
 function providerWithResponses(
@@ -1735,10 +1735,7 @@ function providerWithResponses(
     name: "stub-provider",
     chat: vi.fn(async () => pending.shift() ?? responses.at(-1)!),
     chatStream: vi.fn(
-      async (
-        _messages: LLMMessage[],
-        onChunk: (chunk: unknown) => void,
-      ) => {
+      async (_messages: LLMMessage[], onChunk: (chunk: unknown) => void) => {
         const response = pending.shift() ?? responses.at(-1)!;
         if (response.content.length > 0) {
           onChunk({ type: "text_delta", text: response.content });

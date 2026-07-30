@@ -1,13 +1,9 @@
-import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename, resolve } from "node:path";
-import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import treeKill from "tree-kill";
 
-import {
-  SandboxManager,
-  type SandboxType,
-} from "../sandbox/engine/index.js";
+import { SandboxManager, type SandboxType } from "../sandbox/engine/index.js";
 import {
   approximateTokenCount,
   maxCharsForTokens,
@@ -33,6 +29,15 @@ import {
   type IPty,
   type PtyModule,
 } from "../pty/loadPty.js";
+import {
+  hasCurrentWorkspaceOperationLifetime,
+  retainCurrentWorkspaceOperation,
+} from "../workspace/tool-operation-lifetime.js";
+import {
+  signalProcessTree,
+  spawnContainedProcess,
+  terminateProcessTreeAndWait,
+} from "../utils/supervisedProcess.js";
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
 const DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250;
@@ -58,7 +63,7 @@ type ExitState = {
 
 type StoredProcess =
   | { readonly kind: "pty"; readonly process: IPty }
-  | { readonly kind: "pipe"; readonly process: ChildProcessByStdio<null, Readable, Readable> };
+  | { readonly kind: "pipe"; readonly process: ChildProcessWithoutNullStreams };
 
 interface OutputChunk {
   readonly stream: UnifiedExecStream;
@@ -196,10 +201,7 @@ export class ProcessOutputBuffer {
     const replacement: OutputChunk[] = [];
     for (const segment of segments) {
       const budget = budgetByStream.get(segment.stream) ?? segment.chunk.length;
-      const truncated = truncateHeadTail(
-        segment.chunk,
-        Math.max(64, budget),
-      );
+      const truncated = truncateHeadTail(segment.chunk, Math.max(64, budget));
       replacement.push({ stream: segment.stream, chunk: truncated.text });
     }
 
@@ -218,7 +220,8 @@ function runtimeSandboxesCompatible(
   requested: UnifiedExecRuntimeSandbox,
 ): boolean {
   if (active === undefined) return false;
-  return active.sandboxPolicyCwd === requested.sandboxPolicyCwd &&
+  return (
+    active.sandboxPolicyCwd === requested.sandboxPolicyCwd &&
     canonicalPermissionProfile(active.permissionProfile) ===
       canonicalPermissionProfile(requested.permissionProfile) &&
     (active.agencLinuxSandboxExe ?? "") ===
@@ -235,7 +238,8 @@ function runtimeSandboxesCompatible(
     (active.windowsSandboxLevel ?? "disabled") ===
       (requested.windowsSandboxLevel ?? "disabled") &&
     (active.windowsSandboxPrivateDesktop ?? false) ===
-      (requested.windowsSandboxPrivateDesktop ?? false);
+      (requested.windowsSandboxPrivateDesktop ?? false)
+  );
 }
 
 function canonicalPermissionProfile(
@@ -259,7 +263,9 @@ function stableStringify(value: unknown): string {
   if (value !== null && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>)
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, child]) => `${JSON.stringify(key)}:${stableStringify(child)}`);
+      .map(
+        ([key, child]) => `${JSON.stringify(key)}:${stableStringify(child)}`,
+      );
     return `{${entries.join(",")}}`;
   }
   return JSON.stringify(value) ?? "undefined";
@@ -327,7 +333,10 @@ function makeDeferredExit(): {
 
 function resolveShell(shell: string | undefined): string {
   if (shell && shell.trim().length > 0) return shell;
-  return process.env.SHELL ?? (process.platform === "win32" ? "cmd.exe" : "/bin/bash");
+  return (
+    process.env.SHELL ??
+    (process.platform === "win32" ? "cmd.exe" : "/bin/bash")
+  );
 }
 
 function shellArgs(command: string, login: boolean | undefined): string[] {
@@ -336,21 +345,28 @@ function shellArgs(command: string, login: boolean | undefined): string[] {
 }
 
 /** SEC-01: never pass raw process.env (API keys) into shell children. */
-function buildEnv(env: Record<string, string> | undefined): Record<string, string> {
+function buildEnv(
+  env: Record<string, string> | undefined,
+): Record<string, string> {
   return buildScrubbedSpawnEnv(env);
 }
 
 function clampExecYield(value: number | undefined): number {
-  const raw = typeof value === "number" && Number.isFinite(value)
-    ? value
-    : DEFAULT_EXEC_YIELD_TIME_MS;
-  return Math.min(MAX_YIELD_TIME_MS, Math.max(MIN_YIELD_TIME_MS, Math.floor(raw)));
+  const raw =
+    typeof value === "number" && Number.isFinite(value)
+      ? value
+      : DEFAULT_EXEC_YIELD_TIME_MS;
+  return Math.min(
+    MAX_YIELD_TIME_MS,
+    Math.max(MIN_YIELD_TIME_MS, Math.floor(raw)),
+  );
 }
 
 function clampWriteYield(value: number | undefined, input: string): number {
-  const raw = typeof value === "number" && Number.isFinite(value)
-    ? value
-    : DEFAULT_WRITE_STDIN_YIELD_TIME_MS;
+  const raw =
+    typeof value === "number" && Number.isFinite(value)
+      ? value
+      : DEFAULT_WRITE_STDIN_YIELD_TIME_MS;
   const base = Math.max(MIN_YIELD_TIME_MS, Math.floor(raw));
   if (input.length === 0) {
     return Math.min(
@@ -377,7 +393,9 @@ function createResult(params: {
   const maxChars = maxCharsForTokens(params.maxOutputTokens);
   const stdout = truncateHeadTail(params.stdout, maxChars);
   const stderr = truncateHeadTail(params.stderr, maxChars);
-  const output = [stdout.text, stderr.text].filter((part) => part.length > 0).join("");
+  const output = [stdout.text, stderr.text]
+    .filter((part) => part.length > 0)
+    .join("");
   const originalText = `${params.stdout}${params.stderr}`;
   return {
     output,
@@ -413,15 +431,27 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     this.sandboxManager = options.sandboxManager ?? new SandboxManager();
   }
 
-  async execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput> {
+  async execCommand(
+    request: ExecCommandRequest,
+  ): Promise<ExecCommandToolOutput> {
     if (request.cmd.trim().length === 0) {
-      throw new UnifiedExecError("missing_command", "missing command line for unified exec request");
+      throw new UnifiedExecError(
+        "missing_command",
+        "missing command line for unified exec request",
+      );
     }
     this.pruneExitedProcesses();
     if (this.processes.size >= this.maxProcesses) {
       throw new UnifiedExecError(
         "process_limit",
         `too many live unified exec processes (${this.processes.size}/${this.maxProcesses})`,
+      );
+    }
+    const tty = request.tty === true;
+    if (tty && hasCurrentWorkspaceOperationLifetime()) {
+      throw new UnifiedExecError(
+        "create_process",
+        "tty=true execution is blocked while an Editor workspace fence is active because PTY descendants cannot be contained safely",
       );
     }
 
@@ -440,7 +470,6 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     });
     const startedAt = Date.now();
     const callId = request.callId ?? `exec-${processId}`;
-    const tty = request.tty === true;
     const ownerId =
       typeof request.ownerId === "string" && request.ownerId.trim().length > 0
         ? request.ownerId.trim()
@@ -464,6 +493,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       startedAt,
       signal: request.__abortSignal,
     });
+    const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
+    void entry.exitPromise.then(
+      releaseWorkspaceOperation,
+      releaseWorkspaceOperation,
+    );
     this.processes.set(processId, entry);
     request.observer?.onBegin?.({
       callId,
@@ -590,9 +624,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
    * killing a finished process is a benign race, not an error.
    * Ownership mismatches throw `owner_denied` (TOOL-01).
    */
-  terminateProcess(
-    processIdOrRequest: number | TerminateProcessRequest,
-  ): { terminated: boolean } {
+  terminateProcess(processIdOrRequest: number | TerminateProcessRequest): {
+    terminated: boolean;
+  } {
     const processId =
       typeof processIdOrRequest === "number"
         ? processIdOrRequest
@@ -616,9 +650,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       this.forceTerminate(entry);
     }
     await Promise.allSettled(
-      entries.map((entry) =>
-        Promise.race([entry.exitPromise, delay(2_000)]),
-      ),
+      entries.map((entry) => Promise.race([entry.exitPromise, delay(2_000)])),
     );
     this.processes.clear();
   }
@@ -767,7 +799,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ...(detachUpstreamAbort !== undefined ? { detachUpstreamAbort } : {}),
       };
       processHandle.onData((data) =>
-        notifyData("stdout", Buffer.isBuffer(data) ? data.toString("utf8") : data),
+        notifyData(
+          "stdout",
+          Buffer.isBuffer(data) ? data.toString("utf8") : data,
+        ),
       );
       processHandle.onExit((event) => {
         complete(entry, { exitCode: event.exitCode, signal: event.signal });
@@ -776,27 +811,61 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       return entry;
     }
 
-    const child = spawn(params.program, [...params.args], {
+    const child = spawnContainedProcess(params.program, params.args, {
       cwd: params.cwd,
       env: params.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
       argv0: params.argv0 ?? basename(params.program),
     });
-    child.stdout.on("data", (data: Buffer) => notifyData("stdout", data.toString("utf8")));
-    child.stderr.on("data", (data: Buffer) => notifyData("stderr", data.toString("utf8")));
+    child.stdin.end();
+    child.stdout.on("data", (data: Buffer) =>
+      notifyData("stdout", data.toString("utf8")),
+    );
+    child.stderr.on("data", (data: Buffer) =>
+      notifyData("stderr", data.toString("utf8")),
+    );
     const entry: ProcessEntry = {
       ...entryBase,
       stored: { kind: "pipe", process: child },
       // gaphunt3 #44: thread the upstream-abort disposer onto the entry.
       ...(detachUpstreamAbort !== undefined ? { detachUpstreamAbort } : {}),
     };
+    let settlementStarted = false;
+    const settleContainedProcess = (
+      state: ExitState,
+      spawnError?: Error,
+    ): void => {
+      if (settlementStarted) return;
+      settlementStarted = true;
+      setTimeout(() => {
+        void terminateProcessTreeAndWait(child, {
+          label: `exec_command process ${params.processId}`,
+        }).then(
+          () => {
+            if (spawnError !== undefined) {
+              notifyData("stderr", spawnError.message);
+            }
+            complete(entry, state);
+          },
+          (error) => {
+            notifyData(
+              "stderr",
+              `AgenC could not verify descendant process cleanup: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            complete(entry, {
+              exitCode: state.exitCode === 0 ? 1 : state.exitCode,
+              signal: state.signal,
+            });
+          },
+        );
+      }, 20).unref?.();
+    };
     child.on("exit", (code, signal) => {
-      setTimeout(() => complete(entry, { exitCode: code, signal }), 20).unref?.();
+      settleContainedProcess({ exitCode: code, signal });
     });
     child.on("error", (error) => {
-      notifyData("stderr", error.message);
-      complete(entry, { exitCode: 1 });
+      settleContainedProcess({ exitCode: 1 }, error);
     });
     this.attachAbortTermination(entry);
     child.unref();
@@ -982,20 +1051,18 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }, 500).unref?.();
   }
 
-  private terminate(entry: ProcessEntry, signal: NodeJS.Signals = "SIGTERM"): void {
+  private terminate(
+    entry: ProcessEntry,
+    signal: NodeJS.Signals = "SIGTERM",
+  ): void {
     try {
       if (entry.stored.kind === "pty") {
         this.terminatePty(entry.stored.process, signal);
-      } else if (entry.stored.process.pid) {
-        if (process.platform !== "win32") {
-          try {
-            process.kill(-entry.stored.process.pid, signal);
-          } catch {
-            entry.stored.process.kill(signal);
-          }
-        } else {
-          entry.stored.process.kill(signal);
-        }
+      } else {
+        signalProcessTree(
+          entry.stored.process,
+          signal === "SIGKILL" ? "SIGKILL" : "SIGTERM",
+        );
       }
     } catch {
       // Best-effort shutdown.

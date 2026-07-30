@@ -1,4 +1,9 @@
-import React, { useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
+import React, {
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import {
   dismissLedgerVerification,
@@ -13,6 +18,8 @@ import { useRegisterOverlay } from "../context/overlayContext.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { Box, Text, useInput } from "../ink.js";
 import { TerminalWriteContext } from "../ink/useTerminalNotification.js";
+import ThemedBox from "./design-system/ThemedBox.js";
+import ThemedText from "./design-system/ThemedText.js";
 import {
   kittyLogoPlaceholderRows,
   supportsKittyGraphics,
@@ -44,10 +51,7 @@ const KITTY_VERIFIED_IMAGE_PAYLOADS = [
 ] as const;
 const ACTIVE_FRAMES = ["◇", "◈", "◆", "◈"] as const;
 
-function kittyImageUploadCommand(
-  imageId: number,
-  payload: string,
-): string {
+function kittyImageUploadCommand(imageId: number, payload: string): string {
   return [
     "\x1b_G",
     "a=T,q=2,o=z,f=32,C=1,U=1,",
@@ -86,13 +90,7 @@ function KittyLedgerNano({
       writeRaw(`\x1b_Ga=d,d=I,i=${imageIds[0]},q=2;\x1b\\`);
       writeRaw(`\x1b_Ga=d,d=I,i=${imageIds[1]},q=2;\x1b\\`);
     };
-  }, [
-    imageIds,
-    payloads,
-    terminalSize.columns,
-    terminalSize.rows,
-    writeRaw,
-  ]);
+  }, [imageIds, payloads, terminalSize.columns, terminalSize.rows, writeRaw]);
 
   if (!ready) return null;
   return (
@@ -102,15 +100,14 @@ function KittyLedgerNano({
       height={KITTY_IMAGE_ROWS}
       flexShrink={0}
     >
-      {kittyLogoPlaceholderRows(
-        KITTY_IMAGE_PART_COLUMNS,
-        KITTY_IMAGE_ROWS,
-      ).map((line, index) => (
-        <Box key={index} flexDirection="row">
-          <Text color={kittyImageColor(imageIds[0])}>{line}</Text>
-          <Text color={kittyImageColor(imageIds[1])}>{line}</Text>
-        </Box>
-      ))}
+      {kittyLogoPlaceholderRows(KITTY_IMAGE_PART_COLUMNS, KITTY_IMAGE_ROWS).map(
+        (line, index) => (
+          <Box key={index} flexDirection="row">
+            <Text color={kittyImageColor(imageIds[0])}>{line}</Text>
+            <Text color={kittyImageColor(imageIds[1])}>{line}</Text>
+          </Box>
+        ),
+      )}
     </Box>
   );
 }
@@ -137,9 +134,9 @@ function LedgerNanoGraphic({
   return (
     <Box flexDirection="column">
       {lines.map((line, index) => (
-        <Text key={index} color="#ffffff">
+        <ThemedText key={index} color="text">
           {line}
-        </Text>
+        </ThemedText>
       ))}
     </Box>
   );
@@ -227,12 +224,7 @@ export function LedgerVerificationOverlay(): React.ReactNode {
       );
       return () => clearTimeout(timer);
     }
-  }, [
-    snapshot.phase,
-    snapshot.requestId,
-    snapshot.startedAt,
-    visible,
-  ]);
+  }, [snapshot.phase, snapshot.requestId, snapshot.startedAt, visible]);
 
   useEffect(() => {
     if (snapshot.phase !== "waiting" && snapshot.phase !== "verifying") {
@@ -254,32 +246,31 @@ export function LedgerVerificationOverlay(): React.ReactNode {
     Math.floor((terminalSize.rows - POPUP_ESTIMATED_HEIGHT) / 2),
   );
   const verified = snapshot.phase === "verified";
-  const active =
-    snapshot.phase === "waiting" || snapshot.phase === "verifying";
+  const active = snapshot.phase === "waiting" || snapshot.phase === "verifying";
   const copy = stateCopy(snapshot.phase);
 
   return (
-    <Box
+    <ThemedBox
       position="absolute"
       left={left}
       top={top}
       width={width}
       flexDirection="column"
       borderStyle="single"
-      borderColor="#ffffff"
-      backgroundColor="#000000"
+      borderColor="text"
+      backgroundColor="background"
       opaque
     >
-      <Box
+      <ThemedBox
         flexDirection="row"
         paddingX={1}
         borderBottom
-        borderBottomColor="#333333"
-        backgroundColor="#000000"
+        borderBottomColor="line"
+        backgroundColor="background"
       >
-        <Text color="#ffffff" bold>
+        <ThemedText color="text" bold>
           LEDGER AUTHENTICITY
-        </Text>
+        </ThemedText>
         <Box flexGrow={1} />
         <Box
           paddingLeft={1}
@@ -288,62 +279,72 @@ export function LedgerVerificationOverlay(): React.ReactNode {
             dismissLedgerVerification(snapshot.requestId);
           }}
         >
-          <Text color="#ffffff">[×]</Text>
+          <ThemedText color="text">[×]</ThemedText>
         </Box>
-      </Box>
+      </ThemedBox>
 
-      <Box
+      <ThemedBox
         flexDirection="column"
         alignItems="center"
         paddingX={2}
         paddingY={1}
-        backgroundColor="#000000"
+        backgroundColor="background"
       >
         <LedgerNanoGraphic verified={verified} />
         <Box marginTop={1}>
-          <Text color={verified ? "success" : snapshot.phase === "failed" ? "error" : "#777777"}>
+          <ThemedText
+            color={
+              verified
+                ? "success"
+                : snapshot.phase === "failed"
+                  ? "error"
+                  : "inactive"
+            }
+          >
             {active ? ACTIVE_FRAMES[frame] : verified ? "✓" : "!"}
             {"  "}
             {copy.eyebrow}
-          </Text>
+          </ThemedText>
         </Box>
-        <Text color={verified ? "#22c55e" : "#ffffff"} bold>
+        <ThemedText color={verified ? "success" : "text"} bold>
           {copy.title}
-        </Text>
+        </ThemedText>
         <Box marginTop={1} justifyContent="center">
-          <Text color="#b8b8b8" wrap="wrap">
+          <ThemedText color="text2" wrap="wrap">
             {copy.body}
-          </Text>
+          </ThemedText>
         </Box>
         {snapshot.model ? (
-          <Text color="#777777">{`device · ${snapshot.model}`}</Text>
+          <ThemedText color="inactive">{`device · ${snapshot.model}`}</ThemedText>
         ) : null}
         {snapshot.phase === "failed" && snapshot.detail ? (
           <Box marginTop={1}>
-            <Text color="#ffffff" wrap="wrap">
+            <ThemedText color="text" wrap="wrap">
               {snapshot.detail}
-            </Text>
+            </ThemedText>
           </Box>
         ) : null}
-      </Box>
+      </ThemedBox>
 
-      <Box
+      <ThemedBox
         flexDirection="row"
         paddingX={1}
         borderTop
-        borderTopColor="#333333"
-        backgroundColor="#000000"
+        borderTopColor="line"
+        backgroundColor="background"
       >
-        <Text color="#777777">esc</Text>
-        <Text color="#444444"> · </Text>
-        <Text color="#777777">close</Text>
+        <ThemedText color="inactive">esc</ThemedText>
+        <ThemedText color="subtle"> · </ThemedText>
+        <ThemedText color="inactive">close</ThemedText>
         <Box flexGrow={1} />
         {verified ? (
-          <Text color="#777777">closing automatically…</Text>
+          <ThemedText color="inactive">closing automatically…</ThemedText>
         ) : (
-          <Text color="#777777">official wallet-cli genuine-check</Text>
+          <ThemedText color="inactive">
+            official wallet-cli genuine-check
+          </ThemedText>
         )}
-      </Box>
-    </Box>
+      </ThemedBox>
+    </ThemedBox>
   );
 }

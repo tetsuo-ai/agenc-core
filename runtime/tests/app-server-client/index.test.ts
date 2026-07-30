@@ -165,6 +165,22 @@ describe("app-server-client daemon helpers", () => {
             image_url: { url: "file:///tmp/cat.png" },
           },
         ],
+        initialDisplayUserMessage: "Explain the selected code",
+        initialEditorInteraction: {
+          interactionId: "interaction-client-explain",
+          kind: "explain",
+          policy: "read_only",
+          editorInstanceId: "editor-client",
+          bufferHandle: 7,
+          changedtick: 12,
+          contentSha256: "c".repeat(64),
+          path: "/workspace/src/main.ts",
+          range: {
+            start: { line: 2, column: 3 },
+            end: { line: 4, column: 0 },
+          },
+          selectionMode: "character",
+        },
       });
 
       expect(createAgent).toHaveBeenCalledWith(
@@ -182,7 +198,40 @@ describe("app-server-client daemon helpers", () => {
               image_url: { url: "file:///tmp/cat.png" },
             },
           ],
+          initialDisplayUserMessage: "Explain the selected code",
+          initialEditorInteraction: {
+            interactionId: "interaction-client-explain",
+            kind: "explain",
+            policy: "read_only",
+            editorInstanceId: "editor-client",
+            bufferHandle: 7,
+            changedtick: 12,
+            contentSha256: "c".repeat(64),
+            path: "/workspace/src/main.ts",
+            range: {
+              start: { line: 2, column: 3 },
+              end: { line: 4, column: 0 },
+            },
+            selectionMode: "character",
+          },
         }),
+      );
+      await startAgenCDaemonPromptAgent({
+        prompt: "AgenC Editor workspace",
+        cwd: "/workspace",
+        deferInitialTurn: true,
+      });
+      expect(createAgent).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          objective: "AgenC Editor workspace",
+          instructions: "AgenC Editor workspace",
+          cwd: "/workspace",
+          deferInitialTurn: true,
+        }),
+      );
+      expect(createAgent.mock.calls[1]?.[0]).not.toHaveProperty(
+        "initialContent",
       );
       expect(request).not.toHaveBeenCalled();
       expect(close).not.toHaveBeenCalled();
@@ -257,8 +306,9 @@ describe("app-server-client daemon helpers", () => {
   it("seeds daemon-only TUI context with bypass permissions for yolo launch", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-yolo-tui-context-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-yolo-tui-workspace-"));
-    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
-      null;
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
     try {
       context = await createAgenCDaemonOnlyTuiContext({
         env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
@@ -271,9 +321,9 @@ describe("app-server-client daemon helpers", () => {
         context.baseSession.services.permissionModeRegistry.current();
       expect(permissionContext.mode).toBe("bypassPermissions");
       expect(permissionContext.isBypassPermissionsModeAvailable).toBe(true);
-      expect(
-        context.baseSession.services.sandboxExecutionBroker?.mode,
-      ).toBe("danger_full_access");
+      expect(context.baseSession.services.sandboxExecutionBroker?.mode).toBe(
+        "danger_full_access",
+      );
     } finally {
       await context?.close();
       rmSync(agencHome, { recursive: true, force: true });
@@ -285,8 +335,9 @@ describe("app-server-client daemon helpers", () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-attach-home-"));
     const authority = mkdtempSync(join(tmpdir(), "agenc-attach-authority-"));
     const worktree = mkdtempSync(join(tmpdir(), "agenc-attach-worktree-"));
-    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
-      null;
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
     try {
       context = await createAgenCDaemonOnlyTuiContext({
         env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
@@ -301,12 +352,12 @@ describe("app-server-client daemon helpers", () => {
       });
       expect(context.baseSession.sessionConfiguration?.cwd).toBe(worktree);
       expect(context.workspaceRoot).toBe(worktree);
-      expect(
-        context.baseSession.services.sandboxExecutionBroker?.mode,
-      ).toBe("workspace_write");
-      expect(
-        context.baseSession.services.sandboxExecutionBroker?.cwd,
-      ).toBe(worktree);
+      expect(context.baseSession.services.sandboxExecutionBroker?.mode).toBe(
+        "workspace_write",
+      );
+      expect(context.baseSession.services.sandboxExecutionBroker?.cwd).toBe(
+        worktree,
+      );
     } finally {
       await context?.close();
       rmSync(agencHome, { recursive: true, force: true });
@@ -318,8 +369,9 @@ describe("app-server-client daemon helpers", () => {
   it("applies daemon-only TUI provider and model startup overrides", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-model-tui-context-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-model-tui-workspace-"));
-    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
-      null;
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
     try {
       context = await createAgenCDaemonOnlyTuiContext({
         env: {
@@ -385,8 +437,9 @@ describe("app-server-client daemon helpers", () => {
       }),
       "utf8",
     );
-    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
-      null;
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
     try {
       context = await createAgenCDaemonOnlyTuiContext({
         env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
@@ -406,7 +459,8 @@ describe("app-server-client daemon helpers", () => {
             cwd,
             home: agencHome,
             agencHome,
-            configStore: context.configStore as SlashCommandContext["configStore"],
+            configStore:
+              context.configStore as SlashCommandContext["configStore"],
             commandRegistry: registry,
             appState: {
               getAppState: () => ({ mcp: { commands: [] } }),
@@ -463,8 +517,9 @@ describe("app-server-client daemon helpers", () => {
   it("refreshes project skills created during the same daemon-only TUI session", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-daemon-skills-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "agenc-daemon-skills-cwd-"));
-    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
-      null;
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
     try {
       context = await createAgenCDaemonOnlyTuiContext({
         env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
@@ -484,7 +539,8 @@ describe("app-server-client daemon helpers", () => {
             cwd,
             home: agencHome,
             agencHome,
-            configStore: context!.configStore as SlashCommandContext["configStore"],
+            configStore: context!
+              .configStore as SlashCommandContext["configStore"],
             commandRegistry: registry,
             appState: {
               getAppState: () => ({ mcp: { commands: [] } }),
@@ -501,7 +557,9 @@ describe("app-server-client daemon helpers", () => {
         },
       });
 
-      mkdirSync(join(cwd, ".agenc/skills/late-python-game"), { recursive: true });
+      mkdirSync(join(cwd, ".agenc/skills/late-python-game"), {
+        recursive: true,
+      });
       writeFileSync(
         join(cwd, ".agenc/skills/late-python-game/SKILL.md"),
         "---\nname: late-python-game\ndescription: Late skill.\n---\n",
@@ -522,10 +580,13 @@ describe("app-server-client daemon helpers", () => {
   });
 
   it("dispatches daemon-only TUI plan and agents commands", async () => {
-    const agencHome = mkdtempSync(join(tmpdir(), "agenc-daemon-plan-agents-home-"));
+    const agencHome = mkdtempSync(
+      join(tmpdir(), "agenc-daemon-plan-agents-home-"),
+    );
     const cwd = mkdtempSync(join(tmpdir(), "agenc-daemon-plan-agents-cwd-"));
-    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
-      null;
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
     try {
       context = await createAgenCDaemonOnlyTuiContext({
         env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
@@ -546,7 +607,8 @@ describe("app-server-client daemon helpers", () => {
             cwd,
             home: agencHome,
             agencHome,
-            configStore: context.configStore as SlashCommandContext["configStore"],
+            configStore:
+              context.configStore as SlashCommandContext["configStore"],
             commandRegistry: registry,
             appState: {
               getAppState: () => ({
@@ -567,15 +629,17 @@ describe("app-server-client daemon helpers", () => {
       await expect(run("/plan")).resolves.toMatchObject({
         result: { kind: "skip" },
       });
-      expect(context.baseSession.services.permissionModeRegistry.current().mode).toBe(
-        "plan",
-      );
+      expect(
+        context.baseSession.services.permissionModeRegistry.current().mode,
+      ).toBe("plan");
       expect(toolJSX).toMatchObject({
         isLocalJSXCommand: true,
         shouldHidePromptInput: true,
         jsx: expect.anything(),
       });
-      (toolJSX as { jsx: { props: { onDone: () => void } } }).jsx.props.onDone();
+      (
+        toolJSX as { jsx: { props: { onDone: () => void } } }
+      ).jsx.props.onDone();
       expect(toolJSX).toMatchObject({
         clearLocalJSX: true,
         jsx: null,
@@ -589,7 +653,9 @@ describe("app-server-client daemon helpers", () => {
         shouldHidePromptInput: true,
         jsx: expect.anything(),
       });
-      (toolJSX as { jsx: { props: { onDone: () => void } } }).jsx.props.onDone();
+      (
+        toolJSX as { jsx: { props: { onDone: () => void } } }
+      ).jsx.props.onDone();
       expect(toolJSX).toMatchObject({
         clearLocalJSX: true,
         jsx: null,

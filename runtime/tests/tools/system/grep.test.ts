@@ -1,6 +1,9 @@
 import {
+  access,
+  chmod,
   mkdir,
   mkdtemp,
+  rename,
   rm,
   symlink,
   utimes,
@@ -18,11 +21,17 @@ import {
   createGrepTool as createUnboundGrepTool,
   GREP_TOOL_NAME,
 } from "./grep.js";
+import {
+  sha256,
+  workspaceMutationCoordinators,
+  type WorkspaceEditorLease,
+  type WorkspaceMutationCoordinator,
+} from "../../../src/workspace/mutation-coordinator.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+import { attachToolRuntimeContext } from "../../../src/tools/runtimes/context.js";
 
-const createGrepTool = (
-  ...args: Parameters<typeof createUnboundGrepTool>
-) => bindExplicitDangerBoundary(createUnboundGrepTool(...args));
+const createGrepTool = (...args: Parameters<typeof createUnboundGrepTool>) =>
+  bindExplicitDangerBoundary(createUnboundGrepTool(...args));
 
 function lines(content: string): string[] {
   return content.split("\n").filter(Boolean);
@@ -34,17 +43,83 @@ function fileResultPaths(content: string): string[] {
   return resultLines.slice(1);
 }
 
+function attachTrustedEditorContext(args: Record<string, unknown>): void {
+  attachToolRuntimeContext(args, {
+    callId: "trusted-editor-grep",
+    toolName: GREP_TOOL_NAME,
+    sandboxMode: "read_only",
+    invocation: {
+      turn: {
+        editorInteraction: {
+          interactionId: "trusted-editor-grep",
+          policy: "read_only",
+        },
+      },
+    },
+  } as never);
+}
+
+function isWindowsExchangeDenial(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return (
+    process.platform === "win32" &&
+    (code === "EPERM" || code === "EACCES" || code === "EBUSY")
+  );
+}
+
+async function exchangeDirectory(
+  current: string,
+  displaced: string,
+  outside: string,
+): Promise<"exchanged" | "kernel_denied"> {
+  try {
+    await rename(current, displaced);
+  } catch (error) {
+    if (isWindowsExchangeDenial(error)) return "kernel_denied";
+    throw error;
+  }
+  try {
+    await symlink(
+      outside,
+      current,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+  } catch (error) {
+    await rename(displaced, current).catch(() => {});
+    if (isWindowsExchangeDenial(error)) return "kernel_denied";
+    throw error;
+  }
+  return "exchanged";
+}
+
+function expectCompletedExchangeAttempt(
+  outcome: "pending" | "exchanged" | "kernel_denied",
+): void {
+  expect(outcome).not.toBe("pending");
+  if (outcome === "kernel_denied") expect(process.platform).toBe("win32");
+}
+
 describe("Grep tool", () => {
   let root = "";
+  let previousAgencHome: string | undefined;
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-grep-"));
+    previousAgencHome = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = join(root, ".agenc-test-home");
+    workspaceMutationCoordinators.clearForTests();
     __resetRipgrepProbeForTests();
   });
 
   afterEach(async () => {
+    workspaceMutationCoordinators.clearForTests();
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
+    if (previousAgencHome === undefined) {
+      delete process.env.AGENC_HOME;
+    } else {
+      process.env.AGENC_HOME = previousAgencHome;
+    }
     __resetRipgrepProbeForTests();
   });
 
@@ -94,6 +169,192 @@ describe("Grep tool", () => {
     expect(result.content).toContain("a.txt");
     expect(result.content).toContain("beta");
     expect(result.content).not.toContain("alpha");
+  });
+
+  test("never returns outside matches after a final ancestor exchange", async () => {
+    const workspace = join(root, "workspace");
+    const displaced = join(root, "workspace-displaced");
+    const outside = join(root, "outside");
+    await mkdir(workspace);
+    await mkdir(outside);
+    await writeFile(
+      join(workspace, "inside.ts"),
+      "const needle = 'inside-grep';\n",
+      "utf8",
+    );
+    await writeFile(
+      join(outside, "outside.ts"),
+      "const needle = 'outside-grep-secret';\n",
+      "utf8",
+    );
+    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
+      workspaceRoot: workspace,
+      editorInstanceId: "grep-confinement-editor",
+    });
+    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
+    const tool = createGrepTool({
+      allowedPaths: [workspace],
+      __testAfterFinalPathCheck: async () => {
+        exchangeOutcome = await exchangeDirectory(
+          workspace,
+          displaced,
+          outside,
+        );
+      },
+    });
+
+    const result = await tool.execute({
+      pattern: "needle",
+      path: workspace,
+      output_mode: "content",
+    });
+
+    expectCompletedExchangeAttempt(exchangeOutcome);
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("inside-grep");
+    expect(result.content).not.toContain("outside-grep-secret");
+    expect(result.content).not.toContain("outside.ts");
+  });
+
+  test("keeps trusted Editor searches bound after the live lease disappears", async () => {
+    const workspace = join(root, "workspace");
+    const displaced = join(root, "workspace-displaced");
+    const outside = join(root, "outside");
+    await mkdir(workspace);
+    await mkdir(outside);
+    await writeFile(
+      join(workspace, "inside.ts"),
+      "const trustedNeedle = 'inside-trusted-grep';\n",
+      "utf8",
+    );
+    await writeFile(
+      join(outside, "outside.ts"),
+      "const trustedNeedle = 'outside-trusted-grep-secret';\n",
+      "utf8",
+    );
+    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
+      workspaceRoot: workspace,
+      editorInstanceId: "expired-grep-editor",
+    });
+    workspaceMutationCoordinators.clearForTests();
+    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
+    const tool = createGrepTool({
+      allowedPaths: [workspace],
+      __testAfterFinalPathCheck: async () => {
+        exchangeOutcome = await exchangeDirectory(
+          workspace,
+          displaced,
+          outside,
+        );
+      },
+    });
+    const args: Record<string, unknown> = {
+      pattern: "trustedNeedle",
+      path: workspace,
+      output_mode: "content",
+    };
+    attachTrustedEditorContext(args);
+
+    const result = await tool.execute(args);
+
+    expectCompletedExchangeAttempt(exchangeOutcome);
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("inside-trusted-grep");
+    expect(result.content).not.toContain("outside-trusted-grep-secret");
+    expect(result.content).not.toContain("outside.ts");
+  });
+
+  test("protected content search preserves head-limit termination as truncation", async () => {
+    await writeFile(
+      join(root, "many.txt"),
+      Array.from({ length: 20 }, (_, index) => `needle-${index}`).join("\n"),
+      "utf8",
+    );
+    workspaceMutationCoordinators.getOrCreate(root).acquire({
+      workspaceRoot: root,
+      editorInstanceId: "grep-head-limit-editor",
+    });
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "needle",
+      path: root,
+      output_mode: "content",
+      head_limit: 1,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("needle-");
+    expect(result.content).toContain("results truncated");
+  });
+
+  test("ignores RIPGREP_CONFIG_PATH preprocessors", async () => {
+    const marker = join(root, "preprocessor-ran");
+    const preprocessor = join(root, "hostile-preprocessor");
+    const config = join(root, "ripgrep.conf");
+    await writeFile(
+      preprocessor,
+      `#!/bin/sh\nprintf ran > ${JSON.stringify(marker)}\ncat "$1"\n`,
+      "utf8",
+    );
+    await chmod(preprocessor, 0o755);
+    await writeFile(config, `--pre=${preprocessor}\n`, "utf8");
+    await writeFile(join(root, "target.txt"), "needle\n", "utf8");
+    const savedConfig = process.env.RIPGREP_CONFIG_PATH;
+    process.env.RIPGREP_CONFIG_PATH = config;
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    try {
+      const result = await tool.execute({
+        pattern: "needle",
+        path: root,
+        output_mode: "content",
+      });
+
+      expect(result.isError).toBeUndefined();
+      await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (savedConfig === undefined) {
+        delete process.env.RIPGREP_CONFIG_PATH;
+      } else {
+        process.env.RIPGREP_CONFIG_PATH = savedConfig;
+      }
+    }
+  });
+
+  test("never resolves the production ripgrep binary through PATH", async () => {
+    const bin = join(root, "bin");
+    const marker = join(root, "path-rg-ran");
+    const fakeRipgrep = join(bin, "rg");
+    await mkdir(bin);
+    await writeFile(
+      fakeRipgrep,
+      `#!/bin/sh\nprintf ran > ${JSON.stringify(marker)}\nexit 99\n`,
+      "utf8",
+    );
+    await chmod(fakeRipgrep, 0o755);
+    await writeFile(join(root, "target.txt"), "needle\n", "utf8");
+    const savedPath = process.env.PATH;
+    process.env.PATH = bin;
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    try {
+      const result = await tool.execute({
+        pattern: "needle",
+        path: root,
+        output_mode: "content",
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("needle");
+      await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (savedPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = savedPath;
+      }
+    }
   });
 
   test("content mode returns long matching lines", async () => {
@@ -165,7 +426,6 @@ describe("Grep tool", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("a.txt:1:foo:123:bar");
   });
-
 
   test("content mode without line numbers preserves Unix filenames containing colons", async () => {
     await writeFile(join(root, "a:b.txt"), "needle\n", "utf8");
@@ -294,11 +554,7 @@ describe("Grep tool", () => {
   });
 
   test("output_mode=count emits path:count lines", async () => {
-    await writeFile(
-      join(root, "a.txt"),
-      "needle\nneedle\nother\n",
-      "utf8",
-    );
+    await writeFile(join(root, "a.txt"), "needle\nneedle\nother\n", "utf8");
     await writeFile(join(root, "b.txt"), "needle\nother\n", "utf8");
     const tool = createGrepTool({ allowedPaths: [root] });
 
@@ -935,7 +1191,11 @@ describe("Grep tool", () => {
   });
 
   test("fallback files_with_matches treats anchored patterns as line matches", async () => {
-    await writeFile(join(root, "anchored.txt"), "alpha\nneedle\nomega\n", "utf8");
+    await writeFile(
+      join(root, "anchored.txt"),
+      "alpha\nneedle\nomega\n",
+      "utf8",
+    );
     __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
@@ -951,10 +1211,7 @@ describe("Grep tool", () => {
 
   test("relativizes Windows-style paths", () => {
     expect(
-      __INTERNAL.toRelativeIfInside(
-        "C:\\repo\\src\\file.txt",
-        "C:\\repo",
-      ),
+      __INTERNAL.toRelativeIfInside("C:\\repo\\src\\file.txt", "C:\\repo"),
     ).toBe("src\\file.txt");
   });
 
@@ -975,7 +1232,10 @@ describe("Grep tool", () => {
     const missing = join(root, "gone.txt");
 
     expect(
-      __INTERNAL.rewriteRipgrepContentLine(`${missing}\u001f12\u001fneedle`, root),
+      __INTERNAL.rewriteRipgrepContentLine(
+        `${missing}\u001f12\u001fneedle`,
+        root,
+      ),
     ).toBe("gone.txt:12:needle");
   });
 
@@ -1154,4 +1414,230 @@ describe("Grep tool", () => {
       process.chdir(prevCwd);
     }
   });
+
+  test("replaces stale disk matches with the exact unsaved Editor snapshot", async () => {
+    const path = join(root, "src", "authoritative.ts");
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(path, "const staleDiskNeedle = true;\n", "utf8");
+    await establishDirtyEditorSnapshot({
+      workspaceRoot: root,
+      path,
+      content: "const unsavedEditorNeedle = true;\n",
+    });
+    __setRipgrepAvailabilityForTests(true);
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const stale = await tool.execute({
+      pattern: "staleDiskNeedle",
+      output_mode: "content",
+    });
+    expect(stale.isError).toBeFalsy();
+    expect(stale.content).toBe("No matches found.");
+
+    const unsaved = await tool.execute({
+      pattern: "unsavedEditorNeedle",
+      output_mode: "content",
+    });
+    expect(unsaved.isError).toBeFalsy();
+    expect(unsaved.content).toContain(
+      "src/authoritative.ts:1:const unsavedEditorNeedle = true;",
+    );
+    expect(unsaved.content).not.toContain("staleDiskNeedle");
+  });
+
+  test("discovers a dirty-only named file through glob and ripgrep type filters", async () => {
+    const path = join(root, "new", "nested", "unsaved-only.ts");
+    await establishDirtyEditorSnapshot({
+      workspaceRoot: root,
+      path,
+      content: "export const dirtyOnlyNeedle = 1;\n",
+    });
+    __setRipgrepAvailabilityForTests(true);
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "dirtyOnlyNeedle",
+      glob: "*.ts",
+      type: "ts",
+      output_mode: "files_with_matches",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(lines(result.content)).toEqual([
+      "Found 1 file",
+      "new/nested/unsaved-only.ts",
+    ]);
+
+    const exact = await tool.execute({
+      pattern: "dirtyOnlyNeedle",
+      path: "new/nested/unsaved-only.ts",
+      output_mode: "content",
+    });
+    expect(exact.isError).toBeFalsy();
+    expect(exact.content).toContain(
+      "new/nested/unsaved-only.ts:1:export const dirtyOnlyNeedle = 1;",
+    );
+  });
+
+  test("preserves multiline, context, and count semantics over unsaved bytes", async () => {
+    const path = join(root, "src", "multiline.ts");
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(path, "disk-only-secret\n", "utf8");
+    await establishDirtyEditorSnapshot({
+      workspaceRoot: root,
+      path,
+      content: [
+        "before-context",
+        "beginNeedle",
+        "middle",
+        "endNeedle",
+        "after-context",
+        "countNeedle",
+        "countNeedle",
+        "",
+      ].join("\n"),
+    });
+    __setRipgrepAvailabilityForTests(true);
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const content = await tool.execute({
+      pattern: "beginNeedle.*endNeedle",
+      output_mode: "content",
+      multiline: true,
+      "-C": 1,
+    });
+    expect(content.isError).toBeFalsy();
+    expect(content.content).toContain("before-context");
+    expect(content.content).toContain("beginNeedle");
+    expect(content.content).toContain("middle");
+    expect(content.content).toContain("endNeedle");
+    expect(content.content).toContain("after-context");
+    expect(content.content).not.toContain("disk-only-secret");
+
+    const count = await tool.execute({
+      pattern: "countNeedle",
+      output_mode: "count",
+    });
+    expect(count.isError).toBeFalsy();
+    expect(count.content).toContain("src/multiline.ts:2");
+    expect(count.content).toContain("2 total occurrences");
+  });
+
+  test("fails closed instead of searching disk when Editor authority is stale", async () => {
+    const path = join(root, "src", "stale.ts");
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(path, "const staleDiskNeedle = true;\n", "utf8");
+    const { coordinator, lease } = await establishDirtyEditorSnapshot({
+      workspaceRoot: root,
+      path,
+      content: "const unsavedNeedle = true;\n",
+    });
+    await coordinator.release({
+      workspaceRoot: root,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    });
+    __setRipgrepAvailabilityForTests(true);
+
+    const result = await createGrepTool({
+      allowedPaths: [root],
+    }).execute({
+      pattern: "staleDiskNeedle",
+      output_mode: "content",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(
+      /authoritative Editor workspace|reconnect/iu,
+    );
+    expect(result.content).not.toContain("const staleDiskNeedle");
+  });
+
+  test("rejects all search output when the authoritative revision changes before return", async () => {
+    const path = join(root, "src", "racing.ts");
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(path, "const diskValue = 1;\n", "utf8");
+    const { coordinator, lease } = await establishDirtyEditorSnapshot({
+      workspaceRoot: root,
+      path,
+      content: "const firstRevisionNeedle = 1;\n",
+    });
+    let changed = false;
+    __setRipgrepAvailabilityForTests(true);
+    const tool = createGrepTool({
+      allowedPaths: [root],
+      beforeAuthoritativeSnapshotValidation: async () => {
+        if (changed) return;
+        changed = true;
+        coordinator.sync({
+          workspaceRoot: root,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+          sequence: 1,
+          buffers: [
+            {
+              path,
+              bufferHandle: 7,
+              changedtick: 42,
+              contentSha256: sha256("const secondRevisionNeedle = 2;\n"),
+              dirty: true,
+              content: "const secondRevisionNeedle = 2;\n",
+            },
+          ],
+        });
+        await coordinator.flushQuarantinePersistence();
+      },
+    });
+
+    const result = await tool.execute({
+      pattern: "firstRevisionNeedle",
+      output_mode: "content",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(
+      /changed while the search|synchronization/iu,
+    );
+    expect(result.content).not.toContain("firstRevisionNeedle = 1");
+  });
 });
+
+async function establishDirtyEditorSnapshot({
+  workspaceRoot,
+  path,
+  content,
+}: {
+  readonly workspaceRoot: string;
+  readonly path: string;
+  readonly content: string;
+}): Promise<{
+  readonly coordinator: WorkspaceMutationCoordinator;
+  readonly lease: WorkspaceEditorLease;
+}> {
+  const coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+  const lease = coordinator.acquire({
+    workspaceRoot,
+    editorInstanceId: "grep-editor",
+  });
+  coordinator.sync({
+    workspaceRoot,
+    editorInstanceId: lease.editorInstanceId,
+    leaseToken: lease.leaseToken,
+    epoch: lease.epoch,
+    sequence: 0,
+    buffers: [
+      {
+        path,
+        bufferHandle: 7,
+        changedtick: 41,
+        contentSha256: sha256(content),
+        dirty: true,
+        content,
+      },
+    ],
+  });
+  await coordinator.flushQuarantinePersistence();
+  return { coordinator, lease };
+}

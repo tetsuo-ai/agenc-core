@@ -82,6 +82,7 @@ import type {
   ToolDecisionResult,
   ToolDenyParams,
 } from "./protocol/index.js";
+import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import {
   ABORT,
   APPROVED,
@@ -120,6 +121,7 @@ import type { Event } from "../session/event-log.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import type { AgenCStateAgentRunRecord } from "../state/agent-runs.js";
 import type { CancelAgentRunTreeReport } from "../state/run-cancellation.js";
+import type { CodePredictionSource } from "../services/code-prediction/types.js";
 
 export type AgenCDaemonAgentLifecycleErrorCode =
   | "AGENT_NOT_FOUND"
@@ -240,14 +242,12 @@ export interface AgenCDaemonAgentStatusSnapshot {
   readonly metadataPatch?: JsonObject;
 }
 
-export interface AgenCDaemonAgentRunSnapshot
-  extends AgenCStateAgentRunRecord {
+export interface AgenCDaemonAgentRunSnapshot extends AgenCStateAgentRunRecord {
   readonly cwd?: string;
   readonly stateProjectDir?: string;
 }
 
-export interface AgenCDaemonRunTerminalSnapshot
-  extends AgenCBackgroundAgentTerminalSnapshot {
+export interface AgenCDaemonRunTerminalSnapshot extends AgenCBackgroundAgentTerminalSnapshot {
   readonly agentId: string;
   /** Canonical rollout session identity (the root managed-thread id). */
   readonly sessionId: string;
@@ -333,7 +333,6 @@ interface RunnerTerminationTarget {
 }
 
 export class AgenCDaemonAgentManager {
-
   readonly #now: () => string;
   readonly #runner: AgenCBackgroundAgentRunner | undefined;
   readonly #sessionManager: AgenCDaemonSessionManager | undefined;
@@ -345,8 +344,7 @@ export class AgenCDaemonAgentManager {
     | ((
         params: AgenCDaemonAgentToolOutputReadParams,
       ) =>
-        | Promise<readonly AgentToolOutputLog[]>
-        | readonly AgentToolOutputLog[])
+        Promise<readonly AgentToolOutputLog[]> | readonly AgentToolOutputLog[])
     | undefined;
   readonly #snapshotFlush:
     | ((snapshot: AgenCDaemonAgentSnapshotFlush) => void | Promise<void>)
@@ -361,8 +359,7 @@ export class AgenCDaemonAgentManager {
     | ((transition: AgenCDaemonAgentStatusSnapshot) => void | Promise<void>)
     | undefined;
   readonly #recordAgentRun:
-    | ((run: AgenCDaemonAgentRunSnapshot) => void | Promise<void>)
-    | undefined;
+    ((run: AgenCDaemonAgentRunSnapshot) => void | Promise<void>) | undefined;
   readonly #recordRunTerminal:
     | ((terminal: AgenCDaemonRunTerminalSnapshot) => void | Promise<void>)
     | undefined;
@@ -380,8 +377,7 @@ export class AgenCDaemonAgentManager {
       }) => CancelAgentRunTreeReport | Promise<CancelAgentRunTreeReport>)
     | undefined;
   readonly #voidBudgetHoldsForAgents:
-    | ((agentIds: readonly string[]) => number | Promise<number>)
-    | undefined;
+    ((agentIds: readonly string[]) => number | Promise<number>) | undefined;
   #shuttingDown = false;
   #activeCreates = 0;
   readonly #createWaiters = new Set<() => void>();
@@ -393,10 +389,7 @@ export class AgenCDaemonAgentManager {
     string,
     PendingCanonicalRunCancellation
   >();
-  readonly #runCancellationTasks = new Map<
-    string,
-    Promise<RunCancelResult>
-  >();
+  readonly #runCancellationTasks = new Map<string, Promise<RunCancelResult>>();
   readonly #state = new AsyncLock<AgentLifecycleState>({
     agents: new Map(),
   });
@@ -469,6 +462,19 @@ export class AgenCDaemonAgentManager {
         ...(params.initialContent !== undefined
           ? { initialContent: params.initialContent }
           : {}),
+        ...(params.deferInitialTurn !== undefined
+          ? { deferInitialTurn: params.deferInitialTurn }
+          : {}),
+        ...(params.initialDisplayUserMessage !== undefined
+          ? {
+              initialDisplayUserMessage: params.initialDisplayUserMessage,
+            }
+          : {}),
+        ...(params.initialEditorInteraction !== undefined
+          ? {
+              initialEditorInteraction: params.initialEditorInteraction,
+            }
+          : {}),
         metadata,
         unattendedAllow,
         unattendedDeny,
@@ -540,24 +546,26 @@ export class AgenCDaemonAgentManager {
           }
         }
 
-        const { result, pendingTermination } = await this.#state.with((state) => {
-          state.agents.set(agent.agentId, agent);
-          const pending = this.#pendingRunnerTerminations.get(agent.agentId);
-          let pendingTermination: RunnerTerminationTarget | null = null;
-          if (pending !== undefined) {
-            this.#pendingRunnerTerminations.delete(agent.agentId);
-            pendingTermination = this.#applyRunnerTerminationLocked(
-              state,
-              agent.agentId,
-              pending.snapshot,
-              pending.transitionAt,
-            );
-          }
-          return {
-            result: toAgentCreateResult(agent),
-            pendingTermination,
-          };
-        });
+        const { result, pendingTermination } = await this.#state.with(
+          (state) => {
+            state.agents.set(agent.agentId, agent);
+            const pending = this.#pendingRunnerTerminations.get(agent.agentId);
+            let pendingTermination: RunnerTerminationTarget | null = null;
+            if (pending !== undefined) {
+              this.#pendingRunnerTerminations.delete(agent.agentId);
+              pendingTermination = this.#applyRunnerTerminationLocked(
+                state,
+                agent.agentId,
+                pending.snapshot,
+                pending.transitionAt,
+              );
+            }
+            return {
+              result: toAgentCreateResult(agent),
+              pendingTermination,
+            };
+          },
+        );
         if (pendingTermination !== null) {
           await this.#finalizeRunnerTermination(
             agent.agentId,
@@ -1271,8 +1279,12 @@ export class AgenCDaemonAgentManager {
       route,
       status: snapshot.status,
       transitionAt,
-      ...(snapshot.metadata !== undefined ? { metadata: snapshot.metadata } : {}),
-      ...(snapshot.terminal !== undefined ? { terminal: snapshot.terminal } : {}),
+      ...(snapshot.metadata !== undefined
+        ? { metadata: snapshot.metadata }
+        : {}),
+      ...(snapshot.terminal !== undefined
+        ? { terminal: snapshot.terminal }
+        : {}),
     };
   }
 
@@ -1280,7 +1292,10 @@ export class AgenCDaemonAgentManager {
     agentId: string,
     target: RunnerTerminationTarget,
   ): Promise<void> {
-    if (target.terminal !== undefined && this.#recordRunTerminal !== undefined) {
+    if (
+      target.terminal !== undefined &&
+      this.#recordRunTerminal !== undefined
+    ) {
       try {
         await this.#recordRunTerminal({
           agentId,
@@ -1552,10 +1567,9 @@ export class AgenCDaemonAgentManager {
       agentId,
       requestId: params.requestId,
       ...(params.scope !== undefined ? { scope: params.scope } : {}),
-      reasonCode:
-        allowAllToolsForSession
-          ? "rpc_approved_all_tools_for_session"
-          : params.scope === "session" || params.scope === "agent"
+      reasonCode: allowAllToolsForSession
+        ? "rpc_approved_all_tools_for_session"
+        : params.scope === "session" || params.scope === "agent"
           ? "rpc_approved_for_scope"
           : "rpc_approved_once",
     });
@@ -1680,7 +1694,9 @@ export class AgenCDaemonAgentManager {
           resolved.push({
             toolCallId: effect.toolCallId,
             toolName: effect.toolName,
-            ...(outcome.durable && "eventId" in outcome && typeof outcome.eventId === "string"
+            ...(outcome.durable &&
+            "eventId" in outcome &&
+            typeof outcome.eventId === "string"
               ? { eventId: outcome.eventId }
               : {}),
           });
@@ -1771,7 +1787,9 @@ export class AgenCDaemonAgentManager {
     const resolved = await this.#runner!.respondToElicitation!(agentId, {
       requestId: params.requestId,
       kind: params.kind,
-      ...(params.serverName !== undefined ? { serverName: params.serverName } : {}),
+      ...(params.serverName !== undefined
+        ? { serverName: params.serverName }
+        : {}),
       response: params.response,
     });
     if (!resolved) {
@@ -2098,7 +2116,9 @@ export class AgenCDaemonAgentManager {
       );
     }
     if (signal?.aborted) {
-      throw Object.assign(new Error("request cancelled"), { name: "AbortError" });
+      throw Object.assign(new Error("request cancelled"), {
+        name: "AbortError",
+      });
     }
     const agentId = await this.#resolveActiveAgentIdForSession(
       params.sessionId,
@@ -2314,6 +2334,22 @@ export class AgenCDaemonAgentManager {
     };
   }
 
+  async resolveCodePredictionSource(
+    sessionId: string,
+  ): Promise<CodePredictionSource> {
+    const agentId = await this.#resolveActiveAgentIdForSession(sessionId, {
+      allowCodePrediction: true,
+    });
+    const resolveSource = this.#runner?.resolveCodePredictionSource;
+    if (resolveSource === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "editor prediction requires a live daemon runtime",
+      );
+    }
+    return await resolveSource.call(this.#runner, agentId);
+  }
+
   async streamAgentMessage(params: {
     readonly sessionId: string;
     readonly content: MessageContent;
@@ -2321,6 +2357,7 @@ export class AgenCDaemonAgentManager {
     readonly streamId: string;
     readonly acceptedAt: string;
     readonly displayUserMessage?: string | null;
+    readonly editorInteraction?: SessionEditorInteraction;
     readonly methodName?: "message.send" | "message.stream";
   }): Promise<void> {
     const methodName = params.methodName ?? "message.stream";
@@ -2386,6 +2423,9 @@ export class AgenCDaemonAgentManager {
       originalContent: params.content,
       ...(params.displayUserMessage !== undefined
         ? { displayUserMessage: params.displayUserMessage }
+        : {}),
+      ...(params.editorInteraction !== undefined
+        ? { editorInteraction: params.editorInteraction }
         : {}),
       messageId: params.messageId,
       streamId: params.streamId,
@@ -2504,6 +2544,7 @@ export class AgenCDaemonAgentManager {
       readonly allowHooksStatus?: boolean;
       readonly allowSetHooksDisabled?: boolean;
       readonly allowApplyConfig?: boolean;
+      readonly allowCodePrediction?: boolean;
     } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
@@ -2512,7 +2553,8 @@ export class AgenCDaemonAgentManager {
         "tool decision requires a daemon session manager",
       );
     }
-    const hasToolDecisionRunner = this.#runner?.resolveToolDecision !== undefined;
+    const hasToolDecisionRunner =
+      this.#runner?.resolveToolDecision !== undefined;
     const hasCancelRunner =
       options.allowCancelTool === true &&
       this.#runner?.cancelTool !== undefined;
@@ -2561,6 +2603,9 @@ export class AgenCDaemonAgentManager {
     const hasApplyConfigRunner =
       options.allowApplyConfig === true &&
       this.#runner?.applyAgentConfig !== undefined;
+    const hasCodePredictionRunner =
+      options.allowCodePrediction === true &&
+      this.#runner?.resolveCodePredictionSource !== undefined;
     if (
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
@@ -2578,7 +2623,8 @@ export class AgenCDaemonAgentManager {
       !hasSetPermissionModeRunner &&
       !hasHooksStatusRunner &&
       !hasSetHooksDisabledRunner &&
-      !hasApplyConfigRunner
+      !hasApplyConfigRunner &&
+      !hasCodePredictionRunner
     ) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
@@ -3447,10 +3493,7 @@ function transcriptMessagesFromRolloutItems(
     }
   }
   const messages: { role: string; text: string }[] = [];
-  const push = (
-    role: string,
-    text: string,
-  ): void => {
+  const push = (role: string, text: string): void => {
     if ((role === "user" || role === "assistant") && text.length > 0) {
       messages.push({ role, text });
     }
@@ -3501,7 +3544,9 @@ function toExitPlanModeApproval(
   if (exitPlan.action === "revise") {
     return {
       action: "revise",
-      ...(exitPlan.feedback !== undefined ? { feedback: exitPlan.feedback } : {}),
+      ...(exitPlan.feedback !== undefined
+        ? { feedback: exitPlan.feedback }
+        : {}),
     };
   }
   return {

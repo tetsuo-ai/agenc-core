@@ -34,11 +34,11 @@
 // task from tight-looping the model and stop a synchronized thundering herd;
 // structured telemetry is emitted on every wake/dispatch.
 
-import type { AgentId } from '../types/ids.js'
-import { getScheduledTasksEnabled } from '../bootstrap/state.js'
-import { logForDebugging } from './debug.js'
-import { enqueuePendingNotification } from './messageQueueManager.js'
-import { monotonicMs } from './monotonic.js'
+import type { AgentId } from "../types/ids.js";
+import { getScheduledTasksEnabled } from "../bootstrap/state.js";
+import { logForDebugging } from "./debug.js";
+import { enqueuePendingNotification } from "./messageQueueManager.js";
+import { monotonicMs } from "./monotonic.js";
 import {
   DEFAULT_CRON_JITTER_CONFIG,
   jitteredNextCronRunMs,
@@ -47,8 +47,9 @@ import {
   nextCronRunMs,
   oneShotJitteredNextCronRunMs,
   removeCronTasks,
+  type CronSessionQueueOwner,
   type CronTask,
-} from './cronTasks.js'
+} from "./cronTasks.js";
 
 /**
  * Minimal enqueue surface the driver needs. Matches
@@ -58,42 +59,54 @@ import {
  * queue function.
  */
 export type CronEnqueue = (command: {
-  value: string
-  mode: 'task-notification'
-  isMeta: true
-  workload: string
-  agentId?: string
-}) => void
+  value: string;
+  mode: "task-notification";
+  isMeta: true;
+  workload: string;
+  queueOwner: CronSessionQueueOwner;
+  agentId?: string;
+}) => void;
+
+/**
+ * Frozen authority for one scheduler lifetime. The process-wide scheduler is
+ * reused across `/resume`, so every wake must prove it still belongs to this
+ * exact conversation and workspace before it can enqueue or mutate task
+ * state.
+ */
+export type CronSchedulerActivation = {
+  readonly queueOwner: CronSessionQueueOwner;
+  readonly workspaceRoot: string;
+};
 
 /** Injectable clocks/timer so tests can drive the driver with fake timers. */
 export type CronSchedulerDeps = {
   /** Wall-clock now in epoch ms. Used for the cron (calendar) computation. */
-  now: () => number
+  now: () => number;
   /**
    * Monotonic now in ms, used ONLY for the min-interval floor between model
    * invocations. Immune to NTP steps / suspend-resume; never used for the
    * calendar computation (cron is inherently wall-clock).
    */
-  monotonicNow: () => number
-  setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
-  clearTimer: (handle: ReturnType<typeof setTimeout>) => void
+  monotonicNow: () => number;
+  setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
   /** Load the currently-enabled tasks (file-backed + session). */
-  loadTasks: (dir?: string) => Promise<CronTask[]>
-  enqueue: CronEnqueue
-}
+  loadTasks: (dir: string, conversationId: string) => Promise<CronTask[]>;
+  enqueue: CronEnqueue;
+};
 
 const defaultDeps: CronSchedulerDeps = {
   now: () => Date.now(),
   monotonicNow: () => monotonicMs(),
   setTimer: (fn, ms) => setTimeout(fn, ms),
-  clearTimer: handle => clearTimeout(handle),
-  loadTasks: dir => listAllCronTasks(dir),
+  clearTimer: (handle) => clearTimeout(handle),
+  loadTasks: (dir, conversationId) => listAllCronTasks(dir, conversationId),
   enqueue: () => {
     // Default stub: never invokes the model. The real call site overrides this
     // with the TUI command queue (enqueuePendingNotification). Keeping a no-op
     // default means an un-wired driver can never surprise-spend tokens.
   },
-}
+};
 
 export type CronSchedulerOptions = {
   /**
@@ -102,19 +115,22 @@ export type CronSchedulerOptions = {
    * now + floor so a task whose schedule keeps resolving to ~now can never
    * tight-loop the model (the agent-cost busy-loop).
    */
-  minIntervalFloorMs: number
+  minIntervalFloorMs: number;
   /**
    * Hard ceiling on enqueues per rolling window. When exceeded the schedule
    * pauses (does NOT keep firing) until resume() is called. A regressed
    * heartbeat that started spamming the model trips this instead of running up
    * a bill.
    */
-  maxInvocationsPerWindow: number
+  maxInvocationsPerWindow: number;
   /** Rolling-window length for {@link maxInvocationsPerWindow}, in ms. */
-  windowMs: number
-  /** Project dir override (daemon). Undefined → getProjectRoot()/session merge. */
-  dir?: string
-}
+  windowMs: number;
+  /**
+   * @deprecated Activation now always supplies an exact workspace root.
+   * Retained only so older constructor call sites remain source-compatible.
+   */
+  dir?: string;
+};
 
 export const DEFAULT_CRON_SCHEDULER_OPTIONS: CronSchedulerOptions = {
   // A self-rescheduling task can never invoke the model more than once every
@@ -124,21 +140,21 @@ export const DEFAULT_CRON_SCHEDULER_OPTIONS: CronSchedulerOptions = {
   // hard backstop against a runaway loop.
   maxInvocationsPerWindow: 60,
   windowMs: 60 * 60 * 1000,
-}
+};
 
 /** Per-dispatch telemetry, emitted to the debug log and exposed for tests. */
 export type CronTickTelemetry = {
   /** Epoch ms when this wake fired. */
-  firedAt: number
+  firedAt: number;
   /** Tasks dispatched (one enqueue each) this tick. */
-  dispatched: number
+  dispatched: number;
   /** Occurrences collapsed into a single fire-once-now (sum across tasks). */
-  coalescedMisses: number
+  coalescedMisses: number;
   /** Occurrences skipped because the task's previous turn was still in flight. */
-  skippedDueToLock: number
+  skippedDueToLock: number;
   /** ms until the next armed wake, or null if nothing is scheduled. */
-  nextWakeInMs: number | null
-}
+  nextWakeInMs: number | null;
+};
 
 /**
  * Single timer-driven cron dispatcher. Construct once, call start(); it arms a
@@ -146,19 +162,20 @@ export type CronTickTelemetry = {
  * due. Idle = zero enqueues.
  */
 export class CronScheduler {
-  private readonly deps: CronSchedulerDeps
-  private readonly opts: CronSchedulerOptions
-  private timer: ReturnType<typeof setTimeout> | null = null
+  private readonly deps: CronSchedulerDeps;
+  private readonly opts: CronSchedulerOptions;
+  private timer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Monotonic ownership token for asynchronous schedule scans. Multiple
    * callers may request a reschedule while filesystem-backed task loading is
    * still in flight. Only the newest scan may arm a timer; stop() invalidates
    * every pending scan so a late completion cannot resurrect the scheduler.
    */
-  private scheduleGeneration = 0
-  private running = false
-  /** True while a tick (the local wake path) is executing — re-entrancy guard. */
-  private tickInFlight = false
+  private scheduleGeneration = 0;
+  private running = false;
+  private activation: CronSchedulerActivation | null = null;
+  /** Serializes mutation-bearing wake paths without delaying the common case. */
+  private tickInFlight = false;
   /**
    * The most recent timer-initiated tick, kept so stop paths can await
    * quiescence: stop() only clears the NEXT wake — a tick already executing
@@ -168,7 +185,7 @@ export class CronScheduler {
    * exploding tick logs instead of dying as an unhandled rejection from
    * the bare timer callback.
    */
-  private lastTick: Promise<void> = Promise.resolve()
+  private lastTick: Promise<void> = Promise.resolve();
   /**
    * Per-task overlap guard: monotonic-ms deadline through which a task that just
    * fired is treated as "still in flight" so a duplicate is skipped. The lease
@@ -178,9 +195,9 @@ export class CronScheduler {
    * markTurnComplete() would fire each recurring task exactly once per process.
    * markTurnComplete() still clears the lease early for callers that CAN signal.
    */
-  private readonly inFlightUntil = new Map<string, number>()
+  private readonly inFlightUntil = new Map<string, number>();
   /** Monotonic ms of the last enqueue per task — drives the min-interval floor. */
-  private readonly lastInvokedAt = new Map<string, number>()
+  private readonly lastInvokedAt = new Map<string, number>();
   /**
    * Wall-clock instant (epoch ms) through which each task has already been
    * dispatched this process. The effective schedule anchor is the LATER of
@@ -190,34 +207,34 @@ export class CronScheduler {
    * once now, then recompute next_due from the canonical schedule" hold even
    * for session tasks whose fire time is never written to disk.
    */
-  private readonly firedThrough = new Map<string, number>()
+  private readonly firedThrough = new Map<string, number>();
   /** Wall-clock ms of recent enqueues, trimmed to the rolling window. */
-  private invocationLog: number[] = []
-  private paused = false
-  private lastTelemetry: CronTickTelemetry | null = null
+  private invocationLog: number[] = [];
+  private paused = false;
+  private lastTelemetry: CronTickTelemetry | null = null;
   /**
    * Set by dispatchDue() so the immediately-following reschedule() patches the
    * dispatch telemetry's nextWakeInMs instead of clobbering it with a fresh
    * idle record. Cleared once consumed.
    */
-  private dispatchAwaitingNextWake = false
+  private dispatchAwaitingNextWake = false;
 
   constructor(
     deps: Partial<CronSchedulerDeps> = {},
     opts: Partial<CronSchedulerOptions> = {},
   ) {
-    this.deps = { ...defaultDeps, ...deps }
-    this.opts = { ...DEFAULT_CRON_SCHEDULER_OPTIONS, ...opts }
+    this.deps = { ...defaultDeps, ...deps };
+    this.opts = { ...DEFAULT_CRON_SCHEDULER_OPTIONS, ...opts };
   }
 
   /** Last tick's telemetry (for tests / observability). */
   getLastTelemetry(): CronTickTelemetry | null {
-    return this.lastTelemetry
+    return this.lastTelemetry;
   }
 
   /** Whether the schedule auto-paused after tripping the invocation cap. */
   isPaused(): boolean {
-    return this.paused
+    return this.paused;
   }
 
   /**
@@ -225,11 +242,21 @@ export class CronScheduler {
    * (OFF) means literally zero surprise token use — start() is a no-op until a
    * CronCreate flips the flag. Idempotent.
    */
-  start(): void {
-    if (this.running) return
-    if (!getScheduledTasksEnabled()) return
-    this.running = true
-    void this.reschedule()
+  start(activation: CronSchedulerActivation): void {
+    if (!getScheduledTasksEnabled()) return;
+    const normalized = normalizeCronSchedulerActivation(activation);
+    if (this.running) {
+      if (!sameCronSchedulerActivation(this.activation, normalized)) {
+        throw new Error(
+          "Cron scheduler is already active for a different conversation or workspace",
+        );
+      }
+      return;
+    }
+    this.resetActivationState();
+    this.activation = normalized;
+    this.running = true;
+    void this.reschedule();
   }
 
   /**
@@ -237,10 +264,20 @@ export class CronScheduler {
    * sleep's shutdown path) so no further wakes occur. In-flight turns are not
    * cancelled but no NEW tick will run.
    */
-  stop(): void {
-    this.running = false
-    this.scheduleGeneration += 1
-    this.clearTimer()
+  stop(expectedActivation?: CronSchedulerActivation): void {
+    if (
+      expectedActivation !== undefined &&
+      !sameCronSchedulerActivation(
+        this.activation,
+        normalizeCronSchedulerActivation(expectedActivation),
+      )
+    ) {
+      return;
+    }
+    this.running = false;
+    this.activation = null;
+    this.scheduleGeneration += 1;
+    this.clearTimer();
   }
 
   /**
@@ -250,13 +287,14 @@ export class CronScheduler {
    * directory must stop() then drain() before deleting files.
    */
   async drain(): Promise<void> {
-    await this.lastTick
+    await this.lastTick;
   }
 
   /** Resume after a pause (manual or post-cap), re-arming the next wake. */
   resume(): void {
-    this.paused = false
-    void this.reschedule()
+    if (!this.running || this.activation === null) return;
+    this.paused = false;
+    void this.reschedule();
   }
 
   /**
@@ -267,7 +305,7 @@ export class CronScheduler {
    * to release the next occurrence sooner than the lease.
    */
   markTurnComplete(taskId: string): void {
-    this.inFlightUntil.delete(taskId)
+    this.inFlightUntil.delete(taskId);
   }
 
   /**
@@ -278,20 +316,22 @@ export class CronScheduler {
    * arms no timer (zero CPU, zero model calls).
    */
   async reschedule(): Promise<void> {
-    if (!this.running || this.paused) return
-    const generation = ++this.scheduleGeneration
-    this.clearTimer()
+    const activation = this.activation;
+    if (!this.running || this.paused || activation === null) return;
+    const generation = ++this.scheduleGeneration;
+    this.clearTimer();
 
-    const dueAt = await this.earliestDueAt()
+    const dueAt = await this.earliestDueAt(activation);
     if (
-      !this.running ||
+      !this.isCurrentActivation(activation, generation) ||
       this.paused ||
       generation !== this.scheduleGeneration
-    ) return
+    )
+      return;
     if (dueAt === null) {
       // No tasks (or none with a future fire). Stay asleep. Zero model calls.
-      this.recordNextWake(null)
-      return
+      this.recordNextWake(null);
+      return;
     }
 
     // Bound the delay to >= 0; a due-in-the-past task fires on the next tick of
@@ -301,13 +341,36 @@ export class CronScheduler {
     const wait = Math.min(
       Math.max(0, dueAt - this.deps.now()),
       this.opts.windowMs,
-    )
-    this.recordNextWake(wait)
+    );
+    this.recordNextWake(wait);
     this.timer = this.deps.setTimer(() => {
-      this.lastTick = this.onWake().catch((error: unknown) => {
-        logForDebugging(`[CronScheduler] tick failed: ${String(error)}`)
-      })
-    }, wait)
+      // Serialize timer ticks even across an activation transition. A stopped
+      // activation can finish harmless persistence after an already-enqueued
+      // fire, but a replacement activation never races that disk mutation.
+      if (!this.tickInFlight) {
+        this.tickInFlight = true;
+        this.lastTick = this.onWake(activation, generation)
+          .catch((error: unknown) => {
+            logForDebugging(`[CronScheduler] tick failed: ${String(error)}`);
+          })
+          .finally(() => {
+            this.tickInFlight = false;
+          });
+        return;
+      }
+      this.lastTick = this.lastTick
+        .catch(() => undefined)
+        .then(async () => {
+          this.tickInFlight = true;
+          await this.onWake(activation, generation);
+        })
+        .catch((error: unknown) => {
+          logForDebugging(`[CronScheduler] tick failed: ${String(error)}`);
+        })
+        .finally(() => {
+          this.tickInFlight = false;
+        });
+    }, wait);
   }
 
   /**
@@ -315,17 +378,17 @@ export class CronScheduler {
    * what (if anything) is due, then enqueues exactly one turn per due task.
    * Re-entrant calls are dropped (re-entrancy guard).
    */
-  private async onWake(): Promise<void> {
-    if (!this.running || this.paused) return
-    if (this.tickInFlight) return // hard re-entrancy guard: one tick at a time
-    this.tickInFlight = true
-    try {
-      await this.dispatchDue()
-    } finally {
-      this.tickInFlight = false
-    }
+  private async onWake(
+    activation: CronSchedulerActivation,
+    generation: number,
+  ): Promise<void> {
+    if (!this.isCurrentActivation(activation, generation) || this.paused)
+      return;
+    await this.dispatchDue(activation, generation);
+    if (!this.isCurrentActivation(activation, generation) || this.paused)
+      return;
     // Re-arm AFTER the tick so the next wake reflects post-fire next_due.
-    await this.reschedule()
+    await this.reschedule();
   }
 
   /**
@@ -335,88 +398,135 @@ export class CronScheduler {
    * or webhook. Running them here too would double-fire every occurrence, so
    * they are excluded from BOTH dispatch and the wake computation.
    */
-  private async loadRunnableTasks(): Promise<CronTask[]> {
-    const tasks = await this.deps.loadTasks(this.opts.dir)
-    return tasks.filter(task => task.deliver === undefined)
+  private async loadRunnableTasks(
+    activation: CronSchedulerActivation,
+  ): Promise<CronTask[]> {
+    const tasks = await this.deps.loadTasks(
+      activation.workspaceRoot,
+      activation.queueOwner.conversationId,
+    );
+    return tasks.filter(
+      (task) =>
+        task.deliver === undefined &&
+        (task.durable !== false ||
+          (task.queueOwner?.kind === "session" &&
+            task.queueOwner.conversationId ===
+              activation.queueOwner.conversationId)),
+    );
   }
 
   /**
    * Find tasks whose due time is now in the past, coalesce each to a single
    * enqueue, persist lastFiredAt / delete one-shots, and emit telemetry.
    */
-  private async dispatchDue(): Promise<void> {
-    const now = this.deps.now()
-    const tasks = await this.loadRunnableTasks()
+  private async dispatchDue(
+    activation: CronSchedulerActivation,
+    generation: number,
+  ): Promise<void> {
+    const now = this.deps.now();
+    const tasks = await this.loadRunnableTasks(activation);
+    // loadTasks may cross a session switch. A stale wake must leave no queue
+    // item, rate accounting, lease, or task-file mutation behind.
+    if (!this.isCurrentActivation(activation, generation) || this.paused)
+      return;
 
-    let dispatched = 0
-    let coalescedMisses = 0
-    let skippedDueToLock = 0
-    const firedRecurringIds: string[] = []
-    const firedOneShotIds: string[] = []
+    let dispatched = 0;
+    let coalescedMisses = 0;
+    let skippedDueToLock = 0;
+    const firedRecurringIds: string[] = [];
+    const firedOneShotIds: string[] = [];
 
     for (const task of tasks) {
-      const occurrences = this.dueOccurrences(task, now)
-      if (occurrences === 0) continue
+      if (!this.isCurrentActivation(activation, generation) || this.paused) {
+        return;
+      }
+      const occurrences = this.dueOccurrences(task, now);
+      if (occurrences === 0) continue;
 
       // Coalesce: N missed slots → at most ONE enqueue. Count the extra,
       // collapsed slots for telemetry (count-1 are the "misses").
-      coalescedMisses += occurrences - 1
+      coalescedMisses += occurrences - 1;
 
       // Overlap guard: a previous turn for this task fired within the lease
       // window → skip this occurrence (do NOT pile a second turn onto the
       // serial queue). It's already coalesced, so drop it and advance next_due
       // on the next wake. The lease auto-expires (below) so recurring tasks are
       // never permanently wedged.
-      const inFlightUntil = this.inFlightUntil.get(task.id)
+      const inFlightUntil = this.inFlightUntil.get(task.id);
       if (inFlightUntil !== undefined) {
         if (this.deps.monotonicNow() < inFlightUntil) {
-          skippedDueToLock += 1
-          continue
+          skippedDueToLock += 1;
+          continue;
         }
         // Lease expired: the prior turn's overlap window has passed.
-        this.inFlightUntil.delete(task.id)
+        this.inFlightUntil.delete(task.id);
       }
 
       // Rate cap: pause the whole schedule rather than keep firing.
       if (!this.tryRecordInvocation(now)) {
-        this.pauseForCap()
-        break
+        this.pauseForCap();
+        break;
       }
 
-      const firedAtMono = this.deps.monotonicNow()
+      const firedAtMono = this.deps.monotonicNow();
       // Hold the overlap lease for one floor interval, then auto-release.
-      this.inFlightUntil.set(task.id, firedAtMono + this.opts.minIntervalFloorMs)
-      this.lastInvokedAt.set(task.id, firedAtMono)
+      this.inFlightUntil.set(
+        task.id,
+        firedAtMono + this.opts.minIntervalFloorMs,
+      );
+      this.lastInvokedAt.set(task.id, firedAtMono);
       // Advance the effective anchor past everything we just coalesced so the
       // next reschedule resolves this task to a FUTURE slot — never the same
       // past-due instant (which would re-fire in a tight loop / busy-spin).
-      this.firedThrough.set(task.id, now)
+      this.firedThrough.set(task.id, now);
+      const queueOwner =
+        task.durable === false ? task.queueOwner : activation.queueOwner;
+      if (
+        queueOwner?.kind !== "session" ||
+        queueOwner.conversationId !== activation.queueOwner.conversationId
+      ) {
+        // Runtime-only tasks without exact provenance are inert. Never repair
+        // them by attributing them to whichever session happens to be active.
+        this.inFlightUntil.delete(task.id);
+        this.lastInvokedAt.delete(task.id);
+        this.firedThrough.delete(task.id);
+        continue;
+      }
       this.deps.enqueue({
         value: task.prompt,
-        mode: 'task-notification',
+        mode: "task-notification",
         isMeta: true,
-        workload: 'cron',
+        workload: "cron",
+        queueOwner: { ...queueOwner },
         ...(task.agentId ? { agentId: task.agentId } : {}),
-      })
-      dispatched += 1
+      });
+      dispatched += 1;
 
       if (task.recurring) {
         // Only file-backed tasks persist lastFiredAt; session tasks die with
         // the process. durable === false marks a session task (see
         // listAllCronTasks).
-        if (task.durable !== false) firedRecurringIds.push(task.id)
+        if (task.durable !== false) firedRecurringIds.push(task.id);
       } else {
-        firedOneShotIds.push(task.id)
+        firedOneShotIds.push(task.id);
       }
     }
 
     // Persist fire times for recurring file-backed tasks and delete fired
     // one-shots — both are read-modify-writes batched once per tick, not N×.
     if (firedRecurringIds.length > 0) {
-      await markCronTasksFired(firedRecurringIds, now, this.opts.dir)
+      await markCronTasksFired(
+        firedRecurringIds,
+        now,
+        activation.workspaceRoot,
+      );
     }
     if (firedOneShotIds.length > 0) {
-      await removeCronTasks(firedOneShotIds, this.opts.dir)
+      await removeCronTasks(
+        firedOneShotIds,
+        activation.workspaceRoot,
+        activation.queueOwner.conversationId,
+      );
     }
 
     this.lastTelemetry = {
@@ -425,12 +535,12 @@ export class CronScheduler {
       coalescedMisses,
       skippedDueToLock,
       nextWakeInMs: null, // patched (not clobbered) by the post-tick reschedule()
-    }
-    this.dispatchAwaitingNextWake = true
+    };
+    this.dispatchAwaitingNextWake = true;
     logForDebugging(
       `[CronScheduler] wake fired=${now} dispatched=${dispatched} ` +
         `coalescedMisses=${coalescedMisses} skippedDueToLock=${skippedDueToLock}`,
-    )
+    );
   }
 
   /**
@@ -443,9 +553,9 @@ export class CronScheduler {
    * round-trips through disk.
    */
   private effectiveAnchor(task: CronTask): number {
-    const persisted = task.lastFiredAt ?? task.createdAt
-    const fired = this.firedThrough.get(task.id)
-    return fired === undefined ? persisted : Math.max(persisted, fired)
+    const persisted = task.lastFiredAt ?? task.createdAt;
+    const fired = this.firedThrough.get(task.id);
+    return fired === undefined ? persisted : Math.max(persisted, fired);
   }
 
   /**
@@ -454,22 +564,22 @@ export class CronScheduler {
    * telemetry — the dispatch fires once regardless of how many slots elapsed.
    */
   private dueOccurrences(task: CronTask, now: number): number {
-    const anchor = this.effectiveAnchor(task)
-    let cursor = nextCronRunMs(task.cron, anchor)
+    const anchor = this.effectiveAnchor(task);
+    let cursor = nextCronRunMs(task.cron, anchor);
 
-    let count = 0
+    let count = 0;
     // Walk forward through past-due slots. Bounded: cron resolution is 1 min,
     // and we stop at the first future instant, so this loop is O(missed slots)
     // and only runs after a real gap (suspend/restart). Cap to a sane bound so
     // a pathological clock skew can't spin here.
-    const MAX_WALK = 100_000
-    let guard = 0
+    const MAX_WALK = 100_000;
+    let guard = 0;
     while (cursor !== null && cursor <= now && guard < MAX_WALK) {
-      count += 1
-      cursor = nextCronRunMs(task.cron, cursor)
-      guard += 1
+      count += 1;
+      cursor = nextCronRunMs(task.cron, cursor);
+      guard += 1;
     }
-    return count
+    return count;
   }
 
   /**
@@ -477,16 +587,18 @@ export class CronScheduler {
    * spreading) and the min-interval floor (anti tight-loop). Null when there
    * are no tasks with a future (or past-due) fire.
    */
-  private async earliestDueAt(): Promise<number | null> {
-    const now = this.deps.now()
-    const tasks = await this.loadRunnableTasks()
-    let earliest: number | null = null
+  private async earliestDueAt(
+    activation: CronSchedulerActivation,
+  ): Promise<number | null> {
+    const now = this.deps.now();
+    const tasks = await this.loadRunnableTasks(activation);
+    let earliest: number | null = null;
     for (const task of tasks) {
-      const due = this.nextDueForTask(task, now)
-      if (due === null) continue
-      if (earliest === null || due < earliest) earliest = due
+      const due = this.nextDueForTask(task, now);
+      if (due === null) continue;
+      if (earliest === null || due < earliest) earliest = due;
     }
-    return earliest
+    return earliest;
   }
 
   /**
@@ -495,12 +607,12 @@ export class CronScheduler {
    * jitter and the min-interval floor.
    */
   private nextDueForTask(task: CronTask, now: number): number | null {
-    const anchor = this.effectiveAnchor(task)
+    const anchor = this.effectiveAnchor(task);
     // If a scheduled instant is already at/behind now, it's due now — return
     // `now` so the timer fires immediately and dispatchDue() coalesces.
-    const plain = nextCronRunMs(task.cron, anchor)
-    if (plain === null) return null
-    if (plain <= now) return now
+    const plain = nextCronRunMs(task.cron, anchor);
+    if (plain === null) return null;
+    if (plain <= now) return now;
 
     // Future fire: apply jitter (recurring → forward, one-shot → backward) to
     // spread synchronized herds, then clamp with the min-interval floor so a
@@ -517,20 +629,20 @@ export class CronScheduler {
           anchor,
           task.id,
           DEFAULT_CRON_JITTER_CONFIG,
-        )
-    const target = jittered ?? plain
+        );
+    const target = jittered ?? plain;
 
-    const last = this.lastInvokedAt.get(task.id)
+    const last = this.lastInvokedAt.get(task.id);
     if (last !== undefined) {
       // Floor is measured on the monotonic clock; translate to wall-clock by
       // taking the larger of (target) and (now + remaining-floor).
-      const elapsed = this.deps.monotonicNow() - last
-      const remainingFloor = this.opts.minIntervalFloorMs - elapsed
+      const elapsed = this.deps.monotonicNow() - last;
+      const remainingFloor = this.opts.minIntervalFloorMs - elapsed;
       if (remainingFloor > 0) {
-        return Math.max(target, now + remainingFloor)
+        return Math.max(target, now + remainingFloor);
       }
     }
-    return target
+    return target;
   }
 
   /**
@@ -538,24 +650,24 @@ export class CronScheduler {
    * when adding this one would exceed maxInvocationsPerWindow.
    */
   private tryRecordInvocation(now: number): boolean {
-    const cutoff = now - this.opts.windowMs
-    this.invocationLog = this.invocationLog.filter(t => t > cutoff)
+    const cutoff = now - this.opts.windowMs;
+    this.invocationLog = this.invocationLog.filter((t) => t > cutoff);
     if (this.invocationLog.length >= this.opts.maxInvocationsPerWindow) {
-      return false
+      return false;
     }
-    this.invocationLog.push(now)
-    return true
+    this.invocationLog.push(now);
+    return true;
   }
 
   private pauseForCap(): void {
-    this.paused = true
-    this.scheduleGeneration += 1
-    this.clearTimer()
+    this.paused = true;
+    this.scheduleGeneration += 1;
+    this.clearTimer();
     logForDebugging(
       `[CronScheduler] invocation cap (${this.opts.maxInvocationsPerWindow}/` +
         `${this.opts.windowMs}ms) hit — schedule PAUSED; call resume() to continue`,
-      { level: 'warn' },
-    )
+      { level: "warn" },
+    );
   }
 
   /**
@@ -567,9 +679,9 @@ export class CronScheduler {
    */
   private recordNextWake(wait: number | null): void {
     if (this.dispatchAwaitingNextWake && this.lastTelemetry !== null) {
-      this.lastTelemetry = { ...this.lastTelemetry, nextWakeInMs: wait }
-      this.dispatchAwaitingNextWake = false
-      return
+      this.lastTelemetry = { ...this.lastTelemetry, nextWakeInMs: wait };
+      this.dispatchAwaitingNextWake = false;
+      return;
     }
     this.lastTelemetry = {
       firedAt: this.deps.now(),
@@ -577,15 +689,64 @@ export class CronScheduler {
       coalescedMisses: 0,
       skippedDueToLock: 0,
       nextWakeInMs: wait,
-    }
+    };
   }
 
   private clearTimer(): void {
     if (this.timer !== null) {
-      this.deps.clearTimer(this.timer)
-      this.timer = null
+      this.deps.clearTimer(this.timer);
+      this.timer = null;
     }
   }
+
+  private isCurrentActivation(
+    activation: CronSchedulerActivation,
+    generation?: number,
+  ): boolean {
+    return (
+      this.running &&
+      sameCronSchedulerActivation(this.activation, activation) &&
+      (generation === undefined || generation === this.scheduleGeneration)
+    );
+  }
+
+  private resetActivationState(): void {
+    this.inFlightUntil.clear();
+    this.lastInvokedAt.clear();
+    this.firedThrough.clear();
+    this.invocationLog = [];
+    this.paused = false;
+    this.dispatchAwaitingNextWake = false;
+    this.lastTelemetry = null;
+  }
+}
+
+function normalizeCronSchedulerActivation(
+  activation: CronSchedulerActivation,
+): CronSchedulerActivation {
+  const conversationId = activation.queueOwner.conversationId.trim();
+  const workspaceRoot = activation.workspaceRoot.trim();
+  if (activation.queueOwner.kind !== "session" || conversationId.length === 0) {
+    throw new Error("Cron scheduler requires an owning conversation");
+  }
+  if (workspaceRoot.length === 0) {
+    throw new Error("Cron scheduler requires an owning workspace root");
+  }
+  return {
+    queueOwner: { kind: "session", conversationId },
+    workspaceRoot,
+  };
+}
+
+function sameCronSchedulerActivation(
+  left: CronSchedulerActivation | null,
+  right: CronSchedulerActivation,
+): boolean {
+  return (
+    left?.queueOwner.kind === "session" &&
+    left.queueOwner.conversationId === right.queueOwner.conversationId &&
+    left.workspaceRoot === right.workspaceRoot
+  );
 }
 
 /**
@@ -593,7 +754,7 @@ export class CronScheduler {
  * once the scheduled-tasks flag is enabled, and reschedule() after any
  * CronCreate/CronDelete so an earlier-due task preempts the current sleep.
  */
-let singleton: CronScheduler | null = null
+let singleton: CronScheduler | null = null;
 
 /**
  * Adapter from the driver's minimal {@link CronEnqueue} surface to the real TUI
@@ -612,8 +773,9 @@ export function cronEnqueueToCommandQueue(
     mode: command.mode,
     isMeta: command.isMeta,
     workload: command.workload,
+    queueOwner: { ...command.queueOwner },
     ...(command.agentId ? { agentId: command.agentId as AgentId } : {}),
-  })
+  });
 }
 
 export function getCronScheduler(): CronScheduler {
@@ -621,15 +783,16 @@ export function getCronScheduler(): CronScheduler {
     singleton = new CronScheduler(
       {
         // Bind to the default (non-daemon) project root + session merge.
-        loadTasks: () => listAllCronTasks(),
+        loadTasks: (dir, conversationId) =>
+          listAllCronTasks(dir, conversationId),
         // Wire the real TUI command queue so a due task actually fires (the
         // default dep is a no-op stub that would silently drop every fire).
         enqueue: cronEnqueueToCommandQueue,
       },
       { dir: undefined },
-    )
+    );
   }
-  return singleton
+  return singleton;
 }
 
 /**
@@ -639,7 +802,7 @@ export function getCronScheduler(): CronScheduler {
  * scheduled_tasks.json write (observed as an unhandled ENOENT rejection).
  */
 export async function resetCronSchedulerForTests(): Promise<void> {
-  singleton?.stop()
-  await singleton?.drain()
-  singleton = null
+  singleton?.stop();
+  await singleton?.drain();
+  singleton = null;
 }

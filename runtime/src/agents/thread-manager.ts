@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { LLMContentPart } from "../llm/types.js";
 import type { Session } from "../session/session.js";
+import type { SessionSubmitOptions } from "../session/autonomous-mode.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import { parseRolloutLine } from "../session/rollout-item.js";
 import { responseItemToLlmMessage as responseItemToLlmHistoryMessage } from "../session/message-history-conversion.js";
@@ -23,6 +24,7 @@ export type ThreadManagerOp =
   | {
       readonly type: "user_input";
       readonly input: string | readonly LLMContentPart[];
+      readonly submitOptions?: SessionSubmitOptions;
     }
   | {
       readonly type: "inter_agent_communication";
@@ -563,7 +565,11 @@ async function submitToSession(
 ): Promise<string> {
   switch (op.type) {
     case "user_input":
-      await session.submit(op.input);
+      if (op.submitOptions === undefined) {
+        await session.submit(op.input);
+      } else {
+        await session.submit(op.input, op.submitOptions);
+      }
       return session.conversationId;
     case "clear_conversation_history":
       await session.state.with((state) => {

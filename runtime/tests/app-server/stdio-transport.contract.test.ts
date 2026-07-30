@@ -5,6 +5,7 @@ import { JSON_RPC_VERSION } from "./protocol/index.js";
 import {
   AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
   AgenCStdioTransport,
+  encodeBoundedJsonLine,
   encodeJsonLine,
   parseJsonObjectLine,
   writeJsonLine,
@@ -45,6 +46,52 @@ describe("AgenC stdio transport", () => {
       id: 1,
       result: { text: "hello\nworld" },
     });
+  });
+
+  it("bounds the real escaped workspace sync JSON-RPC frame", () => {
+    const requestFor = (content: string, workspaceRoot = "/workspace") => ({
+      jsonrpc: JSON_RPC_VERSION,
+      id: Number.MAX_SAFE_INTEGER,
+      method: "workspace.editor.sync",
+      params: {
+        workspaceRoot,
+        editorInstanceId: "editor-boundary",
+        leaseToken: "lease-boundary",
+        epoch: 1,
+        sequence: 1,
+        buffers: [
+          {
+            path: "/workspace/control-bytes.ts",
+            bufferHandle: 1,
+            changedtick: 1,
+            contentSha256: "a".repeat(64),
+            contentBytes: content.length,
+            dirty: true,
+            content,
+          },
+        ],
+      },
+    });
+    // Leave a few MiB for one-byte path padding so the valid frame can land
+    // on the byte boundary exactly while still exercising JSON escaping.
+    const escapedContent = "\0".repeat(2 * 1024 * 1024);
+    const minimallyRootedFrameBytes = Buffer.byteLength(
+      JSON.stringify(requestFor(escapedContent, "/")),
+      "utf8",
+    );
+    const workspaceRoot = `/${"x".repeat(
+      AGENC_STDIO_DEFAULT_MAX_LINE_BYTES - minimallyRootedFrameBytes,
+    )}`;
+    const boundaryLine = encodeBoundedJsonLine(
+      requestFor(escapedContent, workspaceRoot),
+    );
+
+    expect(Buffer.byteLength(boundaryLine, "utf8") - 1).toBe(
+      AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
+    );
+    expect(() =>
+      encodeBoundedJsonLine(requestFor(`${escapedContent}\0`, workspaceRoot)),
+    ).toThrow(/exceeding the 16777216-byte limit/u);
   });
 
   it("parses JSON object lines and rejects malformed frames", () => {
@@ -359,18 +406,22 @@ describe("AgenC stdio transport", () => {
     });
     transport.start();
 
-    input.write(`${JSON.stringify({
-      jsonrpc: JSON_RPC_VERSION,
-      id: "stream",
-      method: "message.stream",
-    })}\n`);
+    input.write(
+      `${JSON.stringify({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "stream",
+        method: "message.stream",
+      })}\n`,
+    );
     await streamStarted;
     for (const [index, method] of RESPONSIVE_CONTROL_METHODS.entries()) {
-      input.write(`${JSON.stringify({
-        jsonrpc: JSON_RPC_VERSION,
-        id: `control-${index}`,
-        method,
-      })}\n`);
+      input.write(
+        `${JSON.stringify({
+          jsonrpc: JSON_RPC_VERSION,
+          id: `control-${index}`,
+          method,
+        })}\n`,
+      );
     }
 
     await delay(40);

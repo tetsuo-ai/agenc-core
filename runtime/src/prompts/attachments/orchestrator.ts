@@ -53,6 +53,13 @@ import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.
  */
 export interface GetAttachmentsOptions {
   /**
+   * Bounds producer-side effects for authority-scoped turns. Editor
+   * interactions use `local_read_only`: the main model request still runs,
+   * but attachment collection cannot contact MCP servers, launch a side
+   * model, or spawn document-extraction helpers.
+   */
+  readonly effectsPolicy?: "ordinary" | "local_read_only";
+  /**
    * Opaque session identity for cross-turn state isolation. Anything
    * stable per-session works (the `Session` instance itself is the
    * canonical choice).
@@ -120,7 +127,10 @@ export interface GetAttachmentsOptions {
   readonly agencHome?: string;
   /** Runtime skill manager used to announce Skill-tool candidates. */
   readonly skillsManager?: {
-    skillsForConfig(input: unknown, fs: unknown): Promise<{
+    skillsForConfig(
+      input: unknown,
+      fs: unknown,
+    ): Promise<{
       readonly availableSkills?: ReadonlyArray<{
         readonly name: string;
         readonly description?: string;
@@ -184,6 +194,20 @@ const PRODUCERS: readonly AttachmentProducer[] = [
 ];
 
 /**
+ * Fail-closed allowlist for Editor attachment collection. A newly registered
+ * ordinary producer is not Editor-authorized until it is deliberately
+ * classified and added here.
+ */
+const LOCAL_READ_ONLY_PRODUCERS: readonly AttachmentProducer[] = [];
+
+export const __INTERNAL = {
+  ordinaryProducerNames: PRODUCERS.map((producer) => producer.name),
+  localReadOnlyProducerNames: LOCAL_READ_ONLY_PRODUCERS.map(
+    (producer) => producer.name,
+  ),
+} as const;
+
+/**
  * Run every producer in parallel and return the flattened attachment
  * list.
  *
@@ -194,6 +218,7 @@ const PRODUCERS: readonly AttachmentProducer[] = [
 export async function getAttachments(
   opts: GetAttachmentsOptions,
 ): Promise<readonly Attachment[]> {
+  if (opts.effectsPolicy === "local_read_only") return [];
   const trackingState = getAttachmentTrackingState(opts.sessionKey);
   const settled = await Promise.allSettled(
     PRODUCERS.map((producer) => producer(opts, trackingState)),

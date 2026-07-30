@@ -225,7 +225,12 @@ export const fileMentionsProducer: AttachmentProducer = async (opts) => {
   );
   const imageAttachment = await collectImageMentionAttachment(mentions, opts);
   if (imageAttachment !== null) out.push(imageAttachment);
-  const pdfAttachment = await collectPdfMentionAttachment(mentions, opts);
-  if (pdfAttachment !== null) out.push(pdfAttachment);
+  // PDF fallback extraction may spawn an operator-installed helper. Keep
+  // regular text/image reads available to Editor questions, but never launch
+  // that helper inside an authority-scoped local-read-only turn.
+  if (opts.effectsPolicy !== "local_read_only") {
+    const pdfAttachment = await collectPdfMentionAttachment(mentions, opts);
+    if (pdfAttachment !== null) out.push(pdfAttachment);
+  }
   return out;
 };

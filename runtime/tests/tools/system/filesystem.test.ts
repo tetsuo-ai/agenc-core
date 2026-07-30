@@ -110,10 +110,9 @@ describe("safePath", () => {
     process.env.HOME = "/home/tester";
     process.env.USERPROFILE = undefined;
     try {
-      const result = await safePath(
-        "~/workspace/file.txt",
-        ["/home/tester/workspace"],
-      );
+      const result = await safePath("~/workspace/file.txt", [
+        "/home/tester/workspace",
+      ]);
       expect(result.safe).toBe(true);
       expect(result.resolved).toBe("/home/tester/workspace/file.txt");
     } finally {
@@ -128,7 +127,9 @@ describe("safePath", () => {
     process.env.HOME = "/home/tester";
     process.env.USERPROFILE = undefined;
     try {
-      const result = await safePath("/home/tester/workspace/file.txt", ["~/workspace"]);
+      const result = await safePath("/home/tester/workspace/file.txt", [
+        "~/workspace",
+      ]);
       expect(result.safe).toBe(true);
       expect(result.resolved).toBe("/home/tester/workspace/file.txt");
     } finally {
@@ -531,6 +532,9 @@ describe("system.move", () => {
   });
 
   it("moves a file within allowed paths", async () => {
+    mockStat.mockResolvedValueOnce({
+      isDirectory: () => false,
+    } as never);
     mockMkdir.mockResolvedValueOnce(undefined);
     mockRename.mockResolvedValueOnce(undefined);
 
@@ -788,12 +792,14 @@ describe("inferToolAccess classification via tool naming", () => {
   });
 });
 
-
 // ============================================================================
 // snapshotTopRecentReads — compact-and-re-attach support
 // ============================================================================
 
-import { snapshotTopRecentReads, seedSessionReadState as seedRead } from "./filesystem.js";
+import {
+  snapshotTopRecentReads,
+  seedSessionReadState as seedRead,
+} from "./filesystem.js";
 
 describe("snapshotTopRecentReads", () => {
   const sessionId = "session-snapshot-top";
@@ -849,9 +855,24 @@ describe("snapshotTopRecentReads", () => {
 
   it("stops adding files once the total budget is exhausted", () => {
     seedRead(sessionId, [
-      { path: "/ws/a.ts", content: "x".repeat(60), timestamp: 5, viewKind: "full" },
-      { path: "/ws/b.ts", content: "y".repeat(60), timestamp: 4, viewKind: "full" },
-      { path: "/ws/c.ts", content: "z".repeat(60), timestamp: 3, viewKind: "full" },
+      {
+        path: "/ws/a.ts",
+        content: "x".repeat(60),
+        timestamp: 5,
+        viewKind: "full",
+      },
+      {
+        path: "/ws/b.ts",
+        content: "y".repeat(60),
+        timestamp: 4,
+        viewKind: "full",
+      },
+      {
+        path: "/ws/c.ts",
+        content: "z".repeat(60),
+        timestamp: 3,
+        viewKind: "full",
+      },
     ]);
     const out = snapshotTopRecentReads({
       sessionId,

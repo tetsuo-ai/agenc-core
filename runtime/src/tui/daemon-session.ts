@@ -40,9 +40,47 @@ import type {
   SessionApplyConfigResult,
   SessionSnapshotResult,
   SessionResolveToolCallResult,
+  WorkspaceEditorAcquireParams,
+  WorkspaceEditorCancelPredictionParams,
+  WorkspaceEditorCancelPredictionSessionParams,
+  WorkspaceEditorCancelPredictionResult,
+  WorkspaceEditorChangesListParams,
+  WorkspaceEditorChangesListResult,
+  WorkspaceEditorPredictParams,
+  WorkspaceEditorPredictSessionParams,
+  WorkspaceEditorPredictionFeedbackParams,
+  WorkspaceEditorPredictionFeedbackSessionParams,
+  WorkspaceEditorPredictionFeedbackResult,
+  WorkspaceEditorPredictionResult,
+  WorkspaceEditorHeartbeatParams,
+  WorkspaceEditorLeaseResult,
+  WorkspaceEditorProposalApplyParams,
+  WorkspaceEditorProposalApplyResult,
+  WorkspaceEditorProposalDiscardResult,
+  WorkspaceEditorProposalParams,
+  WorkspaceEditorProposalResult,
+  WorkspaceEditorProposalStatusParams,
+  WorkspaceEditorProposalStatusResult,
+  WorkspaceEditorReleaseParams,
+  WorkspaceEditorReleaseResult,
+  WorkspaceEditorRecoveredTopologyListParams,
+  WorkspaceEditorRecoveredTopologyListResult,
+  WorkspaceEditorRecoveredTopologyResolveParams,
+  WorkspaceEditorRecoveredTopologyResolveResult,
+  WorkspaceEditorSyncParams,
+  WorkspaceEditorSyncResult,
+  WorkspaceEditorTopologyCompleteParams,
+  WorkspaceEditorTopologyCompleteResult,
+  WorkspaceEditorTopologyFinalizeParams,
+  WorkspaceEditorTopologyReleaseResult,
+  WorkspaceEditorTopologyReserveParams,
+  WorkspaceEditorTopologyReserveResult,
 } from "../app-server/protocol/index.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
-import { reviewDecisionIsAllow, type ReviewDecision } from "../permissions/review-decision.js";
+import {
+  reviewDecisionIsAllow,
+  type ReviewDecision,
+} from "../permissions/review-decision.js";
 import { notifyTasksUpdated } from "../utils/tasks.js";
 import {
   ASK_USER_QUESTION_TOOL_NAME,
@@ -55,7 +93,10 @@ import type {
   RequestUserInputResponse,
 } from "../elicitation/types.js";
 import type { PhaseEvent } from "../phases/events.js";
-import type { IdleInputAdmission } from "../session/session.js";
+import type {
+  IdleInputAdmission,
+  IdleInputOwnership,
+} from "../session/session.js";
 import { isMcpUrlCompletionResponse } from "../elicitation/url-completion.js";
 import { takePlanApprovalChoice } from "./plan-approval-choice.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
@@ -72,6 +113,7 @@ import type { AgenCCompactProgressControls } from "./session-types.js";
 import type { McpServerMutationResult } from "../session/session.js";
 import { isRecord } from "../utils/record.js";
 import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
+import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
@@ -99,9 +141,7 @@ const TERMINAL_DAEMON_TRANSCRIPT_EVENTS = new Set([
 ]);
 
 export type AgenCDaemonConnectionStatus =
-  | "connected"
-  | "disconnected"
-  | "reconnecting";
+  "connected" | "disconnected" | "reconnecting";
 
 export interface AgenCDaemonConnectionState extends JsonObject {
   readonly status: AgenCDaemonConnectionStatus;
@@ -157,7 +197,9 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   setPendingProviderSwitch?(
     pending: { provider: string; model: string; profile?: string } | null,
   ): void;
-  setDaemonPermissionMode?(mode: string): Promise<SessionSetPermissionModeResult>;
+  setDaemonPermissionMode?(
+    mode: string,
+  ): Promise<SessionSetPermissionModeResult>;
   getDaemonHooksStatus?(): Promise<SessionHooksStatusResult>;
   setDaemonHooksDisabled?(
     disabled: boolean,
@@ -166,18 +208,76 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     profile?: string;
     reload?: boolean;
   }): Promise<SessionApplyConfigResult>;
+  acquireWorkspaceEditor?(
+    params: WorkspaceEditorAcquireParams,
+  ): Promise<WorkspaceEditorLeaseResult>;
+  syncWorkspaceEditor?(
+    params: WorkspaceEditorSyncParams,
+  ): Promise<WorkspaceEditorSyncResult>;
+  heartbeatWorkspaceEditor?(
+    params: WorkspaceEditorHeartbeatParams,
+  ): Promise<WorkspaceEditorLeaseResult>;
+  releaseWorkspaceEditor?(
+    params: WorkspaceEditorReleaseParams,
+  ): Promise<WorkspaceEditorReleaseResult>;
+  reserveWorkspaceEditorTopology?(
+    params: WorkspaceEditorTopologyReserveParams,
+  ): Promise<WorkspaceEditorTopologyReserveResult>;
+  completeWorkspaceEditorTopology?(
+    params: WorkspaceEditorTopologyCompleteParams,
+  ): Promise<WorkspaceEditorTopologyCompleteResult>;
+  releaseWorkspaceEditorTopology?(
+    params: WorkspaceEditorTopologyFinalizeParams,
+  ): Promise<WorkspaceEditorTopologyReleaseResult>;
+  listRecoveredWorkspaceEditorTopologies?(
+    params: WorkspaceEditorRecoveredTopologyListParams,
+  ): Promise<WorkspaceEditorRecoveredTopologyListResult>;
+  resolveRecoveredWorkspaceEditorTopology?(
+    params: WorkspaceEditorRecoveredTopologyResolveParams,
+  ): Promise<WorkspaceEditorRecoveredTopologyResolveResult>;
+  getWorkspaceEditorProposal?(
+    params: WorkspaceEditorProposalParams,
+  ): Promise<WorkspaceEditorProposalResult>;
+  getWorkspaceEditorProposalStatus?(
+    params: WorkspaceEditorProposalStatusParams,
+  ): Promise<WorkspaceEditorProposalStatusResult>;
+  applyWorkspaceEditorProposal?(
+    params: WorkspaceEditorProposalApplyParams,
+  ): Promise<WorkspaceEditorProposalApplyResult>;
+  discardWorkspaceEditorProposal?(
+    params: WorkspaceEditorProposalParams,
+  ): Promise<WorkspaceEditorProposalDiscardResult>;
+  listWorkspaceEditorChanges?(
+    params: WorkspaceEditorChangesListParams,
+  ): Promise<WorkspaceEditorChangesListResult>;
+  predictEditorCode?(
+    params: WorkspaceEditorPredictSessionParams,
+  ): Promise<WorkspaceEditorPredictionResult>;
+  cancelEditorPrediction?(
+    params: WorkspaceEditorCancelPredictionSessionParams,
+  ): Promise<WorkspaceEditorCancelPredictionResult>;
+  reportEditorPredictionFeedback?(
+    params: WorkspaceEditorPredictionFeedbackSessionParams,
+  ): Promise<WorkspaceEditorPredictionFeedbackResult>;
   readonly realtime?: AgenCRealtimeTuiControls;
   readonly activeTurn?: {
     unsafePeek(): { readonly turnId: string } | null;
   } | null;
   submit?(
     message: string,
-    opts?: { readonly displayUserMessage?: string | null },
+    opts?: {
+      readonly displayUserMessage?: string | null;
+      readonly editorInteraction?: SessionEditorInteraction;
+    },
   ): Promise<void>;
-  enqueueIdleInput?(input: unknown): number;
-  enqueueIdleInputBatch?(inputs: readonly unknown[]): number;
+  enqueueIdleInput?(input: unknown, ownership?: IdleInputOwnership): number;
+  enqueueIdleInputBatch?(
+    inputs: readonly unknown[],
+    ownership?: IdleInputOwnership,
+  ): number;
   enqueueIdleInputBatchOwned?(
     inputs: readonly unknown[],
+    ownership?: IdleInputOwnership,
   ): IdleInputAdmission;
   rollbackIdleInputAdmission?(token: string): boolean;
   commitIdleInputAdmission?(token: string): boolean;
@@ -204,12 +304,19 @@ export type AgenCDaemonBackedTuiSession<
   subscribeToEvents(cb: (event: unknown) => void): () => void;
   submit(
     message: string,
-    opts?: { readonly displayUserMessage?: string | null },
+    opts?: {
+      readonly displayUserMessage?: string | null;
+      readonly editorInteraction?: SessionEditorInteraction;
+    },
   ): Promise<void>;
-  enqueueIdleInput(input: unknown): number;
-  enqueueIdleInputBatch(inputs: readonly unknown[]): number;
+  enqueueIdleInput(input: unknown, ownership?: IdleInputOwnership): number;
+  enqueueIdleInputBatch(
+    inputs: readonly unknown[],
+    ownership?: IdleInputOwnership,
+  ): number;
   enqueueIdleInputBatchOwned(
     inputs: readonly unknown[],
+    ownership?: IdleInputOwnership,
   ): IdleInputAdmission;
   rollbackIdleInputAdmission(token: string): boolean;
   commitIdleInputAdmission(token: string): boolean;
@@ -306,9 +413,7 @@ export interface AgenCDaemonTuiClient {
     params?: JsonObject,
     options?: { readonly signal?: AbortSignal },
   ): Promise<AgenCDaemonResultByMethod[Method]>;
-  subscribeToNotifications?(
-    cb: (event: JsonObject) => void,
-  ): () => void;
+  subscribeToNotifications?(cb: (event: JsonObject) => void): () => void;
   subscribeToSessionEvents(
     sessionId: string,
     cb: (event: JsonObject) => void,
@@ -317,6 +422,80 @@ export interface AgenCDaemonTuiClient {
   subscribeToConnectionState?(
     cb: (state: AgenCDaemonConnectionState) => void,
   ): () => void;
+}
+
+interface AgenCDaemonEditorPredictionClient {
+  request(
+    method: "workspace.editor.predict",
+    params: WorkspaceEditorPredictParams,
+  ): Promise<WorkspaceEditorPredictionResult>;
+  request(
+    method: "workspace.editor.cancelPrediction",
+    params: WorkspaceEditorCancelPredictionParams,
+  ): Promise<WorkspaceEditorCancelPredictionResult>;
+  request(
+    method: "workspace.editor.predictionFeedback",
+    params: WorkspaceEditorPredictionFeedbackParams,
+  ): Promise<WorkspaceEditorPredictionFeedbackResult>;
+}
+
+interface AgenCDaemonEditorCoherenceClient {
+  request(
+    method: "workspace.editor.acquire",
+    params: WorkspaceEditorAcquireParams,
+  ): Promise<WorkspaceEditorLeaseResult>;
+  request(
+    method: "workspace.editor.sync",
+    params: WorkspaceEditorSyncParams,
+  ): Promise<WorkspaceEditorSyncResult>;
+  request(
+    method: "workspace.editor.heartbeat",
+    params: WorkspaceEditorHeartbeatParams,
+  ): Promise<WorkspaceEditorLeaseResult>;
+  request(
+    method: "workspace.editor.release",
+    params: WorkspaceEditorReleaseParams,
+  ): Promise<WorkspaceEditorReleaseResult>;
+  request(
+    method: "workspace.editor.topology.reserve",
+    params: WorkspaceEditorTopologyReserveParams,
+  ): Promise<WorkspaceEditorTopologyReserveResult>;
+  request(
+    method: "workspace.editor.topology.complete",
+    params: WorkspaceEditorTopologyCompleteParams,
+  ): Promise<WorkspaceEditorTopologyCompleteResult>;
+  request(
+    method: "workspace.editor.topology.release",
+    params: WorkspaceEditorTopologyFinalizeParams,
+  ): Promise<WorkspaceEditorTopologyReleaseResult>;
+  request(
+    method: "workspace.editor.topology.recovered.list",
+    params: WorkspaceEditorRecoveredTopologyListParams,
+  ): Promise<WorkspaceEditorRecoveredTopologyListResult>;
+  request(
+    method: "workspace.editor.topology.recovered.resolve",
+    params: WorkspaceEditorRecoveredTopologyResolveParams,
+  ): Promise<WorkspaceEditorRecoveredTopologyResolveResult>;
+  request(
+    method: "workspace.editor.proposal.get",
+    params: WorkspaceEditorProposalParams,
+  ): Promise<WorkspaceEditorProposalResult>;
+  request(
+    method: "workspace.editor.proposal.status",
+    params: WorkspaceEditorProposalStatusParams,
+  ): Promise<WorkspaceEditorProposalStatusResult>;
+  request(
+    method: "workspace.editor.proposal.apply",
+    params: WorkspaceEditorProposalApplyParams,
+  ): Promise<WorkspaceEditorProposalApplyResult>;
+  request(
+    method: "workspace.editor.proposal.discard",
+    params: WorkspaceEditorProposalParams,
+  ): Promise<WorkspaceEditorProposalDiscardResult>;
+  request(
+    method: "workspace.editor.changes.list",
+    params: WorkspaceEditorChangesListParams,
+  ): Promise<WorkspaceEditorChangesListResult>;
 }
 
 export interface AgenCDaemonTuiSessionOptions<
@@ -378,6 +557,13 @@ export function createDaemonTuiSession<
   options: AgenCDaemonTuiSessionOptions<Session>,
 ): AgenCDaemonBackedTuiSession<Session> {
   const { baseSession, client, sessionId, clientId } = options;
+  // These authenticated TUI-only methods are intentionally absent from the
+  // public daemon method union. The transport accepts known internal methods;
+  // keep the widening narrow so ordinary TUI calls remain contract-checked.
+  const editorPredictionClient =
+    client as unknown as AgenCDaemonEditorPredictionClient;
+  const editorCoherenceClient =
+    client as unknown as AgenCDaemonEditorCoherenceClient;
   const conversationId = options.conversationId ?? sessionId;
   // Share the task board with the daemon turn: TodoWrite persists the board
   // under the conversation id (getTaskListId prefers the ambient session's
@@ -396,7 +582,12 @@ export function createDaemonTuiSession<
     notifyTasksUpdated();
   }
   const realtimeThreadId = options.realtimeThreadId ?? conversationId;
-  const queuedInputs: MessageContentBlock[] = [];
+  type DaemonQueuedInput = {
+    readonly blocks: readonly MessageContentBlock[];
+    readonly bytes: number;
+    readonly ownership?: IdleInputOwnership;
+  };
+  const queuedInputs: DaemonQueuedInput[] = [];
   const eventSubscribers = new Set<(event: unknown) => void>();
   // Backlog of received daemon events, replayed to subscribers that register
   // LATE. The daemon replays the session's early events exactly once when the
@@ -421,7 +612,7 @@ export function createDaemonTuiSession<
   const idleInputAdmissions = new Map<
     string,
     {
-      readonly blocks: readonly MessageContentBlock[];
+      readonly entries: readonly DaemonQueuedInput[];
       readonly inputCount: number;
       readonly bytes: number;
     }
@@ -431,9 +622,11 @@ export function createDaemonTuiSession<
     if (terminalDaemonTurnObserved) return;
     const payload = (event as { readonly payload?: unknown }).payload;
     const turnId =
-      isJsonObject(payload) && typeof payload.turnId === "string" && payload.turnId.length > 0
+      isJsonObject(payload) &&
+      typeof payload.turnId === "string" &&
+      payload.turnId.length > 0
         ? payload.turnId
-        : activeTurnSnapshot?.turnId ?? "daemon-turn";
+        : (activeTurnSnapshot?.turnId ?? "daemon-turn");
     activeTurnSnapshot = { turnId };
   };
   const noteDaemonActivity = (event: unknown): void => {
@@ -446,7 +639,10 @@ export function createDaemonTuiSession<
     // "background_agent_status" status update. Treat it as turn-ending so the
     // active turn is cleared and conversation actions (/rewind, /compact) are
     // not left permanently blocked after a failed turn.
-    if (typeof eventType === "string" && TERMINAL_DAEMON_TRANSCRIPT_EVENTS.has(eventType)) {
+    if (
+      typeof eventType === "string" &&
+      TERMINAL_DAEMON_TRANSCRIPT_EVENTS.has(eventType)
+    ) {
       activeTurnSnapshot = null;
       terminalDaemonTurnObserved = true;
       return;
@@ -456,7 +652,10 @@ export function createDaemonTuiSession<
       markDaemonActivityActive(event);
       return;
     }
-    if (typeof eventType === "string" && ACTIVE_DAEMON_TRANSCRIPT_EVENTS.has(eventType)) {
+    if (
+      typeof eventType === "string" &&
+      ACTIVE_DAEMON_TRANSCRIPT_EVENTS.has(eventType)
+    ) {
       markDaemonActivityActive(event);
       return;
     }
@@ -485,7 +684,10 @@ export function createDaemonTuiSession<
     }
     if (terminalDaemonTurnObserved) return;
     activeTurnSnapshot = {
-      turnId: typeof turnId === "string" && turnId.length > 0 ? turnId : "daemon-turn",
+      turnId:
+        typeof turnId === "string" && turnId.length > 0
+          ? turnId
+          : "daemon-turn",
     };
   };
   const broadcastDaemonEvent = (event: unknown): void => {
@@ -538,13 +740,29 @@ export function createDaemonTuiSession<
   const admitQueuedInputs = (
     inputs: readonly unknown[],
     owned: boolean,
+    ownership?: IdleInputOwnership,
   ): IdleInputAdmission => {
-    const batches = inputs
+    const entries = inputs
       .map((input) => queuedInputBlocks(input))
-      .filter((blocks) => blocks.length > 0);
-    const blocks = batches.flat();
-    const inputCount = batches.length;
-    const bytes = queuedInputBlocksBytes(blocks);
+      .filter((blocks) => blocks.length > 0)
+      .map((blocks): DaemonQueuedInput => ({
+        blocks,
+        bytes: queuedInputBlocksBytes(blocks),
+        ...(ownership !== undefined
+          ? {
+              ownership: {
+                workspaceView: ownership.workspaceView,
+                ...(ownership.editorInteractionId !== undefined
+                  ? {
+                      editorInteractionId: ownership.editorInteractionId,
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+      }));
+    const inputCount = entries.length;
+    const bytes = entries.reduce((sum, entry) => sum + entry.bytes, 0);
     if (
       queuedInputCount + inFlightInputCount + inputCount >
         MAX_DAEMON_QUEUED_INPUTS ||
@@ -555,19 +773,17 @@ export function createDaemonTuiSession<
         "Session mailbox is full; queued input was not accepted.",
       );
     }
-    const firstSequence =
-      inputCount === 0 ? 0 : nextQueuedInputSequence + 1;
+    const firstSequence = inputCount === 0 ? 0 : nextQueuedInputSequence + 1;
     nextQueuedInputSequence += inputCount;
-    const lastSequence =
-      inputCount === 0 ? 0 : nextQueuedInputSequence;
-    queuedInputs.push(...blocks);
+    const lastSequence = inputCount === 0 ? 0 : nextQueuedInputSequence;
+    queuedInputs.push(...entries);
     queuedInputCount += inputCount;
     queuedInputBytes += bytes;
     const token =
       inputCount === 0 ? "daemon-idle:empty" : `daemon-idle:${randomUUID()}`;
     if (owned && inputCount > 0) {
       idleInputAdmissions.set(token, {
-        blocks,
+        entries,
         inputCount,
         bytes,
       });
@@ -584,10 +800,10 @@ export function createDaemonTuiSession<
     const admission = idleInputAdmissions.get(token);
     if (admission === undefined) return false;
     const claimedIndexes = new Set<number>();
-    const indexes = admission.blocks.map((block) => {
+    const indexes = admission.entries.map((entry) => {
       const index = queuedInputs.findIndex(
         (candidate, candidateIndex) =>
-          candidate === block && !claimedIndexes.has(candidateIndex),
+          candidate === entry && !claimedIndexes.has(candidateIndex),
       );
       if (index >= 0) claimedIndexes.add(index);
       return index;
@@ -599,10 +815,7 @@ export function createDaemonTuiSession<
     for (const index of [...indexes].sort((left, right) => right - left)) {
       queuedInputs.splice(index, 1);
     }
-    queuedInputCount = Math.max(
-      0,
-      queuedInputCount - admission.inputCount,
-    );
+    queuedInputCount = Math.max(0, queuedInputCount - admission.inputCount);
     queuedInputBytes = Math.max(0, queuedInputBytes - admission.bytes);
     idleInputAdmissions.delete(token);
     return true;
@@ -617,11 +830,31 @@ export function createDaemonTuiSession<
         activeTurnSnapshot ?? baseSession.activeTurn?.unsafePeek?.() ?? null,
     },
     submit: async (message, opts) => {
-      const queued = queuedInputs.splice(0);
-      const submittedInputCount = queuedInputCount;
-      const submittedInputBytes = queuedInputBytes;
-      queuedInputCount = 0;
-      queuedInputBytes = 0;
+      const queuedInputsBeforeSubmission = [...queuedInputs];
+      const queuedEntries: DaemonQueuedInput[] = [];
+      const retained: DaemonQueuedInput[] = [];
+      for (const entry of queuedInputs) {
+        const selected =
+          opts?.editorInteraction !== undefined
+            ? entry.ownership?.workspaceView === "editor" &&
+              entry.ownership.editorInteractionId ===
+                opts.editorInteraction.interactionId
+            : entry.ownership?.workspaceView !== "editor";
+        if (selected) {
+          queuedEntries.push(entry);
+        } else {
+          retained.push(entry);
+        }
+      }
+      queuedInputs.splice(0, queuedInputs.length, ...retained);
+      const queued = queuedEntries.flatMap((entry) => entry.blocks);
+      const submittedInputCount = queuedEntries.length;
+      const submittedInputBytes = queuedEntries.reduce(
+        (sum, entry) => sum + entry.bytes,
+        0,
+      );
+      queuedInputCount = Math.max(0, queuedInputCount - submittedInputCount);
+      queuedInputBytes = Math.max(0, queuedInputBytes - submittedInputBytes);
       if (queued.length === 0 && message.length === 0) return;
       inFlightInputCount += submittedInputCount;
       inFlightInputBytes += submittedInputBytes;
@@ -638,17 +871,51 @@ export function createDaemonTuiSession<
                 : []),
             ];
       try {
+        const metadata: JsonObject = {
+          ...(opts?.displayUserMessage !== undefined
+            ? { displayUserMessage: opts.displayUserMessage }
+            : {}),
+          ...(opts?.editorInteraction !== undefined
+            ? {
+                editorInteraction: {
+                  interactionId: opts.editorInteraction.interactionId,
+                  kind: opts.editorInteraction.kind,
+                  policy: opts.editorInteraction.policy,
+                  editorInstanceId: opts.editorInteraction.editorInstanceId,
+                  bufferHandle: opts.editorInteraction.bufferHandle,
+                  changedtick: opts.editorInteraction.changedtick,
+                  contentSha256: opts.editorInteraction.contentSha256,
+                  ...(opts.editorInteraction.path !== undefined
+                    ? { path: opts.editorInteraction.path }
+                    : {}),
+                  range: {
+                    start: {
+                      line: opts.editorInteraction.range.start.line,
+                      column: opts.editorInteraction.range.start.column,
+                    },
+                    end: {
+                      line: opts.editorInteraction.range.end.line,
+                      column: opts.editorInteraction.range.end.column,
+                    },
+                  },
+                  ...(opts.editorInteraction.selectionMode !== undefined
+                    ? {
+                        selectionMode: opts.editorInteraction.selectionMode,
+                      }
+                    : {}),
+                },
+              }
+            : {}),
+        };
         await client.request("message.stream", {
           sessionId,
           content,
-          ...(opts?.displayUserMessage !== undefined
-            ? { metadata: { displayUserMessage: opts.displayUserMessage } }
-            : {}),
+          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
           streamId,
         } satisfies MessageStreamParams);
-        const submitted = new Set(queued);
+        const submitted = new Set(queuedEntries);
         for (const [token, admission] of idleInputAdmissions) {
-          if (admission.blocks.every((block) => submitted.has(block))) {
+          if (admission.entries.every((entry) => submitted.has(entry))) {
             idleInputAdmissions.delete(token);
           }
         }
@@ -660,8 +927,17 @@ export function createDaemonTuiSession<
         // if we don't roll them back the user's content is lost permanently
         // with no transcript entry. Re-prepend the drained blocks so the next
         // submit re-sends them, preserving at-least-once delivery.
-        if (queued.length > 0) {
-          queuedInputs.unshift(...queued);
+        if (queuedEntries.length > 0) {
+          const originalEntries = new Set(queuedInputsBeforeSubmission);
+          const admittedAfterSubmission = queuedInputs.filter(
+            (entry) => !originalEntries.has(entry),
+          );
+          queuedInputs.splice(
+            0,
+            queuedInputs.length,
+            ...queuedInputsBeforeSubmission,
+            ...admittedAfterSubmission,
+          );
           queuedInputCount += submittedInputCount;
           queuedInputBytes += submittedInputBytes;
         }
@@ -678,24 +954,24 @@ export function createDaemonTuiSession<
         );
       }
     },
-    enqueueIdleInput: (input) => {
+    enqueueIdleInput: (input, ownership) => {
       try {
-        void admitQueuedInputs([input], false);
+        void admitQueuedInputs([input], false, ownership);
         return queuedInputCount;
       } catch {
         return -1;
       }
     },
-    enqueueIdleInputBatch: (inputs) => {
+    enqueueIdleInputBatch: (inputs, ownership) => {
       try {
-        void admitQueuedInputs(inputs, false);
+        void admitQueuedInputs(inputs, false, ownership);
         return queuedInputCount;
       } catch {
         return -1;
       }
     },
-    enqueueIdleInputBatchOwned: (inputs) =>
-      admitQueuedInputs(inputs, true),
+    enqueueIdleInputBatchOwned: (inputs, ownership) =>
+      admitQueuedInputs(inputs, true, ownership),
     rollbackIdleInputAdmission: rollbackQueuedInputAdmission,
     commitIdleInputAdmission: (token) => {
       if (token === "daemon-idle:empty") return true;
@@ -742,10 +1018,14 @@ export function createDaemonTuiSession<
       // UI keeps showing "Working…" forever. Give up after 5s and tell the
       // user the interrupt could not be delivered.
       try {
-        await client.request("session.cancelTurn", {
-          sessionId,
-          ...(reason !== undefined ? { reason } : {}),
-        }, { signal: AbortSignal.timeout(5_000) });
+        await client.request(
+          "session.cancelTurn",
+          {
+            sessionId,
+            ...(reason !== undefined ? { reason } : {}),
+          },
+          { signal: AbortSignal.timeout(5_000) },
+        );
       } catch (error) {
         const timedOut =
           error instanceof Error &&
@@ -765,14 +1045,20 @@ export function createDaemonTuiSession<
       }
     },
     partialCompactFromMessage: async (params) =>
-      client.request("session.partialCompactFromMessage", {
-        sessionId,
-        messageOrdinal: params.messageOrdinal,
-        direction: params.direction,
-        ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
-      } satisfies SessionPartialCompactFromMessageParams, {
-        signal: params.signal,
-      }),
+      client.request(
+        "session.partialCompactFromMessage",
+        {
+          sessionId,
+          messageOrdinal: params.messageOrdinal,
+          direction: params.direction,
+          ...(params.feedback !== undefined
+            ? { feedback: params.feedback }
+            : {}),
+        } satisfies SessionPartialCompactFromMessageParams,
+        {
+          signal: params.signal,
+        },
+      ),
     rewindConversationToMessage: async (params) =>
       client.request("session.rewindConversationToMessage", {
         sessionId,
@@ -855,12 +1141,80 @@ export function createDaemonTuiSession<
         sessionId,
         disabled,
       } satisfies SessionHooksSetDisabledParams),
-    applyDaemonConfig: async (p) =>
-      client.request("session.applyConfig", {
+    applyDaemonConfig: async (p) => {
+      if (p.reload === true) {
+        // session.applyConfig refreshes only this agent's live config store.
+        // Predictions are daemon-owned, so reload the daemon-global snapshot
+        // first to make first-run consent effective without a restart.
+        await client.request("daemon.reload", {});
+      }
+      return client.request("session.applyConfig", {
         sessionId,
         ...(p.profile !== undefined ? { profile: p.profile } : {}),
         ...(p.reload !== undefined ? { reload: p.reload } : {}),
-      } satisfies SessionApplyConfigParams),
+      } satisfies SessionApplyConfigParams);
+    },
+    acquireWorkspaceEditor: async (params) =>
+      editorCoherenceClient.request("workspace.editor.acquire", params),
+    syncWorkspaceEditor: async (params) =>
+      editorCoherenceClient.request("workspace.editor.sync", params),
+    heartbeatWorkspaceEditor: async (params) =>
+      editorCoherenceClient.request("workspace.editor.heartbeat", params),
+    releaseWorkspaceEditor: async (params) =>
+      editorCoherenceClient.request("workspace.editor.release", params),
+    reserveWorkspaceEditorTopology: async (params) =>
+      editorCoherenceClient.request(
+        "workspace.editor.topology.reserve",
+        params,
+      ),
+    completeWorkspaceEditorTopology: async (params) =>
+      editorCoherenceClient.request(
+        "workspace.editor.topology.complete",
+        params,
+      ),
+    releaseWorkspaceEditorTopology: async (params) =>
+      editorCoherenceClient.request(
+        "workspace.editor.topology.release",
+        params,
+      ),
+    listRecoveredWorkspaceEditorTopologies: async (params) =>
+      editorCoherenceClient.request(
+        "workspace.editor.topology.recovered.list",
+        params,
+      ),
+    resolveRecoveredWorkspaceEditorTopology: async (params) =>
+      editorCoherenceClient.request(
+        "workspace.editor.topology.recovered.resolve",
+        params,
+      ),
+    getWorkspaceEditorProposal: async (params) =>
+      editorCoherenceClient.request("workspace.editor.proposal.get", params),
+    getWorkspaceEditorProposalStatus: async (params) =>
+      editorCoherenceClient.request("workspace.editor.proposal.status", params),
+    applyWorkspaceEditorProposal: async (params) =>
+      editorCoherenceClient.request("workspace.editor.proposal.apply", params),
+    discardWorkspaceEditorProposal: async (params) =>
+      editorCoherenceClient.request(
+        "workspace.editor.proposal.discard",
+        params,
+      ),
+    listWorkspaceEditorChanges: async (params) =>
+      editorCoherenceClient.request("workspace.editor.changes.list", params),
+    predictEditorCode: async (params) =>
+      editorPredictionClient.request("workspace.editor.predict", {
+        ...params,
+        sessionId,
+      } satisfies WorkspaceEditorPredictParams),
+    cancelEditorPrediction: async (params) =>
+      editorPredictionClient.request("workspace.editor.cancelPrediction", {
+        ...params,
+        sessionId,
+      } satisfies WorkspaceEditorCancelPredictionParams),
+    reportEditorPredictionFeedback: async (params) =>
+      editorPredictionClient.request("workspace.editor.predictionFeedback", {
+        ...params,
+        sessionId,
+      } satisfies WorkspaceEditorPredictionFeedbackParams),
     subscribeToEvents: (cb) => {
       // Late registrants get the backlog first (see receivedEvents above) —
       // without this, a subscriber mounting after the daemon's one-shot RPC
@@ -882,10 +1236,10 @@ export function createDaemonTuiSession<
   } as AgenCDaemonBackedTuiSession<Session>;
 }
 
-type McpManagerLike = NonNullable<AgenCTuiBridgeSession["services"]["mcpManager"]> & {
-  addServer?(
-    config: SessionMcpServerConfig,
-  ): Promise<McpServerMutationResult>;
+type McpManagerLike = NonNullable<
+  AgenCTuiBridgeSession["services"]["mcpManager"]
+> & {
+  addServer?(config: SessionMcpServerConfig): Promise<McpServerMutationResult>;
   reconnectServer?(name: string): Promise<McpServerMutationResult>;
   enableServer?(name: string): Promise<McpServerMutationResult>;
   disableServer?(name: string): Promise<McpServerMutationResult>;
@@ -932,9 +1286,7 @@ function createDaemonMirroredMcpManager(
         ...(remote.error !== undefined ? { error: remote.error } : {}),
       };
     },
-    reconnectServer: async (
-      name: string,
-    ): Promise<McpServerMutationResult> => {
+    reconnectServer: async (name: string): Promise<McpServerMutationResult> => {
       const remote = await client.request("session.mcp.reconnectServer", {
         sessionId,
         serverName: name,
@@ -951,9 +1303,7 @@ function createDaemonMirroredMcpManager(
         ...(remote.error !== undefined ? { error: remote.error } : {}),
       };
     },
-    enableServer: async (
-      name: string,
-    ): Promise<McpServerMutationResult> => {
+    enableServer: async (name: string): Promise<McpServerMutationResult> => {
       const remote = await client.request("session.mcp.enableServer", {
         sessionId,
         serverName: name,
@@ -968,9 +1318,7 @@ function createDaemonMirroredMcpManager(
         ...(remote.error !== undefined ? { error: remote.error } : {}),
       };
     },
-    disableServer: async (
-      name: string,
-    ): Promise<McpServerMutationResult> => {
+    disableServer: async (name: string): Promise<McpServerMutationResult> => {
       const remote = await client.request("session.mcp.disableServer", {
         sessionId,
         serverName: name,
@@ -1009,22 +1357,21 @@ function messageContentBlocks(
 ): MessageContentBlock[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
   if (!Array.isArray(content)) return [];
-  return content
-    .flatMap((part): MessageContentBlock[] => {
-      if (!isJsonObject(part) || typeof part.type !== "string") return [];
-      if (part.type === "text") {
-        return typeof part.text === "string"
-          ? [{ type: "text", text: part.text }]
-          : [];
+  return content.flatMap((part): MessageContentBlock[] => {
+    if (!isJsonObject(part) || typeof part.type !== "string") return [];
+    if (part.type === "text") {
+      return typeof part.text === "string"
+        ? [{ type: "text", text: part.text }]
+        : [];
+    }
+    if (part.type === "image_url") {
+      const image = part.image_url;
+      if (isJsonObject(image) && typeof image.url === "string") {
+        return [{ type: "image_url", image_url: { url: image.url } }];
       }
-      if (part.type === "image_url") {
-        const image = part.image_url;
-        if (isJsonObject(image) && typeof image.url === "string") {
-          return [{ type: "image_url", image_url: { url: image.url } }];
-        }
-      }
-      return [];
-    })
+    }
+    return [];
+  });
 }
 
 function subscribeToDaemonEvents(
@@ -1040,8 +1387,20 @@ function subscribeToDaemonEvents(
     (event) => {
       const transcriptEvent = toTranscriptEvent(event);
       cb(transcriptEvent);
-      void maybeBridgeDaemonApproval(client, sessionId, session, transcriptEvent, cb);
-      void maybeBridgeDaemonElicitation(client, sessionId, session, transcriptEvent, cb);
+      void maybeBridgeDaemonApproval(
+        client,
+        sessionId,
+        session,
+        transcriptEvent,
+        cb,
+      );
+      void maybeBridgeDaemonElicitation(
+        client,
+        sessionId,
+        session,
+        transcriptEvent,
+        cb,
+      );
     },
   );
   const unsubscribeRealtime = client.subscribeToNotifications?.((event) => {
@@ -1140,7 +1499,10 @@ async function maybeBridgeDaemonApproval(
         scope: decision.kind === "approved_for_session" ? "session" : "once",
         ...(choice ? { exitPlan: choice } : {}),
         ...(askUserQuestionInput !== null
-          ? { askUserQuestionInput: askUserQuestionInput as unknown as JsonObject }
+          ? {
+              askUserQuestionInput:
+                askUserQuestionInput as unknown as JsonObject,
+            }
           : {}),
       });
       return;
@@ -1181,12 +1543,15 @@ async function maybeBridgeDaemonElicitation(
     let response: RequestUserInputResponse | null;
     try {
       response = await resolver.request({
-        requestId: typeof payload.requestId === "string"
-          ? payload.requestId
-          : payload.callId,
+        requestId:
+          typeof payload.requestId === "string"
+            ? payload.requestId
+            : payload.callId,
         callId: payload.callId,
         turnId: payload.turnId,
-        questions: jsonObjectArray(payload.questions) as unknown as RequestUserInputEvent["questions"],
+        questions: jsonObjectArray(
+          payload.questions,
+        ) as unknown as RequestUserInputEvent["questions"],
         ...(isJsonObject(payload.clientAction)
           ? {
               clientAction: payload.clientAction as unknown as NonNullable<
@@ -1199,7 +1564,9 @@ async function maybeBridgeDaemonElicitation(
       response = null;
     }
     const requestId =
-      typeof payload.requestId === "string" ? payload.requestId : payload.callId;
+      typeof payload.requestId === "string"
+        ? payload.requestId
+        : payload.callId;
     try {
       await client.request("elicitation.respond", {
         sessionId,
@@ -1232,7 +1599,8 @@ async function maybeBridgeDaemonElicitation(
         serverName: payload.serverName,
         requestId: payload.requestId,
         turnId: payload.turnId,
-        request: payload.request as unknown as McpElicitationRequestEvent["request"],
+        request:
+          payload.request as unknown as McpElicitationRequestEvent["request"],
       })
       .catch((): McpElicitationResponse => ({ action: "cancel" }));
     if (isMcpUrlCompletionResponse(response)) return;
@@ -1265,7 +1633,9 @@ function buildDaemonApprovalCtx(
   return {
     invocation: {
       session,
-      turn: { subId: typeof payload.turnId === "string" ? payload.turnId : callId },
+      turn: {
+        subId: typeof payload.turnId === "string" ? payload.turnId : callId,
+      },
       tracker: {
         appendFileDiff() {},
         snapshot: () => [],
@@ -1282,7 +1652,9 @@ function buildDaemonApprovalCtx(
     callId,
     toolName,
     turnId: typeof payload.turnId === "string" ? payload.turnId : callId,
-    ...(typeof payload.reason === "string" ? { retryReason: payload.reason } : {}),
+    ...(typeof payload.reason === "string"
+      ? { retryReason: payload.reason }
+      : {}),
     ...(typeof payload.planContent === "string"
       ? { planContent: payload.planContent }
       : {}),
@@ -1325,10 +1697,7 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
     typeof params.toolName === "string"
   ) {
     return {
-      id: daemonTranscriptEventId(
-        params,
-        `tool-request:${params.requestId}`,
-      ),
+      id: daemonTranscriptEventId(params, `tool-request:${params.requestId}`),
       type: "tool_call_started",
       payload: {
         callId: params.requestId,
@@ -1337,7 +1706,10 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
       },
     };
   }
-  if (method === "event.permission_request" && typeof params.requestId === "string") {
+  if (
+    method === "event.permission_request" &&
+    typeof params.requestId === "string"
+  ) {
     return {
       id: daemonTranscriptEventId(
         params,
@@ -1346,10 +1718,14 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
       type: "request_permissions",
       payload: {
         callId: params.requestId,
-        ...(typeof params.toolName === "string" ? { toolName: params.toolName } : {}),
+        ...(typeof params.toolName === "string"
+          ? { toolName: params.toolName }
+          : {}),
         ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
         permissions: Array.isArray(params.permissions)
-          ? params.permissions.filter((item): item is string => typeof item === "string")
+          ? params.permissions.filter(
+              (item): item is string => typeof item === "string",
+            )
           : [],
         ...(params.input !== undefined ? { input: params.input } : {}),
         ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
@@ -1416,9 +1792,7 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
       ...params.event,
       id: daemonTranscriptEventId(
         params,
-        typeof params.event.id === "string"
-          ? params.event.id
-          : "session-event",
+        typeof params.event.id === "string" ? params.event.id : "session-event",
       ),
     };
   }
@@ -1449,7 +1823,9 @@ function toRealtimeTranscriptEvent(
             typeof params.realtimeSessionId === "string"
               ? params.realtimeSessionId
               : null,
-          ...(typeof params.version === "string" ? { version: params.version } : {}),
+          ...(typeof params.version === "string"
+            ? { version: params.version }
+            : {}),
         },
       };
     case "thread/realtime/itemAdded":
@@ -1525,21 +1901,28 @@ function toRealtimeTranscriptEvent(
   }
 }
 
-function nextRealtimeEventId(method: string, threadId: JsonValue | undefined): string {
+function nextRealtimeEventId(
+  method: string,
+  threadId: JsonValue | undefined,
+): string {
   nextRealtimeTranscriptEventSequence += 1;
   return `realtime:${method}:${String(threadId ?? "thread")}:${nextRealtimeTranscriptEventSequence}`;
 }
 
 function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
   const status = params.status;
-  const turnId = stringParam(params.turnId, stringParam(params.eventId, "status"));
+  const turnId = stringParam(
+    params.turnId,
+    stringParam(params.eventId, "status"),
+  );
   if (status === "error") {
     return {
       id: daemonTranscriptEventId(params, turnId),
       type: "error",
       payload: {
         turnId,
-        message: typeof params.message === "string" ? params.message : "agent error",
+        message:
+          typeof params.message === "string" ? params.message : "agent error",
       },
     };
   }
@@ -1562,10 +1945,7 @@ function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
   };
 }
 
-function daemonTranscriptEventId(
-  params: JsonObject,
-  fallback: string,
-): string {
+function daemonTranscriptEventId(params: JsonObject, fallback: string): string {
   const eventId = stringParam(params.eventId, fallback);
   const agentId = params.agentId;
   if (typeof agentId !== "string" || agentId.length === 0) return eventId;

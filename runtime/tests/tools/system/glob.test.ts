@@ -19,9 +19,13 @@
  */
 
 import {
+  access,
+  chmod,
   mkdir,
   mkdtemp,
+  rename,
   rm,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -36,21 +40,88 @@ import {
   GLOB_TOOL_NAME,
 } from "./glob.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+import { workspaceMutationCoordinators } from "../../../src/workspace/mutation-coordinator.js";
+import { attachToolRuntimeContext } from "../../../src/tools/runtimes/context.js";
 
-const createGlobTool = (
-  ...args: Parameters<typeof createUnboundGlobTool>
-) => bindExplicitDangerBoundary(createUnboundGlobTool(...args));
+const createGlobTool = (...args: Parameters<typeof createUnboundGlobTool>) =>
+  bindExplicitDangerBoundary(createUnboundGlobTool(...args));
+
+function attachTrustedEditorContext(args: Record<string, unknown>): void {
+  attachToolRuntimeContext(args, {
+    callId: "trusted-editor-glob",
+    toolName: GLOB_TOOL_NAME,
+    sandboxMode: "read_only",
+    invocation: {
+      turn: {
+        editorInteraction: {
+          interactionId: "trusted-editor-glob",
+          policy: "read_only",
+        },
+      },
+    },
+  } as never);
+}
+
+function isWindowsExchangeDenial(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return (
+    process.platform === "win32" &&
+    (code === "EPERM" || code === "EACCES" || code === "EBUSY")
+  );
+}
+
+async function exchangeDirectory(
+  current: string,
+  displaced: string,
+  outside: string,
+): Promise<"exchanged" | "kernel_denied"> {
+  try {
+    await rename(current, displaced);
+  } catch (error) {
+    if (isWindowsExchangeDenial(error)) return "kernel_denied";
+    throw error;
+  }
+  try {
+    await symlink(
+      outside,
+      current,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+  } catch (error) {
+    await rename(displaced, current).catch(() => {});
+    if (isWindowsExchangeDenial(error)) return "kernel_denied";
+    throw error;
+  }
+  return "exchanged";
+}
+
+function expectCompletedExchangeAttempt(
+  outcome: "pending" | "exchanged" | "kernel_denied",
+): void {
+  expect(outcome).not.toBe("pending");
+  if (outcome === "kernel_denied") expect(process.platform).toBe("win32");
+}
 
 describe("Glob tool", () => {
   let root = "";
+  let previousAgencHome: string | undefined;
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-glob-"));
+    previousAgencHome = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = join(root, ".agenc-test-home");
+    workspaceMutationCoordinators.clearForTests();
   });
 
   afterEach(async () => {
+    workspaceMutationCoordinators.clearForTests();
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
+    if (previousAgencHome === undefined) {
+      delete process.env.AGENC_HOME;
+    } else {
+      process.env.AGENC_HOME = previousAgencHome;
+    }
   });
 
   test("exposes the AgenC-bare tool name and required schema", () => {
@@ -91,6 +162,149 @@ describe("Glob tool", () => {
     expect(result.content).not.toContain("skip.md");
   });
 
+  test("never returns outside names after a final ancestor exchange", async () => {
+    const workspace = join(root, "workspace");
+    const displaced = join(root, "workspace-displaced");
+    const outside = join(root, "outside");
+    await mkdir(workspace);
+    await mkdir(outside);
+    await writeFile(join(workspace, "inside-only.ts"), "inside\n", "utf8");
+    await writeFile(join(outside, "outside-secret.ts"), "outside\n", "utf8");
+    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
+      workspaceRoot: workspace,
+      editorInstanceId: "glob-confinement-editor",
+    });
+    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
+    const tool = createGlobTool({
+      allowedPaths: [workspace],
+      __testAfterFinalPathCheck: async () => {
+        exchangeOutcome = await exchangeDirectory(
+          workspace,
+          displaced,
+          outside,
+        );
+      },
+    });
+
+    const result = await tool.execute({
+      pattern: "*.ts",
+      path: workspace,
+    });
+
+    expectCompletedExchangeAttempt(exchangeOutcome);
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("inside-only.ts");
+    expect(result.content).not.toContain("outside-secret.ts");
+  });
+
+  test("keeps trusted Editor listings bound after the live lease disappears", async () => {
+    const workspace = join(root, "workspace");
+    const displaced = join(root, "workspace-displaced");
+    const outside = join(root, "outside");
+    await mkdir(workspace);
+    await mkdir(outside);
+    await writeFile(join(workspace, "inside-trusted.ts"), "inside\n", "utf8");
+    await writeFile(
+      join(outside, "outside-trusted-secret.ts"),
+      "outside\n",
+      "utf8",
+    );
+    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
+      workspaceRoot: workspace,
+      editorInstanceId: "expired-glob-editor",
+    });
+    workspaceMutationCoordinators.clearForTests();
+    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
+    const tool = createGlobTool({
+      allowedPaths: [workspace],
+      __testAfterFinalPathCheck: async () => {
+        exchangeOutcome = await exchangeDirectory(
+          workspace,
+          displaced,
+          outside,
+        );
+      },
+    });
+    const args: Record<string, unknown> = {
+      pattern: "*.ts",
+      path: workspace,
+    };
+    attachTrustedEditorContext(args);
+
+    const result = await tool.execute(args);
+
+    expectCompletedExchangeAttempt(exchangeOutcome);
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("inside-trusted.ts");
+    expect(result.content).not.toContain("outside-trusted-secret.ts");
+  });
+
+  test("drops an intermediate-swap candidate restored before validation", async () => {
+    const workspace = join(root, "workspace");
+    const nested = join(workspace, "nested");
+    const outside = join(root, "outside-nested");
+    const fakeRipgrepScript = join(root, "swap-rg.mjs");
+    const fakeRipgrep =
+      process.platform === "win32"
+        ? join(root, "swap-rg.cmd")
+        : fakeRipgrepScript;
+    await mkdir(nested, { recursive: true });
+    await mkdir(outside);
+    await writeFile(join(nested, "inside.ts"), "inside\n", "utf8");
+    await writeFile(join(outside, "outside-secret.ts"), "outside\n", "utf8");
+    await writeFile(
+      fakeRipgrepScript,
+      `#!${process.execPath}
+import { rename, symlink, unlink } from "node:fs/promises";
+import { join } from "node:path";
+const nested = join(process.cwd(), "nested");
+const displaced = join(process.cwd(), "nested-inside");
+try {
+  await rename(nested, displaced);
+} catch (error) {
+  if (process.platform === "win32" && ["EPERM", "EACCES", "EBUSY"].includes(error?.code)) process.exit(0);
+  throw error;
+}
+try {
+  await symlink(${JSON.stringify(outside)}, nested, process.platform === "win32" ? "junction" : "dir");
+} catch (error) {
+  await rename(displaced, nested).catch(() => {});
+  if (process.platform === "win32" && ["EPERM", "EACCES", "EBUSY"].includes(error?.code)) process.exit(0);
+  throw error;
+}
+process.stdout.write("nested/outside-secret.ts\\n");
+await unlink(nested);
+await rename(displaced, nested);
+`,
+      "utf8",
+    );
+    if (process.platform === "win32") {
+      await writeFile(
+        fakeRipgrep,
+        `@echo off\r\n"${process.execPath}" "${fakeRipgrepScript}" %*\r\n`,
+        "utf8",
+      );
+    }
+    await chmod(fakeRipgrep, 0o755);
+    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
+      workspaceRoot: workspace,
+      editorInstanceId: "glob-intermediate-editor",
+    });
+    const tool = createGlobTool({
+      allowedPaths: [workspace],
+      ripgrepCommand: fakeRipgrep,
+    });
+
+    const result = await tool.execute({
+      pattern: "**/*.ts",
+      path: workspace,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe("No files found");
+    expect(result.content).not.toContain("outside-secret.ts");
+  });
+
   test("matches a recursive `**/*.md` pattern across nested directories", async () => {
     await mkdir(join(root, "nested", "deeper"), { recursive: true });
     await writeFile(join(root, "top.md"), "top\n", "utf8");
@@ -109,6 +323,40 @@ describe("Glob tool", () => {
     expect(result.content).toContain("mid.md");
     expect(result.content).toContain("low.md");
     expect(result.content).not.toContain("skip.txt");
+  });
+
+  test("never resolves the production ripgrep binary through PATH", async () => {
+    const bin = join(root, "bin");
+    const marker = join(root, "path-rg-ran");
+    const fakeRipgrep = join(bin, "rg");
+    await mkdir(bin);
+    await writeFile(
+      fakeRipgrep,
+      `#!/bin/sh\nprintf ran > ${JSON.stringify(marker)}\nexit 99\n`,
+      "utf8",
+    );
+    await chmod(fakeRipgrep, 0o755);
+    await writeFile(join(root, "safe.txt"), "safe\n", "utf8");
+    const savedPath = process.env.PATH;
+    process.env.PATH = bin;
+    const tool = createGlobTool({ allowedPaths: [root] });
+
+    try {
+      const result = await tool.execute({
+        pattern: "*.txt",
+        path: root,
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("safe.txt");
+      await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (savedPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = savedPath;
+      }
+    }
   });
 
   test("returns paths sorted by mtime descending (newest first)", async () => {
@@ -301,7 +549,11 @@ describe("Glob tool", () => {
     // an explicit exclude set, NOT by hiding dotfiles.
     await mkdir(join(root, ".hidden-dir"), { recursive: true });
     await writeFile(join(root, ".hidden.txt"), "hidden\n", "utf8");
-    await writeFile(join(root, ".hidden-dir", "nested.txt"), "nested\n", "utf8");
+    await writeFile(
+      join(root, ".hidden-dir", "nested.txt"),
+      "nested\n",
+      "utf8",
+    );
 
     const tool = createGlobTool({ allowedPaths: [root] });
     const result = await tool.execute({ pattern: "*.txt", path: root });
@@ -327,7 +579,11 @@ describe("Glob tool", () => {
     await mkdir(join(root, ".git"), { recursive: true });
     await mkdir(join(root, "src"), { recursive: true });
     await writeFile(join(root, "target", "huge.bin"), "x".repeat(4096), "utf8");
-    await writeFile(join(root, ".localnet", "validator.log"), "y".repeat(4096), "utf8");
+    await writeFile(
+      join(root, ".localnet", "validator.log"),
+      "y".repeat(4096),
+      "utf8",
+    );
     await writeFile(join(root, "node_modules", "pkg", "dep.js"), "z\n", "utf8");
     await writeFile(join(root, "dist", "bundle.js"), "z\n", "utf8");
     await writeFile(join(root, "build", "artifact.o"), "z\n", "utf8");
@@ -395,6 +651,8 @@ describe("Glob tool", () => {
     for (const line of lines) {
       expect(line.startsWith(root)).toBe(false);
     }
-    expect(lines).toEqual(expect.arrayContaining(["x.txt", "a/y.txt", "a/b/z.txt"]));
+    expect(lines).toEqual(
+      expect.arrayContaining(["x.txt", "a/y.txt", "a/b/z.txt"]),
+    );
   });
 });

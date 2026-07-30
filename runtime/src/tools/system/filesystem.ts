@@ -19,9 +19,7 @@
  * @module
  */
 
-import {
-  createHash,
-} from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   opendir,
   stat,
@@ -31,12 +29,7 @@ import {
   rename,
   realpath,
 } from "node:fs/promises";
-import {
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { nonEmptyString } from "../../utils/stringUtils.js";
@@ -62,6 +55,13 @@ import {
 } from "../../agents/_deps/filesystem-args.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
+import {
+  completeWorkspaceTopologyMutation,
+  reserveWorkspaceTopologyMutation,
+  WorkspaceMutationCoordinatorError,
+  workspaceLoadedEditorPathConflict,
+  workspaceMutationPathConflict,
+} from "../../workspace/mutation-coordinator.js";
 
 // Re-export the HMAC-signed trusted-roots and session-id channel
 // constants/helpers so existing importers of `filesystem.ts` keep a
@@ -81,10 +81,7 @@ export {
 const MAX_LIST_ENTRIES = 10_000;
 const MAX_PATH_LENGTH = 4096;
 export const SESSION_AGENC_HOME_ARG = "__agencHome";
-export type SessionReadViewKind =
-  | "full"
-  | "partial"
-  | "legacy_unknown";
+export type SessionReadViewKind = "full" | "partial" | "legacy_unknown";
 
 /**
  * Per-session arg name carrying the session identifier into file-content
@@ -348,7 +345,10 @@ function resolveLocalHistoryFilePath(
   sessionId: string,
   canonicalPath: string,
 ): string {
-  return join(resolveLocalHistorySessionDir(sessionId), `${hashString(canonicalPath)}.json`);
+  return join(
+    resolveLocalHistorySessionDir(sessionId),
+    `${hashString(canonicalPath)}.json`,
+  );
 }
 
 function persistLocalFileHistorySnapshot(
@@ -361,13 +361,16 @@ function persistLocalFileHistorySnapshot(
     const historyFile = resolveLocalHistoryFilePath(sessionId, canonicalPath);
     mkdirSync(dirname(historyFile), { recursive: true });
 
-    let entries: Array<SessionReadSnapshot & { readonly recordedAt: number }> = [];
+    let entries: Array<SessionReadSnapshot & { readonly recordedAt: number }> =
+      [];
     try {
       const raw = readFileSync(historyFile, "utf8");
       const parsed = JSON.parse(raw) as unknown;
       if (Array.isArray(parsed)) {
         entries = parsed.filter(
-          (entry): entry is SessionReadSnapshot & { readonly recordedAt: number } => {
+          (
+            entry,
+          ): entry is SessionReadSnapshot & { readonly recordedAt: number } => {
             if (typeof entry !== "object" || entry === null) return false;
             if (
               typeof (entry as { recordedAt?: unknown }).recordedAt !== "number"
@@ -423,7 +426,8 @@ function loadPersistedSessionReadSnapshot(
       const timestamp =
         typeof timestampValue === "number" && Number.isFinite(timestampValue)
           ? timestampValue
-          : typeof recordedAtValue === "number" && Number.isFinite(recordedAtValue)
+          : typeof recordedAtValue === "number" &&
+              Number.isFinite(recordedAtValue)
             ? recordedAtValue
             : undefined;
       if (typeof content === "string") {
@@ -475,7 +479,10 @@ function rehydrateSessionReadSnapshot(
     return existingSnapshot;
   }
 
-  const persistedSnapshot = loadPersistedSessionReadSnapshot(sessionId, canonicalPath);
+  const persistedSnapshot = loadPersistedSessionReadSnapshot(
+    sessionId,
+    canonicalPath,
+  );
   if (!persistedSnapshot) {
     // No agent-scoped snapshot for this (sessionId, path). Fall back to a
     // workspace-scoped full read recorded by a sibling agent under a
@@ -518,8 +525,7 @@ export function recordSessionRead(
       }
     : { viewKind: "full" as SessionReadViewKind };
   if (nextSnapshot.viewKind === undefined) {
-    nextSnapshot.viewKind =
-      snapshot?.viewKind ?? "full";
+    nextSnapshot.viewKind = snapshot?.viewKind ?? "full";
   }
   fileMap.set(canonicalPath, nextSnapshot);
   boundSessionReadContent(fileMap);
@@ -533,23 +539,32 @@ export function seedSessionReadState(
 ): void {
   if (!sessionId || sessionId.trim().length === 0) return;
   for (const entry of entries) {
-    if (!entry || typeof entry.path !== "string" || entry.path.trim().length === 0) {
+    if (
+      !entry ||
+      typeof entry.path !== "string" ||
+      entry.path.trim().length === 0
+    ) {
       continue;
     }
     recordSessionRead(sessionId, entry.path, {
       ...(entry.content === undefined ? {} : { content: entry.content }),
-      ...(typeof entry.timestamp === "number" && Number.isFinite(entry.timestamp)
+      ...(typeof entry.timestamp === "number" &&
+      Number.isFinite(entry.timestamp)
         ? { timestamp: entry.timestamp }
         : {}),
       viewKind: entry.viewKind ?? "legacy_unknown",
       ...(entry.isPartialView === true ? { isPartialView: true } : {}),
-      ...(typeof entry.readOffset === "number" && Number.isFinite(entry.readOffset)
+      ...(typeof entry.readOffset === "number" &&
+      Number.isFinite(entry.readOffset)
         ? { readOffset: entry.readOffset }
         : {}),
-      ...(typeof entry.readLimit === "number" && Number.isFinite(entry.readLimit)
+      ...(typeof entry.readLimit === "number" &&
+      Number.isFinite(entry.readLimit)
         ? { readLimit: entry.readLimit }
         : {}),
-      ...(entry.rawContent === undefined ? {} : { rawContent: entry.rawContent }),
+      ...(entry.rawContent === undefined
+        ? {}
+        : { rawContent: entry.rawContent }),
     });
   }
 }
@@ -685,9 +700,10 @@ export function snapshotTopRecentReads(params: {
   let usedChars = 0;
   for (const entry of entries) {
     if (kept.length >= maxFiles) break;
-    const slice = entry.content.length > perFileBudgetChars
-      ? entry.content.slice(0, perFileBudgetChars)
-      : entry.content;
+    const slice =
+      entry.content.length > perFileBudgetChars
+        ? entry.content.slice(0, perFileBudgetChars)
+        : entry.content;
     if (usedChars + slice.length > totalBudgetChars) {
       continue;
     }
@@ -704,7 +720,9 @@ export function snapshotTopRecentReads(params: {
  * harness, direct unit test) and mutation guards fail closed unless the
  * caller has seeded a session id into the tool args.
  */
-export function resolveSessionId(args: Record<string, unknown>): string | undefined {
+export function resolveSessionId(
+  args: Record<string, unknown>,
+): string | undefined {
   return nonEmptyString(args[SESSION_ID_ARG]);
 }
 
@@ -745,7 +763,11 @@ function hasTraversalSegment(rawPath: string): boolean {
 }
 
 function expandHomeDirectory(rawPath: string): string {
-  if (rawPath === "~" || rawPath.startsWith("~/") || rawPath.startsWith("~\\")) {
+  if (
+    rawPath === "~" ||
+    rawPath.startsWith("~/") ||
+    rawPath.startsWith("~\\")
+  ) {
     const home = process.env.HOME ?? process.env.USERPROFILE;
     if (!home || home.trim().length === 0) return rawPath;
     if (rawPath === "~") return home;
@@ -794,7 +816,6 @@ async function canonicalize(targetPath: string): Promise<string> {
     }
   }
 }
-
 
 /**
  * Resolve a path and check for traversal attacks.
@@ -981,7 +1002,10 @@ export async function safePathAllowingSessionPlanFile(
   allowedPaths: readonly string[],
   args: Record<string, unknown>,
 ): Promise<{ safe: boolean; resolved: string; reason?: string }> {
-  const result = await safePath(targetPath, resolveToolAllowedPaths(allowedPaths, args));
+  const result = await safePath(
+    targetPath,
+    resolveToolAllowedPaths(allowedPaths, args),
+  );
   if (result.safe) return result;
 
   const planCtx = planFileContextFromArgs(args);
@@ -1288,12 +1312,56 @@ function createDeleteTool(
         if (targetStat.isDirectory() && args.recursive !== true) {
           return errorResult("Cannot delete directory without recursive: true");
         }
+        const conflict = workspaceMutationPathConflict(resolved!, {
+          includeDescendants: targetStat.isDirectory(),
+        });
+        if (conflict !== null) {
+          return errorResult(
+            `Cannot delete ${String(args.path)}: ${conflict.path} has ${
+              conflict.authority === "editor_dirty"
+                ? "unsaved editor changes"
+                : "unreconciled editor changes"
+            }. Resolve the Editor buffer first.`,
+          );
+        }
+        const loadedConflict = workspaceLoadedEditorPathConflict(resolved!, {
+          includeDescendants: targetStat.isDirectory(),
+        });
+        if (loadedConflict !== null) {
+          return errorResult(
+            `Cannot delete ${String(args.path)}: ${loadedConflict.path} is loaded in Editor. Close that buffer or use the Editor project tree to delete it safely.`,
+          );
+        }
 
-        await rm(resolved!, { recursive: args.recursive === true });
+        const reservation = await reserveWorkspaceTopologyMutation([
+          {
+            path: resolved!,
+            includeDescendants: targetStat.isDirectory(),
+          },
+        ]);
+        try {
+          await rm(resolved!, { recursive: args.recursive === true });
+        } catch (error) {
+          if (reservation.tokens.length > 0) {
+            await completeWorkspaceTopologyMutation(
+              reservation,
+              "unknown_outcome",
+            );
+            return errorResult(
+              `Delete did not complete cleanly for ${String(args.path)}. ` +
+                "Its disk outcome is unknown; re-read the path before continuing.",
+            );
+          }
+          throw error;
+        }
+        await completeWorkspaceTopologyMutation(reservation, "applied");
         return {
           content: safeStringify({ path: args.path, deleted: true }),
         };
       } catch (err) {
+        if (err instanceof WorkspaceMutationCoordinatorError) {
+          return errorResult(err.message);
+        }
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("ENOENT"))
           return errorResult(`Path not found: ${args.path}`);
@@ -1341,8 +1409,75 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
         );
         if (dstErr) return dstErr;
 
-        await mkdir(dirname(dst!), { recursive: true });
-        await rename(src!, dst!);
+        const sourceStat = await stat(src!);
+        const sourceConflict = workspaceMutationPathConflict(src!, {
+          includeDescendants: sourceStat.isDirectory(),
+        });
+        if (sourceConflict !== null) {
+          return errorResult(
+            `Cannot move ${String(args.source)}: ${sourceConflict.path} has ${
+              sourceConflict.authority === "editor_dirty"
+                ? "unsaved editor changes"
+                : "unreconciled editor changes"
+            }. Resolve the Editor buffer first.`,
+          );
+        }
+        const loadedSourceConflict = workspaceLoadedEditorPathConflict(src!, {
+          includeDescendants: sourceStat.isDirectory(),
+        });
+        if (loadedSourceConflict !== null) {
+          return errorResult(
+            `Cannot move ${String(args.source)}: ${loadedSourceConflict.path} is loaded in Editor. Close that buffer or use the Editor project tree to move it safely.`,
+          );
+        }
+        const destinationConflict = workspaceMutationPathConflict(dst!, {
+          includeDescendants: true,
+        });
+        if (destinationConflict !== null) {
+          return errorResult(
+            `Cannot move to ${String(args.destination)}: ${destinationConflict.path} has ${
+              destinationConflict.authority === "editor_dirty"
+                ? "unsaved editor changes"
+                : "unreconciled editor changes"
+            }. Resolve the Editor buffer first.`,
+          );
+        }
+        const loadedDestinationConflict = workspaceLoadedEditorPathConflict(
+          dst!,
+          {
+            includeDescendants: true,
+          },
+        );
+        if (loadedDestinationConflict !== null) {
+          return errorResult(
+            `Cannot move to ${String(args.destination)}: ${loadedDestinationConflict.path} is loaded in Editor. Close that buffer or use the Editor project tree to move it safely.`,
+          );
+        }
+        const reservation = await reserveWorkspaceTopologyMutation([
+          {
+            path: src!,
+            includeDescendants: sourceStat.isDirectory(),
+          },
+          { path: dst!, includeDescendants: true },
+        ]);
+        try {
+          await mkdir(dirname(dst!), { recursive: true });
+          await rename(src!, dst!);
+        } catch (error) {
+          if (reservation.tokens.length > 0) {
+            await completeWorkspaceTopologyMutation(
+              reservation,
+              "unknown_outcome",
+            );
+            return errorResult(
+              `Move did not complete cleanly from ${String(args.source)} to ` +
+                `${String(args.destination)}. Its disk outcome is unknown; ` +
+                "re-read both paths before continuing.",
+            );
+          }
+          throw error;
+        }
+        await completeWorkspaceTopologyMutation(reservation, "applied");
         return {
           content: safeStringify({
             source: args.source,
@@ -1351,6 +1486,9 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
           }),
         };
       } catch (err) {
+        if (err instanceof WorkspaceMutationCoordinatorError) {
+          return errorResult(err.message);
+        }
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("ENOENT"))
           return errorResult(`Source not found: ${args.source}`);

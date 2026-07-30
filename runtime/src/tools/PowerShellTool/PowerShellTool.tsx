@@ -1,104 +1,154 @@
-import { feature } from 'bun:bundle';
-import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
-import { copyFile, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
-import { runAdmittedLegacyToolCall } from '../../budget/admitted-legacy-tool-call.js';
-import type { CanUseToolFn } from 'src/tui/hooks/useCanUseTool.js';
-import type { AppState } from '../../tui/state/AppState.js';
-import { z } from 'zod/v4';
-import { getKairosActive } from '../../bootstrap/state.js';
-import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js';
-import type { SetToolJSXFn, Tool, ToolCallProgress, ValidationResult } from '../Tool.js';
-import { buildTool, type ToolDef } from '../Tool.js';
-import type { Tool as RuntimeTool } from '../types.js';
-import { backgroundExistingForegroundTask, markTaskNotified, registerForeground, spawnShellTask, unregisterForeground } from '../../tasks/LocalShellTask/LocalShellTask.js';
-import type { AgentId } from '../../types/ids.js';
-import type { AssistantMessage } from '../../types/message.js';
-import { extractAgenCCodeHints } from '../../errors/hints.js';
-import { isEnvTruthy } from '../../utils/envUtils.js';
-import { errorMessage as getErrorMessage, ShellError } from '../../utils/errors.js';
-import { truncate } from '../../utils/format.js';
-import { lazySchema } from '../../utils/lazySchema.js';
-import { logError } from '../../utils/log.js';
-import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
-import { getPlatform } from '../../utils/platform.js';
-import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
-import { exec } from '../../utils/Shell.js';
-import type { ExecResult } from '../../utils/ShellCommand.js';
-import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js';
-import { semanticBoolean } from '../../utils/semanticBoolean.js';
-import { semanticNumber } from '../../utils/semanticNumber.js';
-import { getCachedPowerShellPath } from '../../utils/shell/powershellDetection.js';
-import { EndTruncatingAccumulator } from '../../utils/stringUtils.js';
-import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
-import { TaskOutput } from '../../utils/task/TaskOutput.js';
-import { isOutputLineTruncated } from '../../utils/terminal.js';
-import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, getToolResultPath, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
-import { shouldUseSandbox } from '../BashTool/shouldUseSandbox.js';
-import { BackgroundHint } from '../BashTool/UI.js';
-import { buildImageToolResult, isImageOutput, resetCwdIfOutsideProject, resizeShellImageOutput, stdErrAppendShellResetMessage, stripEmptyLines } from '../BashTool/utils.js';
-import { trackGitOperations } from '../shared/gitOperationTracking.js';
-import { interpretCommandResult } from './commandSemantics.js';
-import { powershellToolHasPermission } from './powershellPermissions.js';
-import { getDefaultTimeoutMs, getMaxTimeoutMs, getPrompt } from './prompt.js';
-import { hasSyncSecurityConcerns, isReadOnlyCommand, resolveToCanonical } from './readOnlyValidation.js';
-import { POWERSHELL_TOOL_NAME } from './toolName.js';
+import { feature } from "bun:bundle";
+import type { ToolResultBlockParam } from "@anthropic-ai/sdk/resources/index.mjs";
+import {
+  copyFile,
+  stat as fsStat,
+  truncate as fsTruncate,
+  link,
+} from "fs/promises";
+import { runAdmittedLegacyToolCall } from "../../budget/admitted-legacy-tool-call.js";
+import type { CanUseToolFn } from "src/tui/hooks/useCanUseTool.js";
+import type { AppState } from "../../tui/state/AppState.js";
+import { z } from "zod/v4";
+import { getKairosActive } from "../../bootstrap/state.js";
+import { TOOL_SUMMARY_MAX_LENGTH } from "../../constants/toolLimits.js";
+import type {
+  SetToolJSXFn,
+  Tool,
+  ToolCallProgress,
+  ValidationResult,
+} from "../Tool.js";
+import { buildTool, type ToolDef } from "../Tool.js";
+import type { Tool as RuntimeTool } from "../types.js";
+import {
+  backgroundExistingForegroundTask,
+  markTaskNotified,
+  registerForeground,
+  spawnShellTask,
+  unregisterForeground,
+} from "../../tasks/LocalShellTask/LocalShellTask.js";
+import type { AgentId } from "../../types/ids.js";
+import type { AssistantMessage } from "../../types/message.js";
+import { extractAgenCCodeHints } from "../../errors/hints.js";
+import { isEnvTruthy } from "../../utils/envUtils.js";
+import {
+  errorMessage as getErrorMessage,
+  ShellError,
+} from "../../utils/errors.js";
+import { truncate } from "../../utils/format.js";
+import { lazySchema } from "../../utils/lazySchema.js";
+import { logError } from "../../utils/log.js";
+import type { PermissionResult } from "../../utils/permissions/PermissionResult.js";
+import { getPlatform } from "../../utils/platform.js";
+import { maybeRecordPluginHint } from "../../utils/plugins/hintRecommendation.js";
+import { exec } from "../../utils/Shell.js";
+import type { ExecResult } from "../../utils/ShellCommand.js";
+import { SandboxManager } from "../../utils/sandbox/sandbox-runtime.js";
+import { semanticBoolean } from "../../utils/semanticBoolean.js";
+import { semanticNumber } from "../../utils/semanticNumber.js";
+import { getCachedPowerShellPath } from "../../utils/shell/powershellDetection.js";
+import { EndTruncatingAccumulator } from "../../utils/stringUtils.js";
+import { getTaskOutputPath } from "../../utils/task/diskOutput.js";
+import { TaskOutput } from "../../utils/task/TaskOutput.js";
+import { isOutputLineTruncated } from "../../utils/terminal.js";
+import {
+  buildLargeToolResultMessage,
+  ensureToolResultsDir,
+  generatePreview,
+  getToolResultPath,
+  PREVIEW_SIZE_BYTES,
+} from "../../utils/toolResultStorage.js";
+import { shouldUseSandbox } from "../BashTool/shouldUseSandbox.js";
+import { BackgroundHint } from "../BashTool/UI.js";
+import {
+  buildImageToolResult,
+  isImageOutput,
+  resetCwdIfOutsideProject,
+  resizeShellImageOutput,
+  stdErrAppendShellResetMessage,
+  stripEmptyLines,
+} from "../BashTool/utils.js";
+import { trackGitOperations } from "../shared/gitOperationTracking.js";
+import { interpretCommandResult } from "./commandSemantics.js";
+import { powershellToolHasPermission } from "./powershellPermissions.js";
+import { getDefaultTimeoutMs, getMaxTimeoutMs, getPrompt } from "./prompt.js";
+import {
+  hasSyncSecurityConcerns,
+  isReadOnlyCommand,
+  resolveToCanonical,
+} from "./readOnlyValidation.js";
+import { POWERSHELL_TOOL_NAME } from "./toolName.js";
 import {
   SandboxExecutionError,
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
   type SandboxExecutionSurface,
-} from '../../sandbox/execution-broker.js';
-import { peekAmbientRuntimeSession } from '../../session/current-session.js';
-import { renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseQueuedMessage } from './UI.js';
+} from "../../sandbox/execution-broker.js";
+import { peekAmbientRuntimeSession } from "../../session/current-session.js";
+import {
+  renderToolResultMessage,
+  renderToolUseErrorMessage,
+  renderToolUseMessage,
+  renderToolUseProgressMessage,
+  renderToolUseQueuedMessage,
+} from "./UI.js";
+import {
+  captureToolQueueOwner,
+  type SessionQueueOwner,
+} from "../../utils/queueOwnership.js";
 // Never use os.EOL for terminal output — \r\n on Windows breaks Ink rendering
-const EOL = '\n';
+const EOL = "\n";
 
 /**
  * PowerShell search commands (grep equivalents) for collapsible display.
  * Stored as canonical (lowercase) cmdlet names.
  */
-const PS_SEARCH_COMMANDS = new Set(['select-string',
-// grep equivalent
-'get-childitem',
-// find equivalent (with -Recurse)
-'findstr',
-// native Windows search
-'where.exe' // native Windows which
+const PS_SEARCH_COMMANDS = new Set([
+  "select-string",
+  // grep equivalent
+  "get-childitem",
+  // find equivalent (with -Recurse)
+  "findstr",
+  // native Windows search
+  "where.exe", // native Windows which
 ]);
 
 /**
  * PowerShell read/view commands for collapsible display.
  * Stored as canonical (lowercase) cmdlet names.
  */
-const PS_READ_COMMANDS = new Set(['get-content',
-// cat equivalent
-'get-item',
-// file info
-'test-path',
-// test -e equivalent
-'resolve-path',
-// realpath equivalent
-'get-process',
-// ps equivalent
-'get-service',
-// system info
-'get-childitem',
-// ls/dir equivalent (also search when recursive)
-'get-location',
-// pwd equivalent
-'get-filehash',
-// checksum
-'get-acl',
-// permissions info
-'format-hex' // hexdump equivalent
+const PS_READ_COMMANDS = new Set([
+  "get-content",
+  // cat equivalent
+  "get-item",
+  // file info
+  "test-path",
+  // test -e equivalent
+  "resolve-path",
+  // realpath equivalent
+  "get-process",
+  // ps equivalent
+  "get-service",
+  // system info
+  "get-childitem",
+  // ls/dir equivalent (also search when recursive)
+  "get-location",
+  // pwd equivalent
+  "get-filehash",
+  // checksum
+  "get-acl",
+  // permissions info
+  "format-hex", // hexdump equivalent
 ]);
 
 /**
  * PowerShell semantic-neutral commands that don't change the search/read nature.
  */
-const PS_SEMANTIC_NEUTRAL_COMMANDS = new Set(['write-output',
-// echo equivalent
-'write-host']);
+const PS_SEMANTIC_NEUTRAL_COMMANDS = new Set([
+  "write-output",
+  // echo equivalent
+  "write-host",
+]);
 
 /**
  * Checks if a PowerShell command is a search or read operation.
@@ -112,7 +162,7 @@ function isSearchOrReadPowerShellCommand(command: string): {
   if (!trimmed) {
     return {
       isSearch: false,
-      isRead: false
+      isRead: false,
     };
   }
 
@@ -122,7 +172,7 @@ function isSearchOrReadPowerShellCommand(command: string): {
   if (parts.length === 0) {
     return {
       isSearch: false,
-      isRead: false
+      isRead: false,
     };
   }
   let hasSearch = false;
@@ -143,7 +193,7 @@ function isSearchOrReadPowerShellCommand(command: string): {
     if (!isPartSearch && !isPartRead) {
       return {
         isSearch: false,
-        isRead: false
+        isRead: false,
       };
     }
     if (isPartSearch) hasSearch = true;
@@ -152,12 +202,12 @@ function isSearchOrReadPowerShellCommand(command: string): {
   if (!hasNonNeutralCommand) {
     return {
       isSearch: false,
-      isRead: false
+      isRead: false,
     };
   }
   return {
     isSearch: hasSearch,
-    isRead: hasRead
+    isRead: hasRead,
   };
 }
 
@@ -170,9 +220,11 @@ const ASSISTANT_BLOCKING_BUDGET_MS = 15_000;
 // Commands that should not be auto-backgrounded (canonical lowercase).
 // 'sleep' is a PS built-in alias for Start-Sleep but not in COMMON_ALIASES,
 // so list both forms.
-const DISALLOWED_AUTO_BACKGROUND_COMMANDS = ['start-sleep',
-// Start-Sleep should run in foreground unless explicitly backgrounded
-'sleep'];
+const DISALLOWED_AUTO_BACKGROUND_COMMANDS = [
+  "start-sleep",
+  // Start-Sleep should run in foreground unless explicitly backgrounded
+  "sleep",
+];
 
 /**
  * Checks if a command is allowed to be automatically backgrounded
@@ -198,16 +250,27 @@ function detectBlockedSleepPattern(command: string): string | null {
   // intentionally shallow — sleep inside script blocks, subshells, or later
   // pipeline stages is fine. Matches BashTool's splitCommandWithOperators
   // intent (src/utils/bash/commands.ts) without a full PS parser.
-  const first = command.trim().split(/[;|&\r\n]/)[0]?.trim() ?? '';
+  const first =
+    command
+      .trim()
+      .split(/[;|&\r\n]/)[0]
+      ?.trim() ?? "";
   // Match: Start-Sleep N, Start-Sleep -Seconds N, Start-Sleep -s N, sleep N
   // (case-insensitive; -Seconds can be abbreviated to -s per PS convention)
-  const m = /^(?:start-sleep|sleep)(?:\s+-s(?:econds)?)?\s+(\d+)\s*$/i.exec(first);
+  const m = /^(?:start-sleep|sleep)(?:\s+-s(?:econds)?)?\s+(\d+)\s*$/i.exec(
+    first,
+  );
   if (!m) return null;
   const secs = parseInt(m[1]!, 10);
   if (secs < 2) return null; // sub-2s sleeps are fine (rate limiting, pacing)
 
-  const rest = command.trim().slice(first.length).replace(/^[\s;|&]+/, '');
-  return rest ? `Start-Sleep ${secs} followed by: ${rest}` : `standalone Start-Sleep ${secs}`;
+  const rest = command
+    .trim()
+    .slice(first.length)
+    .replace(/^[\s;|&]+/, "");
+  return rest
+    ? `Start-Sleep ${secs} followed by: ${rest}`
+    : `standalone Start-Sleep ${secs}`;
 }
 
 /**
@@ -222,80 +285,136 @@ function detectBlockedSleepPattern(command: string): string | null {
  * (covers direct callers like promptShellExecution.ts that skip
  * validateInput). The call() guard is the load-bearing one.
  */
-const WINDOWS_SANDBOX_POLICY_REFUSAL = 'Enterprise policy requires sandboxing, but sandboxing is not available on native Windows. Shell command execution is blocked on this platform by policy.';
+const WINDOWS_SANDBOX_POLICY_REFUSAL =
+  "Enterprise policy requires sandboxing, but sandboxing is not available on native Windows. Shell command execution is blocked on this platform by policy.";
 function isWindowsSandboxPolicyViolation(): boolean {
-  return getPlatform() === 'windows' && SandboxManager.isSandboxEnabledInSettings() && !SandboxManager.areUnsandboxedCommandsAllowed();
+  return (
+    getPlatform() === "windows" &&
+    SandboxManager.isSandboxEnabledInSettings() &&
+    !SandboxManager.areUnsandboxedCommandsAllowed()
+  );
 }
 
 // Check if background tasks are disabled at module load time
 const isBackgroundTasksDisabled =
-// eslint-disable-next-line custom-rules/no-process-env-top-level -- Intentional: schema must be defined at module load
-isEnvTruthy(process.env.AGENC_DISABLE_BACKGROUND_TASKS);
-const fullInputSchema = lazySchema(() => z.strictObject({
-  command: z.string().describe('The PowerShell command to execute'),
-  timeout: semanticNumber(z.number().optional()).describe(`Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`),
-  description: z.string().optional().describe('Clear, concise description of what this command does in active voice.'),
-  run_in_background: semanticBoolean(z.boolean().optional()).describe(`Set to true to run this command in the background. Use Read to read the output later.`),
-  dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe('Set this to true to dangerously override sandbox mode and run commands without sandboxing.'),
-  _dangerouslyDisableSandboxApproved: z.boolean().optional().describe('Internal: user-approved sandbox override')
-}));
+  // eslint-disable-next-line custom-rules/no-process-env-top-level -- Intentional: schema must be defined at module load
+  isEnvTruthy(process.env.AGENC_DISABLE_BACKGROUND_TASKS);
+const fullInputSchema = lazySchema(() =>
+  z.strictObject({
+    command: z.string().describe("The PowerShell command to execute"),
+    timeout: semanticNumber(z.number().optional()).describe(
+      `Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`,
+    ),
+    description: z
+      .string()
+      .optional()
+      .describe(
+        "Clear, concise description of what this command does in active voice.",
+      ),
+    run_in_background: semanticBoolean(z.boolean().optional()).describe(
+      `Set to true to run this command in the background. Use Read to read the output later.`,
+    ),
+    dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe(
+      "Set this to true to dangerously override sandbox mode and run commands without sandboxing.",
+    ),
+    _dangerouslyDisableSandboxApproved: z
+      .boolean()
+      .optional()
+      .describe("Internal: user-approved sandbox override"),
+  }),
+);
 
 // Omit internal-only sandbox override fields from the model-facing schema.
 // Conditionally remove run_in_background from schema when background tasks are disabled.
-const inputSchema = lazySchema(() => isBackgroundTasksDisabled ? fullInputSchema().omit({
-  run_in_background: true,
-  dangerouslyDisableSandbox: true,
-  _dangerouslyDisableSandboxApproved: true
-}) : fullInputSchema().omit({
-  dangerouslyDisableSandbox: true,
-  _dangerouslyDisableSandboxApproved: true
-}));
+const inputSchema = lazySchema(() =>
+  isBackgroundTasksDisabled
+    ? fullInputSchema().omit({
+        run_in_background: true,
+        dangerouslyDisableSandbox: true,
+        _dangerouslyDisableSandboxApproved: true,
+      })
+    : fullInputSchema().omit({
+        dangerouslyDisableSandbox: true,
+        _dangerouslyDisableSandboxApproved: true,
+      }),
+);
 type InputSchema = ReturnType<typeof inputSchema>;
 
 // Use fullInputSchema for the type to always include run_in_background
 // (even when it's omitted from the schema, the code needs to handle it)
 export type PowerShellToolInput = z.infer<ReturnType<typeof fullInputSchema>>;
-const outputSchema = lazySchema(() => z.object({
-  stdout: z.string().describe('The standard output of the command'),
-  stderr: z.string().describe('The standard error output of the command'),
-  interrupted: z.boolean().describe('Whether the command was interrupted'),
-  returnCodeInterpretation: z.string().optional().describe('Semantic interpretation for non-error exit codes with special meaning'),
-  isImage: z.boolean().optional().describe('Flag to indicate if stdout contains image data'),
-  persistedOutputPath: z.string().optional().describe('Path to persisted full output when too large for inline'),
-  persistedOutputSize: z.number().optional().describe('Total output size in bytes when persisted'),
-  backgroundTaskId: z.string().optional().describe('ID of the background task if command is running in background'),
-  backgroundedByUser: z.boolean().optional().describe('True if the user manually backgrounded the command with Ctrl+B'),
-  assistantAutoBackgrounded: z.boolean().optional().describe('True if the command was auto-backgrounded by the assistant-mode blocking budget')
-}));
+const outputSchema = lazySchema(() =>
+  z.object({
+    stdout: z.string().describe("The standard output of the command"),
+    stderr: z.string().describe("The standard error output of the command"),
+    interrupted: z.boolean().describe("Whether the command was interrupted"),
+    returnCodeInterpretation: z
+      .string()
+      .optional()
+      .describe(
+        "Semantic interpretation for non-error exit codes with special meaning",
+      ),
+    isImage: z
+      .boolean()
+      .optional()
+      .describe("Flag to indicate if stdout contains image data"),
+    persistedOutputPath: z
+      .string()
+      .optional()
+      .describe("Path to persisted full output when too large for inline"),
+    persistedOutputSize: z
+      .number()
+      .optional()
+      .describe("Total output size in bytes when persisted"),
+    backgroundTaskId: z
+      .string()
+      .optional()
+      .describe(
+        "ID of the background task if command is running in background",
+      ),
+    backgroundedByUser: z
+      .boolean()
+      .optional()
+      .describe(
+        "True if the user manually backgrounded the command with Ctrl+B",
+      ),
+    assistantAutoBackgrounded: z
+      .boolean()
+      .optional()
+      .describe(
+        "True if the command was auto-backgrounded by the assistant-mode blocking budget",
+      ),
+  }),
+);
 type OutputSchema = ReturnType<typeof outputSchema>;
 export type Out = z.infer<OutputSchema>;
-import type { PowerShellProgress } from '../../types/tools.js';
-export type { PowerShellProgress } from '../../types/tools.js';
+import type { PowerShellProgress } from "../../types/tools.js";
+export type { PowerShellProgress } from "../../types/tools.js";
 const powerShellAdmissionTool: RuntimeTool = {
   name: POWERSHELL_TOOL_NAME,
-  description: 'Run a PowerShell command',
-  inputSchema: { type: 'object' },
-  recoveryCategory: 'side-effecting',
+  description: "Run a PowerShell command",
+  inputSchema: { type: "object" },
+  recoveryCategory: "side-effecting",
   admissionEstimate: () => ({
     maxInputTokens: 0,
     maxOutputTokens: 0,
-    maxCostUsd: 0
+    maxCostUsd: 0,
   }),
   execute: async () => {
-    throw new Error('PowerShell admission descriptor cannot execute directly');
-  }
+    throw new Error("PowerShell admission descriptor cannot execute directly");
+  },
 };
 export const PowerShellTool = buildTool({
   name: POWERSHELL_TOOL_NAME,
-  recoveryCategory: 'side-effecting',
+  recoveryCategory: "side-effecting",
   admissionEstimate: powerShellAdmissionTool.admissionEstimate,
-  searchHint: 'execute Windows PowerShell commands',
+  searchHint: "execute Windows PowerShell commands",
   maxResultSizeChars: 30_000,
   strict: true,
   async description({
-    description
+    description,
   }: Partial<PowerShellToolInput>): Promise<string> {
-    return description || 'Run PowerShell command';
+    return description || "Run PowerShell command";
   },
   async prompt(): Promise<string> {
     return getPrompt();
@@ -310,7 +429,7 @@ export const PowerShellTool = buildTool({
     if (!input.command) {
       return {
         isSearch: false,
-        isRead: false
+        isRead: false,
       };
     }
     return isSearchOrReadPowerShellCommand(input.command);
@@ -342,26 +461,28 @@ export const PowerShellTool = buildTool({
     return outputSchema();
   },
   userFacingName(): string {
-    return 'PowerShell';
+    return "PowerShell";
   },
-  getToolUseSummary(input: Partial<PowerShellToolInput> | undefined): string | null {
+  getToolUseSummary(
+    input: Partial<PowerShellToolInput> | undefined,
+  ): string | null {
     if (!input?.command) {
       return null;
     }
-    const {
-      command,
-      description
-    } = input;
+    const { command, description } = input;
     if (description) {
       return description;
     }
     return truncate(command, TOOL_SUMMARY_MAX_LENGTH);
   },
-  getActivityDescription(input: Partial<PowerShellToolInput> | undefined): string {
+  getActivityDescription(
+    input: Partial<PowerShellToolInput> | undefined,
+  ): string {
     if (!input?.command) {
-      return 'Running command';
+      return "Running command";
     }
-    const desc = input.description ?? truncate(input.command, TOOL_SUMMARY_MAX_LENGTH);
+    const desc =
+      input.description ?? truncate(input.command, TOOL_SUMMARY_MAX_LENGTH);
     return `Running ${desc}`;
   },
   isEnabled(): boolean {
@@ -373,24 +494,31 @@ export const PowerShellTool = buildTool({
       return {
         result: false,
         message: WINDOWS_SANDBOX_POLICY_REFUSAL,
-        errorCode: 11
+        errorCode: 11,
       };
     }
-    if (feature('MONITOR_TOOL') && !isBackgroundTasksDisabled && !input.run_in_background) {
+    if (
+      feature("MONITOR_TOOL") &&
+      !isBackgroundTasksDisabled &&
+      !input.run_in_background
+    ) {
       const sleepPattern = detectBlockedSleepPattern(input.command);
       if (sleepPattern !== null) {
         return {
           result: false,
           message: `Blocked: ${sleepPattern}. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), use the Monitor tool. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.`,
-          errorCode: 10
+          errorCode: 10,
         };
       }
     }
     return {
-      result: true
+      result: true,
     };
   },
-  async checkPermissions(input: PowerShellToolInput, context: Parameters<Tool['checkPermissions']>[1]): Promise<PermissionResult> {
+  async checkPermissions(
+    input: PowerShellToolInput,
+    context: Parameters<Tool["checkPermissions"]>[1],
+  ): Promise<PermissionResult> {
     return await powershellToolHasPermission(input, context);
   },
   renderToolUseMessage,
@@ -398,47 +526,50 @@ export const PowerShellTool = buildTool({
   renderToolUseQueuedMessage,
   renderToolResultMessage,
   renderToolUseErrorMessage,
-  mapToolResultToToolResultBlockParam({
-    interrupted,
-    stdout,
-    stderr,
-    isImage,
-    persistedOutputPath,
-    persistedOutputSize,
-    backgroundTaskId,
-    backgroundedByUser,
-    assistantAutoBackgrounded
-  }: Out, toolUseID: string): ToolResultBlockParam {
+  mapToolResultToToolResultBlockParam(
+    {
+      interrupted,
+      stdout,
+      stderr,
+      isImage,
+      persistedOutputPath,
+      persistedOutputSize,
+      backgroundTaskId,
+      backgroundedByUser,
+      assistantAutoBackgrounded,
+    }: Out,
+    toolUseID: string,
+  ): ToolResultBlockParam {
     // For image data, format as image content block for AgenC
     if (isImage) {
       const block = buildImageToolResult(stdout, toolUseID);
       if (block) return block;
     }
-    const normalizedStdout = typeof stdout === 'string' ? stdout : '';
-    const normalizedStderr = typeof stderr === 'string' ? stderr : '';
+    const normalizedStdout = typeof stdout === "string" ? stdout : "";
+    const normalizedStderr = typeof stderr === "string" ? stderr : "";
     let processedStdout = normalizedStdout;
     if (persistedOutputPath) {
       const trimmed = normalizedStdout
-        ? normalizedStdout.replace(/^(\s*\n)+/, '').trimEnd()
-        : '';
+        ? normalizedStdout.replace(/^(\s*\n)+/, "").trimEnd()
+        : "";
       const preview = generatePreview(trimmed, PREVIEW_SIZE_BYTES);
       processedStdout = buildLargeToolResultMessage({
         filepath: persistedOutputPath,
         originalSize: persistedOutputSize ?? 0,
         isJson: false,
         preview: preview.preview,
-        hasMore: preview.hasMore
+        hasMore: preview.hasMore,
       });
     } else if (normalizedStdout) {
-      processedStdout = normalizedStdout.replace(/^(\s*\n)+/, '');
+      processedStdout = normalizedStdout.replace(/^(\s*\n)+/, "");
       processedStdout = processedStdout.trimEnd();
     }
     let errorMessage = normalizedStderr.trim();
     if (interrupted) {
       if (normalizedStderr) errorMessage += EOL;
-      errorMessage += '<error>Command was aborted before completion</error>';
+      errorMessage += "<error>Command was aborted before completion</error>";
     }
-    let backgroundInfo = '';
+    let backgroundInfo = "";
     if (backgroundTaskId) {
       const outputPath = getTaskOutputPath(backgroundTaskId);
       if (assistantAutoBackgrounded) {
@@ -451,12 +582,20 @@ export const PowerShellTool = buildTool({
     }
     return {
       tool_use_id: toolUseID,
-      type: 'tool_result' as const,
-      content: [processedStdout, errorMessage, backgroundInfo].filter(Boolean).join('\n'),
-      is_error: interrupted
+      type: "tool_result" as const,
+      content: [processedStdout, errorMessage, backgroundInfo]
+        .filter(Boolean)
+        .join("\n"),
+      is_error: interrupted,
     };
   },
-  async call(input: PowerShellToolInput, toolUseContext: Parameters<Tool['call']>[1], _canUseTool?: CanUseToolFn, _parentMessage?: AssistantMessage, onProgress?: ToolCallProgress<PowerShellProgress>): Promise<{
+  async call(
+    input: PowerShellToolInput,
+    toolUseContext: Parameters<Tool["call"]>[1],
+    _canUseTool?: CanUseToolFn,
+    _parentMessage?: AssistantMessage,
+    onProgress?: ToolCallProgress<PowerShellProgress>,
+  ): Promise<{
     data: Out;
   }> {
     return runAdmittedLegacyToolCall({
@@ -466,241 +605,269 @@ export const PowerShellTool = buildTool({
       invoke: async ({ abortController: admittedAbortController }) => {
         toolUseContext = {
           ...toolUseContext,
-          abortController: admittedAbortController
+          abortController: admittedAbortController,
         };
-    // Load-bearing guard: promptShellExecution.ts and processBashCommand.tsx
-    // call PowerShellTool.call() directly, bypassing validateInput. This is
-    // the check that covers ALL callers. See isWindowsSandboxPolicyViolation
-    // comment for the policy rationale.
-    if (isWindowsSandboxPolicyViolation()) {
-      throw new Error(WINDOWS_SANDBOX_POLICY_REFUSAL);
-    }
-    const {
-      abortController,
-      setAppState,
-      setToolJSX
-    } = toolUseContext;
-    const isMainThread = !toolUseContext.agentId;
-    const sandboxExecutionSurface: SandboxExecutionSurface =
-      toolUseContext.agentId
-        ? 'child_agent'
-        : input.run_in_background
-          ? 'background'
-          : toolUseContext.options?.isNonInteractiveSession
-            ? 'print'
-            : 'interactive';
-    const sandboxExecutionBroker = readSandboxExecutionBroker(toolUseContext);
-    if (sandboxExecutionBroker === undefined) {
-      throw missingSandboxExecutionBoundary(sandboxExecutionSurface);
-    }
-    sandboxExecutionBroker.assertReady(sandboxExecutionSurface);
-    let progressCounter = 0;
-    try {
-      const commandGenerator = runPowerShellCommand({
-        input,
-        abortController,
-        // Use the always-shared task channel so async agents' background
-        // shell tasks are actually registered (and killable on agent exit).
-        setAppState: toolUseContext.setAppStateForTasks ?? setAppState,
-        setToolJSX,
-        preventCwdChanges: !isMainThread,
-        isMainThread,
-        toolUseId: toolUseContext.toolUseId,
-        agentId: toolUseContext.agentId,
-        sandboxExecutionBroker,
-        sandboxExecutionSurface
-      });
-      let generatorResult;
-      do {
-        generatorResult = await commandGenerator.next();
-        if (!generatorResult.done && onProgress) {
-          const progress = generatorResult.value;
-          onProgress({
-            toolUseID: `ps-progress-${progressCounter++}`,
-            data: {
-              type: 'powershell_progress',
-              output: progress.output,
-              fullOutput: progress.fullOutput,
-              elapsedTimeSeconds: progress.elapsedTimeSeconds,
-              totalLines: progress.totalLines,
-              totalBytes: progress.totalBytes,
-              timeoutMs: progress.timeoutMs,
-              taskId: progress.taskId
-            }
-          });
+        // Load-bearing guard: promptShellExecution.ts and processBashCommand.tsx
+        // call PowerShellTool.call() directly, bypassing validateInput. This is
+        // the check that covers ALL callers. See isWindowsSandboxPolicyViolation
+        // comment for the policy rationale.
+        if (isWindowsSandboxPolicyViolation()) {
+          throw new Error(WINDOWS_SANDBOX_POLICY_REFUSAL);
         }
-      } while (!generatorResult.done);
-      const result = generatorResult.value;
-
-      // Feed git/PR usage metrics (same counters as BashTool). PS invokes
-      // git/gh/glab/curl as external binaries with identical syntax, so the
-      // shell-agnostic regex detection in trackGitOperations works as-is.
-      // Called before the backgroundTaskId early-return so backgrounded
-      // commands are counted too (matches BashTool.tsx:912).
-      //
-      // Pre-flight sentinel guard: the two PS pre-flight paths (pwsh-not-found,
-      // exec-spawn-catch) return code: 0 + empty stdout + stderr so call() can
-      // surface stderr gracefully instead of throwing ShellError. But
-      // gitOperationTracking.ts:48 treats code 0 as success and would
-      // regex-match the command, mis-counting a command that never ran.
-      // BashTool is safe — its pre-flight goes through createFailedCommand
-      // (code: 1) so tracking early-returns. Skip tracking on this sentinel.
-      const isPreFlightSentinel = result.code === 0 && !result.stdout && result.stderr && !result.backgroundTaskId;
-      if (!isPreFlightSentinel) {
-        trackGitOperations(input.command, result.code, result.stdout);
-      }
-
-      // Distinguish user-driven interrupt (new message submitted) from other
-      // interrupted states. Only user-interrupt should suppress ShellError —
-      // timeout-kill or process-kill with isError should still throw.
-      // Matches BashTool's isInterrupt.
-      const isInterrupt = result.interrupted && abortController.signal.reason === 'interrupt';
-
-      // Only the main thread tracks/resets cwd; agents have their own cwd
-      // isolation. Matches BashTool's !preventCwdChanges guard.
-      // Runs before the backgroundTaskId early-return: a command may change
-      // CWD before being backgrounded (e.g. `Set-Location C:\temp;
-      // Start-Sleep 60`), and BashTool has no such early return — its
-      // backgrounded results flow through resetCwdIfOutsideProject at :945.
-      let stderrForShellReset = '';
-      if (isMainThread) {
-        const appState = toolUseContext.getAppState();
-        if (resetCwdIfOutsideProject(appState.toolPermissionContext)) {
-          stderrForShellReset = stdErrAppendShellResetMessage('');
+        const { abortController, setAppState, setToolJSX } = toolUseContext;
+        const queueOwner = captureToolQueueOwner(toolUseContext);
+        const isMainThread = !toolUseContext.agentId;
+        const sandboxExecutionSurface: SandboxExecutionSurface =
+          toolUseContext.agentId
+            ? "child_agent"
+            : input.run_in_background
+              ? "background"
+              : toolUseContext.options?.isNonInteractiveSession
+                ? "print"
+                : "interactive";
+        const sandboxExecutionBroker =
+          readSandboxExecutionBroker(toolUseContext);
+        if (sandboxExecutionBroker === undefined) {
+          throw missingSandboxExecutionBoundary(sandboxExecutionSurface);
         }
-      }
-
-      // If backgrounded, return immediately with task ID. Strip hints first
-      // so interrupt-backgrounded fullOutput doesn't leak the tag to the
-      // model (BashTool has no early return, so all paths flow through its
-      // single extraction site).
-      if (result.backgroundTaskId) {
-        const bgExtracted = extractAgenCCodeHints(result.stdout || '', input.command);
-        if (isMainThread && bgExtracted.hints.length > 0) {
-          for (const hint of bgExtracted.hints) maybeRecordPluginHint(hint);
-        }
-        return {
-          data: {
-            stdout: bgExtracted.stripped,
-            stderr: [result.stderr || '', stderrForShellReset].filter(Boolean).join('\n'),
-            interrupted: false,
-            backgroundTaskId: result.backgroundTaskId,
-            backgroundedByUser: result.backgroundedByUser,
-            assistantAutoBackgrounded: result.assistantAutoBackgrounded
-          }
-        };
-      }
-      const stdoutAccumulator = new EndTruncatingAccumulator();
-      const processedStdout = (result.stdout || '').trimEnd();
-      stdoutAccumulator.append(processedStdout + EOL);
-
-      // Interpret exit code using semantic rules. PS-native cmdlets (Select-String,
-      // Compare-Object, Test-Path) exit 0 on no-match so they always hit the default
-      // here. This primarily handles external .exe's (grep, rg, findstr, fc, robocopy)
-      // where non-zero can mean "no match" / "files copied" rather than failure.
-      const interpretation = interpretCommandResult(input.command, result.code, processedStdout, result.stderr || '');
-
-      // getErrorParts() in toolErrors.ts already prepends 'Exit code N'
-      // from error.code when building the ShellError message. Do not
-      // duplicate it into stdout here (BashTool's append at :939 is dead
-      // code — it throws before stdoutAccumulator.toString() is read).
-
-      let stdout = stripEmptyLines(stdoutAccumulator.toString());
-
-      // AgenC hints protocol: CLIs/SDKs gated on AGENCCODE=1 emit a
-      // `<agenc-code-hint />` tag to stderr (merged into stdout here). Scan,
-      // record for useAgenCCodeHintRecommendation to surface, then strip
-      // so the model never sees the tag — a zero-token side channel.
-      // Stripping runs unconditionally (subagent output must stay clean too);
-      // only the dialog recording is main-thread-only.
-      const extracted = extractAgenCCodeHints(stdout, input.command);
-      stdout = extracted.stripped;
-      if (isMainThread && extracted.hints.length > 0) {
-        for (const hint of extracted.hints) maybeRecordPluginHint(hint);
-      }
-
-      // preSpawnError means exec() succeeded but the inner shell failed before
-      // the command ran (e.g. CWD deleted). createFailedCommand sets code=1,
-      // which interpretCommandResult can mistake for grep-no-match / findstr
-      // string-not-found. Throw it directly. Matches BashTool.tsx:957.
-      if (result.preSpawnError) {
-        throw new Error(result.preSpawnError);
-      }
-      if (interpretation.isError && !isInterrupt) {
-        throw new ShellError(stdout, result.stderr || '', result.code, result.interrupted);
-      }
-
-      // Large output: file on disk has more than getMaxOutputLength() bytes.
-      // stdout already contains the first chunk. Copy the output file to the
-      // tool-results dir so the model can read it via FileRead. If > 64 MB,
-      // truncate after copying. Matches BashTool.tsx:983-1005.
-      //
-      // Placed AFTER the preSpawnError/ShellError throws (matches BashTool's
-      // ordering, where persistence is post-try/finally): a failing command
-      // that also produced >maxOutputLength bytes would otherwise do 3-4 disk
-      // syscalls, store to tool-results/, then throw — orphaning the file.
-      const MAX_PERSISTED_SIZE = 64 * 1024 * 1024;
-      let persistedOutputPath: string | undefined;
-      let persistedOutputSize: number | undefined;
-      if (result.outputFilePath && result.outputTaskId) {
+        sandboxExecutionBroker.assertReady(sandboxExecutionSurface);
+        let progressCounter = 0;
         try {
-          const fileStat = await fsStat(result.outputFilePath);
-          persistedOutputSize = fileStat.size;
-          await ensureToolResultsDir();
-          const dest = getToolResultPath(result.outputTaskId, false);
-          if (fileStat.size > MAX_PERSISTED_SIZE) {
-            await fsTruncate(result.outputFilePath, MAX_PERSISTED_SIZE);
-          }
-          try {
-            await link(result.outputFilePath, dest);
-          } catch {
-            await copyFile(result.outputFilePath, dest);
-          }
-          persistedOutputPath = dest;
-        } catch {
-          // File may already be gone — stdout preview is sufficient
-        }
-      }
+          const commandGenerator = runPowerShellCommand({
+            input,
+            abortController,
+            // Use the always-shared task channel so async agents' background
+            // shell tasks are actually registered (and killable on agent exit).
+            setAppState: toolUseContext.setAppStateForTasks ?? setAppState,
+            setToolJSX,
+            preventCwdChanges: !isMainThread,
+            isMainThread,
+            toolUseId: toolUseContext.toolUseId,
+            agentId: toolUseContext.agentId,
+            queueOwner,
+            sandboxExecutionBroker,
+            sandboxExecutionSurface,
+          });
+          let generatorResult;
+          do {
+            generatorResult = await commandGenerator.next();
+            if (!generatorResult.done && onProgress) {
+              const progress = generatorResult.value;
+              onProgress({
+                toolUseID: `ps-progress-${progressCounter++}`,
+                data: {
+                  type: "powershell_progress",
+                  output: progress.output,
+                  fullOutput: progress.fullOutput,
+                  elapsedTimeSeconds: progress.elapsedTimeSeconds,
+                  totalLines: progress.totalLines,
+                  totalBytes: progress.totalBytes,
+                  timeoutMs: progress.timeoutMs,
+                  taskId: progress.taskId,
+                },
+              });
+            }
+          } while (!generatorResult.done);
+          const result = generatorResult.value;
 
-      // Cap image dimensions + size if present (CC-304 — see
-      // resizeShellImageOutput). Scope the decoded buffer so it can be
-      // reclaimed before we build the output object.
-      let isImage = isImageOutput(stdout);
-      let compressedStdout = stdout;
-      if (isImage) {
-        const resized = await resizeShellImageOutput(stdout, result.outputFilePath, persistedOutputSize);
-        if (resized) {
-          compressedStdout = resized;
-        } else {
-          // Parse failed (e.g. multi-line stdout after the data URL). Keep
-          // isImage in sync with what we actually send so the UI label stays
-          // accurate — mapToolResultToToolResultBlockParam's defensive
-          // fallthrough will send text, not an image block.
-          isImage = false;
+          // Feed git/PR usage metrics (same counters as BashTool). PS invokes
+          // git/gh/glab/curl as external binaries with identical syntax, so the
+          // shell-agnostic regex detection in trackGitOperations works as-is.
+          // Called before the backgroundTaskId early-return so backgrounded
+          // commands are counted too (matches BashTool.tsx:912).
+          //
+          // Pre-flight sentinel guard: the two PS pre-flight paths (pwsh-not-found,
+          // exec-spawn-catch) return code: 0 + empty stdout + stderr so call() can
+          // surface stderr gracefully instead of throwing ShellError. But
+          // gitOperationTracking.ts:48 treats code 0 as success and would
+          // regex-match the command, mis-counting a command that never ran.
+          // BashTool is safe — its pre-flight goes through createFailedCommand
+          // (code: 1) so tracking early-returns. Skip tracking on this sentinel.
+          const isPreFlightSentinel =
+            result.code === 0 &&
+            !result.stdout &&
+            result.stderr &&
+            !result.backgroundTaskId;
+          if (!isPreFlightSentinel) {
+            trackGitOperations(input.command, result.code, result.stdout);
+          }
+
+          // Distinguish user-driven interrupt (new message submitted) from other
+          // interrupted states. Only user-interrupt should suppress ShellError —
+          // timeout-kill or process-kill with isError should still throw.
+          // Matches BashTool's isInterrupt.
+          const isInterrupt =
+            result.interrupted && abortController.signal.reason === "interrupt";
+
+          // Only the main thread tracks/resets cwd; agents have their own cwd
+          // isolation. Matches BashTool's !preventCwdChanges guard.
+          // Runs before the backgroundTaskId early-return: a command may change
+          // CWD before being backgrounded (e.g. `Set-Location C:\temp;
+          // Start-Sleep 60`), and BashTool has no such early return — its
+          // backgrounded results flow through resetCwdIfOutsideProject at :945.
+          let stderrForShellReset = "";
+          if (isMainThread) {
+            const appState = toolUseContext.getAppState();
+            if (resetCwdIfOutsideProject(appState.toolPermissionContext)) {
+              stderrForShellReset = stdErrAppendShellResetMessage("");
+            }
+          }
+
+          // If backgrounded, return immediately with task ID. Strip hints first
+          // so interrupt-backgrounded fullOutput doesn't leak the tag to the
+          // model (BashTool has no early return, so all paths flow through its
+          // single extraction site).
+          if (result.backgroundTaskId) {
+            const bgExtracted = extractAgenCCodeHints(
+              result.stdout || "",
+              input.command,
+            );
+            if (isMainThread && bgExtracted.hints.length > 0) {
+              for (const hint of bgExtracted.hints) maybeRecordPluginHint(hint);
+            }
+            return {
+              data: {
+                stdout: bgExtracted.stripped,
+                stderr: [result.stderr || "", stderrForShellReset]
+                  .filter(Boolean)
+                  .join("\n"),
+                interrupted: false,
+                backgroundTaskId: result.backgroundTaskId,
+                backgroundedByUser: result.backgroundedByUser,
+                assistantAutoBackgrounded: result.assistantAutoBackgrounded,
+              },
+            };
+          }
+          const stdoutAccumulator = new EndTruncatingAccumulator();
+          const processedStdout = (result.stdout || "").trimEnd();
+          stdoutAccumulator.append(processedStdout + EOL);
+
+          // Interpret exit code using semantic rules. PS-native cmdlets (Select-String,
+          // Compare-Object, Test-Path) exit 0 on no-match so they always hit the default
+          // here. This primarily handles external .exe's (grep, rg, findstr, fc, robocopy)
+          // where non-zero can mean "no match" / "files copied" rather than failure.
+          const interpretation = interpretCommandResult(
+            input.command,
+            result.code,
+            processedStdout,
+            result.stderr || "",
+          );
+
+          // getErrorParts() in toolErrors.ts already prepends 'Exit code N'
+          // from error.code when building the ShellError message. Do not
+          // duplicate it into stdout here (BashTool's append at :939 is dead
+          // code — it throws before stdoutAccumulator.toString() is read).
+
+          let stdout = stripEmptyLines(stdoutAccumulator.toString());
+
+          // AgenC hints protocol: CLIs/SDKs gated on AGENCCODE=1 emit a
+          // `<agenc-code-hint />` tag to stderr (merged into stdout here). Scan,
+          // record for useAgenCCodeHintRecommendation to surface, then strip
+          // so the model never sees the tag — a zero-token side channel.
+          // Stripping runs unconditionally (subagent output must stay clean too);
+          // only the dialog recording is main-thread-only.
+          const extracted = extractAgenCCodeHints(stdout, input.command);
+          stdout = extracted.stripped;
+          if (isMainThread && extracted.hints.length > 0) {
+            for (const hint of extracted.hints) maybeRecordPluginHint(hint);
+          }
+
+          // preSpawnError means exec() succeeded but the inner shell failed before
+          // the command ran (e.g. CWD deleted). createFailedCommand sets code=1,
+          // which interpretCommandResult can mistake for grep-no-match / findstr
+          // string-not-found. Throw it directly. Matches BashTool.tsx:957.
+          if (result.preSpawnError) {
+            throw new Error(result.preSpawnError);
+          }
+          if (interpretation.isError && !isInterrupt) {
+            throw new ShellError(
+              stdout,
+              result.stderr || "",
+              result.code,
+              result.interrupted,
+            );
+          }
+
+          // Large output: file on disk has more than getMaxOutputLength() bytes.
+          // stdout already contains the first chunk. Copy the output file to the
+          // tool-results dir so the model can read it via FileRead. If > 64 MB,
+          // truncate after copying. Matches BashTool.tsx:983-1005.
+          //
+          // Placed AFTER the preSpawnError/ShellError throws (matches BashTool's
+          // ordering, where persistence is post-try/finally): a failing command
+          // that also produced >maxOutputLength bytes would otherwise do 3-4 disk
+          // syscalls, store to tool-results/, then throw — orphaning the file.
+          const MAX_PERSISTED_SIZE = 64 * 1024 * 1024;
+          let persistedOutputPath: string | undefined;
+          let persistedOutputSize: number | undefined;
+          if (result.outputFilePath && result.outputTaskId) {
+            try {
+              const fileStat = await fsStat(result.outputFilePath);
+              persistedOutputSize = fileStat.size;
+              await ensureToolResultsDir();
+              const dest = getToolResultPath(result.outputTaskId, false);
+              if (fileStat.size > MAX_PERSISTED_SIZE) {
+                await fsTruncate(result.outputFilePath, MAX_PERSISTED_SIZE);
+              }
+              try {
+                await link(result.outputFilePath, dest);
+              } catch {
+                await copyFile(result.outputFilePath, dest);
+              }
+              persistedOutputPath = dest;
+            } catch {
+              // File may already be gone — stdout preview is sufficient
+            }
+          }
+
+          // Cap image dimensions + size if present (CC-304 — see
+          // resizeShellImageOutput). Scope the decoded buffer so it can be
+          // reclaimed before we build the output object.
+          let isImage = isImageOutput(stdout);
+          let compressedStdout = stdout;
+          if (isImage) {
+            const resized = await resizeShellImageOutput(
+              stdout,
+              result.outputFilePath,
+              persistedOutputSize,
+            );
+            if (resized) {
+              compressedStdout = resized;
+            } else {
+              // Parse failed (e.g. multi-line stdout after the data URL). Keep
+              // isImage in sync with what we actually send so the UI label stays
+              // accurate — mapToolResultToToolResultBlockParam's defensive
+              // fallthrough will send text, not an image block.
+              isImage = false;
+            }
+          }
+          const finalStderr = [result.stderr || "", stderrForShellReset]
+            .filter(Boolean)
+            .join("\n");
+          return {
+            data: {
+              stdout: compressedStdout,
+              stderr: finalStderr,
+              interrupted: result.interrupted,
+              returnCodeInterpretation: interpretation.message,
+              isImage,
+              persistedOutputPath,
+              persistedOutputSize,
+            },
+          };
+        } finally {
+          if (setToolJSX) setToolJSX(null);
         }
-      }
-      const finalStderr = [result.stderr || '', stderrForShellReset].filter(Boolean).join('\n');
-      return {
-        data: {
-          stdout: compressedStdout,
-          stderr: finalStderr,
-          interrupted: result.interrupted,
-          returnCodeInterpretation: interpretation.message,
-          isImage,
-          persistedOutputPath,
-          persistedOutputSize
-        }
-      };
-    } finally {
-      if (setToolJSX) setToolJSX(null);
-    }
       },
-      toDispatchResult: result => ({ content: JSON.stringify(result.data) })
+      toDispatchResult: (result) => ({ content: JSON.stringify(result.data) }),
     });
   },
   isResultTruncated(output: Out): boolean {
-    return isOutputLineTruncated(output.stdout) || isOutputLineTruncated(output.stderr);
-  }
+    return (
+      isOutputLineTruncated(output.stdout) ||
+      isOutputLineTruncated(output.stderr)
+    );
+  },
 } satisfies ToolDef<InputSchema, Out>);
 async function* runPowerShellCommand({
   input,
@@ -711,8 +878,9 @@ async function* runPowerShellCommand({
   isMainThread,
   toolUseId,
   agentId,
+  queueOwner,
   sandboxExecutionBroker,
-  sandboxExecutionSurface
+  sandboxExecutionSurface,
 }: {
   input: PowerShellToolInput;
   abortController: AbortController;
@@ -722,29 +890,37 @@ async function* runPowerShellCommand({
   isMainThread?: boolean;
   toolUseId?: string;
   agentId?: AgentId;
+  queueOwner: SessionQueueOwner;
   sandboxExecutionBroker: SandboxExecutionBrokerLike;
   sandboxExecutionSurface: SandboxExecutionSurface;
-}): AsyncGenerator<{
-  type: 'progress';
-  output: string;
-  fullOutput: string;
-  elapsedTimeSeconds: number;
-  totalLines: number;
-  totalBytes: number;
-  taskId?: string;
-  timeoutMs?: number;
-}, ExecResult, void> {
+}): AsyncGenerator<
+  {
+    type: "progress";
+    output: string;
+    fullOutput: string;
+    elapsedTimeSeconds: number;
+    totalLines: number;
+    totalBytes: number;
+    taskId?: string;
+    timeoutMs?: number;
+  },
+  ExecResult,
+  void
+> {
   const {
     command,
     description,
     timeout,
     run_in_background,
     dangerouslyDisableSandbox,
-    _dangerouslyDisableSandboxApproved
+    _dangerouslyDisableSandboxApproved,
   } = input;
-  const timeoutMs = Math.min(timeout || getDefaultTimeoutMs(), getMaxTimeoutMs());
-  let fullOutput = '';
-  let lastProgressOutput = '';
+  const timeoutMs = Math.min(
+    timeout || getDefaultTimeoutMs(),
+    getMaxTimeoutMs(),
+  );
+  let fullOutput = "";
+  let lastProgressOutput = "";
   let lastTotalLines = 0;
   let lastTotalBytes = 0;
   let backgroundShellId: string | undefined = undefined;
@@ -756,26 +932,27 @@ async function* runPowerShellCommand({
   // waiting for the next setTimeout tick (matches BashTool pattern).
   let resolveProgress: (() => void) | null = null;
   function createProgressSignal(): Promise<null> {
-    return new Promise<null>(resolve => {
+    return new Promise<null>((resolve) => {
       resolveProgress = () => resolve(null);
     });
   }
-  const shouldAutoBackground = !isBackgroundTasksDisabled && isAutobackgroundingAllowed(command);
+  const shouldAutoBackground =
+    !isBackgroundTasksDisabled && isAutobackgroundingAllowed(command);
   const powershellPath = await getCachedPowerShellPath();
   if (!powershellPath) {
     // Pre-flight failure: pwsh not installed. Return code 0 so call() surfaces
     // this as a graceful stderr message rather than throwing ShellError — the
     // command never ran, so there is no meaningful non-zero exit to report.
     return {
-      stdout: '',
-      stderr: 'PowerShell is not available on this system.',
+      stdout: "",
+      stderr: "PowerShell is not available on this system.",
       code: 0,
-      interrupted: false
+      interrupted: false,
     };
   }
   let shellCommand: Awaited<ReturnType<typeof exec>>;
   try {
-    shellCommand = await exec(command, abortController.signal, 'powershell', {
+    shellCommand = await exec(command, abortController.signal, "powershell", {
       timeout: timeoutMs,
       onProgress(lastLines, allLines, totalLines, totalBytes, isIncomplete) {
         lastProgressOutput = lastLines;
@@ -790,14 +967,17 @@ async function* runPowerShellCommand({
       // string). On Windows native, sandbox is unsupported; shouldUseSandbox()
       // returns false via isSandboxingEnabled() → isSupportedPlatform() → false.
       // The explicit platform check is redundant-but-obvious.
-      shouldUseSandbox: getPlatform() === 'windows' ? false : shouldUseSandbox({
-        command,
-        dangerouslyDisableSandbox,
-        _dangerouslyDisableSandboxApproved
-      }),
+      shouldUseSandbox:
+        getPlatform() === "windows"
+          ? false
+          : shouldUseSandbox({
+              command,
+              dangerouslyDisableSandbox,
+              _dangerouslyDisableSandboxApproved,
+            }),
       shouldAutoBackground,
       sandboxExecutionBroker,
-      sandboxExecutionSurface
+      sandboxExecutionSurface,
     });
   } catch (e) {
     if (e instanceof SandboxExecutionError) throw e;
@@ -805,29 +985,35 @@ async function* runPowerShellCommand({
     // Pre-flight failure: spawn/exec rejected before the command ran. Use
     // code 0 so call() returns stderr gracefully instead of throwing ShellError.
     return {
-      stdout: '',
+      stdout: "",
       stderr: `Failed to execute PowerShell command: ${getErrorMessage(e)}`,
       code: 0,
-      interrupted: false
+      interrupted: false,
     };
   }
   const resultPromise = shellCommand.result;
 
   // Helper to spawn a background task and return its ID
   async function spawnBackgroundTask(): Promise<string> {
-    const handle = await spawnShellTask({
-      command,
-      description: description || command,
-      shellCommand,
-      toolUseId,
-      agentId
-    }, {
-      abortController,
-      getAppState: () => {
-        throw new Error('getAppState not available in runPowerShellCommand context');
+    const handle = await spawnShellTask(
+      {
+        command,
+        description: description || command,
+        shellCommand,
+        queueOwner,
+        toolUseId,
+        agentId,
       },
-      setAppState
-    });
+      {
+        abortController,
+        getAppState: () => {
+          throw new Error(
+            "getAppState not available in runPowerShellCommand context",
+          );
+        },
+        setAppState,
+      },
+    );
     return handle.taskId;
   }
 
@@ -838,7 +1024,15 @@ async function* runPowerShellCommand({
     // would overwrite tasks[taskId], emit a duplicate task_started SDK event,
     // and leak the first cleanup callback.
     if (foregroundTaskId) {
-      if (!backgroundExistingForegroundTask(foregroundTaskId, shellCommand, description || command, setAppState, toolUseId)) {
+      if (
+        !backgroundExistingForegroundTask(
+          foregroundTaskId,
+          shellCommand,
+          description || command,
+          setAppState,
+          toolUseId,
+        )
+      ) {
         return;
       }
       backgroundShellId = foregroundTaskId;
@@ -848,7 +1042,7 @@ async function* runPowerShellCommand({
 
     // No foreground task registered — spawn a new background task
     // Note: spawn is essentially synchronous despite being async
-    void spawnBackgroundTask().then(shellId => {
+    void spawnBackgroundTask().then((shellId) => {
       backgroundShellId = shellId;
 
       // Wake the generator's Promise.race so it sees backgroundShellId.
@@ -867,7 +1061,7 @@ async function* runPowerShellCommand({
 
   // Set up auto-backgrounding on timeout if enabled
   if (shellCommand.onTimeout && shouldAutoBackground) {
-    shellCommand.onTimeout(backgroundFn => {
+    shellCommand.onTimeout((backgroundFn) => {
       startBackgrounding(backgroundFn);
     });
   }
@@ -875,9 +1069,18 @@ async function* runPowerShellCommand({
   // In assistant mode, the main agent should stay responsive. Auto-background
   // blocking commands after ASSISTANT_BLOCKING_BUDGET_MS so the agent can keep
   // coordinating instead of waiting. The command keeps running — no state loss.
-  if (feature('KAIROS') && getKairosActive() && isMainThread && !isBackgroundTasksDisabled && run_in_background !== true) {
+  if (
+    feature("KAIROS") &&
+    getKairosActive() &&
+    isMainThread &&
+    !isBackgroundTasksDisabled &&
+    run_in_background !== true
+  ) {
     setTimeout(() => {
-      if (shellCommand.status === 'running' && backgroundShellId === undefined) {
+      if (
+        shellCommand.status === "running" &&
+        backgroundShellId === undefined
+      ) {
         assistantAutoBackgrounded = true;
         startBackgrounding();
       }
@@ -890,11 +1093,11 @@ async function* runPowerShellCommand({
   if (run_in_background === true && !isBackgroundTasksDisabled) {
     const shellId = await spawnBackgroundTask();
     return {
-      stdout: '',
-      stderr: '',
+      stdout: "",
+      stderr: "",
       code: 0,
       interrupted: false,
-      backgroundTaskId: shellId
+      backgroundTaskId: shellId,
     };
   }
 
@@ -914,7 +1117,13 @@ async function* runPowerShellCommand({
       const now = Date.now();
       const timeUntilNextProgress = Math.max(0, nextProgressTime - now);
       const progressSignal = createProgressSignal();
-      const result = await Promise.race([resultPromise, new Promise<null>(resolve => setTimeout(r => r(null), timeUntilNextProgress, resolve).unref()), progressSignal]);
+      const result = await Promise.race([
+        resultPromise,
+        new Promise<null>((resolve) =>
+          setTimeout((r) => r(null), timeUntilNextProgress, resolve).unref(),
+        ),
+        progressSignal,
+      ]);
       if (result !== null) {
         // Race: backgrounding fired (15s timer / onTimeout / Ctrl+B) but the
         // command completed before the next poll tick. #handleExit sets
@@ -929,13 +1138,11 @@ async function* runPowerShellCommand({
           markTaskNotified(result.backgroundTaskId, setAppState);
           const fixedResult: ExecResult = {
             ...result,
-            backgroundTaskId: undefined
+            backgroundTaskId: undefined,
           };
           // Mirror ShellCommand.#handleExit's large-output branch that was
           // skipped because #backgroundTaskId was set.
-          const {
-            taskOutput
-          } = shellCommand;
+          const { taskOutput } = shellCommand;
           if (taskOutput.stdoutToFile && !taskOutput.outputFileRedundant) {
             fixedResult.outputFilePath = taskOutput.path;
             fixedResult.outputFileSize = taskOutput.outputFileSize;
@@ -955,17 +1162,21 @@ async function* runPowerShellCommand({
       // Check if command was backgrounded (by timeout or interrupt)
       if (backgroundShellId) {
         return {
-          stdout: interruptBackgroundingStarted ? fullOutput : '',
-          stderr: '',
+          stdout: interruptBackgroundingStarted ? fullOutput : "",
+          stderr: "",
           code: 0,
           interrupted: false,
           backgroundTaskId: backgroundShellId,
-          assistantAutoBackgrounded
+          assistantAutoBackgrounded,
         };
       }
 
       // User submitted a new message - background instead of killing
-      if (abortController.signal.aborted && abortController.signal.reason === 'interrupt' && !interruptBackgroundingStarted) {
+      if (
+        abortController.signal.aborted &&
+        abortController.signal.reason === "interrupt" &&
+        !interruptBackgroundingStarted
+      ) {
         interruptBackgroundingStarted = true;
         if (!isBackgroundTasksDisabled) {
           startBackgrounding();
@@ -980,14 +1191,14 @@ async function* runPowerShellCommand({
 
       // Check if this foreground task was backgrounded via backgroundAll() (ctrl+b)
       if (foregroundTaskId) {
-        if (shellCommand.status === 'backgrounded') {
+        if (shellCommand.status === "backgrounded") {
           return {
-            stdout: '',
-            stderr: '',
+            stdout: "",
+            stderr: "",
             code: 0,
             interrupted: false,
             backgroundTaskId: foregroundTaskId,
-            backgroundedByUser: true
+            backgroundedByUser: true,
           };
         }
       }
@@ -995,33 +1206,45 @@ async function* runPowerShellCommand({
       const elapsed = Date.now() - startTime;
       const elapsedSeconds = Math.floor(elapsed / 1000);
       // Show backgrounding UI hint after threshold
-      if (!isBackgroundTasksDisabled && backgroundShellId === undefined && elapsedSeconds >= PROGRESS_THRESHOLD_MS / 1000 && setToolJSX) {
+      if (
+        !isBackgroundTasksDisabled &&
+        backgroundShellId === undefined &&
+        elapsedSeconds >= PROGRESS_THRESHOLD_MS / 1000 &&
+        setToolJSX
+      ) {
         if (!foregroundTaskId) {
-          foregroundTaskId = registerForeground({
-            command,
-            description: description || command,
-            shellCommand,
-            agentId
-          }, setAppState, toolUseId);
+          foregroundTaskId = registerForeground(
+            {
+              command,
+              description: description || command,
+              shellCommand,
+              queueOwner,
+              agentId,
+            },
+            setAppState,
+            toolUseId,
+          );
         }
         setToolJSX({
           jsx: <BackgroundHint />,
           shouldHidePromptInput: false,
           shouldContinueAnimation: true,
-          showSpinner: true
+          showSpinner: true,
         });
       }
       yield {
-        type: 'progress',
+        type: "progress",
         fullOutput,
         output: lastProgressOutput,
         elapsedTimeSeconds: elapsedSeconds,
         totalLines: lastTotalLines,
         totalBytes: lastTotalBytes,
         taskId: shellCommand.taskOutput.taskId,
-        ...(timeout ? {
-          timeoutMs
-        } : undefined)
+        ...(timeout
+          ? {
+              timeoutMs,
+            }
+          : undefined),
       };
       nextProgressTime = Date.now() + PROGRESS_INTERVAL_MS;
     }
@@ -1030,7 +1253,7 @@ async function* runPowerShellCommand({
     // Ensure cleanup runs on every exit path (success, rejection, abort).
     // Skip when backgrounded — LocalShellTask owns cleanup for those.
     // Matches main #21105.
-    if (!backgroundShellId && shellCommand.status !== 'backgrounded') {
+    if (!backgroundShellId && shellCommand.status !== "backgrounded") {
       if (foregroundTaskId) {
         unregisterForeground(foregroundTaskId, setAppState);
       }
@@ -1040,15 +1263,21 @@ async function* runPowerShellCommand({
 }
 
 function readSandboxExecutionBroker(
-  context: Parameters<Tool['call']>[1],
+  context: Parameters<Tool["call"]>[1],
 ): SandboxExecutionBrokerLike | undefined {
-  const extended = context as Parameters<Tool['call']>[1] & {
-    readonly services?: { readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike };
+  const extended = context as Parameters<Tool["call"]>[1] & {
+    readonly services?: {
+      readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+    };
     readonly session?: {
-      readonly services?: { readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike };
+      readonly services?: {
+        readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+      };
     };
   };
-  return extended.services?.sandboxExecutionBroker ??
+  return (
+    extended.services?.sandboxExecutionBroker ??
     extended.session?.services?.sandboxExecutionBroker ??
-    peekAmbientRuntimeSession()?.services.sandboxExecutionBroker;
+    peekAmbientRuntimeSession()?.services.sandboxExecutionBroker
+  );
 }

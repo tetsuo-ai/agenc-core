@@ -861,7 +861,8 @@ export async function streamModel(
       configStore?: { current?: () => { stream_watchdog_timeout_ms?: number } };
     };
     try {
-      const value = services.configStore?.current?.()?.stream_watchdog_timeout_ms;
+      const value =
+        services.configStore?.current?.()?.stream_watchdog_timeout_ms;
       return typeof value === "number" && Number.isFinite(value) && value > 0
         ? value
         : undefined;
@@ -985,9 +986,11 @@ export async function streamModel(
       for (const call of validatedToolCalls.valid) {
         const block = parseToolUseBlocks([call])[0];
         if (!block) continue;
-        streamedToolCalls.set(call.id, call);
-        streamedToolBlocks.set(block.id, block);
-        if (queueStreamingToolCall(executor, block, call, session)) {
+        if (
+          queueStreamingToolCall(executor, block, call, session, ctx, state)
+        ) {
+          streamedToolCalls.set(call.id, call);
+          streamedToolBlocks.set(block.id, block);
           (
             executor as {
               dispatchPending?: (opts?: {
@@ -1042,14 +1045,14 @@ export async function streamModel(
             onFallbackRecorded: clearRecoveryFallback,
           }
         : attempt === "prewarm_fallback"
-        ? {
-            fallback: {
-              fromModel: model,
-              fromProvider: providerName,
-              reason: "startup_prewarm_failed_before_first_chunk",
-            },
-          }
-        : {}),
+          ? {
+              fallback: {
+                fromModel: model,
+                fromProvider: providerName,
+                reason: "startup_prewarm_failed_before_first_chunk",
+              },
+            }
+          : {}),
       invoke: (admittedOptions) =>
         provider.chatStream(messages, onChunk, admittedOptions),
     });
@@ -1173,7 +1176,10 @@ export async function streamModel(
     state.needsFollowUp = false;
   } else {
     const mergedToolBlocks = new Map(streamedToolBlocks);
-    for (const block of parseToolUseBlocks([...assistant.toolCalls])) {
+    const admittedAssistantToolCalls = assistant.toolCalls.filter(
+      (call) => !state.editorToolCallLimitDeniedIds.has(call.id),
+    );
+    for (const block of parseToolUseBlocks(admittedAssistantToolCalls)) {
       mergedToolBlocks.set(block.id, block);
     }
     state.toolUseBlocks = [...mergedToolBlocks.values()];

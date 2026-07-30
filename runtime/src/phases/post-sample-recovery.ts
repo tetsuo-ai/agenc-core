@@ -110,9 +110,10 @@ export async function runContextCollapseOverflowRecovery(params: {
  */
 const RECOVERY_TAIL_RESULT_CAP_CHARS = 20_000;
 
-async function recoverFromOverflow(
-  messages: RuntimeMessage[],
-): Promise<{ readonly messages: RuntimeMessage[]; readonly committed: number }> {
+async function recoverFromOverflow(messages: RuntimeMessage[]): Promise<{
+  readonly messages: RuntimeMessage[];
+  readonly committed: number;
+}> {
   if (messages.length < 4) return { messages, committed: 0 };
   const retainedTail = shrinkOversizedToolResults(
     selectOverflowRetainedTail(messages) as CollapseRuntimeMessage[],
@@ -198,7 +199,9 @@ function toCollapseRuntimeMessages(
       role,
       content: runtimeContent,
       ...(message.role !== role ? { originalRole: message.role } : {}),
-      ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+      ...(message.toolCallId !== undefined
+        ? { toolCallId: message.toolCallId }
+        : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase !== undefined ? { phase: message.phase } : {}),
       type: role,
@@ -246,7 +249,9 @@ function fromCollapseRuntimeMessage(
       role,
       content: fromRuntimeMessageContent(message.content),
       ...(toolCalls !== undefined ? { toolCalls } : {}),
-      ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+      ...(message.toolCallId !== undefined
+        ? { toolCallId: message.toolCallId }
+        : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase === "commentary" || message.phase === "final_answer"
         ? { phase: message.phase }
@@ -286,9 +291,7 @@ function normalizeRole(value: unknown): LLMMessage["role"] | null {
   return null;
 }
 
-function readContent(
-  message: CollapseRuntimeMessage,
-): LLMMessage["content"] {
+function readContent(message: CollapseRuntimeMessage): LLMMessage["content"] {
   const content = message.message?.content ?? message.content ?? "";
   return cloneContent(content);
 }
@@ -309,6 +312,17 @@ export async function postSampleRecovery(
   signal?: AbortSignal,
 ): Promise<TurnState> {
   if (signal?.aborted) return state;
+
+  // Defense in depth for direct/future callers: an Editor interaction is
+  // bounded to its immutable request plus trusted read/proposal tool loop.
+  // The recovery ladder can compact/rewrite messages, inject prompts, execute
+  // hooks, or stage a model/provider switch, so no ladder transition may
+  // survive this request-scoped boundary.
+  if (ctx.editorInteraction !== undefined) {
+    state.pendingBudgetDecision = undefined;
+    state.transition = undefined;
+    return state;
+  }
 
   // I-22: if stream-model stashed a budget-exceeded decision on a
   // tool-free response, route to token_budget_continuation before the
@@ -400,7 +414,8 @@ export async function postSampleRecovery(
       },
 
       async onStreamingFallback(c) {
-        const executor = c.state.streamingToolExecutor as StreamingToolExecutor | null;
+        const executor = c.state
+          .streamingToolExecutor as StreamingToolExecutor | null;
         tombstoneOrphans(c.state, {
           reason: "streaming_fallback",
           executor,
@@ -426,7 +441,8 @@ export async function postSampleRecovery(
       },
 
       async onFallbackError(c, error) {
-        const executor = c.state.streamingToolExecutor as StreamingToolExecutor | null;
+        const executor = c.state
+          .streamingToolExecutor as StreamingToolExecutor | null;
         runModelFallback({
           session: c.session,
           state: c.state,

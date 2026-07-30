@@ -223,6 +223,139 @@ function createClient(): AgenCDaemonTuiClient & {
           eventAlreadyEmitted: true,
         };
       }
+      if (
+        method === "workspace.editor.acquire" ||
+        method === "workspace.editor.heartbeat"
+      ) {
+        return {
+          workspaceRoot: "/workspace",
+          editorInstanceId: "editor_1",
+          leaseToken: "00000000-0000-4000-8000-000000000001",
+          epoch: 2,
+          sequence: -1,
+          expiresAt: 15_000,
+        } as never;
+      }
+      if (method === "workspace.editor.sync") {
+        return {
+          accepted: true,
+          sequence: 1,
+          expiresAt: 16_000,
+          dirtyPaths: [],
+          stalePaths: [],
+        } as never;
+      }
+      if (method === "workspace.editor.release") {
+        return {
+          released: true,
+          stalePaths: [],
+        } as never;
+      }
+      if (method === "workspace.editor.topology.reserve") {
+        return {
+          tokenId: "topology-1",
+          targets: params?.targets ?? [],
+        } as never;
+      }
+      if (method === "workspace.editor.topology.complete") {
+        return {
+          completed: true,
+          tokenId: "topology-1",
+          status: params?.status ?? "applied",
+          sync: {
+            accepted: true,
+            sequence: params?.sequence ?? 0,
+            expiresAt: 17_000,
+            dirtyPaths: [],
+            stalePaths: [],
+          },
+        } as never;
+      }
+      if (method === "workspace.editor.topology.release") {
+        return {
+          released: true,
+          tokenId: "topology-1",
+          sync: {
+            accepted: true,
+            sequence: params?.sequence ?? 0,
+            expiresAt: 18_000,
+            dirtyPaths: [],
+            stalePaths: [],
+          },
+        } as never;
+      }
+      if (method === "workspace.editor.topology.recovered.list") {
+        return {
+          mutations: [
+            {
+              tokenId: "recovered-topology-1",
+              workspaceRoot: "/workspace",
+              targets: [
+                {
+                  path: "/workspace/src",
+                  includeDescendants: true,
+                },
+              ],
+              source: "editor",
+              createdAt: 123,
+            },
+          ],
+        } as never;
+      }
+      if (method === "workspace.editor.topology.recovered.resolve") {
+        return {
+          resolved: true,
+          tokenId: params?.tokenId,
+          status: "unknown_outcome",
+        } as never;
+      }
+      if (method === "workspace.editor.proposal.get") {
+        return {
+          proposalId: "proposal-1",
+          workspaceRoot: "/workspace",
+          path: "/workspace/src/index.ts",
+          beforeText: "const value = 1;\n",
+          afterText: "const value = 2;\n",
+          baseContentSha256: "a".repeat(64),
+          baseChangedtick: 4,
+          bufferHandle: 7,
+          source: "file_edit",
+        } as never;
+      }
+      if (method === "workspace.editor.proposal.status") {
+        return {
+          status: "committed",
+          proposalId: "proposal-1",
+          path: "/workspace/src/index.ts",
+          source: "file_edit",
+          baseContentSha256: "a".repeat(64),
+          afterContentSha256: "b".repeat(64),
+          baseChangedtick: 4,
+          bufferHandle: 7,
+        } as never;
+      }
+      if (method === "workspace.editor.proposal.apply") {
+        return {
+          applied: true,
+          proposalId: "proposal-1",
+          path: "/workspace/src/index.ts",
+          changedtick: 5,
+          contentSha256: "b".repeat(64),
+        } as never;
+      }
+      if (method === "workspace.editor.proposal.discard") {
+        return {
+          discarded: true,
+          proposalId: "proposal-1",
+          path: "/workspace/src/index.ts",
+        } as never;
+      }
+      if (method === "workspace.editor.changes.list") {
+        return {
+          sequence: 3,
+          changes: [],
+        } as never;
+      }
       return {} as AgenCDaemonResultByMethod[AgenCDaemonMethod];
     },
     subscribeToSessionEvents: (sessionId, cb) => {
@@ -333,10 +466,16 @@ describe("AgenC TUI daemon session adapter", () => {
     });
     client.emit("session_1", {
       type: "daemon.event",
-      msg: { type: "user_message", payload: { message: "hello", displayText: "hello" } },
+      msg: {
+        type: "user_message",
+        payload: { message: "hello", displayText: "hello" },
+      },
     });
     expect(early).toEqual([
-      { type: "user_message", payload: { message: "hello", displayText: "hello" } },
+      {
+        type: "user_message",
+        payload: { message: "hello", displayText: "hello" },
+      },
     ]);
 
     // The late subscriber must receive the same backlog at registration.
@@ -345,7 +484,10 @@ describe("AgenC TUI daemon session adapter", () => {
       late.push(event as JsonObject);
     });
     expect(late).toEqual([
-      { type: "user_message", payload: { message: "hello", displayText: "hello" } },
+      {
+        type: "user_message",
+        payload: { message: "hello", displayText: "hello" },
+      },
     ]);
 
     // Live events after registration keep flowing to both (no doubles).
@@ -354,7 +496,10 @@ describe("AgenC TUI daemon session adapter", () => {
       msg: { type: "turn_delta", id: "turn_1" },
     });
     expect(late).toEqual([
-      { type: "user_message", payload: { message: "hello", displayText: "hello" } },
+      {
+        type: "user_message",
+        payload: { message: "hello", displayText: "hello" },
+      },
       { type: "turn_delta", id: "turn_1" },
     ]);
     unsubscribeEarly();
@@ -711,6 +856,52 @@ describe("AgenC TUI daemon session adapter", () => {
     });
   });
 
+  it("preserves exact editor selection metadata through message.stream", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await session.submit?.("explain this selection", {
+      editorInteraction: {
+        interactionId: "interaction-1",
+        kind: "explain",
+        policy: "read_only",
+        editorInstanceId: "editor-1",
+        bufferHandle: 7,
+        changedtick: 19,
+        contentSha256: "a".repeat(64),
+        path: "/workspace/src/main.ts",
+        range: {
+          start: { line: 4, column: 2 },
+          end: { line: 6, column: 9 },
+        },
+        selectionMode: "block",
+      },
+    });
+
+    expect(client.requests).toHaveLength(1);
+    expect(client.requests[0]).toMatchObject({
+      method: "message.stream",
+      params: {
+        sessionId: "session_1",
+        content: "explain this selection",
+        metadata: {
+          editorInteraction: {
+            range: {
+              start: { line: 4, column: 2 },
+              end: { line: 6, column: 9 },
+            },
+            selectionMode: "block",
+          },
+        },
+      },
+    });
+  });
+
   it("clears daemon-owned session history through session.clear", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({
@@ -798,7 +989,9 @@ describe("AgenC TUI daemon session adapter", () => {
       clientId: "tui_1",
     });
 
-    await expect(session.cancelActiveTurn?.("interrupted")).resolves.toBeUndefined();
+    await expect(
+      session.cancelActiveTurn?.("interrupted"),
+    ).resolves.toBeUndefined();
   });
 
   it("partially compacts daemon-owned session history through the internal TUI RPC", async () => {
@@ -880,11 +1073,13 @@ describe("AgenC TUI daemon session adapter", () => {
     // /model and /provider stage the switch synchronously; the bridge
     // fires session.setModel fire-and-forget. Flush the microtask queue
     // so the request lands before assertion.
-    (session as unknown as {
-      setPendingProviderSwitch: (
-        spec: { provider: string; model: string } | null,
-      ) => void;
-    }).setPendingProviderSwitch({ provider: "openai", model: "gpt-x" });
+    (
+      session as unknown as {
+        setPendingProviderSwitch: (
+          spec: { provider: string; model: string } | null,
+        ) => void;
+      }
+    ).setPendingProviderSwitch({ provider: "openai", model: "gpt-x" });
     await Promise.resolve();
     await Promise.resolve();
 
@@ -909,9 +1104,11 @@ describe("AgenC TUI daemon session adapter", () => {
       clientId: "tui_1",
     });
 
-    (session as unknown as {
-      setPendingProviderSwitch: (spec: null) => void;
-    }).setPendingProviderSwitch(null);
+    (
+      session as unknown as {
+        setPendingProviderSwitch: (spec: null) => void;
+      }
+    ).setPendingProviderSwitch(null);
     await Promise.resolve();
 
     expect(client.requests).toEqual([]);
@@ -926,9 +1123,11 @@ describe("AgenC TUI daemon session adapter", () => {
       clientId: "tui_1",
     });
 
-    await (session as unknown as {
-      setDaemonPermissionMode: (mode: string) => Promise<unknown>;
-    }).setDaemonPermissionMode("plan");
+    await (
+      session as unknown as {
+        setDaemonPermissionMode: (mode: string) => Promise<unknown>;
+      }
+    ).setDaemonPermissionMode("plan");
 
     expect(client.requests).toEqual([
       {
@@ -941,7 +1140,7 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
-  it("forwards applyDaemonConfig to the daemon session.applyConfig RPC", async () => {
+  it("reloads daemon-global config before applying it to the live session", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({
       baseSession: createBaseSession(),
@@ -950,19 +1149,23 @@ describe("AgenC TUI daemon session adapter", () => {
       clientId: "tui_1",
     });
 
-    await (session as unknown as {
-      applyDaemonConfig: (params: {
-        profile?: string;
-        reload?: boolean;
-      }) => Promise<unknown>;
-    }).applyDaemonConfig({ profile: "fast" });
+    await (
+      session as unknown as {
+        applyDaemonConfig: (params: {
+          profile?: string;
+          reload?: boolean;
+        }) => Promise<unknown>;
+      }
+    ).applyDaemonConfig({ profile: "fast" });
 
-    await (session as unknown as {
-      applyDaemonConfig: (params: {
-        profile?: string;
-        reload?: boolean;
-      }) => Promise<unknown>;
-    }).applyDaemonConfig({ reload: true });
+    await (
+      session as unknown as {
+        applyDaemonConfig: (params: {
+          profile?: string;
+          reload?: boolean;
+        }) => Promise<unknown>;
+      }
+    ).applyDaemonConfig({ reload: true });
 
     expect(client.requests).toEqual([
       {
@@ -970,8 +1173,343 @@ describe("AgenC TUI daemon session adapter", () => {
         params: { sessionId: "session_1", profile: "fast" },
       },
       {
+        method: "daemon.reload",
+        params: {},
+      },
+      {
         method: "session.applyConfig",
         params: { sessionId: "session_1", reload: true },
+      },
+    ]);
+  });
+
+  it("forwards workspace editor lease and synchronization RPCs without session projection", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const lease = {
+      workspaceRoot: "/workspace",
+      editorInstanceId: "editor_1",
+      leaseToken: "00000000-0000-4000-8000-000000000001",
+      epoch: 2,
+    };
+
+    await expect(
+      session.acquireWorkspaceEditor?.({
+        workspaceRoot: lease.workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+      }),
+    ).resolves.toMatchObject({
+      ...lease,
+      sequence: -1,
+      expiresAt: 15_000,
+    });
+    await expect(
+      session.syncWorkspaceEditor?.({
+        ...lease,
+        sequence: 1,
+        buffers: [
+          {
+            path: "/workspace/src/index.ts",
+            bufferHandle: 7,
+            changedtick: 4,
+            contentSha256: "a".repeat(64),
+            contentBytes: 0,
+            dirty: false,
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      accepted: true,
+      sequence: 1,
+      expiresAt: 16_000,
+      dirtyPaths: [],
+      stalePaths: [],
+    });
+    await expect(
+      session.heartbeatWorkspaceEditor?.(lease),
+    ).resolves.toMatchObject({
+      ...lease,
+      sequence: -1,
+      expiresAt: 15_000,
+    });
+    await expect(
+      session.releaseWorkspaceEditor?.({
+        ...lease,
+        abandonDirty: false,
+      }),
+    ).resolves.toEqual({
+      released: true,
+      stalePaths: [],
+    });
+    const topologyTargets = [
+      {
+        path: "/workspace/src",
+        includeDescendants: true,
+        allowOwnedClean: true,
+      },
+      {
+        path: "/workspace/lib",
+        includeDescendants: true,
+        allowOwnedClean: false,
+      },
+    ] as const;
+    const finalBuffers = [
+      {
+        path: "/workspace/lib/index.ts",
+        bufferHandle: 7,
+        changedtick: 5,
+        contentSha256: "b".repeat(64),
+        contentBytes: 0,
+        dirty: false,
+      },
+    ] as const;
+    await expect(
+      session.reserveWorkspaceEditorTopology?.({
+        ...lease,
+        targets: topologyTargets,
+      }),
+    ).resolves.toEqual({
+      tokenId: "topology-1",
+      targets: topologyTargets,
+    });
+    await expect(
+      session.completeWorkspaceEditorTopology?.({
+        ...lease,
+        tokenId: "topology-1",
+        status: "applied",
+        sequence: 2,
+        buffers: finalBuffers,
+      }),
+    ).resolves.toEqual({
+      completed: true,
+      tokenId: "topology-1",
+      status: "applied",
+      sync: {
+        accepted: true,
+        sequence: 2,
+        expiresAt: 17_000,
+        dirtyPaths: [],
+        stalePaths: [],
+      },
+    });
+    await expect(
+      session.releaseWorkspaceEditorTopology?.({
+        ...lease,
+        tokenId: "topology-1",
+        sequence: 3,
+        buffers: finalBuffers,
+      }),
+    ).resolves.toEqual({
+      released: true,
+      tokenId: "topology-1",
+      sync: {
+        accepted: true,
+        sequence: 3,
+        expiresAt: 18_000,
+        dirtyPaths: [],
+        stalePaths: [],
+      },
+    });
+    await expect(
+      session.listRecoveredWorkspaceEditorTopologies?.(lease),
+    ).resolves.toEqual({
+      mutations: [
+        {
+          tokenId: "recovered-topology-1",
+          workspaceRoot: "/workspace",
+          targets: [
+            {
+              path: "/workspace/src",
+              includeDescendants: true,
+            },
+          ],
+          source: "editor",
+          createdAt: 123,
+        },
+      ],
+    });
+    await expect(
+      session.resolveRecoveredWorkspaceEditorTopology?.({
+        ...lease,
+        tokenId: "recovered-topology-1",
+      }),
+    ).resolves.toEqual({
+      resolved: true,
+      tokenId: "recovered-topology-1",
+      status: "unknown_outcome",
+    });
+    await expect(
+      session.getWorkspaceEditorProposal?.({
+        ...lease,
+        proposalId: "proposal-1",
+      }),
+    ).resolves.toMatchObject({
+      proposalId: "proposal-1",
+      beforeText: "const value = 1;\n",
+      afterText: "const value = 2;\n",
+    });
+    await expect(
+      session.getWorkspaceEditorProposalStatus?.({
+        ...lease,
+        proposalId: "proposal-1",
+      }),
+    ).resolves.toEqual({
+      status: "committed",
+      proposalId: "proposal-1",
+      path: "/workspace/src/index.ts",
+      source: "file_edit",
+      baseContentSha256: "a".repeat(64),
+      afterContentSha256: "b".repeat(64),
+      baseChangedtick: 4,
+      bufferHandle: 7,
+    });
+    await expect(
+      session.applyWorkspaceEditorProposal?.({
+        ...lease,
+        proposalId: "proposal-1",
+        changedtick: 5,
+        contentSha256: "b".repeat(64),
+        content: "const value = 2;\n",
+      }),
+    ).resolves.toMatchObject({
+      applied: true,
+      proposalId: "proposal-1",
+      changedtick: 5,
+    });
+    await expect(
+      session.discardWorkspaceEditorProposal?.({
+        ...lease,
+        proposalId: "proposal-1",
+      }),
+    ).resolves.toMatchObject({
+      discarded: true,
+      proposalId: "proposal-1",
+    });
+    await expect(
+      session.listWorkspaceEditorChanges?.({
+        ...lease,
+        afterSequence: 2,
+      }),
+    ).resolves.toEqual({
+      sequence: 3,
+      changes: [],
+    });
+
+    expect(client.requests).toEqual([
+      {
+        method: "workspace.editor.acquire",
+        params: {
+          workspaceRoot: "/workspace",
+          editorInstanceId: "editor_1",
+        },
+      },
+      {
+        method: "workspace.editor.sync",
+        params: {
+          ...lease,
+          sequence: 1,
+          buffers: [
+            {
+              path: "/workspace/src/index.ts",
+              bufferHandle: 7,
+              changedtick: 4,
+              contentSha256: "a".repeat(64),
+              contentBytes: 0,
+              dirty: false,
+            },
+          ],
+        },
+      },
+      {
+        method: "workspace.editor.heartbeat",
+        params: lease,
+      },
+      {
+        method: "workspace.editor.release",
+        params: {
+          ...lease,
+          abandonDirty: false,
+        },
+      },
+      {
+        method: "workspace.editor.topology.reserve",
+        params: {
+          ...lease,
+          targets: topologyTargets,
+        },
+      },
+      {
+        method: "workspace.editor.topology.complete",
+        params: {
+          ...lease,
+          tokenId: "topology-1",
+          status: "applied",
+          sequence: 2,
+          buffers: finalBuffers,
+        },
+      },
+      {
+        method: "workspace.editor.topology.release",
+        params: {
+          ...lease,
+          tokenId: "topology-1",
+          sequence: 3,
+          buffers: finalBuffers,
+        },
+      },
+      {
+        method: "workspace.editor.topology.recovered.list",
+        params: lease,
+      },
+      {
+        method: "workspace.editor.topology.recovered.resolve",
+        params: {
+          ...lease,
+          tokenId: "recovered-topology-1",
+        },
+      },
+      {
+        method: "workspace.editor.proposal.get",
+        params: {
+          ...lease,
+          proposalId: "proposal-1",
+        },
+      },
+      {
+        method: "workspace.editor.proposal.status",
+        params: {
+          ...lease,
+          proposalId: "proposal-1",
+        },
+      },
+      {
+        method: "workspace.editor.proposal.apply",
+        params: {
+          ...lease,
+          proposalId: "proposal-1",
+          changedtick: 5,
+          contentSha256: "b".repeat(64),
+          content: "const value = 2;\n",
+        },
+      },
+      {
+        method: "workspace.editor.proposal.discard",
+        params: {
+          ...lease,
+          proposalId: "proposal-1",
+        },
+      },
+      {
+        method: "workspace.editor.changes.list",
+        params: {
+          ...lease,
+          afterSequence: 2,
+        },
       },
     ]);
   });
@@ -985,9 +1523,11 @@ describe("AgenC TUI daemon session adapter", () => {
       clientId: "tui_1",
     });
 
-    await (session as unknown as {
-      getDaemonHooksStatus: () => Promise<unknown>;
-    }).getDaemonHooksStatus();
+    await (
+      session as unknown as {
+        getDaemonHooksStatus: () => Promise<unknown>;
+      }
+    ).getDaemonHooksStatus();
 
     expect(client.requests).toEqual([
       {
@@ -1006,9 +1546,11 @@ describe("AgenC TUI daemon session adapter", () => {
       clientId: "tui_1",
     });
 
-    await (session as unknown as {
-      setDaemonHooksDisabled: (disabled: boolean) => Promise<unknown>;
-    }).setDaemonHooksDisabled(true);
+    await (
+      session as unknown as {
+        setDaemonHooksDisabled: (disabled: boolean) => Promise<unknown>;
+      }
+    ).setDaemonHooksDisabled(true);
 
     expect(client.requests).toEqual([
       {
@@ -1029,7 +1571,10 @@ describe("AgenC TUI daemon session adapter", () => {
       realtimeAudioCaptureFactory: async () => ({ stop: vi.fn() }),
     });
 
-    await session.realtime.start({ transport: "websocket", outputModality: "text" });
+    await session.realtime.start({
+      transport: "websocket",
+      outputModality: "text",
+    });
     await session.realtime.appendText("voice text");
     await session.realtime.appendAudio({
       data: "AAAA",
@@ -1367,7 +1912,10 @@ describe("AgenC TUI daemon session adapter", () => {
         role: "user",
         content: [
           { type: "text", text: "look at this" },
-          { type: "image_url", image_url: { url: "file:///tmp/screenshot.png" } },
+          {
+            type: "image_url",
+            image_url: { url: "file:///tmp/screenshot.png" },
+          },
         ],
       }),
     ).toBe(1);
@@ -1401,7 +1949,9 @@ describe("AgenC TUI daemon session adapter", () => {
       clientId: "tui_1",
     });
 
-    expect(session.enqueueIdleInput({ role: "user", content: "queued" })).toBe(1);
+    expect(session.enqueueIdleInput({ role: "user", content: "queued" })).toBe(
+      1,
+    );
     await session.submit("typed");
 
     expect(client.requests[0]).toMatchObject({
@@ -1413,6 +1963,67 @@ describe("AgenC TUI daemon session adapter", () => {
           { type: "text", text: "typed" },
         ],
       },
+    });
+  });
+
+  it("never drains Editor-owned input into Agent submits and admits only the exact Editor interaction", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const interaction = {
+      interactionId: "editor-owned-daemon-input",
+      kind: "explain" as const,
+      policy: "read_only" as const,
+      editorInstanceId: "editor-1",
+      bufferHandle: 7,
+      changedtick: 3,
+      contentSha256: "a".repeat(64),
+      path: "src/value.ts",
+      range: {
+        start: { line: 1, column: 0 },
+        end: { line: 1, column: 5 },
+      },
+    };
+    session.enqueueIdleInput(
+      { role: "user", content: "EDITOR_ATTACHMENT_SENTINEL" },
+      {
+        workspaceView: "editor",
+        editorInteractionId: interaction.interactionId,
+      },
+    );
+
+    await session.submit("Agent prompt");
+    await session.submit("Editor prompt", {
+      editorInteraction: interaction,
+    });
+    await session.submit("later Agent prompt");
+
+    expect(client.requests).toHaveLength(3);
+    expect(client.requests[0]).toMatchObject({
+      method: "message.stream",
+      params: { content: "Agent prompt" },
+    });
+    expect(client.requests[1]).toMatchObject({
+      method: "message.stream",
+      params: {
+        content: [
+          { type: "text", text: "EDITOR_ATTACHMENT_SENTINEL" },
+          { type: "text", text: "Editor prompt" },
+        ],
+        metadata: {
+          editorInteraction: {
+            interactionId: interaction.interactionId,
+          },
+        },
+      },
+    });
+    expect(client.requests[2]).toMatchObject({
+      method: "message.stream",
+      params: { content: "later Agent prompt" },
     });
   });
 
@@ -1486,9 +2097,7 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       ]),
     ).toThrow("queued input was not accepted");
-    expect(session.enqueueIdleInput({ role: "user", content: "safe" })).toBe(
-      1,
-    );
+    expect(session.enqueueIdleInput({ role: "user", content: "safe" })).toBe(1);
   });
 
   it("bridges daemon permission requests back through tool decisions", async () => {
@@ -1968,8 +2577,9 @@ describe("AgenC TUI daemon session adapter", () => {
       },
     });
     await flush();
-    expect((prompts.at(-1) as { readonly kind?: unknown } | undefined)?.kind)
-      .toBe("mcp-url");
+    expect(
+      (prompts.at(-1) as { readonly kind?: unknown } | undefined)?.kind,
+    ).toBe("mcp-url");
     expect(client.requests).toEqual([]);
 
     client.emit("session_1", {
@@ -2053,7 +2663,10 @@ describe("AgenC TUI daemon session adapter", () => {
     const controller = installElicitationResolvers(session, (pending) => {
       prompts.push(pending);
     });
-    const completionUnsubscribe = subscribeToMcpUrlCompletions(session, controller);
+    const completionUnsubscribe = subscribeToMcpUrlCompletions(
+      session,
+      controller,
+    );
     const transcriptEvents: unknown[] = [];
     const transcriptUnsubscribe = session.subscribeToEvents((event) => {
       transcriptEvents.push(event);
@@ -2085,9 +2698,12 @@ describe("AgenC TUI daemon session adapter", () => {
     });
     await flush();
 
-    expect(prompts.filter((prompt) =>
-      (prompt as { readonly kind?: unknown } | null)?.kind === "user"
-    )).toHaveLength(1);
+    expect(
+      prompts.filter(
+        (prompt) =>
+          (prompt as { readonly kind?: unknown } | null)?.kind === "user",
+      ),
+    ).toHaveLength(1);
     expect(controller.submit("Yes")).toBe(true);
     await flush();
     expect(client.requests).toEqual([
@@ -2121,9 +2737,12 @@ describe("AgenC TUI daemon session adapter", () => {
     });
     await flush();
 
-    expect(prompts.filter((prompt) =>
-      (prompt as { readonly kind?: unknown } | null)?.kind === "mcp-url"
-    )).toHaveLength(1);
+    expect(
+      prompts.filter(
+        (prompt) =>
+          (prompt as { readonly kind?: unknown } | null)?.kind === "mcp-url",
+      ),
+    ).toHaveLength(1);
 
     client.emit("session_1", {
       jsonrpc: JSON_RPC_VERSION,
@@ -2141,9 +2760,11 @@ describe("AgenC TUI daemon session adapter", () => {
 
     expect(prompts.at(-1)).toBeNull();
     expect(client.requests).toHaveLength(1);
-    expect(transcriptEvents.map((event) =>
-      (event as { readonly type?: unknown }).type
-    )).toEqual([
+    expect(
+      transcriptEvents.map(
+        (event) => (event as { readonly type?: unknown }).type,
+      ),
+    ).toEqual([
       "request_user_input",
       "mcp_elicitation_request",
       "mcp_elicitation_complete",

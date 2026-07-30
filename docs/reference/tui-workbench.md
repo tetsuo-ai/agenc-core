@@ -17,15 +17,19 @@ in-tree README:
 
 ## Layouts
 
-| Layout | When |
-| --- | --- |
+| Layout                                          | When                                                   |
+| ----------------------------------------------- | ------------------------------------------------------ |
 | **Workbench** (`workbench/WorkbenchLayout.tsx`) | Default fullscreen when `isWorkbenchEnabled()` is true |
-| **Classic fullscreen** (`FullscreenLayout.tsx`) | `AGENC_TUI_WORKBENCH=0` or workbench disabled |
+| **Classic fullscreen** (`FullscreenLayout.tsx`) | `AGENC_TUI_WORKBENCH=0` or workbench disabled          |
 
 Workbench panes (not mounted inside the transcript `ScrollBox`):
 
 - Explorer (interactive): file-type icons/colors; click to open, mouse wheel
-  or arrows to scroll, file preview inside the TUI
+  or arrows to scroll, file preview inside the TUI. A bound helper safely
+  creates missing parent directories and supports file, symlink, and recursive
+  directory deletion. Rename is no-clobber for regular files that stay in the
+  same directory; cross-directory and non-file rename remains fail-closed with
+  an actionable prompt error.
 - Center work-surface (switches among transcript, preview, BUFFER, diff, test,
   shell, search, and agent views)
 - Agents rail (visible at wide widths): live swarm panel with per-agent
@@ -86,18 +90,25 @@ Interactive menus (via `MenuModal`) include:
 BUFFER is a workspace surface, not a modal editor subprocess that disappears
 when its pane is hidden. By default, one embedded Neovim process keeps all
 loaded buffers alive across project-tree navigation and editor/chat handoffs.
+Agent and Editor are sibling tabs over that same workspace and daemon session;
+switching tabs never starts a second conversation or editor process. Each tab
+retains its own draft and captured attachments, so delayed editor handoffs
+cannot replace or submit Agent-tab context.
 
-| Shortcut | BUFFER action |
-| --- | --- |
-| `Shift+Tab` or `Alt+J` | Focus the composer without closing BUFFER |
-| `Alt+Q` | Hide BUFFER; the Neovim workspace remains alive |
-| `Alt+Z` | Maximize or restore the center editor |
-| `Ctrl+S` | Save the active buffer with AgenC's disk/agent conflict checks |
-| `Ctrl+R` | Redo the last Neovim change natively |
-| `Alt+R` | Move the current file to the review rail and return to chat |
-| `Alt+H` | Focus the project explorer |
-| `Alt+L` | Focus the agents rail |
-| `Alt+E` | Open the configured external editor, only when every Neovim buffer is confirmed clean |
+| Shortcut               | BUFFER action                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------------- |
+| `Alt+1`                | Open the Agent tab and restore its transcript, rail, focus, and composer draft        |
+| `Alt+2`                | Open the Editor tab and restore its Neovim workspace, rail, focus, and composer draft |
+| `Alt`+backtick         | Cycle between Agent and Editor                                                        |
+| `Shift+Tab` or `Alt+J` | Focus the composer without closing BUFFER                                             |
+| `Alt+Q`                | Hide BUFFER; the Neovim workspace remains alive                                       |
+| `Alt+Z`                | Maximize or restore the center editor                                                 |
+| `Ctrl+S`               | Save the active buffer with AgenC's disk/agent conflict checks                        |
+| `Ctrl+R`               | Redo the last Neovim change natively                                                  |
+| `Alt+R`                | Move the current file to the review rail and return to chat                           |
+| `Alt+H`                | Focus the project explorer                                                            |
+| `Alt+L`                | Focus the open Editor AI/proposal panel; pass through to Neovim when no panel is open |
+| `Alt+E`                | Open the configured external editor, only when every Neovim buffer is confirmed clean |
 
 Neovim's command line, messages, completion popups, user init, and plugins
 render in its native grid. The grid tracks the measured center pane, including
@@ -110,12 +121,34 @@ instead of starting workbench chords. The basic inline fallback keeps its
 existing `Ctrl+X H/J/L/Q/Z`, `Ctrl+X Y`, `Ctrl+R`, and
 `Ctrl+X Ctrl+E`/`Ctrl+G` host bindings. User keybinding overrides therefore
 target the `BufferHost` context for embedded Neovim and `Buffer` for inline.
+An Editor AI request focuses its panel as it opens, including when the panel is
+a compact overlay. Page Up / Page Down, Ctrl+Home / Ctrl+End, and the mouse
+wheel scroll it; `Ctrl+W H` returns to the editor.
+
+Ask/Explain run under a daemon-enforced read-only Editor policy; Fix/Edit/
+Refactor run under proposal-only policy and never apply model output directly
+to the buffer. Editor requests cannot start configured hooks, MCP, background
+job recovery, skill watchers, memory/docs learning, or secondary model calls.
+Framed buffer text is never reparsed as `@file`/`@agent` syntax, and Editor
+searches use AgenC's pinned ripgrep binary rather than an executable or config
+selected through the operator environment.
+On a cold workspace, the first eligible prediction may provision the shared
+daemon session without creating a conversation turn; the first real Editor or
+Agent submission reuses it, and closing first tears it down. Agent-only startup
+facilities remain staged until the first normal submission outside an Editor
+read-only/proposal policy. The exact
+allowed side effects, local-only attachment rules, proposal validation, and
+shutdown behavior are documented in
+[`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md).
 
 If a transition would abandon one or more modified loaded buffers—including a
 hidden Neovim buffer—the workbench stops it and offers **Save All**, **Discard
 All**, or **Cancel**. Discard All requires a second confirmation; Save All
 preflights the complete buffer set before it writes. The same gate covers
-`/exit`, `/quit`, `Ctrl+D`, and `/resume`.
+`/exit`, `/quit`, `Ctrl+D`, and `/resume`. Those transitions also remain
+blocked during a proposal-only Editor turn, asynchronous proposal staging, and
+shadow review; AgenC focuses the proposal panel so the user can accept or
+reject it before retrying the transition.
 
 Providers are `auto`, `neovim`, `inline`, and `external`. Configure them from
 `/config`, `[buffer]` in `config.toml`, or temporary `AGENC_BUFFER_*`

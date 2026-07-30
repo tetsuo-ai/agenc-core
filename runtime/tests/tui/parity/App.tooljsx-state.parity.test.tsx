@@ -115,13 +115,20 @@ describe("R2 toolJSX state contract (tool-jsx-state + App.tsx wiring)", () => {
     expect(source).toMatch(/toolJSX\s*=\s*\{\s*toolJSX[^}]*\}/);
   });
 
-  test("E2.8 App.tsx keeps nonblocking toolJSX inline and routes prompt-owning local JSX through FullscreenLayout modal", () => {
+  test("E2.8 App.tsx keeps nonblocking toolJSX inline and routes prompt-owning local JSX through the active layout modal", () => {
     const source = readSource();
     expect(source).toMatch(
       /inlineToolJSX\s*!==?\s*null[\s\S]{0,200}<Box[^>]*flexDirection="column"[^>]*width="100%"[\s\S]{0,200}\{\s*inlineToolJSX\s*\}[\s\S]{0,200}<\/Box>/,
     );
-    expect(source).toMatch(/modalToolJSX\s*=\s*toolOwnsPrompt\s*\?\s*toolJSX\.jsx\s*:\s*null/);
-    expect(source).toMatch(/<FullscreenLayout[\s\S]{0,500}modal=\{modalToolJSX !== null/);
+    expect(source).toMatch(
+      /modalToolJSX\s*=\s*toolOwnsPrompt\s*\?\s*toolJSX\.jsx\s*:\s*null/,
+    );
+    expect(source).toMatch(
+      /<WorkbenchLayout[\s\S]{0,500}modal=\{\s*modalToolJSX !== null/,
+    );
+    expect(source).toMatch(
+      /<FullscreenLayout[\s\S]{0,500}modal=\{\s*modalToolJSX !== null/,
+    );
   });
 
   test("B2.3 setToolJSX is exposed via getToolUseContext so AgenC tools can call it", () => {

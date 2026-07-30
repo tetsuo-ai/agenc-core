@@ -19,25 +19,34 @@ const searchHarness = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../src/utils/ripgrep.js", () => ({
-  ripGrepStream: vi.fn((
-    args: string[],
-    target: string,
-    signal: AbortSignal,
-    onLines: (lines: string[]) => void,
-  ) => {
-    let resolve!: () => void;
-    let reject!: (error: unknown) => void;
-    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-      resolve = resolvePromise;
-      reject = rejectPromise;
-    });
-    searchHarness.calls.push({ args, target, signal, onLines, resolve, reject });
-    if (searchHarness.autoFlush) {
-      onLines(searchHarness.lines);
-      resolve();
-    }
-    return promise;
-  }),
+  ripGrepStream: vi.fn(
+    (
+      args: string[],
+      target: string,
+      signal: AbortSignal,
+      onLines: (lines: string[]) => void,
+    ) => {
+      let resolve!: () => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      searchHarness.calls.push({
+        args,
+        target,
+        signal,
+        onLines,
+        resolve,
+        reject,
+      });
+      if (searchHarness.autoFlush) {
+        onLines(searchHarness.lines);
+        resolve();
+      }
+      return promise;
+    },
+  ),
 }));
 
 vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
@@ -48,8 +57,16 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
 }));
 
 import { createRoot } from "../../../src/tui/ink.js";
-import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
-import { SearchSurface, SearchSurfaceView } from "../../../src/tui/workbench/surfaces/SearchSurface.js";
+import {
+  AppStateProvider,
+  getDefaultAppState,
+  type AppState,
+  useSetAppState,
+} from "../../../src/tui/state/AppState.js";
+import {
+  SearchSurface,
+  SearchSurfaceView,
+} from "../../../src/tui/workbench/surfaces/SearchSurface.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
 type TestStdin = PassThrough & {
@@ -72,10 +89,16 @@ function createStreams(): {
   stdin.ref = () => {};
   stdin.setRawMode = () => {};
   stdin.unref = () => {};
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).columns = 120;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).rows = 24;
-  (stdout as unknown as { columns: number; rows: number; isTTY: boolean }).isTTY = true;
-  stdout.on("data", chunk => {
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).columns = 120;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).rows = 24;
+  (
+    stdout as unknown as { columns: number; rows: number; isTTY: boolean }
+  ).isTTY = true;
+  stdout.on("data", (chunk) => {
     output += chunk.toString();
   });
 
@@ -87,7 +110,7 @@ function createStreams(): {
 }
 
 function sleep(ms = 200): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function jsonMatchLine(file: string, line: number, text: string): string {
@@ -132,15 +155,36 @@ describe("SearchSurface", () => {
 
   it("renders loading, no result, error, and truncated states", async () => {
     const loading = await renderToString(
-      <SearchSurfaceView query="needle" matches={[]} selected={0} loading={true} error={null} focused={true} />,
+      <SearchSurfaceView
+        query="needle"
+        matches={[]}
+        selected={0}
+        loading={true}
+        error={null}
+        focused={true}
+      />,
       80,
     );
     const empty = await renderToString(
-      <SearchSurfaceView query="needle" matches={[]} selected={0} loading={false} error={null} focused={true} />,
+      <SearchSurfaceView
+        query="needle"
+        matches={[]}
+        selected={0}
+        loading={false}
+        error={null}
+        focused={true}
+      />,
       80,
     );
     const error = await renderToString(
-      <SearchSurfaceView query="needle" matches={[]} selected={0} loading={false} error="ripgrep failed" focused={true} />,
+      <SearchSurfaceView
+        query="needle"
+        matches={[]}
+        selected={0}
+        loading={false}
+        error="ripgrep failed"
+        focused={true}
+      />,
       80,
     );
     const truncated = await renderToString(
@@ -171,8 +215,18 @@ describe("SearchSurface", () => {
       <SearchSurfaceView
         query="needle"
         matches={[
-          { id: "src/app.ts:4:needle", file: "src/app.ts", line: 4, text: "const needle = true" },
-          { id: "src/other.ts:9:needle", file: "src/other.ts", line: 9, text: "needle()" },
+          {
+            id: "src/app.ts:4:needle",
+            file: "src/app.ts",
+            line: 4,
+            text: "const needle = true",
+          },
+          {
+            id: "src/other.ts:9:needle",
+            file: "src/other.ts",
+            line: 9,
+            text: "needle()",
+          },
         ]}
         selected={1}
         loading={false}
@@ -197,8 +251,18 @@ describe("SearchSurface", () => {
       <SearchSurfaceView
         query="needle"
         matches={[
-          { id: "src/app.ts:4:needle", file: "src/app.ts", line: 4, text: "const needle = true" },
-          { id: "src/other.ts:9:needle", file: "src/other.ts", line: 9, text: "needle()" },
+          {
+            id: "src/app.ts:4:needle",
+            file: "src/app.ts",
+            line: 4,
+            text: "const needle = true",
+          },
+          {
+            id: "src/other.ts:9:needle",
+            file: "src/other.ts",
+            line: 9,
+            text: "needle()",
+          },
         ]}
         selected={99}
         loading={false}
@@ -240,7 +304,9 @@ describe("SearchSurface", () => {
       await sleep(50);
 
       expect(searchHarness.calls).toHaveLength(0);
-      expect(compact(output())).toContain("Openglobalsearchortypeaqueryfromthecomposer");
+      expect(compact(output())).toContain(
+        "Openglobalsearchortypeaqueryfromthecomposer",
+      );
 
       searchHarness.handlers["workbench:closeSurface"]?.();
 
@@ -274,7 +340,11 @@ describe("SearchSurface", () => {
             },
           }}
         >
-          <SearchQueryController onReady={(setter) => { setSearchQuery = setter; }} />
+          <SearchQueryController
+            onReady={(setter) => {
+              setSearchQuery = setter;
+            }}
+          />
           <SearchSurface focused={true} />
         </AppStateProvider>,
       );
@@ -446,7 +516,9 @@ describe("SearchSurface", () => {
       expect(changes.at(-1)?.workbench.attachments).toEqual([
         expect.objectContaining({ id: "search-result:src/a.ts:1:needle one" }),
         expect.objectContaining({ id: "search-result:src/a.ts:2:needle two" }),
-        expect.objectContaining({ id: "search-result:src/b.ts:3:needle three" }),
+        expect.objectContaining({
+          id: "search-result:src/b.ts:3:needle three",
+        }),
       ]);
 
       await press("surface:open");
@@ -460,7 +532,7 @@ describe("SearchSurface", () => {
 
       await press("workbench:closeSurface");
 
-      expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
+      expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("search");
     } finally {
       root.unmount();
       stdin.end();
@@ -767,7 +839,11 @@ describe("SearchSurface", () => {
             },
           }}
         >
-          <SearchQueryController onReady={(setter) => { setSearchQuery = setter; }} />
+          <SearchQueryController
+            onReady={(setter) => {
+              setSearchQuery = setter;
+            }}
+          />
           <SearchSurface focused={false} />
         </AppStateProvider>,
       );
@@ -813,7 +889,11 @@ describe("SearchSurface", () => {
             },
           }}
         >
-          <SearchQueryController onReady={(setter) => { setSearchQuery = setter; }} />
+          <SearchQueryController
+            onReady={(setter) => {
+              setSearchQuery = setter;
+            }}
+          />
           <SearchSurface focused={false} />
         </AppStateProvider>,
       );

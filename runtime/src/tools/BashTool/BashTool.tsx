@@ -1,80 +1,184 @@
-import { feature } from 'bun:bundle';
-import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
-import { copyFile, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
-import type { CanUseToolFn } from 'src/tui/hooks/useCanUseTool.js';
-import type { AppState } from '../../tui/state/AppState.js';
-import { z } from 'zod/v4';
-import { getKairosActive } from '../../bootstrap/state.js';
-import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js';
-import { notifyVscodeFileUpdated } from '../../services/mcp/vscodeSdkMcp.js';
-import type { SetToolJSXFn, ToolCallProgress, ToolUseContext, ValidationResult } from '../Tool.js';
-import { buildTool, type ToolDef } from '../Tool.js';
-import { backgroundExistingForegroundTask, markTaskNotified, registerForeground, spawnShellTask, unregisterForeground } from '../../tasks/LocalShellTask/LocalShellTask.js';
-import type { AgentId } from '../../types/ids.js';
-import type { AssistantMessage } from '../../types/message.js';
-import { parseForSecurity } from '../../utils/bash/ast.js';
-import { splitCommand_DEPRECATED, splitCommandWithOperators } from '../../utils/bash/commands.js';
-import { extractAgenCCodeHints } from '../../errors/hints.js';
-import { isEnvTruthy } from '../../utils/envUtils.js';
-import { isENOENT, ShellError } from '../../utils/errors.js';
-import { detectFileEncoding, detectLineEndings, getFileModificationTime, writeTextContent } from '../../utils/file.js';
-import { fileHistoryEnabled, fileHistoryTrackEdit } from '../../utils/fileHistory.js';
-import { truncate } from '../../utils/format.js';
-import { getFsImplementation } from '../../utils/fsOperations.js';
-import { lazySchema } from '../../utils/lazySchema.js';
-import { expandPath } from '../../utils/path.js';
-import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
-import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
-import { exec } from '../../utils/Shell.js';
-import type { ExecResult } from '../../utils/ShellCommand.js';
-import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js';
-import { semanticBoolean } from '../../utils/semanticBoolean.js';
-import { semanticNumber } from '../../utils/semanticNumber.js';
-import { EndTruncatingAccumulator } from '../../utils/stringUtils.js';
-import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
-import { TaskOutput } from '../../utils/task/TaskOutput.js';
-import { isOutputLineTruncated } from '../../utils/terminal.js';
-import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, getToolResultPath, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
-import { userFacingName as fileEditUserFacingName } from '../FileEditTool/UI.js';
-import { trackGitOperations } from '../shared/gitOperationTracking.js';
-import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
-import { interpretCommandResult } from './commandSemantics.js';
-import { getDefaultTimeoutMs, getMaxTimeoutMs, getSimplePrompt } from './prompt.js';
-import { checkReadOnlyConstraints } from './readOnlyValidation.js';
-import { parseSedEditCommand } from './sedEditParser.js';
-import { shouldUseSandbox } from './shouldUseSandbox.js';
-import { BASH_TOOL_NAME } from './toolName.js';
-import { BackgroundHint, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseQueuedMessage } from './UI.js';
-import { buildImageToolResult, isImageOutput, resetCwdIfOutsideProject, resizeShellImageOutput, stdErrAppendShellResetMessage, stripEmptyLines } from './utils.js';
-const EOL = '\n';
+import { feature } from "bun:bundle";
+import type { ToolResultBlockParam } from "@anthropic-ai/sdk/resources/index.mjs";
+import {
+  copyFile,
+  stat as fsStat,
+  truncate as fsTruncate,
+  link,
+} from "fs/promises";
+import type { CanUseToolFn } from "src/tui/hooks/useCanUseTool.js";
+import type { AppState } from "../../tui/state/AppState.js";
+import { z } from "zod/v4";
+import { getKairosActive } from "../../bootstrap/state.js";
+import { TOOL_SUMMARY_MAX_LENGTH } from "../../constants/toolLimits.js";
+import { notifyVscodeFileUpdated } from "../../services/mcp/vscodeSdkMcp.js";
+import type {
+  SetToolJSXFn,
+  ToolCallProgress,
+  ToolUseContext,
+  ValidationResult,
+} from "../Tool.js";
+import { buildTool, type ToolDef } from "../Tool.js";
+import {
+  backgroundExistingForegroundTask,
+  markTaskNotified,
+  registerForeground,
+  spawnShellTask,
+  unregisterForeground,
+} from "../../tasks/LocalShellTask/LocalShellTask.js";
+import type { AgentId } from "../../types/ids.js";
+import type { AssistantMessage } from "../../types/message.js";
+import { parseForSecurity } from "../../utils/bash/ast.js";
+import {
+  splitCommand_DEPRECATED,
+  splitCommandWithOperators,
+} from "../../utils/bash/commands.js";
+import { extractAgenCCodeHints } from "../../errors/hints.js";
+import { isEnvTruthy } from "../../utils/envUtils.js";
+import { isENOENT, ShellError } from "../../utils/errors.js";
+import {
+  detectFileEncoding,
+  detectLineEndings,
+  getFileModificationTime,
+  writeTextContent,
+} from "../../utils/file.js";
+import {
+  fileHistoryEnabled,
+  fileHistoryTrackEdit,
+} from "../../utils/fileHistory.js";
+import { truncate } from "../../utils/format.js";
+import { getFsImplementation } from "../../utils/fsOperations.js";
+import { lazySchema } from "../../utils/lazySchema.js";
+import { expandPath } from "../../utils/path.js";
+import type { PermissionResult } from "../../utils/permissions/PermissionResult.js";
+import { maybeRecordPluginHint } from "../../utils/plugins/hintRecommendation.js";
+import { exec } from "../../utils/Shell.js";
+import type { ExecResult } from "../../utils/ShellCommand.js";
+import { SandboxManager } from "../../utils/sandbox/sandbox-runtime.js";
+import { semanticBoolean } from "../../utils/semanticBoolean.js";
+import { semanticNumber } from "../../utils/semanticNumber.js";
+import { EndTruncatingAccumulator } from "../../utils/stringUtils.js";
+import { getTaskOutputPath } from "../../utils/task/diskOutput.js";
+import { TaskOutput } from "../../utils/task/TaskOutput.js";
+import { isOutputLineTruncated } from "../../utils/terminal.js";
+import { retainCurrentWorkspaceOperation } from "../../workspace/tool-operation-lifetime.js";
+import {
+  captureToolQueueOwner,
+  type SessionQueueOwner,
+} from "../../utils/queueOwnership.js";
+import {
+  buildLargeToolResultMessage,
+  ensureToolResultsDir,
+  generatePreview,
+  getToolResultPath,
+  PREVIEW_SIZE_BYTES,
+} from "../../utils/toolResultStorage.js";
+import { userFacingName as fileEditUserFacingName } from "../FileEditTool/UI.js";
+import { trackGitOperations } from "../shared/gitOperationTracking.js";
+import {
+  bashToolHasPermission,
+  commandHasAnyCd,
+  matchWildcardPattern,
+  permissionRuleExtractPrefix,
+} from "./bashPermissions.js";
+import { interpretCommandResult } from "./commandSemantics.js";
+import {
+  getDefaultTimeoutMs,
+  getMaxTimeoutMs,
+  getSimplePrompt,
+} from "./prompt.js";
+import { checkReadOnlyConstraints } from "./readOnlyValidation.js";
+import { parseSedEditCommand } from "./sedEditParser.js";
+import { shouldUseSandbox } from "./shouldUseSandbox.js";
+import { BASH_TOOL_NAME } from "./toolName.js";
+import {
+  BackgroundHint,
+  renderToolResultMessage,
+  renderToolUseErrorMessage,
+  renderToolUseMessage,
+  renderToolUseProgressMessage,
+  renderToolUseQueuedMessage,
+} from "./UI.js";
+import {
+  buildImageToolResult,
+  isImageOutput,
+  resetCwdIfOutsideProject,
+  resizeShellImageOutput,
+  stdErrAppendShellResetMessage,
+  stripEmptyLines,
+} from "./utils.js";
+const EOL = "\n";
 // Progress display constants
 const PROGRESS_THRESHOLD_MS = 2000; // Show progress after 2 seconds
 // In assistant mode, blocking bash auto-backgrounds after this many ms in the main agent
 const ASSISTANT_BLOCKING_BUDGET_MS = 15_000;
 
 // Search commands for collapsible display (grep, find, etc.)
-const BASH_SEARCH_COMMANDS = new Set(['find', 'grep', 'rg', 'ag', 'ack', 'locate', 'which', 'whereis']);
+const BASH_SEARCH_COMMANDS = new Set([
+  "find",
+  "grep",
+  "rg",
+  "ag",
+  "ack",
+  "locate",
+  "which",
+  "whereis",
+]);
 
 // Read/view commands for collapsible display (cat, head, etc.)
-const BASH_READ_COMMANDS = new Set(['cat', 'head', 'tail', 'less', 'more',
-// Analysis commands
-'wc', 'stat', 'file', 'strings',
-// Data processing — commonly used to parse/transform file content in pipes
-'jq', 'awk', 'cut', 'sort', 'uniq', 'tr']);
+const BASH_READ_COMMANDS = new Set([
+  "cat",
+  "head",
+  "tail",
+  "less",
+  "more",
+  // Analysis commands
+  "wc",
+  "stat",
+  "file",
+  "strings",
+  // Data processing — commonly used to parse/transform file content in pipes
+  "jq",
+  "awk",
+  "cut",
+  "sort",
+  "uniq",
+  "tr",
+]);
 
 // Directory-listing commands for collapsible display (ls, tree, du).
 // Split from BASH_READ_COMMANDS so the summary says "Listed N directories"
 // instead of the misleading "Read N files".
-const BASH_LIST_COMMANDS = new Set(['ls', 'tree', 'du']);
+const BASH_LIST_COMMANDS = new Set(["ls", "tree", "du"]);
 
 // Commands that are semantic-neutral in any position — pure output/status commands
 // that don't change the read/search nature of the overall pipeline.
 // e.g. `ls dir && echo "---" && ls dir2` is still a read-only compound command.
-const BASH_SEMANTIC_NEUTRAL_COMMANDS = new Set(['echo', 'printf', 'true', 'false', ':' // bash no-op
+const BASH_SEMANTIC_NEUTRAL_COMMANDS = new Set([
+  "echo",
+  "printf",
+  "true",
+  "false",
+  ":", // bash no-op
 ]);
 
 // Commands that typically produce no stdout on success
-const BASH_SILENT_COMMANDS = new Set(['mv', 'cp', 'rm', 'mkdir', 'rmdir', 'chmod', 'chown', 'chgrp', 'touch', 'ln', 'cd', 'export', 'unset', 'wait']);
+const BASH_SILENT_COMMANDS = new Set([
+  "mv",
+  "cp",
+  "rm",
+  "mkdir",
+  "rmdir",
+  "chmod",
+  "chown",
+  "chgrp",
+  "touch",
+  "ln",
+  "cd",
+  "export",
+  "unset",
+  "wait",
+]);
 
 /**
  * Checks if a bash command is a search or read operation.
@@ -102,14 +206,14 @@ function isSearchOrReadBashCommand(command: string): {
     return {
       isSearch: false,
       isRead: false,
-      isList: false
+      isList: false,
     };
   }
   if (partsWithOperators.length === 0) {
     return {
       isSearch: false,
       isRead: false,
-      isList: false
+      isList: false,
     };
   }
   let hasSearch = false;
@@ -122,11 +226,11 @@ function isSearchOrReadBashCommand(command: string): {
       skipNextAsRedirectTarget = false;
       continue;
     }
-    if (part === '>' || part === '>>' || part === '>&') {
+    if (part === ">" || part === ">>" || part === ">&") {
       skipNextAsRedirectTarget = true;
       continue;
     }
-    if (part === '||' || part === '&&' || part === '|' || part === ';') {
+    if (part === "||" || part === "&&" || part === "|" || part === ";") {
       continue;
     }
     const baseCommand = part.trim().split(/\s+/)[0];
@@ -144,7 +248,7 @@ function isSearchOrReadBashCommand(command: string): {
       return {
         isSearch: false,
         isRead: false,
-        isList: false
+        isList: false,
       };
     }
     if (isPartSearch) hasSearch = true;
@@ -157,13 +261,13 @@ function isSearchOrReadBashCommand(command: string): {
     return {
       isSearch: false,
       isRead: false,
-      isList: false
+      isList: false,
     };
   }
   return {
     isSearch: hasSearch,
     isRead: hasRead,
-    isList: hasList
+    isList: hasList,
   };
 }
 
@@ -189,11 +293,11 @@ function isSilentBashCommand(command: string): boolean {
       skipNextAsRedirectTarget = false;
       continue;
     }
-    if (part === '>' || part === '>>' || part === '>&') {
+    if (part === ">" || part === ">>" || part === ">&") {
       skipNextAsRedirectTarget = true;
       continue;
     }
-    if (part === '||' || part === '&&' || part === '|' || part === ';') {
+    if (part === "||" || part === "&&" || part === "|" || part === ";") {
       lastOperator = part;
       continue;
     }
@@ -201,7 +305,10 @@ function isSilentBashCommand(command: string): boolean {
     if (!baseCommand) {
       continue;
     }
-    if (lastOperator === '||' && BASH_SEMANTIC_NEUTRAL_COMMANDS.has(baseCommand)) {
+    if (
+      lastOperator === "||" &&
+      BASH_SEMANTIC_NEUTRAL_COMMANDS.has(baseCommand)
+    ) {
       continue;
     }
     hasNonFallbackCommand = true;
@@ -213,17 +320,22 @@ function isSilentBashCommand(command: string): boolean {
 }
 
 // Commands that should not be auto-backgrounded
-const DISALLOWED_AUTO_BACKGROUND_COMMANDS = ['sleep' // Sleep should run in foreground unless explicitly backgrounded by user
+const DISALLOWED_AUTO_BACKGROUND_COMMANDS = [
+  "sleep", // Sleep should run in foreground unless explicitly backgrounded by user
 ];
 
 // Check if background tasks are disabled at module load time
 const isBackgroundTasksDisabled =
-// eslint-disable-next-line custom-rules/no-process-env-top-level -- Intentional: schema must be defined at module load
-isEnvTruthy(process.env.AGENC_DISABLE_BACKGROUND_TASKS);
-const fullInputSchema = lazySchema(() => z.strictObject({
-  command: z.string().describe('The command to execute'),
-  timeout: semanticNumber(z.number().optional()).describe(`Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`),
-  description: z.string().optional().describe(`Clear, concise description of what this command does in active voice. Never use words like "complex" or "risk" in the description - just describe what it does.
+  // eslint-disable-next-line custom-rules/no-process-env-top-level -- Intentional: schema must be defined at module load
+  isEnvTruthy(process.env.AGENC_DISABLE_BACKGROUND_TASKS);
+const fullInputSchema = lazySchema(() =>
+  z.strictObject({
+    command: z.string().describe("The command to execute"),
+    timeout: semanticNumber(z.number().optional()).describe(
+      `Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`,
+    ),
+    description: z.string().optional()
+      .describe(`Clear, concise description of what this command does in active voice. Never use words like "complex" or "risk" in the description - just describe what it does.
 
 For simple commands (git, npm, standard CLI tools), keep it brief (5-10 words):
 - ls → "List files in current directory"
@@ -234,14 +346,25 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
 - find . -name "*.tmp" -exec rm {} \\; → "Find and delete all .tmp files recursively"
 - git reset --hard origin/main → "Discard all local changes and match remote main"
 - curl -s url | jq '.data[]' → "Fetch JSON from URL and extract data array elements"`),
-  run_in_background: semanticBoolean(z.boolean().optional()).describe(`Set to true to run this command in the background. Use Read to read the output later.`),
-  dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe('Set this to true to dangerously override sandbox mode and run commands without sandboxing.'),
-  _dangerouslyDisableSandboxApproved: z.boolean().optional().describe('Internal: user-approved sandbox override'),
-  _simulatedSedEdit: z.object({
-    filePath: z.string(),
-    newContent: z.string()
-  }).optional().describe('Internal: pre-computed sed edit result from preview')
-}));
+    run_in_background: semanticBoolean(z.boolean().optional()).describe(
+      `Set to true to run this command in the background. Use Read to read the output later.`,
+    ),
+    dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe(
+      "Set this to true to dangerously override sandbox mode and run commands without sandboxing.",
+    ),
+    _dangerouslyDisableSandboxApproved: z
+      .boolean()
+      .optional()
+      .describe("Internal: user-approved sandbox override"),
+    _simulatedSedEdit: z
+      .object({
+        filePath: z.string(),
+        newContent: z.string(),
+      })
+      .optional()
+      .describe("Internal: pre-computed sed edit result from preview"),
+  }),
+);
 
 // Always omit internal-only fields from the model-facing schema.
 // _simulatedSedEdit is set after the user approves a
@@ -250,43 +373,96 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
 // dangerouslyDisableSandbox is also omitted because sandbox escape must be tied
 // to trusted user/internal provenance, not model-controlled tool input.
 // Also conditionally remove run_in_background when background tasks are disabled.
-const inputSchema = lazySchema(() => isBackgroundTasksDisabled ? fullInputSchema().omit({
-  run_in_background: true,
-  dangerouslyDisableSandbox: true,
-  _dangerouslyDisableSandboxApproved: true,
-  _simulatedSedEdit: true
-}) : fullInputSchema().omit({
-  dangerouslyDisableSandbox: true,
-  _dangerouslyDisableSandboxApproved: true,
-  _simulatedSedEdit: true
-}));
+const inputSchema = lazySchema(() =>
+  isBackgroundTasksDisabled
+    ? fullInputSchema().omit({
+        run_in_background: true,
+        dangerouslyDisableSandbox: true,
+        _dangerouslyDisableSandboxApproved: true,
+        _simulatedSedEdit: true,
+      })
+    : fullInputSchema().omit({
+        dangerouslyDisableSandbox: true,
+        _dangerouslyDisableSandboxApproved: true,
+        _simulatedSedEdit: true,
+      }),
+);
 type InputSchema = ReturnType<typeof inputSchema>;
 
 // Use fullInputSchema for the type to always include run_in_background
 // (even when it's omitted from the schema, the code needs to handle it)
 export type BashToolInput = z.infer<ReturnType<typeof fullInputSchema>>;
-const outputSchema = lazySchema(() => z.object({
-  stdout: z.string().describe('The standard output of the command'),
-  stderr: z.string().describe('The standard error output of the command'),
-  rawOutputPath: z.string().optional().describe('Path to raw output file for large MCP tool outputs'),
-  interrupted: z.boolean().describe('Whether the command was interrupted'),
-  isImage: z.boolean().optional().describe('Flag to indicate if stdout contains image data'),
-  backgroundTaskId: z.string().optional().describe('ID of the background task if command is running in background'),
-  backgroundedByUser: z.boolean().optional().describe('True if the user manually backgrounded the command with Ctrl+B'),
-  assistantAutoBackgrounded: z.boolean().optional().describe('True if assistant-mode auto-backgrounded a long-running blocking command'),
-  dangerouslyDisableSandbox: z.boolean().optional().describe('Flag to indicate if sandbox mode was overridden'),
-  returnCodeInterpretation: z.string().optional().describe('Semantic interpretation for non-error exit codes with special meaning'),
-  noOutputExpected: z.boolean().optional().describe('Whether the command is expected to produce no output on success'),
-  structuredContent: z.array(z.any()).optional().describe('Structured content blocks'),
-  persistedOutputPath: z.string().optional().describe('Path to the persisted full output in tool-results dir (set when output is too large for inline)'),
-  persistedOutputSize: z.number().optional().describe('Total size of the output in bytes (set when output is too large for inline)')
-}));
+const outputSchema = lazySchema(() =>
+  z.object({
+    stdout: z.string().describe("The standard output of the command"),
+    stderr: z.string().describe("The standard error output of the command"),
+    rawOutputPath: z
+      .string()
+      .optional()
+      .describe("Path to raw output file for large MCP tool outputs"),
+    interrupted: z.boolean().describe("Whether the command was interrupted"),
+    isImage: z
+      .boolean()
+      .optional()
+      .describe("Flag to indicate if stdout contains image data"),
+    backgroundTaskId: z
+      .string()
+      .optional()
+      .describe(
+        "ID of the background task if command is running in background",
+      ),
+    backgroundedByUser: z
+      .boolean()
+      .optional()
+      .describe(
+        "True if the user manually backgrounded the command with Ctrl+B",
+      ),
+    assistantAutoBackgrounded: z
+      .boolean()
+      .optional()
+      .describe(
+        "True if assistant-mode auto-backgrounded a long-running blocking command",
+      ),
+    dangerouslyDisableSandbox: z
+      .boolean()
+      .optional()
+      .describe("Flag to indicate if sandbox mode was overridden"),
+    returnCodeInterpretation: z
+      .string()
+      .optional()
+      .describe(
+        "Semantic interpretation for non-error exit codes with special meaning",
+      ),
+    noOutputExpected: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether the command is expected to produce no output on success",
+      ),
+    structuredContent: z
+      .array(z.any())
+      .optional()
+      .describe("Structured content blocks"),
+    persistedOutputPath: z
+      .string()
+      .optional()
+      .describe(
+        "Path to the persisted full output in tool-results dir (set when output is too large for inline)",
+      ),
+    persistedOutputSize: z
+      .number()
+      .optional()
+      .describe(
+        "Total size of the output in bytes (set when output is too large for inline)",
+      ),
+  }),
+);
 type OutputSchema = ReturnType<typeof outputSchema>;
 export type Out = z.infer<OutputSchema>;
 
 // Re-export BashProgress from centralized types to break import cycles
-export type { BashProgress } from '../../types/tools.js';
-import type { BashProgress } from '../../types/tools.js';
+export type { BashProgress } from "../../types/tools.js";
+import type { BashProgress } from "../../types/tools.js";
 
 /**
  * Checks if a command is allowed to be automatically backgrounded
@@ -311,7 +487,7 @@ function isAutobackgroundingAllowed(command: string): boolean {
 function detectBlockedSleepPattern(command: string): string | null {
   const parts = splitCommand_DEPRECATED(command);
   if (parts.length === 0) return null;
-  const first = parts[0]?.trim() ?? '';
+  const first = parts[0]?.trim() ?? "";
   // Bare `sleep N` or `sleep N.N` as the first subcommand.
   // Float durations (sleep 0.5) are allowed — those are legit pacing, not polls.
   const m = /^sleep\s+(\d+)\s*$/.exec(first);
@@ -321,8 +497,10 @@ function detectBlockedSleepPattern(command: string): string | null {
 
   // `sleep N` alone → "what are you waiting for?"
   // `sleep N && check` → "use Monitor { command: check }"
-  const rest = parts.slice(1).join(' ').trim();
-  return rest ? `sleep ${secs} followed by: ${rest}` : `standalone sleep ${secs}`;
+  const rest = parts.slice(1).join(" ").trim();
+  return rest
+    ? `sleep ${secs} followed by: ${rest}`
+    : `standalone sleep ${secs}`;
 }
 
 /**
@@ -339,21 +517,25 @@ function detectBlockedSleepPattern(command: string): string | null {
 type SimulatedSedEditResult = {
   data: Out;
 };
-type SimulatedSedEditContext = Pick<ToolUseContext, 'readFileState' | 'updateFileHistoryState'>;
+type SimulatedSedEditContext = Pick<
+  ToolUseContext,
+  "readFileState" | "updateFileHistoryState"
+>;
 
 /**
  * Applies a simulated sed edit directly instead of running sed.
  * This is used by the permission dialog to ensure what the user previews
  * is exactly what gets written to the file.
  */
-async function applySedEdit(simulatedEdit: {
-  filePath: string;
-  newContent: string;
-}, toolUseContext: SimulatedSedEditContext, parentMessage?: AssistantMessage): Promise<SimulatedSedEditResult> {
-  const {
-    filePath,
-    newContent
-  } = simulatedEdit;
+async function applySedEdit(
+  simulatedEdit: {
+    filePath: string;
+    newContent: string;
+  },
+  toolUseContext: SimulatedSedEditContext,
+  parentMessage?: AssistantMessage,
+): Promise<SimulatedSedEditResult> {
+  const { filePath, newContent } = simulatedEdit;
   const absoluteFilePath = expandPath(filePath);
   const fs = getFsImplementation();
 
@@ -362,16 +544,16 @@ async function applySedEdit(simulatedEdit: {
   let originalContent: string;
   try {
     originalContent = await fs.readFile(absoluteFilePath, {
-      encoding
+      encoding,
     });
   } catch (e) {
     if (isENOENT(e)) {
       return {
         data: {
-          stdout: '',
+          stdout: "",
           stderr: `sed: ${filePath}: No such file or directory\nExit code 1`,
-          interrupted: false
-        }
+          interrupted: false,
+        },
       };
     }
     throw e;
@@ -379,7 +561,11 @@ async function applySedEdit(simulatedEdit: {
 
   // Track file history before making changes (for undo support)
   if (fileHistoryEnabled() && parentMessage) {
-    await fileHistoryTrackEdit(toolUseContext.updateFileHistoryState, absoluteFilePath, parentMessage.uuid);
+    await fileHistoryTrackEdit(
+      toolUseContext.updateFileHistoryState,
+      absoluteFilePath,
+      parentMessage.uuid,
+    );
   }
 
   // Detect line endings and write new content
@@ -394,28 +580,26 @@ async function applySedEdit(simulatedEdit: {
     content: newContent,
     timestamp: getFileModificationTime(absoluteFilePath),
     offset: undefined,
-    limit: undefined
+    limit: undefined,
   });
 
   // Return success result matching sed output format (sed produces no output on success)
   return {
     data: {
-      stdout: '',
-      stderr: '',
-      interrupted: false
-    }
+      stdout: "",
+      stderr: "",
+      interrupted: false,
+    },
   };
 }
 export const BashTool = buildTool({
   name: BASH_TOOL_NAME,
-  searchHint: 'execute shell commands',
+  searchHint: "execute shell commands",
   // 30K chars - tool result persistence threshold
   maxResultSizeChars: 30_000,
   strict: true,
-  async description({
-    description
-  }) {
-    return description || 'Run shell command';
+  async description({ description }) {
+    return description || "Run shell command";
   },
   async prompt() {
     return getSimplePrompt();
@@ -426,28 +610,26 @@ export const BashTool = buildTool({
   isReadOnly(input) {
     const compoundCommandHasCd = commandHasAnyCd(input.command);
     const result = checkReadOnlyConstraints(input, compoundCommandHasCd);
-    return result.behavior === 'allow';
+    return result.behavior === "allow";
   },
   toAutoClassifierInput(input) {
     return input.command;
   },
-  async preparePermissionMatcher({
-    command
-  }) {
+  async preparePermissionMatcher({ command }) {
     // Hook `if` filtering is "no match → skip hook" (deny-like semantics), so
     // compound commands must fire the hook if ANY subcommand matches. Without
     // splitting, `ls && git push` would bypass a `Bash(git *)` security hook.
     const parsed = await parseForSecurity(command);
-    if (parsed.kind !== 'simple') {
+    if (parsed.kind !== "simple") {
       // parse-unavailable / too-complex: fail safe by running the hook.
       return () => true;
     }
     // Match on argv (strips leading VAR=val) so `FOO=bar git push` still
     // matches `Bash(git *)`.
-    const subcommands = parsed.commands.map(c => c.argv.join(' '));
-    return pattern => {
+    const subcommands = parsed.commands.map((c) => c.argv.join(" "));
+    return (pattern) => {
       const prefix = permissionRuleExtractPrefix(pattern);
-      return subcommands.some(cmd => {
+      return subcommands.some((cmd) => {
         if (prefix !== null) {
           return cmd === prefix || cmd.startsWith(`${prefix} `);
         }
@@ -457,11 +639,12 @@ export const BashTool = buildTool({
   },
   isSearchOrReadCommand(input) {
     const parsed = inputSchema().safeParse(input);
-    if (!parsed.success) return {
-      isSearch: false,
-      isRead: false,
-      isList: false
-    };
+    if (!parsed.success)
+      return {
+        isSearch: false,
+        isRead: false,
+        isList: false,
+      };
     return isSearchOrReadBashCommand(parsed.data.command);
   },
   get inputSchema(): InputSchema {
@@ -472,7 +655,7 @@ export const BashTool = buildTool({
   },
   userFacingName(input) {
     if (!input) {
-      return 'Bash';
+      return "Bash";
     }
     // Render sed in-place edits as file edits
     if (input.command) {
@@ -480,7 +663,7 @@ export const BashTool = buildTool({
       if (sedInfo) {
         return fileEditUserFacingName({
           file_path: sedInfo.filePath,
-          old_string: 'x'
+          old_string: "x",
         });
       }
     }
@@ -488,16 +671,16 @@ export const BashTool = buildTool({
     // `new RegExp` per call. userFacingName runs per-render for every bash
     // message in history; with ~50 msgs + one slow-to-tokenize command, this
     // exceeds the shimmer tick → transition abort → infinite retry (#21605).
-    return isEnvTruthy(process.env.AGENC_BASH_SANDBOX_SHOW_INDICATOR) && shouldUseSandbox(input) ? 'SandboxedBash' : 'Bash';
+    return isEnvTruthy(process.env.AGENC_BASH_SANDBOX_SHOW_INDICATOR) &&
+      shouldUseSandbox(input)
+      ? "SandboxedBash"
+      : "Bash";
   },
   getToolUseSummary(input) {
     if (!input?.command) {
       return null;
     }
-    const {
-      command,
-      description
-    } = input;
+    const { command, description } = input;
     if (description) {
       return description;
     }
@@ -505,24 +688,29 @@ export const BashTool = buildTool({
   },
   getActivityDescription(input) {
     if (!input?.command) {
-      return 'Running command';
+      return "Running command";
     }
-    const desc = input.description ?? truncate(input.command, TOOL_SUMMARY_MAX_LENGTH);
+    const desc =
+      input.description ?? truncate(input.command, TOOL_SUMMARY_MAX_LENGTH);
     return `Running ${desc}`;
   },
   async validateInput(input: BashToolInput): Promise<ValidationResult> {
-    if (feature('MONITOR_TOOL') && !isBackgroundTasksDisabled && !input.run_in_background) {
+    if (
+      feature("MONITOR_TOOL") &&
+      !isBackgroundTasksDisabled &&
+      !input.run_in_background
+    ) {
       const sleepPattern = detectBlockedSleepPattern(input.command);
       if (sleepPattern !== null) {
         return {
           result: false,
           message: `Blocked: ${sleepPattern}. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), use the Monitor tool. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.`,
-          errorCode: 10
+          errorCode: 10,
         };
       }
     }
     return {
-      result: true
+      result: true,
     };
   },
   async checkPermissions(input, context): Promise<PermissionResult> {
@@ -535,30 +723,30 @@ export const BashTool = buildTool({
   // BashToolResultMessage shows <OutputLine content={stdout}> + stderr.
   // UI never shows persistedOutputPath wrapper, backgroundInfo — those are
   // model-facing (mapToolResult... below).
-  extractSearchText({
-    stdout,
-    stderr
-  }) {
+  extractSearchText({ stdout, stderr }) {
     return stderr ? `${stdout}\n${stderr}` : stdout;
   },
-  mapToolResultToToolResultBlockParam({
-    interrupted,
-    stdout,
-    stderr,
-    isImage,
-    backgroundTaskId,
-    backgroundedByUser,
-    assistantAutoBackgrounded,
-    structuredContent,
-    persistedOutputPath,
-    persistedOutputSize
-  }, toolUseID): ToolResultBlockParam {
+  mapToolResultToToolResultBlockParam(
+    {
+      interrupted,
+      stdout,
+      stderr,
+      isImage,
+      backgroundTaskId,
+      backgroundedByUser,
+      assistantAutoBackgrounded,
+      structuredContent,
+      persistedOutputPath,
+      persistedOutputSize,
+    },
+    toolUseID,
+  ): ToolResultBlockParam {
     // Handle structured content
     if (structuredContent && structuredContent.length > 0) {
       return {
         tool_use_id: toolUseID,
-        type: 'tool_result',
-        content: structuredContent
+        type: "tool_result",
+        content: structuredContent,
       };
     }
 
@@ -567,12 +755,12 @@ export const BashTool = buildTool({
       const block = buildImageToolResult(stdout, toolUseID);
       if (block) return block;
     }
-    const normalizedStdout = typeof stdout === 'string' ? stdout : '';
-    const normalizedStderr = typeof stderr === 'string' ? stderr : '';
+    const normalizedStdout = typeof stdout === "string" ? stdout : "";
+    const normalizedStderr = typeof stderr === "string" ? stderr : "";
     let processedStdout = normalizedStdout;
     if (normalizedStdout) {
       // Replace any leading newlines or lines with only whitespace
-      processedStdout = normalizedStdout.replace(/^(\s*\n)+/, '');
+      processedStdout = normalizedStdout.replace(/^(\s*\n)+/, "");
       // Still trim the end as before
       processedStdout = processedStdout.trimEnd();
     }
@@ -586,15 +774,15 @@ export const BashTool = buildTool({
         originalSize: persistedOutputSize ?? 0,
         isJson: false,
         preview: preview.preview,
-        hasMore: preview.hasMore
+        hasMore: preview.hasMore,
       });
     }
     let errorMessage = normalizedStderr.trim();
     if (interrupted) {
       if (normalizedStderr) errorMessage += EOL;
-      errorMessage += '<error>Command was aborted before completion</error>';
+      errorMessage += "<error>Command was aborted before completion</error>";
     }
-    let backgroundInfo = '';
+    let backgroundInfo = "";
     if (backgroundTaskId) {
       const outputPath = getTaskOutputPath(backgroundTaskId);
       if (assistantAutoBackgrounded) {
@@ -607,26 +795,36 @@ export const BashTool = buildTool({
     }
     return {
       tool_use_id: toolUseID,
-      type: 'tool_result',
-      content: [processedStdout, errorMessage, backgroundInfo].filter(Boolean).join('\n'),
-      is_error: interrupted
+      type: "tool_result",
+      content: [processedStdout, errorMessage, backgroundInfo]
+        .filter(Boolean)
+        .join("\n"),
+      is_error: interrupted,
     };
   },
-  async call(input: BashToolInput, toolUseContext, _canUseTool?: CanUseToolFn, parentMessage?: AssistantMessage, onProgress?: ToolCallProgress<BashProgress>) {
+  async call(
+    input: BashToolInput,
+    toolUseContext,
+    _canUseTool?: CanUseToolFn,
+    parentMessage?: AssistantMessage,
+    onProgress?: ToolCallProgress<BashProgress>,
+  ) {
     // Handle simulated sed edit - apply directly instead of running sed
     // This ensures what the user previewed is exactly what gets written
     if (input._simulatedSedEdit) {
-      return applySedEdit(input._simulatedSedEdit, toolUseContext, parentMessage);
+      return applySedEdit(
+        input._simulatedSedEdit,
+        toolUseContext,
+        parentMessage,
+      );
     }
-    const {
-      abortController,
-      getAppState,
-      setAppState,
-      setToolJSX
-    } = toolUseContext;
+    const queueOwner = captureToolQueueOwner(toolUseContext);
+    const { abortController, getAppState, setAppState, setToolJSX } =
+      toolUseContext;
     const stdoutAccumulator = new EndTruncatingAccumulator();
-    let stderrForShellReset = '';
-    let interpretationResult: ReturnType<typeof interpretCommandResult> | undefined;
+    let stderrForShellReset = "";
+    let interpretationResult:
+      ReturnType<typeof interpretCommandResult> | undefined;
     let progressCounter = 0;
     let wasInterrupted = false;
     let result: ExecResult;
@@ -644,7 +842,8 @@ export const BashTool = buildTool({
         preventCwdChanges,
         isMainThread,
         toolUseId: toolUseContext.toolUseId,
-        agentId: toolUseContext.agentId
+        agentId: toolUseContext.agentId,
+        queueOwner,
       });
 
       // Consume the generator and capture the return value
@@ -656,15 +855,15 @@ export const BashTool = buildTool({
           onProgress({
             toolUseID: `bash-progress-${progressCounter++}`,
             data: {
-              type: 'bash_progress',
+              type: "bash_progress",
               output: progress.output,
               fullOutput: progress.fullOutput,
               elapsedTimeSeconds: progress.elapsedTimeSeconds,
               totalLines: progress.totalLines,
               totalBytes: progress.totalBytes,
               taskId: progress.taskId,
-              timeoutMs: progress.timeoutMs
-            }
+              timeoutMs: progress.timeoutMs,
+            },
           });
         }
       } while (!generatorResult.done);
@@ -672,13 +871,19 @@ export const BashTool = buildTool({
       // Get the final result from the generator's return value
       result = generatorResult.value;
       trackGitOperations(input.command, result.code, result.stdout);
-      const isInterrupt = result.interrupted && abortController.signal.reason === 'interrupt';
+      const isInterrupt =
+        result.interrupted && abortController.signal.reason === "interrupt";
 
       // stderr is interleaved in stdout (merged fd) — result.stdout has both
-      stdoutAccumulator.append((result.stdout || '').trimEnd() + EOL);
+      stdoutAccumulator.append((result.stdout || "").trimEnd() + EOL);
 
       // Interpret the command result using semantic rules
-      interpretationResult = interpretCommandResult(input.command, result.code, result.stdout || '', '');
+      interpretationResult = interpretCommandResult(
+        input.command,
+        result.code,
+        result.stdout || "",
+        "",
+      );
       if (interpretationResult.isError && !isInterrupt) {
         // Only add exit code if it's actually an error
         if (result.code !== 0) {
@@ -688,12 +893,16 @@ export const BashTool = buildTool({
       if (!preventCwdChanges) {
         const appState = getAppState();
         if (resetCwdIfOutsideProject(appState.toolPermissionContext)) {
-          stderrForShellReset = stdErrAppendShellResetMessage('');
+          stderrForShellReset = stdErrAppendShellResetMessage("");
         }
       }
 
       // Annotate output with sandbox violations if any (stderr is in stdout)
-      const outputWithSbFailures = SandboxManager.annotateStderrWithSandboxFailures(input.command, result.stdout || '');
+      const outputWithSbFailures =
+        SandboxManager.annotateStderrWithSandboxFailures(
+          input.command,
+          result.stdout || "",
+        );
       if (result.preSpawnError) {
         throw new Error(result.preSpawnError);
       }
@@ -701,7 +910,12 @@ export const BashTool = buildTool({
         // stderr is merged into stdout (merged fd); outputWithSbFailures
         // already has the full output. Pass '' for stdout to avoid
         // duplication in getErrorParts() and processBashCommand.
-        throw new ShellError('', outputWithSbFailures, result.code, result.interrupted);
+        throw new ShellError(
+          "",
+          outputWithSbFailures,
+          result.code,
+          result.interrupted,
+        );
       }
       wasInterrupted = result.interrupted;
     } finally {
@@ -757,7 +971,11 @@ export const BashTool = buildTool({
     // before we build the output Out object.
     let compressedStdout = strippedStdout;
     if (isImage) {
-      const resized = await resizeShellImageOutput(strippedStdout, result.outputFilePath, persistedOutputSize);
+      const resized = await resizeShellImageOutput(
+        strippedStdout,
+        result.outputFilePath,
+        persistedOutputSize,
+      );
       if (resized) {
         compressedStdout = resized;
       } else {
@@ -778,18 +996,24 @@ export const BashTool = buildTool({
       backgroundTaskId: result.backgroundTaskId,
       backgroundedByUser: result.backgroundedByUser,
       assistantAutoBackgrounded: result.assistantAutoBackgrounded,
-      dangerouslyDisableSandbox: 'dangerouslyDisableSandbox' in input ? input.dangerouslyDisableSandbox as boolean | undefined : undefined,
+      dangerouslyDisableSandbox:
+        "dangerouslyDisableSandbox" in input
+          ? (input.dangerouslyDisableSandbox as boolean | undefined)
+          : undefined,
       persistedOutputPath,
-      persistedOutputSize
+      persistedOutputSize,
     };
     return {
-      data
+      data,
     };
   },
   renderToolUseErrorMessage,
   isResultTruncated(output: Out): boolean {
-    return isOutputLineTruncated(output.stdout) || isOutputLineTruncated(output.stderr);
-  }
+    return (
+      isOutputLineTruncated(output.stdout) ||
+      isOutputLineTruncated(output.stderr)
+    );
+  },
 } satisfies ToolDef<InputSchema, Out, BashProgress>);
 async function* runShellCommand({
   input,
@@ -799,7 +1023,8 @@ async function* runShellCommand({
   preventCwdChanges,
   isMainThread,
   toolUseId,
-  agentId
+  agentId,
+  queueOwner,
 }: {
   input: BashToolInput;
   abortController: AbortController;
@@ -809,25 +1034,25 @@ async function* runShellCommand({
   isMainThread?: boolean;
   toolUseId?: string;
   agentId?: AgentId;
-}): AsyncGenerator<{
-  type: 'progress';
-  output: string;
-  fullOutput: string;
-  elapsedTimeSeconds: number;
-  totalLines: number;
-  totalBytes?: number;
-  taskId?: string;
-  timeoutMs?: number;
-}, ExecResult, void> {
-  const {
-    command,
-    description,
-    timeout,
-    run_in_background
-  } = input;
+  queueOwner: SessionQueueOwner;
+}): AsyncGenerator<
+  {
+    type: "progress";
+    output: string;
+    fullOutput: string;
+    elapsedTimeSeconds: number;
+    totalLines: number;
+    totalBytes?: number;
+    taskId?: string;
+    timeoutMs?: number;
+  },
+  ExecResult,
+  void
+> {
+  const { command, description, timeout, run_in_background } = input;
   const timeoutMs = timeout || getDefaultTimeoutMs();
-  let fullOutput = '';
-  let lastProgressOutput = '';
+  let fullOutput = "";
+  let lastProgressOutput = "";
   let lastTotalLines = 0;
   let lastTotalBytes = 0;
   let backgroundShellId: string | undefined = undefined;
@@ -837,7 +1062,7 @@ async function* runShellCommand({
   // waking the generator to yield a progress update.
   let resolveProgress: (() => void) | null = null;
   function createProgressSignal(): Promise<null> {
-    return new Promise<null>(resolve => {
+    return new Promise<null>((resolve) => {
       resolveProgress = () => resolve(null);
     });
   }
@@ -845,8 +1070,9 @@ async function* runShellCommand({
   // Determine if auto-backgrounding should be enabled
   // Only enable for commands that are allowed to be auto-backgrounded
   // and when background tasks are not disabled
-  const shouldAutoBackground = !isBackgroundTasksDisabled && isAutobackgroundingAllowed(command);
-  const shellCommand = await exec(command, abortController.signal, 'bash', {
+  const shouldAutoBackground =
+    !isBackgroundTasksDisabled && isAutobackgroundingAllowed(command);
+  const shellCommand = await exec(command, abortController.signal, "bash", {
     timeout: timeoutMs,
     onProgress(lastLines, allLines, totalLines, totalBytes, isIncomplete) {
       lastProgressOutput = lastLines;
@@ -862,29 +1088,40 @@ async function* runShellCommand({
     },
     preventCwdChanges,
     shouldUseSandbox: shouldUseSandbox(input),
-    shouldAutoBackground
+    shouldAutoBackground,
   });
+  const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
+  void shellCommand.result.then(
+    releaseWorkspaceOperation,
+    releaseWorkspaceOperation,
+  );
 
   // Start the command execution
   const resultPromise = shellCommand.result;
 
   // Helper to spawn a background task and return its ID
   async function spawnBackgroundTask(): Promise<string> {
-    const handle = await spawnShellTask({
-      command,
-      description: description || command,
-      shellCommand,
-      toolUseId,
-      agentId
-    }, {
-      abortController,
-      getAppState: () => {
-        // We don't have direct access to getAppState here, but spawn doesn't
-        // actually use it during the spawn process
-        throw new Error('getAppState not available in runShellCommand context');
+    const handle = await spawnShellTask(
+      {
+        command,
+        description: description || command,
+        shellCommand,
+        queueOwner,
+        toolUseId,
+        agentId,
       },
-      setAppState
-    });
+      {
+        abortController,
+        getAppState: () => {
+          // We don't have direct access to getAppState here, but spawn doesn't
+          // actually use it during the spawn process
+          throw new Error(
+            "getAppState not available in runShellCommand context",
+          );
+        },
+        setAppState,
+      },
+    );
     return handle.taskId;
   }
 
@@ -895,7 +1132,15 @@ async function* runShellCommand({
     // would overwrite tasks[taskId], emit a duplicate task_started SDK event,
     // and leak the first cleanup callback.
     if (foregroundTaskId) {
-      if (!backgroundExistingForegroundTask(foregroundTaskId, shellCommand, description || command, setAppState, toolUseId)) {
+      if (
+        !backgroundExistingForegroundTask(
+          foregroundTaskId,
+          shellCommand,
+          description || command,
+          setAppState,
+          toolUseId,
+        )
+      ) {
         return;
       }
       backgroundShellId = foregroundTaskId;
@@ -905,7 +1150,7 @@ async function* runShellCommand({
 
     // No foreground task registered — spawn a new background task
     // Note: spawn is essentially synchronous despite being async
-    void spawnBackgroundTask().then(shellId => {
+    void spawnBackgroundTask().then((shellId) => {
       backgroundShellId = shellId;
 
       // Wake the generator's Promise.race so it sees backgroundShellId.
@@ -927,7 +1172,7 @@ async function* runShellCommand({
   // Set up auto-backgrounding on timeout if enabled
   // Only background commands that are allowed to be auto-backgrounded (not sleep, etc.)
   if (shellCommand.onTimeout && shouldAutoBackground) {
-    shellCommand.onTimeout(backgroundFn => {
+    shellCommand.onTimeout((backgroundFn) => {
       startBackgrounding(backgroundFn);
     });
   }
@@ -935,9 +1180,18 @@ async function* runShellCommand({
   // In assistant mode, the main agent should stay responsive. Auto-background
   // blocking commands after ASSISTANT_BLOCKING_BUDGET_MS so the agent can keep
   // coordinating instead of waiting. The command keeps running — no state loss.
-  if (feature('KAIROS') && getKairosActive() && isMainThread && !isBackgroundTasksDisabled && run_in_background !== true) {
+  if (
+    feature("KAIROS") &&
+    getKairosActive() &&
+    isMainThread &&
+    !isBackgroundTasksDisabled &&
+    run_in_background !== true
+  ) {
     setTimeout(() => {
-      if (shellCommand.status === 'running' && backgroundShellId === undefined) {
+      if (
+        shellCommand.status === "running" &&
+        backgroundShellId === undefined
+      ) {
         assistantAutoBackgrounded = true;
         startBackgrounding();
       }
@@ -951,11 +1205,11 @@ async function* runShellCommand({
   if (run_in_background === true && !isBackgroundTasksDisabled) {
     const shellId = await spawnBackgroundTask();
     return {
-      stdout: '',
-      stderr: '',
+      stdout: "",
+      stderr: "",
       code: 0,
       interrupted: false,
-      backgroundTaskId: shellId
+      backgroundTaskId: shellId,
     };
   }
 
@@ -963,22 +1217,29 @@ async function* runShellCommand({
   const startTime = Date.now();
   let foregroundTaskId: string | undefined = undefined;
   {
-    const initialResult = await Promise.race([resultPromise, new Promise<null>(resolve => {
-      const t = setTimeout((r: (v: null) => void) => r(null), PROGRESS_THRESHOLD_MS, resolve);
-      t.unref();
-    })]);
+    const initialResult = await Promise.race([
+      resultPromise,
+      new Promise<null>((resolve) => {
+        const t = setTimeout(
+          (r: (v: null) => void) => r(null),
+          PROGRESS_THRESHOLD_MS,
+          resolve,
+        );
+        t.unref();
+      }),
+    ]);
     if (initialResult !== null) {
       shellCommand.cleanup();
       return initialResult;
     }
     if (backgroundShellId) {
       return {
-        stdout: '',
-        stderr: '',
+        stdout: "",
+        stderr: "",
         code: 0,
         interrupted: false,
         backgroundTaskId: backgroundShellId,
-        assistantAutoBackgrounded
+        assistantAutoBackgrounded,
       };
     }
   }
@@ -1007,13 +1268,11 @@ async function* runShellCommand({
           markTaskNotified(result.backgroundTaskId, setAppState);
           const fixedResult: ExecResult = {
             ...result,
-            backgroundTaskId: undefined
+            backgroundTaskId: undefined,
           };
           // Mirror ShellCommand.#handleExit's large-output branch that was
           // skipped because #backgroundTaskId was set.
-          const {
-            taskOutput
-          } = shellCommand;
+          const { taskOutput } = shellCommand;
           if (taskOutput.stdoutToFile && !taskOutput.outputFileRedundant) {
             fixedResult.outputFilePath = taskOutput.path;
             fixedResult.outputFileSize = taskOutput.outputFileSize;
@@ -1036,26 +1295,26 @@ async function* runShellCommand({
       // Check if command was backgrounded (either via old mechanism or new backgroundAll)
       if (backgroundShellId) {
         return {
-          stdout: '',
-          stderr: '',
+          stdout: "",
+          stderr: "",
           code: 0,
           interrupted: false,
           backgroundTaskId: backgroundShellId,
-          assistantAutoBackgrounded
+          assistantAutoBackgrounded,
         };
       }
 
       // Check if this foreground task was backgrounded via backgroundAll()
       if (foregroundTaskId) {
         // shellCommand.status becomes 'backgrounded' when background() is called
-        if (shellCommand.status === 'backgrounded') {
+        if (shellCommand.status === "backgrounded") {
           return {
-            stdout: '',
-            stderr: '',
+            stdout: "",
+            stderr: "",
             code: 0,
             interrupted: false,
             backgroundTaskId: foregroundTaskId,
-            backgroundedByUser: true
+            backgroundedByUser: true,
           };
         }
       }
@@ -1064,34 +1323,46 @@ async function* runShellCommand({
       const elapsedSeconds = Math.floor(elapsed / 1000);
       // Show minimal backgrounding UI if available
       // Skip if background tasks are disabled
-      if (!isBackgroundTasksDisabled && backgroundShellId === undefined && elapsedSeconds >= PROGRESS_THRESHOLD_MS / 1000 && setToolJSX) {
+      if (
+        !isBackgroundTasksDisabled &&
+        backgroundShellId === undefined &&
+        elapsedSeconds >= PROGRESS_THRESHOLD_MS / 1000 &&
+        setToolJSX
+      ) {
         // Register this command as a foreground task so it can be backgrounded via Ctrl+B
         if (!foregroundTaskId) {
-          foregroundTaskId = registerForeground({
-            command,
-            description: description || command,
-            shellCommand,
-            agentId
-          }, setAppState, toolUseId);
+          foregroundTaskId = registerForeground(
+            {
+              command,
+              description: description || command,
+              shellCommand,
+              queueOwner,
+              agentId,
+            },
+            setAppState,
+            toolUseId,
+          );
         }
         setToolJSX({
           jsx: <BackgroundHint />,
           shouldHidePromptInput: false,
           shouldContinueAnimation: true,
-          showSpinner: true
+          showSpinner: true,
         });
       }
       yield {
-        type: 'progress',
+        type: "progress",
         fullOutput,
         output: lastProgressOutput,
         elapsedTimeSeconds: elapsedSeconds,
         totalLines: lastTotalLines,
         totalBytes: lastTotalBytes,
         taskId: shellCommand.taskOutput.taskId,
-        ...(timeout ? {
-          timeoutMs
-        } : undefined)
+        ...(timeout
+          ? {
+              timeoutMs,
+            }
+          : undefined),
       };
     }
   } finally {

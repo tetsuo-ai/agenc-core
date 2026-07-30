@@ -1,4 +1,8 @@
-import { describe, expect, test, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   buildToolCall,
   createDiffConsumer,
@@ -11,6 +15,61 @@ import type { Tool } from "./types.js";
 import { EventLog } from "../session/event-log.js";
 import type { GuardianApprovalReviewOptions } from "../permissions/guardian/reviewer.js";
 import { buildGuardianApprovalRequest } from "../permissions/guardian/approval-request.js";
+import {
+  sha256,
+  workspaceMutationCoordinators,
+} from "../workspace/mutation-coordinator.js";
+
+const coherenceTemporaryPaths: string[] = [];
+const originalAgencHome = process.env.AGENC_HOME;
+
+afterEach(async () => {
+  if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
+  else process.env.AGENC_HOME = originalAgencHome;
+  workspaceMutationCoordinators.clearForTests();
+  await Promise.all(
+    coherenceTemporaryPaths
+      .splice(0)
+      .map((path) => rm(path, { recursive: true, force: true })),
+  );
+});
+
+async function createProtectedEditorWorkspace(): Promise<{
+  readonly workspaceRoot: string;
+}> {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), "agenc-router-editor-workspace-"),
+  );
+  const agencHome = await mkdtemp(join(tmpdir(), "agenc-router-editor-home-"));
+  coherenceTemporaryPaths.push(workspaceRoot, agencHome);
+  process.env.AGENC_HOME = agencHome;
+  const path = join(workspaceRoot, "loaded.ts");
+  const content = "export const loaded = true;\n";
+  await writeFile(path, content);
+  const coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+  const lease = coordinator.acquire({
+    workspaceRoot,
+    editorInstanceId: "router-test-editor",
+  });
+  coordinator.sync({
+    workspaceRoot,
+    editorInstanceId: "router-test-editor",
+    leaseToken: lease.leaseToken,
+    epoch: lease.epoch,
+    sequence: 0,
+    buffers: [
+      {
+        path,
+        bufferHandle: 1,
+        changedtick: 1,
+        contentSha256: sha256(content),
+        dirty: false,
+      },
+    ],
+  });
+  await coordinator.flushQuarantinePersistence();
+  return { workspaceRoot };
+}
 
 const readTool: Tool = {
   name: "FileRead",
@@ -36,10 +95,7 @@ const jsReplTool: Tool = {
 // Minimal ToolInvocation stub. The execution boundary reads the session
 // service container even when no sandbox broker is installed, so keep that
 // required shape while casting the other unused fields.
-function makeInvocation(
-  toolName: ToolName,
-  callId = "c0",
-): ToolInvocation {
+function makeInvocation(toolName: ToolName, callId = "c0"): ToolInvocation {
   return {
     session: {
       services: { admissionRequired: false },
@@ -58,6 +114,110 @@ function makeInvocation(
 }
 
 describe("ToolRouter", () => {
+  test("blocks uncoordinated external tools at the pre-dispatch protected-authority barrier", async () => {
+    const { workspaceRoot } = await createProtectedEditorWorkspace();
+    const execute = vi.fn(async () => ({ content: "mutated" }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "mcp.repo.rewrite",
+          description: "",
+          inputSchema: {},
+          metadata: { source: "mcp", mutating: true },
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-editor-external",
+        name: "mcp.repo.rewrite",
+        arguments: "{}",
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: { admissionRequired: false },
+          cwd: workspaceRoot,
+        } as never,
+        turn: { subId: "turn-editor-external", cwd: workspaceRoot } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "danger_full_access",
+      },
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      metadata: { editorWorkspaceCoherenceDenied: true },
+    });
+    expect(result.content).toBe(
+      "<tool_use_error>Tool 'mcp.repo.rewrite' is blocked while this workspace has protected Editor authority</tool_use_error>",
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("suppresses executable extension hooks for coordinated editor writes", async () => {
+    const { workspaceRoot } = await createProtectedEditorWorkspace();
+    const execute = vi.fn(async () => ({ content: "original" }));
+    const preHook = vi.fn(async () => ({
+      kind: "continue" as const,
+      args: { rewrittenByHook: true },
+    }));
+    const postHook = vi.fn(async () => ({
+      kind: "rewrite" as const,
+      result: { content: "rewritten" },
+    }));
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "Write",
+          description: "",
+          inputSchema: {},
+          metadata: { source: "builtin", mutating: true },
+          recoveryCategory: "side-effecting",
+          execute,
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+
+    const result = await router.dispatchModelToolCall(
+      { id: "call-editor-write", name: "Write", arguments: "{}" },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: { admissionRequired: false },
+          cwd: workspaceRoot,
+        } as never,
+        turn: { subId: "turn-editor-write", cwd: workspaceRoot } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "danger_full_access",
+        preHooks: [preHook],
+        postHooks: [postHook],
+      },
+    );
+
+    expect(result.content).toBe("original");
+    expect(result.isError).toBeFalsy();
+    expect(execute).toHaveBeenCalledWith(
+      expect.not.objectContaining({ rewrittenByHook: true }),
+    );
+    expect(preHook).not.toHaveBeenCalled();
+    expect(postHook).not.toHaveBeenCalled();
+  });
+
   test("@ledger turn fails closed for every non-read-only model tool except the Ledger handoff", async () => {
     const readExecute = vi.fn(async () => ({ content: "read-ok" }));
     const writeExecute = vi.fn(async () => ({ content: "write-ok" }));
@@ -298,9 +458,9 @@ describe("ToolRouter", () => {
     const router = new ToolRouter([
       { tool: mcpTool, supportsParallelToolCalls: false, serverId: "db" },
     ]);
-    expect(
-      router.findSpec({ namespace: "db", name: "query" })?.tool,
-    ).toBe(mcpTool);
+    expect(router.findSpec({ namespace: "db", name: "query" })?.tool).toBe(
+      mcpTool,
+    );
     // Namespace mismatch → undefined.
     expect(
       router.findSpec({ namespace: "other", name: "query" }),
@@ -408,14 +568,24 @@ describe("ToolRouter", () => {
       router.toolSupportsParallel({
         toolName: { name: "query" },
         callId: "c3",
-        payload: { kind: "mcp", server: "dbA", tool: "query", rawArguments: "" },
+        payload: {
+          kind: "mcp",
+          server: "dbA",
+          tool: "query",
+          rawArguments: "",
+        },
       }),
     ).toBe(true);
     expect(
       router.toolSupportsParallel({
         toolName: { name: "query" },
         callId: "c4",
-        payload: { kind: "mcp", server: "dbZ", tool: "query", rawArguments: "" },
+        payload: {
+          kind: "mcp",
+          server: "dbZ",
+          tool: "query",
+          rawArguments: "",
+        },
       }),
     ).toBe(false);
   });
@@ -624,11 +794,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       { tool: readTool, supportsParallelToolCalls: true },
     ]);
     const inv = makeInvocation({ name: "FileRead" }, "c3");
-    const result = await router.dispatchToolCallWithCodeMode(
-      inv,
-      {},
-      "direct",
-    );
+    const result = await router.dispatchToolCallWithCodeMode(inv, {}, "direct");
     expect(result.content).toBe("ok");
   });
 
@@ -725,19 +891,20 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
     const execute = vi.fn(async (args: Record<string, unknown>) => {
       const signal = args["__abortSignal"];
       sawRuntimeSignal = signal instanceof AbortSignal;
-      return await new Promise<{ readonly content: string; readonly isError: true }>(
-        (resolve) => {
-          if (!(signal instanceof AbortSignal)) return;
-          signal.addEventListener(
-            "abort",
-            () => {
-              signalAborted = true;
-              resolve({ content: "aborted", isError: true });
-            },
-            { once: true },
-          );
-        },
-      );
+      return await new Promise<{
+        readonly content: string;
+        readonly isError: true;
+      }>((resolve) => {
+        if (!(signal instanceof AbortSignal)) return;
+        signal.addEventListener(
+          "abort",
+          () => {
+            signalAborted = true;
+            resolve({ content: "aborted", isError: true });
+          },
+          { once: true },
+        );
+      });
     });
     const router = new ToolRouter([
       {
@@ -1264,7 +1431,8 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         id: "call-denied",
         name: "Write",
-        arguments: '{"command":"echo api_key=abcdefghijklmnopqrstuvwxyz123456"}',
+        arguments:
+          '{"command":"echo api_key=abcdefghijklmnopqrstuvwxyz123456"}',
       },
       {
         session: {

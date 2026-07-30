@@ -1,54 +1,59 @@
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterEach, expect, test } from 'bun:test'
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, expect, test } from "bun:test";
 import {
   resetStateForTests,
   setCwdState,
   setOriginalCwd,
   setProjectRoot,
-} from '../../src/bootstrap/state.ts'
-import { CronCreateTool } from '../../src/tools/ScheduleCronTool/CronCreateTool.ts'
-import { CronDeleteTool } from '../../src/tools/ScheduleCronTool/CronDeleteTool.ts'
-import { CronListTool } from '../../src/tools/ScheduleCronTool/CronListTool.ts'
-import { resetCronSchedulerForTests } from '../../src/utils/cronScheduler.ts'
+} from "../../src/bootstrap/state.ts";
+import { CronCreateTool } from "../../src/tools/ScheduleCronTool/CronCreateTool.ts";
+import { CronDeleteTool } from "../../src/tools/ScheduleCronTool/CronDeleteTool.ts";
+import { CronListTool } from "../../src/tools/ScheduleCronTool/CronListTool.ts";
+import { resetCronSchedulerForTests } from "../../src/utils/cronScheduler.ts";
 
-let tempRoot: string | undefined
+let tempRoot: string | undefined;
+const toolContext = {
+  sessionId: "cron-tool-test-session",
+} as never;
 
 async function setTempProjectRoot(): Promise<void> {
-  tempRoot = await mkdtemp(join(tmpdir(), 'agenc-cron-tool-'))
-  setProjectRoot(tempRoot)
-  setOriginalCwd(tempRoot)
-  setCwdState(tempRoot)
+  tempRoot = await mkdtemp(join(tmpdir(), "agenc-cron-tool-"));
+  setProjectRoot(tempRoot);
+  setOriginalCwd(tempRoot);
+  setCwdState(tempRoot);
 }
 
 afterEach(async () => {
-  await resetCronSchedulerForTests()
-  resetStateForTests()
+  await resetCronSchedulerForTests();
+  resetStateForTests();
   if (tempRoot) {
-    await rm(tempRoot, { recursive: true, force: true })
-    tempRoot = undefined
+    await rm(tempRoot, { recursive: true, force: true });
+    tempRoot = undefined;
   }
-})
+});
 
-test('ScheduleCron tools create, list, and delete a session cron job', async () => {
-  await setTempProjectRoot()
+test("ScheduleCron tools create, list, and delete a session cron job", async () => {
+  await setTempProjectRoot();
 
   const input = {
-    cron: '* * * * *',
-    prompt: 'cron smoke prompt',
+    cron: "* * * * *",
+    prompt: "cron smoke prompt",
     recurring: false,
     durable: false,
-  }
+  };
 
-  expect(await CronCreateTool.validateInput(input)).toEqual({ result: true })
+  expect(await CronCreateTool.validateInput(input, toolContext)).toEqual({
+    result: true,
+  });
 
-  const created = await CronCreateTool.call(input)
-  expect(created.data.id).toMatch(/^[a-f0-9]{8}$/)
-  expect(created.data.recurring).toBe(false)
-  expect(created.data.durable).toBe(false)
+  const created = await CronCreateTool.call(input, toolContext);
+  expect(created.data.id).toMatch(/^[a-f0-9]{8}$/);
+  expect(created.data.recurring).toBe(false);
+  expect(created.data.durable).toBe(false);
 
-  const listed = await CronListTool.call({})
+  const listed = await CronListTool.call({}, toolContext);
   expect(listed.data.jobs).toEqual([
     expect.objectContaining({
       id: created.data.id,
@@ -56,15 +61,19 @@ test('ScheduleCron tools create, list, and delete a session cron job', async () 
       prompt: input.prompt,
       durable: false,
     }),
-  ])
+  ]);
 
-  expect(await CronDeleteTool.validateInput({ id: created.data.id })).toEqual({
+  expect(
+    await CronDeleteTool.validateInput({ id: created.data.id }, toolContext),
+  ).toEqual({
     result: true,
-  })
-  await expect(CronDeleteTool.call({ id: created.data.id })).resolves.toEqual({
+  });
+  await expect(
+    CronDeleteTool.call({ id: created.data.id }, toolContext),
+  ).resolves.toEqual({
     data: { id: created.data.id },
-  })
+  });
 
-  const afterDelete = await CronListTool.call({})
-  expect(afterDelete.data.jobs).toEqual([])
-})
+  const afterDelete = await CronListTool.call({}, toolContext);
+  expect(afterDelete.data.jobs).toEqual([]);
+});

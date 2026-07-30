@@ -12,7 +12,9 @@ const activeSurfaceHarness = vi.hoisted(() => ({
   }>,
 }));
 
-function surfaceMock(name: string): (props: Record<string, unknown>) => React.ReactElement {
+function surfaceMock(
+  name: string,
+): (props: Record<string, unknown>) => React.ReactElement {
   return (props) => {
     activeSurfaceHarness.renderCalls.push({ name, props });
     return React.createElement(React.Fragment);
@@ -30,7 +32,7 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
 }));
 
 vi.mock("../../../src/tui/workbench/surfaces/AgentSurface.js", () => ({
-  AgentSurface: surfaceMock("agent"),
+  AgentSurface: surfaceMock("task-detail"),
 }));
 
 vi.mock("../../../src/tui/workbench/surfaces/BufferSurface.js", () => ({
@@ -58,14 +60,27 @@ vi.mock("../../../src/tui/workbench/surfaces/TestSurface.js", () => ({
 }));
 
 vi.mock("../../../src/tui/workbench/surfaces/TranscriptSurface.js", () => ({
-  TranscriptSurface: ({ children, scrollRef }: { readonly children: React.ReactNode; readonly scrollRef?: unknown }) => {
-    activeSurfaceHarness.renderCalls.push({ name: "transcript", props: { scrollRef } });
+  TranscriptSurface: ({
+    children,
+    scrollRef,
+  }: {
+    readonly children: React.ReactNode;
+    readonly scrollRef?: unknown;
+  }) => {
+    activeSurfaceHarness.renderCalls.push({
+      name: "transcript",
+      props: { scrollRef },
+    });
     return React.createElement(React.Fragment, null, children);
   },
 }));
 
 import { Text } from "../../../src/tui/ink.js";
-import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
+import {
+  AppStateProvider,
+  getDefaultAppState,
+  type AppState,
+} from "../../../src/tui/state/AppState.js";
 import {
   ActiveWorkSurface,
   descriptorForSurface,
@@ -84,7 +99,7 @@ describe("ActiveWorkSurface", () => {
     "shell",
     "test",
     "search",
-    "agent",
+    "task-detail",
   ] as const)("routes %s mode to its surface renderer", async (mode) => {
     activeSurfaceHarness.keybindingCalls = [];
     activeSurfaceHarness.renderCalls = [];
@@ -145,7 +160,10 @@ describe("ActiveWorkSurface", () => {
         }}
         onChangeAppState={({ newState }) => changes.push(newState)}
       >
-        <ActiveWorkSurface focused={true} transcript={<Text>transcript body</Text>} />
+        <ActiveWorkSurface
+          focused={true}
+          transcript={<Text>transcript body</Text>}
+        />
       </AppStateProvider>,
       100,
     );
@@ -181,14 +199,19 @@ describe("ActiveWorkSurface", () => {
           },
         }}
       >
-        <ActiveWorkSurface focused={true} transcript={<Text>transcript body</Text>} />
+        <ActiveWorkSurface
+          focused={true}
+          transcript={<Text>transcript body</Text>}
+        />
       </AppStateProvider>,
       100,
     );
 
-    expect(activeSurfaceHarness.keybindingCalls.find(
-      (call) => call.options?.context === "Surface",
-    )?.options).toMatchObject({
+    expect(
+      activeSurfaceHarness.keybindingCalls.find(
+        (call) => call.options?.context === "Surface",
+      )?.options,
+    ).toMatchObject({
       context: "Surface",
       isActive: false,
     });
@@ -207,15 +230,23 @@ describe("ActiveWorkSurface", () => {
       "SEARCH",
       "AGENT",
     ]);
-    expect(descriptorForSurface("preview").title({
-      ...state,
-      activeFilePath: "src/app.ts",
-    })).toBe("src/app.ts");
-    expect(descriptorForSurface("buffer").title({
-      ...state,
-      activeFilePath: "src/app.ts",
-    })).toBe("src/app.ts");
-    expect(descriptorForSurface("unknown" as ActiveSurfaceMode).mode).toBe("transcript");
-    expect(footerHintsForSurface("unknown" as ActiveSurfaceMode)).toBe(WORKBENCH_SURFACES[0]?.footerHints);
+    expect(
+      descriptorForSurface("preview").title({
+        ...state,
+        activeFilePath: "src/app.ts",
+      }),
+    ).toBe("src/app.ts");
+    expect(
+      descriptorForSurface("buffer").title({
+        ...state,
+        activeFilePath: "src/app.ts",
+      }),
+    ).toBe("src/app.ts");
+    expect(descriptorForSurface("unknown" as ActiveSurfaceMode).mode).toBe(
+      "transcript",
+    );
+    expect(footerHintsForSurface("unknown" as ActiveSurfaceMode)).toBe(
+      WORKBENCH_SURFACES[0]?.footerHints,
+    );
   });
 });

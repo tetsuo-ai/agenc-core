@@ -14,17 +14,25 @@ describe("session memory runtime contract", () => {
     ]) {
       expect(existsSync(resolve(root, rel)), rel).toBe(true);
     }
-    expect(existsSync(resolve(root, "runtime/src/services/SessionMemory"))).toBe(false);
+    expect(
+      existsSync(resolve(root, "runtime/src/services/SessionMemory")),
+    ).toBe(false);
   });
 
   it("wires the post-sampling hook into the live turn loop", () => {
-    const runTurnSource = readFileSync(resolve(root, "runtime/src/session/run-turn.ts"), "utf8");
+    const runTurnSource = readFileSync(
+      resolve(root, "runtime/src/session/run-turn.ts"),
+      "utf8",
+    );
     expect(runTurnSource).toContain("runSessionMemoryPostSamplingHook");
     expect(runTurnSource).toMatch(
       /function launchSessionMemoryPostSampling\([\s\S]*?querySource: string/,
     );
     expect(runTurnSource).toMatch(
-      /launchSessionMemoryPostSampling\(\s*state,\s*session,\s*ctx,\s*turnQuerySource,/,
+      /function launchTerminalPostSampling\([\s\S]*?if \(ctx\.editorInteraction !== undefined\) return;[\s\S]*?launchSessionMemoryPostSampling\(state, session, ctx, querySource, signal\);/,
+    );
+    expect(runTurnSource).toMatch(
+      /launchTerminalPostSampling\(\s*state,\s*session,\s*ctx,\s*turnQuerySource,\s*signal,?\s*\);/,
     );
     expect(runTurnSource).toContain("state.messagesForQuery.length > 0");
     expect(runTurnSource).toContain("baseInstructions");

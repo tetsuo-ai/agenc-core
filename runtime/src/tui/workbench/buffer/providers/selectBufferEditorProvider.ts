@@ -1,4 +1,8 @@
-import { discoverNeovim, type NeovimDiscoveryConfig, type NeovimDiscoveryResult } from "../neovim/NeovimDiscovery.js";
+import {
+  discoverNeovim,
+  type NeovimDiscoveryConfig,
+  type NeovimDiscoveryResult,
+} from "../neovim/NeovimDiscovery.js";
 import type { WorkbenchBufferStore } from "../BufferStore.js";
 import { ExternalEditorProvider } from "./external/ExternalEditorProvider.js";
 import { InlineBufferProvider } from "./inline/InlineBufferProvider.js";
@@ -24,6 +28,7 @@ export type BufferProviderSelectionConfig = NeovimDiscoveryConfig & {
   readonly sessionMode?: "workspace" | "file";
   readonly workspaceRoot?: string;
   readonly agencHome?: string;
+  readonly requireWorkspaceWriteAuthority?: boolean;
   readonly beforeOpenFile?: (
     context: EmbeddedNeovimStartupContext,
   ) => Promise<EmbeddedNeovimStartupPreparation | void>;
@@ -33,7 +38,10 @@ export type BufferProviderSelection =
   | {
       readonly kind: "neovim";
       readonly provider: BufferEditorProvider;
-      readonly discovery: Extract<NeovimDiscoveryResult, { readonly usable: true }>;
+      readonly discovery: Extract<
+        NeovimDiscoveryResult,
+        { readonly usable: true }
+      >;
       /**
        * Present only for `auto` mode. The controller may install the inline
        * provider only when the selected Neovim provider reports that every
@@ -62,7 +70,8 @@ export async function selectBufferEditorProvider(
 ): Promise<BufferProviderSelection> {
   const mode = config.mode ?? "auto";
   if (mode === "inline") {
-    const reason = "Inline BUFFER selected by configuration. Vim behavior is basic fallback behavior.";
+    const reason =
+      "Inline BUFFER selected by configuration. Vim behavior is basic fallback behavior.";
     return {
       kind: "inline",
       provider: new InlineBufferProvider({ reason, store: config.inlineStore }),
@@ -90,6 +99,7 @@ export async function selectBufferEditorProvider(
       sessionMode: config.sessionMode,
       workspaceRoot: config.workspaceRoot,
       agencHome: config.agencHome,
+      requireWorkspaceWriteAuthority: config.requireWorkspaceWriteAuthority,
       beforeOpenFile: config.beforeOpenFile,
     });
     return {
@@ -127,21 +137,32 @@ export async function selectBufferEditorProvider(
 
   return {
     kind: "inline",
-    provider: new InlineBufferProvider({ reason: discovery.reason, store: config.inlineStore }),
+    provider: new InlineBufferProvider({
+      reason: discovery.reason,
+      store: config.inlineStore,
+    }),
     discovery,
     reason: discovery.reason,
   };
 }
 
-export function bufferProviderConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BufferProviderSelectionConfig {
+export function bufferProviderConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): BufferProviderSelectionConfig {
   return {
     mode: parseMode(env.AGENC_BUFFER_PROVIDER),
     executable: env.AGENC_BUFFER_NVIM,
     useUserInit: parseUseUserInit(env.AGENC_BUFFER_NVIM_USE_INIT),
     timeoutMs: parsePositiveInteger(env.AGENC_BUFFER_NVIM_TIMEOUT_MS),
-    startupTimeoutMs: parsePositiveInteger(env.AGENC_BUFFER_NVIM_STARTUP_TIMEOUT_MS),
-    operationTimeoutMs: parsePositiveInteger(env.AGENC_BUFFER_NVIM_OPERATION_TIMEOUT_MS),
-    cleanupTimeoutMs: parsePositiveInteger(env.AGENC_BUFFER_NVIM_CLEANUP_TIMEOUT_MS),
+    startupTimeoutMs: parsePositiveInteger(
+      env.AGENC_BUFFER_NVIM_STARTUP_TIMEOUT_MS,
+    ),
+    operationTimeoutMs: parsePositiveInteger(
+      env.AGENC_BUFFER_NVIM_OPERATION_TIMEOUT_MS,
+    ),
+    cleanupTimeoutMs: parsePositiveInteger(
+      env.AGENC_BUFFER_NVIM_CLEANUP_TIMEOUT_MS,
+    ),
     sessionMode: parseSessionMode(env.AGENC_BUFFER_NVIM_SESSION),
   };
 }
@@ -152,13 +173,15 @@ export function bufferProviderConfigFromSources(
 ): BufferProviderSelectionConfig {
   const neovim = config?.neovim;
   return {
-    mode: env.AGENC_BUFFER_PROVIDER !== undefined
-      ? parseMode(env.AGENC_BUFFER_PROVIDER)
-      : config?.provider ?? "auto",
+    mode:
+      env.AGENC_BUFFER_PROVIDER !== undefined
+        ? parseMode(env.AGENC_BUFFER_PROVIDER)
+        : (config?.provider ?? "auto"),
     executable: env.AGENC_BUFFER_NVIM ?? neovim?.executable,
-    useUserInit: env.AGENC_BUFFER_NVIM_USE_INIT !== undefined
-      ? parseUseUserInit(env.AGENC_BUFFER_NVIM_USE_INIT)
-      : initModeToUseUserInit(neovim?.init),
+    useUserInit:
+      env.AGENC_BUFFER_NVIM_USE_INIT !== undefined
+        ? parseUseUserInit(env.AGENC_BUFFER_NVIM_USE_INIT)
+        : initModeToUseUserInit(neovim?.init),
     timeoutMs:
       parsePositiveInteger(env.AGENC_BUFFER_NVIM_TIMEOUT_MS) ??
       neovim?.discovery_timeout_ms,
@@ -176,7 +199,13 @@ export function bufferProviderConfigFromSources(
 }
 
 function parseMode(value: string | undefined): BufferProviderMode {
-  if (value === "neovim" || value === "inline" || value === "external" || value === "auto") return value;
+  if (
+    value === "neovim" ||
+    value === "inline" ||
+    value === "external" ||
+    value === "auto"
+  )
+    return value;
   return "auto";
 }
 
@@ -189,8 +218,10 @@ function parsePositiveInteger(value: string | undefined): number | undefined {
 function parseUseUserInit(value: string | undefined): boolean | undefined {
   if (value === undefined) return undefined;
   const normalized = value.trim().toLowerCase();
-  if (normalized === "1" || normalized === "true" || normalized === "yes") return true;
-  if (normalized === "0" || normalized === "false" || normalized === "no") return false;
+  if (normalized === "1" || normalized === "true" || normalized === "yes")
+    return true;
+  if (normalized === "0" || normalized === "false" || normalized === "no")
+    return false;
   return undefined;
 }
 
@@ -202,8 +233,6 @@ function initModeToUseUserInit(
   return undefined;
 }
 
-function parseSessionMode(
-  value: string | undefined,
-): "workspace" | "file" {
+function parseSessionMode(value: string | undefined): "workspace" | "file" {
   return value === "file" ? "file" : "workspace";
 }
