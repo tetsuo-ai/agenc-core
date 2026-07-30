@@ -315,10 +315,15 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
         'Timed out waiting for verifier error status',
       )
 
-      expect(rendered.snapshots).toContainEqual({
-        errorMessage: 'network failed',
-        status: 'error',
-      })
+      await waitForCondition(
+        () =>
+          rendered.snapshots.some(
+            snapshot =>
+              snapshot.errorMessage === 'network failed' &&
+              snapshot.status === 'error',
+          ),
+        'Timed out waiting for verifier error effect snapshot',
+      )
 
       authHarness.state.authEnabled = false
       rendered.rerender()
