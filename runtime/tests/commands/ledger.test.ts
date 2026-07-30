@@ -5,6 +5,10 @@ import {
   ledgerCommand,
   parseLedgerArguments,
 } from "../../src/commands/ledger.js";
+import {
+  getLedgerVerificationSnapshot,
+  resetLedgerVerificationForTests,
+} from "../../src/services/Ledger/ledgerVerification.js";
 
 type FakeResult = {
   readonly stdout?: string;
@@ -120,12 +124,13 @@ vi.mock("../../src/services/Ledger/walletCli.js", async (importOriginal) => {
   };
 });
 
-function makeCtx(argsRaw: string) {
+function makeCtx(argsRaw: string, tui = false) {
   return {
     argsRaw,
     cwd: "/tmp",
     home: "/home/test",
     agencHome: "/home/test/.agenc",
+    ...(tui ? { appState: {} } : {}),
   } as never;
 }
 
@@ -142,6 +147,7 @@ afterEach(() => {
     package: "@ledgerhq/wallet-cli",
     alreadyCurrent: false,
   };
+  resetLedgerVerificationForTests();
 });
 
 describe("/ledger command", () => {
@@ -248,6 +254,40 @@ describe("/ledger command", () => {
       "--output",
       "human",
     ]);
+  });
+
+  test("keeps genuine-check output inside the TUI popup", async () => {
+    nextResult = {
+      code: 0,
+      stdout: "The connected Ledger device is genuine.\n",
+    };
+
+    const result = await ledgerCommand.execute(
+      makeCtx("genuine-check", true),
+    );
+
+    expect(result).toEqual({ kind: "skip" });
+    expect(getLedgerVerificationSnapshot()).toMatchObject({
+      phase: "verified",
+    });
+  });
+
+  test("does not verify ambiguous successful genuine-check output", async () => {
+    nextResult = {
+      code: 0,
+      stdout: "Command completed successfully.\n",
+    };
+
+    const result = await ledgerCommand.execute(
+      makeCtx("genuine-check", true),
+    );
+
+    expect(result).toEqual({ kind: "skip" });
+    expect(getLedgerVerificationSnapshot()).toMatchObject({
+      phase: "failed",
+      detail:
+        "Wallet CLI completed without an explicit genuine-device confirmation.",
+    });
   });
 
   test("treats dry-run and unverified receive as non-device commands", async () => {

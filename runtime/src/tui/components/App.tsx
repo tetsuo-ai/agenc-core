@@ -15,6 +15,7 @@ import { MessageSelector, selectableUserMessagesFilter } from "./MessageSelector
 import { ExitFlow } from "./ExitFlow.js";
 import PromptInput from "./PromptInput/PromptInput.js";
 import { CostThresholdDialog } from "./dialogs/CostThresholdDialog.js";
+import { LedgerVerificationOverlay } from "./LedgerVerificationOverlay.js";
 import { FullscreenLayout } from "./FullscreenLayout.js";
 import { WorkbenchLayout } from "../workbench/WorkbenchLayout.js";
 import { ApprovalSurfaceBridge } from "../workbench/approvals/ApprovalSurfaceBridge.js";
@@ -105,7 +106,20 @@ import {
   useFirstRunOnboardingController,
 } from "../../onboarding/Onboarding.js";
 import type { MCPServerConnection } from "../../services/mcp/types.js";
-import { refreshLedgerStatus } from "../../services/Ledger/ledgerStatus.js";
+import {
+  getLedgerStatusSnapshot,
+  refreshLedgerStatus,
+} from "../../services/Ledger/ledgerStatus.js";
+import {
+  beginLedgerVerification,
+  getLedgerVerificationSnapshot,
+  isLedgerAuthenticityRequest,
+  markLedgerVerificationFailed,
+  markLedgerVerified,
+  markLedgerVerifying,
+  observeLedgerGenuineCheck,
+  subscribeLedgerVerification,
+} from "../../services/Ledger/ledgerVerification.js";
 import {
   completionPipelineOwnsPrompt,
   formatCompletionPipelineRows,
@@ -1831,6 +1845,48 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     props.session,
     props.initialUserMessages ?? EMPTY_INITIAL_USER_MESSAGES,
   );
+  const ledgerVerification = useSyncExternalStore(
+    subscribeLedgerVerification,
+    getLedgerVerificationSnapshot,
+    getLedgerVerificationSnapshot,
+  );
+  useEffect(() => {
+    if (
+      ledgerVerification.source !== "prompt" ||
+      (ledgerVerification.phase !== "waiting" &&
+        ledgerVerification.phase !== "verifying")
+    ) {
+      return;
+    }
+    const observation = observeLedgerGenuineCheck({
+      messages: transcript.messages,
+      inProgressToolUseIDs: transcript.inProgressToolUseIDs,
+      streamingToolUses: transcript.streamingToolUses,
+      startIndex: ledgerVerification.transcriptStartIndex,
+    });
+    if (observation === null) return;
+    const model = getLedgerStatusSnapshot().model;
+    if (observation.status === "running") {
+      markLedgerVerifying(ledgerVerification.requestId, model);
+      return;
+    }
+    if (observation.status === "failed") {
+      markLedgerVerificationFailed(
+        ledgerVerification.requestId,
+        observation.detail,
+      );
+      return;
+    }
+    markLedgerVerified(ledgerVerification.requestId, { model });
+  }, [
+    ledgerVerification.phase,
+    ledgerVerification.requestId,
+    ledgerVerification.source,
+    ledgerVerification.transcriptStartIndex,
+    transcript.inProgressToolUseIDs,
+    transcript.messages,
+    transcript.streamingToolUses,
+  ]);
   // Refs for things the slash-command submit handler needs to read live
   // without re-creating its stable useCallback closure on every render.
   // transcriptMessagesRef gives local command handlers a
@@ -2184,7 +2240,18 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     if (text_0.length === 0 && !hasAttachments) return;
     // On-demand Ledger status read: mentioning "ledger" refreshes the bottom
     // connection indicator (no background polling — this is the only read).
-    if (/\bledger\b/i.test(text_0)) void refreshLedgerStatus();
+    if (/\bledger\b/i.test(text_0)) {
+      void refreshLedgerStatus();
+      if (isLedgerAuthenticityRequest(text_0)) {
+        beginLedgerVerification({
+          source: /^\/(?:ledger|wallet)\s+genuine-check\b/i.test(text_0)
+            ? "slash"
+            : "prompt",
+          transcriptStartIndex: transcriptMessagesRef.current.length,
+          model: getLedgerStatusSnapshot().model,
+        });
+      }
+    }
     // A submitted prompt means "back to the conversation": if a center
     // surface (preview/buffer/diff/etc.) is open, close it so the chat owns
     // the center pane again. A dirty BUFFER blocks the switch through the
@@ -3382,6 +3449,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     } : {}} isSearchingHistory={isSearchingHistory} isHelpOpen={helpOpen} inputMode={mode as never} inputValue={input} streamMode={cancelStreamMode as never} canCancelActiveTurn={isLoading} />
       {workbenchEnabled ? <WorkbenchLayout transcript={scrollableContent} composer={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} pendingApproval={permissionRequests[0] ?? null} scrollRef={scrollRef} atWelcome={transcript.messages.length === 0 && !transcript.streamingText} activityMode={showSpinner ? streamMode : null} contextPctLabel={contextPctLabel} sessionCostUsd={transcript.sessionCostUsd} /> : <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} />}
       {showCostDialog ? <CostThresholdDialog onDone={handleCostThresholdDone} /> : null}
+      <LedgerVerificationOverlay />
       {exitFlow}
       {isMessageSelectorVisible ? <MessageSelector messages={transcript.messages as any[]} onPreRestore={() => {}} onRestoreMessage={handleRestoreMessage} onRestoreCode={handleRestoreCode} onPreviewRewind={handlePreviewRewind} onSummarize={handleSummarize} onClose={handleCloseMessageSelector} /> : null}
     </>;

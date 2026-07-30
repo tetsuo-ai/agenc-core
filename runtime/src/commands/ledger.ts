@@ -24,6 +24,13 @@ import {
   refreshLedgerStatus,
 } from "../services/Ledger/ledgerStatus.js";
 import {
+  beginLedgerVerification,
+  isLedgerGenuineResult,
+  markLedgerVerificationFailed,
+  markLedgerVerified,
+  markLedgerVerifying,
+} from "../services/Ledger/ledgerVerification.js";
+import {
   getWalletCliStatus,
   installLatestWalletCli,
   resolveWalletCliExecutable,
@@ -356,6 +363,9 @@ export const ledgerCommand: SlashCommand = {
           ? ["session", "view"]
           : normalizeLedgerArgs(requested);
       const command = normalized[0];
+      const genuineCheck =
+        command === "genuine-check" &&
+        !hasOption(normalized, ["--help", "-h"]);
       if (command === undefined || !SUPPORTED_COMMANDS.has(command)) {
         return {
           kind: "error",
@@ -370,8 +380,23 @@ export const ledgerCommand: SlashCommand = {
       // Engaging Ledger refreshes the passive bottom-bar USB indicator. It is
       // on-demand only; nothing polls the signer in the background.
       void refreshLedgerStatus();
+      const genuineRequestId = genuineCheck
+        ? beginLedgerVerification({
+            source: "slash",
+            model: getLedgerStatusSnapshot().model,
+          })
+        : null;
+      const popupOwnsGenuineResult =
+        genuineRequestId !== null && ctx.appState !== undefined;
       const executable = await resolveWalletCliExecutable({ agencHome });
       if (executable === null) {
+        if (genuineRequestId !== null) {
+          markLedgerVerificationFailed(
+            genuineRequestId,
+            "Ledger Wallet CLI is not installed. Run /ledger install, then try the genuine check again.",
+          );
+        }
+        if (popupOwnsGenuineResult) return { kind: "skip" };
         return {
           kind: "text",
           text: [
@@ -426,16 +451,38 @@ export const ledgerCommand: SlashCommand = {
       const timeoutMs = device ? undefined : READONLY_TIMEOUT_MS;
       const suppressDecryptedOutput =
         normalized[0] === "ring" && normalized[1] === "decrypt";
-      const result = await runWalletCli(
-        withDefaultHumanOutput(normalized),
-        ctx.cwd,
-        timeoutMs,
-        executable.path,
-        !suppressDecryptedOutput,
-      );
+      if (genuineRequestId !== null) {
+        markLedgerVerifying(
+          genuineRequestId,
+          getLedgerStatusSnapshot().model,
+        );
+      }
+      let result: CliResult;
+      try {
+        result = await runWalletCli(
+          withDefaultHumanOutput(normalized),
+          ctx.cwd,
+          timeoutMs,
+          executable.path,
+          !suppressDecryptedOutput,
+        );
+      } catch (error) {
+        if (genuineRequestId !== null) {
+          markLedgerVerificationFailed(genuineRequestId, String(error));
+        }
+        if (popupOwnsGenuineResult) return { kind: "skip" };
+        throw error;
+      }
 
       // The executable disappeared or became unreadable after resolution.
       if (result.code === -1) {
+        if (genuineRequestId !== null) {
+          markLedgerVerificationFailed(
+            genuineRequestId,
+            "Ledger Wallet CLI became unavailable before the genuine check could complete.",
+          );
+        }
+        if (popupOwnsGenuineResult) return { kind: "skip" };
         return {
           kind: "error",
           message:
@@ -443,6 +490,13 @@ export const ledgerCommand: SlashCommand = {
         };
       }
       if (result.timedOut) {
+        if (genuineRequestId !== null) {
+          markLedgerVerificationFailed(
+            genuineRequestId,
+            "The Ledger genuine check timed out. Unlock the device and try again.",
+          );
+        }
+        if (popupOwnsGenuineResult) return { kind: "skip" };
         return {
           kind: "error",
           message: `wallet-cli timed out after ${READONLY_TIMEOUT_MS / 1000}s.`,
@@ -450,6 +504,14 @@ export const ledgerCommand: SlashCommand = {
       }
       if (result.code !== 0) {
         const detail = result.stderr.trim() || result.stdout.trim();
+        if (genuineRequestId !== null) {
+          markLedgerVerificationFailed(
+            genuineRequestId,
+            detail ||
+              `Ledger genuine check failed with exit code ${result.code}.`,
+          );
+        }
+        if (popupOwnsGenuineResult) return { kind: "skip" };
         return {
           kind: "error",
           message: `wallet-cli failed (exit ${result.code}): ${detail}`,
@@ -462,6 +524,22 @@ export const ledgerCommand: SlashCommand = {
       const text = device
         ? `[confirm on your Ledger device]\n${body}`
         : body;
+      if (
+        genuineRequestId !== null &&
+        !isLedgerGenuineResult(result.stdout)
+      ) {
+        const detail =
+          "Wallet CLI completed without an explicit genuine-device confirmation.";
+        markLedgerVerificationFailed(genuineRequestId, detail);
+        if (popupOwnsGenuineResult) return { kind: "skip" };
+        return { kind: "error", message: detail };
+      }
+      if (genuineRequestId !== null) {
+        markLedgerVerified(genuineRequestId, {
+          model: getLedgerStatusSnapshot().model,
+        });
+      }
+      if (popupOwnsGenuineResult) return { kind: "skip" };
       return { kind: "text", text };
     }),
 };
