@@ -722,7 +722,6 @@ describe("real embedded Neovim lifecycle", () => {
       workspaceRoot: dir,
       agencHome,
       beforeOpenFile,
-      operationTimeoutMs: 25,
       cleanupTimeoutMs: 250,
       size: { rows: 4, columns: 32 },
       onSnapshot: () => {},
@@ -775,7 +774,7 @@ describe("real embedded Neovim lifecycle", () => {
         ],
       };
 
-      await expect(source.stageProposal(proposal)).rejects.toThrow(
+      await expect(source.stageProposal(proposal, 25)).rejects.toThrow(
         "timed out after 25ms",
       );
       const preservationFailure = await waitForValue(fatalErrors, (error) =>

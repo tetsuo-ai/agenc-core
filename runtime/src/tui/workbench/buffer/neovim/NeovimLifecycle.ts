@@ -980,6 +980,7 @@ export class EmbeddedNeovimSession {
 
   async stageProposal(
     proposal: BufferEditorProposal,
+    timeoutMs = this.#operationTimeoutMs,
   ): Promise<BufferEditorProposalResolution> {
     if (this.#closed) {
       return {
@@ -1009,6 +1010,7 @@ export class EmbeddedNeovimSession {
           signal,
           timeoutMs,
         ),
+      timeoutMs,
     );
     return editorProposalResolutionFromRpcValue(
       value,
