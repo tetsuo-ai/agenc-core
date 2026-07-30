@@ -211,11 +211,11 @@ describe('v2 primitives', () => {
       Buffer.from(AGENC_LOGO_RGBA_ZLIB_BASE64, 'base64'),
     )
 
-    expect(AGENC_LOGO_MARK_LINES).toEqual(renderLogoBraille(raster, 18, 8))
+    expect(AGENC_LOGO_MARK_LINES).toEqual(renderLogoBraille(raster, 16, 8))
     expect(AGENC_LOGO_MARK_COMPACT_LINES).toEqual(
       renderLogoBraille(raster, 14, 6),
     )
-    expect(AGENC_LOGO_MARK_LINES.every(line => stringWidth(line) === 18)).toBe(
+    expect(AGENC_LOGO_MARK_LINES.every(line => stringWidth(line) === 16)).toBe(
       true,
     )
     expect(
@@ -236,15 +236,27 @@ describe('v2 primitives', () => {
   })
 
   it('builds a quiet Kitty virtual placement and cell-perfect placeholders', () => {
-    const upload = kittyLogoUploadCommand(16, 8)
-    const placeholders = kittyLogoPlaceholderRows(16, 8)
+    const columns = AGENC_LOGO_MARK_LINES[0].length
+    const rows = AGENC_LOGO_MARK_LINES.length
+    const upload = kittyLogoUploadCommand(columns, rows)
+    const placeholders = kittyLogoPlaceholderRows(columns, rows)
+    const compactPlaceholders = kittyLogoPlaceholderRows(
+      AGENC_LOGO_MARK_COMPACT_LINES[0].length,
+      AGENC_LOGO_MARK_COMPACT_LINES.length,
+    )
 
     expect(upload).toMatch(/^\x1b_G/)
     expect(upload).toContain('a=T,q=2,o=z,f=32,C=1,U=1')
-    expect(upload).toContain('s=160,v=160,c=16,r=8,i=16777215;')
+    expect(upload).toContain(
+      `s=160,v=160,c=${columns},r=${rows},i=16777215;`,
+    )
     expect(upload).toMatch(/\x1b\\$/)
-    expect(placeholders).toHaveLength(8)
-    expect(placeholders.every(row => stringWidth(row) === 16)).toBe(true)
+    expect(columns).toBe(16)
+    expect(placeholders).toHaveLength(rows)
+    expect(placeholders.every(row => stringWidth(row) === columns)).toBe(true)
+    expect(compactPlaceholders).toHaveLength(
+      AGENC_LOGO_MARK_COMPACT_LINES.length,
+    )
   })
 
   it('fabricates no session data when the caller has none', async () => {

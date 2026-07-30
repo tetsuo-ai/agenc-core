@@ -10,14 +10,14 @@ export const AGENC_LOGO_RASTER_SIZE = 160
 // coverage threshold. Each Braille cell encodes a 2×4 sample grid, preserving
 // the official mark's geometry in terminals without an image protocol.
 export const AGENC_LOGO_BRAILLE_LINES = [
-  '⣠⣾⡷⠺⡷⠺⣷⣄⡀⠀⣠⣾⠷⢾⡷⠾⣷⣄',
-  '⣨⣯⠀⠀⠀⠀⠈⢻⣿⣿⡟⠁⠀⠀⠀⠀⣸⣧',
-  '⣼⣧⡀⠀⠀⢀⣴⣿⠟⠻⣿⣦⣀⠀⠀⢀⣼⣧',
-  '⠀⠙⢿⣦⣾⡿⠟⠁⠀⠀⠈⠙⢿⣷⣴⡿⠋⠁',
-  '⠀⣠⣾⠿⢿⣷⣦⡀⠀⠀⢀⣠⣾⡿⠻⣷⣄⡀',
-  '⢻⡟⠁⠀⠀⠈⠻⣿⣦⣴⣿⠟⠉⠀⠀⠈⢻⡟',
-  '⢙⣟⠀⠀⠀⠀⢀⣼⣿⣿⣧⡀⠀⠀⠀⠀⢻⡟',
-  '⠙⢿⡷⢴⡷⢴⡿⠋⠁⠀⠙⢿⡶⢾⡷⢶⡿⠋',
+  '⣠⣾⠖⢿⠶⣿⣦⡀⢀⣴⣿⠶⡿⠲⣷⣄',
+  '⣼⣅⠀⠀⠀⠈⢻⣿⣿⡟⠁⠀⠀⠀⣨⣧',
+  '⣼⣧⡀⠀⢀⣴⣿⠟⠻⣿⣦⡀⠀⢀⣼⣧',
+  '⠈⠻⣿⣶⣿⠟⠁⠀⠀⠈⠻⣿⣶⣿⠟⠁',
+  '⢀⣴⣿⠿⣿⣦⡀⠀⠀⢀⣴⣿⠿⣿⣦⡀',
+  '⢻⡟⠁⠀⠈⠻⣿⣦⣴⣿⠟⠁⠀⠈⢻⡟',
+  '⢻⡋⠀⠀⠀⢀⣼⣿⣿⣧⡀⠀⠀⠀⢙⡟',
+  '⠙⢿⠦⣾⠶⣿⠟⠁⠈⠻⣿⠶⣷⠴⡿⠋',
 ] as const
 
 export const AGENC_LOGO_BRAILLE_COMPACT_LINES = [
