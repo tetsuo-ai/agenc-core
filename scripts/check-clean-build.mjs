@@ -440,11 +440,28 @@ function requireFile(path, label) {
   }
 }
 
-async function assertCanonicalNpmPackageModes(tarball, workspaceRoot) {
+export async function assertCanonicalNpmPackageModes(tarball, workspaceRoot) {
   const pkg = JSON.parse(readFileSync(join(workspaceRoot, "package.json"), "utf8"));
   const bins = typeof pkg.bin === "string" ? [pkg.bin] : Object.values(pkg.bin ?? {});
+  if (bins.some((path) => typeof path !== "string")) {
+    throw new Error(`${pkg.name ?? workspaceRoot} has an invalid bin mapping`);
+  }
+  const executableFiles = pkg.agencExecutableFiles ?? [];
+  if (
+    !Array.isArray(executableFiles) ||
+    executableFiles.some(
+      (path) =>
+        typeof path !== "string" ||
+        path.length === 0 ||
+        /[*?![\]{}]/.test(path),
+    )
+  ) {
+    throw new Error(`${pkg.name ?? workspaceRoot} has an invalid agencExecutableFiles list`);
+  }
   const executable = new Set(
-    bins.map((path) => `package/${String(path).replace(/^\.\//, "")}`),
+    [...bins, ...executableFiles].map(
+      (path) => `package/${path.replace(/^\.\//, "")}`,
+    ),
   );
   const invalid = [];
   await listTar({
@@ -1377,7 +1394,12 @@ async function main() {
   }
 }
 
-await main().catch((error) => {
-  console.error(`[clean-build] FAILED: ${error?.stack ?? error}`);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  await main().catch((error) => {
+    console.error(`[clean-build] FAILED: ${error?.stack ?? error}`);
+    process.exitCode = 1;
+  });
+}
