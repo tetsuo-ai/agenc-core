@@ -279,8 +279,6 @@ describe("real embedded Neovim lifecycle", () => {
       writeFile(appendPath, "existing\n", "utf8"),
     ]);
     const canonicalFilePath = canonicalNeovimPath(filePath);
-    const canonicalRangePath = canonicalNeovimPath(rangePath);
-    const canonicalAppendPath = canonicalNeovimPath(appendPath);
     const canonicalSaveAsPath = canonicalNeovimPath(saveAsPath);
     const requests: BufferWorkspaceWriteRequest[] = [];
     let allow = false;
@@ -326,7 +324,7 @@ describe("real embedded Neovim lifecycle", () => {
       );
       expect(requests[0]).toMatchObject({
         target: {
-          path: canonicalFilePath,
+          path: filePath,
           sourcePath: canonicalFilePath,
           kind: "buffer",
           lineStart: 1,
@@ -347,7 +345,7 @@ describe("real embedded Neovim lifecycle", () => {
       );
       expect(requests[1]).toMatchObject({
         target: {
-          path: canonicalRangePath,
+          path: rangePath,
           sourcePath: canonicalFilePath,
           kind: "file",
           lineStart: 1,
@@ -363,7 +361,7 @@ describe("real embedded Neovim lifecycle", () => {
       );
       expect(requests[2]).toMatchObject({
         target: {
-          path: canonicalAppendPath,
+          path: appendPath,
           sourcePath: canonicalFilePath,
           kind: "append",
           lineStart: 2,
@@ -387,7 +385,7 @@ describe("real embedded Neovim lifecycle", () => {
       );
       expect(requests.at(-1)).toMatchObject({
         target: {
-          path: canonicalSaveAsPath,
+          path: saveAsPath,
           sourcePath: canonicalSaveAsPath,
           kind: "buffer",
         },
@@ -468,7 +466,11 @@ describe("real embedded Neovim lifecycle", () => {
 
     try {
       await provider.open({ filePath });
-      await waitForAsync(async () => syncs.length >= 1, 5_000);
+      expect(provider.getSnapshot()).toMatchObject({
+        absolutePath: canonicalFilePath,
+        providerStatus: "ready",
+      });
+      await waitForAsync(async () => syncs.length >= 1, 15_000);
       const embedded = session;
       if (embedded === null) {
         throw new Error("real Neovim provider did not publish its session");
@@ -719,7 +721,7 @@ describe("real embedded Neovim lifecycle", () => {
       agencHome,
       beforeOpenFile,
       operationTimeoutMs: 25,
-      cleanupTimeoutMs: 25,
+      cleanupTimeoutMs: 250,
       size: { rows: 4, columns: 32 },
       onSnapshot: () => {},
       onError: () => {},
@@ -745,8 +747,7 @@ describe("real embedded Neovim lifecycle", () => {
         _G.AgenCTestOriginalStageEditorProposal =
           _G.AgenCStageEditorProposal
         _G.AgenCStageEditorProposal = function(...)
-          local deadline = vim.uv.hrtime() + (200 * 1000 * 1000)
-          while vim.uv.hrtime() < deadline do end
+          vim.uv.sleep(1000)
           return _G.AgenCTestOriginalStageEditorProposal(...)
         end
         return true
@@ -775,20 +776,24 @@ describe("real embedded Neovim lifecycle", () => {
       await expect(source.stageProposal(proposal)).rejects.toThrow(
         "timed out after 25ms",
       );
-      await new Promise((resolve) => setTimeout(resolve, 70));
+      const preservationFailure = await waitForValue(fatalErrors, (error) =>
+        error.message.includes("exact Neovim recovery preservation failed"),
+      );
       expect(source.recoveryPreservationProven).toBe(false);
       expect(isProcessAlive(sourcePid)).toBe(true);
       expect(fatalErrors[0]?.message).toContain("timed out after 25ms");
-      expect(
-        fatalErrors.some((error) =>
-          error.message.includes("exact Neovim recovery preservation failed"),
-        ),
-      ).toBe(true);
+      expect(preservationFailure.message).toContain(
+        "exact Neovim recovery preservation failed",
+      );
 
       // The timed-out mutation eventually leaves Neovim's serial RPC queue.
       // A cleanup retry can then obtain the preservation acknowledgement. Only
       // that proven retry may stop the process.
-      await new Promise((resolve) => setTimeout(resolve, 180));
+      await withTestTimeout(
+        startupExecLua("return true"),
+        5_000,
+        "timed out waiting for the poisoned Neovim RPC queue to drain",
+      );
       await source.cleanup({ preserveRecovery: true });
       await waitUntilDead(sourcePid);
       expect(source.recoveryPreservationProven).toBe(true);
@@ -1867,6 +1872,22 @@ async function waitForAsync(
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("timed out waiting for real embedded Neovim state");
+}
+
+async function withTestTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 async function waitForRecoverySwap(

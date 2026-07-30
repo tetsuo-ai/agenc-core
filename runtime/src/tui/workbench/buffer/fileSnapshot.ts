@@ -1,6 +1,13 @@
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 
 import { getCwd } from "../../../utils/cwd.js";
 import { isRelativePathOutsideBase } from "../../pathDisplay.js";
@@ -53,30 +60,42 @@ export class BufferUnsafePathError extends Error {
 }
 
 export function resolveBufferFilePath(filePath: string, basePath = getCwd()): string {
-  const absoluteBasePath = realpathOrResolved(basePath);
-  const absolutePath = isAbsolute(filePath)
-    ? resolve(filePath)
-    : resolve(absoluteBasePath, filePath);
+  const absoluteBasePath = canonicalBufferPath(basePath, basePath);
+  const candidatePath = isAbsolute(filePath)
+    ? filePath
+    : `${basePath}${sep}${filePath}`;
+  const absolutePath = canonicalBufferPath(candidatePath, filePath);
   assertPathInsideBase(absolutePath, absoluteBasePath, filePath);
-  const realAbsolutePath = realpathIfExists(absolutePath);
-  if (realAbsolutePath) assertPathInsideBase(realAbsolutePath, absoluteBasePath, filePath);
   return absolutePath;
 }
 
-function realpathOrResolved(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return resolve(path);
-  }
-}
+function canonicalBufferPath(pathValue: string, displayPath: string): string {
+  const missingComponents: string[] = [];
+  let existingAncestor = pathValue;
 
-function realpathIfExists(path: string): string | null {
-  try {
-    return realpathSync(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
+  while (true) {
+    try {
+      return resolve(
+        realpathSync.native(existingAncestor),
+        ...missingComponents,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      try {
+        if (lstatSync(existingAncestor).isSymbolicLink()) {
+          throw new BufferUnsafePathError(displayPath);
+        }
+      } catch (lstatError) {
+        if (lstatError instanceof BufferUnsafePathError) throw lstatError;
+        if ((lstatError as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw lstatError;
+        }
+      }
+      const parent = dirname(existingAncestor);
+      if (parent === existingAncestor) throw error;
+      missingComponents.unshift(basename(existingAncestor));
+      existingAncestor = parent;
+    }
   }
 }
 

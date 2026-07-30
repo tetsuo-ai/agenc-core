@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -40,16 +40,22 @@ afterEach(async () => {
 describe("BUFFER file safety", () => {
   it("rejects a relative path that escapes the workspace", async () => {
     await runWithCwdOverride(dir, async () => {
+      const physicalDir = await realpath(dir);
       expect(() => resolveBufferFilePath("../outside.txt")).toThrow(BufferUnsafePathError);
-      expect(resolveBufferFilePath(join(dir, "inside.txt"))).toBe(join(dir, "inside.txt"));
+      expect(resolveBufferFilePath(join(dir, "inside.txt"))).toBe(
+        join(physicalDir, "inside.txt"),
+      );
       expect(() => resolveBufferFilePath(join(tmpdir(), "outside-buffer.txt"))).toThrow(BufferUnsafePathError);
     });
   });
 
-  it("resolves paths against a missing base without escaping the requested base", () => {
+  it("resolves paths against a missing base without escaping the requested base", async () => {
     const missingBase = join(dir, "missing-base");
+    const physicalDir = await realpath(dir);
 
-    expect(resolveBufferFilePath("child.txt", missingBase)).toBe(join(missingBase, "child.txt"));
+    expect(resolveBufferFilePath("child.txt", missingBase)).toBe(
+      join(physicalDir, "missing-base", "child.txt"),
+    );
     expect(() => resolveBufferFilePath("../outside.txt", missingBase)).toThrow(BufferUnsafePathError);
   });
 
@@ -74,6 +80,53 @@ describe("BUFFER file safety", () => {
     } finally {
       await rm(outside, { force: true });
     }
+  });
+
+  it("uses one physical namespace for workspace aliases and missing descendants", async () => {
+    const physicalRoot = join(dir, "physical");
+    const workspaceAlias = join(dir, "workspace");
+    const inside = join(physicalRoot, "inside.txt");
+    await mkdir(physicalRoot);
+    await writeFile(inside, "inside\n", "utf8");
+    await symlink(
+      physicalRoot,
+      workspaceAlias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    const canonicalRoot = await realpath(physicalRoot);
+    expect(
+      resolveBufferFilePath(join(workspaceAlias, "inside.txt"), workspaceAlias),
+    ).toBe(join(canonicalRoot, "inside.txt"));
+    await expect(
+      readBufferFileSnapshot(join(workspaceAlias, "inside.txt"), {
+        basePath: workspaceAlias,
+      }),
+    ).resolves.toMatchObject({
+      absolutePath: join(canonicalRoot, "inside.txt"),
+      content: "inside\n",
+    });
+    expect(
+      resolveBufferFilePath(
+        join(workspaceAlias, "future", "file.ts"),
+        workspaceAlias,
+      ),
+    ).toBe(join(canonicalRoot, "future", "file.ts"));
+  });
+
+  it("rejects a missing file beneath a workspace symlink that escapes", async () => {
+    const workspace = join(dir, "workspace");
+    const outside = join(dir, "outside");
+    await Promise.all([mkdir(workspace), mkdir(outside)]);
+    await symlink(
+      outside,
+      join(workspace, "escape"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    expect(() =>
+      resolveBufferFilePath(join("escape", "missing.txt"), workspace),
+    ).toThrow(BufferUnsafePathError);
   });
 
   it("rejects binary and over-size files with user-facing details before editing", async () => {
