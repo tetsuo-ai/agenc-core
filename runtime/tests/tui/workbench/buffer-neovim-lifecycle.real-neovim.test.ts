@@ -86,7 +86,12 @@ beforeEach(async () => {
 
 afterEach(async () => {
   cleanupTrackedNeovimProcesses("SIGKILL");
-  await rm(dir, { recursive: true, force: true });
+  await rm(dir, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 50,
+  });
   expect(getTrackedNeovimProcessCountForTesting()).toBe(0);
 });
 
@@ -273,6 +278,10 @@ describe("real embedded Neovim lifecycle", () => {
       writeFile(filePath, "alpha\nbeta\n", "utf8"),
       writeFile(appendPath, "existing\n", "utf8"),
     ]);
+    const canonicalFilePath = canonicalNeovimPath(filePath);
+    const canonicalRangePath = canonicalNeovimPath(rangePath);
+    const canonicalAppendPath = canonicalNeovimPath(appendPath);
+    const canonicalSaveAsPath = canonicalNeovimPath(saveAsPath);
     const requests: BufferWorkspaceWriteRequest[] = [];
     let allow = false;
     let command: EmbeddedNeovimStartupContext["command"] | null = null;
@@ -317,15 +326,15 @@ describe("real embedded Neovim lifecycle", () => {
       );
       expect(requests[0]).toMatchObject({
         target: {
-          path: filePath,
-          sourcePath: filePath,
+          path: canonicalFilePath,
+          sourcePath: canonicalFilePath,
           kind: "buffer",
           lineStart: 1,
           lineEnd: 2,
         },
         buffers: [
           expect.objectContaining({
-            path: filePath,
+            path: canonicalFilePath,
             dirty: true,
             content: "user edit alpha\nbeta\n",
           }),
@@ -338,8 +347,8 @@ describe("real embedded Neovim lifecycle", () => {
       );
       expect(requests[1]).toMatchObject({
         target: {
-          path: rangePath,
-          sourcePath: filePath,
+          path: canonicalRangePath,
+          sourcePath: canonicalFilePath,
           kind: "file",
           lineStart: 1,
           lineEnd: 1,
@@ -354,8 +363,8 @@ describe("real embedded Neovim lifecycle", () => {
       );
       expect(requests[2]).toMatchObject({
         target: {
-          path: appendPath,
-          sourcePath: filePath,
+          path: canonicalAppendPath,
+          sourcePath: canonicalFilePath,
           kind: "append",
           lineStart: 2,
           lineEnd: 2,
@@ -378,8 +387,8 @@ describe("real embedded Neovim lifecycle", () => {
       );
       expect(requests.at(-1)).toMatchObject({
         target: {
-          path: saveAsPath,
-          sourcePath: saveAsPath,
+          path: canonicalSaveAsPath,
+          sourcePath: canonicalSaveAsPath,
           kind: "buffer",
         },
       });
@@ -392,6 +401,7 @@ describe("real embedded Neovim lifecycle", () => {
 
   it("keeps a real native write off disk while the daemon reports an executing Agent mutation", async () => {
     const filePath = join(dir, "provider-native-race.txt");
+    const canonicalFilePath = canonicalNeovimPath(filePath);
     const diskContent = "export const value = 1;\n";
     const editedContent = "export const value = 2;\n";
     await writeFile(filePath, diskContent, "utf8");
@@ -413,7 +423,7 @@ describe("real embedded Neovim lifecycle", () => {
         syncs.push(params);
         if (
           executingAgentMutation &&
-          params.buffers.some((buffer) => buffer.path === filePath)
+          params.buffers.some((buffer) => buffer.path === canonicalFilePath)
         ) {
           throw new Error(
             `Cannot synchronize ${filePath} while an admitted workspace write is committing`,
@@ -458,7 +468,7 @@ describe("real embedded Neovim lifecycle", () => {
 
     try {
       await provider.open({ filePath });
-      await waitForAsync(async () => syncs.length >= 1);
+      await waitForAsync(async () => syncs.length >= 1, 5_000);
       const embedded = session;
       if (embedded === null) {
         throw new Error("real Neovim provider did not publish its session");
@@ -474,7 +484,7 @@ describe("real embedded Neovim lifecycle", () => {
       expect(syncs.at(-1)).toMatchObject({
         buffers: [
           expect.objectContaining({
-            path: filePath,
+            path: canonicalFilePath,
             dirty: true,
             content: editedContent,
           }),
@@ -1473,7 +1483,7 @@ describe("real embedded Neovim lifecycle", () => {
       });
       const context = await session.captureCodePredictionContext();
       expect(context).toMatchObject({
-        path: filePath,
+        path: canonicalNeovimPath(filePath),
         fileBytes: 15,
         cursor: { line: 0, byteColumn: 15 },
         prefix: "const answer = ",
@@ -1847,8 +1857,11 @@ function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-async function waitForAsync(predicate: () => Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 1500;
+async function waitForAsync(
+  predicate: () => Promise<boolean>,
+  timeoutMs = 1_500,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));

@@ -101,8 +101,8 @@ describe("hosted Neovim platform gate contract", () => {
     expect(source).toContain("AGENC_BUFFER_NVIM=$pinned_nvim");
     expect(source).toContain("AGENC_BUFFER_NVIM=$pinnedNvim");
     expect(source).toContain("--config vitest.neovim.config.ts");
-    expect(source).toContain("numTotalTests: 8");
-    expect(source).toContain("numPassedTests: 8");
+    expect(source).toContain("numTotalTests: 18");
+    expect(source).toContain("numPassedTests: 18");
     expect(source).toContain("--config vitest.neovim-platform.config.ts");
     expect(
       JSON.stringify(job).match(/--require-zero-skips/gu),

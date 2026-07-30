@@ -17,6 +17,7 @@ import {
   type RpcValue,
 } from "./NeovimRpc.js";
 import type { NeovimRenderSnapshot } from "./NeovimGrid.js";
+import { canonicalNeovimPath } from "./NeovimPath.js";
 import type {
   BufferCaptureRequest,
   BufferCapturedContext,
@@ -995,7 +996,15 @@ export class EmbeddedNeovimSession {
           "nvim_exec_lua",
           [
             "return _G.AgenCStageEditorProposal(...)",
-            [editorProposalRpcValue(proposal)],
+            [
+              editorProposalRpcValue({
+                ...proposal,
+                path:
+                  proposal.path.length > 0 && isAbsolute(proposal.path)
+                    ? canonicalNeovimPath(proposal.path)
+                    : proposal.path,
+              }),
+            ],
           ],
           signal,
           timeoutMs,

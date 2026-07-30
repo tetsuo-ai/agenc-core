@@ -294,7 +294,7 @@ describe("reproducible install and release contract", () => {
       "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
     );
     expect(neovimJob).toContain("numTotalTestSuites: 2");
-    expect(neovimJob).toContain("numTotalTests: 8");
+    expect(neovimJob).toContain("numTotalTests: 18");
     expect(neovimJob).toContain("results.testResults.length !== 1");
     expect(neovimJob).toContain('if test "$RUNNER_OS" = "Windows"; then');
     expect(neovimJob).toContain(

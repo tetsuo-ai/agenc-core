@@ -792,8 +792,8 @@ jobs:
             numPassedTestSuites: 2,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 8,
-            numPassedTests: 8,
+            numTotalTests: 18,
+            numPassedTests: 18,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -821,7 +821,7 @@ jobs:
               `Neovim-test file was ${JSON.stringify(file)}, expected ${expectedFile}`,
             );
           }
-          console.log("Neovim capability lane passed 8 tests in 1 file with zero skipped");
+          console.log("Neovim capability lane passed 18 tests in 1 file with zero skipped");
           NODE
 
       - name: Run provider and observed-descendant platform contracts
