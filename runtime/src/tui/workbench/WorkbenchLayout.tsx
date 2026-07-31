@@ -64,7 +64,7 @@ type Props = {
   /**
    * Real context-window usage label (e.g. "ctx 42%") computed by the caller
    * from the last assistant usage block; null when no usage data exists yet.
-   * Rendered in the status bar next to the model/mode/cwd strip.
+   * Rendered in the status bar between the model and runtime version.
    */
   readonly contextPctLabel?: string | null;
   /** Live cumulative spend projected from bridge `token_count` events. */

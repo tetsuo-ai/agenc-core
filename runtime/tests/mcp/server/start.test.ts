@@ -238,6 +238,63 @@ describe("mcp server start config", () => {
     }
   });
 
+  test.each(["1", "true"])(
+    "never treats AGENC_MCP_ALLOW_MUTATIONS=%s as inbound authorization",
+    async (legacyOverride) => {
+      const originalOverride = process.env.AGENC_MCP_ALLOW_MUTATIONS;
+      process.env.AGENC_MCP_ALLOW_MUTATIONS = legacyOverride;
+      let closeServer: (() => Promise<void>) | undefined;
+      try {
+        const result = await startMcpServerFromConfig(
+          {
+            mcp: {
+              server: {
+                enabled: true,
+                transport: "sse",
+                host: "127.0.0.1",
+                port: 0,
+                workspace: process.cwd(),
+              },
+            },
+          },
+          { toolRegistry: UNREACHABLE_REGISTRY },
+        );
+        if (result.kind !== "started") {
+          throw new Error(`expected started result, got ${result.kind}`);
+        }
+        closeServer = () => result.server.close();
+
+        const session = await initializeMcp(result.server.url);
+        await expect(
+          postMcpJson(result.server.url, session, 2, "tools/list"),
+        ).resolves.toEqual({
+          jsonrpc: "2.0",
+          id: 2,
+          result: { tools: [], nextCursor: null },
+        });
+        await expect(
+          callMcpTool(
+            result.server.url,
+            session,
+            "system.listDir",
+            { path: process.cwd() },
+            3,
+          ),
+        ).resolves.toEqual({
+          status: 200,
+          message: admissionRequiredMessage(3),
+        });
+      } finally {
+        await closeServer?.();
+        if (originalOverride === undefined) {
+          delete process.env.AGENC_MCP_ALLOW_MUTATIONS;
+        } else {
+          process.env.AGENC_MCP_ALLOW_MUTATIONS = originalOverride;
+        }
+      }
+    },
+  );
+
   test("atomically replaces workspace context, revokes old sessions, and preserves the old context on prepare failure", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-mcp-workspaces-"));
     const workspaceA = join(root, "workspace-a");

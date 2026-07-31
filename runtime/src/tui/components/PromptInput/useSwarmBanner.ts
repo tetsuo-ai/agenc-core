@@ -38,7 +38,7 @@ type SwarmBannerInfo = {
  * - Leader (not in tmux): Returns "tmux -L ... attach" command with cyan background
  * - Leader (in tmux / in-process): Falls through to standalone-agent check.
  * - Teammate: Returns "teammate@team" format with their assigned color background
- * - Viewing a background agent (CoordinatorTaskPanel): Returns agent name with its color
+ * - Viewing a background agent: Returns agent name with its color
  * - Standalone agent: Returns agent name with their color background (no @team)
  * - --agent CLI flag: Returns "@agentName" with cyan background
  */
@@ -106,7 +106,7 @@ export function useSwarmBanner(): SwarmBannerInfo {
     // Not viewing a teammate: fall through so standalone identity is honored.
   }
 
-  // Viewing a background agent (CoordinatorTaskPanel): local_agent tasks aren't
+  // Viewing a background agent: local_agent tasks aren't
   // InProcessTeammates, so getViewedTeammateTask misses them. Reverse-lookup the
   // name from agentNameRegistry the same way CoordinatorAgentStatus does.
   const active = getActiveAgentForInput(state)

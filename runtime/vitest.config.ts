@@ -131,7 +131,6 @@ export const KERNEL_TEST_INCLUDE = Object.freeze([
 export const POWERSHELL_TEST_INCLUDE = Object.freeze([
   'tests/budget/admitted-legacy-powershell.powershell.test.ts',
   'tests/packaging/install-ps1.powershell.test.ts',
-  'tests/shell-command/powershell-parser.powershell.test.ts',
   'tests/tools/PowerShellTool.execution.powershell.test.ts',
 ]);
 

@@ -4,8 +4,8 @@
 //
 // This is a revert-sensitive guard. The pre-fix code set the terminal grace to
 // PANEL_GRACE_MS = 30_000, so a completed/failed agent's row was evicted from
-// getVisibleAgentTasks() once the panel's 1s tick ran evictTerminalTask() at
-// the 30s mark. With the result-board retention (PANEL_GRACE_MS = 1_800_000),
+// getVisibleAgentTasks() once retention cleanup ran evictTerminalTask() at the
+// 30s mark. With the result-board retention (PANEL_GRACE_MS = 1_800_000),
 // the row is still visible at +30s. Stash the source change to framework.ts /
 // collabAgentTaskSync.ts and "the result board survives 30s" goes RED.
 
@@ -37,7 +37,7 @@ function applyEvent(state: AppState, event: unknown, now: number): AppState {
   return next;
 }
 
-/** Drives the panel's 1s-tick eviction (CoordinatorTaskPanel) at a given clock. */
+/** Drives terminal-task retention cleanup at a given clock. */
 function tickPanelEvictionAt(state: AppState, now: number): AppState {
   const realNow = Date.now;
   // evictTerminalTask compares evictAfter against Date.now(); pin the clock so
@@ -114,7 +114,7 @@ describe("agent fleet result-board retention (D8 / D2)", () => {
       expect(t.evictAfter! - SPAWN_NOW).toBeGreaterThan(OLD_GRACE_MS);
     }
 
-    // Run the panel's eviction tick at exactly the OLD 30s boundary. Pre-fix
+    // Run retention cleanup at exactly the OLD 30s boundary. Pre-fix
     // (PANEL_GRACE_MS = 30_000) this is where the result board self-erased.
     const afterOldGrace = tickPanelEvictionAt(state, SPAWN_NOW + OLD_GRACE_MS);
 

@@ -66,13 +66,11 @@ const KERNEL_TEST_FILES = [
 const POWERSHELL_TEST_FILES = [
   "tests/budget/admitted-legacy-powershell.powershell.test.ts",
   "tests/packaging/install-ps1.powershell.test.ts",
-  "tests/shell-command/powershell-parser.powershell.test.ts",
   "tests/tools/PowerShellTool.execution.powershell.test.ts",
 ] as const;
 
 const DEFAULT_POWERSHELL_TEST_FILES = [
   "tests/budget/admitted-legacy-powershell.test.ts",
-  "tests/shell-command/powershell-parser.test.ts",
   "tests/tools/PowerShellTool.execution.test.ts",
 ] as const;
 

@@ -71,8 +71,6 @@ vi.mock('../CoordinatorAgentStatus.js', async () => {
   const { Text } = await import('../../ink.js')
 
   return {
-    CoordinatorTaskPanel: () =>
-      ReactModule.createElement(Text, null, 'CoordinatorTaskPanel'),
     useCoordinatorTaskCount: () => harness.coordinatorTaskCount,
   }
 })

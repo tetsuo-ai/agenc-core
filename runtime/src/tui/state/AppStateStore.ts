@@ -101,7 +101,7 @@ export type AppState = DeepImmutable<{
   // Optional - only present when ENABLE_AGENT_SWARMS is true (for dead code elimination)
   showTeammateMessagePreview?: boolean
   selectedIPAgentIndex: number
-  // CoordinatorTaskPanel selection: -1 = pill, 0 = main, 1..N = agent rows.
+  // Coordinator footer selection: -1 = pill, 0 = main, 1..N = agent rows.
   // AppState (not local) so the panel can read it directly without prop-drilling
   // through PromptInput → PromptInputFooter.
   coordinatorTaskIndex: number

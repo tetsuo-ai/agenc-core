@@ -10,7 +10,6 @@ import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import {
   DEFAULT_MAX_RESULT_SIZE_CHARS,
   MAX_TOOL_RESULT_BYTES,
-  MAX_TOOL_RESULTS_PER_MESSAGE_CHARS,
 } from '../constants/toolLimits.js'
 import type { Message } from '../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -515,10 +514,7 @@ export function isPersistError(
   return 'error' in result
 }
 
-// --- Message-level aggregate tool result budget ---
-//
-// Tracks replacement state across turns so enforceToolResultBudget makes the
-// same choices every time (preserves prompt cache prefix).
+// --- Persisted tool-result replacement state ---
 
 /**
  * Per-conversation-thread state for the aggregate tool result budget.
@@ -548,10 +544,9 @@ export function createContentReplacementState(): ContentReplacementState {
 }
 
 /**
- * Clone replacement state for a cache-sharing fork (e.g. agentSummary).
- * The fork needs state identical to the source at fork time so
- * enforceToolResultBudget makes the same choices → same wire prefix →
- * prompt cache hit. Mutating the clone does not affect the source.
+ * Clone replacement state for a cache-sharing fork. The fork needs state
+ * identical to the source at fork time so its wire prefix remains stable.
+ * Mutating the clone does not affect the source.
  */
 export function cloneContentReplacementState(
   source: ContentReplacementState,
@@ -560,51 +555,6 @@ export function cloneContentReplacementState(
     seenIds: new Set(source.seenIds),
     replacements: new Map(source.replacements),
   }
-}
-
-/**
- * Resolve the per-message aggregate budget limit. GrowthBook override
- * (tengu_hawthorn_window) wins when present and a finite positive number;
- * otherwise falls back to the hardcoded constant. Defensive typeof/finite
- * check: GrowthBook's cache returns `cached !== undefined ? cached : default`,
- * so a flag served as null/string/NaN leaks through.
- */
-export function getPerMessageBudgetLimit(): number {
-  const override: number | null = null
-  if (
-    typeof override === 'number' &&
-    Number.isFinite(override) &&
-    override > 0
-  ) {
-    return override
-  }
-  return MAX_TOOL_RESULTS_PER_MESSAGE_CHARS
-}
-
-/**
- * Provision replacement state for a new conversation thread.
- *
- * Encapsulates the feature-flag gate + reconstruct-vs-fresh choice:
- *   - Flag off → undefined (query.ts skips enforcement entirely)
- *   - No initialMessages (cold start) → fresh
- *   - initialMessages present → reconstruct (freeze all candidate IDs so the
- *     budget never replaces content the model already saw unreplaced). Empty
- *     or absent records freeze everything; non-empty records additionally
- *     populate the replacements Map for byte-identical re-apply.
- */
-export function provisionContentReplacementState(
-  initialMessages?: Message[],
-  initialContentReplacements?: ContentReplacementRecord[],
-): ContentReplacementState | undefined {
-  const enabled = false
-  if (!enabled) return undefined
-  if (initialMessages) {
-    return reconstructContentReplacementState(
-      initialMessages,
-      initialContentReplacements ?? [],
-    )
-  }
-  return createContentReplacementState()
 }
 
 /**
@@ -623,23 +573,6 @@ export type ContentReplacementRecord = {
   replacement: string
 }
 
-export type ToolResultReplacementRecord = Extract<
-  ContentReplacementRecord,
-  { kind: 'tool-result' }
->
-
-type ToolResultCandidate = {
-  toolUseId: string
-  content: NonNullable<ToolResultBlockParam['content']>
-  size: number
-}
-
-type CandidatePartition = {
-  mustReapply: Array<ToolResultCandidate & { replacement: string }>
-  frozen: ToolResultCandidate[]
-  fresh: ToolResultCandidate[]
-}
-
 type UnknownRecord = Record<string, unknown>
 
 type ToolResultBlockRecord = UnknownRecord & {
@@ -655,22 +588,6 @@ function userContentBlocks(message: Message): readonly unknown[] | undefined {
     return undefined
   }
   return envelope.content
-}
-
-function assistantContentBlocks(message: Message): readonly unknown[] | undefined {
-  if (!isRecord(message) || message.type !== 'assistant') return undefined
-  const envelope = message.message
-  if (!isRecord(envelope) || !Array.isArray(envelope.content)) {
-    return undefined
-  }
-  return envelope.content
-}
-
-function assistantMessageId(message: Message): string | undefined {
-  if (!isRecord(message) || message.type !== 'assistant') return undefined
-  const envelope = message.message
-  if (!isRecord(envelope) || typeof envelope.id !== 'string') return undefined
-  return envelope.id
 }
 
 function isToolResultContentBlock(value: unknown): boolean {
@@ -700,20 +617,6 @@ function asToolResultBlock(block: unknown): ToolResultBlockRecord | undefined {
   return block as ToolResultBlockRecord
 }
 
-function asToolUseBlock(
-  block: unknown,
-): { readonly id: string; readonly name: string } | undefined {
-  if (
-    !isRecord(block) ||
-    block.type !== 'tool_use' ||
-    typeof block.id !== 'string' ||
-    typeof block.name !== 'string'
-  ) {
-    return undefined
-  }
-  return { id: block.id, name: block.name }
-}
-
 function isContentAlreadyCompacted(
   content: ToolResultBlockParam['content'],
 ): boolean {
@@ -738,177 +641,26 @@ function contentSize(
   content: NonNullable<ToolResultBlockParam['content']>,
 ): number {
   if (typeof content === 'string') return content.length
-  // Sum text-block lengths directly. Slightly under-counts vs serialized
-  // (no JSON framing), but the budget is a rough token heuristic anyway.
-  // Avoids allocating a content-sized string every enforcement pass.
   return content.reduce(
-    (sum, b) => sum + (b.type === 'text' ? b.text.length : 0),
+    (sum, block) => sum + (block.type === 'text' ? block.text.length : 0),
     0,
   )
 }
 
-/**
- * Walk messages and build tool_use_id → tool_name from assistant tool_use
- * blocks. tool_use always precedes its tool_result (model calls, then result
- * arrives), so by the time budget enforcement sees a result, its name is known.
- */
-function buildToolNameMap(messages: Message[]): Map<string, string> {
-  const map = new Map<string, string>()
+function collectCandidateToolResultIds(messages: Message[]): Set<string> {
+  const ids = new Set<string>()
   for (const message of messages) {
-    const content = assistantContentBlocks(message)
+    const content = userContentBlocks(message)
     if (!content) continue
     for (const block of content) {
-      const toolUse = asToolUseBlock(block)
-      if (toolUse) {
-        map.set(toolUse.id, toolUse.name)
-      }
+      const toolResult = asToolResultBlock(block)
+      if (!toolResult) continue
+      if (isContentAlreadyCompacted(toolResult.content)) continue
+      if (hasImageBlock(toolResult.content)) continue
+      ids.add(toolResult.tool_use_id)
     }
   }
-  return map
-}
-
-/**
- * Extract candidate tool_result blocks from a single user message: blocks
- * that are non-empty, non-image, and not already compacted by tag (i.e. by
- * the per-tool limit, or an earlier iteration of this same query call).
- * Returns [] for messages with no eligible blocks.
- */
-function collectCandidatesFromMessage(message: Message): ToolResultCandidate[] {
-  const content = userContentBlocks(message)
-  if (!content) return []
-  return content.flatMap(block => {
-    const toolResult = asToolResultBlock(block)
-    if (!toolResult) return []
-    if (isContentAlreadyCompacted(toolResult.content)) return []
-    if (hasImageBlock(toolResult.content)) return []
-    return [
-      {
-        toolUseId: toolResult.tool_use_id,
-        content: toolResult.content,
-        size: contentSize(toolResult.content),
-      },
-    ]
-  })
-}
-
-/**
- * Extract candidate tool_result blocks grouped by API-level user message.
- *
- * normalizeMessagesForAPI merges consecutive user messages into one
- * (Bedrock compat; 1P does the same server-side), so parallel tool
- * results that arrive as N separate user messages in our state become
- * ONE user message on the wire. The budget must group the same way or
- * it would see N under-budget messages instead of one over-budget
- * message and fail to enforce exactly when it matters most.
- *
- * A "group" is a maximal run of user messages NOT separated by an
- * assistant message. Only assistant messages create wire-level
- * boundaries — normalizeMessagesForAPI filters out progress entirely
- * and merges attachment / system(local_command) INTO adjacent user
- * blocks, so those types do NOT break groups here either.
- *
- * This matters for abort-during-parallel-tools paths: agent_progress
- * messages (non-ephemeral, persisted in REPL state) can interleave
- * between fresh tool_result messages. If we flushed on progress, those
- * tool_results would split into under-budget groups, slip through
- * unreplaced, get frozen, then be merged by normalizeMessagesForAPI
- * into one over-budget wire message — defeating the feature.
- *
- * Only groups with at least one eligible candidate are returned.
- */
-function collectCandidatesByMessage(
-  messages: Message[],
-): ToolResultCandidate[][] {
-  const groups: ToolResultCandidate[][] = []
-  let current: ToolResultCandidate[] = []
-
-  const flush = () => {
-    if (current.length > 0) groups.push(current)
-    current = []
-  }
-
-  // Track all assistant message.ids seen so far — same-ID fragments are
-  // merged by normalizeMessagesForAPI (messages.ts ~2126 walks back PAST
-  // different-ID assistants via `continue`), so any re-appearance of a
-  // previously-seen ID must NOT create a group boundary. Two scenarios:
-  //   • Consecutive: streamingToolExecution yields one AssistantMessage per
-  //     content_block_stop (same id); a fast tool drains between blocks;
-  //     abort/hook-stop leaves [asst(X), user(trA), asst(X), user(trB)].
-  //   • Interleaved: coordinator/teammate streams mix different responses
-  //     so [asst(X), user(trA), asst(Y), user(trB), asst(X), user(trC)].
-  // In both, normalizeMessagesForAPI merges the X fragments into one wire
-  // assistant, and their following tool_results merge into one wire user
-  // message — so the budget must see them as one group too.
-  const seenAsstIds = new Set<string>()
-  for (const message of messages) {
-    if (isRecord(message) && message.type === 'user') {
-      current.push(...collectCandidatesFromMessage(message))
-    } else if (isRecord(message) && message.type === 'assistant') {
-      const id = assistantMessageId(message)
-      if (id !== undefined && !seenAsstIds.has(id)) {
-        flush()
-        seenAsstIds.add(id)
-      }
-    }
-    // progress / attachment / system are filtered or merged by
-    // normalizeMessagesForAPI — they don't create wire boundaries.
-  }
-  flush()
-
-  return groups
-}
-
-/**
- * Partition candidates by their prior decision state:
- *  - mustReapply: previously replaced → re-apply the cached replacement for
- *    prefix stability
- *  - frozen: previously seen and left unreplaced → off-limits (replacing
- *    now would change a prefix that was already cached)
- *  - fresh: never seen → eligible for new replacement decisions
- */
-function partitionByPriorDecision(
-  candidates: ToolResultCandidate[],
-  state: ContentReplacementState,
-): CandidatePartition {
-  return candidates.reduce<CandidatePartition>(
-    (acc, c) => {
-      const replacement = state.replacements.get(c.toolUseId)
-      if (replacement !== undefined) {
-        acc.mustReapply.push({ ...c, replacement })
-      } else if (state.seenIds.has(c.toolUseId)) {
-        acc.frozen.push(c)
-      } else {
-        acc.fresh.push(c)
-      }
-      return acc
-    },
-    { mustReapply: [], frozen: [], fresh: [] },
-  )
-}
-
-/**
- * Pick the largest fresh results to replace until the model-visible total
- * (frozen + remaining fresh) is at or under budget, or fresh is exhausted.
- * If frozen results alone exceed budget we accept the overage — microcompact
- * will eventually clear them.
- */
-function selectFreshToReplace(
-  fresh: ToolResultCandidate[],
-  frozenSize: number,
-  limit: number,
-): ToolResultCandidate[] {
-  const sorted = [...fresh].sort((a, b) => b.size - a.size)
-  const selected: ToolResultCandidate[] = []
-  let remaining = frozenSize + fresh.reduce((sum, c) => sum + c.size, 0)
-  for (const c of sorted) {
-    if (remaining <= limit) break
-    selected.push(c)
-    // We don't know the replacement size until after persist, but previews
-    // are ~2K and results hitting this path are much larger, so subtracting
-    // the full size is a close approximation for selection purposes.
-    remaining -= c.size
-  }
-  return selected
+  return ids
 }
 
 /**
@@ -971,203 +723,6 @@ export function applyToolResultReplacementsToMessages(
   return replaceToolResultContents(messages, replacements)
 }
 
-async function buildReplacement(
-  candidate: ToolResultCandidate,
-): Promise<{ content: string; originalSize: number } | null> {
-  const result = await persistToolResult(candidate.content, candidate.toolUseId)
-  if (isPersistError(result)) return null
-  return {
-    content: buildLargeToolResultMessage(result),
-    originalSize: result.originalSize,
-  }
-}
-
-/**
- * Enforce the per-message budget on aggregate tool result size.
- *
- * For each user message whose tool_result blocks together exceed the
- * per-message limit (see getPerMessageBudgetLimit), the largest FRESH
- * (never-before-seen) results in THAT message are persisted to disk and
- * replaced with previews.
- * Messages are evaluated independently — a 150K result in one message and
- * a 150K result in another are both under budget and untouched.
- *
- * State is tracked by tool_use_id in `state`. Once a result is seen its
- * fate is frozen: previously-replaced results get the same replacement
- * re-applied every turn from the cached preview string (zero I/O,
- * byte-identical), and previously-unreplaced results are never replaced
- * later (would break prompt cache).
- *
- * Each turn adds at most one new user message with tool_result blocks,
- * so the per-message loop typically does the budget check at most once;
- * all prior messages just re-apply cached replacements.
- *
- * @param state — MUTATED: seenIds and replacements are updated in place
- *   to record choices made this call. The caller holds a stable reference
- *   across turns; returning a new object would require error-prone ref
- *   updates after every query.
- *
- * Returns `{ messages, newlyReplaced }`:
- *   - messages: same array instance when no replacement is needed
- *   - newlyReplaced: replacements made THIS call (not re-applies).
- *     Caller persists these to the transcript for resume reconstruction.
- */
-export async function enforceToolResultBudget(
-  messages: Message[],
-  state: ContentReplacementState,
-  skipToolNames: ReadonlySet<string> = new Set(),
-): Promise<{
-  messages: Message[]
-  newlyReplaced: ToolResultReplacementRecord[]
-}> {
-  const candidatesByMessage = collectCandidatesByMessage(messages)
-  const nameByToolUseId =
-    skipToolNames.size > 0 ? buildToolNameMap(messages) : undefined
-  const shouldSkip = (id: string): boolean =>
-    nameByToolUseId !== undefined &&
-    skipToolNames.has(nameByToolUseId.get(id) ?? '')
-  // Resolve once per call. A mid-session flag change only affects FRESH
-  // messages (prior decisions are frozen via seenIds/replacements), so
-  // prompt cache for already-seen content is preserved regardless.
-  const limit = getPerMessageBudgetLimit()
-
-  // Walk each API-level message group independently. For previously-processed messages
-  // (all IDs in seenIds) this just re-applies cached replacements. For the
-  // single new message this turn added, it runs the budget check.
-  const replacementMap = new Map<string, string>()
-  const toPersist: ToolResultCandidate[] = []
-  let reappliedCount = 0
-  let messagesOverBudget = 0
-
-  for (const candidates of candidatesByMessage) {
-    const { mustReapply, frozen, fresh } = partitionByPriorDecision(
-      candidates,
-      state,
-    )
-
-    // Re-apply: pure Map lookups. No file I/O, byte-identical, cannot fail.
-    mustReapply.forEach(c => replacementMap.set(c.toolUseId, c.replacement))
-    reappliedCount += mustReapply.length
-
-    // Fresh means this is a new message. Check its per-message budget.
-    // (A previously-processed message has fresh.length === 0 because all
-    // its IDs were added to seenIds when first seen.)
-    if (fresh.length === 0) {
-      // mustReapply/frozen are already in seenIds from their first pass —
-      // re-adding is a no-op but keeps the invariant explicit.
-      candidates.forEach(c => state.seenIds.add(c.toolUseId))
-      continue
-    }
-
-    // Tools with maxResultSizeChars: Infinity (Read) — never persist.
-    // Mark as seen (frozen) so the decision sticks across turns. They don't
-    // count toward freshSize; if that lets the group slip under budget and
-    // the wire message is still large, that's the contract — Read's own
-    // maxTokens is the bound, not this wrapper.
-    const skipped = fresh.filter(c => shouldSkip(c.toolUseId))
-    skipped.forEach(c => state.seenIds.add(c.toolUseId))
-    const eligible = fresh.filter(c => !shouldSkip(c.toolUseId))
-
-    const frozenSize = frozen.reduce((sum, c) => sum + c.size, 0)
-    const freshSize = eligible.reduce((sum, c) => sum + c.size, 0)
-
-    const selected =
-      frozenSize + freshSize > limit
-        ? selectFreshToReplace(eligible, frozenSize, limit)
-        : []
-
-    // Mark non-persisting candidates as seen NOW (synchronously). IDs
-    // selected for persist are marked seen AFTER the await, alongside
-    // replacements.set — keeps the pair atomic under observation so no
-    // concurrent reader (once subagents share state) ever sees X∈seenIds
-    // but X∉replacements, which would misclassify X as frozen and send
-    // full content while the main thread sends the preview → cache miss.
-    const selectedIds = new Set(selected.map(c => c.toolUseId))
-    candidates
-      .filter(c => !selectedIds.has(c.toolUseId))
-      .forEach(c => state.seenIds.add(c.toolUseId))
-
-    if (selected.length === 0) continue
-    messagesOverBudget++
-    toPersist.push(...selected)
-  }
-
-  if (replacementMap.size === 0 && toPersist.length === 0) {
-    return { messages, newlyReplaced: [] }
-  }
-
-  // Fresh: concurrent persist for all selected candidates across all
-  // messages. In practice toPersist comes from a single message per turn.
-  const freshReplacements = await Promise.all(
-    toPersist.map(async c => [c, await buildReplacement(c)] as const),
-  )
-  const newlyReplaced: ToolResultReplacementRecord[] = []
-  let replacedSize = 0
-  for (const [candidate, replacement] of freshReplacements) {
-    // Mark seen HERE, post-await, atomically with replacements.set for
-    // success cases. For persist failures (replacement === null) the ID
-    // is seen-but-unreplaced — the original content was sent to the
-    // model, so treating it as frozen going forward is correct.
-    state.seenIds.add(candidate.toolUseId)
-    if (replacement === null) continue
-    replacedSize += candidate.size
-    replacementMap.set(candidate.toolUseId, replacement.content)
-    state.replacements.set(candidate.toolUseId, replacement.content)
-    newlyReplaced.push({
-      kind: 'tool-result',
-      toolUseId: candidate.toolUseId,
-      replacement: replacement.content,
-    })
-  }
-
-  if (replacementMap.size === 0) {
-    return { messages, newlyReplaced: [] }
-  }
-
-  if (newlyReplaced.length > 0) {
-    logForDebugging(
-      `Per-message budget: persisted ${newlyReplaced.length} tool results ` +
-        `across ${messagesOverBudget} over-budget message(s), ` +
-        `shed ~${formatFileSize(replacedSize)}, ${reappliedCount} re-applied`,
-    )
-  }
-
-  return {
-    messages: replaceToolResultContents(messages, replacementMap),
-    newlyReplaced,
-  }
-}
-
-/**
- * Query-loop integration point for the aggregate budget.
- *
- * Gates on `state` (undefined means feature disabled → no-op return),
- * applies enforcement, and fires an optional transcript-write callback
- * for new replacements. The caller (query.ts) owns the persistence gate
- * — it passes a callback only for querySources that read records back on
- * resume (repl_main_thread*, agent:*); ephemeral runForkedAgent callers
- * (agentSummary, sessionMemory, compact) pass undefined.
- *
- * @returns messages with replacements applied, or the input array unchanged
- *   when the feature is off or no replacement occurred.
- */
-export async function applyToolResultBudget(
-  messages: Message[],
-  state: ContentReplacementState | undefined,
-  writeToTranscript?: (records: ToolResultReplacementRecord[]) => void,
-  skipToolNames?: ReadonlySet<string>,
-): Promise<{
-  messages: Message[]
-  newlyReplaced: ToolResultReplacementRecord[]
-}> {
-  if (!state) return { messages, newlyReplaced: [] }
-  const result = await enforceToolResultBudget(messages, state, skipToolNames)
-  if (result.newlyReplaced.length > 0) {
-    writeToTranscript?.(result.newlyReplaced)
-  }
-  return result
-}
-
 /**
  * Reconstruct replacement state from content-replacement records loaded from
  * the transcript. Used on resume so the budget makes the same choices it
@@ -1196,11 +751,7 @@ export function reconstructContentReplacementState(
   inheritedReplacements?: ReadonlyMap<string, string>,
 ): ContentReplacementState {
   const state = createContentReplacementState()
-  const candidateIds = new Set(
-    collectCandidatesByMessage(messages)
-      .flat()
-      .map(c => c.toolUseId),
-  )
+  const candidateIds = collectCandidateToolResultIds(messages)
 
   for (const id of candidateIds) {
     state.seenIds.add(id)

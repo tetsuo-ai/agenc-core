@@ -1,6 +1,8 @@
+import { homedir } from 'os';
 import { isAbsolute, relative } from 'path';
 
 import { isRelativePathOutsideBase } from '../../pathDisplay.js';
+import { getCwd } from '../../../utils/cwd.js';
 
 function containedRelativePath(basePath: string, targetPath: string): string | null {
   const relativePath = relative(basePath, targetPath);
@@ -35,4 +37,8 @@ export function getRelativeMemoryPathForRoots(
       : relativeToCwd;
   }
   return relativeToHome || relativeToCwd || memoryPath;
+}
+
+export function getRelativeMemoryPath(memoryPath: string): string {
+  return getRelativeMemoryPathForRoots(memoryPath, homedir(), getCwd());
 }

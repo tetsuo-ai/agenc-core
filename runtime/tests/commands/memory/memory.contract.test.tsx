@@ -39,8 +39,9 @@ function mockMemoryCommandRuntime(): void {
     Dialog: ({ children }: { children?: React.ReactNode }) =>
       React.createElement("dialog", null, children),
   }));
-  vi.doMock("../../tui/components/memory/MemoryUpdateNotification.js", () => ({
+  vi.doMock("../../tui/components/memory/path-format.js", () => ({
     getRelativeMemoryPath: (path: string) => `relative:${path}`,
+    getRelativeMemoryPathForRoots,
   }));
   vi.doMock("../../utils/editor.js", () => ({
     openFileInExternalEditor: vi.fn(() => true),
@@ -52,7 +53,7 @@ describe("memory command contract", () => {
     vi.restoreAllMocks();
     vi.resetModules();
     vi.doUnmock("../../memory/index.js");
-    vi.doUnmock("../../tui/components/memory/MemoryUpdateNotification.js");
+    vi.doUnmock("../../tui/components/memory/path-format.js");
     vi.doUnmock("../../tui/components/design-system/Dialog.js");
     vi.doUnmock("../../tui/ink.js");
     vi.doUnmock("../../utils/editor.js");

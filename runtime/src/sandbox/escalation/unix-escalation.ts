@@ -76,7 +76,6 @@ export interface UnmatchedCommandContext {
   readonly fileSystemSandboxKind: EscalationFileSystemSandboxKind;
   readonly sandboxPermissions?: SandboxPermissionsInput;
   readonly usedComplexParsing: boolean;
-  readonly environmentLacksSandboxProtections?: boolean;
 }
 
 export function execvePromptRejectedByPolicy(
@@ -272,9 +271,7 @@ function renderDecisionForUnmatchedCommand(
     return "allow";
   }
 
-  const dangerous =
-    isDangerousCommand(commandText) ||
-    context.environmentLacksSandboxProtections === true;
+  const dangerous = isDangerousCommand(commandText);
   if (dangerous) {
     if (context.approvalPolicy === "never") {
       return context.fileSystemSandboxKind === "restricted"

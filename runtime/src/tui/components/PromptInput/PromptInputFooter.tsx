@@ -117,7 +117,7 @@ function PromptInputFooter({
 
   // Pill highlights when tasks is the active footer item AND no specific
   // agent row is selected. When coordinatorTaskIndex >= 0 the pointer has
-  // moved into CoordinatorTaskPanel, so the pill should un-highlight.
+  // selected through task navigation, so the pill should un-highlight.
   // coordinatorTaskCount === 0 covers the bash-only case (no agent rows
   // exist, pill is the only selectable item).
   const coordinatorTaskCount = useCoordinatorTaskCount();

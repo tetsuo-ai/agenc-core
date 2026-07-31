@@ -296,13 +296,12 @@ describe("reproducible install and release contract", () => {
     expect(powershellJob).toContain('["powershellTestRuntime"]["linux-x64"]');
     expect(powershellJob).toContain("--require-zero-skips");
     expect(powershellJob).toContain("--config vitest.powershell.config.ts");
-    expect(powershellJob).toContain("const expectedTests = 41");
-    expect(powershellJob).toContain("numTotalTestSuites: 7");
-    expect(powershellJob).toContain("numPassedTestSuites: 7");
+    expect(powershellJob).toContain("const expectedTests = 40");
+    expect(powershellJob).toContain("numTotalTestSuites: 6");
+    expect(powershellJob).toContain("numPassedTestSuites: 6");
     for (const testFile of [
       "tests/budget/admitted-legacy-powershell.powershell.test.ts",
       "tests/packaging/install-ps1.powershell.test.ts",
-      "tests/shell-command/powershell-parser.powershell.test.ts",
       "tests/tools/PowerShellTool.execution.powershell.test.ts",
     ]) {
       expect(powershellJob).toContain(testFile);

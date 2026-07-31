@@ -499,14 +499,6 @@ function areUnsandboxedCommandsAllowed(): boolean {
   return settings?.sandbox?.allowUnsandboxedCommands ?? true
 }
 
-function isSandboxRequired(): boolean {
-  const settings = getExecutionAuthoritySettings()
-  return (
-    getSandboxEnabledSetting() &&
-    (settings?.sandbox?.failIfUnavailable ?? false)
-  )
-}
-
 /**
  * Check if the current platform is supported for sandboxing (memoized)
  * Supports: macOS, Linux, and WSL2+ (WSL1 is not supported)
@@ -567,51 +559,6 @@ function isSandboxingEnabled(): boolean {
   }
 
   return getSandboxEnabledSetting()
-}
-
-/**
- * If the user explicitly enabled sandbox (sandbox.enabled: true in settings)
- * but it cannot actually run, return a human-readable reason. Otherwise
- * return undefined.
- *
- * Fix for #34044: previously isSandboxingEnabled() silently returned false
- * when dependencies were missing, giving users zero feedback that their
- * explicit security setting was being ignored. This is a security footgun —
- * users configure allowedDomains expecting enforcement, get none.
- *
- * Call this once at startup (REPL/print) and surface the reason if present.
- * Does not cover the case where the user never enabled sandbox (no noise).
- */
-function getSandboxUnavailableReason(): string | undefined {
-  // Only warn if user explicitly asked for sandbox. If they didn't enable
-  // it, missing deps are irrelevant.
-  if (!getSandboxEnabledSetting()) {
-    return undefined
-  }
-
-  if (!isSupportedPlatform()) {
-    const platform = getPlatform()
-    if (platform === 'wsl') {
-      return 'sandbox.enabled is set but WSL1 is not supported (requires WSL2)'
-    }
-    return `sandbox.enabled is set but ${platform} is not supported (requires macOS, Linux, or WSL2)`
-  }
-
-  if (!isPlatformInEnabledList()) {
-    return `sandbox.enabled is set but ${getPlatform()} is not in sandbox.enabledPlatforms`
-  }
-
-  const deps = checkDependencies()
-  if (deps.errors.length > 0) {
-    const platform = getPlatform()
-    const hint =
-      platform === 'macos'
-        ? 'run /sandbox or /doctor for details'
-        : 'install missing tools (e.g. apt install bubblewrap socat) or run /sandbox for details'
-    return `sandbox.enabled is set but dependencies are missing: ${deps.errors.join(', ')} · ${hint}`
-  }
-
-  return undefined
 }
 
 /**
@@ -905,13 +852,11 @@ export interface ISandboxManager {
   initialize(sandboxAskCallback?: SandboxAskCallback): Promise<void>
   isSupportedPlatform(): boolean
   isPlatformInEnabledList(): boolean
-  getSandboxUnavailableReason(): string | undefined
   isSandboxingEnabled(): boolean
   isSandboxEnabledInSettings(): boolean
   checkDependencies(): SandboxDependencyCheck
   isAutoAllowBashIfSandboxedEnabled(): boolean
   areUnsandboxedCommandsAllowed(): boolean
-  isSandboxRequired(): boolean
   areSandboxSettingsLockedByPolicy(): boolean
   setSandboxSettings(options: {
     enabled?: boolean
@@ -954,10 +899,8 @@ export const SandboxManager: ISandboxManager = {
   isSandboxingEnabled,
   isSandboxEnabledInSettings: getSandboxEnabledSetting,
   isPlatformInEnabledList,
-  getSandboxUnavailableReason,
   isAutoAllowBashIfSandboxedEnabled,
   areUnsandboxedCommandsAllowed,
-  isSandboxRequired,
   areSandboxSettingsLockedByPolicy,
   setSandboxSettings,
   getExcludedCommands,

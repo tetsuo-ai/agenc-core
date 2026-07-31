@@ -810,4 +810,3 @@ function isFilesystemRoot(value: string): boolean {
 export { SandboxManager, compatibilitySandboxPolicyForPermissionProfile } from "./manager.js";
 export { createLinuxSandboxCommandArgsForPermissionProfile } from "./landlock.js";
 export { createSeatbeltCommandArgs } from "./seatbelt.js";
-export { findSystemBwrapInPath, systemBwrapWarning } from "./bwrap.js";

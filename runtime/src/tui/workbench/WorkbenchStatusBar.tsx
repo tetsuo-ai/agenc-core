@@ -19,16 +19,14 @@ export function WorkbenchStatusBar({
   /** Current streaming phase, or null when idle. Drives the working indicator. */
   readonly activityMode?: SpinnerMode | null;
   /**
-   * Full status-bar row width (terminal columns). Lets the right-hand context
-   * strip budget its remaining space so it degrades gracefully instead of
-   * overflowing the row. Omitted in tiny/unknown-width contexts, where the
-   * strip is hidden.
+   * Full status-bar row width (terminal columns). Controls whether the
+   * responsive context-usage and version segments are shown.
    */
   readonly columns?: number;
   /**
    * Real context-window usage label (e.g. "ctx 42%"); null when no assistant
-   * usage data exists yet. Rendered ahead of the model/mode/cwd strip, which
-   * keeps its own width budget (the label's width is reserved here).
+   * usage data exists yet. Rendered between the model and runtime version when
+   * the viewport is wide enough.
    */
   readonly contextPctLabel?: string | null;
 } = {}): React.ReactElement {

@@ -16,7 +16,7 @@ import {
   type MemorySelectorFileInfo,
   type MemorySelectorOption,
 } from '../../tui/components/memory/selector-options.js';
-import { getRelativeMemoryPath } from '../../tui/components/memory/MemoryUpdateNotification.js';
+import { getRelativeMemoryPath } from '../../tui/components/memory/path-format.js';
 import { MenuModal } from '../../tui/components/v2/primitives.js';
 import ThemedText from '../../tui/components/design-system/ThemedText.js';
 import { Box, useInput } from '../../tui/ink.js';

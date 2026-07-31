@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { MCP_ERROR_INVALID_REQUEST, MCP_ERROR_INVALID_PARAMS, MCP_ERROR_METHOD_NOT_FOUND, MCP_ERROR_NOT_INITIALIZED, MCP_ERROR_PARSE } from "./types.js";
 import { McpServerFramework, ensureMcpOutgoingSerializable } from "./framework.js";
+import { McpToolRegistry } from "./tools.js";
 
 function request(id: number, method: string, params?: unknown) {
   return {
@@ -175,6 +176,99 @@ describe("McpServerFramework", () => {
         error: {
           code: MCP_ERROR_INVALID_REQUEST,
           message: "tools/call requires the async MCP dispatcher",
+        },
+      },
+    ]);
+  });
+
+  test("lists and dispatches registered tools through the async path", async () => {
+    const registry = new McpToolRegistry();
+    registry.registerTool({
+      definition: {
+        name: "sample.echo",
+        description: "Echo text back to the caller.",
+        inputSchema: {
+          type: "object",
+          properties: { text: { type: "string" } },
+          required: ["text"],
+        },
+      },
+      async call(params) {
+        return {
+          content: [
+            { type: "text", text: String(params.arguments?.text ?? "") },
+          ],
+        };
+      },
+    });
+    const server = new McpServerFramework({ toolProvider: registry });
+    server.handleMessage(request(1, "initialize"));
+
+    expect(server.handleMessage(request(2, "tools/list"))).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        result: {
+          tools: [
+            {
+              name: "sample.echo",
+              description: "Echo text back to the caller.",
+              inputSchema: {
+                type: "object",
+                properties: { text: { type: "string" } },
+                required: ["text"],
+              },
+            },
+          ],
+          nextCursor: null,
+        },
+      },
+    ]);
+    await expect(
+      server.handleMessageAsync(
+        request(3, "tools/call", {
+          name: "sample.echo",
+          arguments: { text: "hello" },
+        }),
+      ),
+    ).resolves.toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        result: { content: [{ type: "text", text: "hello" }] },
+      },
+    ]);
+  });
+
+  test("validates async tools/call params and reports unknown tools", async () => {
+    const server = new McpServerFramework({
+      toolProvider: new McpToolRegistry(),
+    });
+    server.handleMessage(request(1, "initialize"));
+
+    await expect(
+      server.handleMessageAsync(request(2, "tools/call", { name: 123 })),
+    ).resolves.toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        error: {
+          code: MCP_ERROR_INVALID_PARAMS,
+          message: "tools/call name must be a string",
+        },
+      },
+    ]);
+    await expect(
+      server.handleMessageAsync(
+        request(3, "tools/call", { name: "missing.tool", arguments: {} }),
+      ),
+    ).resolves.toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        result: {
+          content: [{ type: "text", text: "Unknown tool 'missing.tool'" }],
+          isError: true,
         },
       },
     ]);

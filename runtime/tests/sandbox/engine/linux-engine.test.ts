@@ -14,11 +14,7 @@ import {
   type PermissionProfile,
 } from "./index.js";
 import {
-  findSystemBwrapInPath,
-  isUserNamespaceFailure,
   procVersionIndicatesWsl1,
-  systemBwrapWarning,
-  systemBwrapWarningForPath,
 } from "./bwrap.js";
 
 describe("Linux sandbox engine", () => {
@@ -215,56 +211,10 @@ describe("Linux sandbox engine", () => {
     );
   });
 
-  it("detects WSL1 and user namespace failures from command output", () => {
+  it("detects WSL1 from kernel version strings", () => {
     expect(procVersionIndicatesWsl1("Linux version 4.4.0 Microsoft")).toBe(true);
     expect(procVersionIndicatesWsl1("Linux version 5.15.90 microsoft-standard-WSL2")).toBe(false);
     expect(procVersionIndicatesWsl1("Linux version 5.15.0 WSL1")).toBe(true);
-    expect(
-      isUserNamespaceFailure({
-        stderr: Buffer.from("No permissions to create a new namespace"),
-      }),
-    ).toBe(true);
-  });
-
-  it("suppresses system bubblewrap warnings outside Linux", () => {
-    const profile: PermissionProfile = {
-      fileSystem: restrictedFileSystemPolicy([
-        { path: { kind: "path", path: "/repo" }, access: "write" },
-      ]),
-      network: "disabled",
-    };
-
-    expect(systemBwrapWarning(profile, "darwin")).toBeNull();
-    expect(systemBwrapWarning(profile, "win32")).toBeNull();
-    expect(systemBwrapWarningForPath(null, "darwin")).toBeNull();
-  });
-
-  it("finds trusted system bubblewrap while ignoring cwd-local candidates", () => {
-    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "agenc-bwrap-path-"));
-    const cwd = path.join(tmpdir, "workspace");
-    const trusted = path.join(tmpdir, "trusted-bin");
-    fs.mkdirSync(cwd);
-    fs.mkdirSync(trusted);
-    const localBwrap = path.join(cwd, "bwrap");
-    const trustedBwrap = path.join(trusted, "bwrap");
-    fs.writeFileSync(localBwrap, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    fs.writeFileSync(trustedBwrap, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-
-    const previousPath = process.env["PATH"];
-    try {
-      delete process.env["PATH"];
-      expect(findSystemBwrapInPath(undefined, cwd)).toBeNull();
-    } finally {
-      if (previousPath === undefined) {
-        delete process.env["PATH"];
-      } else {
-        process.env["PATH"] = previousPath;
-      }
-    }
-    expect(findSystemBwrapInPath("", cwd)).toBeNull();
-    expect(findSystemBwrapInPath([cwd, trusted].join(path.delimiter), cwd)).toBe(
-      fs.realpathSync(trustedBwrap),
-    );
   });
 
   it("does not mark a relative TMPDIR as writable in fallback compatibility projection", () => {
