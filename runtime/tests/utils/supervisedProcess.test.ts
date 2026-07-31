@@ -1076,24 +1076,69 @@ describe("process-tree root safety", () => {
 
       expect(brokerSource).toContain("PR_SET_CHILD_SUBREAPER");
       expect(brokerSource).toContain("PR_SET_PDEATHSIG");
-      expect(brokerSource).toContain('write_status("S", 1U)');
-      expect(brokerSource.match(/write_status\("S", 1U\)/gu)).toHaveLength(1);
-      const childSetupStart = brokerSource.indexOf("if (root_pid == 0)");
-      const childSetupEnd = brokerSource.indexOf(
-        "free(target_argv);",
-        childSetupStart,
+      expect(brokerSource).toContain(
+        'static const char broker_ready_status[] = "S";',
       );
+      expect(
+        brokerSource.match(/write_status\(\s*broker_ready_status,/gu),
+      ).toHaveLength(1);
+
+      const mainDefinition = brokerSource.indexOf(
+        "int main(int argc, char **argv) {",
+      );
+      const prototypeSection = brokerSource.slice(0, mainDefinition);
+      const implementation = brokerSource.slice(mainDefinition);
+      const functionDefinitions = [
+        ...brokerSource.matchAll(
+          /^(?:static\s+)?(?:_Noreturn\s+)?[A-Za-z_][A-Za-z0-9_]*\s+\**([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*?\)\s*\{/gmu,
+        ),
+      ];
+      const helperDefinitions = functionDefinitions.filter(
+        (definition) => definition[1] !== "main",
+      );
+      expect(mainDefinition).toBeGreaterThanOrEqual(0);
+      expect(prototypeSection).toContain("int main(int argc, char **argv);");
+      expect(functionDefinitions[0]?.[1]).toBe("main");
+      expect(helperDefinitions.length).toBeGreaterThan(0);
+      for (const definition of helperDefinitions) {
+        const name = definition[1];
+        expect(name).toBeDefined();
+        expect(prototypeSection).toMatch(
+          new RegExp(`\\b${name}\\s*\\([^;{}]*\\)\\s*;`, "su"),
+        );
+      }
+      expect(implementation).not.toMatch(
+        /(?<![A-Za-z0-9_])(?:0[xX][0-9A-Fa-f]+|[0-9]+[uUlL]*)(?![A-Za-z0-9_])/u,
+      );
+
+      const childSetupDefinitionIndex = functionDefinitions.findIndex(
+        (definition) => definition[1] === "run_target_child",
+      );
+      const childSetupStart =
+        functionDefinitions[childSetupDefinitionIndex]?.index ?? -1;
+      const childSetupEnd =
+        functionDefinitions[childSetupDefinitionIndex + 1]?.index ??
+        brokerSource.length;
       const childSetup = brokerSource.slice(childSetupStart, childSetupEnd);
       expect(childSetupStart).toBeGreaterThanOrEqual(0);
       expect(childSetupEnd).toBeGreaterThan(childSetupStart);
-      expect(childSetup).toContain("setsid()");
-      expect(childSetup).toContain('write_status("S", 1U)');
-      expect(childSetup.indexOf('write_status("S", 1U)')).toBeGreaterThan(
-        childSetup.indexOf("setsid()"),
+      const childSetupOrder = [
+        "reset_child_signals();",
+        "PR_SET_PDEATHSIG",
+        "getppid() != broker_pid",
+        "setsid()",
+        "broker_ready_status",
+        "close(AGENC_BROKER_STATUS_FD)",
+        "execvp(program, target_argv)",
+      ].map((token) => childSetup.indexOf(token));
+      expect(childSetupOrder).toEqual(
+        [...childSetupOrder].sort((left, right) => left - right),
       );
-      expect(brokerSource).toContain("sigwaitinfo(&wait_mask");
+      expect(childSetupOrder.every((index) => index >= 0)).toBe(true);
+
+      expect(brokerSource).toContain("sigwaitinfo(wait_mask");
       expect(brokerSource).toContain("child ownership enumeration unavailable");
-      expect(brokerSource).toContain("waitpid(-1");
+      expect(brokerSource).toContain("waitpid(AGENC_BROKER_ANY_CHILD_PID");
       expect(brokerSource).toContain("signal_direct_children(SIGKILL)");
       expect(buildConfig).toContain("compileLinuxProcessBroker");
       expect(packageManifest.agencExecutableFiles).toContain(
