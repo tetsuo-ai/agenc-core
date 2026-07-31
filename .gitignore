@@ -50,7 +50,6 @@ obj/
 !.mcp.json
 !Anchor.toml
 !package.json
-!tsconfig.json
 !runtime/tsconfig.tui.json
 !runtime/idl/*.json
 !runtime/src/replay/alert-schema-lockfile.json
@@ -170,11 +169,4 @@ TASK-SYSTEM-PLAN.md
 # Playwright outputs
 **/test-results/
 
-# Agent-built demo projects: keep sources, drop build artifacts
-runtime/minilm/.venv/
-runtime/minilm/checkpoints/
-runtime/minilm/runs/ckpt/
-runtime/nighlight/nighlight
-runtime/kernel/build/
-space_invaders/.deps/
 __pycache__/
