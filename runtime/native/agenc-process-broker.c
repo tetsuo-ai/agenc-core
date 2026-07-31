@@ -60,6 +60,8 @@ struct child_signal_context {
 };
 
 int main(int argc, char **argv);
+static int launch_supervised_target(int argc, char **argv, sigset_t *wait_mask);
+static int complete_broker_cleanup(void);
 static int validate_invocation(int argc);
 static int prepare_broker(sigset_t *wait_mask);
 static int block_control_signals(sigset_t *wait_mask);
@@ -111,44 +113,60 @@ static pid_t root_pid = AGENC_BROKER_INVALID_ROOT_PID;
 
 int main(int argc, char **argv) {
   sigset_t wait_mask;
-  char **target_argv;
   int root_status = AGENC_BROKER_EMPTY_WAIT_STATUS;
-  bool residual_observed = false;
 
-  if (validate_invocation(argc) != AGENC_BROKER_SUCCESS) {
-    return AGENC_BROKER_ERROR_EXIT;
-  }
-  if (prepare_broker(&wait_mask) != AGENC_BROKER_SUCCESS) {
-    return AGENC_BROKER_ERROR_EXIT;
-  }
-  target_argv = create_target_argv(argc, argv);
-  if (target_argv == NULL) {
-    return AGENC_BROKER_ERROR_EXIT;
-  }
-  if (start_root_process(argv[AGENC_BROKER_PROGRAM_ARGUMENT], target_argv) !=
+  if (launch_supervised_target(argc, argv, &wait_mask) !=
       AGENC_BROKER_SUCCESS) {
-    free(target_argv);
     return AGENC_BROKER_ERROR_EXIT;
   }
-  free(target_argv);
-  (void)close(STDIN_FILENO);
-
   if (monitor_root_process(&wait_mask, &root_status) != AGENC_BROKER_SUCCESS) {
     return AGENC_BROKER_ERROR_EXIT;
   }
+  if (complete_broker_cleanup() != AGENC_BROKER_SUCCESS) {
+    return AGENC_BROKER_ERROR_EXIT;
+  }
+  exit_like_root(root_status);
+}
+
+static int launch_supervised_target(int argc, char **argv,
+                                    sigset_t *wait_mask) {
+  char **target_argv;
+  int launch_result;
+
+  if (validate_invocation(argc) != AGENC_BROKER_SUCCESS ||
+      prepare_broker(wait_mask) != AGENC_BROKER_SUCCESS) {
+    return AGENC_BROKER_FAILURE;
+  }
+  target_argv = create_target_argv(argc, argv);
+  if (target_argv == NULL) {
+    return AGENC_BROKER_FAILURE;
+  }
+  launch_result =
+      start_root_process(argv[AGENC_BROKER_PROGRAM_ARGUMENT], target_argv);
+  free(target_argv);
+  if (launch_result != AGENC_BROKER_SUCCESS) {
+    return AGENC_BROKER_FAILURE;
+  }
+  (void)close(STDIN_FILENO);
+  return AGENC_BROKER_SUCCESS;
+}
+
+static int complete_broker_cleanup(void) {
+  bool residual_observed = false;
+
   if (observe_residual_descendants(&residual_observed) !=
       AGENC_BROKER_SUCCESS) {
-    return AGENC_BROKER_ERROR_EXIT;
+    return AGENC_BROKER_FAILURE;
   }
   if (force_cleanup_descendants() != AGENC_BROKER_SUCCESS) {
     report_errno("descendant cleanup failed");
-    return AGENC_BROKER_ERROR_EXIT;
+    return AGENC_BROKER_FAILURE;
   }
   if (publish_cleanup_status(residual_observed) != AGENC_BROKER_SUCCESS) {
-    return AGENC_BROKER_ERROR_EXIT;
+    return AGENC_BROKER_FAILURE;
   }
   (void)close(AGENC_BROKER_STATUS_FD);
-  exit_like_root(root_status);
+  return AGENC_BROKER_SUCCESS;
 }
 
 static int validate_invocation(int argc) {

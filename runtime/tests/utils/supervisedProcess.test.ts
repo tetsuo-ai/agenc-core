@@ -1111,6 +1111,32 @@ describe("process-tree root safety", () => {
         /(?<![A-Za-z0-9_])(?:0[xX][0-9A-Fa-f]+|[0-9]+[uUlL]*)(?![A-Za-z0-9_])/u,
       );
 
+      const mainEnd = functionDefinitions[1]?.index ?? brokerSource.length;
+      const mainImplementation = brokerSource.slice(mainDefinition, mainEnd);
+      const normalizeCSource = (source: string): string =>
+        source.replace(/\s+/gu, " ").trim();
+      expect(normalizeCSource(mainImplementation)).toBe(
+        normalizeCSource(`
+          int main(int argc, char **argv) {
+            sigset_t wait_mask;
+            int root_status = AGENC_BROKER_EMPTY_WAIT_STATUS;
+
+            if (launch_supervised_target(argc, argv, &wait_mask) !=
+                AGENC_BROKER_SUCCESS) {
+              return AGENC_BROKER_ERROR_EXIT;
+            }
+            if (monitor_root_process(&wait_mask, &root_status) !=
+                AGENC_BROKER_SUCCESS) {
+              return AGENC_BROKER_ERROR_EXIT;
+            }
+            if (complete_broker_cleanup() != AGENC_BROKER_SUCCESS) {
+              return AGENC_BROKER_ERROR_EXIT;
+            }
+            exit_like_root(root_status);
+          }
+        `),
+      );
+
       const childSetupDefinitionIndex = functionDefinitions.findIndex(
         (definition) => definition[1] === "run_target_child",
       );
