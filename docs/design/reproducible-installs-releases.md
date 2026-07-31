@@ -114,12 +114,16 @@ Research was refreshed on 2026-07-27. The load-bearing sources are:
   [`actions/attest` multiple subjects](https://github.com/actions/attest#identify-multiple-subjects),
   [`npm dist-tag`](https://docs.npmjs.com/cli/v11/commands/npm-dist-tag),
   [GitHub release assets](https://docs.github.com/rest/releases/assets)
-- GitHub-hosted native runner labels receive weekly mutable images. The exact
-  image versions reviewed for this release contract are macOS arm64
-  `20260727.0256.1`, macOS x64 `20260720.0353.1`, and Windows x64
-  `20260714.173.1`; their release inventories are the primary source for the
-  pinned Xcode, SDK, Visual Studio, MSVC, and Windows SDK identities.
-  [macOS arm64 image](https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20260727.0256),
+- GitHub-hosted native runner labels receive weekly mutable images. During an
+  image rollout, GitHub may schedule jobs on either the previous GA image or
+  the deploying image. The exact image versions reviewed for this release
+  contract are macOS arm64 `20260715.0234.1` and `20260727.0256.1`, macOS x64
+  `20260720.0353.1`, and Windows x64 `20260714.173.1`; their release inventories
+  are the primary source for the pinned Xcode, SDK, Visual Studio, MSVC, and
+  Windows SDK identities. Artifact metadata and builder identity record the
+  exact accepted image that ran the build.
+  [macOS arm64 GA image](https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20260715.0234),
+  [macOS arm64 rollout image](https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20260727.0256),
   [macOS x64 image](https://github.com/actions/runner-images/releases/tag/macos-15%2F20260720.0353),
   [Windows x64 image](https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20260714.173)
 - Node 26.5.0 is the Current release, carries module ABI 147 and npm 11.17.0,

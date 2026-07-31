@@ -51,7 +51,6 @@ function validateHostedRunnerContract(nativeToolchain, key, releaseToolchain) {
   for (const [actualField, contractField] of [
     ["runnerLabel", "runnerLabel"],
     ["runnerImage", "imageOS"],
-    ["runnerImageVersion", "imageVersion"],
     ["runnerArch", "runnerArch"],
   ]) {
     if (
@@ -61,9 +60,25 @@ function validateHostedRunnerContract(nativeToolchain, key, releaseToolchain) {
       fail(`${key} ${actualField} does not match the reviewed hosted runner contract`);
     }
   }
+  const alternateImageVersions = contract.alternateImageVersions ?? [];
+  if (
+    typeof contract.imageVersion !== "string" ||
+    contract.imageVersion.length === 0 ||
+    !Array.isArray(alternateImageVersions) ||
+    alternateImageVersions.some((value) => typeof value !== "string" || value.length === 0)
+  ) {
+    fail(`${key} has invalid reviewed hosted runner image versions`);
+  }
+  const imageVersions = [contract.imageVersion, ...alternateImageVersions];
+  if (
+    new Set(imageVersions).size !== imageVersions.length ||
+    !imageVersions.includes(nativeToolchain.runnerImageVersion)
+  ) {
+    fail(`${key} runnerImageVersion does not match the reviewed hosted runner contract`);
+  }
   const expectedBuilder =
     `github-hosted:${contract.runnerLabel}:${contract.imageOS}:` +
-    `${contract.imageVersion}:${contract.runnerArch}`;
+    `${nativeToolchain.runnerImageVersion}:${contract.runnerArch}`;
   if (nativeToolchain.builder !== expectedBuilder) {
     fail(`${key} builder identity is detached from the hosted runner contract`);
   }

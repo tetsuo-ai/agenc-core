@@ -573,9 +573,26 @@ export function canonicalizeRpmContentInventory(inventory, allowedSigningKeyIds)
   };
 }
 
-function expectedHostedBuilder(contract) {
+function reviewedHostedImageVersions(contract, slug) {
+  const alternates = contract.alternateImageVersions ?? [];
+  if (
+    typeof contract.imageVersion !== "string" ||
+    contract.imageVersion.length === 0 ||
+    !Array.isArray(alternates) ||
+    alternates.some((value) => typeof value !== "string" || value.length === 0)
+  ) {
+    throw new Error(`release-toolchain.json has invalid hosted image versions for ${slug}`);
+  }
+  const versions = [contract.imageVersion, ...alternates];
+  if (new Set(versions).size !== versions.length) {
+    throw new Error(`release-toolchain.json has duplicate hosted image versions for ${slug}`);
+  }
+  return versions;
+}
+
+function expectedHostedBuilder(contract, imageVersion) {
   return `github-hosted:${contract.runnerLabel}:${contract.imageOS}:` +
-    `${contract.imageVersion}:${contract.runnerArch}`;
+    `${imageVersion}:${contract.runnerArch}`;
 }
 
 export function assertHostedRunnerContract(metadata, contract, slug) {
@@ -585,7 +602,6 @@ export function assertHostedRunnerContract(metadata, contract, slug) {
   for (const [field, metadataField] of [
     ["runnerLabel", "runnerLabel"],
     ["imageOS", "runnerImage"],
-    ["imageVersion", "runnerImageVersion"],
     ["runnerArch", "runnerArch"],
   ]) {
     if (typeof contract[field] !== "string" || metadata[metadataField] !== contract[field]) {
@@ -595,7 +611,14 @@ export function assertHostedRunnerContract(metadata, contract, slug) {
       );
     }
   }
-  const builder = expectedHostedBuilder(contract);
+  const imageVersions = reviewedHostedImageVersions(contract, slug);
+  if (!imageVersions.includes(metadata.runnerImageVersion)) {
+    throw new Error(
+      `release ${slug} runnerImageVersion does not match release-toolchain.json: ` +
+      `${metadata.runnerImageVersion ?? "missing"} not in ${imageVersions.join(", ")}`,
+    );
+  }
+  const builder = expectedHostedBuilder(contract, metadata.runnerImageVersion);
   if (metadata.builder !== builder) {
     throw new Error(
       `release ${slug} builder identity does not match release-toolchain.json: ` +

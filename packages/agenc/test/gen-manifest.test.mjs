@@ -383,10 +383,12 @@ function addArtifact(directory, platform, arch, body, archiveOptions) {
     : undefined;
   const key = `${platform}-${arch}`;
   const hostedRunner = releaseToolchain.hostedRunners[key];
+  const hostedImageVersion =
+    hostedRunner?.alternateImageVersions?.[0] ?? hostedRunner?.imageVersion;
   const hostedBuilder = hostedRunner === undefined
     ? undefined
     : `github-hosted:${hostedRunner.runnerLabel}:${hostedRunner.imageOS}:` +
-      `${hostedRunner.imageVersion}:${hostedRunner.runnerArch}`;
+      `${hostedImageVersion}:${hostedRunner.runnerArch}`;
   const compilerIdentity = platform === "darwin"
     ? hostedRunner.clangVersion
     : platform === "win"
@@ -440,7 +442,7 @@ function addArtifact(directory, platform, arch, body, archiveOptions) {
         ? {
             runnerLabel: hostedRunner.runnerLabel,
             runnerImage: hostedRunner.imageOS,
-            runnerImageVersion: hostedRunner.imageVersion,
+            runnerImageVersion: hostedImageVersion,
             runnerArch: hostedRunner.runnerArch,
           }
         : {}),

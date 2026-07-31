@@ -923,12 +923,26 @@ jobs:
           observed = {
               "runnerLabel": os.environ.get("AGENC_RUNNER_LABEL"),
               "imageOS": os.environ.get("ImageOS"),
-              "imageVersion": os.environ.get("ImageVersion"),
               "runnerArch": os.environ.get("RUNNER_ARCH"),
           }
           for field, actual in observed.items():
               if actual != contract[field]:
                   raise SystemExit(f"hosted runner drift for {slug} {field}: {actual!r} != {contract[field]!r}")
+          image_version = os.environ.get("ImageVersion")
+          alternate_image_versions = contract.get("alternateImageVersions", [])
+          if not isinstance(alternate_image_versions, list):
+              raise SystemExit(f"invalid reviewed alternate image versions for {slug}")
+          image_versions = [contract["imageVersion"], *alternate_image_versions]
+          if (
+              any(not isinstance(value, str) or not value for value in image_versions)
+              or len(set(image_versions)) != len(image_versions)
+          ):
+              raise SystemExit(f"invalid reviewed image versions for {slug}")
+          if image_version not in image_versions:
+              raise SystemExit(
+                  f"hosted runner drift for {slug} imageVersion: "
+                  f"{image_version!r} not in {image_versions!r}"
+              )
           def capture(*command):
               return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
           xcode = capture("xcodebuild", "-version")
@@ -960,7 +974,7 @@ jobs:
           )
           builder = ":".join((
               "github-hosted", contract["runnerLabel"], contract["imageOS"],
-              contract["imageVersion"], contract["runnerArch"],
+              image_version, contract["runnerArch"],
           ))
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8", newline="\n") as environment:
               environment.write(f"AGENC_BUILDER_ID={builder}\n")

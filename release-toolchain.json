@@ -316,7 +316,10 @@
     "darwin-arm64": {
       "runnerLabel": "macos-15",
       "imageOS": "macos15",
-      "imageVersion": "20260727.0256.1",
+      "imageVersion": "20260715.0234.1",
+      "alternateImageVersions": [
+        "20260727.0256.1"
+      ],
       "runnerArch": "ARM64",
       "xcodeVersion": "16.4",
       "xcodeBuild": "16F6",

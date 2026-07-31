@@ -804,6 +804,7 @@ test("hosted release runner contracts reject valid-looking drift", () => {
     runnerLabel: "macos-15",
     imageOS: "macos15",
     imageVersion: "20260706.0213.1",
+    alternateImageVersions: ["20260715.0234.1"],
     runnerArch: "ARM64",
     xcodeVersion: "16.4",
     xcodeBuild: "16F6",
@@ -823,6 +824,29 @@ test("hosted release runner contracts reject valid-looking drift", () => {
   };
   assert.doesNotThrow(() =>
     assertHostedRunnerContract(metadata, darwinContract, "darwin-arm64"),
+  );
+  assert.doesNotThrow(() =>
+    assertHostedRunnerContract(
+      {
+        ...metadata,
+        builder: "github-hosted:macos-15:macos15:20260715.0234.1:ARM64",
+        runnerImageVersion: "20260715.0234.1",
+      },
+      darwinContract,
+      "darwin-arm64",
+    ),
+  );
+  assert.throws(
+    () =>
+      assertHostedRunnerContract(
+        {
+          ...metadata,
+          runnerImageVersion: "20260715.0234.1",
+        },
+        darwinContract,
+        "darwin-arm64",
+      ),
+    /builder identity/,
   );
   for (const [field, value, expected] of [
     ["runnerImageVersion", "20260714.1", /runnerImageVersion/],

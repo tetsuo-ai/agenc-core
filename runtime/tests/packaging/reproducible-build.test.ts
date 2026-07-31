@@ -679,7 +679,7 @@ describe("reproducible install and release contract", () => {
     const nativeContract = JSON.parse(
       readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
     ) as {
-      hostedRunners: Record<string, Record<string, string>>;
+      hostedRunners: Record<string, Record<string, string | string[]>>;
       nodeDistributions: Record<
         string,
         { file: string; sha256: string; bytes: number }
@@ -722,7 +722,8 @@ describe("reproducible install and release contract", () => {
       "darwin-arm64": {
         runnerLabel: "macos-15",
         imageOS: "macos15",
-        imageVersion: "20260727.0256.1",
+        imageVersion: "20260715.0234.1",
+        alternateImageVersions: ["20260727.0256.1"],
         runnerArch: "ARM64",
         xcodeVersion: "16.4",
         xcodeBuild: "16F6",
