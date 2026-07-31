@@ -49,16 +49,12 @@ export default async function (session) {
     await sleep(80);
     await session.type("PLATFORM_NVIM_MARK", { perCharMs: 15 });
     session.send("\x1b");
-    await waitForFrameText(
-      session,
-      /PLATFORM_NVIM_MARK/u,
-      "hosted-platform Neovim edit",
-      10_000,
-    );
     // Exercise Neovim's real write path in the hosted PTY. The host-owned
     // Ctrl+S boundary is covered separately through the terminal parser and
     // rendered BufferSurface integration test; emitting Ctrl+S from node-pty
     // is not portable because PTY line discipline can retain XOFF handling.
+    // The saved bytes are the authoritative end-to-end edit proof; ConPTY can
+    // omit the transient frame containing the newly inserted marker.
     await runEmbeddedNeovimCommand(session, "write");
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
     const saved = await waitForFileText(

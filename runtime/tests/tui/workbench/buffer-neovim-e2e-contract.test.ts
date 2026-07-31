@@ -162,6 +162,16 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
         "async function runNeovimCommand",
       );
     }
+    expect(platformGate).toContain(
+      'runEmbeddedNeovimCommand(session, "write")',
+    );
+    expect(platformGate).toContain("waitForFileText");
+    expect(platformGate).toContain(
+      'saved.includes("PLATFORM_NVIM_MARK")',
+    );
+    expect(platformGate).not.toContain(
+      '"hosted-platform Neovim edit"',
+    );
     expect(helpers).toContain("listDescendantNeovimPids");
     expect(helpers).toContain("waitForPidsGone");
     expect(helpers).toContain("waitForFrameText");
