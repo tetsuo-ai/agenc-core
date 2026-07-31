@@ -141,4 +141,5 @@ aliases) or `/grok-login` for chat.
 | ImagineImage REST | Yes with BYOK | No |
 | Gateway meme / x_search / TTS | Yes with BYOK aliases | N/A |
 
-See `grok-todo.md` and `[llm.xai]` in config for the direct-xAI capability profile.
+See the [configuration reference](reference/config.md) for the direct-xAI
+`[llm.xai]` capability profile.
