@@ -153,7 +153,9 @@ describe("hosted Neovim platform gate contract", () => {
       ),
       "utf8",
     );
-    expect(saveScenario).toContain('runNeovimCommand(session, "write")');
+    expect(saveScenario).toContain(
+      'runEmbeddedNeovimCommand(session, "write")',
+    );
     expect(saveScenario).toContain("waitForFileText(");
     expect(saveScenario).toContain("PLATFORM_NVIM_MARK");
     expect(saveScenario).toContain(

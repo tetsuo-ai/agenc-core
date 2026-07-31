@@ -95,6 +95,9 @@ const bunOnlyTestFiles = bunTestFiles.filter(
 export const DEFAULT_TEST_INCLUDE = Object.freeze([
   'tests/**/*.test.ts',
   'tests/**/*.test.tsx',
+  // This hosted-lane contract is static and hermetic. Keep it in the ordinary
+  // local suite so workflow/scenario drift fails before a platform dispatch.
+  'platform-tests/neovim-platform-gate.contract.test.ts',
 ]);
 
 export const DESIGN_TEST_INCLUDE = Object.freeze([
