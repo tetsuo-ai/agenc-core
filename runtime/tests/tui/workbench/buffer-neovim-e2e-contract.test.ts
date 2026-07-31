@@ -12,19 +12,16 @@ import { runEmbeddedNeovimCommand } from "../../../scripts/check-tui-e2e/helpers
 // Neovim lane covers four lower-level real-process lifecycle tests; the full
 // PTY scenario remains local, so do not treat this file as e2e coverage.
 describe("embedded Neovim BUFFER PTY gate files", () => {
-  it("enters command mode only after the rendered normal-mode acknowledgement", async () => {
+  it("enters command mode only after committed provider-state acknowledgements", async () => {
     const events: string[] = [];
     const session = {
       cols: 80,
       rows: 24,
-      raw: [
-        "target.txt [embedded Neovim NVIM v0.11.4, normal, ready]",
-        "NORMAL  ctrl+s save",
-      ].join("\n"),
+      raw: "target.txt [embedded Neovim NVIM v0.11.4, normal, ready]",
       send(input: string) {
         events.push(`send:${JSON.stringify(input)}`);
         if (input === ":") {
-          this.raw = "CMDLINE_NORMAL  ctrl+s save";
+          this.raw = "CMDLINE_NORMAL";
         }
       },
       async type(input: string) {

@@ -3347,34 +3347,35 @@ function registerInstallPs1Tests(): void {
           "tetsuo-ai/agenc-releases",
         );
         mutate(manifest);
-        const fixture = startHttpsFixture(work, {
-          [`/${name}.json`]: { bodyText: JSON.stringify(manifest) },
-        });
         const rewrite = writeGithubArtifactFetchRewrite(work);
         const installerPath = writeInstrumentedInstallPs1(work);
         const home = join(work, `powershell-official-${name}`);
-        try {
-          const result = runPowerShell(
-            home,
-            undefined,
-            join(home, ".agenc"),
-            {
-              AGENC_INSTALL_VERSION: VERSION,
-              NODE_EXTRA_CA_CERTS: fixture.ca,
-              NODE_OPTIONS:
-                `${process.env.NODE_OPTIONS ?? ""} --require=${rewrite}`.trim(),
-              AGENC_INSTALL_TEST_GITHUB_MANIFEST_URL:
-                `${fixture.baseUrl}/${name}.json`,
-            },
-            installerPath,
-          );
-          const output = `${result.stdout}\n${result.stderr}`;
-          expect(result.status, `${name}: ${output}`).not.toBe(0);
-          expect(output, name).toContain(expected);
-          expectFailedInstallCleanup(home);
-        } finally {
-          fixture.stop();
-        }
+        const fetchLog = join(work, `${name}-fetch.log`);
+        const manifestDataUrl =
+          `data:application/json;base64,${
+            Buffer.from(JSON.stringify(manifest), "utf8").toString("base64")
+          }`;
+        const result = runPowerShell(
+          home,
+          undefined,
+          join(home, ".agenc"),
+          {
+            AGENC_INSTALL_VERSION: VERSION,
+            NODE_OPTIONS:
+              `${process.env.NODE_OPTIONS ?? ""} --require=${rewrite}`.trim(),
+            AGENC_INSTALL_TEST_FETCH_LOG: fetchLog,
+            AGENC_INSTALL_TEST_GITHUB_MANIFEST_URL: manifestDataUrl,
+          },
+          installerPath,
+        );
+        const output = `${result.stdout}\n${result.stderr}`;
+        expect(result.status, `${name}: ${output}`).not.toBe(0);
+        expect(output, name).toContain(expected);
+        expect(readFileSync(fetchLog, "utf8").trim(), name).toBe(
+          `https://github.com/tetsuo-ai/agenc-releases/releases/download/` +
+            `agenc-v${VERSION}/agenc-runtime-manifest-v2.json`,
+        );
+        expectFailedInstallCleanup(home);
       },
       30_000,
     );
