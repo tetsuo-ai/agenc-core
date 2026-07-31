@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { nextShellTailState } from "../../../src/tui/workbench/surfaces/ShellSurface.js";
 
-// core-todo.md ShellSurface.tsx:39 — the tail effect re-runs on [task.id,
+// ShellSurface.tsx:39 — the tail effect re-runs on [task.id,
 // task.status] and unconditionally blanked the tail, so a running->completed
 // transition flashed the output empty for one cycle. It now preserves content
 // when the task is unchanged (mirrors AgentSurface).

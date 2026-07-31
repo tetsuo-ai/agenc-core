@@ -5,7 +5,7 @@ import type { ToolEvaluatorContext } from "../../src/permissions/bash.js";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 import type { ToolPermissionContext } from "../../src/permissions/types.js";
 
-// M-PERM-1 (core-todo.md): under bypassPermissions (--yolo), bashToolHasPermission
+// M-PERM-1: under bypassPermissions (--yolo), bashToolHasPermission
 // short-circuited to `allow` for any subcommand set with no explicit deny, silently
 // waiving user-configured content-specific ASK rules. The sandbox-override path guards
 // this with aggregateAskCameFromRule; the bypass early-return did not. A rule-based ASK

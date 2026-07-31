@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createOpenAiShimClient } from '../../../src/services/api/openaiShim.ts'
 
-// M-LLM-5 (core-todo.md): once the thinking block closed on a reasoning->content or
+// M-LLM-5: once the thinking block closed on a reasoning->content or
 // reasoning->tool_call transition, hasEmittedThinkingStart was never reset, so a later
 // delta.reasoning_content emitted a thinking_delta at a STALE index (the open text
 // block / an unstarted index). The Anthropic stream consumer (services/api/anthropic.ts)

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { getTeamDir, readTeamFile } from "../../../src/utils/swarm/teamHelpers.js";
 
-// teamHelpers minor (core-todo.md): readTeamFile returned jsonParse(content) as TeamFile
+// teamHelpers minor: readTeamFile returned jsonParse(content) as TeamFile
 // with no shape validation, so a config.json that parses but lacks a `members` array
 // made downstream .members.filter/.findIndex throw — during SIGINT/SIGTERM cleanup that
 // skips worktree/dir cleanup. The fix validates the shape and returns null instead.

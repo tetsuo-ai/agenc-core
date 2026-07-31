@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EmbeddedNeovimSession } from "../../../../../src/tui/workbench/buffer/neovim/NeovimLifecycle.js";
 
-// M-TUI-5 (core-todo.md): isDirty() and the quit path called #rpc.request with
+// M-TUI-5: isDirty() and the quit path called #rpc.request with
 // no catch. The transport can close independently of the session (stdin EPIPE
 // before the child's exit), so during that window :q/:wq and buffer:close (which
 // await isDirty()) must contain the RPC rejection instead of letting an

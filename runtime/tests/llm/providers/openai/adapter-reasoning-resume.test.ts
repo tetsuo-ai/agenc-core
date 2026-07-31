@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { OpenAIProvider } from "../../../../src/llm/providers/openai/adapter.js";
 
-// M-LLM-5 (core-todo.md): once the thinking block was closed on a reasoning->content
+// M-LLM-5: once the thinking block was closed on a reasoning->content
 // (or reasoning->tool_call) transition, hasEmittedThinkingStart was never reset, so a
 // later delta.reasoning_content skipped content_block_start and emitted a thinking_delta
 // at a stale index (pointing at the open text block / an unstarted index). The consumer

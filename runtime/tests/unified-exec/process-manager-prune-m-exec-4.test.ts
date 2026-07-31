@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 
-// M-EXEC-4 (core-todo.md): execCommand called pruneExitedProcesses() at its start,
+// M-EXEC-4: execCommand called pruneExitedProcesses() at its start,
 // which released ANY exited process. A background command that had exited but not yet
 // been polled was therefore evicted the moment the model issued the next exec_command
 // (the normal start -> do other work -> poll workflow), so the subsequent poll threw

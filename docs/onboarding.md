@@ -1,9 +1,8 @@
 # Onboarding AgenC (operator guide)
 
 **Current release: 0.13.0.** This is the live product guide for first-run and
-the multi-act setup path. Historical implementation notes live under
-[archive/onboarding-plan-2026-07.md](archive/onboarding-plan-2026-07.md)
-(archived — not product truth).
+the multi-act setup path. Superseded implementation notes remain available in
+Git history and are not product truth.
 
 Related: [quickstart](quickstart.md) · [install](install.md) ·
 [gateway](gateway.md) · [managed OpenRouter](managed-openrouter.md) ·

@@ -9,7 +9,7 @@ import {
   registeredIncrementalTrackerCountForTest,
 } from "../../../../src/llm/providers/grok/incremental.js";
 
-// M-LLM-3 (core-todo.md): GrokProvider registered its IncrementalTracker in a
+// M-LLM-3: GrokProvider registered its IncrementalTracker in a
 // module-global Set removed only by dispose(), which no production path calls (the
 // auto-mode classifier / delegate build a fresh grok provider per call). The Set
 // held STRONG references, so trackers accumulated unbounded. Fixed by making the

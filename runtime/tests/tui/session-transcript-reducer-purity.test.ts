@@ -5,7 +5,7 @@ import {
   type SessionTranscriptEvent,
 } from "../../src/tui/session-transcript.js";
 
-// session-transcript.ts:2771 (core-todo.md): the `append` reducer mutated the
+// session-transcript.ts:2771: the `append` reducer mutated the
 // previous state's key Set in place. React StrictMode double-invokes reducers
 // with the same prev state; the first invoke's mutation made the second invoke
 // see the key as present and early-return, dropping the event from the render.

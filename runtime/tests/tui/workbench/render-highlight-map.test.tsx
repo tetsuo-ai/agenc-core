@@ -5,7 +5,7 @@ import type {
   NeovimRenderSnapshot,
 } from "../../../src/tui/workbench/buffer/neovim/NeovimGrid.js";
 
-// core-todo.md render.tsx:168 — renderTerminalCellsToAnsi rebuilt the highlight
+// render.tsx:168 — renderTerminalCellsToAnsi rebuilt the highlight
 // Map per row (O(rows × highlights) per Neovim redraw). The map is now built
 // once in terminalAnsiLines and passed down.
 

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { renderToString } from '../../../utils/staticRender.js'
 import { ContextUsageModal } from './ContextUsageModal.js'
 
-// M-TUI-3 / ContextUsageModal:187 (core-todo.md): the /context modal fabricated a
+// M-TUI-3 / ContextUsageModal:187: the /context modal fabricated a
 // per-file breakdown (hardcoded lib.rs/pool.rs/math.rs split by magic ratios) even
 // though only an aggregate `files: N` number exists, and divided by hardLimit without
 // guarding zero (auto-compact at Infinity%). Both are fixed.

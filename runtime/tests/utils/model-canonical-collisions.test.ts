@@ -6,7 +6,7 @@ import {
 } from "../../src/utils/model/model.js";
 import { modelSupportsAdaptiveThinking } from "../../src/utils/thinking.js";
 
-// Minor model-capability/canonicalization fixes (core-todo.md):
+// Minor model-capability/canonicalization fixes:
 //  - model.ts:500/:939 — ordered .includes('claude-opus-4-1') matched a future
 //    claude-opus-4-10/-11, mislabeling it as 4.1.
 //  - model.ts:812 — parseUserSpecifiedModel case 'best' dropped the [1m] suffix.

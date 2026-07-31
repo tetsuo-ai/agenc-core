@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchMcpSkillsForClient } from "../../src/skills/mcpSkills.js";
 import type { MCPServerConnection } from "../../src/services/mcp/types.js";
 
-// mcpSkills:223 minor (core-todo.md): fetchMcpSkillsForClient memoized on client.name
+// mcpSkills:223 minor: fetchMcpSkillsForClient memoized on client.name
 // alone, so two sessions each configuring a same-named MCP server pointing at DIFFERENT
 // servers collided (the second got the first's cached skills). Fixed by keying on
 // name + server config.

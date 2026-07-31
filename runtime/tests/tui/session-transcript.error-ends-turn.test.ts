@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { adaptTranscriptEvents } from "./session-transcript.js";
 
-// bug-audit-2026-07-11.md #13: an error-terminated daemon turn never arrives
+// Audit finding #13: an error-terminated daemon turn never arrives
 // as `turn_complete` — run-turn's turn_complete(stopReason:"error") is
 // remapped to run_error → agent_status:error → a transcript `error` event.
 // The reducer previously left `isStreaming` latched true for that event, so

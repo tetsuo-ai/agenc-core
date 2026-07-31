@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { formatShellPrefixCommand } from "../../../src/utils/bash/shellPrefix.js";
 
-// shellPrefix minor (core-todo.md): formatShellPrefixCommand split at lastIndexOf(' -'),
+// shellPrefix minor: formatShellPrefixCommand split at lastIndexOf(' -'),
 // so a multi-flag prefix (AGENC_SHELL_PREFIX="wsl -e bash -c") mis-parsed the executable
 // as "wsl -e bash". Fixed by splitting at the FIRST " -".
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { StylePool } from "../../../src/tui/ink/screen.js";
 
-// core-todo.md ink.tsx:1642 / screen.ts StylePool: the StylePool is never rotated
+// ink.tsx:1642 / screen.ts StylePool: the StylePool is never rotated
 // (unlike CharPool/HyperlinkPool), so its transitionCache — an O(usedStyles²)
 // (fromId,toId) map — grew unbounded over a long truecolor session. It is now
 // FIFO-capped.

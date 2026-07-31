@@ -7,7 +7,7 @@ const createBashTool = (
   config?: Parameters<typeof createUnboundBashTool>[0],
 ) => bindExplicitDangerBoundary(createUnboundBashTool(config));
 
-// M-EXEC-2 (core-todo.md): the shell-mode spawn path (runSpawnedCommand) accumulated
+// M-EXEC-2: the shell-mode spawn path (runSpawnedCommand) accumulated
 // every stdout/stderr chunk into an unbounded Buffer[] and only truncated at flush, so
 // a fast, huge emitter could OOM the daemon before truncation. The fix caps retention
 // at 2x maxOutputBytes (matching the direct-mode execFile maxBuffer). truncate() keeps

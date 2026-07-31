@@ -6,7 +6,7 @@ import {
   mapLLMError,
 } from "../../src/llm/errors.js";
 
-// M-LLM-1 (core-todo.md): CONTEXT_WINDOW_EXCEEDED_MESSAGE_RE contained a bare `413`
+// M-LLM-1: CONTEXT_WINDOW_EXCEEDED_MESSAGE_RE contained a bare `413`
 // with no boundary, so any error whose body merely contained the substring "413"
 // (a request id, trace id, timestamp) was mapped to the NON-retryable
 // LLMContextWindowExceededError instead of a retryable LLMServerError — dropping

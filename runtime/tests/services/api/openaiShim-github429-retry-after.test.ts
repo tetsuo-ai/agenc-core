@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { computeGithub429WaitMs } from '../../../src/services/api/openaiShim.ts'
 
-// core-todo.md openaiShim:2242 — the GitHub/Copilot 429 retry slept a fixed
+// openaiShim:2242 — the GitHub/Copilot 429 retry slept a fixed
 // exponential backoff and IGNORED the server's Retry-After header (it only
 // decorated the final error). The wait now honors max(Retry-After, backoff),
 // capped so a hostile header cannot stall the request.

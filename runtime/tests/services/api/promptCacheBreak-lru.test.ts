@@ -6,7 +6,7 @@ import {
   trackedCallCountForTest,
 } from "../../../src/services/api/promptCacheBreakDetection.js";
 
-// promptCacheBreakDetection minor (core-todo.md): eviction at MAX_TRACKED_SOURCES
+// promptCacheBreakDetection minor: eviction at MAX_TRACKED_SOURCES
 // deleted the oldest-INSERTED key (FIFO), typically repl_main_thread (inserted first,
 // never re-inserted while alive). ~10 subagent spawns destroyed the main thread's
 // cache-break baseline. Fixed by moving an accessed key to most-recently-used (LRU).

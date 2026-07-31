@@ -3,14 +3,8 @@
 **As of 2026-07-30.** Product line **0.13.0** (SDK package **0.3.0**). What is
 shipped in-tree versus open backlog.
 
-This replaces the competitive parity plan. Historical research and phase
-narratives live under [`archive/`](archive/) and are **not** product truth.
-
-| Historical doc | Notes |
-| --- | --- |
-| [`archive/parity-roadmap-2026-07.md`](archive/parity-roadmap-2026-07.md) | Competitive roadmap vs Hermes / OpenClaw (stale progress header) |
-| [`archive/onboarding-plan-2026-07.md`](archive/onboarding-plan-2026-07.md) | Onboarding implementation plan (superseded by shipped acts + quickstart) |
-| [`archive/README.md`](archive/README.md) | Archive index |
+This replaces the competitive parity plan. Superseded research and phase
+narratives remain available in Git history and are **not** product truth.
 
 Operational task tracking for local engineers may use a gitignored root
 `TODO.md` when present; public product truth for shipped vs open is this file
@@ -132,7 +126,7 @@ Grouped to match current product priority. Detail + acceptance criteria live in
 
 ## What we deliberately do not build
 
-Carried from the archived parity plan (still policy):
+Established product policy:
 
 - WhatsApp via Baileys or any ToS-violating bridge
 - Uncurated public skill registry (unsigned malware magnet)
@@ -149,4 +143,4 @@ Carried from the archived parity plan (still policy):
 | This file | Shipped vs open product summary |
 | `TODO.md` (local/gitignored) | Engineer backlog, gates, completed SHAs |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | How the system is put together |
-| [`archive/`](archive/) | Historical plans only |
+| Git history | Superseded planning and audit provenance |

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { optionsUpdatePlan } from "../../../../src/tui/components/CustomSelect/use-select-navigation.js";
 
-// core-todo.md use-select-navigation.ts:549 — when a parent passes a
+// use-select-navigation.ts:549 — when a parent passes a
 // fresh-but-equal `options` array each render, lastOptions was never refreshed
 // (setLastOptions only ran on a reset), so the O(n) optionsNavigateEqual scan
 // ran every render. lastOptions is now refreshed even on structural equality.

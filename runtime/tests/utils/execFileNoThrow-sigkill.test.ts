@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { execFileNoThrow } from "../../src/utils/execFileNoThrow.js";
 
-// execFileNoThrow:289 (core-todo.md): on timeout it called child.kill() (SIGTERM only)
+// execFileNoThrow:289: on timeout it called child.kill() (SIGTERM only)
 // with no SIGKILL escalation. A child that traps/ignores SIGTERM never emits 'close', so
 // the promise never settled and every awaiting caller hung past the timeout. Mirrors the
 // ripgrep.ts SIGTERM->SIGKILL fix.

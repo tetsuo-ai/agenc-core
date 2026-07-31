@@ -3,7 +3,7 @@ import { writeDiffToTerminal, type Terminal } from "../../../src/tui/ink/termina
 import { getClearTerminalSequence } from "../../../src/tui/ink/clearTerminal.js";
 import { ERASE_SCREEN, ERASE_SCROLLBACK } from "../../../src/tui/ink/termio/csi.js";
 
-// M-TUI-2 (core-todo.md): engine-internal full resets (resize / offscreen) emit
+// M-TUI-2: engine-internal full resets (resize / offscreen) emit
 // getClearTerminalSequence() which includes ESC[3J, erasing the user's scrollback
 // above the app. ESC[3J must be reserved for an explicit clear (reason 'clear').
 

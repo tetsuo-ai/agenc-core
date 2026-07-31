@@ -6,7 +6,7 @@ import {
   setCachedSystemTheme,
 } from "../../src/utils/systemTheme.js";
 
-// M-ONB-2 (core-todo.md): getSystemThemeName() defaults to 'dark' when the
+// M-ONB-2: getSystemThemeName() defaults to 'dark' when the
 // background can't be measured ($COLORFGBG absent, no OSC 11), so callers could
 // not tell a measured dark from a guessed dark. isSystemThemeDetected() exposes
 // that distinction.

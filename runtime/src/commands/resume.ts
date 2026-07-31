@@ -68,7 +68,7 @@ export function sessionIdFromFilename(name: string): string | null {
  * Read the first user-role message text from a rollout JSONL file.
  * Bounded in BYTES as well as lines: rollout transcripts run to tens of MB,
  * and this used to `readFileSync` the whole file per picker row — the
- * dominant cost of the /resume freeze (bug-audit-2026-07-11.md #1). Now
+ * dominant cost of the /resume freeze (audit finding #1). Now
  * streams at most PREVIEW_MAX_BYTES / PREVIEW_MAX_LINES.
  */
 export function readFirstUserPreview(path: string): string {
@@ -187,7 +187,7 @@ export function listResumableSessions(
         // Preview comes from a bounded streaming read of the rollout head.
         // Never load the thread history here: `readThread({includeHistory})`
         // parses the ENTIRE transcript per row and re-reads the registry per
-        // call — the /resume freeze (bug-audit-2026-07-11.md #1).
+        // call — the /resume freeze (audit finding #1).
         const firstUserPreview = readFirstUserPreview(thread.rolloutPath);
         // Skip rollouts that never recorded a user message — those
         // sessions were opened and closed before the user typed

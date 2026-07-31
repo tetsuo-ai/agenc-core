@@ -4,7 +4,7 @@ import { buildToolTransactionGuardInput } from "../../src/transaction-guard/tool
 import type { Tool } from "../../src/tools/types.js";
 import type { ToolInvocation } from "../../src/tools/context.js";
 
-// C2 (core-todo.md): buildToolTransactionGuardInput checked isReadOnlySolanaLookup
+// C2: buildToolTransactionGuardInput checked isReadOnlySolanaLookup
 // (which returns null = guard skipped) BEFORE the write-signal check, and that
 // read-only check consulted only SOLANA_WRITE_SIGNAL_RE — never the direct-signing
 // or program-write regexes. So prefixing a real signing/deploy command with one

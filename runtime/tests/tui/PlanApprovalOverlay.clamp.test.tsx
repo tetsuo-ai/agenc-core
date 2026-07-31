@@ -13,16 +13,16 @@ vi.mock('../../src/tui/ink.js', async () => {
 const PLAN = `# Plan: Local file load for HTML video player
 
 ## Context
-The repo already has a polished HTML5 player in video/ (index.html + styles + script, expects media/demo.mp4). The player currently fails because the demo asset is missing.
+The sample project has an HTML5 player in player/ (index.html + styles + script, expects media/demo.mp4). The player currently fails because the demo asset is missing.
 
 ## Approach
 
 | File | Change |
 |---|---|
-| video/index.html | File input, Open button, optional drop hint; update header copy |
-| video/script.js | Load/revoke object URLs; wire picker + DnD; clear error overlay on success |
-| video/styles.css | Light styles for open button + drag-over state on stage |
-| video/media/.gitkeep | Unchanged (still useful if someone prefers a fixed path) |
+| player/index.html | File input, Open button, optional drop hint; update header copy |
+| player/script.js | Load/revoke object URLs; wire picker + DnD; clear error overlay on success |
+| player/styles.css | Light styles for open button + drag-over state on stage |
+| player/media/.gitkeep | Unchanged (still useful if someone prefers a fixed path) |
 
 ## Steps
 1. Add an "Open file" control wired to a hidden input[type=file].
@@ -31,7 +31,7 @@ The repo already has a polished HTML5 player in video/ (index.html + styles + sc
 4. Update the header copy to explain local-file playback.
 
 ## Verification
-- Open video/index.html directly in the browser (no server needed).
+- Open player/index.html directly in the browser (no server needed).
 - Pick an MP4: playback starts, controls work.
 - Drop a second file: replaces the first without leaks (old object URL revoked).
 - No new dependencies. No backend.

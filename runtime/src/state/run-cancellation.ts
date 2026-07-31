@@ -1,6 +1,6 @@
 /**
  * Tree-scoped run cancellation + spawn admission gate (M3 final slice;
- * design: docs/design/run-cancel-cascade-and-spawn-admission.md).
+ * design: docs/design/execution-admission-kernel.md).
  *
  * `cancelAgentRunTree` walks the spawn tree in ONE transaction and moves
  * every non-terminal descendant (queued AND running) to `cancelled`, closing

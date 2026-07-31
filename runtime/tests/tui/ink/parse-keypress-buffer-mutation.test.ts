@@ -5,7 +5,7 @@ import {
   parseMultipleKeypresses,
 } from "../../../src/tui/ink/parse-keypress.js";
 
-// parse-keypress.ts:199 minor (core-todo.md): inputToString mutated the caller-owned
+// parse-keypress.ts:199 minor: inputToString mutated the caller-owned
 // Buffer in place (`input[0] -= 128`) for the single-byte >127 case, corrupting it for
 // any downstream reader. Fixed by building the escaped char without mutation.
 

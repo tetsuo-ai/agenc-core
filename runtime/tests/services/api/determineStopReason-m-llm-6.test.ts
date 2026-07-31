@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { determineStopReason } from '../../../src/services/api/openAiCodeTransform.ts'
 
-// M-LLM-6 (core-todo.md): determineStopReason returned 'tool_use' before checking
+// M-LLM-6: determineStopReason returned 'tool_use' before checking
 // incomplete_details.reason === 'max_output_tokens', so a response truncated mid-
 // function-call reported 'tool_use' and the runtime executed a tool call built from
 // truncated / JSON-repaired arguments. Truncation must win over the tool signal.

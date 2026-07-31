@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { SlackChannelAdapter } from "../../src/gateway/slack-channel.js";
 import type { OutboundChannelMessage } from "../../src/gateway/types.js";
 
-// gateway #editTargets minor (core-todo.md): SlackChannelAdapter.#editTargets grew one
+// gateway #editTargets minor: SlackChannelAdapter.#editTargets grew one
 // entry per non-edit send and nothing ever deleted, an unbounded leak on a long-lived
 // gateway (same in Discord/Telegram). Fixed by capping the map and evicting oldest-first.
 // Edit-in-place only ever targets a recent message, so evicting old handles is safe.

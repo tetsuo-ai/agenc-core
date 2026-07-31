@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { maxOf } from "../../src/utils/maxOf.js";
 
-// core-todo.md MarkdownTable.tsx:132/236/347 & StructuredDiff/Fallback.tsx:362:
+// MarkdownTable.tsx:132/236/347 & StructuredDiff/Fallback.tsx:362:
 // Math.max(...arr) spreads each element as a call argument, so a ~100k-line
 // table/diff overflows the argument-count limit -> RangeError, crashing the
 // render. maxOf reduces instead.

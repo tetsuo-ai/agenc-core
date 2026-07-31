@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { parseOpenAIResponsesResponse } from "../../../src/llm/wire/responses-openai.js";
 
-// M-LLM-2 (core-todo.md): parseOpenAIResponsesResponse parsed structured output
+// M-LLM-2: parseOpenAIResponsesResponse parsed structured output
 // whenever a schema + non-empty content were present, WITHOUT checking whether the
 // generation completed. A truncated reply (status 'incomplete', reason
 // max_output_tokens -> finishReason 'length') holds partial JSON; the parser then

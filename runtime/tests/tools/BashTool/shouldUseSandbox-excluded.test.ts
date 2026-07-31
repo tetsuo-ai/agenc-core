@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-// shouldUseSandbox.ts:22 (core-todo.md): containsExcludedCommand carried a dead
+// shouldUseSandbox.ts:22: containsExcludedCommand carried a dead
 // "dynamic config" scaffold (a hardcoded-empty { commands, substrings } and two
 // loops that could never match) alongside the live settings-driven path. The
 // dead scaffold was removed (it is a convenience path, not a security boundary,

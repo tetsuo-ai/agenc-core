@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createFileReadTool } from "../../../src/tools/system/file-read.js";
 
-// M-FILE-2 (core-todo.md): readImageFile base64-encoded the raw file with no
+// M-FILE-2: readImageFile base64-encoded the raw file with no
 // downsample/dimension clamp, so a screenshot over ~3.7MB or a small-but-over-1568px
 // PNG produced a payload the provider rejects with a 400 on the common "read this
 // screenshot" path. Fixed by routing through maybeResizeAndDownsampleImageBuffer

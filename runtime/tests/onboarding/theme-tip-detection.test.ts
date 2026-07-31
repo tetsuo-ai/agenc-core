@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-// M-ONB-2 (core-todo.md): the onboarding theme tip asserted "your terminal
+// M-ONB-2: the onboarding theme tip asserted "your terminal
 // background looks <x>" from getSystemThemeName(), which defaults to 'dark' when
 // unmeasured — so a light-terminal user (no $COLORFGBG) was told dark reads best,
 // the exact inverted advice. The tip now only gives a direction when detected.

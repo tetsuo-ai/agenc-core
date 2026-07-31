@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { parseToml, TomlParseError } from "../../src/config/loader.js";
 
-// C3 (core-todo.md): parseToml walked table/key paths with plain `cur[seg] = …`
+// C3: parseToml walked table/key paths with plain `cur[seg] = …`
 // and never rejected `__proto__`, so a config file could pollute Object.prototype
 // for the whole daemon process. These tests pin that every form now throws and,
 // critically, that the global prototype is never mutated.

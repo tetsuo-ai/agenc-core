@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { REDACTED_SECRET, redactSecrets, redactSecretsInValue } from "./index.js";
 
-// C1 (core-todo.md): redactSecrets left the four highest-value wallet secrets on
+// C1: redactSecrets left the four highest-value wallet secrets on
 // this product unredacted — Solana JSON-array keypairs, PEM private keys, the
 // vault passphrase, and uppercase/Title-Case BIP39 phrases. These tests pin the
 // fix; they must fail against the pre-fix sanitizer.

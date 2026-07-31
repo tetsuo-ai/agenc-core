@@ -4,7 +4,7 @@ import { buildToolTransactionGuardInput } from "../../src/transaction-guard/tool
 import type { Tool } from "../../src/tools/types.js";
 import type { ToolInvocation } from "../../src/tools/context.js";
 
-// M-TXG-2 (core-todo.md): isDevnet = DEVNET_RE.test(combined) matched the bare word
+// M-TXG-2: isDevnet = DEVNET_RE.test(combined) matched the bare word
 // "devnet" anywhere in attacker-influenced text, so a comment like "# devnet test"
 // on a MAINNET transfer made the framework author "targeting DevNet." and set
 // devnetRpcExplicit=true, biasing the benign-leaning judge. DevNet must be asserted

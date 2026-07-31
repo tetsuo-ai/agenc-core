@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { updateLatestDebugLogSymlink } from "../../src/utils/debug.js";
 
-// utils/debug.ts:409 minor (core-todo.md): updateLatestDebugLogSymlink was memoized on
+// utils/debug.ts:409 minor: updateLatestDebugLogSymlink was memoized on
 // its empty arg list, so it ran once per process. The debug log path is session-scoped
 // and /resume switches the session, so the `latest` symlink stayed pointed at the
 // pre-resume file. Fixed by re-linking whenever the resolved target changes.

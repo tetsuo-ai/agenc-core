@@ -206,7 +206,7 @@ describe("daemon config/model state refresh + atomicity", () => {
     });
   });
 
-  // bug-audit-2026-07-11.md #10: a provider-only switch is staged for the
+  // Audit finding #10: a provider-only switch is staged for the
   // NEXT turn, so the live session still reports the pre-switch selection.
   // Backfilling that model produced mixed pairs like {provider: "grok",
   // model: "qwen3-coder-next-fp8"} in the process-global, which later daemon

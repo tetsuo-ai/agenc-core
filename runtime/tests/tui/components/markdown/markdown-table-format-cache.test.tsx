@@ -2,7 +2,7 @@ import React from "react";
 import { marked, type Tokens } from "marked";
 import { describe, expect, it, vi } from "vitest";
 
-// M-TUI-12 (core-todo.md): MarkdownTable ran ~4-5 O(rows×cols) layout passes
+// M-TUI-12: MarkdownTable ran ~4-5 O(rows×cols) layout passes
 // (getMinWidth/getIdealWidth/calculateMaxRowLines/renderRowLines), each calling
 // formatCell -> formatToken per cell with no memoization. formatCell is now
 // memoized per render by the cell's tokens reference.

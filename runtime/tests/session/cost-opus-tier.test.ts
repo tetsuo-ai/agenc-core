@@ -7,7 +7,7 @@ import {
   type ModelUsage,
 } from "../../src/session/cost.js";
 
-// M-COST-1 / M-COST-2 (core-todo.md): canonicalModel collapsed every claude-opus-4*
+// M-COST-1 / M-COST-2: canonicalModel collapsed every claude-opus-4*
 // onto the $15/$75 tier, but Opus dropped to $5/$25 with 4.5 (see the canonical
 // utils/modelCost.ts). That 3x overcharge surfaced in the live CostSidecar
 // (session-transcript) and in background-agent dollar_cap enforcement, which both

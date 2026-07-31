@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { checkReadOnlyConstraints } from "../../../src/tools/BashTool/readOnlyValidation.js";
 
-// M-BASH-1 (core-todo.md): in the `date` read-only config, --iso-8601 was typed
+// M-BASH-1: in the `date` read-only config, --iso-8601 was typed
 // 'string' AND listed in the danger callback's flagsWithArgs, so a trailing
 // positional (MMDDhhmm, which sets the system clock) was consumed as the flag's
 // argument and never reached the "positional not starting with +" danger check.

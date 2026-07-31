@@ -1187,7 +1187,7 @@ export class FileThreadStore implements ThreadStore {
     // consistency) — taking the exclusive directory lock here would let a
     // daemon writing a rollout stall a read-only caller (e.g. the /resume
     // picker) for up to the full 30s acquisition window
-    // (bug-audit-2026-07-11.md #1).
+    // (audit finding #1).
     if (!includeLegacy) {
       return this.readRegistryUnlocked(false);
     }
@@ -1223,7 +1223,7 @@ export class FileThreadStore implements ThreadStore {
     // so later reads see it from `threadIndex.listThreads()` above. Running
     // it once per store instance is therefore sufficient; before this guard
     // it re-ran per readRegistry call (O(N²) directory walks when listing N
-    // threads — bug-audit-2026-07-11.md #1).
+    // threads — audit finding #1).
     if (this.legacyImportDone) {
       return result;
     }

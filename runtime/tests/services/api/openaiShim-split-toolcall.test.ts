@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createOpenAiShimClient } from '../../../src/services/api/openaiShim.ts'
 
-// M-LLM-7 (core-todo.md): a streaming tool call was registered only when a single
+// M-LLM-7: a streaming tool call was registered only when a single
 // delta carried BOTH tc.id AND tc.function.name. Providers that split them across
 // chunks (vLLM / LM Studio / OpenRouter passthroughs) never registered the call;
 // later argument deltas hit activeToolCalls.get(index) === undefined and were dropped,

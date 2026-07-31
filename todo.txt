@@ -1,5 +1,5 @@
 AgenC MUST-DO TODO
-Updated: 2026-07-20
+Updated: 2026-07-31
 
 PURPOSE
 -------
@@ -613,6 +613,42 @@ M6 DONE WHEN:
   regressions are visible before release.
 
 
+AUDITED ENGINEERING DEBT
+------------------------
+
+These verified residuals survived the July 2026 audit. They are tracked here
+instead of in a separate audit narrative; each needs a focused design or
+revert-sensitive test before implementation.
+
+[ ] **M-LLM-4 — isolate provider environment per request.**
+    `runtime/src/services/api/openaiShim.ts` must stop mutating process-wide
+    OpenAI/Gemini/Bankr environment variables from a per-query client path.
+[ ] **M-FILE-1 — tear down file-read state with the owning session/workspace.**
+    Wire `clearSessionReadState` into a shared session-close hook and define a
+    safe eviction/teardown policy for `workspaceReadState`.
+[ ] **M-SVC-1 — preserve genuinely recent results during microcompaction.**
+    Carry real message timestamps into `microCompact` or explicitly protect
+    messages whose age is unknown instead of treating epoch zero as old.
+[ ] **M-TUI-7 — handle PromptInput callback rejections.**
+    Catch only the awaited/floated parent callbacks in the submit path without
+    swallowing its existing result-based control flow.
+[ ] **Queued preview identities — keep stable IDs across front drains.**
+    Assign every queued command a stable enqueue-time ID, preserve it through
+    normalization, and key `PromptInputQueuedCommands` previews by that ID.
+[ ] **Session ingress teardown — clear per-session append state safely.**
+    Invoke `runtime/src/services/api/sessionIngress.ts` cleanup from the shared
+    session-close path; do not use an LRU that can evict an in-flight chain.
+[ ] **MCP reconnect catalog refresh — republish changed tool schemas.**
+    Emit a tool-list-changed event from the resilient bridge and have the MCP
+    manager rebuild the policy-filtered model catalog after reconnect.
+[ ] **Secret assignment redaction — cover multiword values.**
+    Extend `runtime/src/secrets/sanitizer.ts` assignment matching through a
+    closing quote or safe end-of-line boundary, with over-redaction tests.
+[ ] **Sandbox dependency probe — remove the process-lifetime failure latch.**
+    Replace the legacy memoized probe in `sandbox-runtime.ts` with a short TTL
+    or settings-refresh invalidation and prove transient failure recovery.
+
+
 GLOBAL DEFINITION OF DONE FOR EVERY CHECKBOX
 --------------------------------------------
 
@@ -664,7 +700,7 @@ SOURCE MAP
 ----------
 
 - Public roadmap: `docs/roadmap.md`
-- Closed audit evidence and skipped residuals: `core-todo.md`
+- Audited live residuals: this file, under `AUDITED ENGINEERING DEBT`
 - Budget behavior: `docs/design/budget-enforcement.md`
 - Evaluation harness: `runtime/eval/`
 - Instruction loader audit surfaces: `runtime/src/prompts/agenc-md.ts`,
@@ -677,4 +713,4 @@ SOURCE MAP
 - Existing reconnect replay: `runtime/src/app-server/client-multiplexer.ts`
 - Protocol events: `runtime/src/app-server/protocol/index.ts`
 - SDK contract: `packages/agenc-sdk/` and `docs/sdk.md`
-- Inbound MCP boundary: `runtime/src/mcp-server/tools.ts`
+- Inbound MCP boundary: `runtime/src/mcp/server/start.ts`

@@ -1,7 +1,9 @@
 # Eval pilot executor
 
-Status: design accepted; phase 1 (model-free preflight executor) implemented,
-phase 2 (real-agent run) designed but not yet implemented.
+Status: design accepted; phase 1 (model-free preflight executor) and phase 2a
+(offline real-agent run) implemented. Phase 2b real-model operation remains
+deferred for normal use; its contained egress prototype and proof are recorded
+separately. Evidence-ledger binding is designed but not yet implemented.
 
 Roadmap anchor: `todo.txt` M1 — "Build a 30-task pilot, then a powered
 superiority set" and "Run the actual AgenC agent, not a mock executor".

@@ -647,7 +647,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       // The explicit per-session cwd must beat AGENC_WORKSPACE: in the
       // daemon, env is frozen at daemon start and a stale AGENC_WORKSPACE
       // pinned every session to the first launch folder
-      // (bug-audit-2026-07-11.md #2).
+      // (audit finding #2).
       const boot = await bootstrapLocalRuntimeSession({
         apiKey: "test-key",
         env: {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createOpenAiShimClient } from '../../../src/services/api/openaiShim.ts'
 
-// openaiShim minor (core-todo.md): _convertNonStreamingResponse dereferenced
+// openaiShim minor: _convertNonStreamingResponse dereferenced
 // tc.function.name/.arguments without a shape check, so a malformed provider response
 // (tool_calls: [{ id }] or a non-function entry) threw a bare TypeError that bypassed
 // the shim's classifyOpenAiHttpFailure routing. Fixed by skipping such entries.

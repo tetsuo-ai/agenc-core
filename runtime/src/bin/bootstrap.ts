@@ -899,7 +899,7 @@ export async function bootstrapLocalRuntimeSession(
   // The explicit per-session cwd must beat AGENC_WORKSPACE: in the daemon,
   // `env` is the process env frozen at daemon start, and a stale
   // AGENC_WORKSPACE from the first launch shell would pin every later
-  // session to that folder (bug-audit-2026-07-11.md #2). Matches the
+  // session to that folder (audit finding #2). Matches the
   // precedence already used by project-trust resolution.
   const workspaceRoot =
     options.cwd ?? resolveWorkspaceFromEnv(env) ?? process.cwd();

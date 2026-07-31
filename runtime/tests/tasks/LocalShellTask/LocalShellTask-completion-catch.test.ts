@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ShellCommand } from "../../../src/utils/ShellCommand.js";
 
-// LocalShellTask.tsx:224/333/431 (core-todo.md): background completion handlers
+// LocalShellTask.tsx:224/333/431: background completion handlers
 // floated `void shellCommand.result.then(async …)` with no `.catch`. A throwing
 // completion callback (updateTaskState/enqueueShellNotification in a torn-down
 // state) became an unhandled rejection. The handlers now end in `.catch(logError)`.

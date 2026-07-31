@@ -1953,7 +1953,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // pre-switch selection here — backfilling it produced mixed pairs like
     // {provider: "grok", model: "qwen3-coder-next-fp8"} in the process-global
     // activeConfigModel, which later daemon sessions then inherited and sent
-    // to the wrong API (bug-audit-2026-07-11.md #10).
+    // to the wrong API (audit finding #10).
     const currentModelUsable =
       current !== undefined &&
       current.model !== "unknown" &&

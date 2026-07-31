@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { McpServerConfig } from "../../../src/services/mcp/types.js";
 import { importSelectedMcpServers } from "../../../src/tui/components/MCPServerDesktopImportDialog.js";
 
-// M-TUI-6 (core-todo.md): the import loop awaited addMcpConfig (a config-file
+// M-TUI-6: the import loop awaited addMcpConfig (a config-file
 // write), but SelectMulti invokes onSubmit fire-and-forget, so a rejection
 // escaped as an unhandled rejection. onSubmit now catches (no unhandled
 // rejection) and, on failure, keeps the dialog open instead of completing —

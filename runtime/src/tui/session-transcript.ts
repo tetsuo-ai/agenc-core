@@ -2583,7 +2583,7 @@ export function adaptTranscriptEvents(
         // "error") is remapped to run_error → agent_status:error → this
         // `error` event. Without clearing the streaming state here,
         // `isStreaming` latches true and the "Working…" spinner never stops
-        // (bug-audit-2026-07-11.md #13) — noteDaemonActivity already treats
+        // (audit finding #13) — noteDaemonActivity already treats
         // `error` as turn-ending; this mirrors it in the reducer. Preserve
         // any partial text like `turn_aborted` does.
         persistAssistantText(streamingText, nextUuid);

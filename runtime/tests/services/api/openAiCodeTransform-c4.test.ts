@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { convertproviderMessagesToResponsesInput } from '../../../src/services/api/openAiCodeTransform.ts'
 
-// C4 (core-todo.md): the Responses-API converter emitted function_call_output for
+// C4: the Responses-API converter emitted function_call_output for
 // EVERY tool_result and function_call for EVERY tool_use with no pairing check —
 // unlike the chat-completions path, which drops orphans because an ESC-interrupt
 // produces a synthetic tool_result with no recorded tool_use. On the Responses
