@@ -126,7 +126,38 @@ describe("homebrew packaging", () => {
     expect(formula).toContain("OWNER-PUBLISH STEP");
     // Homebrew installs the immutable artifact directly and never performs
     // nested network installation during a formula build.
-    expect(formula).toContain('libexec.install "node_modules"');
     expect(formula).not.toContain('libexec.install Dir["node_modules"]');
+  });
+
+  test("recreates node_modules from Homebrew's flattened archive root", () => {
+    const formula = readFileSync(
+      join(REPO_ROOT, "packaging", "homebrew", "agenc.rb"),
+      "utf8",
+    );
+    const archiveBuilder = readFileSync(
+      join(
+        REPO_ROOT,
+        "packages",
+        "agenc",
+        "scripts",
+        "build-runtime-tarball.mjs",
+      ),
+      "utf8",
+    );
+
+    // Runtime archives have one node_modules root. Homebrew enters that sole
+    // directory before install, so the build path contains its children rather
+    // than another nested node_modules directory. Pathname#children preserves
+    // dot-prefixed runtime entries such as .agenc-node and .bin.
+    expect(archiveBuilder).toContain(
+      'canonicalArchiveEntries(installRoot, "node_modules")',
+    );
+    expect(formula).toContain(
+      '(libexec/"node_modules").install buildpath.children',
+    );
+    expect(formula).not.toContain('libexec.install "node_modules"');
+    expect(formula).not.toContain('Dir["*"]');
+    expect(formula).toContain('node_modules/.agenc-node/bin/node');
+    expect(formula).toContain('node_modules/@tetsuo-ai/runtime/bin/agenc');
   });
 });
