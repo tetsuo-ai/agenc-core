@@ -157,6 +157,8 @@ describe("hosted Neovim platform gate contract", () => {
     expect(saveScenario).toContain("readySession: true");
     expect(saveScenario).toContain("waitForFileText(");
     expect(saveScenario).toContain("PLATFORM_NVIM_MARK");
+    expect(saveScenario).toContain("nvim-platform-exit.intent");
+    expect(saveScenario).toContain("| qa!");
     expect(saveScenario).toContain(
       "Ctrl+S boundary is covered separately through the terminal parser",
     );

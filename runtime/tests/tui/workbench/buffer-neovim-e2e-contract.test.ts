@@ -177,6 +177,8 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(platformGate).toContain(
       'saved.includes("PLATFORM_NVIM_MARK")',
     );
+    expect(platformGate).toContain("nvim-platform-exit.intent");
+    expect(platformGate).toContain("| qa!");
     expect(platformGate).not.toContain(
       '"hosted-platform Neovim edit"',
     );

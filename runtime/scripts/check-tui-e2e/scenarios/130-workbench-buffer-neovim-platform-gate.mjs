@@ -26,6 +26,7 @@ export const meta = {
 export default async function (session) {
   const cwd = await mkdtemp(join(tmpdir(), "agenc-platform-nvim-e2e-"));
   const pidFile = join(cwd, "nvim-platform.pid");
+  const exitIntentFile = join(cwd, "nvim-platform-exit.intent");
   let neovimPid = 0;
   try {
     await anchorWorkbenchProjectRoot(cwd);
@@ -68,10 +69,13 @@ export default async function (session) {
       throw new Error(`embedded Neovim did not save the platform marker: ${saved}`);
     }
 
-    await runEmbeddedNeovimCommand(session, "q!", {
-      readySession: true,
-    });
-    await waitForPidGone(neovimPid, 10_000, "embedded Neovim after :q!");
+    await runEmbeddedNeovimCommand(
+      session,
+      "call writefile(['qa!'], 'nvim-platform-exit.intent') | qa!",
+      { readySession: true },
+    );
+    await waitForFileText(exitIntentFile, /qa!/u, 5_000);
+    await waitForPidGone(neovimPid, 10_000, "embedded Neovim after :qa!");
     await waitForFrameText(
       session,
       /Describe a task…/u,
