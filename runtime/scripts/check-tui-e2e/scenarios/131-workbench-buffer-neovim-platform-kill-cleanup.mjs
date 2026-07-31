@@ -28,6 +28,7 @@ export default async function (session) {
   const target = join(cwd, "target.txt");
   const pidFile = join(cwd, "nvim-platform-kill.pid");
   const jobPidFile = join(cwd, "nvim-platform-detached-job.pid");
+  const dirtyProofFile = join(cwd, "nvim-platform-dirty-proof.txt");
   let neovimPid = 0;
   let detachedJobPid = 0;
   try {
@@ -61,6 +62,7 @@ export default async function (session) {
           "agenc-neovim-platform-descendant",
         ].map(vimLiteral).join(", ")
       }], {'detach': v:true})`,
+      { readySession: true },
     );
     detachedJobPid = await readPidFile(jobPidFile);
     if (!processIsAlive(detachedJobPid)) {
@@ -74,12 +76,27 @@ export default async function (session) {
     session.send("o");
     await sleep(80);
     await session.type("UNSAVED_PLATFORM_KILL_MARK", { perCharMs: 15 });
-    await waitForFrameText(
+    await runEmbeddedNeovimCommand(
       session,
-      /UNSAVED_PLATFORM_KILL_MARK/u,
-      "dirty hosted-platform Neovim edit",
-      10_000,
+      "call writefile(getline(1, '$'), 'nvim-platform-dirty-proof.txt')",
+      { readySession: true },
     );
+    const dirtyProof = await waitForFileText(
+      dirtyProofFile,
+      /UNSAVED_PLATFORM_KILL_MARK/u,
+      5_000,
+    );
+    if (!dirtyProof.includes("UNSAVED_PLATFORM_KILL_MARK")) {
+      throw new Error(
+        `Neovim dirty-buffer proof omitted the marker: ${dirtyProof}`,
+      );
+    }
+    const targetBeforeKill = await readFile(target, "utf8");
+    if (targetBeforeKill.includes("UNSAVED_PLATFORM_KILL_MARK")) {
+      throw new Error(
+        `dirty Neovim text reached disk before TUI termination: ${targetBeforeKill}`,
+      );
+    }
 
     session.kill("SIGKILL");
     await waitForPidGone(
@@ -147,6 +164,19 @@ async function readPidFile(path) {
     await sleep(50);
   }
   throw new Error(`embedded Neovim did not write its pid file: ${path}`);
+}
+
+async function waitForFileText(path, pattern, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let last = "";
+  while (Date.now() < deadline) {
+    last = await readFile(path, "utf8").catch(() => "");
+    if (pattern.test(last)) return last;
+    await sleep(50);
+  }
+  throw new Error(
+    `dirty Neovim buffer proof did not update ${path} within ${timeoutMs}ms: ${last}`,
+  );
 }
 
 function processIsAlive(pid) {

@@ -30,11 +30,20 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     };
 
     await runEmbeddedNeovimCommand(session, "write");
+    session.raw = "";
+    await runEmbeddedNeovimCommand(session, "q!", {
+      readySession: true,
+    });
 
     expect(events).toEqual([
       "idle:200",
       'send:"\\u001b"',
       "type::write",
+      'send:"\\r"',
+      "idle:500",
+      "idle:200",
+      'send:"\\u001b"',
+      "type::q!",
       'send:"\\r"',
       "idle:500",
     ]);
@@ -162,15 +171,27 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
         "async function runNeovimCommand",
       );
     }
-    expect(platformGate).toContain(
-      'runEmbeddedNeovimCommand(session, "write")',
-    );
+    expect(platformGate).toContain('"write", {');
+    expect(platformGate).toContain("readySession: true");
     expect(platformGate).toContain("waitForFileText");
     expect(platformGate).toContain(
       'saved.includes("PLATFORM_NVIM_MARK")',
     );
     expect(platformGate).not.toContain(
       '"hosted-platform Neovim edit"',
+    );
+    expect(platformKillCleanup).toContain(
+      "nvim-platform-dirty-proof.txt",
+    );
+    expect(platformKillCleanup).toContain(
+      "writefile(getline(1, '$')",
+    );
+    expect(platformKillCleanup).toContain(
+      "targetBeforeKill.includes",
+    );
+    expect(platformKillCleanup).toContain("readySession: true");
+    expect(platformKillCleanup).not.toContain(
+      '"dirty hosted-platform Neovim edit"',
     );
     expect(helpers).toContain("listDescendantNeovimPids");
     expect(helpers).toContain("waitForPidsGone");

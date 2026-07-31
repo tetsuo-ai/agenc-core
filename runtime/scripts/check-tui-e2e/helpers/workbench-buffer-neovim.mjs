@@ -48,19 +48,27 @@ export async function waitForFrameText(session, pattern, label, timeoutMs = 10_0
   throw new Error(`${label} did not render in the latest PTY frame: ${frame.slice(-1200)}`);
 }
 
-export async function runEmbeddedNeovimCommand(session, command) {
+export async function runEmbeddedNeovimCommand(
+  session,
+  command,
+  { readySession = false } = {},
+) {
   // The terminal grid can paint NORMAL before the provider commits the session
   // that receives input. The provider header binds ready state to that
   // committed session, but its coarse "normal" label also covers transient
   // native modes. Normalize the owned session with Escape before entering Ex.
   // The callers prove command delivery through concrete process/file effects;
   // do not make that contract depend on a ConPTY-rendered presentation footer.
-  await waitForFrameText(
-    session,
-    /\[embedded Neovim [^,\n]+,\s*normal,\s*ready(?:,|\])/iu,
-    `committed embedded Neovim session before :${command}`,
-    5_000,
-  );
+  // A caller may bypass the presentation gate only after concrete evidence
+  // proves that this same Neovim process is live and already received input.
+  if (!readySession) {
+    await waitForFrameText(
+      session,
+      /\[embedded Neovim [^,\n]+,\s*normal,\s*ready(?:,|\])/iu,
+      `committed embedded Neovim session before :${command}`,
+      5_000,
+    );
+  }
   await session.waitForIdle({ idleWindow: 200, timeout: 5_000 });
   session.send("\x1b");
   await sleep(80);

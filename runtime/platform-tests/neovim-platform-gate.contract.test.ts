@@ -153,14 +153,25 @@ describe("hosted Neovim platform gate contract", () => {
       ),
       "utf8",
     );
-    expect(saveScenario).toContain(
-      'runEmbeddedNeovimCommand(session, "write")',
-    );
+    expect(saveScenario).toContain('"write", {');
+    expect(saveScenario).toContain("readySession: true");
     expect(saveScenario).toContain("waitForFileText(");
     expect(saveScenario).toContain("PLATFORM_NVIM_MARK");
     expect(saveScenario).toContain(
       "Ctrl+S boundary is covered separately through the terminal parser",
     );
+    const killScenario = readFileSync(
+      resolve(
+        RUNTIME_ROOT,
+        "scripts/check-tui-e2e/scenarios",
+        "131-workbench-buffer-neovim-platform-kill-cleanup.mjs",
+      ),
+      "utf8",
+    );
+    expect(killScenario).toContain("nvim-platform-dirty-proof.txt");
+    expect(killScenario).toContain("writefile(getline(1, '$')");
+    expect(killScenario).toContain("targetBeforeKill.includes");
+    expect(killScenario).toContain("readySession: true");
     expect(() =>
       selectPlatformScenarios([...HOSTED_NEOVIM_SCENARIOS], "freebsd-x64")
     ).toThrow("unsupported TUI E2E platform");

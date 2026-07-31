@@ -55,7 +55,9 @@ export default async function (session) {
     // is not portable because PTY line discipline can retain XOFF handling.
     // The saved bytes are the authoritative end-to-end edit proof; ConPTY can
     // omit the transient frame containing the newly inserted marker.
-    await runEmbeddedNeovimCommand(session, "write");
+    await runEmbeddedNeovimCommand(session, "write", {
+      readySession: true,
+    });
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
     const saved = await waitForFileText(
       target,
@@ -66,7 +68,9 @@ export default async function (session) {
       throw new Error(`embedded Neovim did not save the platform marker: ${saved}`);
     }
 
-    await runEmbeddedNeovimCommand(session, "q!");
+    await runEmbeddedNeovimCommand(session, "q!", {
+      readySession: true,
+    });
     await waitForPidGone(neovimPid, 10_000, "embedded Neovim after :q!");
     await waitForFrameText(
       session,
