@@ -27,11 +27,13 @@ export default async function (session) {
   const cwd = await mkdtemp(join(tmpdir(), "agenc-platform-nvim-e2e-"));
   const pidFile = join(cwd, "nvim-platform.pid");
   const exitIntentFile = join(cwd, "nvim-platform-exit.intent");
+  const editProofFile = join(cwd, "nvim-platform-edit-proof.txt");
   let neovimPid = 0;
   try {
     await anchorWorkbenchProjectRoot(cwd);
     const target = join(cwd, "target.txt");
-    await writeFile(target, "platform-alpha\n", "utf8");
+    const originalTarget = "platform-alpha\n";
+    await writeFile(target, originalTarget, "utf8");
     session.cwd = cwd;
     await openEmbeddedNeovim(session);
 
@@ -44,11 +46,27 @@ export default async function (session) {
       throw new Error(`embedded Neovim pid ${neovimPid} was not alive after startup`);
     }
 
+    await runEmbeddedNeovimCommand(
+      session,
+      "autocmd TextChangedI,TextChangedP target.txt call writefile(getline(1, '$'), 'nvim-platform-edit-proof.txt')",
+      { readySession: true },
+    );
     session.send("G");
     await sleep(80);
     session.send("o");
     await sleep(80);
     await session.type("PLATFORM_NVIM_MARK", { perCharMs: 15 });
+    const editProof = await waitForFileText(
+      editProofFile,
+      /PLATFORM_NVIM_MARK/u,
+      5_000,
+    );
+    const expectedEditProof = `${originalTarget}PLATFORM_NVIM_MARK\n`;
+    if (editProof !== expectedEditProof) {
+      throw new Error(
+        `Neovim platform edit proof was not exact: ${JSON.stringify(editProof)}`,
+      );
+    }
     session.send("\x1b");
     // Exercise Neovim's real write path in the hosted PTY. The host-owned
     // Ctrl+S boundary is covered separately through the terminal parser and
@@ -133,7 +151,7 @@ async function waitForFileText(path, pattern, timeoutMs) {
     await sleep(50);
   }
   throw new Error(
-    `provider save did not update ${path} within ${timeoutMs}ms: ${last}`,
+    `expected file text did not update ${path} within ${timeoutMs}ms: ${last}`,
   );
 }
 

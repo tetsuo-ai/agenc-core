@@ -20,6 +20,10 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
       raw: "target.txt [embedded Neovim NVIM v0.11.4, normal, ready]",
       send(input: string) {
         events.push(`send:${JSON.stringify(input)}`);
+        if (input === ":") {
+          this.raw =
+            "target.txt [embedded Neovim NVIM v0.11.4, normal, ready] CMDLINE_NORMAL";
+        }
       },
       async type() {
         throw new Error(
@@ -181,6 +185,13 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(platformGate).toContain(
       'saved.includes("PLATFORM_NVIM_MARK")',
     );
+    expect(platformGate).toContain("nvim-platform-edit-proof.txt");
+    expect(platformGate).toContain(
+      "autocmd TextChangedI,TextChangedP target.txt",
+    );
+    expect(platformGate).toContain(
+      "editProof !== expectedEditProof",
+    );
     expect(platformGate).toContain("nvim-platform-exit.intent");
     expect(platformGate).toContain("| qa!");
     expect(platformGate).not.toContain(
@@ -210,6 +221,7 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(helpers).toContain("waitForFrameText");
     expect(helpers).toContain("workspaceSnapshot");
     expect(helpers).toContain("anchorWorkbenchProjectRoot");
+    expect(helpers).toContain("/CMDLINE_NORMAL/u");
     expect(helpers).toContain("\\x1b[200~");
     expect(helpers).toContain("\\x1b[201~");
     expect(helpers).not.toContain("session.type(`:${command}`");

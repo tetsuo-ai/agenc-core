@@ -73,12 +73,21 @@ export async function runEmbeddedNeovimCommand(
   session.send("\x1b");
   await sleep(80);
   session.send(":");
-  await sleep(80);
+  // Neovim's provider footer remains in CMDLINE_NORMAL for the lifetime of
+  // command mode. Do not paste the command body until that real editor-state
+  // acknowledgement proves the normalized Escape and colon were consumed.
+  await waitForFrameText(
+    session,
+    /CMDLINE_NORMAL/u,
+    `embedded Neovim command mode before :${command}`,
+    5_000,
+  );
   // Deliver the command body through the terminal's real bracketed-paste
   // protocol. BufferSurface routes that one paste event to one acknowledged
   // nvim_paste RPC instead of launching an unobserved nvim_input request for
-  // every character. The surrounding Escape, colon, and Enter remain real
-  // editor keystrokes, so this still exercises the complete PTY input path.
+  // every character. Escape, colon, the command-mode acknowledgement, and
+  // Enter remain real editor interactions, so this still exercises the
+  // complete PTY input path.
   session.send(`\x1b[200~${command}\x1b[201~`);
   await sleep(80);
   session.send("\r");

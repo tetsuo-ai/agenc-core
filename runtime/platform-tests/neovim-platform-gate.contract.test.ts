@@ -157,11 +157,40 @@ describe("hosted Neovim platform gate contract", () => {
     expect(saveScenario).toContain("readySession: true");
     expect(saveScenario).toContain("waitForFileText(");
     expect(saveScenario).toContain("PLATFORM_NVIM_MARK");
+    expect(saveScenario).toContain("nvim-platform-edit-proof.txt");
+    expect(saveScenario).toContain(
+      "autocmd TextChangedI,TextChangedP target.txt",
+    );
+    expect(saveScenario).toContain("editProof !== expectedEditProof");
+    const editInputIndex = saveScenario.indexOf(
+      'session.type("PLATFORM_NVIM_MARK"',
+    );
+    const editProofWaitIndex = saveScenario.indexOf(
+      "const editProof = await waitForFileText(",
+    );
+    const editEscapeIndex = saveScenario.indexOf(
+      'session.send("\\x1b")',
+      editInputIndex,
+    );
+    expect(editInputIndex).toBeGreaterThan(-1);
+    expect(editProofWaitIndex).toBeGreaterThan(editInputIndex);
+    expect(editEscapeIndex).toBeGreaterThan(editProofWaitIndex);
     expect(saveScenario).toContain("nvim-platform-exit.intent");
     expect(saveScenario).toContain("| qa!");
     expect(saveScenario).toContain(
       "Ctrl+S boundary is covered separately through the terminal parser",
     );
+    const helperSource = readFileSync(
+      resolve(
+        RUNTIME_ROOT,
+        "scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs",
+      ),
+      "utf8",
+    );
+    expect(helperSource).toContain("/CMDLINE_NORMAL/u");
+    expect(helperSource).toContain("\\x1b[200~");
+    expect(helperSource).toContain("\\x1b[201~");
+    expect(helperSource).not.toContain("session.type(`:${command}`");
     const killScenario = readFileSync(
       resolve(
         RUNTIME_ROOT,
