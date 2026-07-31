@@ -74,7 +74,7 @@ Key `AgencClient` methods:
   `{ runId, specDigest, baseCommit, baseDirty }`)
 - `runStatus(id)` / `runResult(id)` / `replayRun(params)` /
   `reattachRun(options)` / `runEvidence(params)` / `cancelRun(id, reason?)`
-- `request(method, params)` → raw typed JSON-RPC for any of the **46** daemon methods
+- `request(method, params)` → raw typed JSON-RPC for any of the **48** daemon methods
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 
 Permission requests with no registered handler are **denied** (never granted)
@@ -253,7 +253,7 @@ other runs. `run.evidence` declares
 that compatibility source, together with an explicit completeness value and
 content hashes.
 
-## Daemon method surface (46 methods)
+## Daemon method surface (48 methods)
 
 Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 (order pinned to the runtime registry):
@@ -263,7 +263,7 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 | lifecycle | `initialize`, `request.cancel` |
 | agents | `agent.create`, `agent.list`, `agent.attach`, `agent.stop`, `agent.logs` |
 | runs | `run.start`, `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.cancel` |
-| sessions | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.cancelTurn`, `session.mcp.addServer` |
+| sessions | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.addServer` |
 | messaging | `message.send`, `message.stream` |
 | realtime | `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/stop`, `thread/realtime/listVoices` |
 | tools / permissions | `tool.approve`, `tool.deny`, `tool.cancel`, `elicitation.respond`, `permission.list` |
