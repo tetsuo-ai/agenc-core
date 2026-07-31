@@ -9,13 +9,14 @@ The current merge policy keeps the complete platform-independent suite
 merge does not require a GitHub App Check Run or an App-bound ruleset. Before
 merge, the PR must record the exact locally tested
 SHA, commands, results, and every skip. Release verification repeats the
-required gates locally against the immutable release-tag commit. GitHub remains
-the branch/PR/merge record for that broad verification. The dispatch-only
-release workflows may later build or publish artifacts. The tagged native
-runtime builders additionally run an exact allowlist of one macOS Seatbelt test
+required gates locally at exact current `main` before the release tag exists.
+GitHub remains the branch/PR/merge record for that broad verification. The
+dispatch-only untagged candidate then builds all five native artifacts. Its
+macOS and Windows jobs additionally run an exact allowlist of one Seatbelt test
 and three Windows atomic-artifact/`.cmd` tests in two files that Linux cannot
-execute; these probes
-gate their artifacts but do not authorize merge or replace the local evidence.
+execute. The tagged workflow later promotes and re-attests those exact
+candidate bytes without rebuilding them. These probes gate their artifacts but
+do not authorize merge or replace the local evidence.
 Release workflows must not be invoked merely to verify a change.
 
 The sections explicitly labeled **Inactive optional** retain the reviewed App,
@@ -100,7 +101,30 @@ pre-squash branch and do not repeat it after creating a tag at the same SHA.
 Before creating a full-release source tag, dispatch
 `verify-node-bootstrap.yml` at exact current `main` with the verifier's
 `tested_sha` and `local_evidence_sha256`. Require both native Rocky matrix jobs
-to succeed; they invoke the same bootstrap builder as the tagged release.
+to succeed; they exercise the same pinned Rocky bootstrap inputs used by the
+runtime candidate.
+Then dispatch `release-runtime.yml` at exact current `main` with
+`phase=candidate`, `candidate_run_id=0`, and the same identity inputs. Require
+its seven successful jobs (source, five native targets, and `candidate-seal`)
+and all six unexpired artifacts: five runtime artifacts plus the attested
+candidate seal. Record `candidate-build-complete` from the workflow-generated
+schema-v1 receipt. It binds the workflow, candidate phase, run ID/attempt/URL,
+tested SHA, local evidence digest, exact seven successful job names, and the
+archive/metadata/build-bundle byte counts and SHA-256 digests for all five
+runtime artifacts; the release-state tool rejects an incomplete receipt.
+Candidate mode executes all native builders and probes but refuses an existing
+version tag, so hosted toolchain drift is resolved before a release namespace
+is consumed.
+Download those six Actions artifacts, flatten their 17 files, and publish them
+as the permanent immutable prerelease
+`agenc-candidate-v<version>-run-<candidate_run_id>` in
+`tetsuo-ai/agenc-releases`. The name is derived, not supplied. Verify the
+immutable release and record `candidate-escrow-published`; that checkpoint uses
+the checksum-pinned GitHub CLI plus the 2026-03-10 release API, requires exactly
+17 assets with `immutable=true`, `draft=false`, and `prerelease=true`, and
+matches every public byte count and SHA-256 to the authenticated candidate
+seal. GitHub Actions artifacts are only pre-tag staging transport and remain
+vulnerable to deletion by a whole-workflow rerun.
 Then require:
 
 ```bash
@@ -109,15 +133,29 @@ tested_sha=<sha returned by release:verify>
 evidence_sha256=<evidenceSha256 returned by release:verify>
 git fetch origin main --tags
 test "$(git rev-parse refs/remotes/origin/main)" = "$tested_sha"
-test "$(git rev-parse --verify "refs/tags/${tag}^{commit}")" = "$tested_sha"
+! git rev-parse --verify --quiet "refs/tags/${tag}^{commit}"
 [[ "$evidence_sha256" =~ ^[0-9a-f]{64}$ ]]
 ```
 
-After the pre-tag workflow passes and the tag is created, dispatch
-`release-runtime.yml`, the full lane of
-`promote-installers.yml`, and `publish-npm.yml` with `tested_sha` and
-`local_evidence_sha256` set to those exact values. Each workflow rejects a
-different tag/SHA and records the digest as an invocation input.
+After both candidate checkpoints pass and the tag is created, first dispatch
+only `release-runtime.yml` with `phase=tagged`, the successful
+`candidate_run_id`, and the same `tested_sha` and
+`local_evidence_sha256`. Tagged mode verifies the candidate run and immutable
+escrow API identity, downloads its five exact runtime artifacts plus its
+attested seal from that permanent public prerelease (never from Actions),
+preserves each
+authenticated branch-ref bundle as `<archive>.build.sigstore.json`, and creates
+a separate `<archive>.sigstore.json` tag-ref attestation over the same archive
+and metadata bytes without rebuilding on hosted native infrastructure.
+Assemble those tagged promotion outputs and record `runtime-build-complete`;
+stage the matching cross-repository draft and record `release-draft-staged`;
+then publish and verify the immutable GitHub release and record
+`github-published`. Only after that boundary may the operator run the full
+`promote-installers.yml` lane, deploy changed get.agenc.ag source, publish and
+test the Homebrew tap formula, and dispatch `publish-npm.yml`. Record
+`installer-promoted`, `vercel-deployed`, `homebrew-published`, and
+`npm-published` in that order. Each workflow dispatch rejects a different
+tag/SHA and records the evidence digest as an invocation input.
 
 For an installer-only hotfix, run:
 
@@ -795,18 +833,20 @@ exact SHA in its receipt; a prior SHA never authorizes a newer one.
 [`release-runtime.yml`](../.github/workflows/release-runtime.yml), and
 [`promote-installers.yml`](../.github/workflows/promote-installers.yml) use
 GitHub-hosted jobs to publish or promote exact reviewed bytes. They do not
-repeat the local verification plan. The `release-runtime.yml` native matrix
-does run the exact native-only allowlist after its first clean install and
+repeat the local verification plan. The candidate phase of
+`release-runtime.yml` runs the exact native-only allowlist after its first clean
+install and
 requires the recorded result to contain one passing macOS test in one file or
 three passing Windows tests in two files with zero failed, pending, skipped, or
-todo tests. Before artifact
-or promotion work starts, each workflow:
+todo tests. Its tagged phase only promotes and re-attests the five sealed
+runtime artifacts. Before artifact or promotion work starts, each workflow:
 
 1. requires typed `tested_sha` and `local_evidence_sha256` dispatch inputs;
 2. normally requires `tested_sha` to equal the workflow's exact
    `GITHUB_SHA`;
-3. binds the bootstrap precheck and installer-hotfix dispatch to exact current
-   `main`, and full-release dispatch to the matching `agenc-v<version>` tag; and
+3. binds the bootstrap precheck, installer-hotfix dispatch, and runtime
+   candidate phase to exact current `main`; the runtime tagged phase and other
+   full-release dispatches bind to the matching `agenc-v<version>` tag; and
 4. requires the checked-out tree to be clean before artifact work.
 
 The installer workflow additionally checks embedded lock synchronization,
@@ -1077,8 +1117,9 @@ record and must follow the exact-SHA protocol above. Release records use the
 defined local evidence path and immutable-tag protocol. No dedicated GitHub
 App or active App-bound ruleset is claimed or required in local-only mode.
 The hosted platform workflow supplements PRs with the five narrow capability
-lanes above; the same native probes also run before tagged native artifacts
-are built. The optional multi-UID systemd/App design has not been activated.
+lanes above; the same native probes also run while the untagged candidate
+artifacts are built. The optional multi-UID systemd/App design has not been
+activated.
 
 ## Primary sources
 
@@ -1130,7 +1171,7 @@ Research refreshed 2026-07-15:
 
 General GitHub-hosted suite execution remains rejected because it spends remote
 runner time without strengthening the local hermetic boundary. Narrow
-exceptions cover capabilities Linux cannot otherwise prove: tagged artifact
+exceptions cover capabilities Linux cannot otherwise prove: untagged candidate
 builders and PR lanes run exact macOS and Windows native probes, while the PR
 `powershell` and `neovim` lanes run exact pinned-runtime allowlists. None repeat
 the complete local plan. The current policy keeps broad merge verification local

@@ -385,14 +385,14 @@ crashing the process.
   contract runs locally. GitHub Actions carries only exact, narrow Linux-kernel
   sandbox, PowerShell, Neovim, macOS, and Windows capability lanes. Each PR
   records the exact locally tested SHA, commands, results, and skips before
-  merge; release
-  verification repeats the gates on the immutable release-tag commit and
-  retains the defined local evidence record. GitHub remains the
-  branch/PR/merge record; manual release workflows
-  may build artifacts afterward. The tagged native runtime builders also gate
-  artifact construction on one macOS Seatbelt probe or three Windows
-  atomic-artifact/`.cmd` probes in two files with zero skips; those probes do
-  not replace the local test plan. The repository-scoped App/ruleset
+  merge; release verification repeats the gates at exact current `main` before
+  any release tag exists and retains the defined local evidence record. GitHub
+  remains the branch/PR/merge record. The untagged runtime candidate builds all
+  five native artifacts and gates macOS/Windows construction on one Seatbelt
+  probe or three atomic-artifact/`.cmd` probes in two files with zero skips.
+  The tagged workflow later promotes and re-attests those exact candidate bytes
+  without rebuilding them. Those probes do not replace the local test plan.
+  The repository-scoped App/ruleset
   implementation is retained as
   an inactive optional design, not a current merge requirement. Reproduction
   and trust boundaries are documented in

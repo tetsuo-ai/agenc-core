@@ -51,6 +51,7 @@ import {
   selectUpdateArtifact,
   installRuntimeFromManifest,
   officialRuntimeAttestationVerificationArgs,
+  officialRuntimeBuildProvenanceVerificationArgs,
   validateAndParseGeneratedWrapper,
   verifyOfficialRuntimeArtifactProvenance,
   verifyStagedPrivateNodeIdentity,
@@ -289,6 +290,15 @@ function makeRemoteManifest(
       nodeApiVersion: process.versions.napi,
       npmVersion: "11.0.0",
       artifactProfile: "release",
+      releaseCandidate: {
+        workflow: "release-runtime.yml",
+        runId: 123456,
+        runAttempt: 1,
+        runUrl: "https://github.com/tetsuo-ai/agenc-core/actions/runs/123456",
+        phase: "candidate",
+        sourceRef: "refs/heads/main",
+        evidenceSha256: "9".repeat(64),
+      },
     },
     artifacts: [
       {
@@ -309,6 +319,11 @@ function makeRemoteManifest(
           `${releaseTag}/${artifactName}.sigstore.json`,
         attestationSha256: "f".repeat(64),
         attestationBytes: 1,
+        buildProvenanceUrl:
+          `https://github.com/${releaseRepository}/releases/download/` +
+          `${releaseTag}/${artifactName}.build.sigstore.json`,
+        buildProvenanceSha256: "a".repeat(64),
+        buildProvenanceBytes: 1,
         bins: runtimeBins(),
       },
     ],
@@ -368,6 +383,7 @@ function makeRemoteArtifact(
 function makeOfficialArtifact(
   content: Buffer,
   bundle: Buffer,
+  buildBundle: Buffer = bundle,
 ): RuntimeManifestArtifact {
   const artifact = makeRemoteArtifact(content.length, sha256(content));
   return {
@@ -375,6 +391,9 @@ function makeOfficialArtifact(
     attestationUrl: `${artifact.url}.sigstore.json`,
     attestationSha256: sha256(bundle),
     attestationBytes: bundle.length,
+    buildProvenanceUrl: `${artifact.url}.build.sigstore.json`,
+    buildProvenanceSha256: sha256(buildBundle),
+    buildProvenanceBytes: buildBundle.length,
   };
 }
 
@@ -396,6 +415,15 @@ function manifestForArtifact(artifact: RuntimeManifestArtifact): RuntimeManifest
       nodeApiVersion: process.versions.napi,
       npmVersion: "11.0.0",
       artifactProfile: "release",
+      releaseCandidate: {
+        workflow: "release-runtime.yml",
+        runId: 123456,
+        runAttempt: 1,
+        runUrl: "https://github.com/tetsuo-ai/agenc-core/actions/runs/123456",
+        phase: "candidate",
+        sourceRef: "refs/heads/main",
+        evidenceSha256: "9".repeat(64),
+      },
     },
     artifacts: [artifact],
   };
@@ -1257,6 +1285,34 @@ describe("agenc update CLI", () => {
       "https://slsa.dev/provenance/v1",
       "--deny-self-hosted-runners",
     ]);
+    expect(officialRuntimeBuildProvenanceVerificationArgs({
+      manifest,
+      artifactPath: "/private/runtime.tar.gz",
+      bundlePath: "/private/runtime.build.sigstore.json",
+    })).toEqual([
+      "attestation",
+      "verify",
+      "/private/runtime.tar.gz",
+      "--repo",
+      OFFICIAL_SOURCE_REPOSITORY,
+      "--bundle",
+      "/private/runtime.build.sigstore.json",
+      "--signer-workflow",
+      OFFICIAL_RELEASE_WORKFLOW,
+      "--signer-digest",
+      manifest.build?.sourceCommit,
+      "--source-digest",
+      manifest.build?.sourceCommit,
+      "--source-ref",
+      "refs/heads/main",
+      "--hostname",
+      "github.com",
+      "--cert-oidc-issuer",
+      "https://token.actions.githubusercontent.com",
+      "--predicate-type",
+      "https://slsa.dev/provenance/v1",
+      "--deny-self-hosted-runners",
+    ]);
   });
 
   test("uses the exact pinned verifier and removes provenance state on bootstrap failure", async () => {
@@ -1271,7 +1327,10 @@ describe("agenc update CLI", () => {
     const fetchImpl = (async (input: string | URL | Request) => {
       const url = String(input);
       fetched.push(url);
-      if (url === artifact.attestationUrl) {
+      if (
+        url === artifact.attestationUrl ||
+        url === artifact.buildProvenanceUrl
+      ) {
         return responseFromChunks(
           [bundle],
           { "content-length": String(bundle.length) },
@@ -1299,7 +1358,11 @@ describe("agenc update CLI", () => {
         throw new Error("unverified bootstrap must never execute");
       },
     })).rejects.toThrow(/GitHub CLI bootstrap Content-Length mismatch/);
-    expect(fetched).toEqual([artifact.attestationUrl, pinned.url]);
+    expect(fetched).toEqual([
+      artifact.buildProvenanceUrl,
+      artifact.attestationUrl,
+      pinned.url,
+    ]);
     expect(
       readdirSync(work).filter((name) => name.startsWith("agenc-provenance-")),
     ).toEqual([]);
@@ -1335,8 +1398,11 @@ describe("agenc update CLI", () => {
       spawnSyncImpl: () => {
         throw new Error("tampered bundle must never execute a verifier");
       },
-    })).rejects.toThrow(/runtime attestation checksum mismatch/);
-    expect(fetched).toEqual([artifact.attestationUrl]);
+    })).rejects.toThrow(/runtime tag-promotion attestation bundle checksum mismatch/);
+    expect(fetched).toEqual([
+      artifact.buildProvenanceUrl,
+      artifact.attestationUrl,
+    ]);
     expect(
       readdirSync(work).filter((name) => name.startsWith("agenc-provenance-")),
     ).toEqual([]);
@@ -1581,9 +1647,11 @@ describe("agenc update CLI", () => {
     expect(migrated.downloaded).toBe(true);
     expect(verified).toBe(1);
     expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       artifactSha256: artifact.sha256,
       attestationSha256: artifact.attestationSha256,
+      buildProvenanceSha256: artifact.buildProvenanceSha256,
+      buildSourceRef: "refs/heads/main",
       sourceRepository: OFFICIAL_SOURCE_REPOSITORY,
       signerWorkflow: OFFICIAL_RELEASE_WORKFLOW,
       denySelfHostedRunners: true,

@@ -1,5 +1,13 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 
@@ -31,6 +39,33 @@ function expectArtifactWorkflowWithoutBroadHostedGates(workflow: string) {
   for (const command of BROAD_HOSTED_GATE_COMMANDS) {
     expect(workflow).not.toContain(command);
   }
+}
+
+function workflowJob(workflow: string, name: string) {
+  const startMarker = `\n  ${name}:\n`;
+  const start = workflow.indexOf(startMarker);
+  expect(start, `workflow job ${name} exists`).toBeGreaterThanOrEqual(0);
+  const remainder = workflow.slice(start + startMarker.length);
+  const nextJob = remainder.search(/\n  [a-z][a-z0-9-]*:\n/u);
+  return nextJob < 0
+    ? workflow.slice(start)
+    : workflow.slice(start, start + startMarker.length + nextJob);
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function workflowShellFunctions(workflow: string, name: string) {
+  const pattern = new RegExp(
+    `^ {10}${escapeRegExp(name)}\\(\\) \\{\\n`
+      + "(?: {12}.*\\n)+"
+      + "^ {10}\\}",
+    "gmu",
+  );
+  return [...workflow.matchAll(pattern)].map((match) =>
+    match[0].replace(/^ {10}/gmu, "")
+  );
 }
 
 describe("reproducible install and release contract", () => {
@@ -388,6 +423,10 @@ describe("reproducible install and release contract", () => {
       join(REPO_ROOT, ".github/workflows/release-runtime.yml"),
       "utf8",
     );
+    const candidatePolicy = readFileSync(
+      join(REPO_ROOT, "scripts/release_candidate_policy.py"),
+      "utf8",
+    );
     expect(
       workflow.match(/"\$AGENC_NODE_EXECUTABLE_PATH" "\$AGENC_NPM_CLI_PATH" ci --prefix/g),
     ).toHaveLength(2);
@@ -398,7 +437,24 @@ describe("reproducible install and release contract", () => {
     expect(workflow).not.toMatch(/run:\s+npm install(?! --global)/);
     expect(workflow).toContain('NODE_VERSION: "26.5.0"');
     expect(workflow).toContain('NPM_VERSION: "11.17.0"');
-    expect(workflow.match(/-node26-abi147\.tar\.gz/g)).toHaveLength(2);
+    expect(workflow).toContain("Untagged candidate build or immutable tagged promotion");
+    expect(workflow).toContain("RELEASE_PHASE: ${{ inputs.phase }}");
+    expect(workflow).toContain('test "$GITHUB_REF_TYPE" = "branch"');
+    expect(workflow).toContain('test "$GITHUB_REF" = "refs/heads/main"');
+    expect(workflow).toContain(
+      'candidate phase refuses an already-consumed release tag',
+    );
+    expect(workflow).toContain('test "$GITHUB_REF_TYPE" = "tag"');
+    expect(workflow).toContain('test "$GITHUB_REF" = "$expected_ref"');
+    expect(workflow).toContain(
+      "agenc-runtime-${version}-${AGENC_RELEASE_SLUG}-node26-abi147.tar.gz",
+    );
+    expect(candidatePolicy).toContain(
+      'f"agenc-runtime-{version}-{slug}-node26-abi147.tar.gz"',
+    );
+    expect(
+      workflow.match(/AGENC_RELEASE_CANDIDATE_EVIDENCE_SHA256:/g),
+    ).toHaveLength(2);
     expect(workflow).not.toContain("-node25-abi141.tar.gz");
     expect(workflow).toContain("libatomic-8.5.0-28.el8_10");
     expect(workflow).toContain("libgcc-8.5.0-28.el8_10");
@@ -548,16 +604,16 @@ describe("reproducible install and release contract", () => {
     expect(nativeJob.indexOf("Validate and activate the reviewed Windows runner")).toBeLessThan(
       nativeJob.indexOf('"$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix'),
     );
-    expect(workflow.match(/artifact-metadata: write/g)).toHaveLength(2);
+    expect(workflow.match(/artifact-metadata: write/g)).toHaveLength(4);
     expect(workflow).toMatch(/^permissions:\n  contents: read\n\nenv:/m);
-    expect(workflow.match(/subject-path: \|\n\s+\$\{\{ steps\.runtime-artifact\.outputs\.path \}\}\n\s+\$\{\{ steps\.runtime-artifact\.outputs\.metadata \}\}/g)).toHaveLength(2);
-    expect(workflow.match(/steps\.attest-runtime\.outputs\.bundle-path/g)).toHaveLength(2);
-    expect(workflow.match(/agenc-runtime-\*\.tar\.gz\.sigstore\.json/g)).toHaveLength(2);
+    expect(workflow.match(/subject-path: \|\n\s+\$\{\{ steps\.runtime-artifact\.outputs\.path \}\}\n\s+\$\{\{ steps\.runtime-artifact\.outputs\.metadata \}\}/g)).toHaveLength(3);
+    expect(workflow.match(/steps\.attest-runtime\.outputs\.bundle-path/g)).toHaveLength(3);
+    expect(workflow.match(/agenc-runtime-\*\.tar\.gz\.sigstore\.json/g)).toHaveLength(3);
     expect(workflow).not.toMatch(/with:\n\s+subject-path:[^\n]+\n\s+bundle-path:/);
     expect(workflow).toContain("actions/attest bundle is not one regular file");
-    expect(workflow.match(/source_metadata\.st_size > 4 \* 1024 \* 1024/g)).toHaveLength(2);
-    expect(workflow.match(/actions\/attest bundle is outside the 4 MiB release bound/g)).toHaveLength(2);
-    expect(workflow.match(/or destination\.is_symlink\(\)/g)).toHaveLength(2);
+    expect(workflow.match(/source_metadata\.st_size > 4 \* 1024 \* 1024/g)).toHaveLength(4);
+    expect(workflow.match(/actions\/attest bundle is outside the 4 MiB release bound/g)).toHaveLength(3);
+    expect(workflow.match(/or destination\.is_symlink\(\)/g)).toHaveLength(4);
     expect(workflow).not.toContain("actions/setup-node");
     expect(workflow.match(/git worktree add --detach/g)).toHaveLength(4);
     expect(workflow.match(/git -C .* worktree remove --force/g)).toHaveLength(4);
@@ -605,6 +661,12 @@ describe("reproducible install and release contract", () => {
     expect(builder).toContain("runNpm(buildExecutables");
     expect(builder).toContain("captureNpm(buildExecutables");
     expect(builder).toContain("release build process is not running under the verified Node executable");
+    expect(builder).toContain(
+      "const releaseCandidate = releaseCandidateIdentity(",
+    );
+    expect(builder).toContain(
+      "...(releaseCandidate === undefined ? {} : { releaseCandidate })",
+    );
     expect(builder).not.toContain("shell: IS_WINDOWS");
     expect(builder).toContain('"ci"');
     expect(builder).toContain('"--workspace=@tetsuo-ai/runtime"');
@@ -660,7 +722,7 @@ describe("reproducible install and release contract", () => {
       "darwin-arm64": {
         runnerLabel: "macos-15",
         imageOS: "macos15",
-        imageVersion: "20260715.0234.1",
+        imageVersion: "20260727.0256.1",
         runnerArch: "ARM64",
         xcodeVersion: "16.4",
         xcodeBuild: "16F6",
@@ -763,8 +825,8 @@ describe("reproducible install and release contract", () => {
         "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
       signatureKeyIds: ["15af5dac6d745a60"],
       sha256: {
-        x64: "0cf2f72faf2019701463fabc01a78c0cc893d51b2517fc7f4ce7cd65e76c2b02",
-        arm64: "3739ba86a1767e0ed5cc94eaf235ae3d1d9709ab45880c7dca366283068f8e19",
+        x64: "a20edbdbf94e00d0e93ce30f04167861f67b3132f388f06d2c5bb44894b6e613",
+        arm64: "530821a9904c1d9162750d564d89e7556575df1cbec0a54bd5029076dc58731d",
       },
     });
   });
@@ -901,32 +963,90 @@ describe("reproducible install and release contract", () => {
       readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
     ) as {
       githubCli: {
+        schemaVersion: number;
         version: string;
-        linuxX64: { file: string; sha256: string; bytes: number };
-        linuxArm64: { file: string; sha256: string; bytes: number };
-        macosX64: { file: string; sha256: string; bytes: number };
-        macosArm64: { file: string; sha256: string; bytes: number };
-        windowsX64: { file: string; sha256: string; bytes: number };
+        linuxX64: {
+          file: string;
+          sha256: string;
+          bytes: number;
+          executableSha256: string;
+          executableBytes: number;
+        };
+        linuxArm64: {
+          file: string;
+          sha256: string;
+          bytes: number;
+          executableSha256: string;
+          executableBytes: number;
+        };
+        macosX64: {
+          file: string;
+          sha256: string;
+          bytes: number;
+          executableSha256: string;
+          executableBytes: number;
+        };
+        macosArm64: {
+          file: string;
+          sha256: string;
+          bytes: number;
+          executableSha256: string;
+          executableBytes: number;
+        };
+        windowsX64: {
+          file: string;
+          sha256: string;
+          bytes: number;
+          executableSha256: string;
+          executableBytes: number;
+        };
       };
     };
+    expect(toolchain.githubCli.schemaVersion).toBe(1);
     expect(toolchain.githubCli.version).toBe("2.96.0");
     expect(toolchain.githubCli.linuxX64.file).toBe("gh_2.96.0_linux_amd64.tar.gz");
     expect(toolchain.githubCli.linuxX64.sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(Object.entries(toolchain.githubCli).filter(([key]) => key !== "version")).toEqual(
+    expect(
+      Object.entries(toolchain.githubCli).filter(
+        ([key]) => !["schemaVersion", "version"].includes(key),
+      ),
+    ).toEqual(
       expect.arrayContaining([
-        ["linuxX64", expect.objectContaining({ bytes: 14652560 })],
-        ["linuxArm64", expect.objectContaining({ bytes: 13321232 })],
-        ["macosX64", expect.objectContaining({ bytes: 15298430 })],
-        ["macosArm64", expect.objectContaining({ bytes: 13950131 })],
-        ["windowsX64", expect.objectContaining({ bytes: 14821821 })],
+        ["linuxX64", expect.objectContaining({
+          bytes: 14652560,
+          executableBytes: 40722594,
+        })],
+        ["linuxArm64", expect.objectContaining({
+          bytes: 13321232,
+          executableBytes: 37879970,
+        })],
+        ["macosX64", expect.objectContaining({
+          bytes: 15298430,
+          executableBytes: 41773632,
+        })],
+        ["macosArm64", expect.objectContaining({
+          bytes: 13950131,
+          executableBytes: 38817216,
+        })],
+        ["windowsX64", expect.objectContaining({
+          bytes: 14821821,
+          executableBytes: 41504056,
+        })],
       ]),
     );
     for (const pin of Object.values(toolchain.githubCli).filter(
-      (value): value is { file: string; sha256: string; bytes: number } =>
-        typeof value !== "string",
+      (value): value is {
+        file: string;
+        sha256: string;
+        bytes: number;
+        executableSha256: string;
+        executableBytes: number;
+      } => typeof value === "object",
     )) {
       expect(pin.sha256).toMatch(/^[0-9a-f]{64}$/);
       expect(pin.bytes).toBeGreaterThan(0);
+      expect(pin.executableSha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(pin.executableBytes).toBeGreaterThan(0);
     }
     expect(workflow).toContain('node "$NPM_RELEASE_TOOL" verify "$tarball"');
     expect(workflow).toContain(
@@ -970,10 +1090,13 @@ describe("reproducible install and release contract", () => {
     );
     expect(workflow).not.toContain("required-gates:");
     expectArtifactWorkflowWithoutBroadHostedGates(workflow);
-    expect(workflow).toMatch(/\n  linux-tarball:\n    needs: release-source\n/u);
-    expect(workflow).toMatch(/\n  native-tarball:\n    needs: release-source\n/u);
+    const linuxJob = workflowJob(workflow, "linux-tarball");
+    expect(linuxJob).toContain("if: inputs.phase == 'candidate'");
+    expect(linuxJob).toContain("needs: release-source");
+    const nativeJob = workflowJob(workflow, "native-tarball");
+    expect(nativeJob).toContain("if: inputs.phase == 'candidate'");
+    expect(nativeJob).toContain("needs: release-source");
 
-    const nativeJob = workflow.slice(workflow.indexOf("\n  native-tarball:"));
     const nativeBuild = nativeJob.slice(
       nativeJob.indexOf("Run native probes and build from two isolated worktrees"),
       nativeJob.indexOf("Upload failed reproducibility inputs"),
@@ -1023,6 +1146,351 @@ describe("reproducible install and release contract", () => {
     expect(nativeBuild.indexOf("run-hermetic-vitest.mjs")).toBeLessThan(
       nativeBuild.indexOf("build-runtime-tarball.mjs"),
     );
+  });
+
+  test("the immutable tag can only promote a sealed untagged candidate", () => {
+    const workflow = readFileSync(
+      join(REPO_ROOT, ".github/workflows/release-runtime.yml"),
+      "utf8",
+    );
+    const candidatePolicy = readFileSync(
+      join(REPO_ROOT, "scripts/release_candidate_policy.py"),
+      "utf8",
+    );
+    const releaseSource = workflowJob(workflow, "release-source");
+    const linuxCandidate = workflowJob(workflow, "linux-tarball");
+    const nativeCandidate = workflowJob(workflow, "native-tarball");
+    const candidateSeal = workflowJob(workflow, "candidate-seal");
+    const promotion = workflowJob(workflow, "promote-candidate-artifacts");
+
+    expect(workflow).toMatch(
+      /phase:\n\s+description: Untagged candidate build or immutable tagged promotion\n\s+required: true\n\s+default: candidate\n\s+type: choice\n\s+options:\n\s+- candidate\n\s+- tagged/u,
+    );
+    expect(workflow).toMatch(
+      /candidate_run_id:\n\s+description: Successful candidate run to promote; use 0 for candidate phase\n\s+required: true\n\s+default: "0"\n\s+type: string/u,
+    );
+    expect(releaseSource).toContain(
+      'candidate)\n              test "$CANDIDATE_RUN_ID" = "0"',
+    );
+    expect(releaseSource).toContain('test "$GITHUB_REF" = "refs/heads/main"');
+    expect(releaseSource).toContain(
+      "candidate phase refuses an already-consumed release tag",
+    );
+    expect(releaseSource).toContain(
+      'tagged)\n              [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]',
+    );
+    expect(releaseSource).toContain('test "$GITHUB_REF" = "$expected_ref"');
+    expect(releaseSource).toContain(
+      'test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"',
+    );
+    const taggedSourcePolicy = releaseSource.slice(
+      releaseSource.indexOf("            tagged)"),
+      releaseSource.indexOf("              python3 - <<'PY'"),
+    );
+    expect(taggedSourcePolicy).not.toContain("refs/remotes/origin/main");
+    expect(releaseSource).toContain('run = get(f"/actions/runs/{run_id}")');
+    expect(releaseSource).toContain('"head_branch": "main"');
+    expect(releaseSource).toContain('"head_sha": tested_sha');
+    expect(releaseSource).not.toContain('"status": "completed"');
+    expect(releaseSource).not.toContain('"conclusion": "success"');
+    expect(releaseSource).not.toContain('run.get("run_attempt")');
+    expect(releaseSource).not.toContain("filter=latest");
+    expect(releaseSource).toContain("run_attempt = 1");
+    expect(releaseSource).toContain(
+      'f"/actions/runs/{run_id}/attempts/{run_attempt}/jobs?per_page=100"',
+    );
+    expect(releaseSource).toContain('"candidate-seal"');
+    expect(releaseSource).not.toContain(
+      'get(f"/actions/runs/{run_id}/artifacts',
+    );
+    expect(releaseSource).toContain(
+      'candidate_tag = f"agenc-candidate-v{version}-run-{run_id}"',
+    );
+    expect(releaseSource).toContain(
+      'release_repository = "tetsuo-ai/agenc-releases"',
+    );
+    expect(releaseSource).toContain('api_version="2026-03-10"');
+    expect(releaseSource).toContain('"immutable": True');
+    expect(releaseSource).toContain('"draft": False');
+    expect(releaseSource).toContain('"prerelease": True');
+    expect(releaseSource).toContain("len(release_assets) != 17");
+    expect(releaseSource).toContain(
+      'seal_name = "agenc-runtime-candidate-seal.json"',
+    );
+    expect(releaseSource).toContain(
+      'asset["digest"] != f"sha256:{record.get(digest_field)}"',
+    );
+    expect(releaseSource).toContain(
+      'output.write(f"candidate-escrow-tag={candidate_tag}\\n")',
+    );
+    expect(releaseSource).toContain(
+      'output.write(f"candidate-run-attempt={run_attempt}\\n")',
+    );
+    for (const slug of [
+      "linux-x64",
+      "linux-arm64",
+      "darwin-x64",
+      "darwin-arm64",
+      "win-x64",
+    ]) {
+      expect(promotion).toContain(`- ${slug}`);
+    }
+    expect(releaseSource).toContain(
+      'f"agenc-runtime-{slug}" for slug in slugs',
+    );
+
+    for (const candidateProducer of [
+      linuxCandidate,
+      nativeCandidate,
+      candidateSeal,
+    ]) {
+      expect(candidateProducer).toMatch(
+        /steps:\n\s+- name: Reject retried candidate artifact production/u,
+      );
+      expect(candidateProducer).toContain(
+        'require_first_workflow_attempt "$GITHUB_RUN_ATTEMPT"',
+      );
+    }
+    expect(nativeCandidate).toContain(
+      "if: failure() && github.run_attempt == 1",
+    );
+
+    expect(candidateSeal).toContain("if: inputs.phase == 'candidate'");
+    expect(candidateSeal).toMatch(
+      /needs:\n\s+- release-source\n\s+- linux-tarball\n\s+- native-tarball/u,
+    );
+    expect(candidateSeal).toContain("git fetch origin main --tags");
+    expect(candidateSeal).toContain(
+      'test "$(git rev-parse refs/remotes/origin/main)" = "$TESTED_SHA"',
+    );
+    expect(candidateSeal).toContain(
+      "candidate seal refuses an already-consumed release tag",
+    );
+    expect(candidateSeal).toContain("pattern: agenc-runtime-*");
+    expect(candidateSeal).toContain("merge-multiple: true");
+    expect(candidateSeal).toContain('test "$gh_version" = "2.96.0"');
+    expect(candidateSeal.match(/gh attestation verify/g)).toHaveLength(2);
+    expect(candidateSeal).toContain("--source-ref refs/heads/main");
+    expect(candidateSeal).toContain(
+      "python3 scripts/release_candidate_policy.py seal",
+    );
+    for (const argument of [
+      "--source-dir candidate-artifacts",
+      '--receipt "$receipt"',
+      '--repository "$GITHUB_REPOSITORY"',
+      '--run-id "$GITHUB_RUN_ID"',
+      '--run-attempt "$GITHUB_RUN_ATTEMPT"',
+      '--tested-sha "$TESTED_SHA"',
+      '--evidence-sha256 "$LOCAL_EVIDENCE_SHA256"',
+    ]) {
+      expect(candidateSeal).toContain(argument);
+    }
+    expect(candidateSeal).not.toContain("def require_candidate_provenance");
+    expect(candidateSeal).toContain("Attest the candidate seal");
+    expect(candidateSeal).toContain("name: agenc-runtime-candidate-seal");
+
+    expect(promotion.match(/if: inputs\.phase == 'tagged'/g)).toHaveLength(1);
+    expect(promotion).toContain("needs: release-source");
+    expect(promotion).not.toContain("require_first_workflow_attempt");
+    expect(taggedSourcePolicy).not.toContain("GITHUB_RUN_ATTEMPT");
+    expect(promotion).not.toContain("actions/download-artifact@");
+    expect(promotion).not.toContain("run-id:");
+    expect(promotion).toContain(
+      "Download the exact immutable candidate escrow assets",
+    );
+    expect(promotion).toContain(
+      "CANDIDATE_ESCROW_TAG: ${{ needs.release-source.outputs.candidate-escrow-tag }}",
+    );
+    expect(promotion).toContain(
+      'expected_candidate_tag="agenc-candidate-v${version}-run-${CANDIDATE_RUN_ID}"',
+    );
+    expect(promotion).toContain(
+      'escrow_url="https://github.com/tetsuo-ai/agenc-releases/releases/download/${CANDIDATE_ESCROW_TAG}"',
+    );
+    expect(promotion).toContain(
+      '"$escrow_url/$name" --output "candidate-seal/$name"',
+    );
+    expect(promotion).toContain(
+      '"$escrow_url/$name" --output "candidate-artifact/$name"',
+    );
+    expect(promotion).toContain(
+      'test "$(find candidate-artifact -mindepth 1 -maxdepth 1 -printf x | wc -c)" -eq 3',
+    );
+    expect(promotion).toContain(
+      'test "$(find candidate-seal -mindepth 1 -maxdepth 1 -printf x | wc -c)" -eq 2',
+    );
+    expect(promotion).toContain('test "$gh_version" = "2.96.0"');
+    expect(promotion.match(/gh attestation verify/g)).toHaveLength(3);
+    expect(promotion).toContain("--source-ref refs/heads/main");
+    expect(promotion).toContain(
+      "python3 scripts/release_candidate_policy.py promote",
+    );
+    for (const argument of [
+      '--receipt "$receipt"',
+      '--seal-bundle "$seal_bundle"',
+      '--artifact "$artifact"',
+      '--metadata "$metadata"',
+      '--candidate-bundle "$candidate_bundle"',
+      '--slug "$AGENC_RELEASE_SLUG"',
+      '--repository "$GITHUB_REPOSITORY"',
+      '--run-id "$CANDIDATE_RUN_ID"',
+      '--run-attempt "$CANDIDATE_RUN_ATTEMPT"',
+      '--tested-sha "$TESTED_SHA"',
+      '--evidence-sha256 "$LOCAL_EVIDENCE_SHA256"',
+    ]) {
+      expect(promotion).toContain(argument);
+    }
+    expect(promotion).not.toContain("def require_candidate_provenance");
+    expect(candidatePolicy).toContain("def _require_candidate_provenance(");
+    expect(candidatePolicy).toContain("def _validated_receipt(");
+    expect(candidatePolicy).toContain("def _validate_metadata(");
+    expect(candidatePolicy).toContain("def seal_candidate(");
+    expect(candidatePolicy).toContain("def validate_promotion(");
+    expect(promotion).toContain(
+      'promoted_build_bundle="${promoted_artifact}.build.sigstore.json"',
+    );
+    expect(promotion).toContain(
+      "agenc-runtime-*.tar.gz.build.sigstore.json",
+    );
+    expect(promotion).toContain(
+      "Attest the promoted runtime artifact at the immutable tag",
+    );
+    expect(promotion).toContain(
+      "actions/attest@a1948c3f048ba23858d222213b7c278aabede763",
+    );
+    expect(promotion).not.toContain("build-runtime-tarball.mjs");
+    expect(promotion).not.toContain("npm ci");
+
+    const installDocs = readFileSync(join(REPO_ROOT, "docs/install.md"), "utf8");
+    const dispatches = [...installDocs.matchAll(
+      /gh workflow run release-runtime\.yml[\s\S]*?(?=\n\s*(?:gh workflow run|npm run|git |#|```))/gu,
+    )].map((match) => match[0]);
+    expect(dispatches).toHaveLength(4);
+    for (const dispatch of dispatches) {
+      expect(dispatch).toContain("-f phase=");
+      expect(dispatch).toContain("-f candidate_run_id=");
+      expect(dispatch).toContain('-f tested_sha="$tested_sha"');
+      expect(dispatch).toContain(
+        '-f local_evidence_sha256="$evidence_sha256"',
+      );
+    }
+  });
+
+  test("the executable candidate policy rejects forged release identities and bytes", () => {
+    const result = spawnSync(
+      "python3",
+      [join(REPO_ROOT, "scripts/test_release_candidate_policy.py")],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("Ran 10 tests");
+    expect(result.stderr).toContain("OK");
+  });
+
+  test("release tag and retry policies execute fail-closed", () => {
+    const workflow = readFileSync(
+      join(REPO_ROOT, ".github/workflows/release-runtime.yml"),
+      "utf8",
+    );
+    const tagPolicies = workflowShellFunctions(workflow, "release_tag_exists");
+    const attemptPolicies = workflowShellFunctions(
+      workflow,
+      "require_first_workflow_attempt",
+    );
+    expect(tagPolicies).toHaveLength(2);
+    expect(attemptPolicies).toHaveLength(4);
+
+    const repository = mkdtempSync(join(tmpdir(), "agenc-release-ref-policy-"));
+    const tagName = "agenc-v0.13.0";
+    const tagRef = `refs/tags/${tagName}`;
+    const runShellPolicy = (
+      source: string,
+      invocation: string,
+      argument: string,
+    ) => spawnSync(
+      "bash",
+      ["-c", `${source}\n${invocation} "$1"`, "agenc-release-policy", argument],
+      { cwd: repository, encoding: "utf8" },
+    );
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: repository });
+      execFileSync("git", ["config", "user.email", "release@example.invalid"], {
+        cwd: repository,
+      });
+      execFileSync("git", ["config", "user.name", "AgenC Release Test"], {
+        cwd: repository,
+      });
+      writeFileSync(join(repository, "subject.txt"), "candidate\n", "utf8");
+      execFileSync("git", ["add", "subject.txt"], { cwd: repository });
+      execFileSync("git", ["commit", "--quiet", "-m", "candidate"], {
+        cwd: repository,
+      });
+
+      for (const policy of tagPolicies) {
+        expect(
+          runShellPolicy(policy, "release_tag_exists", tagRef).status,
+        ).not.toBe(0);
+      }
+
+      execFileSync("git", ["tag", tagName], { cwd: repository });
+      for (const policy of tagPolicies) {
+        expect(
+          runShellPolicy(policy, "release_tag_exists", tagRef).status,
+        ).toBe(0);
+      }
+      execFileSync("git", ["tag", "--delete", tagName], { cwd: repository });
+
+      execFileSync("git", ["tag", "--annotate", tagName, "-m", "release"], {
+        cwd: repository,
+      });
+      for (const policy of tagPolicies) {
+        expect(
+          runShellPolicy(policy, "release_tag_exists", tagRef).status,
+        ).toBe(0);
+      }
+      execFileSync("git", ["tag", "--delete", tagName], { cwd: repository });
+
+      const blob = execFileSync(
+        "git",
+        ["hash-object", "-w", "subject.txt"],
+        { cwd: repository, encoding: "utf8" },
+      ).trim();
+      execFileSync("git", ["update-ref", tagRef, blob], { cwd: repository });
+      expect(
+        spawnSync(
+          "git",
+          ["rev-parse", "--verify", `${tagRef}^{commit}`],
+          { cwd: repository },
+        ).status,
+        "a non-commit tag ref demonstrates why commit peeling is not an existence check",
+      ).not.toBe(0);
+      for (const policy of tagPolicies) {
+        expect(
+          runShellPolicy(policy, "release_tag_exists", tagRef).status,
+        ).toBe(0);
+      }
+
+      for (const policy of attemptPolicies) {
+        expect(
+          runShellPolicy(policy, "require_first_workflow_attempt", "1").status,
+        ).toBe(0);
+        const retried = runShellPolicy(
+          policy,
+          "require_first_workflow_attempt",
+          "2",
+        );
+        expect(retried.status).not.toBe(0);
+        expect(retried.stderr).toContain("dispatch a fresh candidate workflow");
+      }
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+
   });
 
   test("the ESM bundle disables redundant per-module strict directives", () => {
@@ -1268,6 +1736,9 @@ describe("reproducible install and release contract", () => {
     );
     expect(publishNpm).toContain(
       "--pattern 'agenc-runtime-*.tar.gz.sigstore.json'",
+    );
+    expect(publishNpm).toContain(
+      "--pattern 'agenc-runtime-*.tar.gz.build.sigstore.json'",
     );
 
     const dockerignore = readFileSync(join(REPO_ROOT, ".dockerignore"), "utf8");

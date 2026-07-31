@@ -77,8 +77,10 @@ import {
   PINNED_GITHUB_CLI_ARTIFACTS,
   PINNED_GITHUB_CLI_VERSION,
   canonicalRuntimeAttestationVerificationArgs,
+  canonicalRuntimeBuildProvenanceVerificationArgs,
   canonicalLocalFileUrlToPath,
   requireSupportedRuntimeVersion,
+  runtimeVersionRequiresDualProvenance,
   validateRuntimeReleaseManifest,
   type RuntimeManifestTrustMode,
   type RuntimeReleaseManifest,
@@ -313,6 +315,9 @@ export interface RuntimeManifestArtifact {
   readonly attestationUrl?: string;
   readonly attestationSha256?: string;
   readonly attestationBytes?: number;
+  readonly buildProvenanceUrl?: string;
+  readonly buildProvenanceSha256?: string;
+  readonly buildProvenanceBytes?: number;
   readonly bins?: {
     readonly agenc?: string;
     readonly node?: string;
@@ -1572,10 +1577,27 @@ function renderOfficialProvenanceReceipt(
   ) {
     throw new Error("official runtime manifest is missing receipt provenance");
   }
+  const requiresDualProvenance =
+    runtimeVersionRequiresDualProvenance(manifest.runtimeVersion) ||
+    artifact.buildProvenanceUrl !== undefined ||
+    artifact.buildProvenanceSha256 !== undefined ||
+    artifact.buildProvenanceBytes !== undefined;
+  if (
+    requiresDualProvenance &&
+    typeof artifact.buildProvenanceSha256 !== "string"
+  ) {
+    throw new Error("official runtime manifest is missing build receipt provenance");
+  }
   return `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: requiresDualProvenance ? 2 : 1,
     artifactSha256: artifact.sha256,
     attestationSha256: artifact.attestationSha256,
+    ...(requiresDualProvenance
+      ? {
+          buildProvenanceSha256: artifact.buildProvenanceSha256,
+          buildSourceRef: "refs/heads/main",
+        }
+      : {}),
     sourceRepository: OFFICIAL_SOURCE_REPOSITORY,
     signerWorkflow: OFFICIAL_RELEASE_WORKFLOW,
     signerDigest: build.sourceCommit,
@@ -2413,6 +2435,24 @@ export function officialRuntimeAttestationVerificationArgs(options: {
   });
 }
 
+export function officialRuntimeBuildProvenanceVerificationArgs(options: {
+  readonly manifest: Pick<RuntimeManifest, "build">;
+  readonly artifactPath: string;
+  readonly bundlePath: string;
+}): readonly string[] {
+  const build = options.manifest.build as {
+    readonly sourceCommit?: unknown;
+  };
+  if (typeof build.sourceCommit !== "string") {
+    throw new Error("official runtime manifest is missing build source provenance");
+  }
+  return canonicalRuntimeBuildProvenanceVerificationArgs({
+    subjectPath: options.artifactPath,
+    bundlePath: options.bundlePath,
+    sourceCommit: build.sourceCommit,
+  });
+}
+
 export async function runPreparedOfficialAttestationVerifier(options: {
   readonly cliPath: string;
   readonly manifest: RuntimeManifest;
@@ -2423,6 +2463,8 @@ export async function runPreparedOfficialAttestationVerifier(options: {
   readonly timeoutMs: number;
   readonly runProcess: OfficialProvenanceProcessRunner;
   readonly env?: NodeJS.ProcessEnv;
+  readonly provenanceKind?: "build" | "promotion";
+  readonly verifyCliVersion?: boolean;
 }): Promise<void> {
   const processOptions = (): SpawnSyncOptionsWithStringEncoding => ({
     cwd: options.workDir,
@@ -2437,26 +2479,34 @@ export async function runPreparedOfficialAttestationVerifier(options: {
     ),
     windowsHide: true,
   });
-  const versionResult = await options.runProcess(
-    options.cliPath,
-    ["--version"],
-    processOptions(),
-  );
-  assertVerifierProcessSucceeded(versionResult, "GitHub CLI bootstrap version check");
-  if (!`${versionResult.stdout ?? ""}`.startsWith(
-    `gh version ${PINNED_GITHUB_CLI_VERSION} `,
-  )) {
-    throw new Error(
-      `GitHub CLI bootstrap did not report pinned version ${PINNED_GITHUB_CLI_VERSION}`,
+  if (options.verifyCliVersion !== false) {
+    const versionResult = await options.runProcess(
+      options.cliPath,
+      ["--version"],
+      processOptions(),
     );
+    assertVerifierProcessSucceeded(versionResult, "GitHub CLI bootstrap version check");
+    if (!`${versionResult.stdout ?? ""}`.startsWith(
+      `gh version ${PINNED_GITHUB_CLI_VERSION} `,
+    )) {
+      throw new Error(
+        `GitHub CLI bootstrap did not report pinned version ${PINNED_GITHUB_CLI_VERSION}`,
+      );
+    }
   }
   const verification = await options.runProcess(
     options.cliPath,
-    officialRuntimeAttestationVerificationArgs({
-      manifest: options.manifest,
-      artifactPath: options.artifactPath,
-      bundlePath: options.bundlePath,
-    }),
+    options.provenanceKind === "build"
+      ? officialRuntimeBuildProvenanceVerificationArgs({
+          manifest: options.manifest,
+          artifactPath: options.artifactPath,
+          bundlePath: options.bundlePath,
+        })
+      : officialRuntimeAttestationVerificationArgs({
+          manifest: options.manifest,
+          artifactPath: options.artifactPath,
+          bundlePath: options.bundlePath,
+        }),
     processOptions(),
   );
   assertVerifierProcessSucceeded(verification, "official runtime provenance verification");
@@ -2493,6 +2543,23 @@ export async function verifyOfficialRuntimeArtifactProvenance(
   ) {
     throw new Error("official runtime artifact is missing its attestation contract");
   }
+  const buildProvenanceUrl = artifact.buildProvenanceUrl;
+  const buildProvenanceSha256 = artifact.buildProvenanceSha256;
+  const buildProvenanceBytes = artifact.buildProvenanceBytes;
+  const hasBuildProvenance =
+    buildProvenanceUrl !== undefined ||
+    buildProvenanceSha256 !== undefined ||
+    buildProvenanceBytes !== undefined;
+  if (
+    hasBuildProvenance &&
+    (
+      buildProvenanceUrl === undefined ||
+      buildProvenanceSha256 === undefined ||
+      buildProvenanceBytes === undefined
+    )
+  ) {
+    throw new Error("official runtime artifact has an incomplete build provenance contract");
+  }
   const platform = options.platform ?? process.platform;
   const platformSlug = platform === "win32" ? "win" : platform;
   const key = `${platformSlug}-${options.arch ?? process.arch}`;
@@ -2523,35 +2590,56 @@ export async function verifyOfficialRuntimeArtifactProvenance(
       timeoutMs,
       deadline: guard.deadline,
     });
-    const bundlePath = join(workDir, "artifact.sigstore.json");
+    const bundleContracts = [
+      ...(hasBuildProvenance
+        ? [{
+            kind: "build" as const,
+            path: join(workDir, "artifact.build.sigstore.json"),
+            url: buildProvenanceUrl!,
+            sha256: buildProvenanceSha256!,
+            bytes: buildProvenanceBytes!,
+            label: "runtime build provenance bundle",
+          }]
+        : []),
+      {
+        kind: "promotion" as const,
+        path: join(workDir, "artifact.sigstore.json"),
+        url: attestationUrl,
+        sha256: attestationSha256,
+        bytes: attestationBytes,
+        label: "runtime tag-promotion attestation bundle",
+      },
+    ];
     const cliArchivePath = join(workDir, pinnedCli.file);
     const cliRoot = join(workDir, "gh");
     mkdirSync(cliRoot, { recursive: true, mode: 0o700 });
     const runProcess: OfficialProvenanceProcessRunner = options.spawnSyncImpl ??
       runBoundedProcess;
-    await fetchToFile(
-      attestationUrl,
-      bundlePath,
-      attestationBytes,
-      "official",
-      options.fetchImpl ?? globalThis.fetch,
-      remainingProvenanceTimeout(guard.deadline, timeoutMs, "provenance verification"),
-      {
-        maximumBytes: MAX_RUNTIME_ATTESTATION_BYTES,
-        label: "runtime attestation bundle",
-      },
-    );
-    const actualBundleSha = await hashStableRegularFile(
-      bundlePath,
-      attestationBytes,
-      "runtime attestation bundle",
-      guard,
-    );
-    if (actualBundleSha !== attestationSha256) {
-      throw new Error(
-        `runtime attestation checksum mismatch ` +
-          `(expected ${attestationSha256}, got ${actualBundleSha})`,
+    for (const bundle of bundleContracts) {
+      await fetchToFile(
+        bundle.url,
+        bundle.path,
+        bundle.bytes,
+        "official",
+        options.fetchImpl ?? globalThis.fetch,
+        remainingProvenanceTimeout(guard.deadline, timeoutMs, "provenance verification"),
+        {
+          maximumBytes: MAX_RUNTIME_ATTESTATION_BYTES,
+          label: bundle.label,
+        },
       );
+      const actualBundleSha = await hashStableRegularFile(
+        bundle.path,
+        bundle.bytes,
+        bundle.label,
+        guard,
+      );
+      if (actualBundleSha !== bundle.sha256) {
+        throw new Error(
+          `${bundle.label} checksum mismatch ` +
+            `(expected ${bundle.sha256}, got ${actualBundleSha})`,
+        );
+      }
     }
 
     await fetchToFile(
@@ -2623,16 +2711,20 @@ export async function verifyOfficialRuntimeArtifactProvenance(
     }
     if (platform !== "win32") chmodSync(cliPath, 0o700);
 
-    await runPreparedOfficialAttestationVerifier({
-      cliPath,
-      manifest: options.manifest,
-      artifactPath: options.artifactPath,
-      bundlePath,
-      workDir,
-      deadline: guard.deadline,
-      timeoutMs,
-      runProcess,
-    });
+    for (const [index, bundle] of bundleContracts.entries()) {
+      await runPreparedOfficialAttestationVerifier({
+        cliPath,
+        manifest: options.manifest,
+        artifactPath: options.artifactPath,
+        bundlePath: bundle.path,
+        workDir,
+        deadline: guard.deadline,
+        timeoutMs,
+        runProcess,
+        provenanceKind: bundle.kind,
+        verifyCliVersion: index === 0,
+      });
+    }
 
     const afterVerificationSha = await hashStableRegularFile(
       options.artifactPath,
@@ -2642,6 +2734,17 @@ export async function verifyOfficialRuntimeArtifactProvenance(
     );
     if (afterVerificationSha !== artifact.sha256) {
       throw new Error("runtime artifact changed during provenance verification");
+    }
+    for (const bundle of bundleContracts) {
+      const afterBundleSha = await hashStableRegularFile(
+        bundle.path,
+        bundle.bytes,
+        bundle.label,
+        guard,
+      );
+      if (afterBundleSha !== bundle.sha256) {
+        throw new Error(`${bundle.label} changed during provenance verification`);
+      }
     }
   } catch (error) {
     operationError = error;

@@ -8,9 +8,14 @@
 #
 # This is an artifact-build workflow, not a replacement for the local test
 # plan. Its native jobs additionally run the exact macOS and Windows integration
-# probes that Linux cannot execute. Before dispatch, the operator must complete
-# and retain the exact-tag local release evidence defined in
-# docs/ci-required-gates.md. Publishing stays local/operator-driven (no
+# probes that Linux cannot execute. Candidate mode runs this matrix on the
+# final untagged main SHA. The operator permanently escrows its sealed files in
+# a derived immutable prerelease before tagging. Tagged mode requires that exact
+# successful candidate, downloads only from the escrow, verifies its sealed
+# native artifacts, and adds immutable-tag attestations without rebuilding on
+# mutable hosted infrastructure. Before dispatch, the
+# operator must complete and retain the exact-SHA local release evidence defined
+# in docs/ci-required-gates.md. Publishing stays local/operator-driven (no
 # cross-repository write secret in this workflow). The reviewed draft, explicit
 # destination tag, artifact attestation, immutable publication, and downstream
 # npm/Docker/Homebrew sequence are documented in docs/install.md under
@@ -20,8 +25,21 @@ name: release-runtime
 on:
   workflow_dispatch:
     inputs:
+      phase:
+        description: Untagged candidate build or immutable tagged promotion
+        required: true
+        default: candidate
+        type: choice
+        options:
+          - candidate
+          - tagged
+      candidate_run_id:
+        description: Successful candidate run to promote; use 0 for candidate phase
+        required: true
+        default: "0"
+        type: string
       tested_sha:
-        description: Full immutable release-tag commit tested locally
+        description: Full immutable release commit tested locally
         required: true
         type: string
       local_evidence_sha256:
@@ -30,7 +48,7 @@ on:
         type: string
 
 concurrency:
-  group: release-runtime-${{ github.ref }}
+  group: release-runtime-${{ inputs.phase }}-${{ github.ref }}
   cancel-in-progress: false
   queue: max
 
@@ -48,42 +66,400 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
+    outputs:
+      candidate-escrow-tag: ${{ steps.bind-release-source.outputs.candidate-escrow-tag }}
+      candidate-run-attempt: ${{ steps.bind-release-source.outputs.candidate-run-attempt }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      - name: Bind the run to the version tag commit
+      - name: Bind the run to the reviewed release source
+        id: bind-release-source
         env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          GITHUB_TOKEN: ${{ github.token }}
           LOCAL_EVIDENCE_SHA256: ${{ inputs.local_evidence_sha256 }}
+          RELEASE_PHASE: ${{ inputs.phase }}
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
           TESTED_SHA: ${{ inputs.tested_sha }}
         shell: bash
         run: |
           set -euo pipefail
+          release_tag_exists() {
+            git show-ref --verify --quiet "$1"
+          }
+          require_first_workflow_attempt() {
+            if test "$1" != "1"; then
+              echo "candidate runs cannot be retried; dispatch a fresh candidate workflow" >&2
+              return 1
+            fi
+          }
           [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$LOCAL_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
           test "$TESTED_SHA" = "$GITHUB_SHA"
           test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
           test "$REPOSITORY_VISIBILITY" = public
-          test "$GITHUB_REF_TYPE" = "tag"
           version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          export RELEASE_VERSION="$version"
           expected_ref="refs/tags/agenc-v${version}"
-          test "$GITHUB_REF" = "$expected_ref"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
-          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          case "$RELEASE_PHASE" in
+            candidate)
+              test "$CANDIDATE_RUN_ID" = "0"
+              require_first_workflow_attempt "$GITHUB_RUN_ATTEMPT"
+              test "$GITHUB_REF_TYPE" = "branch"
+              test "$GITHUB_REF" = "refs/heads/main"
+              test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"
+              if release_tag_exists "$expected_ref"; then
+                echo "candidate phase refuses an already-consumed release tag: $expected_ref" >&2
+                exit 1
+              fi
+              ;;
+            tagged)
+              [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+              test "$GITHUB_REF_TYPE" = "tag"
+              test "$GITHUB_REF" = "$expected_ref"
+              test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
+              python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          run_id = int(os.environ["CANDIDATE_RUN_ID"])
+          tested_sha = os.environ["TESTED_SHA"]
+          token = os.environ["GITHUB_TOKEN"]
+          api_root = f"https://api.github.com/repos/{repository}"
+
+          def get(
+              path,
+              api_root=api_root,
+              api_version="2022-11-28",
+              authenticated=True,
+          ):
+              headers = {
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "agenc-release-candidate-verifier",
+                  "X-GitHub-Api-Version": api_version,
+              }
+              if authenticated:
+                  headers["Authorization"] = f"Bearer {token}"
+              request = urllib.request.Request(
+                  f"{api_root}{path}",
+                  headers=headers,
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  if response.status != 200:
+                      raise SystemExit(f"GitHub API returned {response.status} for {path}")
+                  return json.load(response)
+
+          workflow = get("/actions/workflows/release-runtime.yml")
+          run = get(f"/actions/runs/{run_id}")
+          expected_run = {
+              "workflow_id": workflow["id"],
+              "event": "workflow_dispatch",
+              "head_branch": "main",
+              "head_sha": tested_sha,
+          }
+          for field, expected in expected_run.items():
+              if run.get(field) != expected:
+                  raise SystemExit(
+                      f"candidate run {field} was {run.get(field)!r}, expected {expected!r}"
+                  )
+          run_attempt = 1
+          jobs = get(
+              f"/actions/runs/{run_id}/attempts/{run_attempt}/jobs?per_page=100"
+          )
+          expected_jobs = {
+              "release-source",
+              "linux-tarball (ubuntu-24.04, linux-x64)",
+              "linux-tarball (ubuntu-24.04-arm, linux-arm64)",
+              "native-tarball (macos-15, darwin-arm64)",
+              "native-tarball (macos-15-intel, darwin-x64)",
+              "native-tarball (windows-2025, win-x64)",
+              "candidate-seal",
+          }
+          all_jobs = jobs.get("jobs", [])
+          successful_jobs = [
+              job["name"]
+              for job in all_jobs
+              if job.get("status") == "completed" and job.get("conclusion") == "success"
+          ]
+          unexpected_jobs = [
+              (job.get("name"), job.get("status"), job.get("conclusion"))
+              for job in all_jobs
+              if not (
+                  (
+                      job.get("name") in expected_jobs
+                      and job.get("status") == "completed"
+                      and job.get("conclusion") == "success"
+                  )
+                  or (
+                      str(job.get("name", "")).startswith("promote-candidate-artifacts")
+                      and job.get("status") == "completed"
+                      and job.get("conclusion") == "skipped"
+                  )
+              )
+          ]
+          if (
+              len(successful_jobs) != len(expected_jobs)
+              or set(successful_jobs) != expected_jobs
+              or unexpected_jobs
+          ):
+              raise SystemExit(
+                  "candidate job inventory mismatch: "
+                  f"successful={sorted(successful_jobs)!r}, unexpected={unexpected_jobs!r}"
+              )
+
+          version = os.environ["RELEASE_VERSION"]
+          release_repository = "tetsuo-ai/agenc-releases"
+          candidate_tag = f"agenc-candidate-v{version}-run-{run_id}"
+          release_api_root = (
+              f"https://api.github.com/repos/{release_repository}"
+          )
+          candidate_release = get(
+              f"/releases/tags/{candidate_tag}",
+              api_root=release_api_root,
+              api_version="2026-03-10",
+              authenticated=False,
+          )
+          expected_release = {
+              "tag_name": candidate_tag,
+              "draft": False,
+              "prerelease": True,
+              "immutable": True,
+          }
+          for field, expected in expected_release.items():
+              if candidate_release.get(field) != expected:
+                  raise SystemExit(
+                      f"candidate escrow {field} was "
+                      f"{candidate_release.get(field)!r}, expected {expected!r}"
+                  )
+          if (
+              not isinstance(candidate_release.get("id"), int)
+              or candidate_release["id"] < 1
+          ):
+              raise SystemExit("candidate escrow release ID is invalid")
+
+          slugs = (
+              "linux-x64",
+              "linux-arm64",
+              "darwin-x64",
+              "darwin-arm64",
+              "win-x64",
+          )
+          seal_name = "agenc-runtime-candidate-seal.json"
+          seal_bundle_name = f"{seal_name}.sigstore.json"
+          expected_asset_names = {seal_name, seal_bundle_name}
+          for slug in slugs:
+              archive = (
+                  f"agenc-runtime-{version}-{slug}-node26-abi147.tar.gz"
+              )
+              expected_asset_names.update(
+                  (archive, f"{archive}.meta.json", f"{archive}.sigstore.json")
+              )
+          release_assets = candidate_release.get("assets")
+          if not isinstance(release_assets, list):
+              raise SystemExit("candidate escrow assets are not a list")
+          asset_by_name = {
+              asset.get("name"): asset
+              for asset in release_assets
+              if isinstance(asset, dict) and isinstance(asset.get("name"), str)
+          }
+          if (
+              len(release_assets) != 17
+              or len(asset_by_name) != 17
+              or set(asset_by_name) != expected_asset_names
+          ):
+              raise SystemExit(
+                  "candidate escrow asset inventory mismatch: "
+                  f"{sorted(asset_by_name)!r}"
+              )
+          for name, asset in asset_by_name.items():
+              expected_url = (
+                  f"https://github.com/{release_repository}/releases/download/"
+                  f"{candidate_tag}/{name}"
+              )
+              if (
+                  not isinstance(asset.get("id"), int)
+                  or asset["id"] < 1
+                  or type(asset.get("size")) is not int
+                  or asset["size"] < 1
+                  or not isinstance(asset.get("digest"), str)
+                  or not re.fullmatch(
+                      r"sha256:[0-9a-f]{64}",
+                      asset["digest"],
+                  )
+                  or asset.get("browser_download_url") != expected_url
+              ):
+                  raise SystemExit(
+                      f"candidate escrow asset identity is invalid for {name}"
+                  )
+
+          def download_asset(name):
+              asset = asset_by_name[name]
+              request = urllib.request.Request(
+                  asset["browser_download_url"],
+                  headers={
+                      "Accept": "application/octet-stream",
+                      "User-Agent": "agenc-release-candidate-verifier",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  if response.status != 200:
+                      raise SystemExit(
+                          f"candidate escrow download returned "
+                          f"{response.status} for {name}"
+                      )
+                  payload = response.read(4 * 1024 * 1024 + 1)
+              digest = hashlib.sha256(payload).hexdigest()
+              if (
+                  len(payload) != asset["size"]
+                  or asset["digest"] != f"sha256:{digest}"
+              ):
+                  raise SystemExit(
+                      f"candidate escrow API/download identity drifted for {name}"
+                  )
+              return payload
+
+          receipt_bytes = download_asset(seal_name)
+          download_asset(seal_bundle_name)
+          try:
+              receipt = json.loads(receipt_bytes)
+          except (UnicodeDecodeError, json.JSONDecodeError) as error:
+              raise SystemExit(f"candidate escrow receipt is invalid: {error}")
+          expected_receipt_keys = {
+              "artifacts",
+              "evidenceSha256",
+              "phase",
+              "runAttempt",
+              "runId",
+              "runUrl",
+              "schemaVersion",
+              "sha",
+              "successfulJobs",
+              "workflow",
+          }
+          if not isinstance(receipt, dict) or set(receipt) != expected_receipt_keys:
+              raise SystemExit("candidate escrow receipt keys are not exact")
+          expected_receipt = {
+              "schemaVersion": 1,
+              "workflow": "release-runtime.yml",
+              "phase": "candidate",
+              "runId": run_id,
+              "runAttempt": run_attempt,
+              "runUrl": (
+                  f"https://github.com/{repository}/actions/runs/{run_id}"
+              ),
+              "sha": tested_sha,
+              "evidenceSha256": os.environ["LOCAL_EVIDENCE_SHA256"],
+          }
+          for field, expected in expected_receipt.items():
+              if receipt.get(field) != expected:
+                  raise SystemExit(
+                      f"candidate escrow receipt {field} was "
+                      f"{receipt.get(field)!r}, expected {expected!r}"
+                  )
+          successful_jobs = receipt.get("successfulJobs")
+          if (
+              not isinstance(successful_jobs, list)
+              or any(not isinstance(name, str) for name in successful_jobs)
+              or len(successful_jobs) != len(set(successful_jobs))
+              or set(successful_jobs) != expected_jobs
+          ):
+              raise SystemExit(
+                  "candidate escrow receipt successful jobs are not exact"
+              )
+          records = receipt.get("artifacts")
+          expected_record_names = {
+              f"agenc-runtime-{slug}" for slug in slugs
+          }
+          if not isinstance(records, dict) or set(records) != expected_record_names:
+              raise SystemExit(
+                  "candidate escrow receipt artifact inventory is not exact"
+              )
+          for slug in slugs:
+              record = records[f"agenc-runtime-{slug}"]
+              expected_record_keys = {
+                  "archive",
+                  "archiveBytes",
+                  "archiveSha256",
+                  "candidateBundleBytes",
+                  "candidateBundleSha256",
+                  "metadataBytes",
+                  "metadataSha256",
+              }
+              if not isinstance(record, dict) or set(record) != expected_record_keys:
+                  raise SystemExit(
+                      f"candidate escrow receipt record is invalid for {slug}"
+                  )
+              archive = (
+                  f"agenc-runtime-{version}-{slug}-node26-abi147.tar.gz"
+              )
+              expected_identities = {
+                  archive: ("archiveBytes", "archiveSha256"),
+                  f"{archive}.meta.json": (
+                      "metadataBytes",
+                      "metadataSha256",
+                  ),
+                  f"{archive}.sigstore.json": (
+                      "candidateBundleBytes",
+                      "candidateBundleSha256",
+                  ),
+              }
+              if record.get("archive") != archive:
+                  raise SystemExit(
+                      f"candidate escrow receipt archive is invalid for {slug}"
+                  )
+              for name, (bytes_field, digest_field) in expected_identities.items():
+                  asset = asset_by_name[name]
+                  if (
+                      asset["size"] != record.get(bytes_field)
+                      or asset["digest"] != f"sha256:{record.get(digest_field)}"
+                  ):
+                      raise SystemExit(
+                          f"candidate escrow API digest is detached for {name}"
+                      )
+          print(
+              f"approved candidate run {run_id} at {tested_sha} "
+              f"with {len(expected_jobs)} jobs and immutable escrow "
+              f"{candidate_tag} ({len(expected_asset_names)} assets)"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"candidate-escrow-tag={candidate_tag}\n")
+              output.write(f"candidate-run-attempt={run_attempt}\n")
+          PY
+              ;;
+            *)
+              echo "unsupported release phase: $RELEASE_PHASE" >&2
+              exit 1
+              ;;
+          esac
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
   linux-tarball:
+    name: linux-tarball (${{ matrix.runner }}, ${{ matrix.slug }})
+    if: inputs.phase == 'candidate'
     needs: release-source
     permissions:
       contents: read
       id-token: write
       attestations: write
       artifact-metadata: write
+    env:
+      AGENC_RELEASE_CANDIDATE_EVIDENCE_SHA256: ${{ inputs.local_evidence_sha256 }}
+      AGENC_RELEASE_CANDIDATE_PHASE: candidate
+      AGENC_RELEASE_CANDIDATE_RUN_ATTEMPT: ${{ github.run_attempt }}
+      AGENC_RELEASE_CANDIDATE_RUN_ID: ${{ github.run_id }}
+      AGENC_RELEASE_CANDIDATE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      AGENC_RELEASE_CANDIDATE_SOURCE_REF: refs/heads/main
+      AGENC_RELEASE_CANDIDATE_WORKFLOW: release-runtime.yml
     strategy:
       fail-fast: false
       matrix:
@@ -97,6 +473,17 @@ jobs:
       image: rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c
     timeout-minutes: 45
     steps:
+      - name: Reject retried candidate artifact production
+        shell: bash
+        run: |
+          set -euo pipefail
+          require_first_workflow_attempt() {
+            if test "$1" != "1"; then
+              echo "candidate artifact jobs cannot be retried; dispatch a fresh candidate workflow" >&2
+              return 1
+            fi
+          }
+          require_first_workflow_attempt "$GITHUB_RUN_ATTEMPT"
       - name: Install glibc 2.28 build prerequisites
         run: |
           dnf install -y --setopt=gpgcheck=1 \
@@ -470,6 +857,8 @@ jobs:
           if-no-files-found: error
 
   native-tarball:
+    name: native-tarball (${{ matrix.runner }}, ${{ matrix.slug }})
+    if: inputs.phase == 'candidate'
     needs: release-source
     permissions:
       contents: read
@@ -489,9 +878,27 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
+      AGENC_RELEASE_CANDIDATE_EVIDENCE_SHA256: ${{ inputs.local_evidence_sha256 }}
+      AGENC_RELEASE_CANDIDATE_PHASE: candidate
+      AGENC_RELEASE_CANDIDATE_RUN_ATTEMPT: ${{ github.run_attempt }}
+      AGENC_RELEASE_CANDIDATE_RUN_ID: ${{ github.run_id }}
+      AGENC_RELEASE_CANDIDATE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      AGENC_RELEASE_CANDIDATE_SOURCE_REF: refs/heads/main
+      AGENC_RELEASE_CANDIDATE_WORKFLOW: release-runtime.yml
       AGENC_RELEASE_SLUG: ${{ matrix.slug }}
       AGENC_RUNNER_LABEL: ${{ matrix.runner }}
     steps:
+      - name: Reject retried candidate artifact production
+        shell: bash
+        run: |
+          set -euo pipefail
+          require_first_workflow_attempt() {
+            if test "$1" != "1"; then
+              echo "candidate artifact jobs cannot be retried; dispatch a fresh candidate workflow" >&2
+              return 1
+            fi
+          }
+          require_first_workflow_attempt "$GITHUB_RUN_ATTEMPT"
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
@@ -919,7 +1326,7 @@ jobs:
             exit 1
           fi
       - name: Upload failed reproducibility inputs
-        if: failure()
+        if: failure() && github.run_attempt == 1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: repro-diagnostics-${{ matrix.slug }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -995,5 +1402,375 @@ jobs:
           path: |
             packages/agenc/release-artifacts/agenc-runtime-*.tar.gz
             packages/agenc/release-artifacts/agenc-runtime-*.meta.json
+            packages/agenc/release-artifacts/agenc-runtime-*.tar.gz.sigstore.json
+          if-no-files-found: error
+
+  candidate-seal:
+    name: candidate-seal
+    if: inputs.phase == 'candidate'
+    needs:
+      - release-source
+      - linux-tarball
+      - native-tarball
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Reject retried candidate artifact production
+        shell: bash
+        run: |
+          set -euo pipefail
+          require_first_workflow_attempt() {
+            if test "$1" != "1"; then
+              echo "candidate artifact jobs cannot be retried; dispatch a fresh candidate workflow" >&2
+              return 1
+            fi
+          }
+          require_first_workflow_attempt "$GITHUB_RUN_ATTEMPT"
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Install checksum-pinned GitHub CLI verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh_version="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["version"])')"
+          gh_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["file"])')"
+          gh_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["url"])')"
+          gh_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["sha256"])')"
+          test "$gh_version" = "2.96.0"
+          gh_archive="$RUNNER_TEMP/$gh_file"
+          gh_root="$RUNNER_TEMP/github-cli"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error "$gh_url" --output "$gh_archive"
+          test "$(sha256sum "$gh_archive" | cut -d ' ' -f 1)" = "$gh_sha"
+          mkdir -m 700 "$gh_root"
+          tar -xzf "$gh_archive" --strip-components=1 -C "$gh_root"
+          test "$("$gh_root/bin/gh" --version | awk 'NR == 1 { print $3 }')" = "$gh_version"
+          echo "$gh_root/bin" >> "$GITHUB_PATH"
+      - name: Download all candidate artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: agenc-runtime-*
+          path: candidate-artifacts
+          merge-multiple: true
+      - name: Seal the exact candidate inventory at current main
+        id: candidate-receipt
+        env:
+          GH_CONFIG_DIR: ${{ runner.temp }}/candidate-seal-gh-config
+          GH_NO_UPDATE_NOTIFIER: "true"
+          GH_PROMPT_DISABLED: "true"
+          GH_SPINNER_DISABLED: "true"
+          GH_TOKEN: ${{ github.token }}
+          LOCAL_EVIDENCE_SHA256: ${{ inputs.local_evidence_sha256 }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          release_tag_exists() {
+            git show-ref --verify --quiet "$1"
+          }
+          mkdir -m 700 "$GH_CONFIG_DIR"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_SHA" = "$TESTED_SHA"
+          version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+          expected_ref="refs/tags/agenc-v${version}"
+          git fetch origin main --tags
+          test "$(git rev-parse refs/remotes/origin/main)" = "$TESTED_SHA"
+          if release_tag_exists "$expected_ref"; then
+            echo "candidate seal refuses an already-consumed release tag: $expected_ref" >&2
+            exit 1
+          fi
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          seal_root="$RUNNER_TEMP/agenc-runtime-candidate-seal"
+          mkdir -m 700 "$seal_root"
+          receipt="$seal_root/agenc-runtime-candidate-seal.json"
+          bundle="${receipt}.sigstore.json"
+          python3 scripts/release_candidate_policy.py seal \
+            --source-dir candidate-artifacts \
+            --receipt "$receipt" \
+            --version "$version" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --tested-sha "$TESTED_SHA" \
+            --evidence-sha256 "$LOCAL_EVIDENCE_SHA256"
+          verification_args=(
+            --repo "$GITHUB_REPOSITORY"
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-runtime.yml"
+            --signer-digest "$TESTED_SHA"
+            --source-digest "$TESTED_SHA"
+            --source-ref refs/heads/main
+            --hostname github.com
+            --cert-oidc-issuer https://token.actions.githubusercontent.com
+            --predicate-type https://slsa.dev/provenance/v1
+            --deny-self-hosted-runners
+          )
+          for slug in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win-x64; do
+            archive="candidate-artifacts/agenc-runtime-${version}-${slug}-node26-abi147.tar.gz"
+            metadata="${archive}.meta.json"
+            candidate_bundle="${archive}.sigstore.json"
+            gh attestation verify "$archive" \
+              --bundle "$candidate_bundle" "${verification_args[@]}" >/dev/null
+            gh attestation verify "$metadata" \
+              --bundle "$candidate_bundle" "${verification_args[@]}" >/dev/null
+          done
+          echo "receipt=$receipt" >> "$GITHUB_OUTPUT"
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+      - name: Attest the candidate seal
+        id: attest-candidate-seal
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.candidate-receipt.outputs.receipt }}
+      - name: Bind the candidate seal attestation
+        shell: bash
+        env:
+          ACTION_BUNDLE_PATH: ${{ steps.attest-candidate-seal.outputs.bundle-path }}
+          CANONICAL_BUNDLE_PATH: ${{ steps.candidate-receipt.outputs.bundle }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import shutil
+          import stat
+
+          source = pathlib.Path(os.environ["ACTION_BUNDLE_PATH"])
+          destination = pathlib.Path(os.environ["CANONICAL_BUNDLE_PATH"])
+          source_metadata = source.lstat()
+          if source.is_symlink() or not stat.S_ISREG(source_metadata.st_mode):
+              raise SystemExit("candidate seal attestation is not one regular file")
+          if source_metadata.st_size <= 0 or source_metadata.st_size > 4 * 1024 * 1024:
+              raise SystemExit("candidate seal attestation is outside the 4 MiB bound")
+          with source.open("r", encoding="utf-8") as bundle:
+              parsed = json.load(bundle)
+          if not isinstance(parsed, dict):
+              raise SystemExit("candidate seal attestation root is not a JSON object")
+          if destination.exists() or destination.is_symlink():
+              raise SystemExit("refusing a pre-existing candidate seal bundle")
+          shutil.copyfile(source, destination, follow_symlinks=False)
+          destination.chmod(0o600)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agenc-runtime-candidate-seal
+          path: |
+            ${{ steps.candidate-receipt.outputs.receipt }}
+            ${{ steps.candidate-receipt.outputs.bundle }}
+          if-no-files-found: error
+
+  promote-candidate-artifacts:
+    name: promote-candidate-artifacts (${{ matrix.slug }})
+    if: inputs.phase == 'tagged'
+    needs: release-source
+    strategy:
+      fail-fast: false
+      matrix:
+        slug:
+          - linux-x64
+          - linux-arm64
+          - darwin-x64
+          - darwin-arm64
+          - win-x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install checksum-pinned GitHub CLI verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh_version="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["version"])')"
+          gh_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["file"])')"
+          gh_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["url"])')"
+          gh_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["sha256"])')"
+          test "$gh_version" = "2.96.0"
+          gh_archive="$RUNNER_TEMP/$gh_file"
+          gh_root="$RUNNER_TEMP/github-cli"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error "$gh_url" --output "$gh_archive"
+          test "$(sha256sum "$gh_archive" | cut -d ' ' -f 1)" = "$gh_sha"
+          mkdir -m 700 "$gh_root"
+          tar -xzf "$gh_archive" --strip-components=1 -C "$gh_root"
+          test "$("$gh_root/bin/gh" --version | awk 'NR == 1 { print $3 }')" = "$gh_version"
+          echo "$gh_root/bin" >> "$GITHUB_PATH"
+      - name: Download the exact immutable candidate escrow assets
+        env:
+          AGENC_RELEASE_SLUG: ${{ matrix.slug }}
+          CANDIDATE_ESCROW_TAG: ${{ needs.release-source.outputs.candidate-escrow-tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          version="$(python3 -c 'import json; print(json.load(open("runtime/package.json"))["version"])')"
+          expected_candidate_tag="agenc-candidate-v${version}-run-${CANDIDATE_RUN_ID}"
+          test "$CANDIDATE_ESCROW_TAG" = "$expected_candidate_tag"
+          archive_name="agenc-runtime-${version}-${AGENC_RELEASE_SLUG}-node26-abi147.tar.gz"
+          escrow_url="https://github.com/tetsuo-ai/agenc-releases/releases/download/${CANDIDATE_ESCROW_TAG}"
+          mkdir -m 700 candidate-seal candidate-artifact
+          for name in \
+            agenc-runtime-candidate-seal.json \
+            agenc-runtime-candidate-seal.json.sigstore.json; do
+            curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+              --fail --location --silent --show-error \
+              "$escrow_url/$name" --output "candidate-seal/$name"
+          done
+          for name in \
+            "$archive_name" \
+            "${archive_name}.meta.json" \
+            "${archive_name}.sigstore.json"; do
+            curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+              --fail --location --silent --show-error \
+              "$escrow_url/$name" --output "candidate-artifact/$name"
+          done
+      - name: Validate and stage the candidate bytes
+        id: runtime-artifact
+        env:
+          AGENC_RELEASE_SLUG: ${{ matrix.slug }}
+          CANDIDATE_RUN_ATTEMPT: ${{ needs.release-source.outputs.candidate-run-attempt }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          GH_CONFIG_DIR: ${{ runner.temp }}/candidate-gh-config
+          GH_NO_UPDATE_NOTIFIER: "true"
+          GH_PROMPT_DISABLED: "true"
+          GH_SPINNER_DISABLED: "true"
+          GH_TOKEN: ${{ github.token }}
+          LOCAL_EVIDENCE_SHA256: ${{ inputs.local_evidence_sha256 }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -m 700 "$GH_CONFIG_DIR"
+          version="$(python3 -c 'import json; print(json.load(open("runtime/package.json"))["version"])')"
+          archive_name="agenc-runtime-${version}-${AGENC_RELEASE_SLUG}-node26-abi147.tar.gz"
+          artifact="candidate-artifact/$archive_name"
+          metadata="${artifact}.meta.json"
+          candidate_bundle="${artifact}.sigstore.json"
+          receipt="candidate-seal/agenc-runtime-candidate-seal.json"
+          seal_bundle="${receipt}.sigstore.json"
+          test -f "$artifact"
+          test ! -L "$artifact"
+          test -f "$metadata"
+          test ! -L "$metadata"
+          test -f "$candidate_bundle"
+          test ! -L "$candidate_bundle"
+          test -f "$receipt"
+          test ! -L "$receipt"
+          test -f "$seal_bundle"
+          test ! -L "$seal_bundle"
+          test "$(find candidate-artifact -mindepth 1 -maxdepth 1 -printf x | wc -c)" -eq 3
+          test "$(find candidate-seal -mindepth 1 -maxdepth 1 -printf x | wc -c)" -eq 2
+          verification_args=(
+            --repo "$GITHUB_REPOSITORY"
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-runtime.yml"
+            --signer-digest "$TESTED_SHA"
+            --source-digest "$TESTED_SHA"
+            --source-ref refs/heads/main
+            --hostname github.com
+            --cert-oidc-issuer https://token.actions.githubusercontent.com
+            --predicate-type https://slsa.dev/provenance/v1
+            --deny-self-hosted-runners
+          )
+          gh attestation verify "$receipt" \
+            --bundle "$seal_bundle" "${verification_args[@]}" >/dev/null
+          gh attestation verify "$artifact" \
+            --bundle "$candidate_bundle" "${verification_args[@]}" >/dev/null
+          gh attestation verify "$metadata" \
+            --bundle "$candidate_bundle" "${verification_args[@]}" >/dev/null
+          python3 scripts/release_candidate_policy.py promote \
+            --receipt "$receipt" \
+            --seal-bundle "$seal_bundle" \
+            --artifact "$artifact" \
+            --metadata "$metadata" \
+            --candidate-bundle "$candidate_bundle" \
+            --slug "$AGENC_RELEASE_SLUG" \
+            --version "$version" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$CANDIDATE_RUN_ID" \
+            --run-attempt "$CANDIDATE_RUN_ATTEMPT" \
+            --tested-sha "$TESTED_SHA" \
+            --evidence-sha256 "$LOCAL_EVIDENCE_SHA256"
+          release_root=packages/agenc/release-artifacts
+          mkdir -p "$release_root"
+          cp "$artifact" "$metadata" "$release_root/"
+          promoted_artifact="$release_root/$(basename "$artifact")"
+          promoted_metadata="$release_root/$(basename "$metadata")"
+          promoted_build_bundle="${promoted_artifact}.build.sigstore.json"
+          promoted_bundle="${promoted_artifact}.sigstore.json"
+          test ! -e "$promoted_build_bundle"
+          test ! -e "$promoted_bundle"
+          cp "$candidate_bundle" "$promoted_build_bundle"
+          echo "path=$promoted_artifact" >> "$GITHUB_OUTPUT"
+          echo "metadata=$promoted_metadata" >> "$GITHUB_OUTPUT"
+          echo "build-bundle=$promoted_build_bundle" >> "$GITHUB_OUTPUT"
+          echo "bundle=$promoted_bundle" >> "$GITHUB_OUTPUT"
+      - name: Attest the promoted runtime artifact at the immutable tag
+        id: attest-runtime
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: |
+            ${{ steps.runtime-artifact.outputs.path }}
+            ${{ steps.runtime-artifact.outputs.metadata }}
+      - name: Bind the promoted bundle to its canonical release name
+        shell: bash
+        env:
+          ACTION_BUNDLE_PATH: ${{ steps.attest-runtime.outputs.bundle-path }}
+          CANONICAL_BUNDLE_PATH: ${{ steps.runtime-artifact.outputs.bundle }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import shutil
+          import stat
+
+          source = pathlib.Path(os.environ["ACTION_BUNDLE_PATH"])
+          destination = pathlib.Path(os.environ["CANONICAL_BUNDLE_PATH"])
+          source_metadata = source.lstat()
+          if source.is_symlink() or not stat.S_ISREG(source_metadata.st_mode):
+              raise SystemExit("actions/attest bundle is not one regular file")
+          if source_metadata.st_size <= 0 or source_metadata.st_size > 4 * 1024 * 1024:
+              raise SystemExit("actions/attest bundle is outside the 4 MiB release bound")
+          with source.open("r", encoding="utf-8") as bundle:
+              parsed = json.load(bundle)
+          if not isinstance(parsed, dict):
+              raise SystemExit("actions/attest bundle root is not a JSON object")
+          release_root = pathlib.Path("packages/agenc/release-artifacts").resolve(strict=True)
+          if (
+              destination.parent.resolve(strict=True) != release_root
+              or destination.exists()
+              or destination.is_symlink()
+          ):
+              raise SystemExit("refusing a detached or pre-existing canonical bundle path")
+          shutil.copyfile(source, destination, follow_symlinks=False)
+          destination.chmod(0o644)
+          print(f"bound {source} to {destination}")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agenc-runtime-${{ matrix.slug }}
+          path: |
+            packages/agenc/release-artifacts/agenc-runtime-*.tar.gz
+            packages/agenc/release-artifacts/agenc-runtime-*.meta.json
+            packages/agenc/release-artifacts/agenc-runtime-*.tar.gz.build.sigstore.json
             packages/agenc/release-artifacts/agenc-runtime-*.tar.gz.sigstore.json
           if-no-files-found: error

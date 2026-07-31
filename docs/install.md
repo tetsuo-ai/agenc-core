@@ -304,7 +304,7 @@ or agent session ended.
 There are two authorized lanes:
 
 - `full` publishes a new SemVer through native runtimes, the immutable GitHub
-  release, the stable installer channel, get.agenc.ag, and npm.
+  release, the stable installer channel, get.agenc.ag, Homebrew, and npm.
 - `installer-hotfix` promotes reviewed `install.sh`/`install.ps1` bytes without
   changing the product version or rebuilding unchanged runtimes and npm.
 
@@ -330,7 +330,8 @@ There are two authorized lanes:
    recorded atomically with its retained log digest. Repeating the command
    resumes at the first missing, failed, or tampered gate.
 3. Before creating an immutable source tag, reproduce both Linux compatibility
-   bootstraps on their native pinned Rocky runners:
+   bootstraps on their native pinned Rocky runners, then run the complete
+   five-target release workflow in untagged candidate mode:
 
    ```bash
    tested_sha="$(git rev-parse HEAD)"
@@ -339,40 +340,211 @@ There are two authorized lanes:
      --ref main \
      -f tested_sha="$tested_sha" \
      -f local_evidence_sha256="$evidence_sha256"
+   gh workflow run release-runtime.yml --repo tetsuo-ai/agenc-core \
+     --ref main \
+     -f phase=candidate \
+     -f candidate_run_id=0 \
+     -f tested_sha="$tested_sha" \
+     -f local_evidence_sha256="$evidence_sha256"
    ```
 
-   Require both `rocky-bootstrap` matrix jobs to succeed. The workflow invokes
-   the same repository-owned builder as the tagged release, builds each archive
-   twice, and verifies its members, modes, component hashes, size, and SHA-256.
-   A failure is still recoverable through an ordinary PR because no tag exists.
-4. Use the command's `evidenceSha256` and exact `sha` to create and dispatch the
-   source tag:
+   Require both `rocky-bootstrap` matrix jobs and all seven successful candidate
+   workflow jobs (source, five native targets, and `candidate-seal`), with all
+   six unexpired artifacts: five runtime artifacts plus the attested candidate
+   seal. Candidate mode is the only phase that runs the reproducible Linux,
+   Darwin, and Windows builders and native probes; it refuses to run if the
+   version tag already exists. Download and verify the workflow-generated seal
+   with the checksum-pinned GitHub CLI, then checkpoint its receipt before any
+   tag is created:
+
+   ```bash
+   candidate_run_id="<successful candidate workflow run ID>"
+   candidate_seal_dir="$(mktemp -d)"
+   github_cli=/absolute/path/to/checksum-verified/gh
+   "$github_cli" run download "$candidate_run_id" \
+     --repo tetsuo-ai/agenc-core \
+     --name agenc-runtime-candidate-seal \
+     --dir "$candidate_seal_dir"
+   candidate_receipt="$candidate_seal_dir/agenc-runtime-candidate-seal.json"
+   "$github_cli" attestation verify "$candidate_receipt" \
+     --bundle "${candidate_receipt}.sigstore.json" \
+     --repo tetsuo-ai/agenc-core \
+     --signer-workflow \
+       tetsuo-ai/agenc-core/.github/workflows/release-runtime.yml \
+     --signer-digest "$tested_sha" \
+     --source-digest "$tested_sha" \
+     --source-ref refs/heads/main \
+     --hostname github.com \
+     --cert-oidc-issuer https://token.actions.githubusercontent.com \
+     --predicate-type https://slsa.dev/provenance/v1 \
+     --deny-self-hosted-runners
+   npm run release:checkpoint -- \
+     --lane full --version "$version" --sha "$tested_sha" \
+     --step candidate-build-complete \
+     --receipt-file "$candidate_receipt" \
+     --receipt-bundle "${candidate_receipt}.sigstore.json" \
+     --github-cli "$github_cli"
+   ```
+
+   `github_cli` must be the canonical absolute path extracted from the exact
+   archive pinned under `release-toolchain.json#githubCli`. The checkpoint also
+   matches the executable itself to that host pin's reviewed
+   `executableBytes` and `executableSha256` before and after verification and
+   records that identity; a version-compatible substitute is rejected. The
+   later detailed procedure describes that verifier boundary. Candidate
+   artifacts are created only by attempt 1 (`run_attempt=1`): every
+   artifact-producing candidate job
+   rejects a direct or whole-workflow retry before checkout, build, attestation,
+   or upload. If any candidate job fails, dispatch a fresh candidate workflow.
+   Until immutable escrow publication finishes, a later “re-run all jobs” can
+   delete the successful attempt's Actions staging artifacts. Only an escrowed
+   candidate is retry-independent: tagged promotion validates attempt 1
+   through GitHub's attempt-specific jobs API and authenticates the escrowed
+   signed seal, native bundles, and exact byte identities instead of trusting
+   the mutable top-level run conclusion or latest-attempt fields. A candidate
+   failure remains recoverable through an ordinary PR because no source tag
+   exists.
+
+   The candidate checkpoint receipt is schema version 1 and must contain the
+   canonical workflow name, `phase=candidate`, run ID/attempt/URL, tested SHA,
+   evidence digest, the exact seven successful job names, and all five runtime
+   artifact records. Each artifact record binds the canonical archive filename
+   plus the byte count and SHA-256 of the archive, metadata, and build Sigstore
+   bundle downloaded from that run. `release:checkpoint` privately copies and
+   authenticates the receipt with the checksum-pinned GitHub CLI before parsing
+   it, and rejects an incomplete or differently bound candidate receipt.
+
+   Before creating the source tag, copy all 17 sealed candidate files into a
+   permanent immutable prerelease escrow in `tetsuo-ai/agenc-releases`. The
+   escrow tag is always derived from the reviewed version and run ID; it is
+   never an operator input. Actions artifacts remain convenient staging
+   transport only because a later “re-run all jobs” can delete the original
+   run artifacts:
+
+   ```bash
+   [[ "$candidate_run_id" =~ ^[1-9][0-9]*$ ]]
+   candidate_tag="agenc-candidate-v${version}-run-${candidate_run_id}"
+   candidate_assets="$(mktemp -d)"
+   "$github_cli" run download "$candidate_run_id" \
+     --repo tetsuo-ai/agenc-core \
+     --pattern 'agenc-runtime-*' \
+     --dir "$candidate_assets"
+   test "$(find "$candidate_assets" -mindepth 2 -maxdepth 2 -type f \
+     -printf x | wc -c)" -eq 17
+   verification_args=(
+     --repo tetsuo-ai/agenc-core
+     --signer-workflow \
+       tetsuo-ai/agenc-core/.github/workflows/release-runtime.yml
+     --signer-digest "$tested_sha"
+     --source-digest "$tested_sha"
+     --source-ref refs/heads/main
+     --hostname github.com
+     --cert-oidc-issuer https://token.actions.githubusercontent.com
+     --predicate-type https://slsa.dev/provenance/v1
+     --deny-self-hosted-runners
+   )
+   candidate_receipt="$candidate_assets/agenc-runtime-candidate-seal/agenc-runtime-candidate-seal.json"
+   candidate_seal_bundle="${candidate_receipt}.sigstore.json"
+   "$github_cli" attestation verify "$candidate_receipt" \
+     --bundle "$candidate_seal_bundle" "${verification_args[@]}"
+   for slug in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win-x64; do
+     archive="$candidate_assets/agenc-runtime-$slug/agenc-runtime-${version}-${slug}-node26-abi147.tar.gz"
+     metadata="${archive}.meta.json"
+     candidate_bundle="${archive}.sigstore.json"
+     "$github_cli" attestation verify "$archive" \
+       --bundle "$candidate_bundle" "${verification_args[@]}"
+     "$github_cli" attestation verify "$metadata" \
+       --bundle "$candidate_bundle" "${verification_args[@]}"
+     python3 scripts/release_candidate_policy.py promote \
+       --repository tetsuo-ai/agenc-core \
+       --run-id "$candidate_run_id" --run-attempt 1 \
+       --tested-sha "$tested_sha" --evidence-sha256 "$evidence_sha256" \
+       --version "$version" --slug "$slug" \
+       --receipt "$candidate_receipt" \
+       --seal-bundle "$candidate_seal_bundle" \
+       --artifact "$archive" --metadata "$metadata" \
+       --candidate-bundle "$candidate_bundle"
+   done
+   release_branch="$(gh api repos/tetsuo-ai/agenc-releases --jq .default_branch)"
+   release_head="$(gh api \
+     "repos/tetsuo-ai/agenc-releases/git/ref/heads/$release_branch" \
+     --jq .object.sha)"
+   candidate_tag_object="$(gh api --method POST \
+     repos/tetsuo-ai/agenc-releases/git/tags \
+     --raw-field tag="$candidate_tag" \
+     --raw-field message="AgenC $version candidate run $candidate_run_id" \
+     --raw-field object="$release_head" --raw-field type=commit --jq .sha)"
+   gh api --method POST repos/tetsuo-ai/agenc-releases/git/refs \
+     --raw-field ref="refs/tags/$candidate_tag" \
+     --raw-field sha="$candidate_tag_object"
+   gh release create "$candidate_tag" --repo tetsuo-ai/agenc-releases \
+     --verify-tag --draft --prerelease \
+     --title "AgenC $version candidate run $candidate_run_id" \
+     --notes "Permanent candidate escrow for agenc-core run $candidate_run_id."
+   gh release upload "$candidate_tag" --repo tetsuo-ai/agenc-releases \
+     "$candidate_assets"/agenc-runtime-*/*
+   gh release edit "$candidate_tag" --repo tetsuo-ai/agenc-releases \
+     --draft=false --prerelease
+   gh release verify "$candidate_tag" --repo tetsuo-ai/agenc-releases
+   GH_TOKEN="$("$github_cli" auth token --hostname github.com)" \
+     npm run release:checkpoint -- \
+       --lane full --version "$version" --sha "$tested_sha" \
+       --step candidate-escrow-published \
+       --github-cli "$github_cli"
+   ```
+
+   The checkpoint invokes the checksum-pinned CLI itself, verifies GitHub's
+   immutable-release attestation, requests the release API contract version
+   that exposes asset digests, and matches the exact 17 public asset names,
+   byte counts, and SHA-256 values to the already-authenticated candidate seal.
+   It requires `immutable=true`, `draft=false`, and `prerelease=true`. Keep this
+   escrow permanently; do not delete it after the final release.
+4. Only after `candidate-escrow-published` is recorded, use the command's
+   `evidenceSha256` and exact `sha` to create and dispatch the source tag:
 
    ```bash
    tag="agenc-v${version}"
    tested_sha="$(git rev-parse HEAD)"
    evidence_sha256="<release:verify evidenceSha256>"
-   git tag --annotate "$tag" --message "AgenC $version"
+   git fetch origin main --tags
+   test "$(git rev-parse refs/remotes/origin/main)" = "$tested_sha"
+   ! git show-ref --verify --quiet "refs/tags/$tag"
+   git tag --annotate --message "AgenC $version" "$tag" "$tested_sha"
+   test "$(git rev-parse "${tag}^{commit}")" = "$tested_sha"
    git push origin "refs/tags/$tag"
    gh workflow run release-runtime.yml --repo tetsuo-ai/agenc-core \
      --ref "$tag" \
+     -f phase=tagged \
+     -f candidate_run_id="$candidate_run_id" \
      -f tested_sha="$tested_sha" \
      -f local_evidence_sha256="$evidence_sha256"
+   promotion_run_id="<tagged promotion workflow run ID>"
    npm run release:checkpoint -- \
-     --lane full --version "$version" --step source-tag-pushed \
-     --receipt-json "{\"tag\":\"$tag\",\"sha\":\"$tested_sha\"}"
+     --lane full --version "$version" --sha "$tested_sha" \
+     --step source-tag-pushed \
+     --receipt-json \
+       "{\"tag\":\"$tag\",\"sha\":\"$tested_sha\",\"promotionRunId\":$promotion_run_id}"
    ```
 
-   Do not repeat the verifier from a detached tag: the tag points to the
-   already-proven commit.
-5. Wait for all five runtime targets, assemble the manifests/SBOM/attestations
-   with the repository release scripts, run
+   Tagged mode verifies the candidate run metadata, then reads the five runtime
+   artifacts and attested seal exclusively from the derived immutable escrow
+   prerelease. Actions run artifacts are non-authoritative at this point. It
+   preserves each authenticated branch-ref bundle
+   as `<archive>.build.sigstore.json` and emits a distinct
+   `<archive>.sigstore.json` tag-ref attestation over the same archive and
+   metadata bytes. It does not rebuild on mutable native runners after the tag
+   exists. Do not repeat the verifier from a detached tag: the tag points to
+   the already-proven commit.
+5. Wait for all five tagged promotion targets, assemble the
+   manifests/SBOM/attestations with the repository release scripts, run
    `scripts/validate-runtime-release-inventory.py`, and stage one matching
-   cross-repository draft without clobber. Record
-   `runtime-build-complete` and `release-draft-staged` with their workflow run
-   ID and draft URL.
+   cross-repository draft without clobber. Record `runtime-build-complete`
+   against `promotion_run_id`, then `release-draft-staged` with the distinct
+   destination draft URL.
 6. Publish and verify the immutable non-prerelease GitHub release. Then promote
-   the same SHA through the stable installer channel:
+   the same SHA through the stable installer channel. Record
+   `github-published` before dispatching the installer workflow and
+   `installer-promoted` only after its branch and public-byte readback passes:
 
    ```bash
    gh workflow run promote-installers.yml --repo tetsuo-ai/agenc-core \
@@ -388,9 +560,14 @@ There are two authorized lanes:
    snapshots.
 7. Deploy `packaging/get-agenc-ag/` to Vercel production only when its tracked
    route or landing source differs from production. Otherwise record a checked
-   skip. The manifest routes remain redirects to GitHub latest; the installer
-   routes point to `installer-stable`.
-8. Dispatch npm trusted publishing at the identical tag and evidence identity:
+   skip. Record `vercel-deployed` in either case. The manifest routes remain
+   redirects to GitHub latest; the installer routes point to
+   `installer-stable`.
+8. Populate the private-Node formula in `tetsuo-ai/homebrew-agenc` from the
+   immutable Darwin artifact URLs and SHA-256 values. Land it through a PR only
+   after both hosted Intel and Apple Silicon test-bot jobs pass, verify a clean
+   tap install, and record `homebrew-published`.
+9. Dispatch npm trusted publishing at the identical tag and evidence identity:
 
    ```bash
    gh workflow run publish-npm.yml --repo tetsuo-ai/agenc-core \
@@ -400,10 +577,11 @@ There are two authorized lanes:
    ```
 
    The `npm-production` environment remains the OIDC publication boundary.
-9. Run isolated installer-managed and npm-managed install/update smokes, then
-   audit public convergence. Record `converged` only when source tag, all five
-   native artifacts, manifests, GitHub latest, npm latest, installer promotion,
-   get.agenc.ag, and the landing agree.
+   Record `npm-published` only after registry integrity and provenance readback.
+10. Run isolated installer-managed, Homebrew, and npm-managed install/update
+    smokes, then audit public convergence. Record `converged` only when source
+    tag, all five native artifacts, manifests, GitHub latest, installer
+    promotion, get.agenc.ag, the Homebrew tap, npm latest, and the landing agree.
 
 Query or resume the exact state at any time:
 
@@ -515,12 +693,19 @@ resolved package inventory is stored at
 `/usr/share/agenc/debian-packages.txt` in the image.
 
 1. Bump and review a version that has never been published, merge that commit
-   to `main`, run the native pre-tag bootstrap workflow, then create its source tag and dispatch
-   `.github/workflows/release-runtime.yml` at that exact ref. These guards are
-   intentionally safe to rerun: the tested preflight accepts only explicit
-   HTTP 404 responses from the public npm registry and GitHub API. Existing
-   versions fail, and DNS, TLS, authentication, rate-limit, redirect, and 5xx
-   results are inconclusive failures rather than permission to tag.
+   to `main`, run the native pre-tag bootstrap and full candidate workflows,
+   then create its source tag and dispatch `.github/workflows/release-runtime.yml`
+   in tagged mode at that exact ref. The preflight guards are intentionally
+   safe to repeat, but a failed candidate workflow must be replaced by a fresh
+   dispatch rather than retried: only attempt 1 can produce candidate
+   artifacts. A later whole-workflow retry can delete the original Actions
+   artifacts until they have been copied into the permanent immutable
+   prerelease escrow. After escrow, tagged promotion is retryable because it
+   authenticates and re-attests only those durable sealed candidate bytes. The
+   tested preflight accepts only
+   explicit HTTP 404 responses from the public npm registry and GitHub API.
+   Existing versions fail, and DNS, TLS, authentication, rate-limit, redirect,
+   and 5xx results are inconclusive failures rather than permission to tag.
 
    ```bash
    git fetch origin main --tags
@@ -528,7 +713,7 @@ resolved package inventory is stored at
    git merge-base --is-ancestor HEAD origin/main
    version="$(node -p 'require("./package.json").version')"
    tag="agenc-v${version}"
-   ! git rev-parse --verify --quiet "refs/tags/$tag"
+   ! git show-ref --verify --quiet "refs/tags/$tag"
    npm run release:preflight
    tested_sha="$(git rev-parse HEAD)"
    evidence_path="${AGENC_RELEASE_EVIDENCE_DIR:-$HOME/.agenc/release-evidence}/${tag}-${tested_sha}.json"
@@ -539,21 +724,138 @@ resolved package inventory is stored at
      --ref main \
      -f tested_sha="$tested_sha" \
      -f local_evidence_sha256="$evidence_sha256"
-   # Require both native Rocky jobs to pass before creating the tag.
-   git tag --annotate "$tag" --message "AgenC $version"
+   gh workflow run release-runtime.yml --repo tetsuo-ai/agenc-core \
+     --ref main \
+     -f phase=candidate \
+     -f candidate_run_id=0 \
+     -f tested_sha="$tested_sha" \
+     -f local_evidence_sha256="$evidence_sha256"
+   # Require both Rocky jobs, all seven candidate jobs, and all six artifacts.
+   candidate_run_id="<successful candidate run ID>"
+   candidate_seal_dir="$(mktemp -d)"
+   github_cli=/absolute/path/to/checksum-verified/gh
+   "$github_cli" run download "$candidate_run_id" \
+     --repo tetsuo-ai/agenc-core \
+     --name agenc-runtime-candidate-seal \
+     --dir "$candidate_seal_dir"
+   candidate_receipt="$candidate_seal_dir/agenc-runtime-candidate-seal.json"
+   "$github_cli" attestation verify "$candidate_receipt" \
+     --bundle "${candidate_receipt}.sigstore.json" \
+     --repo tetsuo-ai/agenc-core \
+     --signer-workflow \
+       tetsuo-ai/agenc-core/.github/workflows/release-runtime.yml \
+     --signer-digest "$tested_sha" \
+     --source-digest "$tested_sha" \
+     --source-ref refs/heads/main \
+     --hostname github.com \
+     --cert-oidc-issuer https://token.actions.githubusercontent.com \
+     --predicate-type https://slsa.dev/provenance/v1 \
+     --deny-self-hosted-runners
+   npm run release:checkpoint -- \
+     --lane full --version "$version" --sha "$tested_sha" \
+     --step candidate-build-complete \
+     --receipt-file "$candidate_receipt" \
+     --receipt-bundle "${candidate_receipt}.sigstore.json" \
+     --github-cli "$github_cli"
+   [[ "$candidate_run_id" =~ ^[1-9][0-9]*$ ]]
+   candidate_tag="agenc-candidate-v${version}-run-${candidate_run_id}"
+   candidate_assets="$(mktemp -d)"
+   "$github_cli" run download "$candidate_run_id" \
+     --repo tetsuo-ai/agenc-core \
+     --pattern 'agenc-runtime-*' --dir "$candidate_assets"
+   test "$(find "$candidate_assets" -mindepth 2 -maxdepth 2 -type f \
+     -printf x | wc -c)" -eq 17
+   verification_args=(
+     --repo tetsuo-ai/agenc-core
+     --signer-workflow \
+       tetsuo-ai/agenc-core/.github/workflows/release-runtime.yml
+     --signer-digest "$tested_sha"
+     --source-digest "$tested_sha"
+     --source-ref refs/heads/main
+     --hostname github.com
+     --cert-oidc-issuer https://token.actions.githubusercontent.com
+     --predicate-type https://slsa.dev/provenance/v1
+     --deny-self-hosted-runners
+   )
+   candidate_receipt="$candidate_assets/agenc-runtime-candidate-seal/agenc-runtime-candidate-seal.json"
+   candidate_seal_bundle="${candidate_receipt}.sigstore.json"
+   "$github_cli" attestation verify "$candidate_receipt" \
+     --bundle "$candidate_seal_bundle" "${verification_args[@]}"
+   for slug in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win-x64; do
+     archive="$candidate_assets/agenc-runtime-$slug/agenc-runtime-${version}-${slug}-node26-abi147.tar.gz"
+     metadata="${archive}.meta.json"
+     candidate_bundle="${archive}.sigstore.json"
+     "$github_cli" attestation verify "$archive" \
+       --bundle "$candidate_bundle" "${verification_args[@]}"
+     "$github_cli" attestation verify "$metadata" \
+       --bundle "$candidate_bundle" "${verification_args[@]}"
+     python3 scripts/release_candidate_policy.py promote \
+       --repository tetsuo-ai/agenc-core \
+       --run-id "$candidate_run_id" --run-attempt 1 \
+       --tested-sha "$tested_sha" --evidence-sha256 "$evidence_sha256" \
+       --version "$version" --slug "$slug" \
+       --receipt "$candidate_receipt" \
+       --seal-bundle "$candidate_seal_bundle" \
+       --artifact "$archive" --metadata "$metadata" \
+       --candidate-bundle "$candidate_bundle"
+   done
+   release_branch="$(gh api repos/tetsuo-ai/agenc-releases --jq .default_branch)"
+   release_head="$(gh api \
+     "repos/tetsuo-ai/agenc-releases/git/ref/heads/$release_branch" \
+     --jq .object.sha)"
+   candidate_tag_object="$(gh api --method POST \
+     repos/tetsuo-ai/agenc-releases/git/tags \
+     --raw-field tag="$candidate_tag" \
+     --raw-field message="AgenC $version candidate run $candidate_run_id" \
+     --raw-field object="$release_head" --raw-field type=commit --jq .sha)"
+   gh api --method POST repos/tetsuo-ai/agenc-releases/git/refs \
+     --raw-field ref="refs/tags/$candidate_tag" \
+     --raw-field sha="$candidate_tag_object"
+   gh release create "$candidate_tag" --repo tetsuo-ai/agenc-releases \
+     --verify-tag --draft --prerelease \
+     --title "AgenC $version candidate run $candidate_run_id" \
+     --notes "Permanent candidate escrow for agenc-core run $candidate_run_id."
+   gh release upload "$candidate_tag" --repo tetsuo-ai/agenc-releases \
+     "$candidate_assets"/agenc-runtime-*/*
+   gh release edit "$candidate_tag" --repo tetsuo-ai/agenc-releases \
+     --draft=false --prerelease
+   gh release verify "$candidate_tag" --repo tetsuo-ai/agenc-releases
+   GH_TOKEN="$("$github_cli" auth token --hostname github.com)" \
+     npm run release:checkpoint -- \
+       --lane full --version "$version" --sha "$tested_sha" \
+       --step candidate-escrow-published \
+       --github-cli "$github_cli"
+   git fetch origin main --tags
+   test "$(git rev-parse refs/remotes/origin/main)" = "$tested_sha"
+   ! git show-ref --verify --quiet "refs/tags/$tag"
+   git tag --annotate --message "AgenC $version" "$tag" "$tested_sha"
    test "$(git rev-parse "${tag}^{commit}")" = "$tested_sha"
    git push origin "refs/tags/$tag"
    gh workflow run release-runtime.yml --repo tetsuo-ai/agenc-core \
      --ref "$tag" \
+     -f phase=tagged \
+     -f candidate_run_id="$candidate_run_id" \
      -f tested_sha="$tested_sha" \
      -f local_evidence_sha256="$evidence_sha256"
+   promotion_run_id="<tagged promotion workflow run ID>"
+   npm run release:checkpoint -- \
+     --lane full --version "$version" --sha "$tested_sha" \
+     --step source-tag-pushed \
+     --receipt-json \
+       "{\"tag\":\"$tag\",\"sha\":\"$tested_sha\",\"promotionRunId\":$promotion_run_id}"
    ```
 
-   The source tag does not exist until the exact-SHA evidence and both native
-   Rocky bootstrap jobs have passed human review. Each workflow dispatch is
-   invalid if either evidence input is omitted.
+   The source tag does not exist until the exact-SHA evidence, both native
+   Rocky bootstrap jobs, all seven full candidate jobs, the five runtime
+   artifacts, the attested candidate seal, and its permanent immutable
+   17-asset prerelease escrow have passed review and checkpointing. Tagged mode
+   reads only that escrow, preserves the verified build provenance, and adds
+   tag provenance while promoting those exact candidate bytes; it does not
+   rebuild them. Each
+   workflow dispatch is invalid if either evidence input is omitted.
 
-   Wait for all five jobs (Linux x64/arm64, macOS x64/arm64, Windows x64).
+   Wait for all five tagged promotion jobs (Linux x64/arm64, macOS x64/arm64,
+   Windows x64).
    Publishing stays operator-driven; the workflow has no cross-repository
    publish secret.
 2. Download into a fresh temporary directory. `gh run download` creates one
@@ -563,7 +865,7 @@ resolved package inventory is stored at
    ```bash
    tmp="$(mktemp -d)"
    github_cli=/absolute/path/to/checksum-verified/gh
-   "$github_cli" run download <run-id> \
+   "$github_cli" run download "$promotion_run_id" \
      --dir "$tmp/download" --pattern 'agenc-runtime-*'
    legacy_generate_args=()
    if [ "$version" != "0.7.2" ]; then
@@ -587,12 +889,18 @@ resolved package inventory is stored at
      --github-cli "$github_cli" \
      --legacy-manifest "$tmp/agenc-runtime-manifest.json" \
      --output "$tmp/upload"
+   npm run release:checkpoint -- \
+     --lane full --version "$version" --sha "$tested_sha" \
+     --step runtime-build-complete \
+     --receipt-json \
+       "{\"runId\":$promotion_run_id,\"sha\":\"$tested_sha\"}"
    ```
 
    `github_cli` must be the canonical absolute path extracted from the exact
    platform archive, byte count, and SHA-256 in
-   `release-toolchain.json#githubCli`; an ambient `gh` found through `PATH` is
-   rejected. Its ordinary GitHub authentication may still authorize reading
+   `release-toolchain.json#githubCli`; candidate checkpointing additionally
+   requires the selected host pin's exact executable byte count and SHA-256.
+   An ambient `gh` found through `PATH` is rejected. Its ordinary GitHub authentication may still authorize reading
    the source repository, but the verifier receives a private config/cache
    home, no ambient GitHub tokens, and a bounded execution deadline.
 
@@ -644,6 +952,13 @@ resolved package inventory is stored at
      --notes-file "$release_notes"
    gh release upload "$tag" --repo tetsuo-ai/agenc-releases \
      "$tmp/upload"/*
+   draft_url="$(gh release view "$tag" --repo tetsuo-ai/agenc-releases \
+     --json url --jq .url)"
+   npm run release:checkpoint -- \
+     --lane full --version "$version" --sha "$tested_sha" \
+     --step release-draft-staged \
+     --receipt-json \
+       "{\"tag\":\"$tag\",\"sha\":\"$tested_sha\",\"url\":\"$draft_url\"}"
    ```
 
    If transport failure leaves a partial draft, never add `--clobber`. Resume
@@ -693,15 +1008,100 @@ resolved package inventory is stored at
    ```bash
    gh release edit "$tag" --repo tetsuo-ai/agenc-releases --draft=false
    gh release verify "$tag" --repo tetsuo-ai/agenc-releases
+   npm run release:checkpoint -- \
+     --lane full --version "$version" --sha "$tested_sha" \
+     --step github-published \
+     --receipt-json \
+       "{\"tag\":\"$tag\",\"sha\":\"$tested_sha\",\"repository\":\"tetsuo-ai/agenc-releases\"}"
    ```
 
    The release must not be marked prerelease: `releases/latest/download/`
    skips prereleases and the default installer URL would stop advancing.
-4. npm: dispatch the trusted-publishing workflow at the same immutable source
-   tag and approve its `npm-production` environment. The workflow verifies the
-   immutable runtime release and its assets, packs in an isolated detached
-   worktree, attests the exact tarball and receipt, revalidates both after the
-   approval gate, publishes with npm OIDC, and verifies the registry receipt:
+4. Promote the exact tested SHA through the stable installer lane only after
+   the immutable GitHub release passes readback. Wait for the workflow, verify
+   that `installer-stable` and both public installer routes resolve to the
+   tested bytes, then record `installer-promoted`:
+
+   ```bash
+   gh workflow run promote-installers.yml --repo tetsuo-ai/agenc-core \
+     --ref "$tag" \
+     -f lane=full \
+     -f tested_sha="$tested_sha" \
+     -f local_evidence_sha256="$evidence_sha256"
+   installer_run_id="<successful installer promotion run ID>"
+   npm run release:checkpoint -- \
+     --lane full --version "$version" --sha "$tested_sha" \
+     --step installer-promoted \
+     --receipt-json \
+       "{\"runId\":$installer_run_id,\"sha\":\"$tested_sha\"}"
+   ```
+5. `https://get.agenc.ag/{install.sh,install.ps1,manifest-v2.json,manifest.json}`
+   307-redirect to the release assets. The site root serves the versioned
+   installer landing page. Vercel project `agenc-get` has its complete tracked
+   source in `packaging/get-agenc-ag/` (redeploy: `vercel deploy --prod` from
+   that directory). Record `vercel-deployed` with the production deployment
+   identity, or with an explicit checked-skip receipt when the tracked source
+   already matches production.
+6. Docker publication is intentionally disabled, remains outside the hosted M0
+   quality-gate scope, and stays unauthorized until measured environment drift
+   earns that work. Do not publish from an ambient local `docker buildx` invocation: a
+   version string does not prove the Buildx binary, and one host architecture
+   does not validate both native-addon targets. Any separately approved path
+   must reuse the checksum-verified Buildx bytes, prove both native platform
+   manifests, attach validated SBOM and provenance whose subjects match those
+   manifests, publish the immutable version digest first, smoke the registry
+   result, and only then advance `latest` by digest. The local clean-build gate
+   proves the current host image only and no GHCR release is authorized.
+7. Homebrew resumes with the private-Node formula in 0.11.2. Keep the checked-in
+   placeholder formula unpublishable until both native macOS artifacts pass
+   their release gates; then substitute the immutable release URLs and SHA-256
+   values in `tetsuo-ai/homebrew-agenc`, test both Intel and Apple Silicon
+   installs, and publish the tap update. Record `homebrew-published` with the
+   merged tap commit, PR URL, formula version, Darwin artifact hashes, and both
+   successful hosted test-bot run URLs:
+
+   ```bash
+   tap_commit="<merged tap commit SHA>"
+   tap_pr_url="<merged tap PR URL>"
+   darwin_arm64_sha256="<immutable Darwin arm64 artifact SHA-256>"
+   darwin_x64_sha256="<immutable Darwin x64 artifact SHA-256>"
+   arm64_test_bot_url="<successful Apple Silicon test-bot run URL>"
+   x64_test_bot_url="<successful Intel test-bot run URL>"
+   homebrew_receipt_json="$(
+     AGENC_TAP_COMMIT="$tap_commit" \
+     AGENC_TAP_PR_URL="$tap_pr_url" \
+     AGENC_RELEASE_VERSION="$version" \
+     AGENC_DARWIN_ARM64_SHA256="$darwin_arm64_sha256" \
+     AGENC_DARWIN_X64_SHA256="$darwin_x64_sha256" \
+     AGENC_ARM64_TEST_BOT_URL="$arm64_test_bot_url" \
+     AGENC_X64_TEST_BOT_URL="$x64_test_bot_url" \
+       node -e '
+         process.stdout.write(JSON.stringify({
+           tapCommit: process.env.AGENC_TAP_COMMIT,
+           prUrl: process.env.AGENC_TAP_PR_URL,
+           version: process.env.AGENC_RELEASE_VERSION,
+           darwinSha256: {
+             arm64: process.env.AGENC_DARWIN_ARM64_SHA256,
+             x64: process.env.AGENC_DARWIN_X64_SHA256,
+           },
+           testBotRunUrls: {
+             arm64: process.env.AGENC_ARM64_TEST_BOT_URL,
+             x64: process.env.AGENC_X64_TEST_BOT_URL,
+           },
+         }))'
+   )"
+   npm run release:checkpoint -- \
+     --lane full --version "$version" --sha "$tested_sha" \
+     --step homebrew-published \
+     --receipt-json "$homebrew_receipt_json"
+   ```
+8. npm: only after the immutable runtime release, stable installers,
+   get.agenc.ag, and Homebrew have passed readback, dispatch the
+   trusted-publishing workflow at the same immutable source tag and approve its
+   `npm-production` environment. The workflow verifies the immutable runtime
+   release and its assets, packs in an isolated detached worktree, attests the
+   exact tarball and receipt, revalidates both after the approval gate,
+   publishes with npm OIDC, and verifies the registry receipt:
 
    ```bash
    tested_sha="$(git rev-parse "${tag}^{commit}")"
@@ -713,6 +1113,11 @@ resolved package inventory is stored at
      --ref "$tag" \
      -f tested_sha="$tested_sha" \
      -f local_evidence_sha256="$evidence_sha256"
+   npm_run_id="<successful npm publication run ID>"
+   npm run release:checkpoint -- \
+     --lane full --version "$version" --sha "$tested_sha" \
+     --step npm-published \
+     --receipt-json "{\"runId\":$npm_run_id,\"sha\":\"$tested_sha\"}"
    ```
 
    If the immutable tag's npm workflow fails before upload because of a
@@ -742,27 +1147,6 @@ resolved package inventory is stored at
    tooling commit. This exception is only for downstream npm recovery after an
    immutable matching runtime release; identity drift still requires a new
    version.
-
-5. `https://get.agenc.ag/{install.sh,install.ps1,manifest-v2.json,manifest.json}`
-   307-redirect to the release assets. The site root serves the versioned
-   installer landing page. Vercel project `agenc-get` has its complete tracked
-   source in `packaging/get-agenc-ag/` (redeploy: `vercel deploy --prod` from
-   that directory).
-6. Docker publication is intentionally disabled, remains outside the hosted M0
-   quality-gate scope, and stays unauthorized until measured environment drift
-   earns that work. Do not publish from an ambient local `docker buildx` invocation: a
-   version string does not prove the Buildx binary, and one host architecture
-   does not validate both native-addon targets. Any separately approved path
-   must reuse the checksum-verified Buildx bytes, prove both native platform
-   manifests, attach validated SBOM and provenance whose subjects match those
-   manifests, publish the immutable version digest first, smoke the registry
-   result, and only then advance `latest` by digest. The local clean-build gate
-   proves the current host image only and no GHCR release is authorized.
-7. Homebrew resumes with the private-Node formula in 0.11.2. Keep the checked-in
-   placeholder formula unpublishable until both native macOS artifacts pass
-   their release gates; then substitute the immutable release URLs and SHA-256
-   values in `tetsuo-ai/homebrew-agenc`, test both Intel and Apple Silicon
-   installs, and publish the tap update.
 
 For npm artifacts, use the exact launcher workspace and an owned empty output
 directory:

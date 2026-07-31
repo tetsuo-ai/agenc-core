@@ -30,6 +30,16 @@ ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 CHECKSUM_LINE = re.compile(rb"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)\Z")
 SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+MINIMUM_DUAL_PROVENANCE_VERSION = (0, 13, 0)
+RELEASE_CANDIDATE_KEYS = {
+    "workflow",
+    "runId",
+    "runAttempt",
+    "runUrl",
+    "phase",
+    "sourceRef",
+    "evidenceSha256",
+}
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -135,7 +145,46 @@ def canonical_directory(path: pathlib.Path, label: str) -> pathlib.Path:
     return canonical
 
 
-def runtime_asset_names(manifest: dict[str, Any], tag: str) -> set[str]:
+def release_candidate_identity(
+    value: Any,
+    source_commit: Any,
+    *,
+    required: bool,
+) -> dict[str, Any] | None:
+    if value is None and not required:
+        return None
+    if (
+        not isinstance(value, dict)
+        or set(value) != RELEASE_CANDIDATE_KEYS
+        or value.get("workflow") != "release-runtime.yml"
+        or type(value.get("runId")) is not int
+        or value["runId"] <= 0
+        or type(value.get("runAttempt")) is not int
+        or value["runAttempt"] <= 0
+        or value.get("runUrl") != (
+            "https://github.com/tetsuo-ai/agenc-core/actions/runs/"
+            f"{value.get('runId')}"
+        )
+        or value.get("phase") != "candidate"
+        or value.get("sourceRef") != "refs/heads/main"
+        or not isinstance(value.get("evidenceSha256"), str)
+        or SHA256.fullmatch(value["evidenceSha256"]) is None
+        or not isinstance(source_commit, str)
+        or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None
+    ):
+        raise ValueError("runtime release candidate identity is invalid")
+    return value
+
+
+def runtime_asset_names(
+    manifest: dict[str, Any],
+    tag: str,
+) -> tuple[
+    set[str],
+    dict[str, tuple[str, int | None]],
+    str,
+    dict[str, Any] | None,
+]:
     if manifest.get("releaseTag") != tag:
         raise ValueError("v2 manifest tag mismatch")
     version = manifest.get("runtimeVersion")
@@ -146,6 +195,23 @@ def runtime_asset_names(manifest: dict[str, Any], tag: str) -> set[str]:
         raise ValueError("runtime matrix is incomplete")
     seen: set[tuple[str, str]] = set()
     names: set[str] = set()
+    bound_assets: dict[str, tuple[str, int | None]] = {}
+    requires_dual_provenance = (
+        tuple(int(part) for part in version.split(".")) >=
+        MINIMUM_DUAL_PROVENANCE_VERSION
+    )
+    build = manifest.get("build")
+    if (
+        not isinstance(build, dict)
+        or build.get("sourceRef") != f"refs/tags/{tag}"
+    ):
+        raise ValueError("runtime manifest build identity is invalid")
+    source_commit = build.get("sourceCommit")
+    release_candidate = release_candidate_identity(
+        build.get("releaseCandidate"),
+        source_commit,
+        required=requires_dual_provenance,
+    )
     for artifact in artifacts:
         if not isinstance(artifact, dict):
             raise ValueError("runtime artifact entry is invalid")
@@ -169,10 +235,64 @@ def runtime_asset_names(manifest: dict[str, Any], tag: str) -> set[str]:
         )
         if artifact.get("url") != expected_url:
             raise ValueError(f"noncanonical runtime URL: {key}")
-        names.update((name, f"{name}.meta.json", f"{name}.sigstore.json"))
+        artifact_sha256 = artifact.get("sha256")
+        artifact_bytes = artifact.get("bytes")
+        metadata_sha256 = artifact.get("metadataSha256")
+        if (
+            not isinstance(artifact_sha256, str)
+            or SHA256.fullmatch(artifact_sha256) is None
+            or type(artifact_bytes) is not int
+            or artifact_bytes <= 0
+            or not isinstance(metadata_sha256, str)
+            or SHA256.fullmatch(metadata_sha256) is None
+        ):
+            raise ValueError(f"invalid runtime byte identity: {key}")
+        bound_assets[name] = (artifact_sha256, artifact_bytes)
+        bound_assets[f"{name}.meta.json"] = (metadata_sha256, None)
+
+        provenance = [
+            (
+                f"{name}.sigstore.json",
+                "attestationUrl",
+                "attestationSha256",
+                "attestationBytes",
+            ),
+        ]
+        has_build_provenance = any(
+            artifact.get(field) is not None
+            for field in (
+                "buildProvenanceUrl",
+                "buildProvenanceSha256",
+                "buildProvenanceBytes",
+            )
+        )
+        if requires_dual_provenance or has_build_provenance:
+            provenance.append(
+                (
+                    f"{name}.build.sigstore.json",
+                    "buildProvenanceUrl",
+                    "buildProvenanceSha256",
+                    "buildProvenanceBytes",
+                )
+            )
+        for provenance_name, url_field, digest_field, bytes_field in provenance:
+            expected_provenance_url = f"{expected_url}{provenance_name[len(name):]}"
+            digest = artifact.get(digest_field)
+            byte_count = artifact.get(bytes_field)
+            if (
+                artifact.get(url_field) != expected_provenance_url
+                or not isinstance(digest, str)
+                or SHA256.fullmatch(digest) is None
+                or type(byte_count) is not int
+                or byte_count <= 0
+                or byte_count > 4 * 1024 * 1024
+            ):
+                raise ValueError(f"invalid runtime provenance identity: {key}")
+            bound_assets[provenance_name] = (digest, byte_count)
+        names.update(bound_assets.keys())
     if seen != EXPECTED_PLATFORMS:
         raise ValueError("runtime matrix is incomplete")
-    return names
+    return names, bound_assets, source_commit, release_candidate
 
 
 def validate(
@@ -201,7 +321,12 @@ def validate(
     ):
         raise ValueError("runtime release must be published, stable, and immutable")
 
-    runtime_assets = runtime_asset_names(manifest, tag)
+    (
+        runtime_assets,
+        manifest_bound_assets,
+        source_commit,
+        release_candidate,
+    ) = runtime_asset_names(manifest, tag)
     bootstrap_contract = (
         reviewed_bootstrap_assets if tag == bootstrap_release_tag else {}
     )
@@ -212,6 +337,9 @@ def validate(
     for name, (expected_sha256, _) in bootstrap_contract.items():
         if checksums[name] != expected_sha256:
             raise ValueError(f"Node bootstrap checksum is detached from the toolchain: {name}")
+    for name, (expected_sha256, _) in manifest_bound_assets.items():
+        if checksums[name] != expected_sha256:
+            raise ValueError(f"runtime manifest digest is detached from the asset: {name}")
     release_names = checksum_names | {"SHA256SUMS"}
 
     assets = release.get("assets")
@@ -243,6 +371,10 @@ def validate(
             raise ValueError(f"release asset digest, state, or size mismatch: {name}")
         if name in bootstrap_contract and size != bootstrap_contract[name][1]:
             raise ValueError(f"Node bootstrap byte count is detached from the toolchain: {name}")
+        if name in manifest_bound_assets:
+            expected_size = manifest_bound_assets[name][1]
+            if expected_size is not None and size != expected_size:
+                raise ValueError(f"runtime manifest byte count is detached from the asset: {name}")
 
     locally_required = runtime_assets | bootstrap_assets | {
         "agenc-runtime-manifest-v2.json",
@@ -258,6 +390,24 @@ def validate(
         expected = checksum_digest if name == "SHA256SUMS" else checksums[name]
         if actual != expected:
             raise ValueError(f"downloaded release asset digest mismatch: {name}")
+        if name.endswith(".meta.json"):
+            metadata_document, _ = load_json(
+                path,
+                1024 * 1024,
+                f"runtime metadata {name}",
+            )
+            metadata_candidate = release_candidate_identity(
+                metadata_document.get("releaseCandidate"),
+                metadata_document.get("sourceCommit"),
+                required=release_candidate is not None,
+            )
+            if (
+                metadata_document.get("sourceCommit") != source_commit
+                or metadata_candidate != release_candidate
+            ):
+                raise ValueError(
+                    f"runtime metadata release candidate identity is detached: {name}"
+                )
 
     if prepared_root is not None:
         prepared_names: set[str] = set()

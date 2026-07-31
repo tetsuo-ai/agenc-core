@@ -243,6 +243,15 @@ function remoteManifest(
       nodeApiVersion: process.versions.napi,
       npmVersion: "11.17.0",
       artifactProfile: "release",
+      releaseCandidate: {
+        workflow: "release-runtime.yml",
+        runId: 123456,
+        runAttempt: 1,
+        runUrl: "https://github.com/tetsuo-ai/agenc-core/actions/runs/123456",
+        phase: "candidate",
+        sourceRef: "refs/heads/main",
+        evidenceSha256: "9".repeat(64),
+      },
     },
     artifacts: [{
       platform,
@@ -263,11 +272,132 @@ function remoteManifest(
       attestationUrl: `${artifactUrl}.sigstore.json`,
       attestationSha256: sha256(attestation),
       attestationBytes: attestation.length,
+      buildProvenanceUrl: `${artifactUrl}.build.sigstore.json`,
+      buildProvenanceSha256: sha256(attestation),
+      buildProvenanceBytes: attestation.length,
       bins: platform === "win"
         ? { agenc: BIN_REL, node: WINDOWS_NODE_BIN_REL }
         : { agenc: BIN_REL, node: NODE_BIN_REL, nodeLibrary: NODE_LIBRARY_REL },
     }],
   };
+}
+
+type ManifestMutationCase = [
+  name: string,
+  mutate: (manifest: Record<string, any>) => void,
+  expected: string,
+];
+
+const RELEASE_CANDIDATE_IDENTITY_MUTATIONS: ManifestMutationCase[] = [
+  [
+    "missing-release-candidate",
+    (manifest) => { delete manifest.build.releaseCandidate; },
+    "release candidate identity",
+  ],
+  [
+    "null-release-candidate",
+    (manifest) => { manifest.build.releaseCandidate = null; },
+    "release candidate identity",
+  ],
+  [
+    "extra-release-candidate-field",
+    (manifest) => { manifest.build.releaseCandidate.unexpected = true; },
+    "release candidate identity",
+  ],
+  ...[
+    "workflow",
+    "runId",
+    "runAttempt",
+    "runUrl",
+    "phase",
+    "sourceRef",
+    "evidenceSha256",
+  ].map((field): ManifestMutationCase => [
+    `missing-release-candidate-${field}`,
+    (manifest) => { delete manifest.build.releaseCandidate[field]; },
+    "release candidate identity",
+  ]),
+  [
+    "forged-release-candidate-workflow",
+    (manifest) => { manifest.build.releaseCandidate.workflow = "other.yml"; },
+    "release candidate identity",
+  ],
+  [
+    "forged-release-candidate-run-id",
+    (manifest) => { manifest.build.releaseCandidate.runId = 0; },
+    "release candidate identity",
+  ],
+  [
+    "unsafe-release-candidate-run-id",
+    (manifest) => {
+      manifest.build.releaseCandidate.runId = Number.MAX_SAFE_INTEGER + 1;
+      manifest.build.releaseCandidate.runUrl =
+        `https://github.com/tetsuo-ai/agenc-core/actions/runs/${Number.MAX_SAFE_INTEGER + 1}`;
+    },
+    "release candidate identity",
+  ],
+  [
+    "forged-release-candidate-run-attempt",
+    (manifest) => { manifest.build.releaseCandidate.runAttempt = 0; },
+    "release candidate identity",
+  ],
+  [
+    "fractional-release-candidate-run-attempt",
+    (manifest) => { manifest.build.releaseCandidate.runAttempt = 1.5; },
+    "release candidate identity",
+  ],
+  [
+    "forged-release-candidate-run-url",
+    (manifest) => {
+      manifest.build.releaseCandidate.runUrl =
+        "https://github.com/tetsuo-ai/agenc-core/actions/runs/654321";
+    },
+    "release candidate identity",
+  ],
+  [
+    "forged-release-candidate-phase",
+    (manifest) => { manifest.build.releaseCandidate.phase = "promote"; },
+    "release candidate identity",
+  ],
+  [
+    "forged-release-candidate-source-ref",
+    (manifest) => {
+      manifest.build.releaseCandidate.sourceRef = "refs/tags/agenc-v0.13.0";
+    },
+    "release candidate identity",
+  ],
+  [
+    "forged-release-candidate-evidence",
+    (manifest) => {
+      manifest.build.releaseCandidate.evidenceSha256 = "A".repeat(64);
+    },
+    "release candidate identity",
+  ],
+  [
+    "non-git-release-candidate-source-commit",
+    (manifest) => { manifest.build.sourceCommit = "a".repeat(64); },
+    "release candidate identity",
+  ],
+];
+
+function retargetManifestToLegacyCandidateContract(
+  manifest: Record<string, any>,
+): void {
+  const version = "0.12.0";
+  manifest.runtimeVersion = version;
+  manifest.releaseTag = `agenc-v${version}`;
+  manifest.build.sourceRef = `refs/tags/agenc-v${version}`;
+  delete manifest.build.releaseCandidate;
+  const artifact = manifest.artifacts[0];
+  artifact.runtimeVersion = version;
+  const artifactName =
+    `agenc-runtime-${version}-${artifact.platform}-${artifact.arch}` +
+    `-node${artifact.nodeMajor}-abi${artifact.nodeModuleAbi}.tar.gz`;
+  artifact.url =
+    `https://github.com/${manifest.releaseRepository}/releases/download/` +
+    `${manifest.releaseTag}/${artifactName}`;
+  artifact.attestationUrl = `${artifact.url}.sigstore.json`;
+  artifact.buildProvenanceUrl = `${artifact.url}.build.sigstore.json`;
 }
 
 function replaceExactlyOnce(source: string, needle: string, replacement: string): string {
@@ -553,7 +683,7 @@ function makeFakeGhArchive(dir: string): string {
   mkdirSync(binDir, { recursive: true });
   const binary = join(binDir, "gh");
   writeFileSync(binary, `#!/bin/sh
-printf '%s\\n' "$@" > "$AGENC_INSTALL_TEST_GH_LOG"
+printf '%s\\n' "$@" >> "$AGENC_INSTALL_TEST_GH_LOG"
 if [ -n "\${AGENC_INSTALL_TEST_GH_ENV_LOG:-}" ]; then
   {
     printf 'GH_CONFIG_DIR=%s\\n' "\${GH_CONFIG_DIR:-}"
@@ -1603,7 +1733,14 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     }
   });
 
-  test.each(["attestationUrl", "attestationSha256", "attestationBytes"])(
+  test.each([
+    "attestationUrl",
+    "attestationSha256",
+    "attestationBytes",
+    "buildProvenanceUrl",
+    "buildProvenanceSha256",
+    "buildProvenanceBytes",
+  ])(
     "explicit-local manifests reject a declared %s even when it is null",
     (field) => {
       const fixtureRoot = join(work, `local-attestation-${field}`);
@@ -1758,7 +1895,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     }
   }, 30_000);
 
-  test("official manifests require a complete canonical attestation identity", () => {
+  test("official manifests require complete canonical dual provenance identities", () => {
     const artifact = makeSyntheticArtifact(work);
     const base = remoteManifest(
       artifact,
@@ -1773,6 +1910,13 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
       ["wrong-url", (manifest) => { manifest.artifacts[0].attestationUrl = "https://example.invalid/bundle"; }, "attestation URL"],
       ["wrong-sha", (manifest) => { manifest.artifacts[0].attestationSha256 = "A".repeat(64); }, "attestation digest"],
       ["oversized", (manifest) => { manifest.artifacts[0].attestationBytes = 4 * 1024 * 1024 + 1; }, "attestation size"],
+      ["missing-build-url", (manifest) => { delete manifest.artifacts[0].buildProvenanceUrl; }, "build provenance URL"],
+      ["missing-build-sha", (manifest) => { delete manifest.artifacts[0].buildProvenanceSha256; }, "build provenance digest"],
+      ["missing-build-bytes", (manifest) => { delete manifest.artifacts[0].buildProvenanceBytes; }, "build provenance size"],
+      ["wrong-build-url", (manifest) => { manifest.artifacts[0].buildProvenanceUrl = "https://example.invalid/build-bundle"; }, "build provenance URL"],
+      ["wrong-build-sha", (manifest) => { manifest.artifacts[0].buildProvenanceSha256 = "A".repeat(64); }, "build provenance digest"],
+      ["oversized-build", (manifest) => { manifest.artifacts[0].buildProvenanceBytes = 4 * 1024 * 1024 + 1; }, "build provenance size"],
+      ...RELEASE_CANDIDATE_IDENTITY_MUTATIONS,
     ];
     const routes = Object.fromEntries(cases.map(([name, mutate]) => {
       const manifest = structuredClone(base);
@@ -1798,6 +1942,43 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
         expect(result.status).not.toBe(0);
         expect(result.stderr, name).toContain(expected);
       }
+    } finally {
+      fixture.stop();
+    }
+  }, 30_000);
+
+  test("official pre-0.13 manifests do not require release candidate identity", () => {
+    const artifact = makeSyntheticArtifact(work);
+    const manifest = remoteManifest(
+      artifact,
+      "linux",
+      "unused",
+      "tetsuo-ai/agenc-releases",
+    );
+    retargetManifestToLegacyCandidateContract(manifest);
+    manifest.build.nodeApiVersion = "999";
+    manifest.artifacts[0].nodeApiVersion = "999";
+    const fixture = startHttpsFixture(work, {
+      "/manifest.json": { bodyText: JSON.stringify(manifest) },
+    });
+    const rewrite = writeGithubArtifactFetchRewrite(work);
+    const home = join(work, "official-pre-candidate-contract");
+    try {
+      const result = runInstaller({
+        home,
+        repoDerived: true,
+        args: ["--version", "0.12.0", "--no-daemon"],
+        installerPath: writeInstrumentedInstallSh(work),
+        envOverrides: {
+          NODE_EXTRA_CA_CERTS: fixture.ca,
+          NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require=${rewrite}`.trim(),
+          AGENC_INSTALL_TEST_GITHUB_MANIFEST_URL: `${fixture.baseUrl}/manifest.json`,
+        },
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("manifest artifact identity is invalid");
+      expect(result.stderr).not.toContain("release candidate identity");
+      expectFailedInstallCleanup(home);
     } finally {
       fixture.stop();
     }
@@ -1858,7 +2039,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
         envOverrides: common,
       });
       expect(result.status, result.stderr).toBe(0);
-      expect(result.stderr).toContain("source-workflow provenance verified");
+      expect(result.stderr).toContain("native-build and tag-promotion provenance verified");
       expect(existsSync(ambientLog)).toBe(false);
       expect(existsSync(ambientTarLog)).toBe(false);
       const ghArgs = readFileSync(ghLog, "utf8");
@@ -1870,6 +2051,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
       expect(ghArgs).toContain(`--source-digest\n${"a".repeat(40)}\n`);
       expect(ghArgs).toContain(`--signer-digest\n${"a".repeat(40)}\n`);
       expect(ghArgs).toContain(`--source-ref\nrefs/tags/agenc-v${VERSION}\n`);
+      expect(ghArgs).toContain("--source-ref\nrefs/heads/main\n");
       expect(ghArgs).toContain("--hostname\ngithub.com\n");
       expect(ghArgs).toContain(
         "--cert-oidc-issuer\nhttps://token.actions.githubusercontent.com\n",
@@ -1890,13 +2072,14 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
       expect(ghEnvironment).toContain("GH_SPINNER_DISABLED=1\n");
       const fetched = readFileSync(fetchLog, "utf8");
       expect(fetched).toContain(`${manifest.artifacts[0].url}.sigstore.json`);
+      expect(fetched).toContain(`${manifest.artifacts[0].url}.build.sigstore.json`);
       expect(fetched).toContain(
         "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_linux_amd64.tar.gz",
       );
 
       const receiptPath = paths(home, artifact.sha).provenanceReceipt;
       expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toEqual({
-        schema: "agenc-runtime-provenance/v1",
+        schema: "agenc-runtime-provenance/v2",
         artifactSha256: artifact.sha,
         artifactUrl: manifest.artifacts[0].url,
         sourceRepository: "tetsuo-ai/agenc-core",
@@ -1906,6 +2089,10 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
         attestationUrl: manifest.artifacts[0].attestationUrl,
         attestationSha256: sha256(Buffer.from("{}")),
         attestationBytes: Buffer.byteLength("{}"),
+        buildProvenanceUrl: manifest.artifacts[0].buildProvenanceUrl,
+        buildProvenanceSha256: sha256(Buffer.from("{}")),
+        buildProvenanceBytes: Buffer.byteLength("{}"),
+        buildSourceRef: "refs/heads/main",
         verificationPolicy: {
           hostname: "github.com",
           certOidcIssuer: "https://token.actions.githubusercontent.com",
@@ -1927,7 +2114,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
         envOverrides: common,
       });
       expect(migrated.status, migrated.stderr).toBe(0);
-      expect(migrated.stderr).toContain("source-workflow provenance verified");
+      expect(migrated.stderr).toContain("native-build and tag-promotion provenance verified");
       expect(existsSync(receiptPath)).toBe(true);
       expect(readFileSync(fetchLog, "utf8")).toContain(
         `${manifest.artifacts[0].url}.sigstore.json`,
@@ -1959,6 +2146,10 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
         ["attestationUrl", `${manifest.artifacts[0].url}.tampered`],
         ["attestationSha256", "0".repeat(64)],
         ["attestationBytes", 1],
+        ["buildProvenanceUrl", `${manifest.artifacts[0].url}.tampered-build`],
+        ["buildProvenanceSha256", "0".repeat(64)],
+        ["buildProvenanceBytes", 1],
+        ["buildSourceRef", "refs/heads/not-main"],
       ] as const) {
         const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
         receipt[field] = value;
@@ -1973,7 +2164,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
           envOverrides: common,
         });
         expect(repaired.status, `${field}: ${repaired.stderr}`).toBe(0);
-        expect(repaired.stderr).toContain("source-workflow provenance verified");
+        expect(repaired.stderr).toContain("native-build and tag-promotion provenance verified");
         expect(readFileSync(fetchLog, "utf8")).toContain(
           manifest.artifacts[0].attestationUrl,
         );
@@ -2687,7 +2878,10 @@ test("official standalone paths pin gh and bind Sigstore verification to the sou
     expect(installer).toContain("--predicate-type");
     expect(installer).toContain("--deny-self-hosted-runners");
     expect(installer).toContain("agenc-runtime-provenance/v1");
+    expect(installer).toContain("agenc-runtime-provenance/v2");
     expect(installer).toContain("attestationSha256");
+    expect(installer).toContain("buildProvenanceSha256");
+    expect(installer).toContain("refs/heads/main");
   }
   expect(shell).toContain("GH_TELEMETRY=0");
   expect(shell).toContain("DO_NOT_TRACK=1");
@@ -3137,6 +3331,92 @@ function registerInstallPs1Tests(): void {
         fixture.stop();
       }
     });
+
+    test("PowerShell official manifests require exact release candidate identity", () => {
+      const artifact = makeSyntheticArtifact(work);
+      const base = remoteManifest(
+        artifact,
+        "win",
+        "unused",
+        "tetsuo-ai/agenc-releases",
+      );
+      const routes = Object.fromEntries(
+        RELEASE_CANDIDATE_IDENTITY_MUTATIONS.map(([name, mutate]) => {
+          const manifest = structuredClone(base);
+          mutate(manifest);
+          return [`/${name}.json`, { bodyText: JSON.stringify(manifest) }];
+        }),
+      );
+      const fixture = startHttpsFixture(work, routes);
+      const rewrite = writeGithubArtifactFetchRewrite(work);
+      const installerPath = writeInstrumentedInstallPs1(work);
+      try {
+        for (const [name, _mutate, expected] of RELEASE_CANDIDATE_IDENTITY_MUTATIONS) {
+          const home = join(work, `powershell-official-${name}`);
+          const result = runPowerShell(
+            home,
+            undefined,
+            join(home, ".agenc"),
+            {
+              AGENC_INSTALL_VERSION: VERSION,
+              NODE_EXTRA_CA_CERTS: fixture.ca,
+              NODE_OPTIONS:
+                `${process.env.NODE_OPTIONS ?? ""} --require=${rewrite}`.trim(),
+              AGENC_INSTALL_TEST_GITHUB_MANIFEST_URL:
+                `${fixture.baseUrl}/${name}.json`,
+            },
+            installerPath,
+          );
+          const output = `${result.stdout}\n${result.stderr}`;
+          expect(result.status, `${name}: ${output}`).not.toBe(0);
+          expect(output, name).toContain(expected);
+          expectFailedInstallCleanup(home);
+        }
+      } finally {
+        fixture.stop();
+      }
+    }, 30_000);
+
+    test("PowerShell official pre-0.13 manifests do not require release candidate identity", () => {
+      const artifact = makeSyntheticArtifact(work);
+      const manifest = remoteManifest(
+        artifact,
+        "win",
+        "unused",
+        "tetsuo-ai/agenc-releases",
+      );
+      retargetManifestToLegacyCandidateContract(manifest);
+      manifest.build.nodeApiVersion = "999";
+      manifest.artifacts[0].nodeApiVersion = "999";
+      const fixture = startHttpsFixture(work, {
+        "/manifest.json": { bodyText: JSON.stringify(manifest) },
+      });
+      const rewrite = writeGithubArtifactFetchRewrite(work);
+      const home = join(work, "powershell-official-pre-candidate-contract");
+      try {
+        const result = runPowerShell(
+          home,
+          undefined,
+          join(home, ".agenc"),
+          {
+            AGENC_INSTALL_VERSION: "0.12.0",
+            NODE_EXTRA_CA_CERTS: fixture.ca,
+            NODE_OPTIONS:
+              `${process.env.NODE_OPTIONS ?? ""} --require=${rewrite}`.trim(),
+            AGENC_INSTALL_TEST_GITHUB_MANIFEST_URL:
+              `${fixture.baseUrl}/manifest.json`,
+          },
+          writeInstrumentedInstallPs1(work),
+        );
+        const output = `${result.stdout}\n${result.stderr}`;
+        expect(result.status, output).not.toBe(0);
+        expect(output).toContain("manifest artifact identity is invalid");
+        expect(output).not.toContain("release candidate identity");
+        expectFailedInstallCleanup(home);
+      } finally {
+        fixture.stop();
+      }
+    }, 30_000);
 
     test("PowerShell bounded fetch aborts a stalled response on its total deadline", () => {
       const home = join(work, "deadline-home");

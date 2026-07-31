@@ -52,6 +52,7 @@ $MaxSigstoreBundleBytes = 4MB
 $MaxGhArchiveBytes = 64MB
 $OfficialRepo = "tetsuo-ai/agenc-releases"
 $ProvenanceSchema = "agenc-runtime-provenance/v1"
+$DualProvenanceSchema = "agenc-runtime-provenance/v2"
 $ProvenanceRepository = "tetsuo-ai/agenc-core"
 $ProvenanceWorkflow = "tetsuo-ai/agenc-core/.github/workflows/release-runtime.yml"
 $ProvenanceHostname = "github.com"
@@ -452,6 +453,9 @@ function Confirm-OfficialRuntimeProvenance(
   [string]$AttestationUrl,
   [string]$AttestationSha256,
   [long]$AttestationBytes,
+  [string]$BuildProvenanceUrl,
+  [string]$BuildProvenanceSha256,
+  [long]$BuildProvenanceBytes,
   [string]$SourceCommit,
   [string]$SourceRef,
   [string]$Work,
@@ -477,12 +481,21 @@ function Confirm-OfficialRuntimeProvenance(
   $ghDirectory = "gh_${ghVersion}_windows_amd64"
   $ghBinary = Join-Path $ghRoot "$ghDirectory/bin/gh.exe"
   $bundle = Join-Path $Work "runtime.sigstore.json"
-  $bundleUrl = $AttestationUrl
+  $buildBundle = Join-Path $Work "runtime.build.sigstore.json"
+  $hasBuildProvenance = -not [string]::IsNullOrEmpty($BuildProvenanceUrl)
 
-  Copy-InstallerResource $bundleUrl $bundle $MaxSigstoreBundleBytes ([string]$AttestationBytes) "official"
+  Copy-InstallerResource $AttestationUrl $bundle $MaxSigstoreBundleBytes ([string]$AttestationBytes) "official"
   $bundleSha = (Get-FileHash -Algorithm SHA256 $bundle).Hash.ToLowerInvariant()
   if ($bundleSha -cne $AttestationSha256) {
     Fail "Sigstore bundle checksum mismatch (expected $AttestationSha256, got $bundleSha)"
+  }
+  if ($hasBuildProvenance) {
+    Copy-InstallerResource $BuildProvenanceUrl $buildBundle $MaxSigstoreBundleBytes `
+      ([string]$BuildProvenanceBytes) "official"
+    $buildBundleSha = (Get-FileHash -Algorithm SHA256 $buildBundle).Hash.ToLowerInvariant()
+    if ($buildBundleSha -cne $BuildProvenanceSha256) {
+      Fail "build provenance bundle checksum mismatch (expected $BuildProvenanceSha256, got $buildBundleSha)"
+    }
   }
   Copy-InstallerResource $ghUrl $ghArchive $MaxGhArchiveBytes ([string]$ghBytes) "official"
   $actualGhSha = (Get-FileHash -Algorithm SHA256 $ghArchive).Hash.ToLowerInvariant()
@@ -522,6 +535,22 @@ function Confirm-OfficialRuntimeProvenance(
     $env:GH_DEBUG = $null
     $env:GH_PAGER = $null
     $env:PAGER = $null
+    if ($hasBuildProvenance) {
+      & $ghBinary attestation verify $Tarball `
+        --bundle $buildBundle `
+        --repo $ProvenanceRepository `
+        --signer-workflow $ProvenanceWorkflow `
+        --signer-digest $SourceCommit `
+        --source-digest $SourceCommit `
+        --source-ref "refs/heads/main" `
+        --hostname $ProvenanceHostname `
+        --cert-oidc-issuer $ProvenanceOidcIssuer `
+        --predicate-type $ProvenancePredicateType `
+        --deny-self-hosted-runners | Out-Null
+      if ($LASTEXITCODE -ne 0) {
+        Fail "official runtime build provenance verification failed"
+      }
+    }
     & $ghBinary attestation verify $Tarball `
       --bundle $bundle `
       --repo $ProvenanceRepository `
@@ -547,8 +576,16 @@ function Confirm-OfficialRuntimeProvenance(
   if ($postVerifyBundleSha -cne $bundleSha) {
     Fail "Sigstore bundle changed during provenance verification"
   }
+  if ($hasBuildProvenance) {
+    $postVerifyBuildBundleSha = (
+      Get-FileHash -Algorithm SHA256 $buildBundle
+    ).Hash.ToLowerInvariant()
+    if ($postVerifyBuildBundleSha -cne $buildBundleSha) {
+      Fail "build provenance bundle changed during provenance verification"
+    }
+  }
   $script:OfficialProvenanceReceiptBase64 = $ExpectedReceiptBase64
-  Remove-Item -Force -LiteralPath $bundle, $ghArchive -ErrorAction SilentlyContinue
+  Remove-Item -Force -LiteralPath $bundle, $buildBundle, $ghArchive -ErrorAction SilentlyContinue
   Remove-Item -Recurse -Force -LiteralPath $ghRoot, $ghConfigRoot -ErrorAction SilentlyContinue
   Write-Log "source-workflow provenance verified"
 }
@@ -990,6 +1027,13 @@ try {
           $runtimePatch -lt [System.Numerics.BigInteger]::Parse("2")))) {
       Fail "runtime $($manifest.runtimeVersion) has no supported standalone activation contract; use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.2 and newer with private Node"
     }
+    $requiresDualProvenance = (
+      $runtimeMajor -gt [System.Numerics.BigInteger]::Zero -or
+      (
+        $runtimeMajor -eq [System.Numerics.BigInteger]::Zero -and
+        $runtimeMinor -ge [System.Numerics.BigInteger]::Parse("13")
+      )
+    )
     if ($expectedManifestRepo -and [string]$manifest.releaseRepository -cne $expectedManifestRepo) {
       Fail "runtime manifest releaseRepository $($manifest.releaseRepository) does not match requested $expectedManifestRepo"
     }
@@ -1040,7 +1084,10 @@ try {
         if ($LASTEXITCODE -ne 0) { Fail "explicit local manifests may only use canonical file artifact URLs" }
         if ((Test-HasProperty $candidate "attestationUrl") -or
             (Test-HasProperty $candidate "attestationSha256") -or
-            (Test-HasProperty $candidate "attestationBytes")) {
+            (Test-HasProperty $candidate "attestationBytes") -or
+            (Test-HasProperty $candidate "buildProvenanceUrl") -or
+            (Test-HasProperty $candidate "buildProvenanceSha256") -or
+            (Test-HasProperty $candidate "buildProvenanceBytes")) {
           Fail "explicit local runtime artifacts must not declare remote attestations"
         }
       } elseif ($candidateUri.Scheme -cne "https") {
@@ -1068,6 +1115,26 @@ try {
           Fail "runtime artifact attestation size is invalid"
         }
       }
+      $hasBuildProvenance = (Test-HasProperty $candidate "buildProvenanceUrl") -or
+        (Test-HasProperty $candidate "buildProvenanceSha256") -or
+        (Test-HasProperty $candidate "buildProvenanceBytes")
+      if (
+        ($manifestTrust -eq "official" -and $requiresDualProvenance) -or
+        $hasBuildProvenance
+      ) {
+        if ([string]$candidate.buildProvenanceUrl -cne "$($candidate.url).build.sigstore.json") {
+          Fail "runtime artifact build provenance URL is not canonical"
+        }
+        if (-not (Test-CleanString $candidate.buildProvenanceSha256) -or
+            [string]$candidate.buildProvenanceSha256 -notmatch "^[0-9a-f]{64}$") {
+          Fail "runtime artifact build provenance digest is invalid"
+        }
+        if (-not (Test-JsonInteger $candidate.buildProvenanceBytes) -or
+            [long]$candidate.buildProvenanceBytes -le 0 -or
+            [long]$candidate.buildProvenanceBytes -gt $MaxSigstoreBundleBytes) {
+          Fail "runtime artifact build provenance size is invalid"
+        }
+      }
       if ($manifestTrust -eq "official" -and [string]$manifest.releaseRepository -cne $OfficialRepo) {
         Fail "manifest release repository is not official"
       }
@@ -1087,6 +1154,43 @@ try {
           [string]$build.artifactProfile -cne "release" -or
           [int](([string]$build.nodeVersion).Substring(1).Split(".")[0]) -ne [int]$build.nodeMajor) {
         Fail "runtime manifest build provenance is invalid"
+      }
+      $hasReleaseCandidate = Test-HasProperty $build "releaseCandidate"
+      if (($manifestTrust -eq "official" -and $requiresDualProvenance) -or
+          $hasReleaseCandidate) {
+        $releaseCandidate = $build.releaseCandidate
+        $expectedReleaseCandidateProperties = @(
+          "workflow",
+          "runId",
+          "runAttempt",
+          "runUrl",
+          "phase",
+          "sourceRef",
+          "evidenceSha256"
+        ) | Sort-Object -CaseSensitive
+        $actualReleaseCandidateProperties = if ($releaseCandidate -is [pscustomobject]) {
+          @($releaseCandidate.PSObject.Properties.Name) | Sort-Object -CaseSensitive
+        } else {
+          @()
+        }
+        if (-not ($releaseCandidate -is [pscustomobject]) -or
+            ($actualReleaseCandidateProperties -join "`0") -cne
+              ($expectedReleaseCandidateProperties -join "`0") -or
+            [string]$releaseCandidate.workflow -cne "release-runtime.yml" -or
+            -not (Test-JsonInteger $releaseCandidate.runId) -or
+            [long]$releaseCandidate.runId -le 0 -or
+            [long]$releaseCandidate.runId -gt 9007199254740991 -or
+            -not (Test-JsonInteger $releaseCandidate.runAttempt) -or
+            [long]$releaseCandidate.runAttempt -le 0 -or
+            [long]$releaseCandidate.runAttempt -gt 9007199254740991 -or
+            [string]$releaseCandidate.runUrl -cne
+              "https://github.com/tetsuo-ai/agenc-core/actions/runs/$($releaseCandidate.runId)" -or
+            [string]$releaseCandidate.phase -cne "candidate" -or
+            [string]$releaseCandidate.sourceRef -cne "refs/heads/main" -or
+            [string]$releaseCandidate.evidenceSha256 -cnotmatch "^[0-9a-f]{64}$" -or
+            [string]$build.sourceCommit -cnotmatch "^[0-9a-f]{40}$") {
+          Fail "runtime release candidate identity is invalid"
+        }
       }
       foreach ($candidate in $allArtifacts) {
         if ([int]$candidate.nodeMajor -ne [int]$build.nodeMajor -or
@@ -1148,8 +1252,9 @@ try {
 
   $provenanceExpectationBase64 = ""
   if ($manifestTrust -eq "official") {
+    $hasBuildProvenance = Test-HasProperty $artifact "buildProvenanceUrl"
     $expectation = [ordered]@{
-      schema = $ProvenanceSchema
+      schema = if ($hasBuildProvenance) { $DualProvenanceSchema } else { $ProvenanceSchema }
       artifactSha256 = [string]$artifact.sha256
       artifactUrl = [string]$artifact.url
       sourceRepository = $ProvenanceRepository
@@ -1159,12 +1264,18 @@ try {
       attestationUrl = [string]$artifact.attestationUrl
       attestationSha256 = [string]$artifact.attestationSha256
       attestationBytes = [long]$artifact.attestationBytes
-      verificationPolicy = [ordered]@{
-        hostname = $ProvenanceHostname
-        certOidcIssuer = $ProvenanceOidcIssuer
-        predicateType = $ProvenancePredicateType
-        denySelfHostedRunners = $true
-      }
+    }
+    if ($hasBuildProvenance) {
+      $expectation["buildProvenanceUrl"] = [string]$artifact.buildProvenanceUrl
+      $expectation["buildProvenanceSha256"] = [string]$artifact.buildProvenanceSha256
+      $expectation["buildProvenanceBytes"] = [long]$artifact.buildProvenanceBytes
+      $expectation["buildSourceRef"] = "refs/heads/main"
+    }
+    $expectation["verificationPolicy"] = [ordered]@{
+      hostname = $ProvenanceHostname
+      certOidcIssuer = $ProvenanceOidcIssuer
+      predicateType = $ProvenancePredicateType
+      denySelfHostedRunners = $true
     }
     $expectationJson = $expectation | ConvertTo-Json -Compress -Depth 5
     $provenanceExpectationBase64 = [Convert]::ToBase64String(
@@ -1556,11 +1667,18 @@ function decodeProvenanceJson(encoded, label) {
   catch { throw new Error(`invalid ${label}`); }
 }
 function validProvenanceExpectation(value) {
-  return exactKeys(value, [
+  const baseKeys = [
     "schema", "artifactSha256", "artifactUrl", "sourceRepository", "sourceWorkflow",
     "sourceCommit", "sourceRef", "attestationUrl", "attestationSha256",
     "attestationBytes", "verificationPolicy",
-  ]) && value.schema === "agenc-runtime-provenance/v1" &&
+  ];
+  const dual = value?.schema === "agenc-runtime-provenance/v2";
+  return exactKeys(value, dual ? [
+    ...baseKeys,
+    "buildProvenanceUrl", "buildProvenanceSha256", "buildProvenanceBytes",
+    "buildSourceRef",
+  ] : baseKeys) &&
+    (dual || value.schema === "agenc-runtime-provenance/v1") &&
     value.artifactSha256 === expectedSha &&
     typeof value.artifactUrl === "string" &&
     value.artifactUrl.startsWith("https://github.com/tetsuo-ai/agenc-releases/releases/download/") &&
@@ -1572,6 +1690,14 @@ function validProvenanceExpectation(value) {
     /^[0-9a-f]{64}$/.test(value.attestationSha256) &&
     Number.isSafeInteger(value.attestationBytes) && value.attestationBytes > 0 &&
     value.attestationBytes <= 4 * 1024 * 1024 &&
+    (!dual || (
+      value.buildProvenanceUrl === `${value.artifactUrl}.build.sigstore.json` &&
+      /^[0-9a-f]{64}$/.test(value.buildProvenanceSha256) &&
+      Number.isSafeInteger(value.buildProvenanceBytes) &&
+      value.buildProvenanceBytes > 0 &&
+      value.buildProvenanceBytes <= 4 * 1024 * 1024 &&
+      value.buildSourceRef === "refs/heads/main"
+    )) &&
     exactKeys(value.verificationPolicy, [
       "hostname", "certOidcIssuer", "predicateType", "denySelfHostedRunners",
     ]) && value.verificationPolicy.hostname === "github.com" &&
@@ -2185,6 +2311,9 @@ main().catch((error) => {
       ([string]$artifact.attestationUrl) `
       ([string]$artifact.attestationSha256) `
       ([long]$artifact.attestationBytes) `
+      ([string]$artifact.buildProvenanceUrl) `
+      ([string]$artifact.buildProvenanceSha256) `
+      ([long]$artifact.buildProvenanceBytes) `
       ([string]$manifest.build.sourceCommit) `
       ([string]$manifest.build.sourceRef) `
       $work `

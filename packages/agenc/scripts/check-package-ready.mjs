@@ -6,6 +6,10 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  runtimeVersionRequiresDualProvenance,
+  validateRuntimeReleaseCandidateIdentity,
+} from "../lib/runtime-release-contract.mjs";
+import {
   LEGACY_BRIDGE_CONTRACT,
   LEGACY_MANIFEST_FILENAME,
   V2_MANIFEST_FILENAME,
@@ -243,6 +247,19 @@ export function validateLauncherManifest({
         : "public launcher manifest must use the release artifact profile",
     );
   }
+  try {
+    validateRuntimeReleaseCandidateIdentity(
+      manifest.build?.releaseCandidate,
+      manifest.build?.sourceCommit,
+      {
+        required:
+          !allowTestPartial &&
+          runtimeVersionRequiresDualProvenance(manifest.runtimeVersion),
+      },
+    );
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "release candidate identity is invalid");
+  }
   const seen = new Set();
   for (const artifact of manifest.artifacts) {
     const key = `${artifact.platform}-${artifact.arch}`;
@@ -299,6 +316,8 @@ export function validateLauncherManifest({
     if (!allowTestPartial && artifact.url !== expectedUrl) {
       fail(`${key} URL is not the canonical immutable release asset URL`);
     }
+    const requiresDualProvenance =
+      runtimeVersionRequiresDualProvenance(manifest.runtimeVersion);
     if (
       !allowTestPartial &&
       (
@@ -306,10 +325,20 @@ export function validateLauncherManifest({
         !/^[0-9a-f]{64}$/.test(artifact.attestationSha256 ?? "") ||
         !Number.isSafeInteger(artifact.attestationBytes) ||
         artifact.attestationBytes <= 0 ||
-        artifact.attestationBytes > MAX_RUNTIME_ATTESTATION_BYTES
+        artifact.attestationBytes > MAX_RUNTIME_ATTESTATION_BYTES ||
+        (
+          requiresDualProvenance &&
+          (
+            artifact.buildProvenanceUrl !== `${expectedUrl}.build.sigstore.json` ||
+            !/^[0-9a-f]{64}$/.test(artifact.buildProvenanceSha256 ?? "") ||
+            !Number.isSafeInteger(artifact.buildProvenanceBytes) ||
+            artifact.buildProvenanceBytes <= 0 ||
+            artifact.buildProvenanceBytes > MAX_RUNTIME_ATTESTATION_BYTES
+          )
+        )
       )
     ) {
-      fail(`${key} has an invalid canonical Sigstore attestation identity`);
+      fail(`${key} has an invalid canonical dual-provenance identity`);
     }
     if (!/^[0-9a-f]{64}$/.test(artifact.sha256 ?? "")) {
       fail(`${key} has an invalid sha256`);

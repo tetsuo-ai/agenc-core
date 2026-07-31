@@ -116,10 +116,10 @@ Research was refreshed on 2026-07-27. The load-bearing sources are:
   [GitHub release assets](https://docs.github.com/rest/releases/assets)
 - GitHub-hosted native runner labels receive weekly mutable images. The exact
   image versions reviewed for this release contract are macOS arm64
-  `20260715.0234.1`, macOS x64 `20260720.0353.1`, and Windows x64
+  `20260727.0256.1`, macOS x64 `20260720.0353.1`, and Windows x64
   `20260714.173.1`; their release inventories are the primary source for the
   pinned Xcode, SDK, Visual Studio, MSVC, and Windows SDK identities.
-  [macOS arm64 image](https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20260715.0234),
+  [macOS arm64 image](https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20260727.0256),
   [macOS x64 image](https://github.com/actions/runner-images/releases/tag/macos-15%2F20260720.0353),
   [Windows x64 image](https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20260714.173)
 - Node 26.5.0 is the Current release, carries module ABI 147 and npm 11.17.0,
@@ -211,20 +211,33 @@ its writer, and verify restored format, removed uncommitted table, and
 
 ### Publication separates proof from promotion
 
-Runtime assets are assembled before release and uploaded by immutable artifact
-identity. npm pack produces an exact tarball plus receipt; the protected OIDC
-publish job revalidates those bytes after approval and verifies the registry
-integrity receipt. Existing mutable release state is never silently repaired.
+Runtime assets are built and sealed at exact current `main` while the version
+tag is still absent. The six Actions artifacts are pre-tag staging transport,
+not durable authority: before the source tag exists, their 17 files are
+published permanently under the derived
+`agenc-candidate-v<version>-run-<run_id>` immutable prerelease in
+`tetsuo-ai/agenc-releases`. A checksum-pinned verifier checkpoints that exact
+non-draft prerelease and its API asset digests against the authenticated seal.
+This ordering survives Actions artifact deletion by a later whole-workflow
+rerun. The tagged workflow then downloads only from that immutable escrow,
+promotes the same archive and metadata bytes, and creates tag-ref attestations
+without rebuilding on mutable native runners. Only the validated tagged
+artifacts enter the final immutable GitHub release. npm pack produces an exact
+tarball plus receipt; the protected OIDC publish job revalidates those bytes
+after approval and verifies the registry integrity receipt. Existing mutable
+release state is never silently repaired.
 
 Before npm packing, the downstream job proves that the immutable release API,
 canonical `SHA256SUMS`, complete five-platform tar/metadata/attestation matrix,
 source-exact installers, SBOM, and locally re-prepared release asset directory
 have identical names, sizes, and SHA-256 digests. The `0.11.2` private-Node
 anchor contains 23 files, including its two immutable Linux compatibility
-bootstraps; later releases contain 21 and reuse those anchored bootstraps. An
-incomplete, substituted, or extra immutable asset therefore blocks launcher
-promotion. Packing and verification both run the complete launcher-manifest
-validator over the exact source or embedded bytes. Stable publication
+bootstraps, and `0.12.0` contains 21. Candidate-preserving releases add five
+authenticated build-provenance bundles to the 21-file runtime/static inventory
+and reuse the anchored bootstraps. An incomplete, substituted, or extra
+immutable asset therefore blocks launcher promotion. Packing and verification
+both run the complete launcher-manifest validator over the exact source or
+embedded bytes. Stable publication
 explicitly selects `latest` and then independently verifies the registry
 dist-tag, including idempotent reruns.
 
@@ -256,12 +269,18 @@ unless the hosted runner image and compiler/SDK inventory exactly match
 `release-toolchain.json`. Updating a moving runner image is therefore a
 reviewed source change instead of an invisible release input.
 
-Each runtime tarball and its provenance metadata sidecar are subjects of one
-pinned-workflow attestation. Its canonical
-`<tarball>.sigstore.json` bundle is byte-counted and hashed into the release
-manifest. Official standalone installs and self-updates bootstrap an exact
+Each candidate runtime tarball and its provenance metadata sidecar are subjects
+of a pinned-workflow attestation. Tagged promotion verifies and preserves that
+bundle as `<tarball>.build.sigstore.json`, keeps the two subjects byte-for-byte,
+and emits the canonical `<tarball>.sigstore.json` tag-ref bundle. Both bundles
+are byte-counted and hashed into the release inventory. Official standalone
+installs and self-updates bootstrap an exact
 per-platform GitHub CLI archive by reviewed URL, size, and SHA-256, isolate its
-configuration from ambient credentials, then require the attestation to match
+configuration from ambient credentials, and verify the extracted executable
+against a separate reviewed byte count and SHA-256 before running it. The
+candidate checkpoint repeats that executable check after verification and
+records the selected host pin in its immutable authentication receipt. It then
+requires the attestation to match
 the AgenC source repository, exact workflow path and commit, release tag and
 commit, GitHub OIDC issuer, SLSA v1 predicate, and a GitHub-hosted runner. This
 verification completes before runtime archive parsing or extraction. Custom
@@ -321,9 +340,10 @@ release-matrix responsibilities, not an implied Docker-publication grant.
 `socket._handle.fd` is a Node implementation detail, so the real
 `verifiedBy=peerUid` smoke remains mandatory on every supported Node/platform
 release job. The historical Node 25 bridge remains immutable, while current
-releases use Node 26.5.0 / ABI 147. Homebrew publication is no longer blocked
-by the runtime line, but still requires a populated formula and successful
-native macOS release gates.
+releases use Node 26.5.0 / ABI 147. Homebrew is an active release surface:
+publication waits for the immutable Darwin artifacts, a populated formula, and
+successful Intel and Apple Silicon tap tests, then records its own release
+checkpoint before npm publication.
 
 Official artifact attestations authenticate build origin, but the current
 online verifier still obtains current GitHub/Sigstore trusted-root and

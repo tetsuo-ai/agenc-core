@@ -24,6 +24,10 @@ import {
   validateEmbeddedNodeRuntimeArchive,
   validateRuntimeArchive,
 } from "../lib/runtime-archive.mjs";
+import {
+  runtimeVersionRequiresDualProvenance,
+  validateRuntimeReleaseCandidateIdentity,
+} from "../lib/runtime-release-contract.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const launcherDir = resolve(__dirname, "..");
@@ -351,6 +355,35 @@ function sha256File(path) {
 
 function sha256Bytes(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+async function sigstoreBundleIdentity(files, name, key, label) {
+  const path = files.get(name);
+  if (path === undefined) {
+    throw new Error(`${key} ${label} Sigstore bundle is missing: ${name}`);
+  }
+  const bytes = statSync(path).size;
+  if (
+    !Number.isSafeInteger(bytes) ||
+    bytes <= 0 ||
+    bytes > MAX_ATTESTATION_BUNDLE_BYTES
+  ) {
+    throw new Error(`${key} ${label} Sigstore bundle has an invalid byte count`);
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("bundle root is not an object");
+    }
+  } catch (error) {
+    throw new Error(`${key} ${label} Sigstore bundle is invalid JSON`, {
+      cause: error,
+    });
+  }
+  return {
+    sha256: await sha256File(path),
+    bytes,
+  };
 }
 
 function captureOptional(command, args) {
@@ -938,33 +971,29 @@ export async function generateManifest({
     if (actualDigest !== expectedDigest) {
       throw new Error(`${key} sha256 mismatch (${expectedDigest} != ${actualDigest})`);
     }
-    let attestation;
+    let provenance;
     if (artifactProfile === "release") {
       const attestationName = `${artifactName}.sigstore.json`;
-      const attestationPath = files.get(attestationName);
-      if (attestationPath === undefined) {
-        throw new Error(`${key} canonical Sigstore bundle is missing: ${attestationName}`);
-      }
-      const attestationBytes = statSync(attestationPath).size;
-      if (
-        !Number.isSafeInteger(attestationBytes) ||
-        attestationBytes <= 0 ||
-        attestationBytes > MAX_ATTESTATION_BUNDLE_BYTES
-      ) {
-        throw new Error(`${key} canonical Sigstore bundle has an invalid byte count`);
-      }
-      try {
-        const parsed = JSON.parse(readFileSync(attestationPath, "utf8"));
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-          throw new Error("bundle root is not an object");
-        }
-      } catch (error) {
-        throw new Error(`${key} canonical Sigstore bundle is invalid JSON`, { cause: error });
-      }
-      attestation = {
+      const buildProvenanceName = `${artifactName}.build.sigstore.json`;
+      const attestation = await sigstoreBundleIdentity(
+        files,
+        attestationName,
+        key,
+        "tag promotion",
+      );
+      const buildProvenance = await sigstoreBundleIdentity(
+        files,
+        buildProvenanceName,
+        key,
+        "native build provenance",
+      );
+      provenance = {
         attestationUrl: `${resolvedBaseUrl}/${attestationName}`,
-        attestationSha256: await sha256File(attestationPath),
-        attestationBytes,
+        attestationSha256: attestation.sha256,
+        attestationBytes: attestation.bytes,
+        buildProvenanceUrl: `${resolvedBaseUrl}/${buildProvenanceName}`,
+        buildProvenanceSha256: buildProvenance.sha256,
+        buildProvenanceBytes: buildProvenance.bytes,
       };
     }
     const metadataPath = files.get(`${artifactName}.meta.json`);
@@ -1169,7 +1198,7 @@ export async function generateManifest({
       url: `${resolvedBaseUrl}/${artifactName}`,
       sha256: actualDigest,
       bytes: actualBytes,
-      ...attestation,
+      ...provenance,
       metadataSha256,
       nativeToolchain,
       dependencyTreeSha256,
@@ -1203,8 +1232,11 @@ export async function generateManifest({
       throw new Error(`runtime artifact has no sidecar: ${name}`);
     }
   }
-  for (const name of names.filter((entry) => entry.endsWith(".tar.gz.sigstore.json"))) {
-    const artifactName = name.slice(0, -".sigstore.json".length);
+  for (const name of names.filter((entry) => entry.endsWith(".sigstore.json"))) {
+    const suffix = name.endsWith(".build.sigstore.json")
+      ? ".build.sigstore.json"
+      : ".sigstore.json";
+    const artifactName = name.slice(0, -suffix.length);
     if (!runtimeArtifactNames.has(artifactName)) {
       throw new Error(`canonical Sigstore bundle has no runtime artifact: ${name}`);
     }
@@ -1221,6 +1253,30 @@ export async function generateManifest({
     /^(release|clean-local|container-local)$/,
   );
   requireExpectedBuildValue(sourceCommit, expectedBuild.sourceCommit, "source commit");
+  const releaseCandidateValues = metas.map((meta) => meta.releaseCandidate);
+  const hasReleaseCandidate = releaseCandidateValues.some(
+    (value) => value !== undefined,
+  );
+  const requiresReleaseCandidate =
+    artifactProfile === "release" &&
+    runtimeVersionRequiresDualProvenance(runtimeVersion);
+  if (artifactProfile !== "release" && hasReleaseCandidate) {
+    throw new Error("release candidate identity is valid only for release artifacts");
+  }
+  let releaseCandidate;
+  if (requiresReleaseCandidate || hasReleaseCandidate) {
+    const serialized = new Set();
+    for (const value of releaseCandidateValues) {
+      validateRuntimeReleaseCandidateIdentity(value, sourceCommit, {
+        required: true,
+      });
+      serialized.add(JSON.stringify(value));
+    }
+    if (serialized.size !== 1) {
+      throw new Error("mixed release candidate identities");
+    }
+    releaseCandidate = releaseCandidateValues[0];
+  }
   const sourceDateEpoch = requireSafeInteger(
     sameValue(metas, "sourceDateEpoch"),
     "source date epoch",
@@ -1303,6 +1359,7 @@ export async function generateManifest({
       nodeApiVersion,
       npmVersion,
       artifactProfile,
+      ...(releaseCandidate === undefined ? {} : { releaseCandidate }),
     },
     artifacts: artifacts.sort((a, b) =>
       utf8Compare(`${a.platform}-${a.arch}`, `${b.platform}-${b.arch}`),

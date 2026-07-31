@@ -12,6 +12,7 @@ export const OFFICIAL_RELEASE_REPOSITORY = "tetsuo-ai/agenc-releases";
 export const OFFICIAL_SOURCE_REPOSITORY = "tetsuo-ai/agenc-core";
 export const FROZEN_LEGACY_RUNTIME_VERSION = "0.7.2";
 export const MINIMUM_PRIVATE_NODE_RUNTIME_VERSION = "0.11.2";
+export const MINIMUM_DUAL_PROVENANCE_RUNTIME_VERSION = "0.13.0";
 export const PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG =
   `agenc-v${MINIMUM_PRIVATE_NODE_RUNTIME_VERSION}`;
 export const OFFICIAL_RELEASE_WORKFLOW =
@@ -23,6 +24,10 @@ export const RUNTIME_ATTESTATION_POLICY = Object.freeze({
   oidcIssuer: "https://token.actions.githubusercontent.com",
   predicateType: "https://slsa.dev/provenance/v1",
 });
+export const RUNTIME_BUILD_PROVENANCE_POLICY = Object.freeze({
+  ...RUNTIME_ATTESTATION_POLICY,
+  sourceRef: "refs/heads/main",
+});
 export const PINNED_GITHUB_CLI_VERSION = "2.96.0";
 export const PINNED_GITHUB_CLI_ARTIFACTS = Object.freeze({
   "linux-x64": Object.freeze({
@@ -31,6 +36,8 @@ export const PINNED_GITHUB_CLI_ARTIFACTS = Object.freeze({
     sha256: "83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60",
     bytes: 14652560,
     executable: "gh_2.96.0_linux_amd64/bin/gh",
+    executableSha256: "56b8bbbb27b066ecb33dbef9a256dc9d1314adaeff0908a752feba6c34053b40",
+    executableBytes: 40722594,
   }),
   "linux-arm64": Object.freeze({
     file: "gh_2.96.0_linux_arm64.tar.gz",
@@ -38,6 +45,8 @@ export const PINNED_GITHUB_CLI_ARTIFACTS = Object.freeze({
     sha256: "06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909",
     bytes: 13321232,
     executable: "gh_2.96.0_linux_arm64/bin/gh",
+    executableSha256: "f903d2fa04ae78ee8f8df0186364d0b92f078d2720053941a47e0a3beaef54f0",
+    executableBytes: 37879970,
   }),
   "darwin-x64": Object.freeze({
     file: "gh_2.96.0_macOS_amd64.zip",
@@ -45,6 +54,8 @@ export const PINNED_GITHUB_CLI_ARTIFACTS = Object.freeze({
     sha256: "4bd449df9ad639391bc62b8032546f0fe9edcd8526e06682a4f88abd8c5d163c",
     bytes: 15298430,
     executable: "gh_2.96.0_macOS_amd64/bin/gh",
+    executableSha256: "49380b19e758c14ce5509afe0ced58777fe45cfbcd5989941f7314d5f7e468c8",
+    executableBytes: 41773632,
   }),
   "darwin-arm64": Object.freeze({
     file: "gh_2.96.0_macOS_arm64.zip",
@@ -52,6 +63,8 @@ export const PINNED_GITHUB_CLI_ARTIFACTS = Object.freeze({
     sha256: "f23a0c37d963aacc3bed703ccbd59b41c5ca22101fab7f00eb2b7cad23aba463",
     bytes: 13950131,
     executable: "gh_2.96.0_macOS_arm64/bin/gh",
+    executableSha256: "b1d6c442fde99ca27c04e1e74d624895abe37785f4a3e9e9b684bf7586ce4bc8",
+    executableBytes: 38817216,
   }),
   "win-x64": Object.freeze({
     file: "gh_2.96.0_windows_amd64.zip",
@@ -59,6 +72,8 @@ export const PINNED_GITHUB_CLI_ARTIFACTS = Object.freeze({
     sha256: "c2d6acc935cd2f00e2144d7e036d5cd82e6b6bd5594e8c75aa75ef2a4ed6aac3",
     bytes: 14821821,
     executable: "gh_2.96.0_windows_amd64/bin/gh.exe",
+    executableSha256: "cd79f16203f1fbe56937c4c96e2b6eadd10549418dcb241d91576ac77af0ac8b",
+    executableBytes: 41504056,
   }),
 });
 export const RUNTIME_MANIFEST_TRUST_MODES = Object.freeze([
@@ -69,17 +84,19 @@ export const RUNTIME_MANIFEST_TRUST_MODES = Object.freeze([
 
 const TRUST_MODES = new Set(RUNTIME_MANIFEST_TRUST_MODES);
 
-export function canonicalRuntimeAttestationVerificationArgs({
+function canonicalRuntimeProvenanceVerificationArgs({
   subjectPath,
   bundlePath,
   sourceCommit,
   sourceRef,
+  sourceRefPattern,
+  sourceRefError,
 }) {
   if (!/^[0-9a-f]{40,64}$/.test(sourceCommit ?? "")) {
     throw new Error("runtime attestation policy requires an exact source commit");
   }
-  if (typeof sourceRef !== "string" || !sourceRef.startsWith("refs/tags/agenc-v")) {
-    throw new Error("runtime attestation policy requires the canonical release source ref");
+  if (typeof sourceRef !== "string" || !sourceRefPattern.test(sourceRef)) {
+    throw new Error(sourceRefError);
   }
   return [
     "attestation",
@@ -105,6 +122,40 @@ export function canonicalRuntimeAttestationVerificationArgs({
     RUNTIME_ATTESTATION_POLICY.predicateType,
     "--deny-self-hosted-runners",
   ];
+}
+
+export function canonicalRuntimeAttestationVerificationArgs({
+  subjectPath,
+  bundlePath,
+  sourceCommit,
+  sourceRef,
+}) {
+  return canonicalRuntimeProvenanceVerificationArgs({
+    subjectPath,
+    bundlePath,
+    sourceCommit,
+    sourceRef,
+    sourceRefPattern: /^refs\/tags\/agenc-v[0-9]+\.[0-9]+\.[0-9]+$/,
+    sourceRefError:
+      "runtime attestation policy requires the canonical release source ref",
+  });
+}
+
+export function canonicalRuntimeBuildProvenanceVerificationArgs({
+  subjectPath,
+  bundlePath,
+  sourceCommit,
+  sourceRef = RUNTIME_BUILD_PROVENANCE_POLICY.sourceRef,
+}) {
+  return canonicalRuntimeProvenanceVerificationArgs({
+    subjectPath,
+    bundlePath,
+    sourceCommit,
+    sourceRef,
+    sourceRefPattern: /^refs\/heads\/main$/,
+    sourceRefError:
+      "runtime build provenance policy requires the canonical main source ref",
+  });
 }
 
 export function requireRuntimeManifestTrustMode(trustMode) {
@@ -160,6 +211,57 @@ export function requireSupportedRuntimeVersion(version) {
     }
   }
   return version;
+}
+
+export function runtimeVersionRequiresDualProvenance(version) {
+  requireSupportedRuntimeVersion(version);
+  if (version === FROZEN_LEGACY_RUNTIME_VERSION) return false;
+  const actual = version.split("-", 1)[0].split(".").map(Number);
+  const minimum = MINIMUM_DUAL_PROVENANCE_RUNTIME_VERSION.split(".").map(Number);
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (actual[index] > minimum[index]) return true;
+    if (actual[index] < minimum[index]) return false;
+  }
+  return true;
+}
+
+const RUNTIME_RELEASE_CANDIDATE_KEYS = Object.freeze([
+  "workflow",
+  "runId",
+  "runAttempt",
+  "runUrl",
+  "phase",
+  "sourceRef",
+  "evidenceSha256",
+]);
+
+export function validateRuntimeReleaseCandidateIdentity(
+  value,
+  sourceCommit,
+  { required = false } = {},
+) {
+  if (value === undefined && !required) return undefined;
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join("\0") !==
+      [...RUNTIME_RELEASE_CANDIDATE_KEYS].sort().join("\0") ||
+    value.workflow !== "release-runtime.yml" ||
+    !Number.isSafeInteger(value.runId) ||
+    value.runId <= 0 ||
+    !Number.isSafeInteger(value.runAttempt) ||
+    value.runAttempt <= 0 ||
+    value.runUrl !==
+      `https://github.com/tetsuo-ai/agenc-core/actions/runs/${value.runId}` ||
+    value.phase !== "candidate" ||
+    value.sourceRef !== RUNTIME_BUILD_PROVENANCE_POLICY.sourceRef ||
+    !/^[0-9a-f]{64}$/.test(value.evidenceSha256 ?? "") ||
+    !/^[0-9a-f]{40}$/.test(sourceCommit ?? "")
+  ) {
+    throw new Error("agenc: runtime release candidate identity is invalid");
+  }
+  return value;
 }
 
 function localFileUrlUsesWindowsPaths(platform) {
@@ -281,7 +383,10 @@ function validateArtifactUrl(manifest, artifact, trustMode) {
     if (
       artifact.attestationUrl !== undefined ||
       artifact.attestationSha256 !== undefined ||
-      artifact.attestationBytes !== undefined
+      artifact.attestationBytes !== undefined ||
+      artifact.buildProvenanceUrl !== undefined ||
+      artifact.buildProvenanceSha256 !== undefined ||
+      artifact.buildProvenanceBytes !== undefined
     ) {
       throw new Error("agenc: explicit local runtime artifacts must not declare remote attestations");
     }
@@ -313,6 +418,31 @@ function validateArtifactUrl(manifest, artifact, trustMode) {
       artifact.attestationBytes > MAX_RUNTIME_ATTESTATION_BYTES
     ) {
       throw new Error("agenc: runtime artifact attestation size is invalid");
+    }
+  }
+  const hasBuildProvenance =
+    artifact.buildProvenanceUrl !== undefined ||
+    artifact.buildProvenanceSha256 !== undefined ||
+    artifact.buildProvenanceBytes !== undefined;
+  if (
+    (
+      trustMode === "official" &&
+      runtimeVersionRequiresDualProvenance(manifest.runtimeVersion)
+    ) ||
+    hasBuildProvenance
+  ) {
+    if (artifact.buildProvenanceUrl !== `${artifact.url}.build.sigstore.json`) {
+      throw new Error("agenc: runtime artifact build provenance URL is not canonical");
+    }
+    if (!/^[0-9a-f]{64}$/.test(artifact.buildProvenanceSha256 ?? "")) {
+      throw new Error("agenc: runtime artifact build provenance digest is invalid");
+    }
+    if (
+      !Number.isSafeInteger(artifact.buildProvenanceBytes) ||
+      artifact.buildProvenanceBytes <= 0 ||
+      artifact.buildProvenanceBytes > MAX_RUNTIME_ATTESTATION_BYTES
+    ) {
+      throw new Error("agenc: runtime artifact build provenance size is invalid");
     }
   }
 }
@@ -427,6 +557,15 @@ export function validateRuntimeReleaseManifest(
     ) {
       throw new Error("agenc: runtime manifest build provenance is invalid");
     }
+    validateRuntimeReleaseCandidateIdentity(
+      build.releaseCandidate,
+      build.sourceCommit,
+      {
+        required:
+          trustMode === "official" &&
+          runtimeVersionRequiresDualProvenance(manifest.runtimeVersion),
+      },
+    );
     for (const artifact of manifest.artifacts) {
       if (
         artifact.nodeMajor !== build.nodeMajor ||

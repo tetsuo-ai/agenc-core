@@ -32,11 +32,13 @@ import {
 } from "../scripts/gen-manifest.mjs";
 import { validateLauncherManifest } from "../scripts/check-package-ready.mjs";
 import {
+  canonicalBuildProvenanceVerificationArgs,
   canonicalAttestationVerificationArgs,
   isolatedGitHubCliEnvironment,
   nodeBootstrapReleaseAssets,
   prepareReleaseAssets,
   RELEASE_ATTESTATION_POLICY,
+  RELEASE_BUILD_PROVENANCE_POLICY,
 } from "../scripts/prepare-release-assets.mjs";
 
 const runtimeVersion = JSON.parse(
@@ -110,6 +112,10 @@ test("release attestation gate exactly matches the official client policy", () =
     oidcIssuer: "https://token.actions.githubusercontent.com",
     predicateType: "https://slsa.dev/provenance/v1",
   });
+  assert.deepEqual(RELEASE_BUILD_PROVENANCE_POLICY, {
+    ...RELEASE_ATTESTATION_POLICY,
+    sourceRef: "refs/heads/main",
+  });
   assert.deepEqual(
     canonicalAttestationVerificationArgs(
       "/private/runtime.tar.gz",
@@ -132,6 +138,37 @@ test("release attestation gate exactly matches the official client policy", () =
       commit,
       "--source-ref",
       sourceRef,
+      "--hostname",
+      "github.com",
+      "--cert-oidc-issuer",
+      "https://token.actions.githubusercontent.com",
+      "--predicate-type",
+      "https://slsa.dev/provenance/v1",
+      "--deny-self-hosted-runners",
+    ],
+  );
+  assert.deepEqual(
+    canonicalBuildProvenanceVerificationArgs(
+      "/private/runtime.tar.gz",
+      "/private/runtime.tar.gz.build.sigstore.json",
+      { build: { sourceCommit: commit, sourceRef } },
+    ),
+    [
+      "attestation",
+      "verify",
+      "/private/runtime.tar.gz",
+      "--repo",
+      "tetsuo-ai/agenc-core",
+      "--bundle",
+      "/private/runtime.tar.gz.build.sigstore.json",
+      "--signer-workflow",
+      "tetsuo-ai/agenc-core/.github/workflows/release-runtime.yml",
+      "--signer-digest",
+      commit,
+      "--source-digest",
+      commit,
+      "--source-ref",
+      "refs/heads/main",
       "--hostname",
       "github.com",
       "--cert-oidc-issuer",
@@ -374,6 +411,15 @@ function addArtifact(directory, platform, arch, body, archiveOptions) {
     nodeApiVersion: releaseToolchain.nodeApiVersion,
     npmVersion: releaseToolchain.npmVersion,
     artifactProfile: "release",
+    releaseCandidate: {
+      workflow: "release-runtime.yml",
+      runId: 123456,
+      runAttempt: 1,
+      runUrl: "https://github.com/tetsuo-ai/agenc-core/actions/runs/123456",
+      phase: "candidate",
+      sourceRef: "refs/heads/main",
+      evidenceSha256: "9".repeat(64),
+    },
     nativeToolchain: {
       schemaVersion: 1,
       builder: platform === "linux"
@@ -466,6 +512,14 @@ function addArtifact(directory, platform, arch, body, archiveOptions) {
   writeFileSync(
     join(directory, `${artifact}.sigstore.json`),
     `${JSON.stringify({ mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json", artifact })}\n`,
+  );
+  writeFileSync(
+    join(directory, `${artifact}.build.sigstore.json`),
+    `${JSON.stringify({
+      mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
+      artifact,
+      phase: "build",
+    })}\n`,
   );
   return { artifact, meta };
 }
@@ -685,12 +739,27 @@ test("manifest generation verifies bytes and is independent of input creation or
     );
     assert.equal(manifest.build.sourceCommit, sourceCommit);
     assert.equal(manifest.build.sourceRef, `refs/tags/${tag}`);
+    assert.deepEqual(manifest.build.releaseCandidate, {
+      workflow: "release-runtime.yml",
+      runId: 123456,
+      runAttempt: 1,
+      runUrl: "https://github.com/tetsuo-ai/agenc-core/actions/runs/123456",
+      phase: "candidate",
+      sourceRef: "refs/heads/main",
+      evidenceSha256: "9".repeat(64),
+    });
     assert.equal(manifest.build.nodeModuleAbi, releaseToolchain.nodeModuleAbi);
     assert.equal(manifest.manifestVersion, 2);
     for (const artifact of manifest.artifacts) {
       assert.equal(artifact.attestationUrl, `${artifact.url}.sigstore.json`);
       assert.match(artifact.attestationSha256, /^[0-9a-f]{64}$/);
       assert.ok(artifact.attestationBytes > 0);
+      assert.equal(
+        artifact.buildProvenanceUrl,
+        `${artifact.url}.build.sigstore.json`,
+      );
+      assert.match(artifact.buildProvenanceSha256, /^[0-9a-f]{64}$/);
+      assert.ok(artifact.buildProvenanceBytes > 0);
     }
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -783,7 +852,7 @@ test("release asset preparation revalidates and binds every provenance sidecar",
       readSourceFile,
     });
     const outputNames = readdirSync(output).sort();
-    assert.equal(outputNames.length, 21 + (publishesNodeBootstrap ? 2 : 0));
+    assert.equal(outputNames.length, 26 + (publishesNodeBootstrap ? 2 : 0));
     assert.ok(outputNames.includes("SHA256SUMS"));
     for (const [key, bytes] of bootstrapFixtures) {
       const name = exactSourceToolchain.nodeBootstrap[key].file;
@@ -806,7 +875,7 @@ test("release asset preparation revalidates and binds every provenance sidecar",
     assert.equal(statSync(join(output, "agenc-runtime-manifest-v2.json")).mode & 0o777, 0o644);
     assert.equal(
       readFileSync(join(output, "SHA256SUMS"), "utf8").trim().split("\n").length,
-      20 + (publishesNodeBootstrap ? 2 : 0),
+      25 + (publishesNodeBootstrap ? 2 : 0),
     );
 
     const attestedOutput = join(work, "attested-upload");
@@ -821,24 +890,27 @@ test("release asset preparation revalidates and binds every provenance sidecar",
       verifySourceTag: false,
       verifyAttestations: true,
       readSourceFile,
-      verifyAttestation(source, bundle, manifest) {
+      verifyAttestation(source, bundle, manifest, options) {
         verifiedNames.push(basename(source));
-        const expectedBundle = basename(source).endsWith(".meta.json")
-          ? `${basename(source).slice(0, -".meta.json".length)}.sigstore.json`
-          : `${basename(source)}.sigstore.json`;
+        const artifactName = basename(source).endsWith(".meta.json")
+          ? basename(source).slice(0, -".meta.json".length)
+          : basename(source);
+        const expectedBundle = options.provenanceKind === "build"
+          ? `${artifactName}.build.sigstore.json`
+          : `${artifactName}.sigstore.json`;
         assert.equal(basename(bundle), expectedBundle);
         assert.equal(manifest.build.sourceCommit, sourceCommit);
       },
     });
-    assert.equal(verifiedNames.length, 10);
-    assert.equal(verifiedNames.filter((name) => name.endsWith(".meta.json")).length, 5);
+    assert.equal(verifiedNames.length, 20);
+    assert.equal(verifiedNames.filter((name) => name.endsWith(".meta.json")).length, 10);
     assert.equal(
       readdirSync(attestedOutput).filter((name) => name.endsWith(".sigstore.json")).length,
-      5,
+      10,
     );
     assert.equal(
       readdirSync(attestedOutput).length,
-      21 + (publishesNodeBootstrap ? 2 : 0),
+      26 + (publishesNodeBootstrap ? 2 : 0),
     );
 
     const pinnedGh = join(work, "pinned-gh");
@@ -860,7 +932,7 @@ test("release asset preparation revalidates and binds every provenance sidecar",
       githubCliPath: pinnedGh,
       readSourceFile,
     });
-    assert.equal(readFileSync(pinnedGhLog, "utf8").trim().split("\n").length, 10);
+    assert.equal(readFileSync(pinnedGhLog, "utf8").trim().split("\n").length, 20);
     assert.throws(
       () => prepareReleaseAssets({
         artifactsRoot: artifacts,
@@ -936,7 +1008,11 @@ test("release asset preparation revalidates and binds every provenance sidecar",
     assert.equal(existsSync(detachedLegacyOutput), false);
     writeFileSync(legacyManifestPath, reviewedLegacy);
 
-    const bundle = readdirSync(artifacts).find((name) => name.endsWith(".sigstore.json"));
+    const bundle = readdirSync(artifacts).find(
+      (name) =>
+        name.endsWith(".sigstore.json") &&
+        !name.endsWith(".build.sigstore.json"),
+    );
     const bundlePath = join(artifacts, bundle);
     const reviewedBundle = readFileSync(bundlePath);
     writeFileSync(bundlePath, `${JSON.stringify({ tampered: true })}\n`);
@@ -971,7 +1047,7 @@ test("release asset preparation revalidates and binds every provenance sidecar",
         verifySourceTag: false,
         readSourceFile,
       }),
-      /provenance binding failed/,
+      /release candidate identity|provenance binding failed/,
     );
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -1070,11 +1146,12 @@ test("manifest generation accepts one gh-run-download directory level", async ()
   }
 });
 
-test("release manifest generation requires one canonical bounded Sigstore bundle", async () => {
+test("release manifest generation requires canonical bounded dual Sigstore bundles", async () => {
   const work = mkdtempSync(join(tmpdir(), "agenc-manifest-sigstore-test-"));
   try {
     const { artifact } = addArtifact(work, "linux", "x64", "sigstore");
     const bundlePath = join(work, `${artifact}.sigstore.json`);
+    const reviewedBundle = readFileSync(bundlePath);
     rmSync(bundlePath);
     await assert.rejects(
       generateManifest({
@@ -1084,7 +1161,7 @@ test("release manifest generation requires one canonical bounded Sigstore bundle
         allowPartial: true,
         outputPath: join(work, "missing.json"),
       }),
-      /canonical Sigstore bundle is missing/,
+      /tag promotion Sigstore bundle is missing/,
     );
     writeFileSync(bundlePath, "[]\n");
     await assert.rejects(
@@ -1095,7 +1172,7 @@ test("release manifest generation requires one canonical bounded Sigstore bundle
         allowPartial: true,
         outputPath: join(work, "invalid.json"),
       }),
-      /canonical Sigstore bundle is invalid JSON/,
+      /tag promotion Sigstore bundle is invalid JSON/,
     );
     writeFileSync(bundlePath, Buffer.alloc(4 * 1024 * 1024 + 1, 0x20));
     await assert.rejects(
@@ -1106,7 +1183,80 @@ test("release manifest generation requires one canonical bounded Sigstore bundle
         allowPartial: true,
         outputPath: join(work, "oversized.json"),
       }),
-      /canonical Sigstore bundle has an invalid byte count/,
+      /tag promotion Sigstore bundle has an invalid byte count/,
+    );
+    writeFileSync(bundlePath, reviewedBundle);
+
+    const buildBundlePath = join(work, `${artifact}.build.sigstore.json`);
+    rmSync(buildBundlePath);
+    await assert.rejects(
+      generateManifest({
+        tag,
+        artifactsDir: work,
+        baseUrl: `https://example.invalid/${tag}`,
+        allowPartial: true,
+        outputPath: join(work, "missing-build.json"),
+      }),
+      /native build provenance Sigstore bundle is missing/,
+    );
+    writeFileSync(buildBundlePath, "[]\n");
+    await assert.rejects(
+      generateManifest({
+        tag,
+        artifactsDir: work,
+        baseUrl: `https://example.invalid/${tag}`,
+        allowPartial: true,
+        outputPath: join(work, "invalid-build.json"),
+      }),
+      /native build provenance Sigstore bundle is invalid JSON/,
+    );
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("release manifest generation requires one canonical candidate identity across builders", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-manifest-candidate-test-"));
+  try {
+    addArtifact(work, "linux", "x64", "candidate-x64");
+    addArtifact(work, "linux", "arm64", "candidate-arm64");
+    const sidecars = readdirSync(work)
+      .filter((name) => name.endsWith(".meta.json"))
+      .sort();
+    const firstPath = join(work, sidecars[0]);
+    const first = JSON.parse(readFileSync(firstPath, "utf8"));
+    delete first.releaseCandidate;
+    writeFileSync(firstPath, `${JSON.stringify(first, null, 2)}\n`);
+    await assert.rejects(
+      generateManifest({
+        tag,
+        artifactsDir: work,
+        baseUrl: `https://example.invalid/${tag}`,
+        allowPartial: true,
+        outputPath: join(work, "missing-candidate.json"),
+      }),
+      /runtime release candidate identity is invalid/,
+    );
+
+    first.releaseCandidate = {
+      workflow: "release-runtime.yml",
+      runId: 654321,
+      runAttempt: 2,
+      runUrl: "https://github.com/tetsuo-ai/agenc-core/actions/runs/654321",
+      phase: "candidate",
+      sourceRef: "refs/heads/main",
+      evidenceSha256: "8".repeat(64),
+    };
+    writeFileSync(firstPath, `${JSON.stringify(first, null, 2)}\n`);
+    await assert.rejects(
+      generateManifest({
+        tag,
+        artifactsDir: work,
+        baseUrl: `https://example.invalid/${tag}`,
+        allowPartial: true,
+        outputPath: join(work, "mixed-candidate.json"),
+      }),
+      /mixed release candidate identities/,
     );
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -1272,6 +1422,7 @@ test("launcher packaging rejects partial matrices except the narrow local test s
     const metaPath = join(work, metaName);
     const meta = JSON.parse(readFileSync(metaPath, "utf8"));
     meta.artifactProfile = "clean-local";
+    delete meta.releaseCandidate;
     writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`);
     const manifestPath = join(work, "manifest.json");
     await generateManifest({

@@ -134,6 +134,76 @@ function requireAbsoluteRegularFile(value, label) {
   return realpathSync(value);
 }
 
+const RELEASE_CANDIDATE_ENVIRONMENT = Object.freeze({
+  workflow: "AGENC_RELEASE_CANDIDATE_WORKFLOW",
+  runId: "AGENC_RELEASE_CANDIDATE_RUN_ID",
+  runAttempt: "AGENC_RELEASE_CANDIDATE_RUN_ATTEMPT",
+  runUrl: "AGENC_RELEASE_CANDIDATE_RUN_URL",
+  phase: "AGENC_RELEASE_CANDIDATE_PHASE",
+  sourceRef: "AGENC_RELEASE_CANDIDATE_SOURCE_REF",
+  evidenceSha256: "AGENC_RELEASE_CANDIDATE_EVIDENCE_SHA256",
+});
+
+export function releaseCandidateIdentity(
+  environment,
+  sourceCommit,
+  artifactProfile = "release",
+) {
+  const values = Object.fromEntries(
+    Object.entries(RELEASE_CANDIDATE_ENVIRONMENT).map(([field, variable]) => [
+      field,
+      typeof environment?.[variable] === "string"
+        ? environment[variable].trim()
+        : "",
+    ]),
+  );
+  const present = Object.values(values).filter((value) => value.length > 0);
+  if (present.length === 0) return undefined;
+  if (present.length !== Object.keys(RELEASE_CANDIDATE_ENVIRONMENT).length) {
+    const missing = Object.entries(values)
+      .filter(([, value]) => value.length === 0)
+      .map(([field]) => field);
+    throw new Error(
+      `release candidate identity is incomplete; missing ${missing.join(", ")}`,
+    );
+  }
+  if (artifactProfile !== "release") {
+    throw new Error("release candidate identity is valid only for release artifacts");
+  }
+  if (!/^[0-9a-f]{40}$/.test(sourceCommit ?? "")) {
+    throw new Error("release candidate identity requires an exact source commit");
+  }
+  if (
+    values.workflow !== "release-runtime.yml" ||
+    values.phase !== "candidate" ||
+    values.sourceRef !== "refs/heads/main" ||
+    !/^[0-9a-f]{64}$/.test(values.evidenceSha256)
+  ) {
+    throw new Error("release candidate identity is not canonical");
+  }
+  const runId = Number(values.runId);
+  const runAttempt = Number(values.runAttempt);
+  if (
+    !/^[1-9][0-9]*$/.test(values.runId) ||
+    !Number.isSafeInteger(runId) ||
+    !/^[1-9][0-9]*$/.test(values.runAttempt) ||
+    !Number.isSafeInteger(runAttempt) ||
+    values.runUrl !==
+      `https://github.com/tetsuo-ai/agenc-core/actions/runs/${values.runId}`
+  ) {
+    throw new Error("release candidate run identity is not canonical");
+  }
+  return Object.freeze({
+    workflow: values.workflow,
+    runId,
+    runAttempt,
+    runUrl: values.runUrl,
+    phase: values.phase,
+    sourceRef: values.sourceRef,
+    evidenceSha256: values.evidenceSha256,
+  });
+}
+
 export function embeddedNodeLayout(platform = process.platform) {
   const windows = platform === "win32" || platform === "win";
   const linux = platform === "linux";
@@ -1601,6 +1671,11 @@ async function main() {
     throw new Error("current Node native ABI does not match release-toolchain.json");
   }
   const source = sourceMetadata();
+  const releaseCandidate = releaseCandidateIdentity(
+    process.env,
+    source.sourceCommit,
+    artifactProfile,
+  );
   const nodeHeadersRoot = process.env.npm_config_nodedir?.trim();
   if (!nodeHeadersRoot || !isAbsolute(nodeHeadersRoot)) {
     throw new Error("native runtime builds require an absolute npm_config_nodedir");
@@ -1853,6 +1928,7 @@ async function main() {
       nodeApiVersion: process.versions.napi,
       npmVersion,
       artifactProfile,
+      ...(releaseCandidate === undefined ? {} : { releaseCandidate }),
       nativeToolchain,
       ...nativeCompatibility,
       archiveFormat: "tar+gzip; portable; utf8-byte-order; normalized-mtime",

@@ -4,19 +4,23 @@ import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 
 import {
+  canonicalRuntimeBuildProvenanceVerificationArgs,
   canonicalRuntimeAttestationVerificationArgs,
   canonicalLocalFileUrlToPath,
   canonicalRuntimeNodeBin,
   canonicalRuntimeNodeLibrary,
   FROZEN_LEGACY_RUNTIME_VERSION,
+  MINIMUM_DUAL_PROVENANCE_RUNTIME_VERSION,
   MINIMUM_PRIVATE_NODE_RUNTIME_VERSION,
   PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG,
   OFFICIAL_RELEASE_REPOSITORY,
   PINNED_GITHUB_CLI_ARTIFACTS,
   PINNED_GITHUB_CLI_VERSION,
   RUNTIME_ATTESTATION_POLICY,
+  RUNTIME_BUILD_PROVENANCE_POLICY,
   RUNTIME_MANIFEST_TRUST_MODES,
   requireSupportedRuntimeVersion,
+  runtimeVersionRequiresDualProvenance,
   validateRuntimeReleaseManifest,
 } from "../lib/runtime-release-contract.mjs";
 import { LEGACY_BRIDGE_CONTRACT } from "../scripts/gen-manifest.mjs";
@@ -332,6 +336,23 @@ test("every runtime attestation consumer is mechanically tied to one policy", ()
     "--predicate-type", RUNTIME_ATTESTATION_POLICY.predicateType,
     "--deny-self-hosted-runners",
   ]);
+  assert.deepEqual(canonicalRuntimeBuildProvenanceVerificationArgs({
+    subjectPath: "artifact",
+    bundlePath: "build-bundle",
+    sourceCommit: commit,
+  }), [
+    "attestation", "verify", "artifact",
+    "--repo", RUNTIME_BUILD_PROVENANCE_POLICY.repository,
+    "--bundle", "build-bundle",
+    "--signer-workflow", RUNTIME_BUILD_PROVENANCE_POLICY.signerWorkflow,
+    "--signer-digest", commit,
+    "--source-digest", commit,
+    "--source-ref", "refs/heads/main",
+    "--hostname", RUNTIME_BUILD_PROVENANCE_POLICY.hostname,
+    "--cert-oidc-issuer", RUNTIME_BUILD_PROVENANCE_POLICY.oidcIssuer,
+    "--predicate-type", RUNTIME_BUILD_PROVENANCE_POLICY.predicateType,
+    "--deny-self-hosted-runners",
+  ]);
   const shell = readFileSync(new URL("scripts/install/install.sh", repoRoot), "utf8");
   const powershell = readFileSync(new URL("scripts/install/install.ps1", repoRoot), "utf8");
   for (const [name, value] of [
@@ -377,6 +398,15 @@ function remoteManifest({
       nodeApiVersion: NODE_API_VERSION,
       npmVersion: "11.17.0",
       artifactProfile: "release",
+      releaseCandidate: {
+        workflow: "release-runtime.yml",
+        runId: 123456,
+        runAttempt: 1,
+        runUrl: "https://github.com/tetsuo-ai/agenc-core/actions/runs/123456",
+        phase: "candidate",
+        sourceRef: "refs/heads/main",
+        evidenceSha256: "9".repeat(64),
+      },
     },
     artifacts: [{
       platform: "linux",
@@ -403,7 +433,11 @@ function remoteManifest({
 }
 
 function attachCanonicalAttestation(manifest) {
-  manifest.artifacts[0].attestationUrl = `${manifest.artifacts[0].url}.sigstore.json`;
+  const artifact = manifest.artifacts[0];
+  artifact.attestationUrl = `${artifact.url}.sigstore.json`;
+  artifact.buildProvenanceUrl = `${artifact.url}.build.sigstore.json`;
+  artifact.buildProvenanceSha256 = "e".repeat(64);
+  artifact.buildProvenanceBytes = 1;
   return manifest;
 }
 
@@ -435,6 +469,10 @@ test("modern v2 artifacts bind the platform-specific private Node entrypoint", (
   assert.equal(FROZEN_LEGACY_RUNTIME_VERSION, "0.7.2");
   assert.equal(MINIMUM_PRIVATE_NODE_RUNTIME_VERSION, "0.11.2");
   assert.equal(PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG, "agenc-v0.11.2");
+  assert.equal(MINIMUM_DUAL_PROVENANCE_RUNTIME_VERSION, "0.13.0");
+  assert.equal(runtimeVersionRequiresDualProvenance("0.12.999"), false);
+  assert.equal(runtimeVersionRequiresDualProvenance("0.13.0"), true);
+  assert.equal(runtimeVersionRequiresDualProvenance("1.0.0"), true);
   assert.equal(requireSupportedRuntimeVersion("0.7.2"), "0.7.2");
   assert.equal(requireSupportedRuntimeVersion("0.11.2"), "0.11.2");
   assert.equal(requireSupportedRuntimeVersion("0.11.3"), "0.11.3");
@@ -483,6 +521,10 @@ test("published declarations expose the private Node release contract", () => {
     "canonicalRuntimeNodeBin(platform: string): string",
     "canonicalRuntimeNodeLibrary(platform: string): string | undefined",
     "requireSupportedRuntimeVersion(version: string): string",
+    'MINIMUM_DUAL_PROVENANCE_RUNTIME_VERSION: "0.13.0"',
+    "readonly buildProvenanceUrl?: string",
+    "canonicalRuntimeBuildProvenanceVerificationArgs",
+    "runtimeVersionRequiresDualProvenance(version: string): boolean",
   ]) {
     assert.match(declarations, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
@@ -531,6 +573,9 @@ test("version pinning preserves launcher diagnostics without restricting explici
   delete explicitLocal.artifacts[0].attestationUrl;
   delete explicitLocal.artifacts[0].attestationSha256;
   delete explicitLocal.artifacts[0].attestationBytes;
+  delete explicitLocal.artifacts[0].buildProvenanceUrl;
+  delete explicitLocal.artifacts[0].buildProvenanceSha256;
+  delete explicitLocal.artifacts[0].buildProvenanceBytes;
   assert.equal(
     validateRuntimeReleaseManifest(explicitLocal, { trustMode: "explicitLocal" }),
     explicitLocal,
@@ -551,6 +596,49 @@ test("official trust requires a canonical bounded Sigstore bundle", () => {
       /attestation/,
     );
   }
+});
+
+test("new official releases require canonical bounded build provenance", () => {
+  for (const mutate of [
+    (artifact) => { delete artifact.buildProvenanceUrl; },
+    (artifact) => {
+      artifact.buildProvenanceUrl = "https://example.invalid/build-bundle";
+    },
+    (artifact) => { artifact.buildProvenanceSha256 = "0"; },
+    (artifact) => { artifact.buildProvenanceBytes = 0; },
+  ]) {
+    const manifest = attachCanonicalAttestation(remoteManifest());
+    mutate(manifest.artifacts[0]);
+    assert.throws(
+      () => validateRuntimeReleaseManifest(manifest, { trustMode: "official" }),
+      /build provenance/,
+    );
+  }
+
+  const historical = remoteManifest({ version: "0.12.0" });
+  historical.artifacts[0].attestationUrl =
+    `${historical.artifacts[0].url}.sigstore.json`;
+  assert.equal(
+    validateRuntimeReleaseManifest(historical, { trustMode: "official" }),
+    historical,
+  );
+});
+
+test("new official releases bind a canonical candidate run identity", () => {
+  const missing = attachCanonicalAttestation(remoteManifest());
+  delete missing.build.releaseCandidate;
+  assert.throws(
+    () => validateRuntimeReleaseManifest(missing, { trustMode: "official" }),
+    /release candidate identity/,
+  );
+
+  const detached = attachCanonicalAttestation(remoteManifest());
+  detached.build.releaseCandidate.runUrl =
+    "https://github.com/tetsuo-ai/agenc-core/actions/runs/999";
+  assert.throws(
+    () => validateRuntimeReleaseManifest(detached, { trustMode: "official" }),
+    /release candidate identity/,
+  );
 });
 
 test("local file URLs have one authority-free canonical spelling on every platform", () => {

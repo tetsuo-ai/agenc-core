@@ -69,6 +69,7 @@ MAX_ARTIFACT_BYTES=268435456
 MAX_SIGSTORE_BUNDLE_BYTES=4194304
 MAX_GH_ARCHIVE_BYTES=67108864
 PROVENANCE_SCHEMA="agenc-runtime-provenance/v1"
+DUAL_PROVENANCE_SCHEMA="agenc-runtime-provenance/v2"
 PROVENANCE_REPOSITORY="tetsuo-ai/agenc-core"
 PROVENANCE_WORKFLOW="tetsuo-ai/agenc-core/.github/workflows/release-runtime.yml"
 PROVENANCE_HOSTNAME="github.com"
@@ -717,6 +718,8 @@ verify_official_provenance() {
   GH_BIN="$GH_ROOT/$GH_DIR/bin/gh"
   BUNDLE="$WORK/runtime.sigstore.json"
   BUNDLE_URL="$ARTIFACT_ATTESTATION_URL"
+  BUILD_BUNDLE="$WORK/runtime.build.sigstore.json"
+  BUILD_BUNDLE_URL="$ARTIFACT_BUILD_PROVENANCE_URL"
   GH_URL="https://github.com/cli/cli/releases/download/v${GH_VERSION}/${GH_FILE}"
 
   fetch_to "$BUNDLE_URL" "$BUNDLE" "$MAX_SIGSTORE_BUNDLE_BYTES" \
@@ -728,6 +731,19 @@ verify_official_provenance() {
   if [ "$ACTUAL_BUNDLE_SHA" != "$ARTIFACT_ATTESTATION_SHA" ]; then
     log "Sigstore bundle checksum mismatch (expected ${ARTIFACT_ATTESTATION_SHA}, got ${ACTUAL_BUNDLE_SHA})"
     return 1
+  fi
+  ACTUAL_BUILD_BUNDLE_SHA=""
+  if [ -n "$BUILD_BUNDLE_URL" ]; then
+    fetch_to "$BUILD_BUNDLE_URL" "$BUILD_BUNDLE" "$MAX_SIGSTORE_BUNDLE_BYTES" \
+      "$ARTIFACT_BUILD_PROVENANCE_BYTES" "official" || {
+      log "could not fetch bounded native-build Sigstore bundle: ${BUILD_BUNDLE_URL}"
+      return 1
+    }
+    ACTUAL_BUILD_BUNDLE_SHA="$(sha256_of "$BUILD_BUNDLE")" || return 1
+    if [ "$ACTUAL_BUILD_BUNDLE_SHA" != "$ARTIFACT_BUILD_PROVENANCE_SHA" ]; then
+      log "native-build Sigstore bundle checksum mismatch (expected ${ARTIFACT_BUILD_PROVENANCE_SHA}, got ${ACTUAL_BUILD_BUNDLE_SHA})"
+      return 1
+    fi
   fi
   fetch_to "$GH_URL" "$GH_ARCHIVE" "$MAX_GH_ARCHIVE_BYTES" "$GH_BYTES" "official" || {
     log "could not fetch pinned GitHub CLI: ${GH_URL}"
@@ -755,7 +771,25 @@ verify_official_provenance() {
   }
   chmod 700 "$GH_BIN" || return 1
 
-  log "verifying source-workflow provenance for ${ARTIFACT_URL}"
+  if [ -n "$BUILD_BUNDLE_URL" ]; then
+    log "verifying native-build provenance for ${ARTIFACT_URL}"
+    GH_CONFIG_DIR="$GH_CONFIG_ROOT" GH_TOKEN= GITHUB_TOKEN= GH_ENTERPRISE_TOKEN= \
+      GITHUB_ENTERPRISE_TOKEN= GH_PROMPT_DISABLED=true GH_NO_UPDATE_NOTIFIER=1 \
+      GH_TELEMETRY=0 DO_NOT_TRACK=1 GH_SPINNER_DISABLED=1 GH_DEBUG= GH_PAGER= PAGER= \
+      "$GH_BIN" attestation verify "$TARBALL" \
+      --bundle "$BUILD_BUNDLE" \
+      --repo "$PROVENANCE_REPOSITORY" \
+      --signer-workflow "$PROVENANCE_WORKFLOW" \
+      --signer-digest "$SOURCE_COMMIT" \
+      --source-digest "$SOURCE_COMMIT" \
+      --source-ref "refs/heads/main" \
+      --hostname "$PROVENANCE_HOSTNAME" \
+      --cert-oidc-issuer "$PROVENANCE_OIDC_ISSUER" \
+      --predicate-type "$PROVENANCE_PREDICATE_TYPE" \
+      --deny-self-hosted-runners >/dev/null || return 1
+  fi
+
+  log "verifying tag-promotion provenance for ${ARTIFACT_URL}"
   GH_CONFIG_DIR="$GH_CONFIG_ROOT" GH_TOKEN= GITHUB_TOKEN= GH_ENTERPRISE_TOKEN= \
     GITHUB_ENTERPRISE_TOKEN= GH_PROMPT_DISABLED=true GH_NO_UPDATE_NOTIFIER=1 \
     GH_TELEMETRY=0 DO_NOT_TRACK=1 GH_SPINNER_DISABLED=1 GH_DEBUG= GH_PAGER= PAGER= \
@@ -779,11 +813,20 @@ verify_official_provenance() {
     log "Sigstore bundle changed during provenance verification"
     return 1
   }
+  if [ -n "$BUILD_BUNDLE_URL" ] &&
+     [ "$(sha256_of "$BUILD_BUNDLE")" != "$ACTUAL_BUILD_BUNDLE_SHA" ]; then
+    log "native-build Sigstore bundle changed during provenance verification"
+    return 1
+  fi
   PROVENANCE_RECEIPT_BASE64="$PROVENANCE_EXPECTATION_BASE64"
 
-  rm -f "$BUNDLE" "$GH_ARCHIVE"
+  rm -f "$BUNDLE" "$BUILD_BUNDLE" "$GH_ARCHIVE"
   rm -rf "$GH_ROOT" "$GH_CONFIG_ROOT"
-  log "source-workflow provenance verified"
+  if [ -n "$BUILD_BUNDLE_URL" ]; then
+    log "native-build and tag-promotion provenance verified"
+  else
+    log "tag-promotion provenance verified"
+  fi
 }
 
 # --- resolve manifest --------------------------------------------------------
@@ -1004,13 +1047,15 @@ SELECTED="$(node -e '
       .split("-", 1)[0]
       .split(".")
       .map(BigInt);
-    const minimumRuntime = [0n, 11n, 2n];
-    const runtimeSupported = actualRuntime.some((part, index) =>
-      part > minimumRuntime[index] &&
-      actualRuntime.slice(0, index).every((prior, priorIndex) =>
-        prior === minimumRuntime[priorIndex],
+    const atLeast = (actual, minimum) => actual.some((part, index) =>
+      part > minimum[index] &&
+      actual.slice(0, index).every((prior, priorIndex) =>
+        prior === minimum[priorIndex],
       ),
-    ) || actualRuntime.every((part, index) => part === minimumRuntime[index]);
+    ) || actual.every((part, index) => part === minimum[index]);
+    const minimumRuntime = [0n, 11n, 2n];
+    const runtimeSupported = atLeast(actualRuntime, minimumRuntime);
+    const requiresDualProvenance = atLeast(actualRuntime, [0n, 13n, 0n]);
     if (!runtimeSupported) {
       reject(
         `runtime ${m.runtimeVersion} has no supported standalone activation contract; ` +
@@ -1063,7 +1108,10 @@ SELECTED="$(node -e '
         }
         if (artifact.attestationUrl !== undefined ||
             artifact.attestationSha256 !== undefined ||
-            artifact.attestationBytes !== undefined) {
+            artifact.attestationBytes !== undefined ||
+            artifact.buildProvenanceUrl !== undefined ||
+            artifact.buildProvenanceSha256 !== undefined ||
+            artifact.buildProvenanceBytes !== undefined) {
           reject("explicit local runtime artifacts must not declare remote attestations");
         }
       } else if (parsed.protocol !== "https:") {
@@ -1089,6 +1137,22 @@ SELECTED="$(node -e '
           reject("runtime artifact attestation size is invalid");
         }
       }
+      const hasBuildProvenance = artifact.buildProvenanceUrl !== undefined ||
+        artifact.buildProvenanceSha256 !== undefined ||
+        artifact.buildProvenanceBytes !== undefined;
+      if ((trustMode === "official" && requiresDualProvenance) || hasBuildProvenance) {
+        if (artifact.buildProvenanceUrl !== `${artifact.url}.build.sigstore.json`) {
+          reject("runtime artifact build provenance URL is not canonical");
+        }
+        if (!/^[0-9a-f]{64}$/.test(artifact.buildProvenanceSha256 ?? "")) {
+          reject("runtime artifact build provenance digest is invalid");
+        }
+        if (!Number.isSafeInteger(artifact.buildProvenanceBytes) ||
+            artifact.buildProvenanceBytes <= 0 ||
+            artifact.buildProvenanceBytes > attestationCeiling) {
+          reject("runtime artifact build provenance size is invalid");
+        }
+      }
       if (trustMode === "official" && m.releaseRepository !== expectedRepo) {
         reject("manifest release repository is not official");
       }
@@ -1107,6 +1171,37 @@ SELECTED="$(node -e '
           !cleanString(b.npmVersion) || !/^\d+\.\d+\.\d+$/.test(b.npmVersion) ||
           b.artifactProfile !== "release" || Number(b.nodeVersion.slice(1).split(".")[0]) !== b.nodeMajor) {
         reject("runtime manifest build provenance is invalid");
+      }
+      const releaseCandidate = b.releaseCandidate;
+      const releaseCandidateKeys = [
+        "workflow",
+        "runId",
+        "runAttempt",
+        "runUrl",
+        "phase",
+        "sourceRef",
+        "evidenceSha256",
+      ];
+      if (releaseCandidate !== undefined ||
+          (trustMode === "official" && requiresDualProvenance)) {
+        if (releaseCandidate === null ||
+            typeof releaseCandidate !== "object" ||
+            Array.isArray(releaseCandidate) ||
+            Object.keys(releaseCandidate).sort().join("\0") !==
+              [...releaseCandidateKeys].sort().join("\0") ||
+            releaseCandidate.workflow !== "release-runtime.yml" ||
+            !Number.isSafeInteger(releaseCandidate.runId) ||
+            releaseCandidate.runId <= 0 ||
+            !Number.isSafeInteger(releaseCandidate.runAttempt) ||
+            releaseCandidate.runAttempt <= 0 ||
+            releaseCandidate.runUrl !==
+              `https://github.com/tetsuo-ai/agenc-core/actions/runs/${releaseCandidate.runId}` ||
+            releaseCandidate.phase !== "candidate" ||
+            releaseCandidate.sourceRef !== "refs/heads/main" ||
+            !/^[0-9a-f]{64}$/.test(releaseCandidate.evidenceSha256 ?? "") ||
+            !/^[0-9a-f]{40}$/.test(b.sourceCommit ?? "")) {
+          reject("runtime release candidate identity is invalid");
+        }
       }
       for (const artifact of artifacts) {
         if (artifact.nodeMajor !== b.nodeMajor || artifact.nodeModuleAbi !== b.nodeModuleAbi ||
@@ -1245,6 +1340,9 @@ SELECTED="$(node -e '
     legacy ? "" : a.attestationUrl ?? "",
     legacy ? "" : a.attestationSha256 ?? "",
     legacy ? "" : a.attestationBytes ?? "",
+    legacy ? "" : a.buildProvenanceUrl ?? "",
+    legacy ? "" : a.buildProvenanceSha256 ?? "",
+    legacy ? "" : a.buildProvenanceBytes ?? "",
     legacy ? "" : a.bins.node,
     legacy ? "" : a.bins.nodeLibrary ?? "",
   ].join("\n"));
@@ -1263,37 +1361,48 @@ SOURCE_REF="$(printf '%s\n' "$SELECTED" | sed -n 9p)"
 ARTIFACT_ATTESTATION_URL="$(printf '%s\n' "$SELECTED" | sed -n 10p)"
 ARTIFACT_ATTESTATION_SHA="$(printf '%s\n' "$SELECTED" | sed -n 11p)"
 ARTIFACT_ATTESTATION_BYTES="$(printf '%s\n' "$SELECTED" | sed -n 12p)"
-NODE_BIN_REL="$(printf '%s\n' "$SELECTED" | sed -n 13p)"
-NODE_LIBRARY_REL="$(printf '%s\n' "$SELECTED" | sed -n 14p)"
+ARTIFACT_BUILD_PROVENANCE_URL="$(printf '%s\n' "$SELECTED" | sed -n 13p)"
+ARTIFACT_BUILD_PROVENANCE_SHA="$(printf '%s\n' "$SELECTED" | sed -n 14p)"
+ARTIFACT_BUILD_PROVENANCE_BYTES="$(printf '%s\n' "$SELECTED" | sed -n 15p)"
+NODE_BIN_REL="$(printf '%s\n' "$SELECTED" | sed -n 16p)"
+NODE_LIBRARY_REL="$(printf '%s\n' "$SELECTED" | sed -n 17p)"
 
 PROVENANCE_EXPECTATION_BASE64=""
 PROVENANCE_RECEIPT_BASE64=""
 if [ "$MANIFEST_TRUST" = "official" ]; then
   PROVENANCE_EXPECTATION_BASE64="$(node -e '
+    const hasBuildProvenance = process.argv[15] !== "";
     const value = {
-      schema: process.argv[1],
-      artifactSha256: process.argv[2],
-      artifactUrl: process.argv[10],
-      sourceRepository: process.argv[3],
-      sourceWorkflow: process.argv[4],
-      sourceCommit: process.argv[5],
-      sourceRef: process.argv[6],
-      attestationUrl: process.argv[11],
-      attestationSha256: process.argv[12],
-      attestationBytes: Number(process.argv[13]),
+      schema: hasBuildProvenance ? process.argv[2] : process.argv[1],
+      artifactSha256: process.argv[3],
+      artifactUrl: process.argv[11],
+      sourceRepository: process.argv[4],
+      sourceWorkflow: process.argv[5],
+      sourceCommit: process.argv[6],
+      sourceRef: process.argv[7],
+      attestationUrl: process.argv[12],
+      attestationSha256: process.argv[13],
+      attestationBytes: Number(process.argv[14]),
+      ...(hasBuildProvenance ? {
+        buildProvenanceUrl: process.argv[15],
+        buildProvenanceSha256: process.argv[16],
+        buildProvenanceBytes: Number(process.argv[17]),
+        buildSourceRef: "refs/heads/main",
+      } : {}),
       verificationPolicy: {
-        hostname: process.argv[7],
-        certOidcIssuer: process.argv[8],
-        predicateType: process.argv[9],
+        hostname: process.argv[8],
+        certOidcIssuer: process.argv[9],
+        predicateType: process.argv[10],
         denySelfHostedRunners: true,
       },
     };
     process.stdout.write(Buffer.from(JSON.stringify(value)).toString("base64"));
-  ' "$PROVENANCE_SCHEMA" "$ARTIFACT_SHA" "$PROVENANCE_REPOSITORY" \
+  ' "$PROVENANCE_SCHEMA" "$DUAL_PROVENANCE_SCHEMA" "$ARTIFACT_SHA" "$PROVENANCE_REPOSITORY" \
     "$PROVENANCE_WORKFLOW" "$SOURCE_COMMIT" "$SOURCE_REF" \
     "$PROVENANCE_HOSTNAME" "$PROVENANCE_OIDC_ISSUER" "$PROVENANCE_PREDICATE_TYPE" \
     "$ARTIFACT_URL" "$ARTIFACT_ATTESTATION_URL" "$ARTIFACT_ATTESTATION_SHA" \
-    "$ARTIFACT_ATTESTATION_BYTES")" || \
+    "$ARTIFACT_ATTESTATION_BYTES" "$ARTIFACT_BUILD_PROVENANCE_URL" \
+    "$ARTIFACT_BUILD_PROVENANCE_SHA" "$ARTIFACT_BUILD_PROVENANCE_BYTES")" || \
     fail "could not construct official provenance expectation"
 fi
 
@@ -1696,11 +1805,18 @@ function decodeProvenanceJson(encoded, label) {
   catch { throw new Error(`invalid ${label}`); }
 }
 function validProvenanceExpectation(value) {
-  return exactKeys(value, [
+  const baseKeys = [
     "schema", "artifactSha256", "artifactUrl", "sourceRepository", "sourceWorkflow",
     "sourceCommit", "sourceRef", "attestationUrl", "attestationSha256",
     "attestationBytes", "verificationPolicy",
-  ]) && value.schema === "agenc-runtime-provenance/v1" &&
+  ];
+  const dual = value?.schema === "agenc-runtime-provenance/v2";
+  return exactKeys(value, dual ? [
+    ...baseKeys,
+    "buildProvenanceUrl", "buildProvenanceSha256", "buildProvenanceBytes",
+    "buildSourceRef",
+  ] : baseKeys) &&
+    (dual || value.schema === "agenc-runtime-provenance/v1") &&
     value.artifactSha256 === expectedSha &&
     typeof value.artifactUrl === "string" &&
     value.artifactUrl.startsWith("https://github.com/tetsuo-ai/agenc-releases/releases/download/") &&
@@ -1712,6 +1828,14 @@ function validProvenanceExpectation(value) {
     /^[0-9a-f]{64}$/.test(value.attestationSha256) &&
     Number.isSafeInteger(value.attestationBytes) && value.attestationBytes > 0 &&
     value.attestationBytes <= 4 * 1024 * 1024 &&
+    (!dual || (
+      value.buildProvenanceUrl === `${value.artifactUrl}.build.sigstore.json` &&
+      /^[0-9a-f]{64}$/.test(value.buildProvenanceSha256) &&
+      Number.isSafeInteger(value.buildProvenanceBytes) &&
+      value.buildProvenanceBytes > 0 &&
+      value.buildProvenanceBytes <= 4 * 1024 * 1024 &&
+      value.buildSourceRef === "refs/heads/main"
+    )) &&
     exactKeys(value.verificationPolicy, [
       "hostname", "certOidcIssuer", "predicateType", "denySelfHostedRunners",
     ]) && value.verificationPolicy.hostname === "github.com" &&

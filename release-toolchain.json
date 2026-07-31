@@ -93,36 +93,47 @@
     }
   },
   "githubCli": {
+    "schemaVersion": 1,
     "version": "2.96.0",
     "linuxX64": {
       "file": "gh_2.96.0_linux_amd64.tar.gz",
       "url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_linux_amd64.tar.gz",
       "sha256": "83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60",
-      "bytes": 14652560
+      "bytes": 14652560,
+      "executableSha256": "56b8bbbb27b066ecb33dbef9a256dc9d1314adaeff0908a752feba6c34053b40",
+      "executableBytes": 40722594
     },
     "linuxArm64": {
       "file": "gh_2.96.0_linux_arm64.tar.gz",
       "url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_linux_arm64.tar.gz",
       "sha256": "06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909",
-      "bytes": 13321232
+      "bytes": 13321232,
+      "executableSha256": "f903d2fa04ae78ee8f8df0186364d0b92f078d2720053941a47e0a3beaef54f0",
+      "executableBytes": 37879970
     },
     "macosX64": {
       "file": "gh_2.96.0_macOS_amd64.zip",
       "url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_macOS_amd64.zip",
       "sha256": "4bd449df9ad639391bc62b8032546f0fe9edcd8526e06682a4f88abd8c5d163c",
-      "bytes": 15298430
+      "bytes": 15298430,
+      "executableSha256": "49380b19e758c14ce5509afe0ced58777fe45cfbcd5989941f7314d5f7e468c8",
+      "executableBytes": 41773632
     },
     "macosArm64": {
       "file": "gh_2.96.0_macOS_arm64.zip",
       "url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_macOS_arm64.zip",
       "sha256": "f23a0c37d963aacc3bed703ccbd59b41c5ca22101fab7f00eb2b7cad23aba463",
-      "bytes": 13950131
+      "bytes": 13950131,
+      "executableSha256": "b1d6c442fde99ca27c04e1e74d624895abe37785f4a3e9e9b684bf7586ce4bc8",
+      "executableBytes": 38817216
     },
     "windowsX64": {
       "file": "gh_2.96.0_windows_amd64.zip",
       "url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_windows_amd64.zip",
       "sha256": "c2d6acc935cd2f00e2144d7e036d5cd82e6b6bd5594e8c75aa75ef2a4ed6aac3",
-      "bytes": 14821821
+      "bytes": 14821821,
+      "executableSha256": "cd79f16203f1fbe56937c4c96e2b6eadd10549418dcb241d91576ac77af0ac8b",
+      "executableBytes": 41504056
     }
   },
   "legacyBridge": {
@@ -287,8 +298,8 @@
       "format": "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
       "signatureKeyIds": ["15af5dac6d745a60"],
       "sha256": {
-        "x64": "0cf2f72faf2019701463fabc01a78c0cc893d51b2517fc7f4ce7cd65e76c2b02",
-        "arm64": "3739ba86a1767e0ed5cc94eaf235ae3d1d9709ab45880c7dca366283068f8e19"
+        "x64": "a20edbdbf94e00d0e93ce30f04167861f67b3132f388f06d2c5bb44894b6e613",
+        "arm64": "530821a9904c1d9162750d564d89e7556575df1cbec0a54bd5029076dc58731d"
       }
     },
     "compilerVersion": "12.2.1",
@@ -305,7 +316,7 @@
     "darwin-arm64": {
       "runnerLabel": "macos-15",
       "imageOS": "macos15",
-      "imageVersion": "20260715.0234.1",
+      "imageVersion": "20260727.0256.1",
       "runnerArch": "ARM64",
       "xcodeVersion": "16.4",
       "xcodeBuild": "16F6",

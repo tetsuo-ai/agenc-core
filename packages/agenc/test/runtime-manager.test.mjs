@@ -231,6 +231,9 @@ function httpsManifest(version, digest, bytes, overrides = {}) {
     artifact.attestationUrl ??= `${artifact.url}.sigstore.json`;
     artifact.attestationSha256 ??= "e".repeat(64);
     artifact.attestationBytes ??= 1;
+    artifact.buildProvenanceUrl ??= `${artifact.url}.build.sigstore.json`;
+    artifact.buildProvenanceSha256 ??= "f".repeat(64);
+    artifact.buildProvenanceBytes ??= 1;
   }
   return {
     manifestVersion: 2,
@@ -248,6 +251,15 @@ function httpsManifest(version, digest, bytes, overrides = {}) {
       nodeApiVersion: process.versions.napi,
       npmVersion: "11.17.0",
       artifactProfile: "release",
+      releaseCandidate: {
+        workflow: "release-runtime.yml",
+        runId: 123456,
+        runAttempt: 1,
+        runUrl: "https://github.com/tetsuo-ai/agenc-core/actions/runs/123456",
+        phase: "candidate",
+        sourceRef: "refs/heads/main",
+        evidenceSha256: "9".repeat(64),
+      },
     },
     artifacts: [artifact],
   };

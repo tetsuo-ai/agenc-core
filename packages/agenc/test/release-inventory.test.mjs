@@ -26,6 +26,7 @@ const platforms = [
   ["linux", "x64"],
   ["win", "x64"],
 ];
+const sourceCommit = "a".repeat(40);
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -35,8 +36,47 @@ function runtimeName(platform, arch, runtimeVersion = version) {
   return `agenc-runtime-${runtimeVersion}-${platform}-${arch}-node26-abi147.tar.gz`;
 }
 
+function fixtureBytes(name) {
+  return Buffer.from(`fixture:${name}\n`);
+}
+
+function requiresDualProvenance(runtimeVersion) {
+  const actual = runtimeVersion.split(".").map(Number);
+  const minimum = [0, 13, 0];
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (actual[index] > minimum[index]) return true;
+    if (actual[index] < minimum[index]) return false;
+  }
+  return true;
+}
+
+function releaseCandidate(runtimeVersion) {
+  return requiresDualProvenance(runtimeVersion)
+    ? {
+        workflow: "release-runtime.yml",
+        runId: 123456,
+        runAttempt: 1,
+        runUrl: "https://github.com/tetsuo-ai/agenc-core/actions/runs/123456",
+        phase: "candidate",
+        sourceRef: "refs/heads/main",
+        evidenceSha256: "9".repeat(64),
+      }
+    : undefined;
+}
+
+function metadataFixtureBytes(name, runtimeVersion) {
+  return Buffer.from(`${JSON.stringify({
+    artifact: name,
+    sourceCommit,
+    ...(releaseCandidate(runtimeVersion) === undefined
+      ? {}
+      : { releaseCandidate: releaseCandidate(runtimeVersion) }),
+  })}\n`);
+}
+
 function fixture(mutate = () => {}, {
   runtimeVersion = version,
+  mutateManifest = () => {},
 } = {}) {
   const releaseTag = `agenc-v${runtimeVersion}`;
   const root = mkdtempSync(join(tmpdir(), "agenc-release-inventory-"));
@@ -51,18 +91,44 @@ function fixture(mutate = () => {}, {
     runtimeVersion,
     releaseRepository: "tetsuo-ai/agenc-releases",
     releaseTag,
+    build: {
+      sourceCommit,
+      sourceRef: `refs/tags/${releaseTag}`,
+      ...(releaseCandidate(runtimeVersion) === undefined
+        ? {}
+        : { releaseCandidate: releaseCandidate(runtimeVersion) }),
+    },
     artifacts: platforms.map(([platform, arch]) => {
       const name = runtimeName(platform, arch, runtimeVersion);
+      const url =
+        `https://github.com/tetsuo-ai/agenc-releases/releases/download/${releaseTag}/${name}`;
+      const artifactBytes = fixtureBytes(name);
+      const metadataBytes = metadataFixtureBytes(name, runtimeVersion);
+      const attestationBytes = fixtureBytes(`${name}.sigstore.json`);
+      const buildProvenanceBytes = fixtureBytes(`${name}.build.sigstore.json`);
       return {
         platform,
         arch,
         nodeMajor: 26,
         nodeModuleAbi: "147",
-        url:
-          `https://github.com/tetsuo-ai/agenc-releases/releases/download/${releaseTag}/${name}`,
+        url,
+        sha256: sha256(artifactBytes),
+        bytes: artifactBytes.length,
+        metadataSha256: sha256(metadataBytes),
+        attestationUrl: `${url}.sigstore.json`,
+        attestationSha256: sha256(attestationBytes),
+        attestationBytes: attestationBytes.length,
+        ...(requiresDualProvenance(runtimeVersion)
+          ? {
+              buildProvenanceUrl: `${url}.build.sigstore.json`,
+              buildProvenanceSha256: sha256(buildProvenanceBytes),
+              buildProvenanceBytes: buildProvenanceBytes.length,
+            }
+          : {}),
       };
     }),
   };
+  mutateManifest(manifest);
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
   const localBytes = new Map();
@@ -81,8 +147,17 @@ function fixture(mutate = () => {}, {
   }
   for (const [platform, arch] of platforms) {
     const name = runtimeName(platform, arch, runtimeVersion);
-    for (const asset of [name, `${name}.meta.json`, `${name}.sigstore.json`]) {
-      localBytes.set(asset, Buffer.from(`fixture:${asset}\n`));
+    const assets = [name, `${name}.meta.json`, `${name}.sigstore.json`];
+    if (requiresDualProvenance(runtimeVersion)) {
+      assets.push(`${name}.build.sigstore.json`);
+    }
+    for (const asset of assets) {
+      localBytes.set(
+        asset,
+        asset.endsWith(".meta.json")
+          ? metadataFixtureBytes(name, runtimeVersion)
+          : fixtureBytes(asset),
+      );
     }
   }
   writeFileSync(toolchainPath, `${JSON.stringify(fixtureToolchain, null, 2)}\n`);
@@ -215,6 +290,45 @@ test("immutable runtime release inventory accepts only the exact asset graph", (
     } finally {
       rmSync(work.root, { recursive: true, force: true });
     }
+  }
+});
+
+test("0.13 and newer require native build and tag-promotion provenance bundles", () => {
+  const valid = fixture(() => {}, { runtimeVersion: "0.13.0" });
+  try {
+    assert.equal(run(valid).status, 0);
+  } finally {
+    rmSync(valid.root, { recursive: true, force: true });
+  }
+
+  const missingBuildProvenance = fixture(({ checksums, assets }) => {
+    const name = `${runtimeName("linux", "x64", "0.13.0")}.build.sigstore.json`;
+    checksums.delete(name);
+    assets.splice(assets.findIndex((asset) => asset.name === name), 1);
+  }, { runtimeVersion: "0.13.0" });
+  try {
+    const result = run(missingBuildProvenance);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /asset inventory/u);
+  } finally {
+    rmSync(missingBuildProvenance.root, { recursive: true, force: true });
+  }
+
+  const missingCandidate = fixture(
+    () => {},
+    {
+      runtimeVersion: "0.13.0",
+      mutateManifest(manifest) {
+        delete manifest.build.releaseCandidate;
+      },
+    },
+  );
+  try {
+    const result = run(missingCandidate);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /release candidate identity/u);
+  } finally {
+    rmSync(missingCandidate.root, { recursive: true, force: true });
   }
 });
 

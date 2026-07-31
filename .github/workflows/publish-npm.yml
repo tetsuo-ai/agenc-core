@@ -222,6 +222,7 @@ jobs:
           runtime_patterns=(
             --pattern 'agenc-runtime-*.tar.gz'
             --pattern 'agenc-runtime-*.tar.gz.sigstore.json'
+            --pattern 'agenc-runtime-*.tar.gz.build.sigstore.json'
             --pattern 'agenc-runtime-*.meta.json'
           )
           bootstrap_tag="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeBootstrap"]["releaseTag"])')"

@@ -9,16 +9,20 @@ import {
   createWriteStream,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
+  realpathSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 
@@ -30,15 +34,45 @@ const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 const SHA_RE = /^[0-9a-f]{40}$/u;
 const HASH_RE = /^[0-9a-f]{64}$/u;
 const INVALID_LOCK_GRACE_MS = 30_000;
+const MAX_CANDIDATE_ATTESTATION_BYTES = 4 * 1024 * 1024;
+const GITHUB_ATTESTATION_TIMEOUT_MS = 30_000;
+const GITHUB_CLI_TOOLCHAIN_SCHEMA_VERSION = 1;
+const CANDIDATE_ESCROW_REPOSITORY = "tetsuo-ai/agenc-releases";
+const GITHUB_CLI_TARGET_BY_HOST = Object.freeze({
+  "linux:x64": "linuxX64",
+  "linux:arm64": "linuxArm64",
+  "darwin:x64": "macosX64",
+  "darwin:arm64": "macosArm64",
+  "win32:x64": "windowsX64",
+});
 const LANES = new Set(["full", "installer-hotfix"]);
+const CANDIDATE_SUCCESSFUL_JOBS = Object.freeze([
+  "release-source",
+  "linux-tarball (ubuntu-24.04, linux-x64)",
+  "linux-tarball (ubuntu-24.04-arm, linux-arm64)",
+  "native-tarball (macos-15, darwin-arm64)",
+  "native-tarball (macos-15-intel, darwin-x64)",
+  "native-tarball (windows-2025, win-x64)",
+  "candidate-seal",
+]);
+const CANDIDATE_ARTIFACT_SLUGS = Object.freeze([
+  "linux-x64",
+  "linux-arm64",
+  "darwin-x64",
+  "darwin-arm64",
+  "win-x64",
+]);
 const CHECKPOINTS = Object.freeze({
   full: Object.freeze([
+    "candidate-build-complete",
+    "candidate-escrow-published",
     "source-tag-pushed",
     "runtime-build-complete",
     "release-draft-staged",
     "github-published",
     "installer-promoted",
     "vercel-deployed",
+    "homebrew-published",
     "npm-published",
     "converged",
   ]),
@@ -60,11 +94,16 @@ function usage() {
     "  node scripts/release-state.mjs verify --lane full --version X.Y.Z",
     "  node scripts/release-state.mjs verify --lane installer-hotfix",
     "  node scripts/release-state.mjs status --lane <lane> [--version X.Y.Z] [--sha <sha>]",
-    "  node scripts/release-state.mjs checkpoint --lane <lane> [--version X.Y.Z] --step <name> --receipt-json <json>",
+    "  node scripts/release-state.mjs checkpoint --lane full [--version X.Y.Z] --step candidate-build-complete --receipt-file <path> --receipt-bundle <path> --github-cli <absolute-path>",
+    "  GH_TOKEN=<token> node scripts/release-state.mjs checkpoint --lane full [--version X.Y.Z] --step candidate-escrow-published --github-cli <absolute-path>",
+    "  node scripts/release-state.mjs checkpoint --lane <lane> [--version X.Y.Z] --step <other-name> --receipt-json <json>",
     "",
     "Options:",
     "  --state-root <path>  Override the private state root.",
     "  --sha <sha>          Bind to an exact commit; defaults to HEAD.",
+    "  --receipt-file <path> Candidate seal receipt authenticated before parsing.",
+    "  --receipt-bundle <path> Sigstore bundle authenticating the candidate receipt.",
+    "  --github-cli <path>   Canonical absolute path to the checksum-pinned GitHub CLI.",
     "  --json               Emit machine-readable output (status always does).",
   ].join("\n");
 }
@@ -128,6 +167,9 @@ function parseArguments(argv) {
         "state-root",
         "step",
         "receipt-json",
+        "receipt-file",
+        "receipt-bundle",
+        "github-cli",
       ].includes(key)
     ) {
       throw new Error(`unknown option: --${key}\n${usage()}`);
@@ -882,6 +924,813 @@ function parseReceipt(value) {
   return parsed;
 }
 
+function readBoundedPlainFile(value, label) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${label} requires a file path`);
+  }
+  const path = resolve(value);
+  let metadata;
+  try {
+    metadata = lstatSync(path);
+  } catch (error) {
+    throw new Error(`${label} is not readable at ${path}: ${error.message}`);
+  }
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.size <= 0 ||
+    metadata.size > MAX_CANDIDATE_ATTESTATION_BYTES
+  ) {
+    throw new Error(
+      `${label} must be a non-empty plain file no larger than ` +
+        `${MAX_CANDIDATE_ATTESTATION_BYTES} bytes: ${path}`,
+    );
+  }
+  const bytes = readFileSync(path);
+  if (bytes.length !== metadata.size) {
+    throw new Error(`${label} changed while it was being read: ${path}`);
+  }
+  return { bytes, path };
+}
+
+function pinnedGitHubCliIdentity() {
+  const toolchain = loadJson(join(repoRoot, "release-toolchain.json"));
+  if (toolchain.schemaVersion !== GITHUB_CLI_TOOLCHAIN_SCHEMA_VERSION) {
+    throw new Error(
+      "release-toolchain.json does not contain the supported schema version",
+    );
+  }
+  const githubCli = toolchain.githubCli;
+  if (
+    githubCli === null ||
+    typeof githubCli !== "object" ||
+    Array.isArray(githubCli) ||
+    githubCli.schemaVersion !== GITHUB_CLI_TOOLCHAIN_SCHEMA_VERSION
+  ) {
+    throw new Error(
+      "release-toolchain.json does not contain the supported GitHub CLI pin schema",
+    );
+  }
+  const version = githubCli.version;
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/u.test(version)) {
+    throw new Error("release-toolchain.json does not contain a valid pinned GitHub CLI version");
+  }
+  const platform = process.platform;
+  const arch = process.arch;
+  const target = GITHUB_CLI_TARGET_BY_HOST[`${platform}:${arch}`];
+  if (target === undefined) {
+    throw new Error(
+      `release-toolchain.json has no supported GitHub CLI host target for ${platform}/${arch}`,
+    );
+  }
+  const pin = githubCli[target];
+  if (
+    pin === null ||
+    typeof pin !== "object" ||
+    Array.isArray(pin) ||
+    !Number.isSafeInteger(pin.executableBytes) ||
+    pin.executableBytes <= 0 ||
+    !HASH_RE.test(pin.executableSha256 ?? "")
+  ) {
+    throw new Error(
+      `release-toolchain.json does not contain a valid GitHub CLI executable pin for ${target}`,
+    );
+  }
+  return Object.freeze({
+    arch,
+    executableBytes: pin.executableBytes,
+    executableSha256: pin.executableSha256,
+    platform,
+    target,
+    version,
+  });
+}
+
+async function assertPinnedGitHubCliExecutable(githubCliPath, identity, phase) {
+  let metadata;
+  try {
+    metadata = lstatSync(githubCliPath);
+  } catch (error) {
+    throw new Error(
+      `checksum-pinned GitHub CLI is not readable at ${githubCliPath}: ${error.message}`,
+    );
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error(`checksum-pinned GitHub CLI must be a plain file: ${githubCliPath}`);
+  }
+  if (realpathSync.native(githubCliPath) !== githubCliPath) {
+    throw new Error("checksum-pinned GitHub CLI path must be canonical");
+  }
+  if (metadata.size !== identity.executableBytes) {
+    throw new Error(
+      `GitHub CLI executable byte count ${metadata.size} does not match ` +
+        `release-toolchain.json ${identity.target} pin ${identity.executableBytes} ` +
+        `during ${phase}`,
+    );
+  }
+  const observedSha256 = await sha256File(githubCliPath);
+  if (observedSha256 !== identity.executableSha256) {
+    throw new Error(
+      `GitHub CLI executable SHA-256 ${observedSha256} does not match ` +
+        `release-toolchain.json ${identity.target} pin ${identity.executableSha256} ` +
+        `during ${phase}`,
+    );
+  }
+}
+
+function isolatedGitHubCliEnvironment(workDirectory, source = process.env) {
+  const environment = {};
+  for (const key of [
+    "PATH",
+    "SystemRoot",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+  ]) {
+    if (source[key] !== undefined) environment[key] = source[key];
+  }
+  const configDirectory = join(workDirectory, "gh-config");
+  return {
+    ...environment,
+    HOME: workDirectory,
+    USERPROFILE: workDirectory,
+    APPDATA: configDirectory,
+    LOCALAPPDATA: configDirectory,
+    XDG_CONFIG_HOME: configDirectory,
+    XDG_CACHE_HOME: configDirectory,
+    GH_CONFIG_DIR: configDirectory,
+    GH_HOST: "github.com",
+    GH_NO_UPDATE_NOTIFIER: "1",
+    GH_PROMPT_DISABLED: "1",
+    GH_SPINNER_DISABLED: "1",
+    GH_TELEMETRY: "0",
+    DO_NOT_TRACK: "1",
+    NO_COLOR: "1",
+    TEMP: workDirectory,
+    TMP: workDirectory,
+  };
+}
+
+function runGitHubCli(githubCliPath, args, environment, label) {
+  const result = spawnSync(githubCliPath, args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: environment,
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: GITHUB_ATTESTATION_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  });
+  if (result.error?.code === "ENOENT") {
+    throw new Error(`checksum-pinned GitHub CLI disappeared during ${label}`);
+  }
+  if (result.error !== undefined) {
+    throw new Error(`checksum-pinned GitHub CLI failed during ${label}: ${result.error.message}`);
+  }
+  return result;
+}
+
+async function authenticatedCandidateReceipt(identity, state, options, paths) {
+  if (options["receipt-json"] !== undefined) {
+    throw new Error(
+      "candidate-build-complete does not accept --receipt-json; " +
+        "use --receipt-file, --receipt-bundle, and --github-cli",
+    );
+  }
+  const receiptSource = readBoundedPlainFile(
+    options["receipt-file"],
+    "candidate receipt",
+  );
+  const bundleSource = readBoundedPlainFile(
+    options["receipt-bundle"],
+    "candidate receipt Sigstore bundle",
+  );
+  const githubCliPath = options["github-cli"];
+  if (typeof githubCliPath !== "string" || !isAbsolute(githubCliPath)) {
+    throw new Error("candidate checkpoint requires an absolute checksum-pinned GitHub CLI path");
+  }
+
+  const githubCliIdentity = pinnedGitHubCliIdentity();
+  await assertPinnedGitHubCliExecutable(
+    githubCliPath,
+    githubCliIdentity,
+    "pre-spawn verification",
+  );
+  const workDirectory = mkdtempSync(join(paths.directory, ".candidate-auth-"));
+  chmodSync(workDirectory, 0o700);
+  const receiptPath = join(workDirectory, basename(receiptSource.path));
+  const bundlePath = join(workDirectory, `${basename(receiptSource.path)}.sigstore.json`);
+  const configDirectory = join(workDirectory, "gh-config");
+  try {
+    writeFileSync(receiptPath, receiptSource.bytes, {
+      flag: "wx",
+      mode: 0o600,
+    });
+    writeFileSync(bundlePath, bundleSource.bytes, {
+      flag: "wx",
+      mode: 0o600,
+    });
+    mkdirSync(configDirectory, { mode: 0o700 });
+    const environment = isolatedGitHubCliEnvironment(workDirectory);
+    const versionResult = runGitHubCli(
+      githubCliPath,
+      ["--version"],
+      environment,
+      "version verification",
+    );
+    if (versionResult.status !== 0) {
+      throw new Error(
+        "checksum-pinned GitHub CLI version verification failed: " +
+          `${versionResult.stderr.trim() || versionResult.stdout.trim() || "unknown error"}`,
+      );
+    }
+    const versionMatch = /^gh version (\d+\.\d+\.\d+)(?:\s|$)/u.exec(
+      versionResult.stdout.trim(),
+    );
+    if (versionMatch?.[1] !== githubCliIdentity.version) {
+      throw new Error(
+        `GitHub CLI version ${versionMatch?.[1] ?? "unknown"} does not match ` +
+          `release-toolchain.json pin ${githubCliIdentity.version}`,
+      );
+    }
+
+    const verifyArguments = [
+      "attestation",
+      "verify",
+      receiptPath,
+      "--bundle",
+      bundlePath,
+      "--repo",
+      REPOSITORY,
+      "--signer-workflow",
+      `${REPOSITORY}/.github/workflows/release-runtime.yml`,
+      "--signer-digest",
+      identity.sha,
+      "--source-digest",
+      identity.sha,
+      "--source-ref",
+      "refs/heads/main",
+      "--hostname",
+      "github.com",
+      "--cert-oidc-issuer",
+      "https://token.actions.githubusercontent.com",
+      "--predicate-type",
+      "https://slsa.dev/provenance/v1",
+      "--deny-self-hosted-runners",
+    ];
+    const verifyResult = runGitHubCli(
+      githubCliPath,
+      verifyArguments,
+      environment,
+      "candidate receipt attestation verification",
+    );
+    if (verifyResult.status !== 0) {
+      throw new Error(
+        `GitHub attestation policy rejected ${basename(receiptSource.path)}: ` +
+          `${verifyResult.stderr.trim() || verifyResult.stdout.trim() || "unknown error"}`,
+      );
+    }
+
+    const verifiedReceiptBytes = readFileSync(receiptPath);
+    const verifiedBundleBytes = readFileSync(bundlePath);
+    if (
+      !verifiedReceiptBytes.equals(receiptSource.bytes) ||
+      !verifiedBundleBytes.equals(bundleSource.bytes)
+    ) {
+      throw new Error("candidate receipt or Sigstore bundle changed during verification");
+    }
+    await assertPinnedGitHubCliExecutable(
+      githubCliPath,
+      githubCliIdentity,
+      "post-spawn verification",
+    );
+
+    let receipt;
+    try {
+      receipt = JSON.parse(verifiedReceiptBytes.toString("utf8"));
+    } catch (error) {
+      throw new Error(`invalid authenticated candidate receipt JSON: ${error.message}`);
+    }
+    if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)) {
+      throw new Error("authenticated candidate receipt must contain a JSON object");
+    }
+    validateCheckpointReceipt({
+      evidenceSha256: state.verification.evidenceSha256,
+      lane: identity.lane,
+      receipt,
+      sha: identity.sha,
+      step: "candidate-build-complete",
+      version: identity.version,
+    });
+    return {
+      authentication: {
+        type: "github-attestation",
+        repository: REPOSITORY,
+        signerWorkflow: `${REPOSITORY}/.github/workflows/release-runtime.yml`,
+        signerDigest: identity.sha,
+        sourceDigest: identity.sha,
+        sourceRef: "refs/heads/main",
+        githubCliPlatform: githubCliIdentity.platform,
+        githubCliArch: githubCliIdentity.arch,
+        githubCliTarget: githubCliIdentity.target,
+        githubCliVersion: githubCliIdentity.version,
+        githubCliExecutableBytes: githubCliIdentity.executableBytes,
+        githubCliExecutableSha256: githubCliIdentity.executableSha256,
+        receiptBytes: verifiedReceiptBytes.length,
+        receiptSha256: sha256Bytes(verifiedReceiptBytes),
+        bundleBytes: verifiedBundleBytes.length,
+        bundleSha256: sha256Bytes(verifiedBundleBytes),
+      },
+      receipt,
+    };
+  } finally {
+    rmSync(workDirectory, { recursive: true, force: true });
+  }
+}
+
+function requireExactKeys(value, expected, label) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON object`);
+  }
+  const observed = Object.keys(value).sort();
+  const required = [...expected].sort();
+  if (canonicalJson(observed) !== canonicalJson(required)) {
+    throw new Error(
+      `${label} keys were ${JSON.stringify(observed)}, expected ${JSON.stringify(required)}`,
+    );
+  }
+}
+
+function candidateEscrowReceiptFromRelease(
+  release,
+  candidateCheckpoint,
+  version,
+) {
+  const runId = candidateCheckpoint.receipt.runId;
+  const tag = `agenc-candidate-v${version}-run-${runId}`;
+  if (
+    release === null ||
+    typeof release !== "object" ||
+    Array.isArray(release) ||
+    release.tag_name !== tag ||
+    release.html_url !==
+      `https://github.com/${CANDIDATE_ESCROW_REPOSITORY}/releases/tag/${tag}` ||
+    !Number.isSafeInteger(release.id) ||
+    release.id <= 0 ||
+    release.immutable !== true ||
+    release.draft !== false ||
+    release.prerelease !== true ||
+    !Array.isArray(release.assets)
+  ) {
+    throw new Error(
+      "candidate escrow API did not return the exact immutable prerelease",
+    );
+  }
+  const assets = {};
+  for (const asset of release.assets) {
+    const name = asset?.name;
+    const expectedUrl =
+      `https://github.com/${CANDIDATE_ESCROW_REPOSITORY}/releases/download/` +
+      `${tag}/${name}`;
+    const digest = typeof asset?.digest === "string"
+      ? /^sha256:([0-9a-f]{64})$/u.exec(asset.digest)?.[1]
+      : undefined;
+    if (
+      typeof name !== "string" ||
+      Object.hasOwn(assets, name) ||
+      !Number.isSafeInteger(asset.id) ||
+      asset.id <= 0 ||
+      !Number.isSafeInteger(asset.size) ||
+      asset.size <= 0 ||
+      digest === undefined ||
+      asset.state !== "uploaded" ||
+      asset.browser_download_url !== expectedUrl
+    ) {
+      throw new Error(
+        `candidate escrow API asset identity is invalid for ${String(name)}`,
+      );
+    }
+    assets[name] = {
+      assetId: asset.id,
+      bytes: asset.size,
+      sha256: digest,
+    };
+  }
+  return {
+    schemaVersion: 1,
+    repository: CANDIDATE_ESCROW_REPOSITORY,
+    tag,
+    url: release.html_url,
+    runId,
+    releaseId: release.id,
+    immutable: release.immutable,
+    draft: release.draft,
+    prerelease: release.prerelease,
+    assets,
+  };
+}
+
+async function authenticatedCandidateEscrow(identity, state, options, paths) {
+  if (
+    options["receipt-json"] !== undefined ||
+    options["receipt-file"] !== undefined ||
+    options["receipt-bundle"] !== undefined
+  ) {
+    throw new Error(
+      "candidate-escrow-published does not accept operator-supplied receipts; " +
+        "use --github-cli with an explicit GH_TOKEN",
+    );
+  }
+  const candidateCheckpoint =
+    state.checkpoints["candidate-build-complete"];
+  validateCheckpointReceipt({
+    evidenceSha256: state.verification.evidenceSha256,
+    lane: identity.lane,
+    receipt: candidateCheckpoint?.receipt,
+    sha: identity.sha,
+    step: "candidate-build-complete",
+    version: identity.version,
+  });
+  const githubToken = process.env.GH_TOKEN;
+  if (
+    typeof githubToken !== "string" ||
+    githubToken.length === 0 ||
+    /[\0\r\n]/u.test(githubToken)
+  ) {
+    throw new Error(
+      "candidate-escrow-published requires an explicit non-empty GH_TOKEN",
+    );
+  }
+  const githubCliPath = options["github-cli"];
+  if (typeof githubCliPath !== "string" || !isAbsolute(githubCliPath)) {
+    throw new Error(
+      "candidate escrow checkpoint requires an absolute checksum-pinned GitHub CLI path",
+    );
+  }
+  const githubCliIdentity = pinnedGitHubCliIdentity();
+  await assertPinnedGitHubCliExecutable(
+    githubCliPath,
+    githubCliIdentity,
+    "candidate escrow pre-spawn verification",
+  );
+  const workDirectory = mkdtempSync(join(paths.directory, ".candidate-escrow-"));
+  chmodSync(workDirectory, 0o700);
+  try {
+    const environment = {
+      ...isolatedGitHubCliEnvironment(workDirectory),
+      GH_TOKEN: githubToken,
+    };
+    mkdirSync(join(workDirectory, "gh-config"), { mode: 0o700 });
+    const versionResult = runGitHubCli(
+      githubCliPath,
+      ["--version"],
+      environment,
+      "candidate escrow version verification",
+    );
+    if (versionResult.status !== 0) {
+      throw new Error(
+        "checksum-pinned GitHub CLI version verification failed for candidate escrow",
+      );
+    }
+    const versionMatch = /^gh version (\d+\.\d+\.\d+)(?:\s|$)/u.exec(
+      versionResult.stdout.trim(),
+    );
+    if (versionMatch?.[1] !== githubCliIdentity.version) {
+      throw new Error(
+        `GitHub CLI version ${versionMatch?.[1] ?? "unknown"} does not match ` +
+          `release-toolchain.json pin ${githubCliIdentity.version}`,
+      );
+    }
+    const runId = candidateCheckpoint.receipt.runId;
+    const candidateTag =
+      `agenc-candidate-v${identity.version}-run-${runId}`;
+    const verifyResult = runGitHubCli(
+      githubCliPath,
+      [
+        "release",
+        "verify",
+        candidateTag,
+        "--repo",
+        CANDIDATE_ESCROW_REPOSITORY,
+      ],
+      environment,
+      "candidate escrow immutable release verification",
+    );
+    if (verifyResult.status !== 0) {
+      throw new Error(
+        `GitHub immutable release verification rejected ${candidateTag}: ` +
+          `${verifyResult.stderr.trim() || verifyResult.stdout.trim() || "unknown error"}`,
+      );
+    }
+    const apiVersion = "2026-03-10";
+    const apiResult = runGitHubCli(
+      githubCliPath,
+      [
+        "api",
+        "--method",
+        "GET",
+        `repos/${CANDIDATE_ESCROW_REPOSITORY}/releases/tags/${candidateTag}`,
+        "--header",
+        "Accept: application/vnd.github+json",
+        "--header",
+        `X-GitHub-Api-Version: ${apiVersion}`,
+      ],
+      environment,
+      "candidate escrow release API readback",
+    );
+    if (apiResult.status !== 0) {
+      throw new Error(
+        `candidate escrow API readback failed for ${candidateTag}: ` +
+          `${apiResult.stderr.trim() || apiResult.stdout.trim() || "unknown error"}`,
+      );
+    }
+    if (
+      Buffer.byteLength(apiResult.stdout, "utf8") <= 0 ||
+      Buffer.byteLength(apiResult.stdout, "utf8") >
+        MAX_CANDIDATE_ATTESTATION_BYTES
+    ) {
+      throw new Error("candidate escrow API response is outside the 4 MiB bound");
+    }
+    let release;
+    try {
+      release = JSON.parse(apiResult.stdout);
+    } catch (error) {
+      throw new Error(`candidate escrow API returned invalid JSON: ${error.message}`);
+    }
+    const receipt = candidateEscrowReceiptFromRelease(
+      release,
+      candidateCheckpoint,
+      identity.version,
+    );
+    validateCheckpointReceipt({
+      candidateCheckpoint,
+      evidenceSha256: state.verification.evidenceSha256,
+      lane: identity.lane,
+      receipt,
+      sha: identity.sha,
+      step: "candidate-escrow-published",
+      version: identity.version,
+    });
+    await assertPinnedGitHubCliExecutable(
+      githubCliPath,
+      githubCliIdentity,
+      "candidate escrow post-spawn verification",
+    );
+    return {
+      authentication: {
+        type: "github-immutable-release",
+        repository: CANDIDATE_ESCROW_REPOSITORY,
+        tag: candidateTag,
+        apiVersion,
+        githubCliPlatform: githubCliIdentity.platform,
+        githubCliArch: githubCliIdentity.arch,
+        githubCliTarget: githubCliIdentity.target,
+        githubCliVersion: githubCliIdentity.version,
+        githubCliExecutableBytes: githubCliIdentity.executableBytes,
+        githubCliExecutableSha256: githubCliIdentity.executableSha256,
+      },
+      receipt,
+    };
+  } finally {
+    rmSync(workDirectory, { recursive: true, force: true });
+  }
+}
+
+export function validateCheckpointReceipt({
+  candidateCheckpoint,
+  evidenceSha256,
+  lane,
+  receipt,
+  sha,
+  step,
+  version,
+}) {
+  if (step === "candidate-escrow-published") {
+    if (lane !== "full") {
+      throw new Error(
+        "candidate-escrow-published is valid only for the full release lane",
+      );
+    }
+    const candidateReceipt = candidateCheckpoint?.receipt;
+    const authentication = candidateCheckpoint?.authentication;
+    validateCheckpointReceipt({
+      evidenceSha256,
+      lane,
+      receipt: candidateReceipt,
+      sha,
+      step: "candidate-build-complete",
+      version,
+    });
+    if (
+      authentication?.type !== "github-attestation" ||
+      !Number.isSafeInteger(authentication.receiptBytes) ||
+      authentication.receiptBytes <= 0 ||
+      !HASH_RE.test(authentication.receiptSha256 ?? "") ||
+      !Number.isSafeInteger(authentication.bundleBytes) ||
+      authentication.bundleBytes <= 0 ||
+      !HASH_RE.test(authentication.bundleSha256 ?? "")
+    ) {
+      throw new Error(
+        "candidate-escrow-published requires the authenticated seal byte identity",
+      );
+    }
+    const runId = candidateReceipt.runId;
+    const candidateTag = `agenc-candidate-v${version}-run-${runId}`;
+    requireExactKeys(
+      receipt,
+      [
+        "assets",
+        "draft",
+        "immutable",
+        "prerelease",
+        "releaseId",
+        "repository",
+        "runId",
+        "schemaVersion",
+        "tag",
+        "url",
+      ],
+      "candidate-escrow-published receipt",
+    );
+    if (
+      receipt.schemaVersion !== 1 ||
+      receipt.repository !== CANDIDATE_ESCROW_REPOSITORY ||
+      receipt.tag !== candidateTag ||
+      receipt.url !==
+        `https://github.com/${CANDIDATE_ESCROW_REPOSITORY}/releases/tag/${candidateTag}` ||
+      receipt.runId !== runId ||
+      !Number.isSafeInteger(receipt.releaseId) ||
+      receipt.releaseId <= 0 ||
+      receipt.immutable !== true ||
+      receipt.draft !== false ||
+      receipt.prerelease !== true
+    ) {
+      throw new Error(
+        "candidate-escrow-published receipt is not the exact immutable prerelease",
+      );
+    }
+    const expectedAssets = {
+      "agenc-runtime-candidate-seal.json": {
+        bytes: authentication.receiptBytes,
+        sha256: authentication.receiptSha256,
+      },
+      "agenc-runtime-candidate-seal.json.sigstore.json": {
+        bytes: authentication.bundleBytes,
+        sha256: authentication.bundleSha256,
+      },
+    };
+    for (const slug of CANDIDATE_ARTIFACT_SLUGS) {
+      const artifact = candidateReceipt.artifacts[`agenc-runtime-${slug}`];
+      expectedAssets[artifact.archive] = {
+        bytes: artifact.archiveBytes,
+        sha256: artifact.archiveSha256,
+      };
+      expectedAssets[`${artifact.archive}.meta.json`] = {
+        bytes: artifact.metadataBytes,
+        sha256: artifact.metadataSha256,
+      };
+      expectedAssets[`${artifact.archive}.sigstore.json`] = {
+        bytes: artifact.candidateBundleBytes,
+        sha256: artifact.candidateBundleSha256,
+      };
+    }
+    requireExactKeys(
+      receipt.assets,
+      Object.keys(expectedAssets),
+      "candidate escrow asset inventory",
+    );
+    for (const [name, expected] of Object.entries(expectedAssets)) {
+      const asset = receipt.assets[name];
+      requireExactKeys(
+        asset,
+        ["assetId", "bytes", "sha256"],
+        `candidate escrow asset ${name}`,
+      );
+      if (
+        !Number.isSafeInteger(asset.assetId) ||
+        asset.assetId <= 0 ||
+        asset.bytes !== expected.bytes ||
+        asset.sha256 !== expected.sha256
+      ) {
+        throw new Error(
+          `candidate escrow asset identity does not match the authenticated candidate: ${name}`,
+        );
+      }
+    }
+    return receipt;
+  }
+  if (step !== "candidate-build-complete") return receipt;
+  if (lane !== "full") {
+    throw new Error("candidate-build-complete is valid only for the full release lane");
+  }
+  requireExactKeys(
+    receipt,
+    [
+      "artifacts",
+      "evidenceSha256",
+      "phase",
+      "runAttempt",
+      "runId",
+      "runUrl",
+      "schemaVersion",
+      "sha",
+      "successfulJobs",
+      "workflow",
+    ],
+    "candidate-build-complete receipt",
+  );
+  if (
+    receipt.schemaVersion !== 1 ||
+    receipt.workflow !== "release-runtime.yml" ||
+    receipt.phase !== "candidate" ||
+    !Number.isSafeInteger(receipt.runId) ||
+    receipt.runId <= 0 ||
+    !Number.isSafeInteger(receipt.runAttempt) ||
+    receipt.runAttempt <= 0 ||
+    receipt.runUrl !==
+      `https://github.com/${REPOSITORY}/actions/runs/${receipt.runId}` ||
+    !SHA_RE.test(sha ?? "") ||
+    !HASH_RE.test(evidenceSha256 ?? "") ||
+    receipt.sha !== sha ||
+    receipt.evidenceSha256 !== evidenceSha256 ||
+    !HASH_RE.test(receipt.evidenceSha256 ?? "")
+  ) {
+    throw new Error(
+      "candidate-build-complete receipt identity does not match the exact verified release",
+    );
+  }
+  const successfulJobs = Array.isArray(receipt.successfulJobs)
+    ? receipt.successfulJobs
+    : [];
+  if (
+    successfulJobs.some((name) => typeof name !== "string") ||
+    new Set(successfulJobs).size !== successfulJobs.length ||
+    canonicalJson([...successfulJobs].sort()) !==
+      canonicalJson([...CANDIDATE_SUCCESSFUL_JOBS].sort())
+  ) {
+    throw new Error(
+      "candidate-build-complete receipt must contain the exact seven successful jobs",
+    );
+  }
+  const expectedArtifactNames = CANDIDATE_ARTIFACT_SLUGS.map(
+    (slug) => `agenc-runtime-${slug}`,
+  );
+  requireExactKeys(
+    receipt.artifacts,
+    expectedArtifactNames,
+    "candidate-build-complete artifact inventory",
+  );
+  for (const slug of CANDIDATE_ARTIFACT_SLUGS) {
+    const name = `agenc-runtime-${slug}`;
+    const artifact = receipt.artifacts[name];
+    requireExactKeys(
+      artifact,
+      [
+        "archive",
+        "archiveBytes",
+        "archiveSha256",
+        "candidateBundleBytes",
+        "candidateBundleSha256",
+        "metadataBytes",
+        "metadataSha256",
+      ],
+      `candidate-build-complete artifact ${name}`,
+    );
+    if (
+      artifact.archive !==
+        `agenc-runtime-${version}-${slug}-node26-abi147.tar.gz` ||
+      !Number.isSafeInteger(artifact.archiveBytes) ||
+      artifact.archiveBytes <= 0 ||
+      !HASH_RE.test(artifact.archiveSha256 ?? "") ||
+      !Number.isSafeInteger(artifact.metadataBytes) ||
+      artifact.metadataBytes <= 0 ||
+      !HASH_RE.test(artifact.metadataSha256 ?? "") ||
+      !Number.isSafeInteger(artifact.candidateBundleBytes) ||
+      artifact.candidateBundleBytes <= 0 ||
+      !HASH_RE.test(artifact.candidateBundleSha256 ?? "")
+    ) {
+      throw new Error(
+        `candidate-build-complete artifact identity is invalid for ${name}`,
+      );
+    }
+  }
+  return receipt;
+}
+
 async function checkpoint(identity, options) {
   const plan = verificationPlan(identity.lane);
   const paths = statePaths(identity, options);
@@ -903,7 +1752,44 @@ async function checkpoint(identity, options) {
           sequence.join(", "),
       );
     }
-    const receipt = parseReceipt(options["receipt-json"]);
+    let authentication = null;
+    let receipt;
+    if (step === "candidate-build-complete") {
+      ({ authentication, receipt } = await authenticatedCandidateReceipt(
+        identity,
+        state,
+        options,
+        paths,
+      ));
+    } else if (step === "candidate-escrow-published") {
+      ({ authentication, receipt } = await authenticatedCandidateEscrow(
+        identity,
+        state,
+        options,
+        paths,
+      ));
+    } else {
+      if (
+        options["receipt-file"] !== undefined ||
+        options["receipt-bundle"] !== undefined ||
+        options["github-cli"] !== undefined
+      ) {
+        throw new Error(
+          `${step} accepts --receipt-json, not candidate attestation options`,
+        );
+      }
+      receipt = parseReceipt(options["receipt-json"]);
+      validateCheckpointReceipt({
+        candidateCheckpoint:
+          state.checkpoints["candidate-build-complete"],
+        evidenceSha256: state.verification.evidenceSha256,
+        lane: identity.lane,
+        receipt,
+        sha: identity.sha,
+        step,
+        version: identity.version,
+      });
+    }
     const priorSteps = sequence.slice(
       0,
       sequence.indexOf(step),
@@ -918,7 +1804,11 @@ async function checkpoint(identity, options) {
     }
     const existing = state.checkpoints[step];
     if (existing !== undefined) {
-      if (canonicalJson(existing.receipt) !== canonicalJson(receipt)) {
+      if (
+        canonicalJson(existing.receipt) !== canonicalJson(receipt) ||
+        canonicalJson(existing.authentication ?? null) !==
+          canonicalJson(authentication)
+      ) {
         throw new Error(`checkpoint ${step} already has a different immutable receipt`);
       }
       if (step === "converged") await compactCompletedLogs(state, paths);
@@ -927,6 +1817,7 @@ async function checkpoint(identity, options) {
     state.checkpoints[step] = {
       recordedAt: new Date().toISOString(),
       receipt,
+      ...(authentication === null ? {} : { authentication }),
     };
     updateState(paths, state);
     if (step === "converged") await compactCompletedLogs(state, paths);

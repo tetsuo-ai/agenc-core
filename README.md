@@ -392,13 +392,14 @@ the authoritative OS egress boundary.
 GitHub Actions carries only exact, narrow Linux-kernel sandbox, PowerShell,
 Neovim, macOS, and Windows capability lanes. Before merge, the PR records the
 exact locally
-tested SHA, commands, results, and skips. Release verification repeats
-the same local gates against the immutable release-tag commit and retains the
-defined local evidence record. Manual release workflows may build artifacts
-afterward; the tagged native runtime builders also require one macOS Seatbelt
-probe or three Windows atomic-artifact/`.cmd` probes in two files to pass with
-zero skips before building. Those native probes do not replace the local test
-plan. The
+tested SHA, commands, results, and skips. Release verification repeats the same
+local gates at exact current `main` before any release tag exists and retains
+the defined local evidence record. The untagged runtime candidate then builds
+all five native artifacts; its macOS and Windows jobs additionally require one
+Seatbelt probe or three atomic-artifact/`.cmd` probes in two files to pass with
+zero skips. After the source tag is created, the tagged workflow promotes and
+re-attests those exact candidate bytes without rebuilding them. Those native
+probes do not replace the local test plan. The
 repository retains an optional GitHub App/ruleset design, but it is inactive
 and not required by the current local-only operating policy. Contract and
 reproduction details live in [`docs/ci-required-gates.md`](docs/ci-required-gates.md).

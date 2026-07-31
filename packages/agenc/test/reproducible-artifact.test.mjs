@@ -21,6 +21,7 @@ import {
   maximumMacosDeploymentVersion,
   maximumRequiredSymbolVersion,
   pruneNativeBuildIntermediates,
+  releaseCandidateIdentity,
   resolveBuildExecutables,
   stageEmbeddedNode,
   withPinnedExecutablePath,
@@ -33,6 +34,72 @@ import {
   validateEmbeddedNodeRuntimeArchive,
   validateRuntimeArchive,
 } from "../lib/runtime-archive.mjs";
+
+test("release candidate metadata binds one complete canonical workflow identity", () => {
+  const sourceCommit = "a".repeat(40);
+  const environment = {
+    AGENC_RELEASE_CANDIDATE_WORKFLOW: "release-runtime.yml",
+    AGENC_RELEASE_CANDIDATE_RUN_ID: "123456",
+    AGENC_RELEASE_CANDIDATE_RUN_ATTEMPT: "2",
+    AGENC_RELEASE_CANDIDATE_RUN_URL:
+      "https://github.com/tetsuo-ai/agenc-core/actions/runs/123456",
+    AGENC_RELEASE_CANDIDATE_PHASE: "candidate",
+    AGENC_RELEASE_CANDIDATE_SOURCE_REF: "refs/heads/main",
+    AGENC_RELEASE_CANDIDATE_EVIDENCE_SHA256: "b".repeat(64),
+  };
+  assert.equal(releaseCandidateIdentity({}, sourceCommit), undefined);
+  const identity = releaseCandidateIdentity(environment, sourceCommit);
+  assert.deepEqual(identity, {
+    workflow: "release-runtime.yml",
+    runId: 123456,
+    runAttempt: 2,
+    runUrl: "https://github.com/tetsuo-ai/agenc-core/actions/runs/123456",
+    phase: "candidate",
+    sourceRef: "refs/heads/main",
+    evidenceSha256: "b".repeat(64),
+  });
+  assert.equal(Object.isFrozen(identity), true);
+
+  for (const [label, mutate] of [
+    ["partial identity", (value) => {
+      delete value.AGENC_RELEASE_CANDIDATE_RUN_ATTEMPT;
+    }],
+    ["wrong workflow", (value) => {
+      value.AGENC_RELEASE_CANDIDATE_WORKFLOW = "other.yml";
+    }],
+    ["noncanonical run", (value) => {
+      value.AGENC_RELEASE_CANDIDATE_RUN_ID = "0123456";
+    }],
+    ["detached run URL", (value) => {
+      value.AGENC_RELEASE_CANDIDATE_RUN_URL += "/attempts/2";
+    }],
+    ["wrong phase", (value) => {
+      value.AGENC_RELEASE_CANDIDATE_PHASE = "tagged";
+    }],
+    ["wrong source ref", (value) => {
+      value.AGENC_RELEASE_CANDIDATE_SOURCE_REF = "refs/tags/agenc-v0.13.0";
+    }],
+    ["invalid evidence digest", (value) => {
+      value.AGENC_RELEASE_CANDIDATE_EVIDENCE_SHA256 = "0";
+    }],
+  ]) {
+    const candidate = { ...environment };
+    mutate(candidate);
+    assert.throws(
+      () => releaseCandidateIdentity(candidate, sourceCommit),
+      Error,
+      label,
+    );
+  }
+  assert.throws(
+    () => releaseCandidateIdentity(environment, "0", "release"),
+    /exact source commit/,
+  );
+  assert.throws(
+    () => releaseCandidateIdentity(environment, sourceCommit, "clean-local"),
+    /only for release artifacts/,
+  );
+});
 
 function fixture(root, reverse) {
   const modules = join(root, "node_modules");

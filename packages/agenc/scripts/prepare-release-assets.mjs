@@ -22,9 +22,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { validateLauncherManifest } from "./check-package-ready.mjs";
 import {
   canonicalRuntimeAttestationVerificationArgs,
+  canonicalRuntimeBuildProvenanceVerificationArgs,
   MINIMUM_PRIVATE_NODE_RUNTIME_VERSION,
   PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG,
   RUNTIME_ATTESTATION_POLICY,
+  RUNTIME_BUILD_PROVENANCE_POLICY,
+  runtimeVersionRequiresDualProvenance,
+  validateRuntimeReleaseCandidateIdentity,
 } from "../lib/runtime-release-contract.mjs";
 import {
   frozenLegacyManifestBytes,
@@ -40,6 +44,7 @@ const repoRoot = resolve(launcherDir, "..", "..");
 const MAX_ATTESTATION_BUNDLE_BYTES = 4 * 1024 * 1024;
 const DEFAULT_ATTESTATION_TIMEOUT_MS = 30_000;
 export const RELEASE_ATTESTATION_POLICY = RUNTIME_ATTESTATION_POLICY;
+export const RELEASE_BUILD_PROVENANCE_POLICY = RUNTIME_BUILD_PROVENANCE_POLICY;
 
 export function canonicalAttestationVerificationArgs(subjectPath, bundlePath, manifest) {
   const sourceCommit = manifest?.build?.sourceCommit;
@@ -49,6 +54,19 @@ export function canonicalAttestationVerificationArgs(subjectPath, bundlePath, ma
     bundlePath,
     sourceCommit,
     sourceRef,
+  });
+}
+
+export function canonicalBuildProvenanceVerificationArgs(
+  subjectPath,
+  bundlePath,
+  manifest,
+) {
+  const sourceCommit = manifest?.build?.sourceCommit;
+  return canonicalRuntimeBuildProvenanceVerificationArgs({
+    subjectPath,
+    bundlePath,
+    sourceCommit,
   });
 }
 
@@ -319,7 +337,7 @@ function verifyCanonicalAttestation(
   subjectPath,
   bundlePath,
   manifest,
-  { githubCliPath, timeoutMs },
+  { githubCliPath, timeoutMs, provenanceKind = "promotion" },
 ) {
   assertPlainFile(bundlePath, "canonical Sigstore bundle");
   if (typeof githubCliPath !== "string" || !isAbsolute(githubCliPath)) {
@@ -339,7 +357,9 @@ function verifyCanonicalAttestation(
     mkdirSync(configDirectory, { recursive: true, mode: 0o700 });
     verify = spawnSync(
       githubCliPath,
-      canonicalAttestationVerificationArgs(subjectPath, bundlePath, manifest),
+      provenanceKind === "build"
+        ? canonicalBuildProvenanceVerificationArgs(subjectPath, bundlePath, manifest)
+        : canonicalAttestationVerificationArgs(subjectPath, bundlePath, manifest),
       {
         cwd: repoRoot,
         encoding: "utf8",
@@ -451,12 +471,45 @@ export function prepareReleaseAssets({
     const name = basename(new URL(artifact.url).pathname);
     const sidecar = `${name}.meta.json`;
     const bundleName = `${name}.sigstore.json`;
-    for (const assetName of [name, sidecar, bundleName]) {
+    const buildBundleName = `${name}.build.sigstore.json`;
+    const hasBuildProvenance =
+      artifact.buildProvenanceUrl !== undefined ||
+      artifact.buildProvenanceSha256 !== undefined ||
+      artifact.buildProvenanceBytes !== undefined;
+    const useBuildProvenance =
+      runtimeVersionRequiresDualProvenance(manifest.runtimeVersion) ||
+      hasBuildProvenance;
+    const assetNames = [name, sidecar, bundleName];
+    if (useBuildProvenance) assetNames.push(buildBundleName);
+    for (const assetName of assetNames) {
       const source = downloaded.get(assetName);
       if (source === undefined) throw new Error(`manifest release asset is missing: ${assetName}`);
       selected.push([assetName, source]);
     }
     const metadataPath = downloaded.get(sidecar);
+    let metadata;
+    try {
+      metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+    } catch (error) {
+      throw new Error(`runtime metadata is invalid JSON: ${sidecar}`, {
+        cause: error,
+      });
+    }
+    const expectedReleaseCandidate = manifest.build?.releaseCandidate;
+    validateRuntimeReleaseCandidateIdentity(
+      metadata?.releaseCandidate,
+      metadata?.sourceCommit,
+      {
+        required: runtimeVersionRequiresDualProvenance(manifest.runtimeVersion),
+      },
+    );
+    if (
+      metadata?.sourceCommit !== manifest.build?.sourceCommit ||
+      JSON.stringify(metadata?.releaseCandidate) !==
+        JSON.stringify(expectedReleaseCandidate)
+    ) {
+      throw new Error(`manifest release candidate binding failed for ${sidecar}`);
+    }
     const metadataDigest = createHash("sha256").update(readFileSync(metadataPath)).digest("hex");
     if (metadataDigest !== artifact.metadataSha256) {
       throw new Error(`manifest provenance binding failed for ${sidecar}`);
@@ -466,46 +519,72 @@ export function prepareReleaseAssets({
     if (bytes.length !== artifact.bytes || digest !== artifact.sha256) {
       throw new Error(`manifest binding failed for ${name}`);
     }
-    const canonicalAttestationUrl = `${artifact.url}.sigstore.json`;
-    if (artifact.attestationUrl !== canonicalAttestationUrl) {
-      throw new Error(`manifest attestation URL is not canonical for ${name}`);
-    }
-    if (
-      !/^[0-9a-f]{64}$/.test(artifact.attestationSha256 ?? "") ||
-      !Number.isSafeInteger(artifact.attestationBytes) ||
-      artifact.attestationBytes <= 0 ||
-      artifact.attestationBytes > MAX_ATTESTATION_BUNDLE_BYTES
-    ) {
-      throw new Error(`manifest attestation identity is invalid for ${name}`);
-    }
-    const bundlePath = downloaded.get(bundleName);
-    const bundle = readFileSync(bundlePath);
-    const bundleDigest = createHash("sha256").update(bundle).digest("hex");
-    if (
-      bundle.length !== artifact.attestationBytes ||
-      bundleDigest !== artifact.attestationSha256
-    ) {
-      throw new Error(`manifest attestation binding failed for ${bundleName}`);
-    }
-    try {
-      const parsed = JSON.parse(bundle.toString("utf8"));
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("bundle root is not an object");
+    const provenanceContracts = [
+      {
+        label: "attestation",
+        kind: "promotion",
+        name: bundleName,
+        url: artifact.attestationUrl,
+        expectedUrl: `${artifact.url}.sigstore.json`,
+        sha256: artifact.attestationSha256,
+        bytes: artifact.attestationBytes,
+      },
+      ...(useBuildProvenance ? [{
+        label: "build provenance",
+        kind: "build",
+        name: buildBundleName,
+        url: artifact.buildProvenanceUrl,
+        expectedUrl: `${artifact.url}.build.sigstore.json`,
+        sha256: artifact.buildProvenanceSha256,
+        bytes: artifact.buildProvenanceBytes,
+      }] : []),
+    ];
+    for (const provenance of provenanceContracts) {
+      if (provenance.url !== provenance.expectedUrl) {
+        throw new Error(
+          `manifest ${provenance.label} URL is not canonical for ${name}`,
+        );
       }
-    } catch (error) {
-      throw new Error(`canonical Sigstore bundle is invalid JSON: ${bundleName}`, {
-        cause: error,
-      });
-    }
-    if (verifyAttestations) {
-      verifyAttestation(downloaded.get(name), bundlePath, manifest, {
-        githubCliPath,
-        timeoutMs: attestationTimeoutMs,
-      });
-      verifyAttestation(metadataPath, bundlePath, manifest, {
-        githubCliPath,
-        timeoutMs: attestationTimeoutMs,
-      });
+      if (
+        !/^[0-9a-f]{64}$/.test(provenance.sha256 ?? "") ||
+        !Number.isSafeInteger(provenance.bytes) ||
+        provenance.bytes <= 0 ||
+        provenance.bytes > MAX_ATTESTATION_BUNDLE_BYTES
+      ) {
+        throw new Error(
+          `manifest ${provenance.label} identity is invalid for ${name}`,
+        );
+      }
+      const bundlePath = downloaded.get(provenance.name);
+      const bundle = readFileSync(bundlePath);
+      const bundleDigest = createHash("sha256").update(bundle).digest("hex");
+      if (
+        bundle.length !== provenance.bytes ||
+        bundleDigest !== provenance.sha256
+      ) {
+        throw new Error(
+          `manifest ${provenance.label} binding failed for ${provenance.name}`,
+        );
+      }
+      try {
+        const parsed = JSON.parse(bundle.toString("utf8"));
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("bundle root is not an object");
+        }
+      } catch (error) {
+        throw new Error(`canonical Sigstore bundle is invalid JSON: ${provenance.name}`, {
+          cause: error,
+        });
+      }
+      if (verifyAttestations) {
+        for (const subjectPath of [downloaded.get(name), metadataPath]) {
+          verifyAttestation(subjectPath, bundlePath, manifest, {
+            githubCliPath,
+            timeoutMs: attestationTimeoutMs,
+            provenanceKind: provenance.kind,
+          });
+        }
+      }
     }
   }
 
