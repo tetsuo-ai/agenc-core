@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   anchorWorkbenchProjectRoot,
   runEmbeddedNeovimCommand,
+  waitForExactFileText,
   waitForFrameText,
   waitForScreen,
 } from "../helpers/workbench-buffer-neovim.mjs";
@@ -86,13 +87,14 @@ export default async function (session) {
     session.send("o");
     await sleep(80);
     await session.type("UNSAVED_PLATFORM_KILL_MARK", { perCharMs: 15 });
-    const dirtyProof = await waitForFileText(
-      dirtyProofFile,
-      /UNSAVED_PLATFORM_KILL_MARK/u,
-      5_000,
-    );
     const expectedDirtyProof =
       `${originalTarget}UNSAVED_PLATFORM_KILL_MARK\n`;
+    const dirtyProof = await waitForExactFileText(
+      dirtyProofFile,
+      expectedDirtyProof,
+      5_000,
+      "Neovim dirty-buffer proof",
+    );
     if (dirtyProof !== expectedDirtyProof) {
       throw new Error(
         `Neovim dirty-buffer proof was not exact: ${JSON.stringify(dirtyProof)}`,
@@ -173,19 +175,6 @@ async function readPidFile(path) {
     await sleep(50);
   }
   throw new Error(`embedded Neovim did not write its pid file: ${path}`);
-}
-
-async function waitForFileText(path, pattern, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  let last = "";
-  while (Date.now() < deadline) {
-    last = await readFile(path, "utf8").catch(() => "");
-    if (pattern.test(last)) return last;
-    await sleep(50);
-  }
-  throw new Error(
-    `dirty Neovim buffer proof did not update ${path} within ${timeoutMs}ms: ${last}`,
-  );
 }
 
 function processIsAlive(pid) {

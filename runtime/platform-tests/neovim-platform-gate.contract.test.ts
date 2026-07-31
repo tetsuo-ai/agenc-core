@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { parse } from "yaml";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import { waitForExactFileText } from "../scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs";
 
 import {
   HOSTED_NEOVIM_SCENARIOS,
@@ -58,6 +60,28 @@ const EXPECTED_TARGETS = {
 } as const;
 
 describe("hosted Neovim platform gate contract", () => {
+  it("waits through marker-bearing partial proof reads until the bytes are exact", async () => {
+    const expected = "platform-alpha\nPLATFORM_NVIM_MARK\n";
+    const reads = [
+      "platform-alpha\nPLATFORM_NVIM_MARK",
+      expected,
+    ];
+    const readText = vi.fn(async () => reads.shift() ?? expected);
+    const wait = vi.fn(async () => {});
+
+    await expect(
+      waitForExactFileText(
+        "/private/proof.txt",
+        expected,
+        1_000,
+        "platform edit proof",
+        { readText, wait },
+      ),
+    ).resolves.toBe(expected);
+    expect(readText).toHaveBeenCalledTimes(2);
+    expect(wait).toHaveBeenCalledOnce();
+  });
+
   it("pins every required hosted target without changing the legacy Linux release pin", () => {
     const toolchain = JSON.parse(
       readFileSync(resolve(REPO_ROOT, "release-toolchain.json"), "utf8"),
@@ -155,18 +179,31 @@ describe("hosted Neovim platform gate contract", () => {
     );
     expect(saveScenario).toContain('"write", {');
     expect(saveScenario).toContain("readySession: true");
-    expect(saveScenario).toContain("waitForFileText(");
+    expect(saveScenario).toContain("waitForExactFileText(");
+    expect(saveScenario).toMatch(
+      /waitForExactFileText\(\s*editProofFile,\s*expectedEditProof,/u,
+    );
+    expect(saveScenario).not.toMatch(
+      /waitForFileText\(\s*editProofFile,/u,
+    );
+    expect(saveScenario).toMatch(
+      /waitForExactFileText\(\s*target,\s*expectedEditProof,/u,
+    );
+    expect(saveScenario).not.toMatch(
+      /waitForFileText\(\s*target,/u,
+    );
     expect(saveScenario).toContain("PLATFORM_NVIM_MARK");
     expect(saveScenario).toContain("nvim-platform-edit-proof.txt");
     expect(saveScenario).toContain(
       "autocmd TextChangedI,TextChangedP target.txt",
     );
     expect(saveScenario).toContain("editProof !== expectedEditProof");
+    expect(saveScenario).toContain("saved !== expectedEditProof");
     const editInputIndex = saveScenario.indexOf(
       'session.type("PLATFORM_NVIM_MARK"',
     );
     const editProofWaitIndex = saveScenario.indexOf(
-      "const editProof = await waitForFileText(",
+      "const editProof = await waitForExactFileText(",
     );
     const editEscapeIndex = saveScenario.indexOf(
       'session.send("\\x1b")',
@@ -204,6 +241,12 @@ describe("hosted Neovim platform gate contract", () => {
       "autocmd TextChangedI,TextChangedP target.txt",
     );
     expect(killScenario).toContain("writefile(getline(1, '$')");
+    expect(killScenario).toMatch(
+      /waitForExactFileText\(\s*dirtyProofFile,\s*expectedDirtyProof,/u,
+    );
+    expect(killScenario).not.toMatch(
+      /waitForFileText\(\s*dirtyProofFile,/u,
+    );
     expect(killScenario).toContain("targetBeforeKill !== originalTarget");
     expect(killScenario).toContain("dirtyProof !== expectedDirtyProof");
     expect(killScenario).toContain("readySession: true");
@@ -214,7 +257,7 @@ describe("hosted Neovim platform gate contract", () => {
       'session.type("UNSAVED_PLATFORM_KILL_MARK"',
     );
     const dirtyProofWaitIndex = killScenario.indexOf(
-      "const dirtyProof = await waitForFileText(",
+      "const dirtyProof = await waitForExactFileText(",
     );
     expect(dirtyAcknowledgementIndex).toBeGreaterThan(-1);
     expect(dirtyInputIndex).toBeGreaterThan(dirtyAcknowledgementIndex);

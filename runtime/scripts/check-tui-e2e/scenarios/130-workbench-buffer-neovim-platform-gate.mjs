@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   anchorWorkbenchProjectRoot,
   runEmbeddedNeovimCommand,
+  waitForExactFileText,
   waitForFrameText,
   waitForScreen,
 } from "../helpers/workbench-buffer-neovim.mjs";
@@ -56,12 +57,13 @@ export default async function (session) {
     session.send("o");
     await sleep(80);
     await session.type("PLATFORM_NVIM_MARK", { perCharMs: 15 });
-    const editProof = await waitForFileText(
-      editProofFile,
-      /PLATFORM_NVIM_MARK/u,
-      5_000,
-    );
     const expectedEditProof = `${originalTarget}PLATFORM_NVIM_MARK\n`;
+    const editProof = await waitForExactFileText(
+      editProofFile,
+      expectedEditProof,
+      5_000,
+      "Neovim platform edit proof",
+    );
     if (editProof !== expectedEditProof) {
       throw new Error(
         `Neovim platform edit proof was not exact: ${JSON.stringify(editProof)}`,
@@ -78,13 +80,16 @@ export default async function (session) {
       readySession: true,
     });
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
-    const saved = await waitForFileText(
+    const saved = await waitForExactFileText(
       target,
-      /PLATFORM_NVIM_MARK/u,
+      expectedEditProof,
       10_000,
+      "saved Neovim platform edit",
     );
-    if (!saved.includes("PLATFORM_NVIM_MARK")) {
-      throw new Error(`embedded Neovim did not save the platform marker: ${saved}`);
+    if (saved !== expectedEditProof) {
+      throw new Error(
+        `embedded Neovim save was not exact: ${JSON.stringify(saved)}`,
+      );
     }
 
     await runEmbeddedNeovimCommand(

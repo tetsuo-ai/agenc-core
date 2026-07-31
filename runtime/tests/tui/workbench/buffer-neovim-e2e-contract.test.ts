@@ -182,9 +182,13 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(platformGate).toContain('"write", {');
     expect(platformGate).toContain("readySession: true");
     expect(platformGate).toContain("waitForFileText");
-    expect(platformGate).toContain(
-      'saved.includes("PLATFORM_NVIM_MARK")',
+    expect(platformGate).toMatch(
+      /waitForExactFileText\(\s*target,\s*expectedEditProof,/u,
     );
+    expect(platformGate).not.toMatch(
+      /waitForFileText\(\s*target,/u,
+    );
+    expect(platformGate).toContain("saved !== expectedEditProof");
     expect(platformGate).toContain("nvim-platform-edit-proof.txt");
     expect(platformGate).toContain(
       "autocmd TextChangedI,TextChangedP target.txt",
