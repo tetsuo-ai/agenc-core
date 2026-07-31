@@ -21,6 +21,7 @@ import {
   installTuiGateSignalHandlers,
   startTuiGateDaemon,
   teardownTuiGateState,
+  writeTuiGateDefaultConfig,
   writeTuiGateTrust,
 } from "./tui-gate-state.mjs";
 
@@ -702,6 +703,7 @@ async function main() {
   try {
     gateState = await gateStatePromise;
     await writeTuiGateTrust(gateState.env, [RUNTIME_DIR]);
+    await writeTuiGateDefaultConfig(gateState);
     if (interrupted) return 1;
     await startTuiGateDaemon(gateState, BIN_AGENC_PATH);
     if (interrupted) return 1;

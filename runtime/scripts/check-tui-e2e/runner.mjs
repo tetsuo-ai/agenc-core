@@ -29,6 +29,7 @@ import {
   installTuiGateSignalHandlers,
   startTuiGateDaemon,
   teardownTuiGateState,
+  writeTuiGateDefaultConfig,
 } from "../tui-gate-state.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -90,6 +91,19 @@ export function platformSelectionFromArgv(argv) {
     throw new Error("--platform requires a target slug");
   }
   return value;
+}
+
+export function shouldSeedTuiGateDefaultConfig(meta = {}) {
+  const firstUsePredictionConsent = meta.firstUsePredictionConsent;
+  if (
+    firstUsePredictionConsent !== undefined &&
+    typeof firstUsePredictionConsent !== "boolean"
+  ) {
+    throw new Error(
+      "firstUsePredictionConsent scenario metadata must be boolean",
+    );
+  }
+  return firstUsePredictionConsent !== true;
 }
 
 export function applyScenarioFilters(names, argv) {
@@ -337,6 +351,9 @@ async function runScenarioEntry(
         scenario.meta.env ?? {},
       );
       replaceProcessEnvironment(gateState.env);
+      if (shouldSeedTuiGateDefaultConfig(scenario.meta)) {
+        await writeTuiGateDefaultConfig(gateState);
+      }
       await configureTuiGateSandbox(
         gateState,
         BIN_AGENC,

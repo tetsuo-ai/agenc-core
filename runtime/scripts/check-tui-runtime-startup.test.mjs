@@ -7,6 +7,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -27,6 +28,7 @@ import {
   teardownTuiGateState,
   TUI_GATE_TRUST_TIMESTAMP,
   tuiGateEnvironment,
+  writeTuiGateDefaultConfig,
   writeTuiGateTrust,
 } from "./tui-gate-state.mjs";
 
@@ -259,6 +261,65 @@ test("private gate trust is canonical and deterministic without copied operator 
     rmSync(state.root, { recursive: true, force: true });
     rmSync(operatorRoot, { recursive: true, force: true });
   }
+});
+
+test("private gate default config disables predictions before ordinary TUI startup", async () => {
+  const state = await createTuiGateState({
+    prefix: "agenc-tui-default-config-test-",
+  });
+  try {
+    const configPath = await writeTuiGateDefaultConfig(state);
+    assert.equal(configPath, path.join(state.agencHome, "config.toml"));
+    assert.equal(
+      readFileSync(configPath, "utf8"),
+      [
+        "configVersion = 1",
+        "",
+        "[buffer.prediction]",
+        'enabled = "off"',
+        "",
+      ].join("\n"),
+    );
+    if (process.platform !== "win32") {
+      assert.equal(statSync(configPath).mode & 0o777, 0o600);
+    }
+    await assert.rejects(
+      writeTuiGateDefaultConfig(state),
+      (error) => error?.code === "EEXIST",
+    );
+    assert.equal(
+      readFileSync(configPath, "utf8"),
+      [
+        "configVersion = 1",
+        "",
+        "[buffer.prediction]",
+        'enabled = "off"',
+        "",
+      ].join("\n"),
+    );
+  } finally {
+    await teardownTuiGateState(state);
+  }
+});
+
+test("startup smoke seeds its default config before starting the daemon", () => {
+  const source = readFileSync(
+    new URL("./check-tui-runtime-startup.mjs", import.meta.url),
+    "utf8",
+  );
+  const mainIndex = source.indexOf("async function main()");
+  const configIndex = source.indexOf(
+    "await writeTuiGateDefaultConfig(gateState);",
+    mainIndex,
+  );
+  const daemonIndex = source.indexOf(
+    "await startTuiGateDaemon(gateState, BIN_AGENC_PATH);",
+    mainIndex,
+  );
+
+  assert.ok(mainIndex >= 0);
+  assert.ok(configIndex > mainIndex);
+  assert.ok(daemonIndex > configIndex);
 });
 
 test("private gate teardown removes only an owned root and proves it absent", async () => {

@@ -11,7 +11,10 @@ import {
   tempDaemonEnv,
   tuiE2eGateEnv,
 } from "../scripts/check-tui-e2e/harness.mjs";
-import { runScenario } from "../scripts/check-tui-e2e/runner.mjs";
+import {
+  runScenario,
+  shouldSeedTuiGateDefaultConfig,
+} from "../scripts/check-tui-e2e/runner.mjs";
 import {
   createTuiGateState,
   teardownTuiGateState,
@@ -265,6 +268,77 @@ describe("TUI E2E harness state isolation", () => {
 
     expect(configIndex).toBeGreaterThan(-1);
     expect(daemonIndex).toBeGreaterThan(configIndex);
+  });
+
+  it("seeds prediction-off state before ordinary scenario daemons while preserving first-use consent coverage", () => {
+    const runner = readFileSync(
+      new URL("../scripts/check-tui-e2e/runner.mjs", import.meta.url),
+      "utf8",
+    );
+    const scenarioEntryIndex = runner.indexOf(
+      "async function runScenarioEntry(",
+    );
+    const environmentIndex = runner.indexOf(
+      "gateState.env = environmentForTuiGateState(",
+      scenarioEntryIndex,
+    );
+    const configIndex = runner.indexOf(
+      "await writeTuiGateDefaultConfig(gateState);",
+      scenarioEntryIndex,
+    );
+    const sandboxIndex = runner.indexOf(
+      "await configureTuiGateSandbox(",
+      scenarioEntryIndex,
+    );
+    const daemonIndex = runner.indexOf(
+      "await startTuiGateDaemon(gateState, BIN_AGENC)",
+      scenarioEntryIndex,
+    );
+
+    expect(scenarioEntryIndex).toBeGreaterThan(-1);
+    expect(environmentIndex).toBeGreaterThan(scenarioEntryIndex);
+    expect(configIndex).toBeGreaterThan(environmentIndex);
+    expect(sandboxIndex).toBeGreaterThan(configIndex);
+    expect(daemonIndex).toBeGreaterThan(sandboxIndex);
+    expect(shouldSeedTuiGateDefaultConfig({})).toBe(true);
+    expect(
+      shouldSeedTuiGateDefaultConfig({ firstUsePredictionConsent: false }),
+    ).toBe(true);
+    expect(
+      shouldSeedTuiGateDefaultConfig({ firstUsePredictionConsent: true }),
+    ).toBe(false);
+    expect(() =>
+      shouldSeedTuiGateDefaultConfig({
+        firstUsePredictionConsent: "yes",
+      }),
+    ).toThrow(/must be boolean/u);
+
+    const ordinaryScenarios = [
+      "130-workbench-buffer-neovim-platform-gate.mjs",
+      "131-workbench-buffer-neovim-platform-kill-cleanup.mjs",
+    ].map((scenario) =>
+      readFileSync(
+        new URL(
+          `../scripts/check-tui-e2e/scenarios/${scenario}`,
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    const consentScenario = readFileSync(
+      new URL(
+        "../scripts/check-tui-e2e/scenarios/133-editor-code-prediction.mjs",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    for (const source of ordinaryScenarios) {
+      expect(source).not.toContain("firstUsePredictionConsent");
+    }
+    expect(consentScenario).toContain("firstUsePredictionConsent: true");
+    expect(consentScenario).toContain("Enable editor code predictions");
+    expect(consentScenario).toContain('session.send("\\x1by")');
   });
 
   it("keeps /init writes out of the source checkout", () => {
