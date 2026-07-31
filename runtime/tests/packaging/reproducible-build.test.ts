@@ -1363,7 +1363,27 @@ describe("reproducible install and release contract", () => {
       "candidate seal refuses an already-consumed release tag",
     );
     expect(candidateSeal).toContain("pattern: agenc-runtime-*");
+    expect(candidateSeal).toContain(
+      "path: ${{ runner.temp }}/candidate-artifacts",
+    );
+    expect(candidateSeal).not.toMatch(/^\s+path: candidate-artifacts$/mu);
     expect(candidateSeal).toContain("merge-multiple: true");
+    expect(candidateSeal).toContain(
+      "CANDIDATE_ARTIFACTS_DIR: ${{ runner.temp }}/candidate-artifacts",
+    );
+    expect(candidateSeal).toContain(
+      'test -z "$(git status --porcelain=v1 --untracked-files=all)"',
+    );
+    expect(candidateSeal.match(/candidate-artifacts/g)).toHaveLength(2);
+    expect(
+      candidateSeal.indexOf(
+        "path: ${{ runner.temp }}/candidate-artifacts",
+      ),
+    ).toBeLessThan(
+      candidateSeal.indexOf(
+        'test -z "$(git status --porcelain=v1 --untracked-files=all)"',
+      ),
+    );
     expect(candidateSeal).toContain('test "$gh_version" = "2.96.0"');
     expect(candidateSeal.match(/gh attestation verify/g)).toHaveLength(2);
     expect(candidateSeal).toContain("--source-ref refs/heads/main");
@@ -1371,7 +1391,7 @@ describe("reproducible install and release contract", () => {
       "python3 scripts/release_candidate_policy.py seal",
     );
     for (const argument of [
-      "--source-dir candidate-artifacts",
+      '--source-dir "$CANDIDATE_ARTIFACTS_DIR"',
       '--receipt "$receipt"',
       '--repository "$GITHUB_REPOSITORY"',
       '--run-id "$GITHUB_RUN_ID"',
@@ -1381,6 +1401,9 @@ describe("reproducible install and release contract", () => {
     ]) {
       expect(candidateSeal).toContain(argument);
     }
+    expect(candidateSeal).toContain(
+      'archive="$CANDIDATE_ARTIFACTS_DIR/agenc-runtime-${version}-${slug}-node26-abi147.tar.gz"',
+    );
     expect(candidateSeal).not.toContain("def require_candidate_provenance");
     expect(candidateSeal).toContain("Attest the candidate seal");
     expect(candidateSeal).toContain("name: agenc-runtime-candidate-seal");
