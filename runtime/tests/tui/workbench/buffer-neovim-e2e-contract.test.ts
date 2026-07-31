@@ -20,9 +20,6 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
       raw: "target.txt [embedded Neovim NVIM v0.11.4, normal, ready]",
       send(input: string) {
         events.push(`send:${JSON.stringify(input)}`);
-        if (input === ":") {
-          this.raw = "CMDLINE_NORMAL";
-        }
       },
       async type(input: string) {
         events.push(`type:${input}`);
@@ -36,12 +33,11 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
 
     expect(events).toEqual([
       "idle:200",
-      'send:":"',
-      "type:write",
+      'send:"\\u001b"',
+      "type::write",
       'send:"\\r"',
       "idle:500",
     ]);
-    expect(events).not.toContain('send:"\\u001b"');
   });
 
   it("defines the workbench Neovim scenarios and wrapper command", async () => {

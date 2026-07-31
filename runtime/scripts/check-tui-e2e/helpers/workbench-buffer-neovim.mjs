@@ -50,9 +50,11 @@ export async function waitForFrameText(session, pattern, label, timeoutMs = 10_0
 
 export async function runEmbeddedNeovimCommand(session, command) {
   // The terminal grid can paint NORMAL before the provider commits the session
-  // that receives input. The provider header binds normal mode and ready state
-  // to that committed session; long presentation footers may be elided by
-  // ConPTY, so keep the handshake on the provider state itself.
+  // that receives input. The provider header binds ready state to that
+  // committed session, but its coarse "normal" label also covers transient
+  // native modes. Normalize the owned session with Escape before entering Ex.
+  // The callers prove command delivery through concrete process/file effects;
+  // do not make that contract depend on a ConPTY-rendered presentation footer.
   await waitForFrameText(
     session,
     /\[embedded Neovim [^,\n]+,\s*normal,\s*ready(?:,|\])/iu,
@@ -60,15 +62,9 @@ export async function runEmbeddedNeovimCommand(session, command) {
     5_000,
   );
   await session.waitForIdle({ idleWindow: 200, timeout: 5_000 });
-  session.send(":");
-  await waitForFrameText(
-    session,
-    /\bCMDLINE_NORMAL\b/u,
-    `embedded Neovim command-line mode for :${command}`,
-    5_000,
-  );
+  session.send("\x1b");
   await sleep(80);
-  await session.type(command, { perCharMs: 5 });
+  await session.type(`:${command}`, { perCharMs: 5 });
   session.send("\r");
   await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
 }

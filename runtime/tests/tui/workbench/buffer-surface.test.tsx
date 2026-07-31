@@ -2115,6 +2115,8 @@ describe("BufferSurface", () => {
       // handler returns false and the user's native Neovim mapping survives.
       stdin.write("\x1bl");
       await sleep();
+      stdin.write(":");
+      await sleep();
 
       expect(provider.handleInput).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2137,6 +2139,12 @@ describe("BufferSurface", () => {
         expect.objectContaining({
           input: "l",
           key: expect.objectContaining({ meta: true }),
+        }),
+      );
+      expect(provider.handleInput).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: ":",
+          key: expect.objectContaining({ ctrl: false, meta: false }),
         }),
       );
       expect(
