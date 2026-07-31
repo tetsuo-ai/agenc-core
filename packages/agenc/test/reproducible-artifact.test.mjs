@@ -800,17 +800,37 @@ test("signed RPM content inventory binds header, payload, algorithm, and signer 
 });
 
 test("hosted release runner contracts reject valid-looking drift", () => {
+  const inventory = (commit, name) => ({
+    inventoryUrl:
+      `https://raw.githubusercontent.com/actions/runner-images/${commit}/` +
+      `images/macos/${name}-Readme.md`,
+    inventorySha256: "a".repeat(64),
+    inventoryBytes: 12_345,
+  });
   const darwinContract = {
     runnerLabel: "macos-15",
     imageOS: "macos15",
-    imageVersion: "20260706.0213.1",
-    alternateImageVersions: ["20260715.0234.1"],
     runnerArch: "ARM64",
-    xcodeVersion: "16.4",
-    xcodeBuild: "16F6",
-    macosSdkVersion: "15.5",
-    clangVersion: "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+    imageProfiles: [
+      {
+        imageVersion: "20260706.0213.1",
+        ...inventory("1".repeat(40), "macos-15-arm64"),
+        xcodeVersion: "16.4",
+        xcodeBuild: "16F6",
+        macosSdkVersion: "15.5",
+        clangVersion: "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+      },
+      {
+        imageVersion: "20260715.0234.1",
+        ...inventory("2".repeat(40), "macos-15-arm64"),
+        xcodeVersion: "16.5",
+        xcodeBuild: "16G7",
+        macosSdkVersion: "15.6",
+        clangVersion: "Apple clang version 17.0.1",
+      },
+    ],
   };
+  const darwinProfile = darwinContract.imageProfiles[0];
   const metadata = {
     builder: "github-hosted:macos-15:macos15:20260706.0213.1:ARM64",
     runnerLabel: "macos-15",
@@ -819,8 +839,8 @@ test("hosted release runner contracts reject valid-looking drift", () => {
     runnerArch: "ARM64",
     xcode: "Xcode 16.4\nBuild version 16F6",
     sdk: "15.5",
-    cc: darwinContract.clangVersion,
-    cxx: darwinContract.clangVersion,
+    cc: darwinProfile.clangVersion,
+    cxx: darwinProfile.clangVersion,
   };
   assert.doesNotThrow(() =>
     assertHostedRunnerContract(metadata, darwinContract, "darwin-arm64"),
@@ -831,6 +851,10 @@ test("hosted release runner contracts reject valid-looking drift", () => {
         ...metadata,
         builder: "github-hosted:macos-15:macos15:20260715.0234.1:ARM64",
         runnerImageVersion: "20260715.0234.1",
+        xcode: "Xcode 16.5\nBuild version 16G7",
+        sdk: "15.6",
+        cc: "Apple clang version 17.0.1",
+        cxx: "Apple clang version 17.0.1",
       },
       darwinContract,
       "darwin-arm64",
@@ -841,12 +865,28 @@ test("hosted release runner contracts reject valid-looking drift", () => {
       assertHostedRunnerContract(
         {
           ...metadata,
+          builder: "github-hosted:macos-15:macos15:20260715.0234.1:ARM64",
           runnerImageVersion: "20260715.0234.1",
         },
         darwinContract,
         "darwin-arm64",
       ),
-    /builder identity/,
+    /Xcode/,
+  );
+  assert.throws(
+    () =>
+      assertHostedRunnerContract(
+        metadata,
+        {
+          ...darwinContract,
+          imageProfiles: [
+            darwinContract.imageProfiles[0],
+            { ...darwinContract.imageProfiles[0] },
+          ],
+        },
+        "darwin-arm64",
+      ),
+    /duplicate hosted image profiles/,
   );
   for (const [field, value, expected] of [
     ["runnerImageVersion", "20260714.1", /runnerImageVersion/],
@@ -864,6 +904,92 @@ test("hosted release runner contracts reject valid-looking drift", () => {
       field,
     );
   }
+
+  const windowsInventory = (commit) => ({
+    inventoryUrl:
+      `https://raw.githubusercontent.com/actions/runner-images/${commit}/` +
+      "images/windows/Windows2025-VS2026-Readme.md",
+    inventorySha256: "b".repeat(64),
+    inventoryBytes: 23_456,
+  });
+  const windowsContract = {
+    runnerLabel: "windows-2025-vs2026",
+    imageOS: "win25-vs2026",
+    runnerArch: "X64",
+    imageProfiles: [
+      {
+        imageVersion: "20260728.188.1",
+        ...windowsInventory("3".repeat(40)),
+        visualStudioVersion: "18.8.12023.21",
+        visualStudioInstallPath:
+          "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+        msvcToolsVersion: "14.51.36231",
+        msvcCompilerVersion: "19.51.36252",
+        msvcCompilerSha256: "c".repeat(64),
+        msvcLinkerSha256: "d".repeat(64),
+        windowsSdkVersion: "10.0.26100.0",
+      },
+      {
+        imageVersion: "20260714.173.1",
+        ...windowsInventory("4".repeat(40)),
+        visualStudioVersion: "18.7.11925.98",
+        visualStudioInstallPath:
+          "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+        msvcToolsVersion: "14.51.36231",
+        msvcCompilerVersion: "19.51.36248",
+        msvcCompilerSha256: "e".repeat(64),
+        msvcLinkerSha256: "f".repeat(64),
+        windowsSdkVersion: "10.0.26100.0",
+      },
+    ],
+  };
+  const windowsMetadata = {
+    builder:
+      "github-hosted:windows-2025-vs2026:win25-vs2026:20260728.188.1:X64",
+    runnerLabel: "windows-2025-vs2026",
+    runnerImage: "win25-vs2026",
+    runnerImageVersion: "20260728.188.1",
+    runnerArch: "X64",
+    visualStudioVersion: "18.8.12023.21",
+    visualStudioInstallPath:
+      "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+    msvcToolsVersion: "14.51.36231",
+    windowsSdkVersion: "10.0.26100.0",
+    cc: "Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36252 for x64",
+    cxx: "Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36252 for x64",
+    msvcCompilerSha256: "c".repeat(64),
+    msvcLinkerSha256: "d".repeat(64),
+  };
+  assert.doesNotThrow(() =>
+    assertHostedRunnerContract(windowsMetadata, windowsContract, "win-x64"),
+  );
+  assert.throws(
+    () =>
+      assertHostedRunnerContract(
+        {
+          ...windowsMetadata,
+          builder:
+            "github-hosted:windows-2025-vs2026:win25-vs2026:" +
+            "20260714.173.1:X64",
+          runnerImageVersion: "20260714.173.1",
+        },
+        windowsContract,
+        "win-x64",
+      ),
+    /Visual Studio/,
+  );
+  assert.throws(
+    () =>
+      assertHostedRunnerContract(
+        {
+          ...windowsMetadata,
+          msvcCompilerSha256: "0".repeat(64),
+        },
+        windowsContract,
+        "win-x64",
+      ),
+    /MSVC compiler SHA-256/,
+  );
 });
 
 test("two-build verifier rejects a byte-identical but detached provenance sidecar", () => {

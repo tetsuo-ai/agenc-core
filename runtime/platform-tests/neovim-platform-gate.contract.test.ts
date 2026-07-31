@@ -48,7 +48,7 @@ const EXPECTED_TARGETS = {
     executable: "bin/nvim",
   },
   "win-x64": {
-    runner: "windows-2025",
+    runner: "windows-2025-vs2026",
     file: "nvim-win64.zip",
     url: "https://github.com/neovim/neovim/releases/download/v0.12.1/nvim-win64.zip",
     sha256: "75fedc530b3772ca9f177edc7db92560bb9d2d6700ac6d5b2c53eaf5a9317ae3",

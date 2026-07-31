@@ -26,7 +26,7 @@ import {
 } from "../../../src/tui/workbench/buffer/neovim/NeovimDiscovery.js";
 import type { NeovimRenderSnapshot } from "../../../src/tui/workbench/buffer/neovim/NeovimGrid.js";
 import {
-  startEmbeddedNeovim,
+  startEmbeddedNeovim as startEmbeddedNeovimProcess,
   type EmbeddedNeovimSession,
   type EmbeddedNeovimStartupContext,
   type EmbeddedNeovimStartupPreparation,
@@ -55,6 +55,18 @@ type UsableNeovim = Extract<NeovimDiscoveryResult, { readonly usable: true }>;
 
 let dir: string;
 let neovim: UsableNeovim;
+
+const REAL_NEOVIM_STARTUP_TIMEOUT_MS = 20_000;
+
+function startEmbeddedNeovim(
+  options: StartEmbeddedNeovimOptions,
+): Promise<EmbeddedNeovimSession> {
+  return startEmbeddedNeovimProcess({
+    ...options,
+    startupTimeoutMs:
+      options.startupTimeoutMs ?? REAL_NEOVIM_STARTUP_TIMEOUT_MS,
+  });
+}
 
 beforeAll(async () => {
   const discovery = await discoverNeovim({

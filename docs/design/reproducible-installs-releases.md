@@ -29,7 +29,7 @@ in a set.
 
 ## Primary-source research
 
-Research was refreshed on 2026-07-27. The load-bearing sources are:
+Research was refreshed on 2026-07-30. The load-bearing sources are:
 
 - npm documents `npm ci` as the frozen, clean-install command: it requires an
   existing lock, removes an existing `node_modules`, and exits when the lock and
@@ -118,14 +118,20 @@ Research was refreshed on 2026-07-27. The load-bearing sources are:
   image rollout, GitHub may schedule jobs on either the previous GA image or
   the deploying image. The exact image versions reviewed for this release
   contract are macOS arm64 `20260715.0234.1` and `20260727.0256.1`, macOS x64
-  `20260720.0353.1`, and Windows x64 `20260714.173.1`; their release inventories
-  are the primary source for the pinned Xcode, SDK, Visual Studio, MSVC, and
-  Windows SDK identities. Artifact metadata and builder identity record the
-  exact accepted image that ran the build.
-  [macOS arm64 GA image](https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20260715.0234),
-  [macOS arm64 rollout image](https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20260727.0256),
-  [macOS x64 image](https://github.com/actions/runner-images/releases/tag/macos-15%2F20260720.0353),
-  [Windows x64 image](https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20260714.173)
+  `20260720.0353.1` and `20260727.0377.1`, and Windows x64 `20260714.173.1`
+  and `20260728.188.1`.
+  `npm run check:hosted-runner-contract` first discovers the latest stable and
+  any newer prerelease for each target from the official release index. It
+  requires reviewed profiles for all of them, authenticates their exact-commit
+  inventories by byte count and SHA-256, and parses their image and toolchain
+  facts before release verification reaches expensive gates. Artifact metadata
+  and builder identity record the exact accepted image that ran the build.
+  [macOS arm64 GA inventory](https://raw.githubusercontent.com/actions/runner-images/7989a200e3494c1a7e7623a5c0b584002c074152/images/macos/macos-15-arm64-Readme.md),
+  [macOS arm64 rollout inventory](https://raw.githubusercontent.com/actions/runner-images/f1f5b5c6e23728a6f5c74b69ac2eab8aa93f473d/images/macos/macos-15-arm64-Readme.md),
+  [macOS x64 GA inventory](https://raw.githubusercontent.com/actions/runner-images/581131a0d97bdf762bff82d03070b8d5e5ff7c1d/images/macos/macos-15-Readme.md),
+  [macOS x64 rollout inventory](https://raw.githubusercontent.com/actions/runner-images/1d294df93a93fcb193d2c02a4ca0b79de20d5951/images/macos/macos-15-Readme.md),
+  [Windows x64 GA inventory](https://raw.githubusercontent.com/actions/runner-images/c7b2e4c4b56f91032a19a30e85395c6e5f7a7784/images/windows/Windows2025-VS2026-Readme.md),
+  [Windows x64 rollout inventory](https://raw.githubusercontent.com/actions/runner-images/c4dc17bcd08ff8f08f241504b58ddcd9d4e8cbd1/images/windows/Windows2025-VS2026-Readme.md)
 - Node 26.5.0 is the Current release, carries module ABI 147 and npm 11.17.0,
   and is scheduled to enter Active LTS on 2026-10-28. Standalone and Homebrew
   installations bundle this exact runtime instead of depending on the host's

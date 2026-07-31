@@ -55,6 +55,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { create as createTar, extract as extractTar } from "tar";
 import { validateEmbeddedNodeRuntimeArchive } from "../lib/runtime-archive.mjs";
+import {
+  expectedHostedRunnerBuilder,
+  resolveHostedRunnerImageProfile,
+} from "./hosted-runner-contract.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const launcherDir = resolve(__dirname, "..");
@@ -573,28 +577,6 @@ export function canonicalizeRpmContentInventory(inventory, allowedSigningKeyIds)
   };
 }
 
-function reviewedHostedImageVersions(contract, slug) {
-  const alternates = contract.alternateImageVersions ?? [];
-  if (
-    typeof contract.imageVersion !== "string" ||
-    contract.imageVersion.length === 0 ||
-    !Array.isArray(alternates) ||
-    alternates.some((value) => typeof value !== "string" || value.length === 0)
-  ) {
-    throw new Error(`release-toolchain.json has invalid hosted image versions for ${slug}`);
-  }
-  const versions = [contract.imageVersion, ...alternates];
-  if (new Set(versions).size !== versions.length) {
-    throw new Error(`release-toolchain.json has duplicate hosted image versions for ${slug}`);
-  }
-  return versions;
-}
-
-function expectedHostedBuilder(contract, imageVersion) {
-  return `github-hosted:${contract.runnerLabel}:${contract.imageOS}:` +
-    `${imageVersion}:${contract.runnerArch}`;
-}
-
 export function assertHostedRunnerContract(metadata, contract, slug) {
   if (contract === null || typeof contract !== "object" || Array.isArray(contract)) {
     throw new Error(`release-toolchain.json has no hosted runner contract for ${slug}`);
@@ -611,14 +593,15 @@ export function assertHostedRunnerContract(metadata, contract, slug) {
       );
     }
   }
-  const imageVersions = reviewedHostedImageVersions(contract, slug);
-  if (!imageVersions.includes(metadata.runnerImageVersion)) {
-    throw new Error(
-      `release ${slug} runnerImageVersion does not match release-toolchain.json: ` +
-      `${metadata.runnerImageVersion ?? "missing"} not in ${imageVersions.join(", ")}`,
-    );
-  }
-  const builder = expectedHostedBuilder(contract, metadata.runnerImageVersion);
+  const profile = resolveHostedRunnerImageProfile(
+    contract,
+    metadata.runnerImageVersion,
+    slug,
+  );
+  const builder = expectedHostedRunnerBuilder(
+    contract,
+    metadata.runnerImageVersion,
+  );
   if (metadata.builder !== builder) {
     throw new Error(
       `release ${slug} builder identity does not match release-toolchain.json: ` +
@@ -626,12 +609,13 @@ export function assertHostedRunnerContract(metadata, contract, slug) {
     );
   }
   if (slug.startsWith("darwin-")) {
-    const expectedXcode = `Xcode ${contract.xcodeVersion}\nBuild version ${contract.xcodeBuild}`;
+    const expectedXcode =
+      `Xcode ${profile.xcodeVersion}\nBuild version ${profile.xcodeBuild}`;
     for (const [actual, expected, label] of [
       [metadata.xcode, expectedXcode, "Xcode"],
-      [metadata.sdk, contract.macosSdkVersion, "macOS SDK"],
-      [metadata.cc, contract.clangVersion, "C compiler"],
-      [metadata.cxx, contract.clangVersion, "C++ compiler"],
+      [metadata.sdk, profile.macosSdkVersion, "macOS SDK"],
+      [metadata.cc, profile.clangVersion, "C compiler"],
+      [metadata.cxx, profile.clangVersion, "C++ compiler"],
     ]) {
       if (typeof expected !== "string" || actual !== expected) {
         throw new Error(
@@ -642,14 +626,24 @@ export function assertHostedRunnerContract(metadata, contract, slug) {
     }
   } else if (slug === "win-x64") {
     const expectedCompiler =
-      `Microsoft (R) C/C++ Optimizing Compiler Version ${contract.msvcCompilerVersion} for x64`;
+      `Microsoft (R) C/C++ Optimizing Compiler Version ${profile.msvcCompilerVersion} for x64`;
     for (const [actual, expected, label] of [
-      [metadata.visualStudioVersion, contract.visualStudioVersion, "Visual Studio"],
-      [metadata.visualStudioInstallPath, contract.visualStudioInstallPath, "Visual Studio path"],
-      [metadata.msvcToolsVersion, contract.msvcToolsVersion, "MSVC tools"],
-      [metadata.windowsSdkVersion, contract.windowsSdkVersion, "Windows SDK"],
+      [metadata.visualStudioVersion, profile.visualStudioVersion, "Visual Studio"],
+      [
+        metadata.visualStudioInstallPath,
+        profile.visualStudioInstallPath,
+        "Visual Studio path",
+      ],
+      [metadata.msvcToolsVersion, profile.msvcToolsVersion, "MSVC tools"],
+      [metadata.windowsSdkVersion, profile.windowsSdkVersion, "Windows SDK"],
       [metadata.cc, expectedCompiler, "C compiler"],
       [metadata.cxx, expectedCompiler, "C++ compiler"],
+      [
+        metadata.msvcCompilerSha256,
+        profile.msvcCompilerSha256,
+        "MSVC compiler SHA-256",
+      ],
+      [metadata.msvcLinkerSha256, profile.msvcLinkerSha256, "MSVC linker SHA-256"],
     ]) {
       if (typeof expected !== "string" || actual !== expected) {
         throw new Error(

@@ -296,7 +296,7 @@ describe("reproducible install and release contract", () => {
     expect(powershellJob).toContain('["powershellTestRuntime"]["linux-x64"]');
     expect(powershellJob).toContain("--require-zero-skips");
     expect(powershellJob).toContain("--config vitest.powershell.config.ts");
-    expect(powershellJob).toContain("const expectedTests = 20");
+    expect(powershellJob).toContain("const expectedTests = 41");
     expect(powershellJob).toContain("numTotalTestSuites: 7");
     expect(powershellJob).toContain("numPassedTestSuites: 7");
     for (const testFile of [
@@ -341,6 +341,29 @@ describe("reproducible install and release contract", () => {
     expect(neovimJob).toContain("$_.ProcessId -ne $PID -and");
     expect(neovimJob).toContain("pgrep -f --");
 
+    const neovimLifecycleSuite = readFileSync(
+      join(
+        REPO_ROOT,
+        "runtime/tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
+      ),
+      "utf8",
+    );
+    expect(neovimLifecycleSuite).toContain(
+      "startEmbeddedNeovim as startEmbeddedNeovimProcess",
+    );
+    expect(neovimLifecycleSuite).toContain(
+      "const REAL_NEOVIM_STARTUP_TIMEOUT_MS = 20_000;",
+    );
+    expect(neovimLifecycleSuite).toContain(
+      "options.startupTimeoutMs ?? REAL_NEOVIM_STARTUP_TIMEOUT_MS",
+    );
+    expect(
+      neovimLifecycleSuite.match(/startEmbeddedNeovimProcess\(\{/gu),
+    ).toHaveLength(1);
+    expect(
+      neovimLifecycleSuite.match(/startEmbeddedNeovim\(\{/gu),
+    ).toHaveLength(20);
+
     const macosJob = workflow.slice(
       workflow.indexOf("\n  macos-native:"),
       workflow.indexOf("\n  windows-native:"),
@@ -354,7 +377,7 @@ describe("reproducible install and release contract", () => {
     expect(macosJob).toContain("numTotalTests: 1");
 
     const windowsJob = workflow.slice(workflow.indexOf("\n  windows-native:"));
-    expect(windowsJob).toContain("runs-on: windows-2025");
+    expect(windowsJob).toContain("runs-on: windows-2025-vs2026");
     expect(windowsJob).toContain(
       "npm.cmd run build --workspace=@tetsuo-ai/runtime",
     );
@@ -427,6 +450,14 @@ describe("reproducible install and release contract", () => {
       join(REPO_ROOT, "scripts/release_candidate_policy.py"),
       "utf8",
     );
+    const macosRunnerValidator = readFileSync(
+      join(REPO_ROOT, "scripts/validate-hosted-macos-runner.py"),
+      "utf8",
+    );
+    const windowsRunnerValidator = readFileSync(
+      join(REPO_ROOT, "scripts/validate-hosted-windows-runner.ps1"),
+      "utf8",
+    );
     expect(
       workflow.match(/"\$AGENC_NODE_EXECUTABLE_PATH" "\$AGENC_NPM_CLI_PATH" ci --prefix/g),
     ).toHaveLength(2);
@@ -488,12 +519,17 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("Assert-Bytes $nodeArchive $distribution.bytes");
     expect(workflow).toContain("Assert-Bytes $headersArchive $toolchain.nodeHeaders.bytes");
     expect(workflow).toContain("Invoke-WebRequest -Uri $importLibrary.url");
-    expect(workflow).toContain("Validate the reviewed macOS runner and native toolchain");
-    expect(workflow).toContain("Validate and activate the reviewed Windows runner and native toolchain");
-    expect(workflow).toContain("hostedRunners");
-    expect(workflow).toContain("Assert-Exact 'ImageVersion'");
-    expect(workflow).toContain("Assert-Exact 'active MSVC tools version'");
-    expect(workflow).toContain("MSVC compiler identity");
+    expect(workflow).toContain("Validate the reviewed macOS image and native toolchain");
+    expect(workflow).toContain("Validate the reviewed Windows image and native toolchain");
+    expect(macosRunnerValidator).toContain('toolchain.get("hostedRunners")');
+    expect(macosRunnerValidator).toContain("_select_image_profile");
+    expect(windowsRunnerValidator).toContain("$contract.imageProfiles");
+    expect(windowsRunnerValidator).toContain(
+      "Assert-Exact 'active MSVC tools version'",
+    );
+    expect(windowsRunnerValidator).toContain("MSVC compiler identity");
+    expect(windowsRunnerValidator).toContain("msvcCompilerSha256");
+    expect(windowsRunnerValidator).toContain("msvcLinkerSha256");
     expect(workflow).toContain('["nodeBootstrap"]["minimumRuntimeVersion"]');
     expect(workflow).toContain('test "$bootstrap_tag" = "agenc-v${bootstrap_version}"');
     expect(workflow).toContain(
@@ -553,22 +589,24 @@ describe("reproducible install and release contract", () => {
       "steps.runtime-artifact.outputs.bootstrap",
     );
     const nativeJob = workflow.slice(workflow.indexOf("\n  native-tarball:"));
-    const macosValidation = nativeJob.slice(
-      nativeJob.indexOf("Validate the reviewed macOS runner"),
-      nativeJob.indexOf("Validate and activate the reviewed Windows runner"),
+    expect(macosRunnerValidator).toContain(
+      '"xcrun",\n                    "--sdk",\n                    "macosx",\n                    "--show-sdk-path"',
     );
-    expect(macosValidation).toContain('capture("xcrun", "--sdk", "macosx", "--show-sdk-path")');
-    expect(macosValidation).toContain('functional = os.path.join(sdk_path, "usr", "include", "c++", "v1", "functional")');
-    expect(macosValidation).toContain('probe_environment["SDKROOT"] = sdk_path');
-    expect(macosValidation).toContain('environment.write(f\'SDKROOT={sdk_path}\\n\')');
-    const windowsValidation = nativeJob.slice(
-      nativeJob.indexOf("Validate and activate the reviewed Windows runner"),
-      nativeJob.indexOf("Install digest-pinned Node, headers, and npm (macOS)"),
+    expect(macosRunnerValidator).toContain(
+      'functional = sdk_path / "usr" / "include" / "c++" / "v1" / "functional"',
     );
-    expect(windowsValidation).toMatch(
+    expect(macosRunnerValidator).toContain(
+      'probe_environment["SDKROOT"] = str(sdk_path)',
+    );
+    expect(macosRunnerValidator).toContain(
+      'environment.write(f"SDKROOT={sdk_path}\\n")',
+    );
+    expect(windowsRunnerValidator).toMatch(
       /\$compilerLines = @\(& \$cl \/Bv[\s\S]*?\$global:LASTEXITCODE = 0[\s\S]*?MSVC compiler identity/,
     );
-    expect(windowsValidation).toContain("if ($name -ieq 'PATH') { $name = 'PATH' }");
+    expect(windowsRunnerValidator).toContain(
+      "if ($name -ieq 'PATH') { $name = 'PATH' }",
+    );
     const windowsInstall = nativeJob.slice(
       nativeJob.indexOf("Install digest-pinned Node, headers, and npm (Windows)"),
       nativeJob.indexOf("Run native probes and build from two isolated worktrees"),
@@ -679,7 +717,7 @@ describe("reproducible install and release contract", () => {
     const nativeContract = JSON.parse(
       readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
     ) as {
-      hostedRunners: Record<string, Record<string, string | string[]>>;
+      hostedRunners: Record<string, Record<string, unknown>>;
       nodeDistributions: Record<
         string,
         { file: string; sha256: string; bytes: number }
@@ -722,27 +760,60 @@ describe("reproducible install and release contract", () => {
       "darwin-arm64": {
         runnerLabel: "macos-15",
         imageOS: "macos15",
-        imageVersion: "20260715.0234.1",
-        alternateImageVersions: ["20260727.0256.1"],
         runnerArch: "ARM64",
-        xcodeVersion: "16.4",
-        xcodeBuild: "16F6",
-        macosSdkVersion: "15.5",
-        clangVersion: "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+        imageProfiles: [
+          {
+            imageVersion: "20260727.0256.1",
+            xcodeVersion: "16.4",
+            xcodeBuild: "16F6",
+            macosSdkVersion: "15.5",
+            clangVersion: "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+          },
+          {
+            imageVersion: "20260715.0234.1",
+            xcodeVersion: "16.4",
+            xcodeBuild: "16F6",
+            macosSdkVersion: "15.5",
+            clangVersion: "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+          },
+        ],
       },
       "darwin-x64": {
         runnerLabel: "macos-15-intel",
-        imageVersion: "20260720.0353.1",
         runnerArch: "X64",
+        imageProfiles: [
+          { imageVersion: "20260727.0377.1" },
+          { imageVersion: "20260720.0353.1" },
+        ],
       },
       "win-x64": {
-        runnerLabel: "windows-2025",
+        runnerLabel: "windows-2025-vs2026",
         imageOS: "win25-vs2026",
-        imageVersion: "20260714.173.1",
         runnerArch: "X64",
-        visualStudioVersion: "18.7.11925.98",
-        msvcToolsVersion: "14.51.36231",
-        windowsSdkVersion: "10.0.26100.0",
+        imageProfiles: [
+          {
+            imageVersion: "20260728.188.1",
+            visualStudioVersion: "18.8.12023.21",
+            msvcToolsVersion: "14.51.36231",
+            msvcCompilerVersion: "19.51.36252",
+            msvcCompilerSha256:
+              "c94cdac6a780142920110e5cb8b7339817029eead696e0e97700b45e03216a00",
+            msvcLinkerSha256:
+              "f233b8e337cec96a69868a8cde676808bfa81152493968d0b27b7cd0daac15be",
+            windowsSdkVersion: "10.0.26100.0",
+          },
+          {
+            imageVersion: "20260714.173.1",
+            visualStudioVersion: "18.7.11925.98",
+            msvcToolsVersion: "14.51.36231",
+            msvcCompilerVersion: "19.51.36248",
+            msvcCompilerSha256:
+              "dc8426b8760d92cf757df3d10b9f0244a95b454ff43194a58161568a0ec70d53",
+            msvcLinkerSha256:
+              "e8c524347b8bc87fba790d254c8a3b902bf1a4b63807093b816d992940af3791",
+            windowsSdkVersion: "10.0.26100.0",
+          },
+        ],
       },
     });
     expect(nativeContract.linux.builderPackages.libatomic).toBe(
@@ -1077,10 +1148,7 @@ describe("reproducible install and release contract", () => {
       join(REPO_ROOT, ".github/workflows/release-runtime.yml"),
       "utf8",
     );
-    const releaseSourceJob = workflow.slice(
-      workflow.indexOf("\n  release-source:"),
-      workflow.indexOf("\n  linux-tarball:"),
-    );
+    const releaseSourceJob = workflowJob(workflow, "release-source");
     expect(releaseSourceJob).not.toContain("checks: read");
     expect(releaseSourceJob).not.toContain("AGENC_LOCAL_GATE_APP_ID");
     expect(releaseSourceJob).not.toContain("scripts/verify-required-gate-check.mjs");
@@ -1091,12 +1159,39 @@ describe("reproducible install and release contract", () => {
     );
     expect(workflow).not.toContain("required-gates:");
     expectArtifactWorkflowWithoutBroadHostedGates(workflow);
+    const hostedPreflight = workflowJob(
+      workflow,
+      "hosted-toolchain-preflight",
+    );
+    expect(hostedPreflight).toContain("if: inputs.phase == 'candidate'");
+    expect(hostedPreflight).toContain("needs: release-source");
+    expect(hostedPreflight).toContain("fail-fast: false");
+    expect(hostedPreflight).toContain("timeout-minutes: 5");
+    expect(hostedPreflight).toContain("runner: macos-15");
+    expect(hostedPreflight).toContain("runner: macos-15-intel");
+    expect(hostedPreflight).toContain("runner: windows-2025-vs2026");
+    expect(hostedPreflight).toContain(
+      "scripts/validate-hosted-macos-runner.py",
+    );
+    expect(hostedPreflight).toContain(
+      "scripts/validate-hosted-windows-runner.ps1",
+    );
+    expect(hostedPreflight).not.toContain("setup-node");
+    expect(hostedPreflight).not.toContain("npm ci");
+    expect(hostedPreflight).not.toContain("build-runtime-tarball");
+    expect(hostedPreflight).not.toContain("actions/upload-artifact");
     const linuxJob = workflowJob(workflow, "linux-tarball");
     expect(linuxJob).toContain("if: inputs.phase == 'candidate'");
-    expect(linuxJob).toContain("needs: release-source");
+    expect(linuxJob).toContain(
+      "needs:\n      - release-source\n      - hosted-toolchain-preflight",
+    );
     const nativeJob = workflowJob(workflow, "native-tarball");
     expect(nativeJob).toContain("if: inputs.phase == 'candidate'");
-    expect(nativeJob).toContain("needs: release-source");
+    expect(nativeJob).toContain(
+      "needs:\n      - release-source\n      - hosted-toolchain-preflight",
+    );
+    expect(nativeJob).toContain("scripts/validate-hosted-macos-runner.py");
+    expect(nativeJob).toContain("scripts/validate-hosted-windows-runner.ps1");
 
     const nativeBuild = nativeJob.slice(
       nativeJob.indexOf("Run native probes and build from two isolated worktrees"),
@@ -1192,9 +1287,9 @@ describe("reproducible install and release contract", () => {
     expect(releaseSource).toContain('run = get(f"/actions/runs/{run_id}")');
     expect(releaseSource).toContain('"head_branch": "main"');
     expect(releaseSource).toContain('"head_sha": tested_sha');
-    expect(releaseSource).not.toContain('"status": "completed"');
-    expect(releaseSource).not.toContain('"conclusion": "success"');
-    expect(releaseSource).not.toContain('run.get("run_attempt")');
+    expect(releaseSource).toContain('"run_attempt": 1');
+    expect(releaseSource).toContain('"status": "completed"');
+    expect(releaseSource).toContain('"conclusion": "success"');
     expect(releaseSource).not.toContain("filter=latest");
     expect(releaseSource).toContain("run_attempt = 1");
     expect(releaseSource).toContain(

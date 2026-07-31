@@ -1437,7 +1437,7 @@ describe("embedded Neovim lifecycle", () => {
     const pid = await waitForPidFile(pidFile);
 
     await expect(startup).rejects.toThrow(
-      "Embedded Neovim startup timed out after 1000ms",
+      "Embedded Neovim startup timed out after 1000ms while attaching the embedded UI.",
     );
     await waitUntilDead(pid);
     expect(isProcessAlive(pid)).toBe(false);

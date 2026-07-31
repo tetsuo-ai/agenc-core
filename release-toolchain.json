@@ -84,7 +84,7 @@
       "executable": "bin/nvim"
     },
     "win-x64": {
-      "runner": "windows-2025",
+      "runner": "windows-2025-vs2026",
       "file": "nvim-win64.zip",
       "url": "https://github.com/neovim/neovim/releases/download/v0.12.1/nvim-win64.zip",
       "sha256": "75fedc530b3772ca9f177edc7db92560bb9d2d6700ac6d5b2c53eaf5a9317ae3",
@@ -316,36 +316,89 @@
     "darwin-arm64": {
       "runnerLabel": "macos-15",
       "imageOS": "macos15",
-      "imageVersion": "20260715.0234.1",
-      "alternateImageVersions": [
-        "20260727.0256.1"
-      ],
       "runnerArch": "ARM64",
-      "xcodeVersion": "16.4",
-      "xcodeBuild": "16F6",
-      "macosSdkVersion": "15.5",
-      "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)"
+      "imageProfiles": [
+        {
+          "imageVersion": "20260727.0256.1",
+          "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/f1f5b5c6e23728a6f5c74b69ac2eab8aa93f473d/images/macos/macos-15-arm64-Readme.md",
+          "inventorySha256": "7480916d25dc7a51fa1c23addf9435dcc91d160eb2e14c7495e63e1663c4cc6a",
+          "inventoryBytes": 25178,
+          "xcodeVersion": "16.4",
+          "xcodeBuild": "16F6",
+          "macosSdkVersion": "15.5",
+          "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)"
+        },
+        {
+          "imageVersion": "20260715.0234.1",
+          "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/7989a200e3494c1a7e7623a5c0b584002c074152/images/macos/macos-15-arm64-Readme.md",
+          "inventorySha256": "b114a3def3b5ff06e850602643f8164a49309d5b593a73784739780711fadc03",
+          "inventoryBytes": 24825,
+          "xcodeVersion": "16.4",
+          "xcodeBuild": "16F6",
+          "macosSdkVersion": "15.5",
+          "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)"
+        }
+      ]
     },
     "darwin-x64": {
       "runnerLabel": "macos-15-intel",
       "imageOS": "macos15",
-      "imageVersion": "20260720.0353.1",
       "runnerArch": "X64",
-      "xcodeVersion": "16.4",
-      "xcodeBuild": "16F6",
-      "macosSdkVersion": "15.5",
-      "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)"
+      "imageProfiles": [
+        {
+          "imageVersion": "20260727.0377.1",
+          "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/1d294df93a93fcb193d2c02a4ca0b79de20d5951/images/macos/macos-15-Readme.md",
+          "inventorySha256": "a9b6da09cfcd68032dda589875c351c214dfd285a6a3b563699f2b4589948233",
+          "inventoryBytes": 23458,
+          "xcodeVersion": "16.4",
+          "xcodeBuild": "16F6",
+          "macosSdkVersion": "15.5",
+          "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)"
+        },
+        {
+          "imageVersion": "20260720.0353.1",
+          "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/581131a0d97bdf762bff82d03070b8d5e5ff7c1d/images/macos/macos-15-Readme.md",
+          "inventorySha256": "86424bcd3a62a019d90b3097d01f815e03b94aa6827206a0001899b7911bad11",
+          "inventoryBytes": 23219,
+          "xcodeVersion": "16.4",
+          "xcodeBuild": "16F6",
+          "macosSdkVersion": "15.5",
+          "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)"
+        }
+      ]
     },
     "win-x64": {
-      "runnerLabel": "windows-2025",
+      "runnerLabel": "windows-2025-vs2026",
       "imageOS": "win25-vs2026",
-      "imageVersion": "20260714.173.1",
       "runnerArch": "X64",
-      "visualStudioVersion": "18.7.11925.98",
-      "visualStudioInstallPath": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
-      "msvcToolsVersion": "14.51.36231",
-      "msvcCompilerVersion": "19.51.36248",
-      "windowsSdkVersion": "10.0.26100.0"
+      "imageProfiles": [
+        {
+          "imageVersion": "20260728.188.1",
+          "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/c4dc17bcd08ff8f08f241504b58ddcd9d4e8cbd1/images/windows/Windows2025-VS2026-Readme.md",
+          "inventorySha256": "5b4342e1e0ad754fe07fb2b4279e41f74d01f5955e1a249c2890da051995121a",
+          "inventoryBytes": 33432,
+          "visualStudioVersion": "18.8.12023.21",
+          "visualStudioInstallPath": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+          "msvcToolsVersion": "14.51.36231",
+          "msvcCompilerVersion": "19.51.36252",
+          "msvcCompilerSha256": "c94cdac6a780142920110e5cb8b7339817029eead696e0e97700b45e03216a00",
+          "msvcLinkerSha256": "f233b8e337cec96a69868a8cde676808bfa81152493968d0b27b7cd0daac15be",
+          "windowsSdkVersion": "10.0.26100.0"
+        },
+        {
+          "imageVersion": "20260714.173.1",
+          "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/c7b2e4c4b56f91032a19a30e85395c6e5f7a7784/images/windows/Windows2025-VS2026-Readme.md",
+          "inventorySha256": "34bfdffaf77eb4fa890acf08cf6d9301c66b0a3f4b0e25bec2b5423f78ecef2f",
+          "inventoryBytes": 32972,
+          "visualStudioVersion": "18.7.11925.98",
+          "visualStudioInstallPath": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+          "msvcToolsVersion": "14.51.36231",
+          "msvcCompilerVersion": "19.51.36248",
+          "msvcCompilerSha256": "dc8426b8760d92cf757df3d10b9f0244a95b454ff43194a58161568a0ec70d53",
+          "msvcLinkerSha256": "e8c524347b8bc87fba790d254c8a3b902bf1a4b63807093b816d992940af3791",
+          "windowsSdkVersion": "10.0.26100.0"
+        }
+      ]
     }
   }
 }

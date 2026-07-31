@@ -1564,9 +1564,11 @@ function waitForObservedExit(
 export async function startEmbeddedNeovim(
   options: StartEmbeddedNeovimOptions,
 ): Promise<EmbeddedNeovimSession> {
+  let startupPhase = "spawning the embedded process";
   const startupAbort = createStartupAbort(
     options.signal,
     options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
+    () => startupPhase,
   );
   try {
     startupAbort.signal.throwIfAborted();
@@ -1675,12 +1677,17 @@ export async function startEmbeddedNeovim(
     startupAbort.signal.addEventListener("abort", abortStartup, { once: true });
     try {
       try {
+        startupPhase = "attaching the embedded UI";
         await ui.attach();
+        startupPhase = "configuring embedded editing";
         await configureEmbeddedEditing(rpc);
         if (options.requireWorkspaceWriteAuthority === true) {
+          startupPhase = "installing the workspace write gate";
           await installWorkspaceWriteGate(rpc);
         }
+        startupPhase = "installing the agent bridge";
         await installAgentBridge(rpc);
+        startupPhase = "preparing the workspace";
         preparation = await options.beforeOpenFile?.({
           workspaceRoot: options.workspaceRoot ?? options.cwd ?? getCwd(),
           agencHome: options.agencHome,
@@ -1690,6 +1697,7 @@ export async function startEmbeddedNeovim(
           execLua: (source, args = []) =>
             rpc.request("nvim_exec_lua", [source, args]),
         });
+        startupPhase = "opening the requested file";
         await editFile(
           rpc,
           options.filePath,
@@ -1698,6 +1706,7 @@ export async function startEmbeddedNeovim(
           startupAbort.signal,
           options.operationTimeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS,
         );
+        startupPhase = "installing dirty-buffer tracking";
         await installDirtyAutocmds(rpc);
         startupAbort.signal.throwIfAborted();
       } catch (error) {
@@ -1760,6 +1769,7 @@ export async function startEmbeddedNeovim(
 function createStartupAbort(
   parentSignal: AbortSignal | undefined,
   timeoutMs: number,
+  describePhase: () => string,
 ): { readonly signal: AbortSignal; readonly dispose: () => void } {
   const controller = new AbortController();
   const abortFromParent = (): void => {
@@ -1773,7 +1783,9 @@ function createStartupAbort(
     : DEFAULT_STARTUP_TIMEOUT_MS;
   const timer = setTimeout(() => {
     controller.abort(
-      new Error(`Embedded Neovim startup timed out after ${safeTimeoutMs}ms.`),
+      new Error(
+        `Embedded Neovim startup timed out after ${safeTimeoutMs}ms while ${describePhase()}.`,
+      ),
     );
   }, safeTimeoutMs);
   timer.unref();

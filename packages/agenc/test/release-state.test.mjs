@@ -51,11 +51,14 @@ function candidateReceiptFixture({
 } = {}) {
   const successfulJobs = [
     "release-source",
+    "hosted-toolchain-preflight (macos-15, darwin-arm64)",
+    "hosted-toolchain-preflight (macos-15-intel, darwin-x64)",
+    "hosted-toolchain-preflight (windows-2025-vs2026, win-x64)",
     "linux-tarball (ubuntu-24.04, linux-x64)",
     "linux-tarball (ubuntu-24.04-arm, linux-arm64)",
     "native-tarball (macos-15, darwin-arm64)",
     "native-tarball (macos-15-intel, darwin-x64)",
-    "native-tarball (windows-2025, win-x64)",
+    "native-tarball (windows-2025-vs2026, win-x64)",
     "candidate-seal",
   ];
   const artifacts = Object.fromEntries(
@@ -369,6 +372,7 @@ test("full release verification runs each expensive gate once for an exact SHA",
   const ids = plan.map(({ id }) => id);
   assert.deepEqual(ids, [
     "release-preflight",
+    "hosted-runner-contract",
     "installer-lock-sync",
     "typecheck",
     "full-tests",

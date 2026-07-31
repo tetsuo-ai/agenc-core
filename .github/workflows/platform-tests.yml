@@ -477,7 +477,7 @@ jobs:
           const [resultsPath] = process.argv.slice(2);
           if (!resultsPath) throw new Error("missing PowerShell-test results path");
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
-          const expectedTests = 20;
+          const expectedTests = 41;
           const expectedFiles = [
             "tests/budget/admitted-legacy-powershell.powershell.test.ts",
             "tests/packaging/install-ps1.powershell.test.ts",
@@ -543,7 +543,7 @@ jobs:
           - slug: darwin-arm64
             runner: macos-15
           - slug: win-x64
-            runner: windows-2025
+            runner: windows-2025-vs2026
     # The baseline matrix cell remains runs-on: ubuntu-24.04.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -1030,7 +1030,7 @@ jobs:
 
   windows-native:
     name: windows-native
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

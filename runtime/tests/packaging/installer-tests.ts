@@ -3332,27 +3332,28 @@ function registerInstallPs1Tests(): void {
       }
     });
 
-    test("PowerShell official manifests require exact release candidate identity", () => {
-      const artifact = makeSyntheticArtifact(work);
-      const base = remoteManifest(
-        artifact,
-        "win",
-        "unused",
-        "tetsuo-ai/agenc-releases",
-      );
-      const routes = Object.fromEntries(
-        RELEASE_CANDIDATE_IDENTITY_MUTATIONS.map(([name, mutate]) => {
-          const manifest = structuredClone(base);
-          mutate(manifest);
-          return [`/${name}.json`, { bodyText: JSON.stringify(manifest) }];
-        }),
-      );
-      const fixture = startHttpsFixture(work, routes);
-      const rewrite = writeGithubArtifactFetchRewrite(work);
-      const installerPath = writeInstrumentedInstallPs1(work);
-      try {
-        for (const [name, _mutate, expected] of RELEASE_CANDIDATE_IDENTITY_MUTATIONS) {
-          const home = join(work, `powershell-official-${name}`);
+    test.each(
+      RELEASE_CANDIDATE_IDENTITY_MUTATIONS.map(
+        ([name, mutate, expected]) => ({ name, mutate, expected }),
+      ),
+    )(
+      "PowerShell official manifests reject release candidate mutation: $name",
+      ({ name, mutate, expected }) => {
+        const artifact = makeSyntheticArtifact(work);
+        const manifest = remoteManifest(
+          artifact,
+          "win",
+          "unused",
+          "tetsuo-ai/agenc-releases",
+        );
+        mutate(manifest);
+        const fixture = startHttpsFixture(work, {
+          [`/${name}.json`]: { bodyText: JSON.stringify(manifest) },
+        });
+        const rewrite = writeGithubArtifactFetchRewrite(work);
+        const installerPath = writeInstrumentedInstallPs1(work);
+        const home = join(work, `powershell-official-${name}`);
+        try {
           const result = runPowerShell(
             home,
             undefined,
@@ -3371,11 +3372,12 @@ function registerInstallPs1Tests(): void {
           expect(result.status, `${name}: ${output}`).not.toBe(0);
           expect(output, name).toContain(expected);
           expectFailedInstallCleanup(home);
+        } finally {
+          fixture.stop();
         }
-      } finally {
-        fixture.stop();
-      }
-    }, 30_000);
+      },
+      30_000,
+    );
 
     test("PowerShell official pre-0.13 manifests do not require release candidate identity", () => {
       const artifact = makeSyntheticArtifact(work);

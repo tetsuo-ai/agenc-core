@@ -383,16 +383,16 @@ function addArtifact(directory, platform, arch, body, archiveOptions) {
     : undefined;
   const key = `${platform}-${arch}`;
   const hostedRunner = releaseToolchain.hostedRunners[key];
-  const hostedImageVersion =
-    hostedRunner?.alternateImageVersions?.[0] ?? hostedRunner?.imageVersion;
+  const hostedProfile = hostedRunner?.imageProfiles?.[0];
+  const hostedImageVersion = hostedProfile?.imageVersion;
   const hostedBuilder = hostedRunner === undefined
     ? undefined
     : `github-hosted:${hostedRunner.runnerLabel}:${hostedRunner.imageOS}:` +
       `${hostedImageVersion}:${hostedRunner.runnerArch}`;
   const compilerIdentity = platform === "darwin"
-    ? hostedRunner.clangVersion
+    ? hostedProfile.clangVersion
     : platform === "win"
-      ? `Microsoft (R) C/C++ Optimizing Compiler Version ${hostedRunner.msvcCompilerVersion} for x64`
+      ? `Microsoft (R) C/C++ Optimizing Compiler Version ${hostedProfile.msvcCompilerVersion} for x64`
       : "test cc 12.2.1";
   const meta = {
     platform,
@@ -448,8 +448,8 @@ function addArtifact(directory, platform, arch, body, archiveOptions) {
         : {}),
       ...(platform === "darwin"
         ? {
-            xcode: `Xcode ${hostedRunner.xcodeVersion}\nBuild version ${hostedRunner.xcodeBuild}`,
-            sdk: hostedRunner.macosSdkVersion,
+            xcode: `Xcode ${hostedProfile.xcodeVersion}\nBuild version ${hostedProfile.xcodeBuild}`,
+            sdk: hostedProfile.macosSdkVersion,
           }
         : {}),
       ...(platform === "win"
@@ -464,13 +464,13 @@ function addArtifact(directory, platform, arch, body, archiveOptions) {
               releaseToolchain.nodeHeaders.windowsCommonGypi.releaseSha256,
             nodeCommonGypiTransformation:
               releaseToolchain.nodeHeaders.windowsCommonGypi.transformation,
-            visualStudioVersion: hostedRunner.visualStudioVersion,
-            visualStudioInstallPath: hostedRunner.visualStudioInstallPath,
-            msvcToolsVersion: hostedRunner.msvcToolsVersion,
-            windowsSdkVersion: hostedRunner.windowsSdkVersion,
+            visualStudioVersion: hostedProfile.visualStudioVersion,
+            visualStudioInstallPath: hostedProfile.visualStudioInstallPath,
+            msvcToolsVersion: hostedProfile.msvcToolsVersion,
+            windowsSdkVersion: hostedProfile.windowsSdkVersion,
             compilerDetails: `${compilerIdentity}\nCompiler Passes: reviewed fixture`,
-            msvcCompilerSha256: "1".repeat(64),
-            msvcLinkerSha256: "2".repeat(64),
+            msvcCompilerSha256: hostedProfile.msvcCompilerSha256,
+            msvcLinkerSha256: hostedProfile.msvcLinkerSha256,
           }
         : {}),
       ...(platform === "linux"
@@ -1347,6 +1347,42 @@ test("full release manifest accepts the combined workflow download and exact pla
     );
     writeFileSync(outputPath, validManifestText);
 
+    const crossProfileManifest = JSON.parse(validManifestText);
+    const crossProfileWindowsArtifact = crossProfileManifest.artifacts.find(
+      (artifact) => artifact.platform === "win" && artifact.arch === "x64",
+    );
+    const windowsContract = releaseToolchain.hostedRunners["win-x64"];
+    const otherWindowsProfile = windowsContract.imageProfiles[1];
+    crossProfileWindowsArtifact.nativeToolchain.runnerImageVersion =
+      otherWindowsProfile.imageVersion;
+    crossProfileWindowsArtifact.nativeToolchain.builder =
+      `github-hosted:${windowsContract.runnerLabel}:${windowsContract.imageOS}:` +
+      `${otherWindowsProfile.imageVersion}:${windowsContract.runnerArch}`;
+    writeFileSync(
+      outputPath,
+      `${JSON.stringify(crossProfileManifest, null, 2)}\n`,
+    );
+    assert.throws(
+      () => validateLauncherManifest({ manifestPath: outputPath }),
+      /Visual Studio does not match/,
+    );
+    writeFileSync(outputPath, validManifestText);
+
+    const detachedCompilerManifest = JSON.parse(validManifestText);
+    const detachedCompilerArtifact = detachedCompilerManifest.artifacts.find(
+      (artifact) => artifact.platform === "win" && artifact.arch === "x64",
+    );
+    detachedCompilerArtifact.nativeToolchain.msvcCompilerSha256 = "0".repeat(64);
+    writeFileSync(
+      outputPath,
+      `${JSON.stringify(detachedCompilerManifest, null, 2)}\n`,
+    );
+    assert.throws(
+      () => validateLauncherManifest({ manifestPath: outputPath }),
+      /MSVC compiler SHA-256 does not match/,
+    );
+    writeFileSync(outputPath, validManifestText);
+
     const detachedImportLibraryManifest = JSON.parse(validManifestText);
     const windowsArtifact = detachedImportLibraryManifest.artifacts.find(
       (artifact) => artifact.platform === "win" && artifact.arch === "x64",
@@ -1613,9 +1649,21 @@ test("manifest generation rejects detached macOS and Windows toolchain evidence"
     ["win", "x64", "msvc-version", (meta) => { meta.nativeToolchain.msvcToolsVersion = "14.44.00000"; }, /MSVC tools does not match/],
     ["win", "x64", "sdk-version", (meta) => { meta.nativeToolchain.windowsSdkVersion = "10.0.22621.0"; }, /Windows SDK does not match/],
     ["win", "x64", "compiler-version", (meta) => { meta.nativeToolchain.cc = "Microsoft (R) C/C++ Optimizing Compiler Version 19.43 for x64"; }, /C compiler does not match/],
+    ["win", "x64", "cross-profile", (meta) => {
+      const contract = releaseToolchain.hostedRunners["win-x64"];
+      const otherProfile = contract.imageProfiles[1];
+      meta.nativeToolchain.runnerImageVersion = otherProfile.imageVersion;
+      meta.nativeToolchain.builder =
+        `github-hosted:${contract.runnerLabel}:${contract.imageOS}:` +
+        `${otherProfile.imageVersion}:${contract.runnerArch}`;
+    }, /Visual Studio does not match/],
     ["win", "x64", "compiler-details", (meta) => { meta.nativeToolchain.compilerDetails = ""; }, /compilerDetails/],
-    ["win", "x64", "compiler-hash", (meta) => { meta.nativeToolchain.msvcCompilerSha256 = "0"; }, /msvcCompilerSha256/],
-    ["win", "x64", "linker-hash", (meta) => { meta.nativeToolchain.msvcLinkerSha256 = "0"; }, /msvcLinkerSha256/],
+    ["win", "x64", "compiler-hash", (meta) => {
+      meta.nativeToolchain.msvcCompilerSha256 = "0".repeat(64);
+    }, /MSVC compiler SHA-256 does not match/],
+    ["win", "x64", "linker-hash", (meta) => {
+      meta.nativeToolchain.msvcLinkerSha256 = "0".repeat(64);
+    }, /MSVC linker SHA-256 does not match/],
     ["win", "x64", "node-import-library", (meta) => {
       meta.nativeToolchain.nodeImportLibrarySha256 = "0".repeat(64);
     }, /Node import library evidence/],

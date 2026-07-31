@@ -167,6 +167,9 @@ jobs:
               "event": "workflow_dispatch",
               "head_branch": "main",
               "head_sha": tested_sha,
+              "run_attempt": 1,
+              "status": "completed",
+              "conclusion": "success",
           }
           for field, expected in expected_run.items():
               if run.get(field) != expected:
@@ -179,11 +182,14 @@ jobs:
           )
           expected_jobs = {
               "release-source",
+              "hosted-toolchain-preflight (macos-15, darwin-arm64)",
+              "hosted-toolchain-preflight (macos-15-intel, darwin-x64)",
+              "hosted-toolchain-preflight (windows-2025-vs2026, win-x64)",
               "linux-tarball (ubuntu-24.04, linux-x64)",
               "linux-tarball (ubuntu-24.04-arm, linux-arm64)",
               "native-tarball (macos-15, darwin-arm64)",
               "native-tarball (macos-15-intel, darwin-x64)",
-              "native-tarball (windows-2025, win-x64)",
+              "native-tarball (windows-2025-vs2026, win-x64)",
               "candidate-seal",
           }
           all_jobs = jobs.get("jobs", [])
@@ -443,10 +449,80 @@ jobs:
               ;;
           esac
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+  hosted-toolchain-preflight:
+    name: hosted-toolchain-preflight (${{ matrix.runner }}, ${{ matrix.slug }})
+    if: inputs.phase == 'candidate'
+    needs: release-source
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            slug: darwin-arm64
+          - runner: macos-15-intel
+            slug: darwin-x64
+          - runner: windows-2025-vs2026
+            slug: win-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    env:
+      AGENC_RELEASE_SLUG: ${{ matrix.slug }}
+      AGENC_RUNNER_LABEL: ${{ matrix.runner }}
+    steps:
+      - name: Reject retried candidate preflights
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1" || {
+            echo "candidate preflights cannot be retried; dispatch a fresh candidate workflow" >&2
+            exit 1
+          }
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Validate the reviewed macOS image and native toolchain
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate-hosted-macos-runner.py \
+            --report "$RUNNER_TEMP/agenc-hosted-toolchain-${AGENC_RELEASE_SLUG}.json"
+      - name: Validate the reviewed Windows image and native toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          scripts/validate-hosted-windows-runner.ps1 `
+            -ReportPath "$env:RUNNER_TEMP/agenc-hosted-toolchain-$env:AGENC_RELEASE_SLUG.json"
+      - name: Print the observed macOS toolchain report
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          report="$RUNNER_TEMP/agenc-hosted-toolchain-${AGENC_RELEASE_SLUG}.json"
+          if test -f "$report"; then
+            cat "$report"
+          else
+            echo "hosted toolchain validator did not produce $report" >&2
+          fi
+      - name: Print the observed Windows toolchain report
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $report = "$env:RUNNER_TEMP/agenc-hosted-toolchain-$env:AGENC_RELEASE_SLUG.json"
+          if (Test-Path -LiteralPath $report -PathType Leaf) {
+            Get-Content -Raw -LiteralPath $report
+          } else {
+            Write-Error "hosted toolchain validator did not produce $report"
+          }
+
   linux-tarball:
     name: linux-tarball (${{ matrix.runner }}, ${{ matrix.slug }})
     if: inputs.phase == 'candidate'
-    needs: release-source
+    needs:
+      - release-source
+      - hosted-toolchain-preflight
     permissions:
       contents: read
       id-token: write
@@ -859,7 +935,9 @@ jobs:
   native-tarball:
     name: native-tarball (${{ matrix.runner }}, ${{ matrix.slug }})
     if: inputs.phase == 'candidate'
-    needs: release-source
+    needs:
+      - release-source
+      - hosted-toolchain-preflight
     permissions:
       contents: read
       id-token: write
@@ -873,7 +951,7 @@ jobs:
             slug: darwin-arm64
           - runner: macos-15-intel
             slug: darwin-x64
-          - runner: windows-2025
+          - runner: windows-2025-vs2026
             slug: win-x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -902,165 +980,19 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - name: Validate the reviewed macOS runner and native toolchain
+      - name: Revalidate the reviewed macOS image and native toolchain
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import os
-          import platform
-          import subprocess
-
-          with open("release-toolchain.json", encoding="utf-8") as source:
-              toolchain = json.load(source)
-          slug = os.environ["AGENC_RELEASE_SLUG"]
-          expected_slug = {"arm64": "darwin-arm64", "x86_64": "darwin-x64"}[platform.machine()]
-          if slug != expected_slug:
-              raise SystemExit(f"runner architecture resolves to {expected_slug}, not {slug}")
-          contract = toolchain["hostedRunners"][slug]
-          observed = {
-              "runnerLabel": os.environ.get("AGENC_RUNNER_LABEL"),
-              "imageOS": os.environ.get("ImageOS"),
-              "runnerArch": os.environ.get("RUNNER_ARCH"),
-          }
-          for field, actual in observed.items():
-              if actual != contract[field]:
-                  raise SystemExit(f"hosted runner drift for {slug} {field}: {actual!r} != {contract[field]!r}")
-          image_version = os.environ.get("ImageVersion")
-          alternate_image_versions = contract.get("alternateImageVersions", [])
-          if not isinstance(alternate_image_versions, list):
-              raise SystemExit(f"invalid reviewed alternate image versions for {slug}")
-          image_versions = [contract["imageVersion"], *alternate_image_versions]
-          if (
-              any(not isinstance(value, str) or not value for value in image_versions)
-              or len(set(image_versions)) != len(image_versions)
-          ):
-              raise SystemExit(f"invalid reviewed image versions for {slug}")
-          if image_version not in image_versions:
-              raise SystemExit(
-                  f"hosted runner drift for {slug} imageVersion: "
-                  f"{image_version!r} not in {image_versions!r}"
-              )
-          def capture(*command):
-              return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
-          xcode = capture("xcodebuild", "-version")
-          expected_xcode = f'Xcode {contract["xcodeVersion"]}\nBuild version {contract["xcodeBuild"]}'
-          sdk = capture("xcrun", "--sdk", "macosx", "--show-sdk-version")
-          sdk_path = capture("xcrun", "--sdk", "macosx", "--show-sdk-path")
-          clang = capture("xcrun", "--sdk", "macosx", "clang", "--version").splitlines()[0]
-          for label, actual, expected in (
-              ("Xcode", xcode, expected_xcode),
-              ("macOS SDK", sdk, contract["macosSdkVersion"]),
-              ("Apple clang", clang, contract["clangVersion"]),
-          ):
-              if actual != expected:
-                  raise SystemExit(f"{label} drift for {slug}: {actual!r} != {expected!r}")
-          cxx = capture("xcrun", "--sdk", "macosx", "--find", "clang++")
-          functional = os.path.join(sdk_path, "usr", "include", "c++", "v1", "functional")
-          if not os.path.isfile(functional):
-              raise SystemExit(f"reviewed macOS SDK is missing libc++ functional: {functional}")
-          probe_environment = os.environ.copy()
-          probe_environment["SDKROOT"] = sdk_path
-          subprocess.run(
-              [cxx, "-x", "c++", "-std=c++20", "-fsyntax-only", "-"],
-              input="#include <functional>\nint main() { return 0; }\n",
-              text=True,
-              stdout=subprocess.PIPE,
-              stderr=subprocess.STDOUT,
-              env=probe_environment,
-              check=True,
-          )
-          builder = ":".join((
-              "github-hosted", contract["runnerLabel"], contract["imageOS"],
-              image_version, contract["runnerArch"],
-          ))
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8", newline="\n") as environment:
-              environment.write(f"AGENC_BUILDER_ID={builder}\n")
-              environment.write(f'SDKROOT={sdk_path}\n')
-              environment.write(f'CC={capture("xcrun", "--sdk", "macosx", "--find", "clang")}\n')
-              environment.write(f'CXX={cxx}\n')
-          print(f"approved hosted runner and Xcode contract for {slug}")
-          PY
-      - name: Validate and activate the reviewed Windows runner and native toolchain
+          python3 scripts/validate-hosted-macos-runner.py \
+            --report "$RUNNER_TEMP/agenc-hosted-toolchain-${AGENC_RELEASE_SLUG}.json"
+      - name: Revalidate and activate the reviewed Windows image and native toolchain
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $toolchain = Get-Content -Raw release-toolchain.json | ConvertFrom-Json
-          $contract = $toolchain.hostedRunners.PSObject.Properties[$env:AGENC_RELEASE_SLUG].Value
-          if ($null -eq $contract) { throw "missing hosted runner contract for $env:AGENC_RELEASE_SLUG" }
-          function Assert-Exact([string]$Label, [string]$Actual, [string]$Expected) {
-            if ($Actual -cne $Expected) { throw "$Label drift: '$Actual' != '$Expected'" }
-          }
-          Assert-Exact 'runner label' $env:AGENC_RUNNER_LABEL $contract.runnerLabel
-          Assert-Exact 'ImageOS' $env:ImageOS $contract.imageOS
-          Assert-Exact 'ImageVersion' $env:ImageVersion $contract.imageVersion
-          Assert-Exact 'RUNNER_ARCH' $env:RUNNER_ARCH $contract.runnerArch
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw "missing $vswhere" }
-          $vswhereArgs = @(
-            '-latest', '-products', '*',
-            '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
-          )
-          $installPath = (& $vswhere @vswhereArgs -property installationPath | Select-Object -First 1).Trim()
-          $installationVersion = (& $vswhere @vswhereArgs -property installationVersion | Select-Object -First 1).Trim()
-          Assert-Exact 'Visual Studio path' $installPath $contract.visualStudioInstallPath
-          Assert-Exact 'Visual Studio version' $installationVersion $contract.visualStudioVersion
-          $defaultToolsFile = Join-Path $installPath 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt'
-          if (-not (Test-Path -LiteralPath $defaultToolsFile -PathType Leaf)) { throw "missing $defaultToolsFile" }
-          Assert-Exact 'default MSVC tools version' (Get-Content -Raw $defaultToolsFile).Trim() $contract.msvcToolsVersion
-          $devCmd = Join-Path $installPath 'Common7\Tools\VsDevCmd.bat'
-          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) { throw "missing $devCmd" }
-          $environmentLines = & cmd.exe /d /s /c "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 && set"
-          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd.bat failed' }
-          $required = @(
-            'PATH', 'INCLUDE', 'LIB', 'LIBPATH', 'VCToolsVersion',
-            'WindowsSdkDir', 'WindowsSDKVersion', 'VCINSTALLDIR', 'VSINSTALLDIR'
-          )
-          $captured = @{}
-          foreach ($line in $environmentLines) {
-            $separator = $line.IndexOf('=')
-            if ($separator -le 0) { continue }
-            $name = $line.Substring(0, $separator)
-            if ($required -notcontains $name) { continue }
-            if ($name -ieq 'PATH') { $name = 'PATH' }
-            $value = $line.Substring($separator + 1)
-            $captured[$name] = $value
-            Set-Item -Path "Env:$name" -Value $value
-            "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
-          foreach ($name in $required) {
-            if (-not $captured.ContainsKey($name) -or -not $captured[$name]) {
-              throw "VsDevCmd.bat did not define $name"
-            }
-          }
-          $toolsVersion = $captured['VCToolsVersion'].TrimEnd([char[]]'\/')
-          $sdkVersion = $captured['WindowsSDKVersion'].TrimEnd([char[]]'\/')
-          Assert-Exact 'active MSVC tools version' $toolsVersion $contract.msvcToolsVersion
-          Assert-Exact 'active Windows SDK version' $sdkVersion $contract.windowsSdkVersion
-          $cl = (Get-Command cl.exe -ErrorAction Stop).Source
-          $link = (Get-Command link.exe -ErrorAction Stop).Source
-          $compilerLines = @(& $cl /Bv 2>&1 | ForEach-Object { $_.ToString().Trim() })
-          # /Bv without a source returns nonzero after printing the compiler identity.
-          $global:LASTEXITCODE = 0
-          $compilerIdentity = $compilerLines | Where-Object { $_ -like 'Microsoft (R) C/C++ Optimizing Compiler Version *' } | Select-Object -First 1
-          $expectedCompiler = "Microsoft (R) C/C++ Optimizing Compiler Version $($contract.msvcCompilerVersion) for x64"
-          Assert-Exact 'MSVC compiler identity' $compilerIdentity $expectedCompiler
-          $clSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $cl).Hash.ToLowerInvariant()
-          $linkSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $link).Hash.ToLowerInvariant()
-          $builder = "github-hosted:$($contract.runnerLabel):$($contract.imageOS):$($contract.imageVersion):$($contract.runnerArch)"
-          @(
-            'CC=cl.exe'
-            'CXX=cl.exe'
-            "AGENC_BUILDER_ID=$builder"
-            "AGENC_VISUAL_STUDIO_VERSION=$installationVersion"
-            "AGENC_VISUAL_STUDIO_INSTALL_PATH=$installPath"
-            "AGENC_MSVC_COMPILER_SHA256=$clSha"
-            "AGENC_MSVC_LINKER_SHA256=$linkSha"
-          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "approved hosted runner, MSVC $toolsVersion, and Windows SDK $sdkVersion"
+          scripts/validate-hosted-windows-runner.ps1 `
+            -ReportPath "$env:RUNNER_TEMP/agenc-hosted-toolchain-$env:AGENC_RELEASE_SLUG.json"
       - name: Install digest-pinned Node, headers, and npm (macOS)
         if: runner.os == 'macOS'
         shell: bash

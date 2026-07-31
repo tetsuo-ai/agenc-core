@@ -11,12 +11,16 @@ merge, the PR must record the exact locally tested
 SHA, commands, results, and every skip. Release verification repeats the
 required gates locally at exact current `main` before the release tag exists.
 GitHub remains the branch/PR/merge record for that broad verification. The
-dispatch-only untagged candidate then builds all five native artifacts. Its
-macOS and Windows jobs additionally run an exact allowlist of one Seatbelt test
-and three Windows atomic-artifact/`.cmd` tests in two files that Linux cannot
-execute. The tagged workflow later promotes and re-attests those exact
-candidate bytes without rebuilding them. These probes gate their artifacts but
-do not authorize merge or replace the local evidence.
+dispatch-only untagged candidate first runs three hosted-toolchain preflight
+jobs (macOS arm64, macOS x64, and Windows x64). Every artifact builder depends
+on that complete matrix, so it is a barrier: no Linux, Darwin, or Windows
+artifact construction starts unless all three runner images and native
+toolchains match reviewed profiles. The candidate then builds all five native
+artifacts. Its macOS and Windows jobs additionally run an exact allowlist of
+one Seatbelt test and three Windows atomic-artifact/`.cmd` tests in two files
+that Linux cannot execute. The tagged workflow later promotes and re-attests
+those exact candidate bytes without rebuilding them. These probes gate their
+artifacts but do not authorize merge or replace the local evidence.
 Release workflows must not be invoked merely to verify a change.
 
 The sections explicitly labeled **Inactive optional** retain the reviewed App,
@@ -93,10 +97,15 @@ and log SHA-256, skips, clean-tree result, reviewer identity, and unresolved
 risks. Its SHA-256 is computed from the final bytes and returned as
 `evidenceSha256`. Those bytes are never edited.
 
-The full plan runs once at the final main SHA: preflight, installer
-synchronization, typecheck, full tests, runtime startup smoke, and complete
-clean-build acceptance. Do not run the clean-build acceptance on the
-pre-squash branch and do not repeat it after creating a tag at the same SHA.
+The full plan runs once at the final main SHA: preflight, online hosted-runner
+contract verification, installer synchronization, typecheck, full tests,
+runtime startup smoke, and complete clean-build acceptance. The runner check
+first requires profiles for each target's latest stable image and every newer
+prerelease in the official GitHub release index. It then downloads every
+exact-commit inventory URL in `release-toolchain.json` and verifies its byte
+count, SHA-256, image version, and parsed toolchain facts before any expensive
+build gate begins. Do not run the clean-build acceptance on the pre-squash
+branch and do not repeat it after creating a tag at the same SHA.
 
 Before creating a full-release source tag, dispatch
 `verify-node-bootstrap.yml` at exact current `main` with the verifier's
@@ -105,13 +114,15 @@ to succeed; they exercise the same pinned Rocky bootstrap inputs used by the
 runtime candidate.
 Then dispatch `release-runtime.yml` at exact current `main` with
 `phase=candidate`, `candidate_run_id=0`, and the same identity inputs. Require
-its seven successful jobs (source, five native targets, and `candidate-seal`)
-and all six unexpired artifacts: five runtime artifacts plus the attested
-candidate seal. Record `candidate-build-complete` from the workflow-generated
-schema-v1 receipt. It binds the workflow, candidate phase, run ID/attempt/URL,
-tested SHA, local evidence digest, exact seven successful job names, and the
-archive/metadata/build-bundle byte counts and SHA-256 digests for all five
-runtime artifacts; the release-state tool rejects an incomplete receipt.
+its ten successful jobs (source, three hosted-toolchain preflights, five native
+targets, and `candidate-seal`) and all six unexpired artifacts: five runtime
+artifacts plus the attested candidate seal. The three preflights form a single
+barrier for every artifact builder. Record `candidate-build-complete` from the
+workflow-generated schema-v1 receipt. It binds the workflow, candidate phase,
+run ID/attempt/URL, tested SHA, local evidence digest, exact ten successful job
+names, and the archive/metadata/build-bundle byte counts and SHA-256 digests
+for all five runtime artifacts; the release-state tool rejects an incomplete
+receipt.
 Candidate mode executes all native builders and probes but refuses an existing
 version tag, so hosted toolchain drift is resolved before a release namespace
 is consumed.

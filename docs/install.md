@@ -324,11 +324,13 @@ There are two authorized lanes:
 
    The command writes one private state directory for the exact SHA and holds
    an exclusive operation lock so duplicate invocations cannot run gates in
-   parallel. It runs
-   preflight, installer synchronization, typecheck, the full test suite,
-   runtime startup smokes, and `check:clean-build` once. Each passing gate is
-   recorded atomically with its retained log digest. Repeating the command
-   resumes at the first missing, failed, or tampered gate.
+   parallel. It runs preflight, discovers every current stable or rolling
+   hosted-runner image, and verifies its exact-commit inventory online (byte
+   count, SHA-256, image version, and parsed toolchain facts). It then runs
+   installer synchronization, typecheck, the full test suite, runtime startup
+   smokes, and `check:clean-build` once. Each passing gate is recorded
+   atomically with its retained log digest. Repeating the command resumes at
+   the first missing, failed, or tampered gate.
 3. Before creating an immutable source tag, reproduce both Linux compatibility
    bootstraps on their native pinned Rocky runners, then run the complete
    five-target release workflow in untagged candidate mode:
@@ -348,14 +350,17 @@ There are two authorized lanes:
      -f local_evidence_sha256="$evidence_sha256"
    ```
 
-   Require both `rocky-bootstrap` matrix jobs and all seven successful candidate
-   workflow jobs (source, five native targets, and `candidate-seal`), with all
-   six unexpired artifacts: five runtime artifacts plus the attested candidate
-   seal. Candidate mode is the only phase that runs the reproducible Linux,
-   Darwin, and Windows builders and native probes; it refuses to run if the
-   version tag already exists. Download and verify the workflow-generated seal
-   with the checksum-pinned GitHub CLI, then checkpoint its receipt before any
-   tag is created:
+   Require both `rocky-bootstrap` matrix jobs and all ten successful candidate
+   workflow jobs (source, three hosted-toolchain preflights, five native
+   targets, and `candidate-seal`), with all six unexpired artifacts: five
+   runtime artifacts plus the attested candidate seal. The three hosted
+   preflights validate macOS arm64, macOS x64, and Windows x64, and every
+   artifact builder waits on the complete matrix as a single barrier.
+   Candidate mode is the only phase that runs the reproducible Linux, Darwin,
+   and Windows builders and native probes; it refuses to run if the version tag
+   already exists. Download and verify the workflow-generated seal with the
+   checksum-pinned GitHub CLI, then checkpoint its receipt before any tag is
+   created:
 
    ```bash
    candidate_run_id="<successful candidate workflow run ID>"
@@ -399,15 +404,15 @@ There are two authorized lanes:
    Until immutable escrow publication finishes, a later “re-run all jobs” can
    delete the successful attempt's Actions staging artifacts. Only an escrowed
    candidate is retry-independent: tagged promotion validates attempt 1
-   through GitHub's attempt-specific jobs API and authenticates the escrowed
-   signed seal, native bundles, and exact byte identities instead of trusting
-   the mutable top-level run conclusion or latest-attempt fields. A candidate
+   through GitHub's attempt-specific jobs API, requires the top-level run to
+   remain a completed attempt-one success, and authenticates the escrowed
+   signed seal, native bundles, and exact byte identities. A candidate
    failure remains recoverable through an ordinary PR because no source tag
    exists.
 
    The candidate checkpoint receipt is schema version 1 and must contain the
    canonical workflow name, `phase=candidate`, run ID/attempt/URL, tested SHA,
-   evidence digest, the exact seven successful job names, and all five runtime
+   evidence digest, the exact ten successful job names, and all five runtime
    artifact records. Each artifact record binds the canonical archive filename
    plus the byte count and SHA-256 of the archive, metadata, and build Sigstore
    bundle downloaded from that run. `release:checkpoint` privately copies and
@@ -730,7 +735,7 @@ resolved package inventory is stored at
      -f candidate_run_id=0 \
      -f tested_sha="$tested_sha" \
      -f local_evidence_sha256="$evidence_sha256"
-   # Require both Rocky jobs, all seven candidate jobs, and all six artifacts.
+   # Require both Rocky jobs, all ten candidate jobs, and all six artifacts.
    candidate_run_id="<successful candidate run ID>"
    candidate_seal_dir="$(mktemp -d)"
    github_cli=/absolute/path/to/checksum-verified/gh
@@ -846,7 +851,7 @@ resolved package inventory is stored at
    ```
 
    The source tag does not exist until the exact-SHA evidence, both native
-   Rocky bootstrap jobs, all seven full candidate jobs, the five runtime
+   Rocky bootstrap jobs, all ten full candidate jobs, the five runtime
    artifacts, the attested candidate seal, and its permanent immutable
    17-asset prerelease escrow have passed review and checkpointing. Tagged mode
    reads only that escrow, preserves the verified build provenance, and adds

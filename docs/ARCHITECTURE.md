@@ -387,11 +387,13 @@ crashing the process.
   records the exact locally tested SHA, commands, results, and skips before
   merge; release verification repeats the gates at exact current `main` before
   any release tag exists and retains the defined local evidence record. GitHub
-  remains the branch/PR/merge record. The untagged runtime candidate builds all
-  five native artifacts and gates macOS/Windows construction on one Seatbelt
-  probe or three atomic-artifact/`.cmd` probes in two files with zero skips.
-  The tagged workflow later promotes and re-attests those exact candidate bytes
-  without rebuilding them. Those probes do not replace the local test plan.
+  remains the branch/PR/merge record. The untagged runtime candidate first
+  runs three hosted-toolchain jobs as a complete barrier for every artifact
+  builder, then builds all five native artifacts and gates macOS/Windows
+  construction on one Seatbelt probe or three atomic-artifact/`.cmd` probes in
+  two files with zero skips. The tagged workflow later promotes and re-attests
+  those exact candidate bytes without rebuilding them. Those probes do not
+  replace the local test plan.
   The repository-scoped App/ruleset
   implementation is retained as
   an inactive optional design, not a current merge requirement. Reproduction

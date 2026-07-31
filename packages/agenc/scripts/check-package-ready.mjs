@@ -14,6 +14,10 @@ import {
   LEGACY_MANIFEST_FILENAME,
   V2_MANIFEST_FILENAME,
 } from "./gen-manifest.mjs";
+import {
+  expectedHostedRunnerBuilder,
+  resolveHostedRunnerImageProfile,
+} from "./hosted-runner-contract.mjs";
 
 const launcherDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SUPPORTED_PLATFORMS = Object.freeze([
@@ -60,25 +64,20 @@ function validateHostedRunnerContract(nativeToolchain, key, releaseToolchain) {
       fail(`${key} ${actualField} does not match the reviewed hosted runner contract`);
     }
   }
-  const alternateImageVersions = contract.alternateImageVersions ?? [];
-  if (
-    typeof contract.imageVersion !== "string" ||
-    contract.imageVersion.length === 0 ||
-    !Array.isArray(alternateImageVersions) ||
-    alternateImageVersions.some((value) => typeof value !== "string" || value.length === 0)
-  ) {
-    fail(`${key} has invalid reviewed hosted runner image versions`);
+  let profile;
+  try {
+    profile = resolveHostedRunnerImageProfile(
+      contract,
+      nativeToolchain.runnerImageVersion,
+      key,
+    );
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
   }
-  const imageVersions = [contract.imageVersion, ...alternateImageVersions];
-  if (
-    new Set(imageVersions).size !== imageVersions.length ||
-    !imageVersions.includes(nativeToolchain.runnerImageVersion)
-  ) {
-    fail(`${key} runnerImageVersion does not match the reviewed hosted runner contract`);
-  }
-  const expectedBuilder =
-    `github-hosted:${contract.runnerLabel}:${contract.imageOS}:` +
-    `${nativeToolchain.runnerImageVersion}:${contract.runnerArch}`;
+  const expectedBuilder = expectedHostedRunnerBuilder(
+    contract,
+    nativeToolchain.runnerImageVersion,
+  );
   if (nativeToolchain.builder !== expectedBuilder) {
     fail(`${key} builder identity is detached from the hosted runner contract`);
   }
@@ -86,12 +85,12 @@ function validateHostedRunnerContract(nativeToolchain, key, releaseToolchain) {
     for (const [actual, expected, label] of [
       [
         nativeToolchain.xcode,
-        `Xcode ${contract.xcodeVersion}\nBuild version ${contract.xcodeBuild}`,
+        `Xcode ${profile.xcodeVersion}\nBuild version ${profile.xcodeBuild}`,
         "Xcode",
       ],
-      [nativeToolchain.sdk, contract.macosSdkVersion, "macOS SDK"],
-      [nativeToolchain.cc, contract.clangVersion, "C compiler"],
-      [nativeToolchain.cxx, contract.clangVersion, "C++ compiler"],
+      [nativeToolchain.sdk, profile.macosSdkVersion, "macOS SDK"],
+      [nativeToolchain.cc, profile.clangVersion, "C compiler"],
+      [nativeToolchain.cxx, profile.clangVersion, "C++ compiler"],
     ]) {
       if (typeof expected !== "string" || actual !== expected) {
         fail(`${key} ${label} does not match the reviewed hosted runner contract`);
@@ -102,18 +101,28 @@ function validateHostedRunnerContract(nativeToolchain, key, releaseToolchain) {
   if (key === "win-x64") {
     const expectedCompiler =
       `Microsoft (R) C/C++ Optimizing Compiler Version ` +
-      `${contract.msvcCompilerVersion} for x64`;
+      `${profile.msvcCompilerVersion} for x64`;
     for (const [actual, expected, label] of [
-      [nativeToolchain.visualStudioVersion, contract.visualStudioVersion, "Visual Studio"],
+      [nativeToolchain.visualStudioVersion, profile.visualStudioVersion, "Visual Studio"],
       [
         nativeToolchain.visualStudioInstallPath,
-        contract.visualStudioInstallPath,
+        profile.visualStudioInstallPath,
         "Visual Studio path",
       ],
-      [nativeToolchain.msvcToolsVersion, contract.msvcToolsVersion, "MSVC tools"],
-      [nativeToolchain.windowsSdkVersion, contract.windowsSdkVersion, "Windows SDK"],
+      [nativeToolchain.msvcToolsVersion, profile.msvcToolsVersion, "MSVC tools"],
+      [nativeToolchain.windowsSdkVersion, profile.windowsSdkVersion, "Windows SDK"],
       [nativeToolchain.cc, expectedCompiler, "C compiler"],
       [nativeToolchain.cxx, expectedCompiler, "C++ compiler"],
+      [
+        nativeToolchain.msvcCompilerSha256,
+        profile.msvcCompilerSha256,
+        "MSVC compiler SHA-256",
+      ],
+      [
+        nativeToolchain.msvcLinkerSha256,
+        profile.msvcLinkerSha256,
+        "MSVC linker SHA-256",
+      ],
     ]) {
       if (typeof expected !== "string" || actual !== expected) {
         fail(`${key} ${label} does not match the reviewed hosted runner contract`);

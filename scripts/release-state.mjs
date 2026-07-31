@@ -48,11 +48,14 @@ const GITHUB_CLI_TARGET_BY_HOST = Object.freeze({
 const LANES = new Set(["full", "installer-hotfix"]);
 const CANDIDATE_SUCCESSFUL_JOBS = Object.freeze([
   "release-source",
+  "hosted-toolchain-preflight (macos-15, darwin-arm64)",
+  "hosted-toolchain-preflight (macos-15-intel, darwin-x64)",
+  "hosted-toolchain-preflight (windows-2025-vs2026, win-x64)",
   "linux-tarball (ubuntu-24.04, linux-x64)",
   "linux-tarball (ubuntu-24.04-arm, linux-arm64)",
   "native-tarball (macos-15, darwin-arm64)",
   "native-tarball (macos-15-intel, darwin-x64)",
-  "native-tarball (windows-2025, win-x64)",
+  "native-tarball (windows-2025-vs2026, win-x64)",
   "candidate-seal",
 ]);
 const CANDIDATE_ARTIFACT_SLUGS = Object.freeze([
@@ -441,6 +444,10 @@ export function verificationPlan(lane) {
     Object.freeze({
       id: "release-preflight",
       argv: ["npm", "run", "release:preflight"],
+    }),
+    Object.freeze({
+      id: "hosted-runner-contract",
+      argv: ["npm", "run", "check:hosted-runner-contract"],
     }),
     Object.freeze({
       id: "installer-lock-sync",
@@ -1683,7 +1690,7 @@ export function validateCheckpointReceipt({
       canonicalJson([...CANDIDATE_SUCCESSFUL_JOBS].sort())
   ) {
     throw new Error(
-      "candidate-build-complete receipt must contain the exact seven successful jobs",
+      "candidate-build-complete receipt must contain the exact ten successful jobs",
     );
   }
   const expectedArtifactNames = CANDIDATE_ARTIFACT_SLUGS.map(
