@@ -21,8 +21,10 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
       send(input: string) {
         events.push(`send:${JSON.stringify(input)}`);
       },
-      async type(input: string) {
-        events.push(`type:${input}`);
+      async type() {
+        throw new Error(
+          "embedded Neovim commands must not fan out into unacknowledged character inputs",
+        );
       },
       async waitForIdle(options: { idleWindow: number }) {
         events.push(`idle:${options.idleWindow}`);
@@ -38,12 +40,14 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(events).toEqual([
       "idle:200",
       'send:"\\u001b"',
-      "type::write",
+      'send:":"',
+      'send:"\\u001b[200~write\\u001b[201~"',
       'send:"\\r"',
       "idle:500",
       "idle:200",
       'send:"\\u001b"',
-      "type::q!",
+      'send:":"',
+      'send:"\\u001b[200~q!\\u001b[201~"',
       'send:"\\r"',
       "idle:500",
     ]);
@@ -206,6 +210,9 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(helpers).toContain("waitForFrameText");
     expect(helpers).toContain("workspaceSnapshot");
     expect(helpers).toContain("anchorWorkbenchProjectRoot");
+    expect(helpers).toContain("\\x1b[200~");
+    expect(helpers).toContain("\\x1b[201~");
+    expect(helpers).not.toContain("session.type(`:${command}`");
     for (const anchoredScenario of [
       scenario,
       missingFallback,

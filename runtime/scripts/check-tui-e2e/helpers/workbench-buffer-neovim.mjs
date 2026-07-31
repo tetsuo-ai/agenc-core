@@ -72,7 +72,15 @@ export async function runEmbeddedNeovimCommand(
   await session.waitForIdle({ idleWindow: 200, timeout: 5_000 });
   session.send("\x1b");
   await sleep(80);
-  await session.type(`:${command}`, { perCharMs: 5 });
+  session.send(":");
+  await sleep(80);
+  // Deliver the command body through the terminal's real bracketed-paste
+  // protocol. BufferSurface routes that one paste event to one acknowledged
+  // nvim_paste RPC instead of launching an unobserved nvim_input request for
+  // every character. The surrounding Escape, colon, and Enter remain real
+  // editor keystrokes, so this still exercises the complete PTY input path.
+  session.send(`\x1b[200~${command}\x1b[201~`);
+  await sleep(80);
   session.send("\r");
   await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
 }
