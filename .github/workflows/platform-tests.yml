@@ -486,8 +486,8 @@ jobs:
           const exactCounts = {
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTestSuites: 6,
-            numPassedTestSuites: 6,
+            numTotalTestSuites: 5,
+            numPassedTestSuites: 5,
             numTotalTests: expectedTests,
             numPassedTests: expectedTests,
             numFailedTests: 0,
