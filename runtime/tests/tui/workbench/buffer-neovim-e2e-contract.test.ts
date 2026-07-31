@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
+import { runEmbeddedNeovimCommand } from "../../../scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs";
+
 // NOTE: This is a STATIC contract check that the PTY gate scripts exist and
 // declare the expected lifecycle assertions — it does NOT spawn nvim or run a
 // real session. The actual embedded-Neovim PTY end-to-end gate (including the
@@ -10,6 +12,41 @@ import { describe, expect, it } from "vitest";
 // Neovim lane covers four lower-level real-process lifecycle tests; the full
 // PTY scenario remains local, so do not treat this file as e2e coverage.
 describe("embedded Neovim BUFFER PTY gate files", () => {
+  it("enters command mode only after the rendered normal-mode acknowledgement", async () => {
+    const events: string[] = [];
+    const session = {
+      cols: 80,
+      rows: 24,
+      raw: [
+        "target.txt [embedded Neovim NVIM v0.11.4, normal, ready]",
+        "NORMAL  ctrl+s save",
+      ].join("\n"),
+      send(input: string) {
+        events.push(`send:${JSON.stringify(input)}`);
+        if (input === ":") {
+          this.raw = "CMDLINE_NORMAL  ctrl+s save";
+        }
+      },
+      async type(input: string) {
+        events.push(`type:${input}`);
+      },
+      async waitForIdle(options: { idleWindow: number }) {
+        events.push(`idle:${options.idleWindow}`);
+      },
+    };
+
+    await runEmbeddedNeovimCommand(session, "write");
+
+    expect(events).toEqual([
+      "idle:200",
+      'send:":"',
+      "type:write",
+      'send:"\\r"',
+      "idle:500",
+    ]);
+    expect(events).not.toContain('send:"\\u001b"');
+  });
+
   it("defines the workbench Neovim scenarios and wrapper command", async () => {
     const scenario = await readFile(
       "scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs",
@@ -37,6 +74,14 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     );
     const codePrediction = await readFile(
       "scripts/check-tui-e2e/scenarios/133-editor-code-prediction.mjs",
+      "utf8",
+    );
+    const platformGate = await readFile(
+      "scripts/check-tui-e2e/scenarios/130-workbench-buffer-neovim-platform-gate.mjs",
+      "utf8",
+    );
+    const platformKillCleanup = await readFile(
+      "scripts/check-tui-e2e/scenarios/131-workbench-buffer-neovim-platform-kill-cleanup.mjs",
       "utf8",
     );
     const helpers = await readFile(
@@ -118,6 +163,12 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(codePrediction).toContain("prediction text leaked");
     expect(codePrediction).toContain('session.send("\\t")');
     expect(codePrediction).toContain("accepted prediction saved from Neovim");
+    for (const platformScenario of [platformGate, platformKillCleanup]) {
+      expect(platformScenario).toContain("runEmbeddedNeovimCommand");
+      expect(platformScenario).not.toContain(
+        "async function runNeovimCommand",
+      );
+    }
     expect(helpers).toContain("listDescendantNeovimPids");
     expect(helpers).toContain("waitForPidsGone");
     expect(helpers).toContain("waitForFrameText");

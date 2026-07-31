@@ -48,6 +48,36 @@ export async function waitForFrameText(session, pattern, label, timeoutMs = 10_0
   throw new Error(`${label} did not render in the latest PTY frame: ${frame.slice(-1200)}`);
 }
 
+export async function runEmbeddedNeovimCommand(session, command) {
+  // The terminal grid can paint NORMAL before the provider commits the session
+  // that receives input. Require both the committed "ready" header and NORMAL
+  // mode, then let that acknowledged frame settle before entering a command.
+  await waitForFrameText(
+    session,
+    /\[embedded Neovim [^,\n]+,\s*normal,\s*ready(?:,|\])/iu,
+    `committed embedded Neovim session before :${command}`,
+    5_000,
+  );
+  await waitForFrameText(
+    session,
+    /\bNORMAL\s+ctrl\+s save\b/u,
+    `embedded Neovim normal mode before :${command}`,
+    5_000,
+  );
+  await session.waitForIdle({ idleWindow: 200, timeout: 5_000 });
+  session.send(":");
+  await waitForFrameText(
+    session,
+    /\bCMDLINE_NORMAL\s+ctrl\+s save\b/u,
+    `embedded Neovim command-line mode for :${command}`,
+    5_000,
+  );
+  await sleep(80);
+  await session.type(command, { perCharMs: 5 });
+  session.send("\r");
+  await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
+}
+
 export async function listNeovimPids() {
   const processes = await listProcesses();
   return processes

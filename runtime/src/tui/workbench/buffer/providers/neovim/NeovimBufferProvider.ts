@@ -920,9 +920,16 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         onSnapshot: (terminal) => {
           if (!isCurrentOpen()) return;
           this.#terminal = terminal;
-          if (generation === this.#openGeneration) {
+          if (
+            generation === this.#openGeneration &&
+            openSucceeded
+          ) {
             this.#setSnapshot("ready", null);
           } else {
+            // Neovim can paint a complete NORMAL frame before startup returns
+            // the session that handleInput needs. Preserve the loading state
+            // until the whole open succeeds; otherwise the UI advertises an
+            // editor that silently drops early keystrokes.
             this.#emitSnapshot();
           }
         },

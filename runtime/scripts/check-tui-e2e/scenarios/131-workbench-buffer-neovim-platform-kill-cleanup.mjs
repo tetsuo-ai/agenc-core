@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import {
   anchorWorkbenchProjectRoot,
+  runEmbeddedNeovimCommand,
   waitForFrameText,
   waitForScreen,
 } from "../helpers/workbench-buffer-neovim.mjs";
@@ -35,7 +36,7 @@ export default async function (session) {
     session.cwd = cwd;
     await openEmbeddedNeovim(session);
 
-    await runNeovimCommand(
+    await runEmbeddedNeovimCommand(
       session,
       "call writefile([string(getpid())], 'nvim-platform-kill.pid')",
     );
@@ -49,7 +50,7 @@ export default async function (session) {
       "process.on('SIGTERM', () => {});",
       "setInterval(() => {}, 1000);",
     ].join("");
-    await runNeovimCommand(
+    await runEmbeddedNeovimCommand(
       session,
       `call jobstart([${
         [
@@ -133,22 +134,6 @@ async function openEmbeddedNeovim(session) {
     "hosted-platform kill target loaded in embedded Neovim",
     20_000,
   );
-}
-
-async function runNeovimCommand(session, command) {
-  session.send("\x1b");
-  await sleep(80);
-  session.send(":");
-  await waitForFrameText(
-    session,
-    /CMDLINE_NORMAL/u,
-    "embedded Neovim command-line mode",
-    5_000,
-  );
-  await sleep(80);
-  await session.type(command, { perCharMs: 5 });
-  session.send("\r");
-  await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
 }
 
 async function readPidFile(path) {

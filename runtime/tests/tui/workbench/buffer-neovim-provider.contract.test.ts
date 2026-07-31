@@ -121,6 +121,64 @@ describe("embedded Neovim BUFFER provider", () => {
     );
   });
 
+  it("keeps an early NORMAL frame loading until the startup session can receive input", async () => {
+    const pending = controlled<EmbeddedNeovimSession>();
+    let onSnapshot:
+      | StartEmbeddedNeovimOptions["onSnapshot"]
+      | null = null;
+    const harness = createHarness({
+      startSession: vi.fn((options: StartEmbeddedNeovimOptions) => {
+        onSnapshot = options.onSnapshot;
+        return pending.promise;
+      }),
+    });
+    const provider = new NeovimBufferProvider(harness.options);
+
+    const opening = provider.open({ filePath: "target.txt" });
+    await flush();
+    const startupFrame = {
+      ...createNeovimRenderSnapshot(20, 80),
+      lines: ["", "    alpha", ""],
+      cursor: { row: 1, column: 4, grid: 1 },
+      mode: "normal",
+    };
+    onSnapshot?.(startupFrame);
+
+    expect(provider.getSnapshot()).toMatchObject({
+      status: "loading",
+      providerStatus: "loading",
+      terminal: {
+        mode: "normal",
+        lines: startupFrame.lines,
+      },
+    });
+    expect(
+      provider.handleInput({
+        input: ":",
+        key: baseKey(),
+        context: { rows: 20, columns: 80 },
+      }),
+    ).toBe(false);
+    expect(harness.session.input).not.toHaveBeenCalled();
+
+    pending.resolve(harness.session);
+    await opening;
+    expect(provider.getSnapshot()).toMatchObject({
+      status: "ready",
+      providerStatus: "ready",
+    });
+
+    expect(
+      provider.handleInput({
+        input: ":",
+        key: baseKey(),
+        context: { rows: 20, columns: 80 },
+      }),
+    ).toBe(true);
+    await flush();
+    expect(harness.session.input).toHaveBeenCalledWith(":");
+  });
+
   it("runs user init once and retries the real startup clean when auto mode fails safely", async () => {
     const harness = createHarness();
     harness.startSession.mockRejectedValueOnce(new Error("user init boom"));

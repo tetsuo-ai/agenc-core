@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import {
   anchorWorkbenchProjectRoot,
+  runEmbeddedNeovimCommand,
   waitForFrameText,
   waitForScreen,
 } from "../helpers/workbench-buffer-neovim.mjs";
@@ -33,7 +34,7 @@ export default async function (session) {
     session.cwd = cwd;
     await openEmbeddedNeovim(session);
 
-    await runNeovimCommand(
+    await runEmbeddedNeovimCommand(
       session,
       "call writefile([string(getpid())], 'nvim-platform.pid')",
     );
@@ -58,7 +59,7 @@ export default async function (session) {
     // Ctrl+S boundary is covered separately through the terminal parser and
     // rendered BufferSurface integration test; emitting Ctrl+S from node-pty
     // is not portable because PTY line discipline can retain XOFF handling.
-    await runNeovimCommand(session, "write");
+    await runEmbeddedNeovimCommand(session, "write");
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
     const saved = await waitForFileText(
       target,
@@ -69,7 +70,7 @@ export default async function (session) {
       throw new Error(`embedded Neovim did not save the platform marker: ${saved}`);
     }
 
-    await runNeovimCommand(session, "q!");
+    await runEmbeddedNeovimCommand(session, "q!");
     await waitForPidGone(neovimPid, 10_000, "embedded Neovim after :q!");
     await waitForFrameText(
       session,
@@ -104,22 +105,6 @@ async function openEmbeddedNeovim(session) {
     "hosted-platform target loaded in embedded Neovim",
     20_000,
   );
-}
-
-async function runNeovimCommand(session, command) {
-  session.send("\x1b");
-  await sleep(80);
-  session.send(":");
-  await waitForFrameText(
-    session,
-    /CMDLINE_NORMAL/u,
-    "embedded Neovim command-line mode",
-    5_000,
-  );
-  await sleep(80);
-  await session.type(command, { perCharMs: 5 });
-  session.send("\r");
-  await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
 }
 
 async function readPidFile(path) {
