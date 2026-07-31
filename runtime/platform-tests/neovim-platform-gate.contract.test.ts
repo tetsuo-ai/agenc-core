@@ -171,9 +171,28 @@ describe("hosted Neovim platform gate contract", () => {
       "utf8",
     );
     expect(killScenario).toContain("nvim-platform-dirty-proof.txt");
+    expect(killScenario).toContain(
+      "autocmd TextChangedI,TextChangedP target.txt",
+    );
     expect(killScenario).toContain("writefile(getline(1, '$')");
-    expect(killScenario).toContain("targetBeforeKill.includes");
+    expect(killScenario).toContain("targetBeforeKill !== originalTarget");
+    expect(killScenario).toContain("dirtyProof !== expectedDirtyProof");
     expect(killScenario).toContain("readySession: true");
+    const dirtyAcknowledgementIndex = killScenario.indexOf(
+      "autocmd TextChangedI,TextChangedP target.txt",
+    );
+    const dirtyInputIndex = killScenario.indexOf(
+      'session.type("UNSAVED_PLATFORM_KILL_MARK"',
+    );
+    const dirtyProofWaitIndex = killScenario.indexOf(
+      "const dirtyProof = await waitForFileText(",
+    );
+    expect(dirtyAcknowledgementIndex).toBeGreaterThan(-1);
+    expect(dirtyInputIndex).toBeGreaterThan(dirtyAcknowledgementIndex);
+    expect(dirtyProofWaitIndex).toBeGreaterThan(dirtyInputIndex);
+    expect(
+      killScenario.slice(dirtyInputIndex),
+    ).not.toContain("runEmbeddedNeovimCommand");
     expect(() =>
       selectPlatformScenarios([...HOSTED_NEOVIM_SCENARIOS], "freebsd-x64")
     ).toThrow("unsupported TUI E2E platform");

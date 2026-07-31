@@ -186,10 +186,16 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
       "nvim-platform-dirty-proof.txt",
     );
     expect(platformKillCleanup).toContain(
+      "autocmd TextChangedI,TextChangedP target.txt",
+    );
+    expect(platformKillCleanup).toContain(
       "writefile(getline(1, '$')",
     );
     expect(platformKillCleanup).toContain(
-      "targetBeforeKill.includes",
+      "targetBeforeKill !== originalTarget",
+    );
+    expect(platformKillCleanup).toContain(
+      "dirtyProof !== expectedDirtyProof",
     );
     expect(platformKillCleanup).toContain("readySession: true");
     expect(platformKillCleanup).not.toContain(

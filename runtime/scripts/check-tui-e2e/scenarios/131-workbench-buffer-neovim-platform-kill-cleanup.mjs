@@ -33,7 +33,8 @@ export default async function (session) {
   let detachedJobPid = 0;
   try {
     await anchorWorkbenchProjectRoot(cwd);
-    await writeFile(target, "platform-kill-alpha\n", "utf8");
+    const originalTarget = "platform-kill-alpha\n";
+    await writeFile(target, originalTarget, "utf8");
     session.cwd = cwd;
     await openEmbeddedNeovim(session);
 
@@ -71,30 +72,36 @@ export default async function (session) {
       );
     }
 
+    // Outer-PTY write completion and rendered idleness do not acknowledge
+    // Neovim's asynchronous nvim_input requests. Have the editor itself
+    // publish each insert-mode change so the full marker is proven before the
+    // TUI is killed, without depending on a transient terminal frame.
+    await runEmbeddedNeovimCommand(
+      session,
+      "autocmd TextChangedI,TextChangedP target.txt call writefile(getline(1, '$'), 'nvim-platform-dirty-proof.txt')",
+      { readySession: true },
+    );
     session.send("G");
     await sleep(80);
     session.send("o");
     await sleep(80);
     await session.type("UNSAVED_PLATFORM_KILL_MARK", { perCharMs: 15 });
-    await runEmbeddedNeovimCommand(
-      session,
-      "call writefile(getline(1, '$'), 'nvim-platform-dirty-proof.txt')",
-      { readySession: true },
-    );
     const dirtyProof = await waitForFileText(
       dirtyProofFile,
       /UNSAVED_PLATFORM_KILL_MARK/u,
       5_000,
     );
-    if (!dirtyProof.includes("UNSAVED_PLATFORM_KILL_MARK")) {
+    const expectedDirtyProof =
+      `${originalTarget}UNSAVED_PLATFORM_KILL_MARK\n`;
+    if (dirtyProof !== expectedDirtyProof) {
       throw new Error(
-        `Neovim dirty-buffer proof omitted the marker: ${dirtyProof}`,
+        `Neovim dirty-buffer proof was not exact: ${JSON.stringify(dirtyProof)}`,
       );
     }
     const targetBeforeKill = await readFile(target, "utf8");
-    if (targetBeforeKill.includes("UNSAVED_PLATFORM_KILL_MARK")) {
+    if (targetBeforeKill !== originalTarget) {
       throw new Error(
-        `dirty Neovim text reached disk before TUI termination: ${targetBeforeKill}`,
+        `dirty Neovim text changed disk before TUI termination: ${JSON.stringify(targetBeforeKill)}`,
       );
     }
 
@@ -110,8 +117,10 @@ export default async function (session) {
       "detached Neovim job after hosted-platform TUI termination",
     );
     const saved = await readFile(target, "utf8");
-    if (saved.includes("UNSAVED_PLATFORM_KILL_MARK")) {
-      throw new Error(`TUI termination wrote dirty Neovim text: ${saved}`);
+    if (saved !== originalTarget) {
+      throw new Error(
+        `TUI termination changed dirty Neovim text on disk: ${JSON.stringify(saved)}`,
+      );
     }
   } finally {
     if (detachedJobPid > 0 && processIsAlive(detachedJobPid)) {
