@@ -55,8 +55,15 @@ const CROSS_REPO_TEST_FILES = [
 const NATIVE_TEST_FILES = [
   "tests/app-server/windows-named-pipe.win32.test.ts",
   "tests/durability/atomic-artifact.win32.test.ts",
+  "tests/fnd/process-repository-helpers.native.test.ts",
   "tests/tools/runtimes/runtime.darwin.test.ts",
   "tests/utils/execFileNoThrow.win32.test.ts",
+] as const;
+
+const HOSTED_FND_TEST_FILES = [
+  "tests/fnd/bounded-file-io.test.ts",
+  "tests/fnd/fnd-fixtures.test.ts",
+  "tests/fnd/portable-repository-path.test.ts",
 ] as const;
 
 const KERNEL_TEST_FILES = [
@@ -137,6 +144,13 @@ describe("hermetic test discovery", () => {
       ).not.toContain(nativeFile);
     }
 
+    for (const hostedFndFile of HOSTED_FND_TEST_FILES) {
+      expect(
+        files,
+        `${hostedFndFile} must retain ordinary cross-platform coverage`,
+      ).toContain(hostedFndFile);
+    }
+
     for (const kernelFile of KERNEL_TEST_FILES) {
       expect(
         files,
@@ -193,10 +207,9 @@ describe("hermetic test discovery", () => {
   });
 
   it("native discovery is an exact hosted-builder allowlist without skip gates", () => {
-    expect(listTestFiles("vitest.native.config.ts")).toEqual([
-      ...NATIVE_TEST_FILES,
-    ]);
-    for (const file of NATIVE_TEST_FILES) {
+    const hostedFiles = [...HOSTED_FND_TEST_FILES, ...NATIVE_TEST_FILES].sort();
+    expect(listTestFiles("vitest.native.config.ts")).toEqual(hostedFiles);
+    for (const file of hostedFiles) {
       const source = readFileSync(resolve(runtimeRoot, file), "utf8");
       expect(source).not.toMatch(/\b(?:runIf|skip|skipIf)\b/u);
     }
@@ -534,7 +547,10 @@ describe("hermetic test discovery", () => {
       "../scripts/run-hermetic-test-boundary.mjs",
       import.meta.url,
     );
-    boundaryUrl.searchParams.set("fnd-support-gate-sequence", String(Date.now()));
+    boundaryUrl.searchParams.set(
+      "fnd-support-gate-sequence",
+      String(Date.now()),
+    );
     const boundary = (await import(/* @vite-ignore */ boundaryUrl.href)) as {
       readonly HERMETIC_SUITE_COMMAND: string;
     };

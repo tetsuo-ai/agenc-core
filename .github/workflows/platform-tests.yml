@@ -968,14 +968,19 @@ jobs:
           npm_config_build_from_source=true \
             npm rebuild better-sqlite3 esbuild node-pty
 
-      - name: Run the exact macOS native capability lane
+      - name: Run the exact macOS FND/native capability lane
         shell: bash
         run: |
           set -euo pipefail
           results="$RUNNER_TEMP/macos-native-test-results.json"
           node runtime/scripts/run-hermetic-vitest.mjs \
             --require-zero-skips \
-            run tests/tools/runtimes/runtime.darwin.test.ts \
+            run \
+            tests/fnd/bounded-file-io.test.ts \
+            tests/fnd/fnd-fixtures.test.ts \
+            tests/fnd/portable-repository-path.test.ts \
+            tests/fnd/process-repository-helpers.native.test.ts \
+            tests/tools/runtimes/runtime.darwin.test.ts \
             --config vitest.native.config.ts \
             --allowOnly=false \
             --reporter=verbose \
@@ -988,14 +993,20 @@ jobs:
           const [resultsPath] = process.argv.slice(2);
           if (!resultsPath) throw new Error("missing macOS-native results path");
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
-          const expectedFile = "tests/tools/runtimes/runtime.darwin.test.ts";
+          const expectedFiles = [
+            "tests/fnd/bounded-file-io.test.ts",
+            "tests/fnd/fnd-fixtures.test.ts",
+            "tests/fnd/portable-repository-path.test.ts",
+            "tests/fnd/process-repository-helpers.native.test.ts",
+            "tests/tools/runtimes/runtime.darwin.test.ts",
+          ];
           const exactCounts = {
-            numTotalTestSuites: 1,
-            numPassedTestSuites: 1,
+            numTotalTestSuites: 8,
+            numPassedTestSuites: 8,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 1,
-            numPassedTests: 1,
+            numTotalTests: 45,
+            numPassedTests: 45,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1010,20 +1021,19 @@ jobs:
           if (
             results.success !== true ||
             !Array.isArray(results.testResults) ||
-            results.testResults.length !== 1
+            results.testResults.length !== expectedFiles.length
           ) {
-            throw new Error("macOS-native result did not report one successful file");
+            throw new Error("macOS-native result did not report success");
           }
-          const file = relative(
-            resolve("runtime"),
-            results.testResults[0].name,
-          ).split("\\").join("/");
-          if (file !== expectedFile) {
+          const files = results.testResults
+            .map(result => relative(resolve("runtime"), result.name).split("\\").join("/"))
+            .sort();
+          if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) {
             throw new Error(
-              `macOS-native file was ${JSON.stringify(file)}, expected ${expectedFile}`,
+              `macOS-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("macOS native capability lane passed 1 test in 1 file with zero skipped");
+          console.log("macOS FND/native capability lane passed 45 tests in 5 files with zero skipped");
           NODE
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
@@ -1086,7 +1096,7 @@ jobs:
           & npm.cmd run build --workspace=@tetsuo-ai/runtime
           if ($LASTEXITCODE -ne 0) { throw "runtime build failed" }
 
-      - name: Run the exact Windows native capability lane
+      - name: Run the exact Windows FND/native capability lane
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -1096,6 +1106,10 @@ jobs:
             run `
             tests/app-server/windows-named-pipe.win32.test.ts `
             tests/durability/atomic-artifact.win32.test.ts `
+            tests/fnd/bounded-file-io.test.ts `
+            tests/fnd/fnd-fixtures.test.ts `
+            tests/fnd/portable-repository-path.test.ts `
+            tests/fnd/process-repository-helpers.native.test.ts `
             tests/utils/execFileNoThrow.win32.test.ts `
             --config vitest.native.config.ts `
             --allowOnly=false `
@@ -1113,15 +1127,19 @@ jobs:
           const expectedFiles = [
             "tests/app-server/windows-named-pipe.win32.test.ts",
             "tests/durability/atomic-artifact.win32.test.ts",
+            "tests/fnd/bounded-file-io.test.ts",
+            "tests/fnd/fnd-fixtures.test.ts",
+            "tests/fnd/portable-repository-path.test.ts",
+            "tests/fnd/process-repository-helpers.native.test.ts",
             "tests/utils/execFileNoThrow.win32.test.ts",
           ];
           const exactCounts = {
-            numTotalTestSuites: 4,
-            numPassedTestSuites: 4,
+            numTotalTestSuites: 11,
+            numPassedTestSuites: 11,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 5,
-            numPassedTests: 5,
+            numTotalTests: 49,
+            numPassedTests: 49,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1144,7 +1162,7 @@ jobs:
               `Windows-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("Windows native capability lane passed 5 tests in 3 files with zero skipped");
+          console.log("Windows FND/native capability lane passed 49 tests in 7 files with zero skipped");
           '@ | node --input-type=module - $results
           if ($LASTEXITCODE -ne 0) { throw "Windows native result contract failed" }
           if (-not [string]::IsNullOrWhiteSpace(

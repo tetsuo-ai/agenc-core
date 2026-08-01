@@ -118,8 +118,16 @@ export const CROSS_REPO_TEST_INCLUDE = Object.freeze([
 export const NATIVE_TEST_INCLUDE = Object.freeze([
   'tests/app-server/windows-named-pipe.win32.test.ts',
   'tests/durability/atomic-artifact.win32.test.ts',
+  'tests/fnd/process-repository-helpers.native.test.ts',
   'tests/tools/runtimes/runtime.darwin.test.ts',
   'tests/utils/execFileNoThrow.win32.test.ts',
+]);
+
+/** Portable FND contracts repeated by every supported native builder. */
+export const HOSTED_FND_TEST_INCLUDE = Object.freeze([
+  'tests/fnd/bounded-file-io.test.ts',
+  'tests/fnd/fnd-fixtures.test.ts',
+  'tests/fnd/portable-repository-path.test.ts',
 ]);
 
 /** Real Linux-kernel sandbox coverage executed on a disposable hosted runner. */
@@ -455,11 +463,14 @@ export function createAgenCVitestConfig(mode: AgenCVitestMode = 'default') {
           }
         : mode === 'native'
           ? {
-              // Platform integration probes run only on their matching hosted
-              // native builder, with normal credential stripping and the JS
-              // network tripwire.
+              // Platform integration probes and portable FND contracts run on
+              // every matching hosted native builder, with normal credential
+              // stripping and the JS network tripwire.
               setupFiles: ['./vitest.setup.ts'],
-              include: [...NATIVE_TEST_INCLUDE],
+              include: [
+                ...HOSTED_FND_TEST_INCLUDE,
+                ...NATIVE_TEST_INCLUDE,
+              ],
               exclude: [...configDefaults.exclude],
             }
           : mode === 'kernel'

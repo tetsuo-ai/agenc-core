@@ -1143,17 +1143,27 @@ jobs:
           native_results="$owned_root/native-test-results.json"
           case "$AGENC_RELEASE_SLUG" in
             darwin-arm64|darwin-x64)
-              native_tests=("tests/tools/runtimes/runtime.darwin.test.ts")
-              expected_native_tests=1
-              expected_native_suites=1
+              native_tests=(
+                "tests/fnd/bounded-file-io.test.ts"
+                "tests/fnd/fnd-fixtures.test.ts"
+                "tests/fnd/portable-repository-path.test.ts"
+                "tests/fnd/process-repository-helpers.native.test.ts"
+                "tests/tools/runtimes/runtime.darwin.test.ts"
+              )
+              expected_native_tests=45
+              expected_native_suites=8
               ;;
             win-x64)
               native_tests=(
                 "tests/durability/atomic-artifact.win32.test.ts"
+                "tests/fnd/bounded-file-io.test.ts"
+                "tests/fnd/fnd-fixtures.test.ts"
+                "tests/fnd/portable-repository-path.test.ts"
+                "tests/fnd/process-repository-helpers.native.test.ts"
                 "tests/utils/execFileNoThrow.win32.test.ts"
               )
-              expected_native_tests=3
-              expected_native_suites=3
+              expected_native_tests=47
+              expected_native_suites=10
               ;;
             *)
               echo "unsupported native release slug: $AGENC_RELEASE_SLUG" >&2
@@ -1251,7 +1261,7 @@ jobs:
             );
           }
           console.log(
-            `native integration probe passed ${expectedTests} test(s) in ${expectedFiles.length} file(s) with zero skipped`,
+            `hosted FND/native integration probe passed ${expectedTests} test(s) in ${expectedFiles.length} file(s) with zero skipped`,
           );
           NODE
               test -z "$(git -C "$build_source" status --porcelain=v1 --untracked-files=all)"

@@ -60,4 +60,53 @@ Red probes, the isolated helper runner, and benchmark harnesses land in their
 separately reviewed foundation PRs. Production parsers must not import these
 test-only helpers or the fixture corpus.
 
+## Process and restart helpers
+
+`child-process-harness.ts` owns every child it starts and makes cleanup an
+idempotent settlement barrier. Its invocation contract snapshots plain data
+before asynchronous validation, pins the workspace and executable identities,
+uses one end-to-end deadline, combines stdout and stderr under one byte quota,
+admits at most eight aggregate active or preparing operations, and can require a
+bounded heartbeat file. An operation retains its admission slot until caller,
+child, and detached preparation work have physically settled. Cleanup joins
+aborted or timed-out preparation and heartbeat-monitor work; a named two-second
+settlement bound is reported as a cleanup failure only after the physical work
+has been joined. Durable markers and heartbeats are declared before spawn, must
+be absent at that boundary, and carry a fresh per-child nonce. Heartbeats begin
+at sequence one and advance monotonically.
+Portable path identities keep case, Unicode-normalization, and DOS 8.3 aliases
+from conflating evidence boundaries. Evidence uses the shared bounded-file
+reader, which pins singly-linked regular-file descriptors and verifies BigInt
+identity, mode, size, modification/change time, and the post-read pathname;
+paths must remain below the pinned temporary workspace. `forced` records actual
+escalation past the initial process-tree termination request, independent of
+heartbeat observation. Windows Job Object shutdown can settle the whole tree on
+that initial request, while a POSIX signal-resistant child requires escalation.
+The stop reason, tree-settlement proof, and escalation flag are authoritative;
+Darwin may leave both optional child exit-status fields null after the detached
+`process.execve` boundary has been proven absent.
+
+`restart-harness.ts` keeps simulated exits distinct from forced process crashes
+and requires two to eight successful recovery passes with one stable
+fingerprint. Inspection callbacks receive an abort signal at their explicit
+deadline and must physically settle within a second bounded interval; failure
+to prove settlement rejects the scenario. The ordinary Node test exercises real
+contained processes, the Bun test runs the same transition contract without
+platform process APIs, and the native allowlist repeats fixture loading,
+bounded descriptor I/O, portable path identity, termination, heartbeat, and
+portable evidence admission on macOS and Windows. None of these tests uses a
+skip or todo gate.
+
+Run the focused checks from the repository root:
+
+```sh
+npm --workspace=@tetsuo-ai/runtime exec vitest -- \
+  run tests/fnd/process-repository-helpers.test.ts
+(cd runtime && bun test tests/fnd/process-repository-helpers.bun.test.ts)
+npm run typecheck:test-support
+```
+
+The process helpers remain test-only; they do not replace production process
+containment or add a production parser.
+
 See [the fixture contract](fixtures/README.md) for byte-preservation rules.

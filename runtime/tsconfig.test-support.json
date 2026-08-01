@@ -34,6 +34,7 @@
     "tests/helpers/bounded-temp-repository.ts",
     "tests/helpers/bun-test-shim.ts",
     "tests/helpers/controlled-async.ts",
+    "tests/helpers/child-process-harness.ts",
     "tests/helpers/deterministic-clock.ts",
     "tests/helpers/failure-plan.ts",
     "tests/helpers/fnd-fixture-inventory.ts",
@@ -42,7 +43,12 @@
     "tests/helpers/fnd-fixture-policy.ts",
     "tests/helpers/fnd-fixtures.ts",
     "tests/helpers/portable-repository-path.ts",
+    "tests/helpers/process-evidence-contract.mjs",
+    "tests/helpers/process-harness-contract.ts",
+    "tests/helpers/process-workspace.ts",
+    "tests/helpers/restart-harness.ts",
     "tests/helpers/seeded-rng.ts",
+    "tests/helpers/temp-workspace.ts",
     "tests/helpers/unicode-15-1-repertoire.ts",
     "tests/fnd/bounded-file-io.test.ts",
     "tests/fnd/bounded-repository-git.test.ts",
@@ -52,7 +58,11 @@
     "tests/fnd/fnd-fixtures.bun.test.ts",
     "tests/fnd/fnd-fixtures.test.ts",
     "tests/fnd/portable-repository-path.bun.test.ts",
-    "tests/fnd/portable-repository-path.test.ts"
+    "tests/fnd/portable-repository-path.test.ts",
+    "tests/fnd/process-fixtures/crash-child.ts",
+    "tests/fnd/process-repository-helpers.bun.test.ts",
+    "tests/fnd/process-repository-helpers.native.test.ts",
+    "tests/fnd/process-repository-helpers.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

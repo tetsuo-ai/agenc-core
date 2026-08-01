@@ -58,13 +58,13 @@ function escapeRegExp(value: string) {
 
 function workflowShellFunctions(workflow: string, name: string) {
   const pattern = new RegExp(
-    `^ {10}${escapeRegExp(name)}\\(\\) \\{\\n`
-      + "(?: {12}.*\\n)+"
-      + "^ {10}\\}",
+    `^ {10}${escapeRegExp(name)}\\(\\) \\{\\n` +
+      "(?: {12}.*\\n)+" +
+      "^ {10}\\}",
     "gmu",
   );
   return [...workflow.matchAll(pattern)].map((match) =>
-    match[0].replace(/^ {10}/gmu, "")
+    match[0].replace(/^ {10}/gmu, ""),
   );
 }
 
@@ -75,7 +75,8 @@ describe("reproducible install and release contract", () => {
         process.execPath,
         [join(REPO_ROOT, "scripts/sync-installer-sqlite-lock.mjs"), "--check"],
         { encoding: "utf8" },
-      )).not.toThrow();
+      ),
+    ).not.toThrow();
     for (const relativePath of [
       "scripts/install/install.sh",
       "scripts/install/install.ps1",
@@ -94,7 +95,9 @@ describe("reproducible install and release contract", () => {
   });
 
   test("committed root lock matches the complete workspace set", () => {
-    const root = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as {
+    const root = JSON.parse(
+      readFileSync(join(REPO_ROOT, "package.json"), "utf8"),
+    ) as {
       name: string;
       version: string;
       license: string;
@@ -103,27 +106,44 @@ describe("reproducible install and release contract", () => {
       dependencies?: Record<string, string>;
       devDependencies: Record<string, string>;
     };
-    const lock = JSON.parse(readFileSync(join(REPO_ROOT, "package-lock.json"), "utf8")) as {
+    const lock = JSON.parse(
+      readFileSync(join(REPO_ROOT, "package-lock.json"), "utf8"),
+    ) as {
       version: string;
       lockfileVersion: number;
-      packages: Record<string, {
-        name?: string;
-        version?: string;
-        license?: string;
-        workspaces?: string[];
-        dependencies?: Record<string, string>;
-        devDependencies?: Record<string, string>;
-      }>;
+      packages: Record<
+        string,
+        {
+          name?: string;
+          version?: string;
+          license?: string;
+          workspaces?: string[];
+          dependencies?: Record<string, string>;
+          devDependencies?: Record<string, string>;
+        }
+      >;
     };
     expect(root.packageManager).toBe("npm@11.17.0");
-    expect(root.workspaces).toEqual(["packages/agenc", "packages/agenc-sdk", "runtime"]);
+    expect(root.workspaces).toEqual([
+      "packages/agenc",
+      "packages/agenc-sdk",
+      "runtime",
+    ]);
     expect(lock.lockfileVersion).toBe(3);
     expect(lock.version).toBe(root.version);
     expect(lock.packages[""]?.workspaces).toEqual(root.workspaces);
     expect(root.dependencies).toBeUndefined();
     expect(lock.packages[""]?.dependencies).toBeUndefined();
-    for (const field of ["name", "version", "license", "workspaces", "devDependencies"] as const) {
-      expect(lock.packages[""]?.[field], `root lock snapshot ${field}`).toEqual(root[field]);
+    for (const field of [
+      "name",
+      "version",
+      "license",
+      "workspaces",
+      "devDependencies",
+    ] as const) {
+      expect(lock.packages[""]?.[field], `root lock snapshot ${field}`).toEqual(
+        root[field],
+      );
     }
     for (const workspace of root.workspaces) {
       expect(existsSync(join(REPO_ROOT, workspace, "package.json"))).toBe(true);
@@ -195,7 +215,8 @@ describe("reproducible install and release contract", () => {
         packageVersion: "0.9.0-1ubuntu0.1",
         file: "bubblewrap_0.9.0-1ubuntu0.1_amd64.deb",
         url: "https://security.ubuntu.com/ubuntu/pool/main/b/bubblewrap/bubblewrap_0.9.0-1ubuntu0.1_amd64.deb",
-        sha256: "1b506492bd9c7fd0cdb4f02ac822f1d3e336b0aead5113c1239baf8db5db562a",
+        sha256:
+          "1b506492bd9c7fd0cdb4f02ac822f1d3e336b0aead5113c1239baf8db5db562a",
         bytes: 50_178,
       },
     });
@@ -205,7 +226,8 @@ describe("reproducible install and release contract", () => {
       "linux-x64": {
         file: "powershell-7.6.4-linux-x64.tar.gz",
         url: "https://github.com/PowerShell/PowerShell/releases/download/v7.6.4/powershell-7.6.4-linux-x64.tar.gz",
-        sha256: "4471b5a36bfe86ec7af8525d36bb1cacba0128e7aac22d05cc064bc00e604721",
+        sha256:
+          "4471b5a36bfe86ec7af8525d36bb1cacba0128e7aac22d05cc064bc00e604721",
         bytes: 77_628_778,
       },
     });
@@ -215,7 +237,8 @@ describe("reproducible install and release contract", () => {
       "linux-x64": {
         file: "nvim-linux-x86_64.tar.gz",
         url: "https://github.com/neovim/neovim/releases/download/v0.12.1/nvim-linux-x86_64.tar.gz",
-        sha256: "ab757a1fd9ad307d53d2df4045698906a7ca3993d92260dd8fe49108712d57d0",
+        sha256:
+          "ab757a1fd9ad307d53d2df4045698906a7ca3993d92260dd8fe49108712d57d0",
         bytes: 11_359_184,
       },
     });
@@ -223,6 +246,25 @@ describe("reproducible install and release contract", () => {
     const workflow = readFileSync(
       join(REPO_ROOT, ".github/workflows/platform-tests.yml"),
       "utf8",
+    );
+    const ciRequiredGates = readFileSync(
+      join(REPO_ROOT, "docs/ci-required-gates.md"),
+      "utf8",
+    );
+    const normalizedCiRequiredGates = ciRequiredGates.replace(/\s+/gu, " ");
+    for (const inventory of [
+      "45 passing macOS tests in eight suites across five files",
+      "47 passing Windows tests in ten suites across six files",
+      "shared 44-test, seven-suite, four-file FND set",
+      "49 tests, eleven suites, and seven files",
+    ]) {
+      expect(normalizedCiRequiredGates).toContain(inventory);
+    }
+    expect(normalizedCiRequiredGates).not.toContain(
+      "one passing macOS test in one file",
+    );
+    expect(normalizedCiRequiredGates).not.toContain(
+      "three passing Windows tests in two files",
     );
     expect(workflow).toContain("\n  pull_request:");
     expect(workflow).toContain("\n  linux-kernel-sandbox:");
@@ -240,16 +282,10 @@ describe("reproducible install and release contract", () => {
       '["bubblewrapTestRuntime"]["ubuntu-24.04-x64"]',
     );
     expect(linuxKernelJob).toContain("sudo dpkg --install");
-    expect(linuxKernelJob).toContain(
-      "stat --format='%U:%G:%a' /usr/bin/bwrap",
-    );
+    expect(linuxKernelJob).toContain("stat --format='%U:%G:%a' /usr/bin/bwrap");
     expect(linuxKernelJob).toContain("getcap -n /usr/bin/bwrap");
-    expect(linuxKernelJob).toContain(
-      'node_copy="/opt/agenc-kernel-e2e-node"',
-    );
-    expect(linuxKernelJob).toContain(
-      'stat --format=\'%U:%G:%a\' "$node_copy"',
-    );
+    expect(linuxKernelJob).toContain('node_copy="/opt/agenc-kernel-e2e-node"');
+    expect(linuxKernelJob).toContain("stat --format='%U:%G:%a' \"$node_copy\"");
     expect(linuxKernelJob).toContain('test "$(id -u)" -ne 0');
     expect(linuxKernelJob).toContain('[[ "$cap_eff" =~ ^0+$ ]]');
     expect(linuxKernelJob).toContain(
@@ -314,7 +350,7 @@ describe("reproducible install and release contract", () => {
       "'[/]powershell-distribution/pwsh([[:space:]]|$)'",
     );
     expect(powershellJob).toContain(
-      'git status --porcelain=v1 --untracked-files=all',
+      "git status --porcelain=v1 --untracked-files=all",
     );
 
     const neovimJob = workflow.slice(
@@ -369,14 +405,27 @@ describe("reproducible install and release contract", () => {
     );
     expect(macosJob).toContain("runs-on: macos-15");
     expect(macosJob).toContain(
-      "run tests/tools/runtimes/runtime.darwin.test.ts",
+      "Run the exact macOS FND/native capability lane",
     );
+    expect(macosJob).toContain("tests/fnd/bounded-file-io.test.ts");
+    expect(macosJob).toContain("tests/fnd/fnd-fixtures.test.ts");
+    expect(macosJob).toContain("tests/fnd/portable-repository-path.test.ts");
+    expect(macosJob).toContain(
+      "tests/fnd/process-repository-helpers.native.test.ts",
+    );
+    expect(macosJob).toContain("tests/tools/runtimes/runtime.darwin.test.ts");
     expect(macosJob).toContain("--config vitest.native.config.ts");
-    expect(macosJob).toContain("numTotalTestSuites: 1");
-    expect(macosJob).toContain("numTotalTests: 1");
+    expect(macosJob).toContain("numTotalTestSuites: 8");
+    expect(macosJob).toContain("numTotalTests: 45");
+    expect(macosJob).toContain(
+      "macOS FND/native capability lane passed 45 tests in 5 files with zero skipped",
+    );
 
     const windowsJob = workflow.slice(workflow.indexOf("\n  windows-native:"));
     expect(windowsJob).toContain("runs-on: windows-2025-vs2026");
+    expect(windowsJob).toContain(
+      "Run the exact Windows FND/native capability lane",
+    );
     expect(windowsJob).toContain(
       "npm.cmd run build --workspace=@tetsuo-ai/runtime",
     );
@@ -386,12 +435,16 @@ describe("reproducible install and release contract", () => {
     expect(windowsJob).toContain(
       "tests/durability/atomic-artifact.win32.test.ts",
     );
+    expect(windowsJob).toContain("tests/fnd/bounded-file-io.test.ts");
+    expect(windowsJob).toContain("tests/fnd/fnd-fixtures.test.ts");
+    expect(windowsJob).toContain("tests/fnd/portable-repository-path.test.ts");
     expect(windowsJob).toContain(
-      "tests/utils/execFileNoThrow.win32.test.ts",
+      "tests/fnd/process-repository-helpers.native.test.ts",
     );
+    expect(windowsJob).toContain("tests/utils/execFileNoThrow.win32.test.ts");
     expect(windowsJob).toContain("--config vitest.native.config.ts");
-    expect(windowsJob).toContain("numTotalTestSuites: 4");
-    expect(windowsJob).toContain("numTotalTests: 5");
+    expect(windowsJob).toContain("numTotalTestSuites: 11");
+    expect(windowsJob).toContain("numTotalTests: 49");
     expect(windowsJob).toContain(
       "npm.cmd ci --ignore-scripts --no-audit --no-fund",
     );
@@ -401,15 +454,19 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).not.toContain("npm_config_build_from_source");
     expect(windowsJob).toContain(
-      "Windows native capability lane passed 5 tests in 3 files with zero skipped",
+      "Windows FND/native capability lane passed 49 tests in 7 files with zero skipped",
     );
 
-    expect(workflow.match(
-      /actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/g,
-    )).toHaveLength(5);
-    expect(workflow.match(
-      /actions\/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e/g,
-    )).toHaveLength(4);
+    expect(
+      workflow.match(
+        /actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/g,
+      ),
+    ).toHaveLength(5);
+    expect(
+      workflow.match(
+        /actions\/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e/g,
+      ),
+    ).toHaveLength(4);
     expect(workflow.match(/--require-zero-skips/g)).toHaveLength(6);
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toContain("cache: npm");
@@ -417,17 +474,22 @@ describe("reproducible install and release contract", () => {
   });
 
   test("release-sensitive text inputs check out with canonical LF endings", () => {
-    const root = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as {
+    const root = JSON.parse(
+      readFileSync(join(REPO_ROOT, "package.json"), "utf8"),
+    ) as {
       workspaces: string[];
     };
     const binSubjects = root.workspaces.flatMap((workspace) => {
       const manifest = JSON.parse(
         readFileSync(join(REPO_ROOT, workspace, "package.json"), "utf8"),
       ) as { bin?: string | Record<string, string> };
-      const targets = typeof manifest.bin === "string"
-        ? [manifest.bin]
-        : Object.values(manifest.bin ?? {});
-      return targets.map((target) => join(workspace, target).replaceAll("\\", "/"));
+      const targets =
+        typeof manifest.bin === "string"
+          ? [manifest.bin]
+          : Object.values(manifest.bin ?? {});
+      return targets.map((target) =>
+        join(workspace, target).replaceAll("\\", "/"),
+      );
     });
     const lfSubjects = [...binSubjects, "package-lock.json"];
     const attributes = execFileSync(
@@ -458,21 +520,27 @@ describe("reproducible install and release contract", () => {
       "utf8",
     );
     expect(
-      workflow.match(/"\$AGENC_NODE_EXECUTABLE_PATH" "\$AGENC_NPM_CLI_PATH" ci --prefix/g),
+      workflow.match(
+        /"\$AGENC_NODE_EXECUTABLE_PATH" "\$AGENC_NPM_CLI_PATH" ci --prefix/g,
+      ),
     ).toHaveLength(2);
     expect(
-      workflow.match(/"\$build_source\/packages\/agenc\/scripts\/build-runtime-tarball\.mjs"/g),
+      workflow.match(
+        /"\$build_source\/packages\/agenc\/scripts\/build-runtime-tarball\.mjs"/g,
+      ),
     ).toHaveLength(2);
     expect(workflow).not.toContain('require(\\"./runtime/package.json');
     expect(workflow).not.toMatch(/run:\s+npm install(?! --global)/);
     expect(workflow).toContain('NODE_VERSION: "26.5.0"');
     expect(workflow).toContain('NPM_VERSION: "11.17.0"');
-    expect(workflow).toContain("Untagged candidate build or immutable tagged promotion");
+    expect(workflow).toContain(
+      "Untagged candidate build or immutable tagged promotion",
+    );
     expect(workflow).toContain("RELEASE_PHASE: ${{ inputs.phase }}");
     expect(workflow).toContain('test "$GITHUB_REF_TYPE" = "branch"');
     expect(workflow).toContain('test "$GITHUB_REF" = "refs/heads/main"');
     expect(workflow).toContain(
-      'candidate phase refuses an already-consumed release tag',
+      "candidate phase refuses an already-consumed release tag",
     );
     expect(workflow).toContain('test "$GITHUB_REF_TYPE" = "tag"');
     expect(workflow).toContain('test "$GITHUB_REF" = "$expected_ref"');
@@ -513,13 +581,21 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("Get-FileHash -Algorithm SHA256");
     expect(workflow).toContain("AGENC_NODE_IMPORT_LIBRARY_SHA256=");
     expect(workflow).toContain("AGENC_NODE_IMPORT_LIBRARY_BYTES=");
-    expect(workflow).toContain('["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["bytes"]');
+    expect(workflow).toContain(
+      '["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["bytes"]',
+    );
     expect(workflow).toContain('["nodeHeaders"]["bytes"]');
     expect(workflow).toContain("Assert-Bytes $nodeArchive $distribution.bytes");
-    expect(workflow).toContain("Assert-Bytes $headersArchive $toolchain.nodeHeaders.bytes");
+    expect(workflow).toContain(
+      "Assert-Bytes $headersArchive $toolchain.nodeHeaders.bytes",
+    );
     expect(workflow).toContain("Invoke-WebRequest -Uri $importLibrary.url");
-    expect(workflow).toContain("Validate the reviewed macOS image and native toolchain");
-    expect(workflow).toContain("Validate the reviewed Windows image and native toolchain");
+    expect(workflow).toContain(
+      "Validate the reviewed macOS image and native toolchain",
+    );
+    expect(workflow).toContain(
+      "Validate the reviewed Windows image and native toolchain",
+    );
     expect(macosRunnerValidator).toContain('toolchain.get("hostedRunners")');
     expect(macosRunnerValidator).toContain("_select_image_profile");
     expect(windowsRunnerValidator).toContain("$contract.imageProfiles");
@@ -530,7 +606,9 @@ describe("reproducible install and release contract", () => {
     expect(windowsRunnerValidator).toContain("msvcCompilerSha256");
     expect(windowsRunnerValidator).toContain("msvcLinkerSha256");
     expect(workflow).toContain('["nodeBootstrap"]["minimumRuntimeVersion"]');
-    expect(workflow).toContain('test "$bootstrap_tag" = "agenc-v${bootstrap_version}"');
+    expect(workflow).toContain(
+      'test "$bootstrap_tag" = "agenc-v${bootstrap_version}"',
+    );
     expect(workflow).toContain(
       'test "$GITHUB_REF" = "refs/tags/${bootstrap_tag}"',
     );
@@ -543,20 +621,28 @@ describe("reproducible install and release contract", () => {
       workflow.indexOf("Install digest-pinned Node, headers, and npm"),
       workflow.indexOf("Build from two isolated worktrees and compare bytes"),
     );
-    expect(linuxInstall).toContain("rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' libatomic");
+    expect(linuxInstall).toContain(
+      "rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' libatomic",
+    );
     expect(linuxInstall).toContain("COPYING.RUNTIME");
     expect(linuxInstall).toContain("COPYING3");
     expect(linuxInstall).toContain("nodeBootstrap");
     expect(linuxInstall).toContain('ldd "$node_root/bin/node"');
-    expect(linuxInstall).toContain("portable Node has unresolved shared libraries");
+    expect(linuxInstall).toContain(
+      "portable Node has unresolved shared libraries",
+    );
     expect(linuxInstall.indexOf('ldd "$node_root/bin/node"')).toBeLessThan(
-      linuxInstall.indexOf('"$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js"'),
+      linuxInstall.indexOf(
+        '"$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js"',
+      ),
     );
     const linuxBuild = workflow.slice(
       workflow.indexOf("Build from two isolated worktrees and compare bytes"),
       workflow.indexOf("Select the canonical runtime subject and bundle path"),
     );
-    expect(linuxBuild).toContain('git config --global --add safe.directory "$source_root"');
+    expect(linuxBuild).toContain(
+      'git config --global --add safe.directory "$source_root"',
+    );
     expect(linuxBuild).not.toContain("safe.directory '*'");
     expect(linuxBuild.indexOf("safe.directory")).toBeLessThan(
       linuxBuild.indexOf("git worktree add"),
@@ -607,10 +693,16 @@ describe("reproducible install and release contract", () => {
       "if ($name -ieq 'PATH') { $name = 'PATH' }",
     );
     const windowsInstall = nativeJob.slice(
-      nativeJob.indexOf("Install digest-pinned Node, headers, and npm (Windows)"),
-      nativeJob.indexOf("Run native probes and build from two isolated worktrees"),
+      nativeJob.indexOf(
+        "Install digest-pinned Node, headers, and npm (Windows)",
+      ),
+      nativeJob.indexOf(
+        "Run native probes and build from two isolated worktrees",
+      ),
     );
-    expect(windowsInstall).toContain("$headersRelease = Join-Path $headersRoot 'Release'");
+    expect(windowsInstall).toContain(
+      "$headersRelease = Join-Path $headersRoot 'Release'",
+    );
     expect(windowsInstall).toContain(
       "Copy-Item -LiteralPath $nodeImportLibrary -Destination $headersNodeImportLibrary",
     );
@@ -632,33 +724,65 @@ describe("reproducible install and release contract", () => {
     expect(windowsInstall).toContain(
       "& $nodeExecutablePath $npmCliPath install --global $npmArchive --prefix $nodeRoot",
     );
-    expect(windowsInstall.indexOf("prepare-windows-node-headers.mjs")).toBeLessThan(
-      windowsInstall.indexOf('"AGENC_NODE_COMMON_GYPI_SHA256=$($headerProof.sha256)"'),
+    expect(
+      windowsInstall.indexOf("prepare-windows-node-headers.mjs"),
+    ).toBeLessThan(
+      windowsInstall.indexOf(
+        '"AGENC_NODE_COMMON_GYPI_SHA256=$($headerProof.sha256)"',
+      ),
     );
-    expect(nativeJob.indexOf("Validate the reviewed macOS runner")).toBeLessThan(
-      nativeJob.indexOf('"$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix'),
+    expect(
+      nativeJob.indexOf("Validate the reviewed macOS runner"),
+    ).toBeLessThan(
+      nativeJob.indexOf(
+        '"$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix',
+      ),
     );
-    expect(nativeJob.indexOf("Validate and activate the reviewed Windows runner")).toBeLessThan(
-      nativeJob.indexOf('"$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix'),
+    expect(
+      nativeJob.indexOf("Validate and activate the reviewed Windows runner"),
+    ).toBeLessThan(
+      nativeJob.indexOf(
+        '"$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix',
+      ),
     );
     expect(workflow.match(/artifact-metadata: write/g)).toHaveLength(4);
     expect(workflow).toMatch(/^permissions:\n  contents: read\n\nenv:/m);
-    expect(workflow.match(/subject-path: \|\n\s+\$\{\{ steps\.runtime-artifact\.outputs\.path \}\}\n\s+\$\{\{ steps\.runtime-artifact\.outputs\.metadata \}\}/g)).toHaveLength(3);
-    expect(workflow.match(/steps\.attest-runtime\.outputs\.bundle-path/g)).toHaveLength(3);
-    expect(workflow.match(/agenc-runtime-\*\.tar\.gz\.sigstore\.json/g)).toHaveLength(3);
-    expect(workflow).not.toMatch(/with:\n\s+subject-path:[^\n]+\n\s+bundle-path:/);
+    expect(
+      workflow.match(
+        /subject-path: \|\n\s+\$\{\{ steps\.runtime-artifact\.outputs\.path \}\}\n\s+\$\{\{ steps\.runtime-artifact\.outputs\.metadata \}\}/g,
+      ),
+    ).toHaveLength(3);
+    expect(
+      workflow.match(/steps\.attest-runtime\.outputs\.bundle-path/g),
+    ).toHaveLength(3);
+    expect(
+      workflow.match(/agenc-runtime-\*\.tar\.gz\.sigstore\.json/g),
+    ).toHaveLength(3);
+    expect(workflow).not.toMatch(
+      /with:\n\s+subject-path:[^\n]+\n\s+bundle-path:/,
+    );
     expect(workflow).toContain("actions/attest bundle is not one regular file");
-    expect(workflow.match(/source_metadata\.st_size > 4 \* 1024 \* 1024/g)).toHaveLength(4);
-    expect(workflow.match(/actions\/attest bundle is outside the 4 MiB release bound/g)).toHaveLength(3);
+    expect(
+      workflow.match(/source_metadata\.st_size > 4 \* 1024 \* 1024/g),
+    ).toHaveLength(4);
+    expect(
+      workflow.match(
+        /actions\/attest bundle is outside the 4 MiB release bound/g,
+      ),
+    ).toHaveLength(3);
     expect(workflow.match(/or destination\.is_symlink\(\)/g)).toHaveLength(4);
     expect(workflow).not.toContain("actions/setup-node");
     expect(workflow.match(/git worktree add --detach/g)).toHaveLength(4);
-    expect(workflow.match(/git -C .* worktree remove --force/g)).toHaveLength(4);
+    expect(workflow.match(/git -C .* worktree remove --force/g)).toHaveLength(
+      4,
+    );
     expect(workflow).toContain("Upload failed reproducibility inputs");
     expect(workflow).toContain("if-no-files-found: ignore");
     expect(workflow).toContain("retention-days: 1");
-    expect(workflow).toContain("agenc-repro-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}");
-    expect(workflow).toContain('npm-cache-$build');
+    expect(workflow).toContain(
+      "agenc-repro-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+    );
+    expect(workflow).toContain("npm-cache-$build");
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toContain("cache: npm");
     const inactive = readFileSync(
@@ -677,9 +801,13 @@ describe("reproducible install and release contract", () => {
     expect(builder).not.toContain('"-Wl,-no_uuid"');
     expect(builder).not.toContain('"-Wl,-oso_prefix,."');
     expect(builder).toContain('"/PDBALTPATH:%_PDB%"');
-    expect(builder).toContain('append("_LINK_", ["/DEBUG:NONE", "/INCREMENTAL:NO", "/Brepro"])');
+    expect(builder).toContain(
+      'append("_LINK_", ["/DEBUG:NONE", "/INCREMENTAL:NO", "/Brepro"])',
+    );
     expect(builder).toContain("`/d1trimfile:${buildRoot}\\\\`");
-    expect(builder).toContain('WINDOWS_NATIVE_BUILD_ROOT_PROVENANCE = "<release-stage>"');
+    expect(builder).toContain(
+      'WINDOWS_NATIVE_BUILD_ROOT_PROVENANCE = "<release-stage>"',
+    );
     expect(builder).toContain('"CL", "LINK", "_LINK_"');
     expect(builder).toContain("? canonicalWindowsNativeBuildRoot(stage)");
     expect(builder).toContain(
@@ -688,16 +816,24 @@ describe("reproducible install and release contract", () => {
     expect(builder).toContain(
       "windowsReproducibleNativeFlagProvenance(releaseEnv, nativeBuildRoot)",
     );
-    expect(builder).not.toContain("Object.assign(releaseEnv, withWindowsReproducibleNativeFlags");
-    expect(builder).toContain("release builds require verified AGENC_NODE_EXECUTABLE_PATH and AGENC_NPM_CLI_PATH");
-    expect(builder).toContain("release-toolchain.json has no valid Windows common.gypi contract");
+    expect(builder).not.toContain(
+      "Object.assign(releaseEnv, withWindowsReproducibleNativeFlags",
+    );
+    expect(builder).toContain(
+      "release builds require verified AGENC_NODE_EXECUTABLE_PATH and AGENC_NPM_CLI_PATH",
+    );
+    expect(builder).toContain(
+      "release-toolchain.json has no valid Windows common.gypi contract",
+    );
     expect(builder).toContain("AGENC_NODE_COMMON_GYPI_SHA256");
     expect(builder).toContain("metadata.nodeCommonGypiSourceSha256");
     expect(builder).toContain("metadata.nodeCommonGypiReleaseSha256");
     expect(builder).toContain("metadata.nodeCommonGypiTransformation");
     expect(builder).toContain("runNpm(buildExecutables");
     expect(builder).toContain("captureNpm(buildExecutables");
-    expect(builder).toContain("release build process is not running under the verified Node executable");
+    expect(builder).toContain(
+      "release build process is not running under the verified Node executable",
+    );
     expect(builder).toContain(
       "const releaseCandidate = releaseCandidateIdentity(",
     );
@@ -708,10 +844,16 @@ describe("reproducible install and release contract", () => {
     expect(builder).toContain('"ci"');
     expect(builder).toContain('"--workspace=@tetsuo-ai/runtime"');
     expect(builder).toContain("writeCanonicalArchive");
-    expect(builder).toContain("release Linux signed RPM content inventory does not match");
+    expect(builder).toContain(
+      "release Linux signed RPM content inventory does not match",
+    );
     expect(builder).toContain("assertHostedRunnerContract");
-    expect(builder).toContain("metadata.nodeImportLibraryFile = expectedImportLibrary.file");
-    expect(builder).toContain("metadata.nodeImportLibraryBytes = importLibraryBytes");
+    expect(builder).toContain(
+      "metadata.nodeImportLibraryFile = expectedImportLibrary.file",
+    );
+    expect(builder).toContain(
+      "metadata.nodeImportLibraryBytes = importLibraryBytes",
+    );
     expect(builder).not.toMatch(/\[\s*"install",\s*runtimeTgz/);
     const nativeContract = JSON.parse(
       readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
@@ -827,19 +969,23 @@ describe("reproducible install and release contract", () => {
       releaseTag: "agenc-v0.11.2",
       licenseExpression: "GPL-3.0-or-later WITH GCC-exception-3.1",
       licenses: {
-        copying3Sha256: "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+        copying3Sha256:
+          "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
         runtimeExceptionSha256:
           "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
-        combinedSha256: "df7743d494c078043b24385b7e214c13afb0067b43d9b385b4be64e5b872326c",
+        combinedSha256:
+          "df7743d494c078043b24385b7e214c13afb0067b43d9b385b4be64e5b872326c",
       },
       "linux-x64": {
-        sha256: "1f7bafeb33c504e59e0143d917354f70d40989e286e651ecabafbb9ad4c31833",
+        sha256:
+          "1f7bafeb33c504e59e0143d917354f70d40989e286e651ecabafbb9ad4c31833",
         bytes: 26_074,
         librarySha256:
           "5d7b55b28da42d1f298277089903a3eca81610b6aed627fc25270353ff24cbbd",
       },
       "linux-arm64": {
-        sha256: "327f0db1f8b6f2c2d787a1d95e20a76f0b94146785d1499f1d23c50186ad9d13",
+        sha256:
+          "327f0db1f8b6f2c2d787a1d95e20a76f0b94146785d1499f1d23c50186ad9d13",
         bytes: 27_660,
         librarySha256:
           "d3c76f7e4ef68232200c8d4ee91c91162b06a952d3a81afdab9b7ad379185dd2",
@@ -848,46 +994,55 @@ describe("reproducible install and release contract", () => {
     expect(nativeContract.nodeDistributions).toEqual({
       "linux-x64": {
         file: "node-v26.5.0-linux-x64.tar.gz",
-        sha256: "22b5f47ad6ae78837e4c2b846019965ce1a06ba143de176102294a1bf44fc677",
+        sha256:
+          "22b5f47ad6ae78837e4c2b846019965ce1a06ba143de176102294a1bf44fc677",
         bytes: 61_529_729,
       },
       "linux-arm64": {
         file: "node-v26.5.0-linux-arm64.tar.gz",
-        sha256: "308e5fe89a82461ba5a6cf15ff5221b2cdbd7ae87600aa72bb3c3fbdc66412d1",
+        sha256:
+          "308e5fe89a82461ba5a6cf15ff5221b2cdbd7ae87600aa72bb3c3fbdc66412d1",
         bytes: 61_388_036,
       },
       "darwin-x64": {
         file: "node-v26.5.0-darwin-x64.tar.gz",
-        sha256: "98293394c945a24e64e00b4177bf075ec963ea70b34d1d2e24bd4a71716d334f",
+        sha256:
+          "98293394c945a24e64e00b4177bf075ec963ea70b34d1d2e24bd4a71716d334f",
         bytes: 58_480_209,
       },
       "darwin-arm64": {
         file: "node-v26.5.0-darwin-arm64.tar.gz",
-        sha256: "ee920559aaa2391569cff4d737e3b83963430e3a14dedd91bfe0ff53171b5af9",
+        sha256:
+          "ee920559aaa2391569cff4d737e3b83963430e3a14dedd91bfe0ff53171b5af9",
         bytes: 57_181_366,
       },
       "win-x64": {
         file: "node-v26.5.0-win-x64.zip",
-        sha256: "d3b2277dbcccfdf24ef6302928f64f484cff1d77a6d3caa3a28f4d20ce9158f6",
+        sha256:
+          "d3b2277dbcccfdf24ef6302928f64f484cff1d77a6d3caa3a28f4d20ce9158f6",
         bytes: 41_113_391,
       },
     });
     expect(nativeContract.nodeHeaders).toMatchObject({
       file: "node-v26.5.0-headers.tar.gz",
-      sha256: "b02b9c5922e7fd7bae30d9e97c293059175aa9d267b81d2866d52696445b5cbd",
+      sha256:
+        "b02b9c5922e7fd7bae30d9e97c293059175aa9d267b81d2866d52696445b5cbd",
       bytes: 9_963_460,
     });
     expect(nativeContract.nodeImportLibraries["win-x64"]).toEqual({
       file: "node.lib",
       url: "https://nodejs.org/dist/v26.5.0/win-x64/node.lib",
-      sha256: "56f06350037085fce04930befd98327afc86ee46f52af6f6f8a68a03630e8380",
+      sha256:
+        "56f06350037085fce04930befd98327afc86ee46f52af6f6f8a68a03630e8380",
       bytes: 3_026_982,
     });
     expect(nativeContract.nodeHeaders.windowsCommonGypi).toEqual({
       schemaVersion: 1,
       path: "include/node/common.gypi",
-      sourceSha256: "48c0c45ddfcf0de738fd7d9fc23c02768f2816686e099027af6373bd062e53b7",
-      releaseSha256: "ddeb29bbdbcd29a167aa4799794c4a5c56222184f06361d8a2c0bfc310d9b266",
+      sourceSha256:
+        "48c0c45ddfcf0de738fd7d9fc23c02768f2816686e099027af6373bd062e53b7",
+      releaseSha256:
+        "ddeb29bbdbcd29a167aa4799794c4a5c56222184f06361d8a2c0bfc310d9b266",
       transformation: "disable-debug-information-and-full-paths",
     });
     expect(nativeContract.linux.rpmContentInventory).toEqual({
@@ -897,7 +1052,8 @@ describe("reproducible install and release contract", () => {
       signatureKeyIds: ["15af5dac6d745a60"],
       sha256: {
         x64: "a20edbdbf94e00d0e93ce30f04167861f67b3132f388f06d2c5bb44894b6e613",
-        arm64: "530821a9904c1d9162750d564d89e7556575df1cbec0a54bd5029076dc58731d",
+        arm64:
+          "530821a9904c1d9162750d564d89e7556575df1cbec0a54bd5029076dc58731d",
       },
     });
   });
@@ -918,17 +1074,23 @@ describe("reproducible install and release contract", () => {
     const builder = readFileSync(builderPath, "utf8");
 
     expect(statSync(builderPath).mode & 0o111).not.toBe(0);
-    expect(releaseWorkflow.match(/packages\/agenc\/scripts\/build-node-bootstrap\.sh/g))
-      .toHaveLength(1);
-    expect(pretagWorkflow.match(/packages\/agenc\/scripts\/build-node-bootstrap\.sh/g))
-      .toHaveLength(1);
+    expect(
+      releaseWorkflow.match(
+        /packages\/agenc\/scripts\/build-node-bootstrap\.sh/g,
+      ),
+    ).toHaveLength(1);
+    expect(
+      pretagWorkflow.match(
+        /packages\/agenc\/scripts\/build-node-bootstrap\.sh/g,
+      ),
+    ).toHaveLength(1);
     expect(releaseWorkflow).not.toContain(
       "/usr/bin/tar --sort=name --format=posix",
     );
 
     expect(pretagWorkflow).toContain("workflow_dispatch:");
-    expect(pretagWorkflow).toContain("test \"$TESTED_SHA\" = \"$GITHUB_SHA\"");
-    expect(pretagWorkflow).toContain("test \"$GITHUB_REF\" = refs/heads/main");
+    expect(pretagWorkflow).toContain('test "$TESTED_SHA" = "$GITHUB_SHA"');
+    expect(pretagWorkflow).toContain('test "$GITHUB_REF" = refs/heads/main');
     expect(pretagWorkflow).toContain(
       'git config --global --add safe.directory "$source_root"',
     );
@@ -951,13 +1113,17 @@ describe("reproducible install and release contract", () => {
         `rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' ${packageName}`,
       );
     }
-    expect(builder).toContain("build_archive \"$work/first\" \"$first\"");
-    expect(builder).toContain("build_archive \"$work/second\" \"$second\"");
-    expect(builder).toContain("Node bootstrap archive is not byte-reproducible");
+    expect(builder).toContain('build_archive "$work/first" "$first"');
+    expect(builder).toContain('build_archive "$work/second" "$second"');
+    expect(builder).toContain(
+      "Node bootstrap archive is not byte-reproducible",
+    );
     expect(builder).toContain("/usr/bin/tar --sort=name --format=posix");
     expect(builder).toContain("/usr/bin/gzip -n -9");
     expect(builder).toContain('"lib/libatomic.so.1"');
-    expect(builder).toContain("Node bootstrap archive member order or inventory is invalid");
+    expect(builder).toContain(
+      "Node bootstrap archive member order or inventory is invalid",
+    );
     expect(builder).toContain("Node bootstrap identity drift for ${slug}");
   });
 
@@ -968,7 +1134,9 @@ describe("reproducible install and release contract", () => {
     );
     expect(workflow).toContain("environment: npm-production");
     expect(workflow).toContain('NODE_VERSION: "26.5.0"');
-    expect(workflow.match(/nodeDistributions"\]\["linux-x64"\]\["bytes"\]/g)).toHaveLength(2);
+    expect(
+      workflow.match(/nodeDistributions"\]\["linux-x64"\]\["bytes"\]/g),
+    ).toHaveLength(2);
     expect(workflow.match(/stat -c '%s' "\$node_archive"/g)).toHaveLength(2);
     expect(workflow.match(/id-token: write/g)).toHaveLength(1);
     const releaseSourceJob = workflow.slice(
@@ -991,7 +1159,9 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain('test "$REPOSITORY_VISIBILITY" = public');
     expect(releaseSourceJob).not.toContain("checks: read");
     expect(releaseSourceJob).not.toContain("AGENC_LOCAL_GATE_APP_ID");
-    expect(releaseSourceJob).not.toContain("scripts/verify-required-gate-check.mjs");
+    expect(releaseSourceJob).not.toContain(
+      "scripts/verify-required-gate-check.mjs",
+    );
     expect(releaseSourceJob).toContain("LOCAL_EVIDENCE_SHA256");
     expect(releaseSourceJob).toContain('test "$TESTED_SHA" = "$GITHUB_SHA"');
     expect(releaseSourceJob).toContain('test "$source_sha" = "$TESTED_SHA"');
@@ -1001,7 +1171,7 @@ describe("reproducible install and release contract", () => {
       expect(job.match(/git merge-base --is-ancestor/g)).toHaveLength(1);
       expect(job.match(/persist-credentials: false/g)).toHaveLength(1);
     }
-    expect(workflow).toContain("gh release verify \"$RELEASE_TAG\"");
+    expect(workflow).toContain('gh release verify "$RELEASE_TAG"');
     expect(workflow).toContain("gh release verify-asset");
     const releaseInventory = readFileSync(
       join(REPO_ROOT, "scripts/validate-runtime-release-inventory.py"),
@@ -1009,26 +1179,30 @@ describe("reproducible install and release contract", () => {
     );
     expect(releaseInventory).toContain('release.get("immutable") is not True');
     expect(workflow).toContain("prepare-release-assets.mjs");
-    expect(workflow.match(/validate-runtime-release-inventory\.py/g)).toHaveLength(2);
-    expect(workflow).toContain('--prepared-root "$owned_root/verified-release"');
+    expect(
+      workflow.match(/validate-runtime-release-inventory\.py/g),
+    ).toHaveLength(2);
+    expect(workflow).toContain(
+      '--prepared-root "$owned_root/verified-release"',
+    );
     expect(workflow).toContain("agenc-runtime-manifest-v2.json");
     expect(workflow).toContain("--legacy-manifest");
     expect(workflow).toContain(
       "--pattern 'agenc-node-bootstrap-libatomic-*.tar.gz'",
     );
-    expect(workflow).toContain(
-      '["nodeBootstrap"]["releaseTag"]',
-    );
-    expect(workflow).toContain(
-      'if test "$RELEASE_TAG" = "$bootstrap_tag"',
-    );
+    expect(workflow).toContain('["nodeBootstrap"]["releaseTag"]');
+    expect(workflow).toContain('if test "$RELEASE_TAG" = "$bootstrap_tag"');
     expect(workflow).not.toContain("npm test --workspace=@tetsuo-ai/agenc");
     expect(workflow).toContain("git worktree add --detach");
-    expect(workflow).toMatch(/\(\n\s+cd \"\$source\"[\s\S]+node \"\$release_tool\" pack/);
+    expect(workflow).toMatch(
+      /\(\n\s+cd \"\$source\"[\s\S]+node \"\$release_tool\" pack/,
+    );
     expect(workflow).toContain("--workspace=@tetsuo-ai/agenc");
     expect(workflow).toContain("*.tgz.release.json");
-    expect(workflow).toContain("gh attestation verify \"$asset\"");
-    expect(workflow).toContain("artifact-ids: ${{ needs.pack.outputs.artifact-id }}");
+    expect(workflow).toContain('gh attestation verify "$asset"');
+    expect(workflow).toContain(
+      "artifact-ids: ${{ needs.pack.outputs.artifact-id }}",
+    );
     expect(workflow).toContain("githubCli");
     const toolchain = JSON.parse(
       readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
@@ -1075,7 +1249,9 @@ describe("reproducible install and release contract", () => {
     };
     expect(toolchain.githubCli.schemaVersion).toBe(1);
     expect(toolchain.githubCli.version).toBe("2.96.0");
-    expect(toolchain.githubCli.linuxX64.file).toBe("gh_2.96.0_linux_amd64.tar.gz");
+    expect(toolchain.githubCli.linuxX64.file).toBe(
+      "gh_2.96.0_linux_amd64.tar.gz",
+    );
     expect(toolchain.githubCli.linuxX64.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(
       Object.entries(toolchain.githubCli).filter(
@@ -1083,30 +1259,47 @@ describe("reproducible install and release contract", () => {
       ),
     ).toEqual(
       expect.arrayContaining([
-        ["linuxX64", expect.objectContaining({
-          bytes: 14652560,
-          executableBytes: 40722594,
-        })],
-        ["linuxArm64", expect.objectContaining({
-          bytes: 13321232,
-          executableBytes: 37879970,
-        })],
-        ["macosX64", expect.objectContaining({
-          bytes: 15298430,
-          executableBytes: 41773632,
-        })],
-        ["macosArm64", expect.objectContaining({
-          bytes: 13950131,
-          executableBytes: 38817216,
-        })],
-        ["windowsX64", expect.objectContaining({
-          bytes: 14821821,
-          executableBytes: 41504056,
-        })],
+        [
+          "linuxX64",
+          expect.objectContaining({
+            bytes: 14652560,
+            executableBytes: 40722594,
+          }),
+        ],
+        [
+          "linuxArm64",
+          expect.objectContaining({
+            bytes: 13321232,
+            executableBytes: 37879970,
+          }),
+        ],
+        [
+          "macosX64",
+          expect.objectContaining({
+            bytes: 15298430,
+            executableBytes: 41773632,
+          }),
+        ],
+        [
+          "macosArm64",
+          expect.objectContaining({
+            bytes: 13950131,
+            executableBytes: 38817216,
+          }),
+        ],
+        [
+          "windowsX64",
+          expect.objectContaining({
+            bytes: 14821821,
+            executableBytes: 41504056,
+          }),
+        ],
       ]),
     );
     for (const pin of Object.values(toolchain.githubCli).filter(
-      (value): value is {
+      (
+        value,
+      ): value is {
         file: string;
         sha256: string;
         bytes: number;
@@ -1129,7 +1322,7 @@ describe("reproducible install and release contract", () => {
     expect(workflow).not.toContain("actions/setup-node");
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toMatch(/run:\s+npm publish/);
-    expect(workflow).toContain("npm ci --prefix \"$source\"");
+    expect(workflow).toContain('npm ci --prefix "$source"');
     expect(workflow).toContain("npm ci --ignore-scripts --no-audit --no-fund");
     expect(workflow.indexOf("environment: npm-production")).toBeLessThan(
       workflow.indexOf("actions/attest@"),
@@ -1150,7 +1343,9 @@ describe("reproducible install and release contract", () => {
     const releaseSourceJob = workflowJob(workflow, "release-source");
     expect(releaseSourceJob).not.toContain("checks: read");
     expect(releaseSourceJob).not.toContain("AGENC_LOCAL_GATE_APP_ID");
-    expect(releaseSourceJob).not.toContain("scripts/verify-required-gate-check.mjs");
+    expect(releaseSourceJob).not.toContain(
+      "scripts/verify-required-gate-check.mjs",
+    );
     expect(releaseSourceJob).toContain("LOCAL_EVIDENCE_SHA256");
     expect(releaseSourceJob).toContain('test "$TESTED_SHA" = "$GITHUB_SHA"');
     expect(releaseSourceJob).toContain(
@@ -1158,10 +1353,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(workflow).not.toContain("required-gates:");
     expectArtifactWorkflowWithoutBroadHostedGates(workflow);
-    const hostedPreflight = workflowJob(
-      workflow,
-      "hosted-toolchain-preflight",
-    );
+    const hostedPreflight = workflowJob(workflow, "hosted-toolchain-preflight");
     expect(hostedPreflight).toContain("if: inputs.phase == 'candidate'");
     expect(hostedPreflight).toContain("needs: release-source");
     expect(hostedPreflight).toContain("fail-fast: false");
@@ -1193,11 +1385,21 @@ describe("reproducible install and release contract", () => {
     expect(nativeJob).toContain("scripts/validate-hosted-windows-runner.ps1");
 
     const nativeBuild = nativeJob.slice(
-      nativeJob.indexOf("Run native probes and build from two isolated worktrees"),
+      nativeJob.indexOf(
+        "Run native probes and build from two isolated worktrees",
+      ),
       nativeJob.indexOf("Upload failed reproducibility inputs"),
     );
+    expect(nativeBuild).toContain('"tests/fnd/bounded-file-io.test.ts"');
+    expect(nativeBuild).toContain('"tests/fnd/fnd-fixtures.test.ts"');
     expect(nativeBuild).toContain(
-      'native_tests=("tests/tools/runtimes/runtime.darwin.test.ts")',
+      '"tests/fnd/portable-repository-path.test.ts"',
+    );
+    expect(nativeBuild).toContain(
+      '"tests/fnd/process-repository-helpers.native.test.ts"',
+    );
+    expect(nativeBuild).toContain(
+      '"tests/tools/runtimes/runtime.darwin.test.ts"',
     );
     expect(nativeBuild).toContain(
       '"tests/durability/atomic-artifact.win32.test.ts"',
@@ -1205,12 +1407,12 @@ describe("reproducible install and release contract", () => {
     expect(nativeBuild).toContain(
       '"tests/utils/execFileNoThrow.win32.test.ts"',
     );
-    expect(nativeBuild).toContain("expected_native_tests=1");
-    expect(nativeBuild).toContain("expected_native_tests=3");
-    expect(nativeBuild).toContain("expected_native_suites=1");
-    expect(nativeBuild).toContain("expected_native_suites=3");
+    expect(nativeBuild).toContain("expected_native_tests=45");
+    expect(nativeBuild).toContain("expected_native_tests=47");
+    expect(nativeBuild).toContain("expected_native_suites=8");
+    expect(nativeBuild).toContain("expected_native_suites=10");
     expect(nativeBuild).toContain('run "${native_tests[@]}"');
-    expect(nativeBuild).toContain('"${native_tests[@]}" <<\'NODE\'');
+    expect(nativeBuild).toContain("\"${native_tests[@]}\" <<'NODE'");
     expect(nativeBuild).toContain("...expectedFiles");
     expect(nativeBuild.match(/run-hermetic-vitest\.mjs/g)).toHaveLength(1);
     expect(nativeBuild).toContain("vitest.native.config.ts");
@@ -1234,6 +1436,7 @@ describe("reproducible install and release contract", () => {
       expect(nativeBuild).toContain(field);
     }
     expect(nativeBuild).toContain("results.success !== true");
+    expect(nativeBuild).toContain("hosted FND/native integration probe passed");
     expect(nativeBuild).toContain("zero skipped");
     expect(nativeBuild.indexOf('ci --prefix "$build_source"')).toBeLessThan(
       nativeBuild.indexOf("run-hermetic-vitest.mjs"),
@@ -1375,9 +1578,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(candidateSeal.match(/candidate-artifacts/g)).toHaveLength(2);
     expect(
-      candidateSeal.indexOf(
-        "path: ${{ runner.temp }}/candidate-artifacts",
-      ),
+      candidateSeal.indexOf("path: ${{ runner.temp }}/candidate-artifacts"),
     ).toBeLessThan(
       candidateSeal.indexOf(
         'test -z "$(git status --porcelain=v1 --untracked-files=all)"',
@@ -1467,9 +1668,7 @@ describe("reproducible install and release contract", () => {
     expect(promotion).toContain(
       'promoted_build_bundle="${promoted_artifact}.build.sigstore.json"',
     );
-    expect(promotion).toContain(
-      "agenc-runtime-*.tar.gz.build.sigstore.json",
-    );
+    expect(promotion).toContain("agenc-runtime-*.tar.gz.build.sigstore.json");
     expect(promotion).toContain(
       "Attest the promoted runtime artifact at the immutable tag",
     );
@@ -1479,18 +1678,21 @@ describe("reproducible install and release contract", () => {
     expect(promotion).not.toContain("build-runtime-tarball.mjs");
     expect(promotion).not.toContain("npm ci");
 
-    const installDocs = readFileSync(join(REPO_ROOT, "docs/install.md"), "utf8");
-    const dispatches = [...installDocs.matchAll(
-      /gh workflow run release-runtime\.yml[\s\S]*?(?=\n\s*(?:gh workflow run|npm run|git |#|```))/gu,
-    )].map((match) => match[0]);
+    const installDocs = readFileSync(
+      join(REPO_ROOT, "docs/install.md"),
+      "utf8",
+    );
+    const dispatches = [
+      ...installDocs.matchAll(
+        /gh workflow run release-runtime\.yml[\s\S]*?(?=\n\s*(?:gh workflow run|npm run|git |#|```))/gu,
+      ),
+    ].map((match) => match[0]);
     expect(dispatches).toHaveLength(4);
     for (const dispatch of dispatches) {
       expect(dispatch).toContain("-f phase=");
       expect(dispatch).toContain("-f candidate_run_id=");
       expect(dispatch).toContain('-f tested_sha="$tested_sha"');
-      expect(dispatch).toContain(
-        '-f local_evidence_sha256="$evidence_sha256"',
-      );
+      expect(dispatch).toContain('-f local_evidence_sha256="$evidence_sha256"');
     }
   });
 
@@ -1530,11 +1732,17 @@ describe("reproducible install and release contract", () => {
       source: string,
       invocation: string,
       argument: string,
-    ) => spawnSync(
-      "bash",
-      ["-c", `${source}\n${invocation} "$1"`, "agenc-release-policy", argument],
-      { cwd: repository, encoding: "utf8" },
-    );
+    ) =>
+      spawnSync(
+        "bash",
+        [
+          "-c",
+          `${source}\n${invocation} "$1"`,
+          "agenc-release-policy",
+          argument,
+        ],
+        { cwd: repository, encoding: "utf8" },
+      );
     try {
       execFileSync("git", ["init", "--quiet"], { cwd: repository });
       execFileSync("git", ["config", "user.email", "release@example.invalid"], {
@@ -1573,18 +1781,15 @@ describe("reproducible install and release contract", () => {
       }
       execFileSync("git", ["tag", "--delete", tagName], { cwd: repository });
 
-      const blob = execFileSync(
-        "git",
-        ["hash-object", "-w", "subject.txt"],
-        { cwd: repository, encoding: "utf8" },
-      ).trim();
+      const blob = execFileSync("git", ["hash-object", "-w", "subject.txt"], {
+        cwd: repository,
+        encoding: "utf8",
+      }).trim();
       execFileSync("git", ["update-ref", tagRef, blob], { cwd: repository });
       expect(
-        spawnSync(
-          "git",
-          ["rev-parse", "--verify", `${tagRef}^{commit}`],
-          { cwd: repository },
-        ).status,
+        spawnSync("git", ["rev-parse", "--verify", `${tagRef}^{commit}`], {
+          cwd: repository,
+        }).status,
         "a non-commit tag ref demonstrates why commit peeling is not an existence check",
       ).not.toBe(0);
       for (const policy of tagPolicies) {
@@ -1608,7 +1813,6 @@ describe("reproducible install and release contract", () => {
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
-
   });
 
   test("the ESM bundle disables redundant per-module strict directives", () => {
@@ -1623,7 +1827,9 @@ describe("reproducible install and release contract", () => {
     expect(readFileSync(join(REPO_ROOT, ".gitignore"), "utf8")).toContain(
       "!/runtime/tsconfig.bundle.json",
     );
-    expect(buildScript).toContain('resolve(runtimeRoot, "tsconfig.bundle.json")');
+    expect(buildScript).toContain(
+      'resolve(runtimeRoot, "tsconfig.bundle.json")',
+    );
     expect(buildScript).toContain("tsconfig: bundleTsconfigPath");
     expect(bundleTsconfig).toContain('"strict": false');
     expect(bundleTsconfig).toContain('"alwaysStrict": false');
@@ -1711,12 +1917,18 @@ describe("reproducible install and release contract", () => {
       nodeModuleAbi: "147",
       nodeApiVersion: "10",
     });
-    const images = [...dockerfile.matchAll(/^FROM (\S+)/gm)].map((match) => match[1]);
-    expect(dockerfile.split("\n", 1)[0]).toBe(`# syntax=${toolchain.docker.dockerfileFrontend}`);
+    const images = [...dockerfile.matchAll(/^FROM (\S+)/gm)].map(
+      (match) => match[1],
+    );
+    expect(dockerfile.split("\n", 1)[0]).toBe(
+      `# syntax=${toolchain.docker.dockerfileFrontend}`,
+    );
     expect(toolchain.docker.buildx.version).toBe("0.35.0");
     for (const arch of ["linux-amd64", "linux-arm64"] as const) {
       expect(toolchain.docker.buildx[arch].file).toBe(`buildx-v0.35.0.${arch}`);
-      expect(toolchain.docker.buildx[arch].url).toContain("/docker/buildx/releases/download/v0.35.0/");
+      expect(toolchain.docker.buildx[arch].url).toContain(
+        "/docker/buildx/releases/download/v0.35.0/",
+      );
       expect(toolchain.docker.buildx[arch].sha256).toMatch(/^[0-9a-f]{64}$/);
     }
     expect(toolchain.docker.buildkit).toEqual({
@@ -1725,18 +1937,27 @@ describe("reproducible install and release contract", () => {
         "moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a",
       compatibilityVersion: "30",
     });
-    expect(images).toEqual([toolchain.docker.buildImage, toolchain.docker.runtimeImage]);
+    expect(images).toEqual([
+      toolchain.docker.buildImage,
+      toolchain.docker.runtimeImage,
+    ]);
     expect(toolchain.docker.buildImage).toBe(
       "node:26.5.0-bookworm@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271",
     );
     expect(toolchain.docker.runtimeImage).toBe(
       "node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb",
     );
-    expect(toolchain.docker.debianSnapshot.timestamp).toMatch(/^[0-9]{8}T[0-9]{6}Z$/);
+    expect(toolchain.docker.debianSnapshot.timestamp).toMatch(
+      /^[0-9]{8}T[0-9]{6}Z$/,
+    );
     expect(toolchain.docker.debianSnapshot.repositories).toEqual([
       { archive: "debian", suite: "bookworm", components: ["main"] },
       { archive: "debian", suite: "bookworm-updates", components: ["main"] },
-      { archive: "debian-security", suite: "bookworm-security", components: ["main"] },
+      {
+        archive: "debian-security",
+        suite: "bookworm-security",
+        components: ["main"],
+      },
     ]);
     expect(toolchain.docker.runtimePackages).toEqual({
       ripgrep: "13.0.0-4+b2",
@@ -1744,20 +1965,28 @@ describe("reproducible install and release contract", () => {
       "ca-certificates": "20230311+deb12u1",
       tini: "0.19.0-1+b3",
     });
-    expect(dockerfile).toContain("https://snapshot.debian.org/archive/${archive}/${timestamp}/");
+    expect(dockerfile).toContain(
+      "https://snapshot.debian.org/archive/${archive}/${timestamp}/",
+    );
     expect(dockerfile).toContain('.join("\\n")');
     expect(dockerfile).not.toContain('.join("\\\\n")');
     expect(dockerfile).toContain("Acquire::Check-Valid-Until=false");
-    expect(dockerfile).toContain("signed-by=/usr/share/keyrings/debian-archive-keyring.gpg");
+    expect(dockerfile).toContain(
+      "signed-by=/usr/share/keyrings/debian-archive-keyring.gpg",
+    );
     expect(dockerfile).toContain("update --error-on=any");
-    expect(dockerfile.match(/npm_config_nodedir=\/usr\/local/g)).toHaveLength(2);
+    expect(dockerfile.match(/npm_config_nodedir=\/usr\/local/g)).toHaveLength(
+      2,
+    );
     expect(dockerfile).toContain("/usr/share/agenc/debian-packages.txt");
     expect(dockerfile).toContain("/var/cache/ldconfig/aux-cache");
     expect(dockerfile).toContain("/var/log/alternatives.log");
     expect(dockerfile).toContain("XDG_CACHE_HOME=/data/.cache");
     expect(dockerfile).toContain("/usr/lib/agenc/peer-credentials-required");
     expect(dockerfile).not.toContain("ENV AGENC_NATIVE_PEER_CREDENTIAL_ADDON");
-    expect(dockerfile).toContain("/opt/agenc-native/agenc-peer-credentials.node");
+    expect(dockerfile).toContain(
+      "/opt/agenc-native/agenc-peer-credentials.node",
+    );
     expect(dockerfile).not.toContain("ln -sf /usr/bin/gcc");
     expect(dockerfile).toContain("USER 10001:10001");
     expect(dockerfile).not.toContain("chown -R agenc:agenc /opt/agenc");
@@ -1783,14 +2012,19 @@ describe("reproducible install and release contract", () => {
       "context: ${AGENC_DOCKER_CONTEXT:?set AGENC_DOCKER_CONTEXT",
     );
     expect(compose).not.toContain("context: ../..");
-    const installDocs = readFileSync(join(REPO_ROOT, "docs/install.md"), "utf8");
+    const installDocs = readFileSync(
+      join(REPO_ROOT, "docs/install.md"),
+      "utf8",
+    );
     expect(installDocs).toContain("git archive --format=tar HEAD");
-    expect(installDocs).toContain("Docker publication is intentionally disabled");
+    expect(installDocs).toContain(
+      "Docker publication is intentionally disabled",
+    );
     expect(installDocs).toContain("npm run release:preflight");
     expect(installDocs).not.toContain("! npm view");
     expect(installDocs).not.toContain("! gh release view");
     expect(installDocs).toContain("--workspace=@tetsuo-ai/agenc");
-    expect(installDocs).toContain("--github-cli \"$github_cli\"");
+    expect(installDocs).toContain('--github-cli "$github_cli"');
     expect(installDocs).not.toContain("-t ghcr.io/tetsuo-ai/agenc:latest");
     const cleanBuild = readFileSync(
       join(REPO_ROOT, "scripts/check-clean-build.mjs"),
@@ -1816,7 +2050,9 @@ describe("reproducible install and release contract", () => {
       'process.env.AGENC_BUILD_COMMIT?.trim() || "a".repeat(40)',
     );
     expect(cleanBuild).toContain('"pack",\n          "--json"');
-    expect(cleanBuild).not.toContain('"scripts/npm-release.mjs",\n          "pack"');
+    expect(cleanBuild).not.toContain(
+      '"scripts/npm-release.mjs",\n          "pack"',
+    );
     expect(cleanBuild).toContain('"--ignore-scripts=true"');
     expect(cleanBuild).not.toContain('"--ignore-scripts=false"');
     expect(cleanBuild).toContain(
@@ -1829,7 +2065,9 @@ describe("reproducible install and release contract", () => {
     expect(cleanBuild).not.toContain(
       'join(artifacts, "agenc-runtime-manifest.json")',
     );
-    expect(cleanBuild).toContain("node_modules/@tetsuo-ai/runtime/dist/VERSION");
+    expect(cleanBuild).toContain(
+      "node_modules/@tetsuo-ai/runtime/dist/VERSION",
+    );
     expect(cleanBuild).toContain("/data:rw,nosuid,nodev,noexec");
     expect(cleanBuild).toContain(
       "AGENC_NATIVE_PEER_CREDENTIAL_ADDON=/data/evil.node",
@@ -1882,8 +2120,12 @@ describe("reproducible install and release contract", () => {
     expect(launcher.scripts.prepack).toContain("check-package-ready.mjs");
     expect(runtime.files).toContain("dist");
     expect(sdk.files).toContain("dist");
-    expect(launcher.files).toContain("generated/agenc-runtime-manifest-v2.json");
-    expect(launcher.files).not.toContain("generated/agenc-runtime-manifest.json");
+    expect(launcher.files).toContain(
+      "generated/agenc-runtime-manifest-v2.json",
+    );
+    expect(launcher.files).not.toContain(
+      "generated/agenc-runtime-manifest.json",
+    );
     expect(launcher.files).not.toContain("scripts");
     expect(launcher.files).toContain("scripts/postinstall.mjs");
   });

@@ -16,11 +16,11 @@ jobs (macOS arm64, macOS x64, and Windows x64). Every artifact builder depends
 on that complete matrix, so it is a barrier: no Linux, Darwin, or Windows
 artifact construction starts unless all three runner images and native
 toolchains match reviewed profiles. The candidate then builds all five native
-artifacts. Its macOS and Windows jobs additionally run an exact allowlist of
-one Seatbelt test and three Windows atomic-artifact/`.cmd` tests in two files
-that Linux cannot execute. The tagged workflow later promotes and re-attests
-those exact candidate bytes without rebuilding them. These probes gate their
-artifacts but do not authorize merge or replace the local evidence.
+artifacts. Its macOS and Windows jobs first run the shared 44-test FND contract
+set, then add one Seatbelt test on macOS or three Windows
+atomic-publication/`.cmd` tests. The tagged workflow later promotes and
+re-attests those exact candidate bytes without rebuilding them. These probes
+gate their artifacts but do not authorize merge or replace the local evidence.
 Release workflows must not be invoked merely to verify a change.
 
 The sections explicitly labeled **Inactive optional** retain the reviewed App,
@@ -231,17 +231,17 @@ It requires Linux, Node.js 26.5.0, npm 11.17.0, a clean checkout, and an exact
 lowercase 40-character commit. In this optional design, the authoritative
 deployment runs each gate in its own transient systemd cgroup.
 
-| Order | Gate | Bound | Candidate write access |
-| ---: | --- | ---: | --- |
-| 1 | SDK build (includes strict TypeScript compilation) | 5 min | SDK `dist` |
-| 2 | Launcher package tests | 5 min | private state only |
-| 3 | Local-gate policy tests | 5 min | private state only |
-| 4 | Agent-surface checker tests | 5 min | Vite temp only |
-| 5 | Hermetic runtime typecheck and stable Vitest suite | 20 min | private state and Vite temp |
-| 6 | Agent-surface structural contract | 5 min | private state only |
-| 7 | Runtime build and declarations | 10 min | runtime `dist` |
-| 8 | Deterministic SPDX SBOM check | 5 min | private state only |
-| 9 | PTY/TUI built-runtime startup smoke | 10 min | private state only |
+| Order | Gate                                               |  Bound | Candidate write access      |
+| ----: | -------------------------------------------------- | -----: | --------------------------- |
+|     1 | SDK build (includes strict TypeScript compilation) |  5 min | SDK `dist`                  |
+|     2 | Launcher package tests                             |  5 min | private state only          |
+|     3 | Local-gate policy tests                            |  5 min | private state only          |
+|     4 | Agent-surface checker tests                        |  5 min | Vite temp only              |
+|     5 | Hermetic runtime typecheck and stable Vitest suite | 20 min | private state and Vite temp |
+|     6 | Agent-surface structural contract                  |  5 min | private state only          |
+|     7 | Runtime build and declarations                     | 10 min | runtime `dist`              |
+|     8 | Deterministic SPDX SBOM check                      |  5 min | private state only          |
+|     9 | PTY/TUI built-runtime startup smoke                | 10 min | private state only          |
 
 The stable suite already runs the agent-surface Vitest files, so gate 6 uses
 `--no-run-commands`; it validates the versioned surface ledger without running
@@ -847,10 +847,14 @@ GitHub-hosted jobs to publish or promote exact reviewed bytes. They do not
 repeat the local verification plan. The candidate phase of
 `release-runtime.yml` runs the exact native-only allowlist after its first clean
 install and
-requires the recorded result to contain one passing macOS test in one file or
-three passing Windows tests in two files with zero failed, pending, skipped, or
-todo tests. Its tagged phase only promotes and re-attests the five sealed
-runtime artifacts. Before artifact or promotion work starts, each workflow:
+requires the recorded result to contain 45 passing macOS tests in eight suites
+across five files or 47 passing Windows tests in ten suites across six files,
+with zero failed, pending, skipped, or todo tests. Both candidate lanes begin
+with the same 44-test, seven-suite, four-file FND set for bounded file I/O,
+fixture loading, portable paths, and process containment. macOS adds one
+Seatbelt test; Windows adds three atomic-publication and `.cmd` tests. Its
+tagged phase only promotes and re-attests the five sealed runtime artifacts.
+Before artifact or promotion work starts, each workflow:
 
 1. requires typed `tested_sha` and `local_evidence_sha256` dispatch inputs;
 2. normally requires `tested_sha` to equal the workflow's exact
@@ -876,10 +880,11 @@ attestations and npm provenance bind the separate reviewed `main` tooling
 commit. Runtime publication has no recovery exception and still requires
 `tested_sha == GITHUB_SHA`.
 
-Apart from those three native-only artifact probes, the workflows run no tests
-and do not read a GitHub App check. The operator must first complete and retain
-the exact-tag local evidence defined above. A PR-head test record cannot
-authorize release of a different squash-merged commit.
+Apart from that shared FND set and the platform-specific native artifact
+probes, the workflows run no tests and do not read a GitHub App check. The
+operator must first complete and retain the exact-tag local evidence defined
+above. A PR-head test record cannot authorize release of a different
+squash-merged commit.
 
 ## Hosted capability lanes
 
@@ -906,10 +911,14 @@ fixtures, fixed telemetry/update opt-outs, and an asserted no-process-leak
 postcondition; this narrow lane is not an OS egress boundary.
 The `neovim` job similarly provisions the official digest- and byte-pinned
 Neovim 0.12.1 Linux binary and requires all four real-process lifecycle tests
-in its one-file allowlist. The `macos-native` and `windows-native` jobs run the
-same exact native probes used by release builders: one Seatbelt test in one
-file on macOS, and three atomic-publication/`.cmd` tests in two files on
-Windows. Every result parser requires the exact reviewed suite, test, and file
+in its one-file allowlist. The `macos-native` and `windows-native` jobs first
+run the shared 44-test, seven-suite, four-file FND set used by release builders.
+The macOS job adds one Seatbelt test for an exact total of 45 tests, eight
+suites, and five files. The Windows PR job adds its named-pipe and
+atomic-publication/`.cmd` contracts for an exact total of 49 tests, eleven
+suites, and seven files; the Windows release subset excludes the two
+named-pipe-only PR tests and therefore contains 47 tests, ten suites, and six
+files. Every result parser requires its exact reviewed suite, test, and file
 counts with no failed, pending, skipped, or todo tests.
 
 This narrow hosted check supplements the local required gate; it does not
@@ -936,7 +945,7 @@ context as an alternative. Use this fail-closed rotation:
    stage it root-owned at `POLICY_B_ROOT` without the App credential. Do not yet
    replace the active trusted mirror or its approved digest.
 2. Using B's renderer and an operator Administration credential, create a
-   *separate disabled* any-source bootstrap ruleset for vN. The old App-bound
+   _separate disabled_ any-source bootstrap ruleset for vN. The old App-bound
    vN-1 ruleset remains active throughout.
 3. Through a separately reviewed App-credentialed seeder that can only publish
    `failure`, emit a genuine vN Check Run. This satisfies GitHub's recent-check
@@ -949,7 +958,7 @@ context as an alternative. Use this fail-closed rotation:
    ruleset and the separate disabled App-bound vN bootstrap, with no legacy or
    other required context. Verify that inventory with B's policy tool.
 5. Use that same fresh inventory to render vN, then atomically `PUT` it over the
-   *existing active ruleset ID*. vN becomes blocking immediately; no vN success
+   _existing active ruleset ID_. vN becomes blocking immediately; no vN success
    exists yet. If any later command fails, leave vN active and stop—never fall
    back to vN-1.
 6. Verify the active vN readback, delete the disabled bootstrap, and prove its
