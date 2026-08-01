@@ -406,12 +406,18 @@ describe("reproducible install and release contract", () => {
       workflow.indexOf("\n  windows-native:"),
     );
     expect(macosJob).toContain("runs-on: macos-15");
+    expect(macosJob).toContain("Run the exact macOS red-probe runner contract");
+    expect(macosJob).toContain("tests/fnd/red-probe-runner.contract.test.ts");
+    expect(macosJob).toContain("numTotalTests: 62");
+    expect(macosJob).toContain("numPassedTests: 62");
+    expect(macosJob).toContain("testResult.assertionResults.length !== 62");
+    expect(macosJob).toContain(
+      "macOS red-probe runner passed 62 tests in 1 file with zero skipped",
+    );
     expect(macosJob).toContain(
       "Run the exact macOS FND/native capability lane",
     );
-    expect(macosJob).toContain(
-      "tests/fnd/benchmark-harness-faults.test.ts",
-    );
+    expect(macosJob).toContain("tests/fnd/benchmark-harness-faults.test.ts");
     expect(macosJob).toContain("tests/fnd/bounded-file-io.test.ts");
     expect(macosJob).toContain("tests/fnd/fnd-fixtures.test.ts");
     expect(macosJob).toContain("tests/fnd/portable-repository-path.test.ts");
@@ -434,18 +440,51 @@ describe("reproducible install and release contract", () => {
     expect(windowsJob).toContain(
       "npm.cmd run build --workspace=@tetsuo-ai/runtime",
     );
+    expect(windowsJob).toContain("Run the exact Windows FND red-probe audit");
+    expect(windowsJob).toContain("node runtime/scripts/run-fnd-red-probes.mjs");
+    expect(windowsJob).toContain(
+      "red probes: files=1 expected-red=1 assertions=1 skipped=0 todo=0",
+    );
+    expect(windowsJob).toContain(
+      'if ($LASTEXITCODE -ne 0) { throw "Windows red-probe audit failed" }',
+    );
+    expect(windowsJob).toContain(
+      'throw "Windows red-probe audit dirtied the checkout"',
+    );
+    expect(windowsJob).toContain(
+      "Run the exact Windows FND forced-containment contracts",
+    );
+    expect(windowsJob).toContain("tests/fnd/red-probe-containment.test.ts");
+    expect(windowsJob).toContain(
+      'throw "Windows red-probe forced-containment contracts failed"',
+    );
+    expect(windowsJob).not.toMatch(
+      /^\s*num(?:Total|Passed)TestSuites:\s*1\s*$/gmu,
+    );
+    expect(windowsJob).toContain("numTotalTests: 3");
+    expect(windowsJob).toContain(
+      'const expectedFiles = ["tests/fnd/red-probe-containment.test.ts"]',
+    );
+    expect(windowsJob).toContain("assertions.length !== 3");
+    expect(windowsJob).toContain(
+      'assertions.some(({ status }) => status !== "passed")',
+    );
+    expect(windowsJob).toContain(
+      "Windows red-probe containment passed 3 tests in 1 file with zero skipped",
+    );
+    expect(windowsJob).toContain(
+      'throw "Windows red-probe forced-containment dirtied the checkout"',
+    );
     expect(windowsJob).toContain(
       "tests/app-server/windows-named-pipe.win32.test.ts",
     );
     expect(windowsJob).toContain(
       "tests/durability/atomic-artifact.win32.test.ts",
     );
-    expect(windowsJob).toContain(
-      "tests/fnd/benchmark-harness-faults.test.ts",
-    );
     expect(windowsJob).toContain("tests/fnd/bounded-file-io.test.ts");
     expect(windowsJob).toContain("tests/fnd/fnd-fixtures.test.ts");
     expect(windowsJob).toContain("tests/fnd/portable-repository-path.test.ts");
+    expect(windowsJob).toContain("tests/fnd/benchmark-harness-faults.test.ts");
     expect(windowsJob).toContain(
       "tests/fnd/process-repository-helpers.native.test.ts",
     );
@@ -475,7 +514,7 @@ describe("reproducible install and release contract", () => {
         /actions\/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e/g,
       ),
     ).toHaveLength(4);
-    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(6);
+    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(8);
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toContain("cache: npm");
     expect(workflow).not.toContain("--passWithNoTests");
@@ -499,18 +538,31 @@ describe("reproducible install and release contract", () => {
         join(workspace, target).replaceAll("\\", "/"),
       );
     });
+    const redProbeManifest = JSON.parse(
+      readFileSync(
+        join(REPO_ROOT, "runtime/tests/fnd/red-probes/manifest.json"),
+        "utf8",
+      ),
+    ) as { probes: Array<{ file: string }> };
+    const digestBoundRedProbeSubjects = [
+      "runtime/tests/helpers/red-probe-bootstrap.mjs",
+      "runtime/tests/helpers/red-probe.ts",
+      ...redProbeManifest.probes.map(({ file }) => `runtime/${file}`),
+    ];
     const lfSubjects = [
       ...binSubjects,
       "package-lock.json",
       "runtime/benchmarks/fnd/baseline.v1.json",
       "runtime/benchmarks/fnd/baseline.v1.md",
+      ...digestBoundRedProbeSubjects,
     ];
     const attributes = execFileSync(
       "git",
-      ["check-attr", "eol", "--", ...lfSubjects],
+      ["check-attr", "text", "eol", "--", ...lfSubjects],
       { cwd: REPO_ROOT, encoding: "utf8" },
     );
     for (const subject of lfSubjects) {
+      expect(attributes).toContain(`${subject}: text: set`);
       expect(attributes).toContain(`${subject}: eol: lf`);
     }
   });

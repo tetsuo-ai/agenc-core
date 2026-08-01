@@ -968,6 +968,65 @@ jobs:
           npm_config_build_from_source=true \
             npm rebuild better-sqlite3 esbuild node-pty
 
+      - name: Run the exact macOS red-probe runner contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          results="$RUNNER_TEMP/macos-red-probe-runner.json"
+          node runtime/scripts/run-hermetic-vitest.mjs \
+            --require-zero-skips \
+            run \
+            tests/fnd/red-probe-runner.contract.test.ts \
+            --allowOnly=false \
+            --reporter=verbose \
+            --reporter=json \
+            --outputFile.json "$results"
+          node --input-type=module - "$results" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { relative, resolve } from "node:path";
+
+          const [resultsPath] = process.argv.slice(2);
+          if (!resultsPath) throw new Error("missing macOS red-probe results path");
+          const results = JSON.parse(readFileSync(resultsPath, "utf8"));
+          const exactCounts = {
+            numTotalTests: 62,
+            numPassedTests: 62,
+            numFailedTests: 0,
+            numPendingTests: 0,
+            numTodoTests: 0,
+          };
+          for (const [field, value] of Object.entries(exactCounts)) {
+            if (results[field] !== value) {
+              throw new Error(
+                `macOS red-probe result ${field} was ${results[field]}, expected ${value}`,
+              );
+            }
+          }
+          if (
+            results.success !== true ||
+            !Array.isArray(results.testResults) ||
+            results.testResults.length !== 1
+          ) {
+            throw new Error("macOS red-probe result did not report one successful file");
+          }
+          const [testResult] = results.testResults;
+          const file = relative(resolve("runtime"), testResult.name)
+            .split("\\").join("/");
+          if (file !== "tests/fnd/red-probe-runner.contract.test.ts") {
+            throw new Error(`unexpected macOS red-probe file: ${file}`);
+          }
+          if (
+            testResult.status !== "passed" ||
+            !Array.isArray(testResult.assertionResults) ||
+            testResult.assertionResults.length !== 62 ||
+            testResult.assertionResults.some(({ status }) => status !== "passed")
+          ) {
+            throw new Error("macOS red-probe assertions were not exactly 62 passes");
+          }
+          console.log("macOS red-probe runner passed 62 tests in 1 file with zero skipped");
+          NODE
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
       - name: Run the exact macOS FND/native capability lane
         shell: bash
         run: |
@@ -1097,6 +1156,93 @@ jobs:
           $ErrorActionPreference = "Stop"
           & npm.cmd run build --workspace=@tetsuo-ai/runtime
           if ($LASTEXITCODE -ne 0) { throw "runtime build failed" }
+
+      - name: Run the exact Windows FND red-probe audit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $redProbeOutput = & node runtime/scripts/run-fnd-red-probes.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Windows red-probe audit failed" }
+          $expectedRedProbeOutput = `
+            "red probes: files=1 expected-red=1 assertions=1 skipped=0 todo=0"
+          if (($redProbeOutput | Out-String).Trim() -ne $expectedRedProbeOutput) {
+            throw "Windows red-probe result contract failed: $redProbeOutput"
+          }
+          if (-not [string]::IsNullOrWhiteSpace(
+            (git status --porcelain=v1 --untracked-files=all | Out-String)
+          )) {
+            throw "Windows red-probe audit dirtied the checkout"
+          }
+
+      - name: Run the exact Windows FND forced-containment contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $results = Join-Path $env:RUNNER_TEMP "windows-red-probe-containment.json"
+          & node runtime/scripts/run-hermetic-vitest.mjs `
+            --require-zero-skips `
+            run `
+            tests/fnd/red-probe-containment.test.ts `
+            --allowOnly=false `
+            --reporter=verbose `
+            --reporter=json `
+            --outputFile.json $results
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows red-probe forced-containment contracts failed"
+          }
+          @'
+          import { readFileSync } from "node:fs";
+          import { relative, resolve } from "node:path";
+
+          const [resultsPath] = process.argv.slice(2);
+          if (!resultsPath) throw new Error("missing red-probe containment results path");
+          const results = JSON.parse(readFileSync(resultsPath, "utf8"));
+          const exactCounts = {
+            numFailedTestSuites: 0,
+            numPendingTestSuites: 0,
+            numTotalTests: 3,
+            numPassedTests: 3,
+            numFailedTests: 0,
+            numPendingTests: 0,
+            numTodoTests: 0,
+          };
+          for (const [field, value] of Object.entries(exactCounts)) {
+            if (results[field] !== value) {
+              throw new Error(
+                `Windows red-probe containment ${field} was ${results[field]}, expected ${value}`,
+              );
+            }
+          }
+          if (results.success !== true || !Array.isArray(results.testResults)) {
+            throw new Error("Windows red-probe containment did not report one successful file");
+          }
+          const expectedFiles = ["tests/fnd/red-probe-containment.test.ts"];
+          const testResults = results.testResults;
+          const files = testResults
+            .map(({ name }) => relative(resolve("runtime"), name).split("\\").join("/"))
+            .sort();
+          if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) {
+            throw new Error(`unexpected Windows red-probe containment files: ${JSON.stringify(files)}`);
+          }
+          const assertions = testResults[0].assertionResults;
+          if (
+            testResults[0].status !== "passed" ||
+            !Array.isArray(assertions) ||
+            assertions.length !== 3 ||
+            assertions.some(({ status }) => status !== "passed")
+          ) {
+            throw new Error("Windows red-probe containment assertions were not exactly three passes");
+          }
+          console.log("Windows red-probe containment passed 3 tests in 1 file with zero skipped");
+          '@ | node --input-type=module - $results
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows red-probe forced-containment result contract failed"
+          }
+          if (-not [string]::IsNullOrWhiteSpace(
+            (git status --porcelain=v1 --untracked-files=all | Out-String)
+          )) {
+            throw "Windows red-probe forced-containment dirtied the checkout"
+          }
 
       - name: Run the exact Windows FND/native capability lane
         shell: pwsh

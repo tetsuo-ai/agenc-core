@@ -1,47 +1,47 @@
-import { configDefaults, defineConfig } from 'vitest/config';
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
-import { dirname, isAbsolute, relative, resolve } from 'path';
-import { createScanner, ScriptTarget, SyntaxKind } from 'typescript';
+import { configDefaults, defineConfig } from "vitest/config";
+import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { dirname, isAbsolute, relative, resolve } from "path";
+import { createScanner, ScriptTarget, SyntaxKind } from "typescript";
 
-const agencRoot = resolve(__dirname, 'src/agenc');
-const agencUpstreamRoot = resolve(agencRoot, 'upstream');
-const runtimeSourceRoot = resolve(__dirname, 'src');
-const runtimeTestRoot = resolve(__dirname, 'tests');
+const agencRoot = resolve(__dirname, "src/agenc");
+const agencUpstreamRoot = resolve(agencRoot, "upstream");
+const runtimeSourceRoot = resolve(__dirname, "src");
+const runtimeTestRoot = resolve(__dirname, "tests");
 const relocatedUpstreamRoots = [
   {
-    runtimeRoot: resolve(runtimeSourceRoot, 'utils'),
-    upstreamRoot: resolve(agencUpstreamRoot, 'utils'),
+    runtimeRoot: resolve(runtimeSourceRoot, "utils"),
+    upstreamRoot: resolve(agencUpstreamRoot, "utils"),
   },
   {
-    runtimeRoot: resolve(runtimeSourceRoot, 'constants'),
-    upstreamRoot: resolve(agencUpstreamRoot, 'constants'),
+    runtimeRoot: resolve(runtimeSourceRoot, "constants"),
+    upstreamRoot: resolve(agencUpstreamRoot, "constants"),
   },
   {
-    runtimeRoot: resolve(runtimeSourceRoot, 'memdir'),
-    upstreamRoot: resolve(agencUpstreamRoot, 'memdir'),
+    runtimeRoot: resolve(runtimeSourceRoot, "memdir"),
+    upstreamRoot: resolve(agencUpstreamRoot, "memdir"),
   },
 ];
 const sourceFileBaseAliases = [
   {
-    runtimeBase: resolve(runtimeSourceRoot, 'tools/Tool'),
-    upstreamBase: resolve(agencUpstreamRoot, 'Tool'),
+    runtimeBase: resolve(runtimeSourceRoot, "tools/Tool"),
+    upstreamBase: resolve(agencUpstreamRoot, "Tool"),
   },
   {
-    runtimeBase: resolve(agencUpstreamRoot, 'tools/Tool'),
-    upstreamBase: resolve(agencUpstreamRoot, 'Tool'),
+    runtimeBase: resolve(agencUpstreamRoot, "tools/Tool"),
+    upstreamBase: resolve(agencUpstreamRoot, "Tool"),
   },
   {
-    runtimeBase: resolve(agencUpstreamRoot, 'tasks/Task'),
-    upstreamBase: resolve(agencUpstreamRoot, 'Task'),
+    runtimeBase: resolve(agencUpstreamRoot, "tasks/Task"),
+    upstreamBase: resolve(agencUpstreamRoot, "Task"),
   },
 ];
 const relocatedTuiSourceRoots = [
-  resolve(runtimeSourceRoot, 'tui/components'),
-  resolve(runtimeSourceRoot, 'tui/context'),
-  resolve(runtimeSourceRoot, 'tui/hooks'),
+  resolve(runtimeSourceRoot, "tui/components"),
+  resolve(runtimeSourceRoot, "tui/context"),
+  resolve(runtimeSourceRoot, "tui/hooks"),
 ];
 function normalizeConfigPath(file: string): string {
-  return file.split(/[/\\]+/).join('/');
+  return file.split(/[/\\]+/).join("/");
 }
 
 function walkTestFiles(dir: string): string[] {
@@ -54,11 +54,11 @@ function walkTestFiles(dir: string): string[] {
 }
 
 const bunTestFiles = walkTestFiles(runtimeTestRoot)
-  .filter((file) => readFileSync(file, 'utf8').includes('bun:test'))
+  .filter((file) => readFileSync(file, "utf8").includes("bun:test"))
   .map((file) => normalizeConfigPath(relative(__dirname, file)));
 
 function isVitestCompatibleBunTestFile(file: string): boolean {
-  const source = readFileSync(resolve(__dirname, file), 'utf8');
+  const source = readFileSync(resolve(__dirname, file), "utf8");
   const sourceWithoutComments = stripCommentsForCompatibilityScan(source);
   return (
     !/\bmock\.module\b/.test(sourceWithoutComments) &&
@@ -71,7 +71,7 @@ function isVitestCompatibleBunTestFile(file: string): boolean {
 }
 
 function stripCommentsForCompatibilityScan(source: string): string {
-  const chars = source.split('');
+  const chars = source.split("");
   const scanner = createScanner(ScriptTarget.Latest, false, undefined, source);
   let token = scanner.scan();
 
@@ -80,12 +80,12 @@ function stripCommentsForCompatibilityScan(source: string): string {
       token === SyntaxKind.SingleLineCommentTrivia ||
       token === SyntaxKind.MultiLineCommentTrivia
     ) {
-      chars.fill(' ', scanner.getTokenPos(), scanner.getTextPos());
+      chars.fill(" ", scanner.getTokenPos(), scanner.getTextPos());
     }
     token = scanner.scan();
   }
 
-  return chars.join('');
+  return chars.join("");
 }
 
 const bunOnlyTestFiles = bunTestFiles.filter(
@@ -93,59 +93,59 @@ const bunOnlyTestFiles = bunTestFiles.filter(
 );
 
 export const DEFAULT_TEST_INCLUDE = Object.freeze([
-  'tests/**/*.test.ts',
-  'tests/**/*.test.tsx',
+  "tests/**/*.test.ts",
+  "tests/**/*.test.tsx",
   // This hosted-lane contract is static and hermetic. Keep it in the ordinary
   // local suite so workflow/scenario drift fails before a platform dispatch.
-  'platform-tests/neovim-platform-gate.contract.test.ts',
+  "platform-tests/neovim-platform-gate.contract.test.ts",
 ]);
 
 export const DESIGN_TEST_INCLUDE = Object.freeze([
-  'tests/design-hermetic-env.test.ts',
-  'tests/tui/components/v2/designStateSmoke.test.tsx',
+  "tests/design-hermetic-env.test.ts",
+  "tests/tui/components/v2/designStateSmoke.test.tsx",
 ]);
 
 /** Contracts owned by separately installed AgenC repositories. */
 export const CROSS_REPO_TEST_INCLUDE = Object.freeze([
-  'tests/app-server-protocol/ide-extension.repo.contract.test.ts',
-  'tests/app-server/protocol.contract.test.ts',
-  'tests/app-server/sdk-client.contract.test.ts',
-  'tests/app-server/sdk-hello-world-example.contract.test.ts',
-  'tests/app-server/sdk-tui-coattach-example.contract.test.ts',
+  "tests/app-server-protocol/ide-extension.repo.contract.test.ts",
+  "tests/app-server/protocol.contract.test.ts",
+  "tests/app-server/sdk-client.contract.test.ts",
+  "tests/app-server/sdk-hello-world-example.contract.test.ts",
+  "tests/app-server/sdk-tui-coattach-example.contract.test.ts",
 ]);
 
 /** Native integration tests executed only by their matching hosted builder. */
 export const NATIVE_TEST_INCLUDE = Object.freeze([
-  'tests/app-server/windows-named-pipe.win32.test.ts',
-  'tests/durability/atomic-artifact.win32.test.ts',
-  'tests/fnd/process-repository-helpers.native.test.ts',
-  'tests/tools/runtimes/runtime.darwin.test.ts',
-  'tests/utils/execFileNoThrow.win32.test.ts',
+  "tests/app-server/windows-named-pipe.win32.test.ts",
+  "tests/durability/atomic-artifact.win32.test.ts",
+  "tests/fnd/process-repository-helpers.native.test.ts",
+  "tests/tools/runtimes/runtime.darwin.test.ts",
+  "tests/utils/execFileNoThrow.win32.test.ts",
 ]);
 
 /** Portable FND contracts repeated by every supported native builder. */
 export const HOSTED_FND_TEST_INCLUDE = Object.freeze([
-  'tests/fnd/benchmark-harness-faults.test.ts',
-  'tests/fnd/bounded-file-io.test.ts',
-  'tests/fnd/fnd-fixtures.test.ts',
-  'tests/fnd/portable-repository-path.test.ts',
+  "tests/fnd/benchmark-harness-faults.test.ts",
+  "tests/fnd/bounded-file-io.test.ts",
+  "tests/fnd/fnd-fixtures.test.ts",
+  "tests/fnd/portable-repository-path.test.ts",
 ]);
 
 /** Real Linux-kernel sandbox coverage executed on a disposable hosted runner. */
 export const KERNEL_TEST_INCLUDE = Object.freeze([
-  'tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts',
+  "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
 ]);
 
 /** PowerShell integration tests executed by the pinned hosted capability lane. */
 export const POWERSHELL_TEST_INCLUDE = Object.freeze([
-  'tests/budget/admitted-legacy-powershell.powershell.test.ts',
-  'tests/packaging/install-ps1.powershell.test.ts',
-  'tests/tools/PowerShellTool.execution.powershell.test.ts',
+  "tests/budget/admitted-legacy-powershell.powershell.test.ts",
+  "tests/packaging/install-ps1.powershell.test.ts",
+  "tests/tools/PowerShellTool.execution.powershell.test.ts",
 ]);
 
 /** Real-Neovim integration tests executed by the pinned hosted capability lane. */
 export const NEOVIM_TEST_INCLUDE = Object.freeze([
-  'tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts',
+  "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
 ]);
 
 /**
@@ -156,17 +156,18 @@ export const NEOVIM_TEST_INCLUDE = Object.freeze([
  */
 export const DEFAULT_TEST_EXCLUDE = Object.freeze([
   ...configDefaults.exclude,
-  'dist/**',
-  'tests/agenc/**/*.test.ts',
-  'tests/agenc/**/*.test.tsx',
+  "dist/**",
+  "**/*.red-probe.ts",
+  "tests/agenc/**/*.test.ts",
+  "tests/agenc/**/*.test.tsx",
   ...bunOnlyTestFiles,
-  'tests/integration.test.ts',
-  'tests/eval-replay.integration.test.ts',
-  'tests/live/**',
-  '**/*.live.test.*',
-  'tests/browser/live-e2e.test.ts',
-  'tests/llm/provider.integration.test.ts',
-  'tests/transaction-guard/devnet-live.e2e.test.ts',
+  "tests/integration.test.ts",
+  "tests/eval-replay.integration.test.ts",
+  "tests/live/**",
+  "**/*.live.test.*",
+  "tests/browser/live-e2e.test.ts",
+  "tests/llm/provider.integration.test.ts",
+  "tests/transaction-guard/devnet-live.e2e.test.ts",
   ...DESIGN_TEST_INCLUDE,
   ...CROSS_REPO_TEST_INCLUDE,
   ...NATIVE_TEST_INCLUDE,
@@ -177,28 +178,31 @@ export const DEFAULT_TEST_EXCLUDE = Object.freeze([
 
 /** Explicit allowlist for credential-preserving, operator-invoked live runs. */
 export const LIVE_TEST_INCLUDE = Object.freeze([
-  'tests/live/**/*.test.ts',
-  'tests/live/**/*.test.tsx',
-  'tests/**/*.live.test.ts',
-  'tests/**/*.live.test.tsx',
-  'tests/browser/live-e2e.test.ts',
-  'tests/llm/provider.integration.test.ts',
-  'tests/transaction-guard/devnet-live.e2e.test.ts',
+  "tests/live/**/*.test.ts",
+  "tests/live/**/*.test.tsx",
+  "tests/**/*.live.test.ts",
+  "tests/**/*.live.test.tsx",
+  "tests/browser/live-e2e.test.ts",
+  "tests/llm/provider.integration.test.ts",
+  "tests/transaction-guard/devnet-live.e2e.test.ts",
 ]);
 
 export type AgenCVitestMode =
-  | 'default'
-  | 'live'
-  | 'design'
-  | 'cross-repo'
-  | 'native'
-  | 'kernel'
-  | 'powershell'
-  | 'neovim';
+  | "default"
+  | "live"
+  | "design"
+  | "cross-repo"
+  | "native"
+  | "kernel"
+  | "powershell"
+  | "neovim";
 
-function splitModuleId(id: string): { readonly path: string; readonly suffix: string } {
+function splitModuleId(id: string): {
+  readonly path: string;
+  readonly suffix: string;
+} {
   const index = id.search(/[?#]/);
-  if (index === -1) return { path: id, suffix: '' };
+  if (index === -1) return { path: id, suffix: "" };
   return {
     path: id.slice(0, index),
     suffix: id.slice(index),
@@ -206,11 +210,11 @@ function splitModuleId(id: string): { readonly path: string; readonly suffix: st
 }
 
 function aliasedSourceBases(base: string): string[] {
-  const slash = base.lastIndexOf('/');
+  const slash = base.lastIndexOf("/");
   const file = slash === -1 ? base : base.slice(slash + 1);
   const extMatch = /^(.*?)(\.(?:js|jsx|ts|tsx))?$/.exec(file);
-  const ext = extMatch?.[2] ?? '';
-  const extensionlessBase = ext === '' ? base : base.slice(0, -ext.length);
+  const ext = extMatch?.[2] ?? "";
+  const extensionlessBase = ext === "" ? base : base.slice(0, -ext.length);
   const fileBaseAliases = sourceFileBaseAliases
     .filter(({ runtimeBase }) => runtimeBase === extensionlessBase)
     .map(({ upstreamBase }) => `${upstreamBase}${ext}`);
@@ -225,9 +229,9 @@ function existingSourceFile(base: string): string | null {
         hasExtension
           ? [
               sourceBase,
-              sourceBase.replace(/\.js$/, '.ts'),
-              sourceBase.replace(/\.js$/, '.tsx'),
-              sourceBase.replace(/\.jsx$/, '.tsx'),
+              sourceBase.replace(/\.js$/, ".ts"),
+              sourceBase.replace(/\.js$/, ".tsx"),
+              sourceBase.replace(/\.jsx$/, ".tsx"),
             ]
           : [
               sourceBase,
@@ -235,21 +239,23 @@ function existingSourceFile(base: string): string | null {
               `${sourceBase}.tsx`,
               `${sourceBase}.mts`,
               `${sourceBase}.cts`,
-              resolve(sourceBase, 'index.ts'),
-              resolve(sourceBase, 'index.tsx'),
-              resolve(sourceBase, 'index.js'),
+              resolve(sourceBase, "index.ts"),
+              resolve(sourceBase, "index.tsx"),
+              resolve(sourceBase, "index.js"),
             ],
       ),
     ),
   ];
-  return candidates.find((candidate) => {
-    if (!existsSync(candidate)) return false;
-    try {
-      return statSync(candidate).isFile();
-    } catch {
-      return false;
-    }
-  }) ?? null;
+  return (
+    candidates.find((candidate) => {
+      if (!existsSync(candidate)) return false;
+      try {
+        return statSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    }) ?? null
+  );
 }
 
 function existingRuntimeTestFile(base: string): string | null {
@@ -257,9 +263,9 @@ function existingRuntimeTestFile(base: string): string | null {
   const candidates = hasExtension
     ? [
         base,
-        base.replace(/\.js$/, '.ts'),
-        base.replace(/\.js$/, '.tsx'),
-        base.replace(/\.jsx$/, '.tsx'),
+        base.replace(/\.js$/, ".ts"),
+        base.replace(/\.js$/, ".tsx"),
+        base.replace(/\.jsx$/, ".tsx"),
       ]
     : [
         base,
@@ -267,27 +273,29 @@ function existingRuntimeTestFile(base: string): string | null {
         `${base}.tsx`,
         `${base}.mts`,
         `${base}.cts`,
-        resolve(base, 'index.ts'),
-        resolve(base, 'index.tsx'),
-        resolve(base, 'index.js'),
+        resolve(base, "index.ts"),
+        resolve(base, "index.tsx"),
+        resolve(base, "index.js"),
       ];
-  return candidates.find((candidate) => {
-    if (!existsSync(candidate)) return false;
-    try {
-      return statSync(candidate).isFile();
-    } catch {
-      return false;
-    }
-  }) ?? null;
+  return (
+    candidates.find((candidate) => {
+      if (!existsSync(candidate)) return false;
+      try {
+        return statSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    }) ?? null
+  );
 }
 
 function isWithin(root: string, file: string): boolean {
   const rel = relative(root, file);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 function sourceRootForImporter(importer: string): string | null {
-  const cleanImporter = importer.split('?')[0] ?? importer;
+  const cleanImporter = importer.split("?")[0] ?? importer;
   const absoluteImporter = isAbsolute(cleanImporter)
     ? cleanImporter
     : resolve(__dirname, cleanImporter);
@@ -299,13 +307,13 @@ function sourceRootForImporter(importer: string): string | null {
 }
 
 function relocatedUpstreamImporter(importer: string): string | null {
-  const cleanImporter = importer.split('?')[0] ?? importer;
+  const cleanImporter = importer.split("?")[0] ?? importer;
   const absoluteImporter = isAbsolute(cleanImporter)
     ? cleanImporter
     : resolve(__dirname, cleanImporter);
   for (const { runtimeRoot, upstreamRoot } of relocatedUpstreamRoots) {
     const rel = relative(runtimeRoot, absoluteImporter);
-    if (rel !== '' && !rel.startsWith('..')) {
+    if (rel !== "" && !rel.startsWith("..")) {
       return resolve(upstreamRoot, rel);
     }
   }
@@ -313,10 +321,14 @@ function relocatedUpstreamImporter(importer: string): string | null {
 }
 
 function resolveAgenCBareSrc(source: string): string | null {
-  const sourceRelative = source.slice('src/'.length);
-  const relocatedTuiRelative = /^(components|context|hooks)\//.exec(sourceRelative);
+  const sourceRelative = source.slice("src/".length);
+  const relocatedTuiRelative = /^(components|context|hooks)\//.exec(
+    sourceRelative,
+  );
   if (relocatedTuiRelative) {
-    const found = existingSourceFile(resolve(runtimeSourceRoot, 'tui', sourceRelative));
+    const found = existingSourceFile(
+      resolve(runtimeSourceRoot, "tui", sourceRelative),
+    );
     if (found) return found;
   }
   for (const root of [agencUpstreamRoot, runtimeSourceRoot]) {
@@ -327,64 +339,83 @@ function resolveAgenCBareSrc(source: string): string | null {
 }
 
 function normalizeRuntimePath(file: string): string {
-  return file.split(/[/\\]+/).join('/');
+  return file.split(/[/\\]+/).join("/");
 }
 
 function topKey(logical: string): string {
-  return logical.split('/')[0]?.replace(/\.(?:jsx?|tsx?)$/, '') ?? '';
+  return logical.split("/")[0]?.replace(/\.(?:jsx?|tsx?)$/, "") ?? "";
 }
 
-function relocatedLogicalCandidates(importer: string, source: string): string[] {
+function relocatedLogicalCandidates(
+  importer: string,
+  source: string,
+): string[] {
   const candidates: string[] = [];
   let logical: string | null = null;
-  if (source.startsWith('src/')) {
-    logical = source.slice('src/'.length);
-  } else if (source.startsWith('./') || source.startsWith('../')) {
+  if (source.startsWith("src/")) {
+    logical = source.slice("src/".length);
+  } else if (source.startsWith("./") || source.startsWith("../")) {
     const absolute = resolve(dirname(importer), source);
-    const relSource = normalizeRuntimePath(relative(runtimeSourceRoot, absolute));
-    if (relSource !== '' && !relSource.startsWith('..')) {
+    const relSource = normalizeRuntimePath(
+      relative(runtimeSourceRoot, absolute),
+    );
+    if (relSource !== "" && !relSource.startsWith("..")) {
       logical = relSource;
     } else {
-      const relRuntime = normalizeRuntimePath(relative(resolve(__dirname), absolute));
-      if (relRuntime !== '' && !relRuntime.startsWith('..')) logical = relRuntime;
+      const relRuntime = normalizeRuntimePath(
+        relative(resolve(__dirname), absolute),
+      );
+      if (relRuntime !== "" && !relRuntime.startsWith(".."))
+        logical = relRuntime;
     }
   }
   if (!logical) return candidates;
   candidates.push(logical);
-  if (logical.startsWith('tui/tui/')) candidates.push(logical.slice('tui/'.length));
-  if (logical.startsWith('tui/')) candidates.push(logical.slice('tui/'.length));
+  if (logical.startsWith("tui/tui/"))
+    candidates.push(logical.slice("tui/".length));
+  if (logical.startsWith("tui/")) candidates.push(logical.slice("tui/".length));
   const first = topKey(logical);
-  if (first === 'components' || first === 'context' || first === 'hooks') {
+  if (first === "components" || first === "context" || first === "hooks") {
     candidates.push(`tui/${logical}`);
   }
   return [...new Set(candidates)];
 }
 
-function resolveRelocatedTuiSource(importer: string, source: string): string | null {
+function resolveRelocatedTuiSource(
+  importer: string,
+  source: string,
+): string | null {
   for (const logical of relocatedLogicalCandidates(importer, source)) {
     const direct = existingSourceFile(resolve(runtimeSourceRoot, logical));
     if (direct) return direct;
 
     const first = topKey(logical);
-    if (first === 'components' || first === 'context' || first === 'hooks') {
-      const moved = existingSourceFile(resolve(runtimeSourceRoot, 'tui', logical));
+    if (first === "components" || first === "context" || first === "hooks") {
+      const moved = existingSourceFile(
+        resolve(runtimeSourceRoot, "tui", logical),
+      );
       if (moved) return moved;
     }
 
     const upstream = existingSourceFile(resolve(agencUpstreamRoot, logical));
     if (upstream) return upstream;
 
-    if (logical.startsWith('tui/')) {
-      const stripped = logical.slice('tui/'.length);
-      const strippedUpstream = existingSourceFile(resolve(agencUpstreamRoot, stripped));
+    if (logical.startsWith("tui/")) {
+      const stripped = logical.slice("tui/".length);
+      const strippedUpstream = existingSourceFile(
+        resolve(agencUpstreamRoot, stripped),
+      );
       if (strippedUpstream) return strippedUpstream;
     }
   }
   return null;
 }
 
-function resolveRelativeAgenCSource(importer: string, source: string): string | null {
-  const cleanImporter = importer.split('?')[0] ?? importer;
+function resolveRelativeAgenCSource(
+  importer: string,
+  source: string,
+): string | null {
+  const cleanImporter = importer.split("?")[0] ?? importer;
   const absoluteImporter = isAbsolute(cleanImporter)
     ? cleanImporter
     : resolve(__dirname, cleanImporter);
@@ -406,23 +437,30 @@ function resolveRelativeAgenCSource(importer: string, source: string): string | 
   return null;
 }
 
-function resolveMovedRuntimeTestSource(importer: string, source: string): string | null {
-  if (!source.startsWith('./') && !source.startsWith('../')) return null;
+function resolveMovedRuntimeTestSource(
+  importer: string,
+  source: string,
+): string | null {
+  if (!source.startsWith("./") && !source.startsWith("../")) return null;
   const { path: sourcePath, suffix } = splitModuleId(source);
-  const cleanImporter = importer.split('?')[0] ?? importer;
+  const cleanImporter = importer.split("?")[0] ?? importer;
   const absoluteImporter = isAbsolute(cleanImporter)
     ? cleanImporter
     : resolve(__dirname, cleanImporter);
   if (!isWithin(runtimeTestRoot, absoluteImporter)) return null;
 
-  const directTestTarget = existingRuntimeTestFile(resolve(dirname(absoluteImporter), sourcePath));
+  const directTestTarget = existingRuntimeTestFile(
+    resolve(dirname(absoluteImporter), sourcePath),
+  );
   if (directTestTarget !== null) return null;
 
   const sourceImporter = resolve(
     runtimeSourceRoot,
     relative(runtimeTestRoot, absoluteImporter),
   );
-  const mirrored = existingSourceFile(resolve(dirname(sourceImporter), sourcePath));
+  const mirrored = existingSourceFile(
+    resolve(dirname(sourceImporter), sourcePath),
+  );
   if (mirrored !== null) return `${mirrored}${suffix}`;
 
   const relocated = resolveRelativeAgenCSource(sourceImporter, sourcePath);
@@ -434,141 +472,148 @@ function resolveMovedRuntimeTestSource(importer: string, source: string): string
  * directly because Vitest/Vite merges arrays; merging setup-file arrays can
  * accidentally retain or remove security setup.
  */
-export function createAgenCVitestConfig(mode: AgenCVitestMode = 'default') {
-  const discovery = mode === 'live'
-    ? {
-        // Live tests deliberately preserve provider credentials and external
-        // I/O opt-ins. Keep this empty and do not merge configs.
-        setupFiles: [] as string[],
-        include: [...LIVE_TEST_INCLUDE],
-        exclude: [...configDefaults.exclude],
-      }
-    : mode === 'design'
+export function createAgenCVitestConfig(mode: AgenCVitestMode = "default") {
+  const discovery =
+    mode === "live"
       ? {
-          // Design audits preserve only their dedicated inputs while stripping
-          // credentials, live-provider gates, and real home state. The Node
-          // process retains the JS tripwire; an explicitly requested external
-          // browser is defense-in-depth hardened but is not an OS egress gate.
-          setupFiles: ['./vitest.design.setup.ts'],
-          include: [...DESIGN_TEST_INCLUDE],
+          // Live tests deliberately preserve provider credentials and external
+          // I/O opt-ins. Keep this empty and do not merge configs.
+          setupFiles: [] as string[],
+          include: [...LIVE_TEST_INCLUDE],
           exclude: [...configDefaults.exclude],
         }
-      : mode === 'cross-repo'
+      : mode === "design"
         ? {
-            // These tests inspect separately checked-out AgenC repositories.
-            // They retain the default credential stripping and JS tripwire,
-            // but are intentionally absent from the clean-checkout gate.
-            setupFiles: ['./vitest.setup.ts'],
-            include: [...CROSS_REPO_TEST_INCLUDE],
+            // Design audits preserve only their dedicated inputs while stripping
+            // credentials, live-provider gates, and real home state. The Node
+            // process retains the JS tripwire; an explicitly requested external
+            // browser is defense-in-depth hardened but is not an OS egress gate.
+            setupFiles: ["./vitest.design.setup.ts"],
+            include: [...DESIGN_TEST_INCLUDE],
             exclude: [...configDefaults.exclude],
           }
-        : mode === 'native'
+        : mode === "cross-repo"
           ? {
-              // Platform integration probes and portable FND contracts run on
-              // every matching hosted native builder, with normal credential
-              // stripping and the JS network tripwire.
-              setupFiles: ['./vitest.setup.ts'],
-              include: [
-                ...HOSTED_FND_TEST_INCLUDE,
-                ...NATIVE_TEST_INCLUDE,
-              ],
+              // These tests inspect separately checked-out AgenC repositories.
+              // They retain the default credential stripping and JS tripwire,
+              // but are intentionally absent from the clean-checkout gate.
+              setupFiles: ["./vitest.setup.ts"],
+              include: [...CROSS_REPO_TEST_INCLUDE],
               exclude: [...configDefaults.exclude],
             }
-          : mode === 'kernel'
+          : mode === "native"
             ? {
-                // The disposable hosted lane loads the narrow AppArmor profile
-                // and fails closed on missing kernel facilities, while the
-                // ordinary hermetic environment still strips credentials and
-                // isolates AgenC state.
-                setupFiles: ['./vitest.setup.ts'],
-                include: [...KERNEL_TEST_INCLUDE],
+                // Platform integration probes and portable FND contracts run on
+                // every matching hosted native builder, with normal credential
+                // stripping and the JS network tripwire.
+                setupFiles: ["./vitest.setup.ts"],
+                include: [...HOSTED_FND_TEST_INCLUDE, ...NATIVE_TEST_INCLUDE],
                 exclude: [...configDefaults.exclude],
               }
-          : mode === 'powershell'
-            ? {
-                // The hosted capability lane provisions an exact PowerShell
-                // runtime before entering the ordinary hermetic test boundary.
-                setupFiles: ['./vitest.setup.ts'],
-                include: [...POWERSHELL_TEST_INCLUDE],
-                exclude: [...configDefaults.exclude],
-                env: {
-                  DOTNET_CLI_TELEMETRY_OPTOUT: '1',
-                  DOTNET_NOLOGO: '1',
-                  POWERSHELL_TELEMETRY_OPTOUT: '1',
-                  POWERSHELL_UPDATECHECK: 'Off',
-                },
-              }
-            : mode === 'neovim'
+            : mode === "kernel"
               ? {
-                  // The hosted capability lane provisions a digest-pinned
-                  // Neovim before entering the ordinary hermetic boundary.
-                  setupFiles: ['./vitest.setup.ts'],
-                  include: [...NEOVIM_TEST_INCLUDE],
+                  // The disposable hosted lane loads the narrow AppArmor profile
+                  // and fails closed on missing kernel facilities, while the
+                  // ordinary hermetic environment still strips credentials and
+                  // isolates AgenC state.
+                  setupFiles: ["./vitest.setup.ts"],
+                  include: [...KERNEL_TEST_INCLUDE],
                   exclude: [...configDefaults.exclude],
                 }
-            : {
-                setupFiles: ['./vitest.setup.ts'],
-                include: [...DEFAULT_TEST_INCLUDE],
-                exclude: [...DEFAULT_TEST_EXCLUDE],
-              };
+              : mode === "powershell"
+                ? {
+                    // The hosted capability lane provisions an exact PowerShell
+                    // runtime before entering the ordinary hermetic test boundary.
+                    setupFiles: ["./vitest.setup.ts"],
+                    include: [...POWERSHELL_TEST_INCLUDE],
+                    exclude: [...configDefaults.exclude],
+                    env: {
+                      DOTNET_CLI_TELEMETRY_OPTOUT: "1",
+                      DOTNET_NOLOGO: "1",
+                      POWERSHELL_TELEMETRY_OPTOUT: "1",
+                      POWERSHELL_UPDATECHECK: "Off",
+                    },
+                  }
+                : mode === "neovim"
+                  ? {
+                      // The hosted capability lane provisions a digest-pinned
+                      // Neovim before entering the ordinary hermetic boundary.
+                      setupFiles: ["./vitest.setup.ts"],
+                      include: [...NEOVIM_TEST_INCLUDE],
+                      exclude: [...configDefaults.exclude],
+                    }
+                  : {
+                      setupFiles: ["./vitest.setup.ts"],
+                      include: [...DEFAULT_TEST_INCLUDE],
+                      exclude: [...DEFAULT_TEST_EXCLUDE],
+                    };
 
   return defineConfig({
     plugins: [
-    {
-      name: 'agenc-markdown-text-loader',
-      enforce: 'pre',
-      load(id) {
-        const cleanId = id.split('?')[0] ?? id;
-        if (!cleanId.endsWith('.md')) return null;
-        return `export default ${JSON.stringify(readFileSync(cleanId, 'utf8'))};`;
+      {
+        name: "agenc-markdown-text-loader",
+        enforce: "pre",
+        load(id) {
+          const cleanId = id.split("?")[0] ?? id;
+          if (!cleanId.endsWith(".md")) return null;
+          return `export default ${JSON.stringify(readFileSync(cleanId, "utf8"))};`;
+        },
       },
-    },
-    {
-      name: 'agenc-bare-src-alias',
-      enforce: 'pre',
-      resolveId(source, importer) {
-        if (source.startsWith('src/')) {
-          if (
-            importer === undefined ||
-            (!importer.includes('/src/agenc/') &&
-              sourceRootForImporter(importer) === null &&
-              relocatedUpstreamImporter(importer) === null)
-          ) {
-            return null;
+      {
+        name: "agenc-bare-src-alias",
+        enforce: "pre",
+        resolveId(source, importer) {
+          if (source.startsWith("src/")) {
+            if (
+              importer === undefined ||
+              (!importer.includes("/src/agenc/") &&
+                sourceRootForImporter(importer) === null &&
+                relocatedUpstreamImporter(importer) === null)
+            ) {
+              return null;
+            }
+            return resolveAgenCBareSrc(source);
           }
-          return resolveAgenCBareSrc(source);
-        }
-        if (
-          (source.startsWith('./') || source.startsWith('../')) &&
-          importer !== undefined
-        ) {
-          const movedRuntimeTestSource = resolveMovedRuntimeTestSource(importer, source);
-          if (movedRuntimeTestSource !== null) return movedRuntimeTestSource;
-        }
-        if (
-          (source.startsWith('./') || source.startsWith('../')) &&
-          importer !== undefined &&
-          (importer.includes('/src/agenc/') ||
-            sourceRootForImporter(importer) !== null ||
-            relocatedUpstreamImporter(importer) !== null)
-        ) {
-          return resolveRelativeAgenCSource(importer, source);
-        }
-        return null;
+          if (
+            (source.startsWith("./") || source.startsWith("../")) &&
+            importer !== undefined
+          ) {
+            const movedRuntimeTestSource = resolveMovedRuntimeTestSource(
+              importer,
+              source,
+            );
+            if (movedRuntimeTestSource !== null) return movedRuntimeTestSource;
+          }
+          if (
+            (source.startsWith("./") || source.startsWith("../")) &&
+            importer !== undefined &&
+            (importer.includes("/src/agenc/") ||
+              sourceRootForImporter(importer) !== null ||
+              relocatedUpstreamImporter(importer) !== null)
+          ) {
+            return resolveRelativeAgenCSource(importer, source);
+          }
+          return null;
+        },
       },
-    },
     ],
     resolve: {
       alias: [
-        { find: 'bun:test', replacement: resolve(__dirname, 'tests/helpers/bun-test-shim.ts') },
-        { find: 'bun:bundle', replacement: resolve(__dirname, 'src/build/feature.ts') },
-        { find: /^src\/(.*)$/, replacement: resolve(__dirname, 'src/$1') },
+        {
+          find: "bun:test",
+          replacement: resolve(__dirname, "tests/helpers/bun-test-shim.ts"),
+        },
+        {
+          find: "bun:bundle",
+          replacement: resolve(__dirname, "src/build/feature.ts"),
+        },
+        { find: /^src\/(.*)$/, replacement: resolve(__dirname, "src/$1") },
       ],
     },
     test: {
       globals: false,
-      environment: 'node',
-      pool: 'forks',
+      environment: "node",
+      pool: "forks",
       // Default mode strips ambient credentials/state and installs the public
       // network tripwire before test modules load. Live mode has no setup.
       ...discovery,
@@ -577,11 +622,11 @@ export function createAgenCVitestConfig(mode: AgenCVitestMode = 'default') {
         interopDefault: true,
       },
       coverage: {
-        provider: 'v8',
-        include: ['src/**/*.{ts,tsx,mts,cts}'],
-        exclude: ['src/**/*.d.ts'],
-        reporter: ['text-summary', 'json-summary', 'json'],
-        reportsDirectory: 'coverage/runtime',
+        provider: "v8",
+        include: ["src/**/*.{ts,tsx,mts,cts}"],
+        exclude: ["src/**/*.d.ts"],
+        reporter: ["text-summary", "json-summary", "json"],
+        reportsDirectory: "coverage/runtime",
         thresholds: {
           statements: 100,
           branches: 100,

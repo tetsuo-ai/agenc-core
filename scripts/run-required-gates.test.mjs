@@ -42,9 +42,11 @@ import {
   LOCAL_GATE_COMBINED_LIMITS,
 } from "./systemd-worker-sandbox.mjs";
 import {
+  assertRequiredGateRedProbePolicyClosure,
   computeRequiredGateContract,
   REQUIRED_GATE_CONTEXT,
   REQUIRED_GATE_POLICY_PATHS,
+  REQUIRED_GATE_RED_PROBE_POLICY_PATHS,
 } from "./required-gate-contract.mjs";
 import { proveDockerDaemonQuiescence } from "./docker-quiescence.mjs";
 
@@ -122,9 +124,46 @@ test("required gate inventory is complete, ordered, and bounded", () => {
       !path.isAbsolute(relativePath) && !relativePath.includes("..")
     ))
   ));
-  assert.ok(
-    REQUIRED_GATE_POLICY_PATHS.includes("runtime/tsconfig.test-support.json"),
-    "runtime/tsconfig.test-support.json is not hashed",
+  const exactRedProbePolicyClosure = [
+    "runtime/native/agenc-process-broker.c",
+    "runtime/native/agenc-process-job-broker.cs",
+    "runtime/scripts/run-fnd-red-probes.mjs",
+    "runtime/src/utils/supervisedProcess.ts",
+    "runtime/tests/fnd/red-probes/manifest.json",
+    "runtime/tests/helpers/red-probe-bootstrap.mjs",
+    "runtime/tests/helpers/red-probe.ts",
+  ];
+  assert.deepEqual(
+    REQUIRED_GATE_RED_PROBE_POLICY_PATHS,
+    exactRedProbePolicyClosure,
+  );
+  for (const policyPath of [
+    "runtime/tsconfig.test-support.json",
+    ...exactRedProbePolicyClosure,
+  ]) {
+    assert.ok(
+      REQUIRED_GATE_POLICY_PATHS.includes(policyPath),
+      `${policyPath} is not hashed`,
+    );
+  }
+  for (const omittedPath of exactRedProbePolicyClosure) {
+    assert.throws(
+      () =>
+        assertRequiredGateRedProbePolicyClosure(
+          REQUIRED_GATE_POLICY_PATHS.filter(
+            (policyPath) => policyPath !== omittedPath,
+          ),
+        ),
+      new RegExp(`${omittedPath.replaceAll(".", "\\.")} exactly once`, "u"),
+    );
+  }
+  assert.throws(
+    () =>
+      assertRequiredGateRedProbePolicyClosure([
+        ...REQUIRED_GATE_POLICY_PATHS,
+        exactRedProbePolicyClosure[0],
+      ]),
+    /agenc-process-broker\.c exactly once/u,
   );
   const npm = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["--version"], {
     encoding: "utf8",

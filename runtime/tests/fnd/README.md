@@ -59,8 +59,8 @@ bun test runtime/tests/fnd/portable-repository-path.bun.test.ts \
 The isolated benchmark harness and reviewed known-failure baseline live in
 [`../../benchmarks/fnd/`](../../benchmarks/fnd/). Red probes remain separate
 from timing evidence so noisy wall-clock measurements never enter the default
-test suite. The red-probe runner lands in its separately reviewed foundation
-PR. Production parsers must not import these test-only helpers, benchmarks, or
+test suite. The authenticated red-probe runner and containment contracts live in this
+foundation layer. Production parsers must not import these test-only helpers, benchmarks, or
 the fixture corpus.
 
 ## Process and restart helpers

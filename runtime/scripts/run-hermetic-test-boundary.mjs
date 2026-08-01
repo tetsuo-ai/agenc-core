@@ -32,6 +32,7 @@ export const HERMETIC_SUITE_COMMAND =
   'umask 077 && mkdir -p "$HOME" && chmod 700 "$HOME" && ' +
   "node ../node_modules/typescript/bin/tsc --noEmit && " +
   "node ../node_modules/typescript/bin/tsc --noEmit --project tsconfig.test-support.json && " +
+  "node scripts/run-fnd-red-probes.mjs && " +
   'exec node scripts/run-hermetic-vitest.mjs --require-zero-skips "$@"';
 const DEFAULT_DOCKER_HOST = "unix:///var/run/docker.sock";
 export function resolveDockerHost(value = process.env.DOCKER_HOST) {

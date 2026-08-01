@@ -46,6 +46,8 @@
     "tests/helpers/process-evidence-contract.mjs",
     "tests/helpers/process-harness-contract.ts",
     "tests/helpers/process-workspace.ts",
+    "tests/helpers/red-probe-bootstrap.mjs",
+    "tests/helpers/red-probe.ts",
     "tests/helpers/restart-harness.ts",
     "tests/helpers/seeded-rng.ts",
     "tests/helpers/temp-workspace.ts",
@@ -64,7 +66,10 @@
     "tests/fnd/process-fixtures/crash-child.ts",
     "tests/fnd/process-repository-helpers.bun.test.ts",
     "tests/fnd/process-repository-helpers.native.test.ts",
-    "tests/fnd/process-repository-helpers.test.ts"
+    "tests/fnd/process-repository-helpers.test.ts",
+    "tests/fnd/red-probe-containment.test.ts",
+    "tests/fnd/red-probe-runner.contract.test.ts",
+    "tests/fnd/red-probes/**/*.red-probe.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

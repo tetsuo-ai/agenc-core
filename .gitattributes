@@ -12,3 +12,10 @@ package-lock.json text eol=lf
 # digest and canonical-JSON checks require LF on every supported checkout.
 runtime/benchmarks/fnd/baseline.v1.json text eol=lf
 runtime/benchmarks/fnd/baseline.v1.md text eol=lf
+
+# The red-probe runner authenticates these exact reviewed source bytes. Keep
+# every digest-bound support file and registered probe stable on Windows.
+runtime/tests/helpers/red-probe-bootstrap.mjs text eol=lf
+runtime/tests/helpers/red-probe.ts text eol=lf
+runtime/tests/fnd/red-probes/*.red-probe.ts text eol=lf
+runtime/tests/fnd/red-probes/**/*.red-probe.ts text eol=lf

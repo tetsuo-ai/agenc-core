@@ -45,9 +45,11 @@ npm run check:sbom
 npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime
 ```
 
-`npm test` contains the runtime typecheck and stable Vitest suite. The final
-startup command exercises the built TUI/daemon path in real PTYs. Run additional
-task-specific regression tests before this complete final-head sequence.
+`npm test` contains the runtime and test-support typechecks, the separate
+expected-red probe audit, and the stable Vitest suite, in that order. The final
+startup command exercises the built TUI/daemon path in real PTYs. Run
+additional task-specific regression tests before this complete final-head
+sequence.
 
 The evidence must contain:
 
@@ -231,17 +233,17 @@ It requires Linux, Node.js 26.5.0, npm 11.17.0, a clean checkout, and an exact
 lowercase 40-character commit. In this optional design, the authoritative
 deployment runs each gate in its own transient systemd cgroup.
 
-| Order | Gate                                               |  Bound | Candidate write access      |
-| ----: | -------------------------------------------------- | -----: | --------------------------- |
-|     1 | SDK build (includes strict TypeScript compilation) |  5 min | SDK `dist`                  |
-|     2 | Launcher package tests                             |  5 min | private state only          |
-|     3 | Local-gate policy tests                            |  5 min | private state only          |
-|     4 | Agent-surface checker tests                        |  5 min | Vite temp only              |
-|     5 | Hermetic runtime typecheck and stable Vitest suite | 20 min | private state and Vite temp |
-|     6 | Agent-surface structural contract                  |  5 min | private state only          |
-|     7 | Runtime build and declarations                     | 10 min | runtime `dist`              |
-|     8 | Deterministic SPDX SBOM check                      |  5 min | private state only          |
-|     9 | PTY/TUI built-runtime startup smoke                | 10 min | private state only          |
+| Order | Gate                                                                               |  Bound | Candidate write access      |
+| ----: | ---------------------------------------------------------------------------------- | -----: | --------------------------- |
+|     1 | SDK build (includes strict TypeScript compilation)                                 |  5 min | SDK `dist`                  |
+|     2 | Launcher package tests                                                             |  5 min | private state only          |
+|     3 | Local-gate policy tests                                                            |  5 min | private state only          |
+|     4 | Agent-surface checker tests                                                        |  5 min | Vite temp only              |
+|     5 | Hermetic runtime/test-support typechecks, red-probe audit, and stable Vitest suite | 20 min | private state and Vite temp |
+|     6 | Agent-surface structural contract                                                  |  5 min | private state only          |
+|     7 | Runtime build and declarations                                                     | 10 min | runtime `dist`              |
+|     8 | Deterministic SPDX SBOM check                                                      |  5 min | private state only          |
+|     9 | PTY/TUI built-runtime startup smoke                                                | 10 min | private state only          |
 
 The stable suite already runs the agent-surface Vitest files, so gate 6 uses
 `--no-run-commands`; it validates the versioned surface ledger without running
@@ -250,7 +252,8 @@ miss a transitive daemon, launcher, generated-code, or build change.
 
 There are no duplicate compiler passes: the SDK build is its typecheck, and the
 hermetic stable-suite container performs the authoritative runtime `tsc
---noEmit` immediately before Vitest.
+--noEmit`, the dedicated test-support `tsc --noEmit`, and the red-probe audit
+before Vitest.
 
 The SDK output is frozen root-owned immediately after its build. The final
 runtime output is likewise frozen after the runtime build. Every later gate
@@ -276,6 +279,13 @@ release verifiers, App/ruleset policy, systemd sandbox builders, hermetic
 boundary, TUI supervisor, and their policy tests. The root-installed supervisor
 compares a candidate digest with the reviewed root-owned approval before
 `npm ci`. A PR cannot approve its own gate-policy change.
+
+The red-probe portion of that fixed inventory is fail-closed and exact: it
+includes the runner, manifest, helper, bootstrap, supervised-process
+implementation, Linux subreaper broker source, and Windows Job Object broker
+source. Contract tests remove each member in turn and require the policy-closure
+check to fail, so containment or handoff code cannot silently fall outside the
+approved digest.
 
 ## Inactive optional worker and publisher trust boundaries
 
@@ -911,19 +921,25 @@ fixtures, fixed telemetry/update opt-outs, and an asserted no-process-leak
 postcondition; this narrow lane is not an OS egress boundary.
 The `neovim` job similarly provisions the official digest- and byte-pinned
 Neovim 0.12.1 Linux binary and requires all four real-process lifecycle tests
-in its one-file allowlist. The `macos-native` and `windows-native` jobs first
-run a shared 80-test, eight-suite, five-file FND set. It combines the 44-test
-release-builder set with 36 benchmark-harness fault contracts for process-tree
-containment, owned-root retention, exclusive artifact publication, minimal
-subprocess environments, bounded metadata commands, and provenance binding.
-The macOS job adds one Seatbelt test for an exact total of 81 tests, ten
-suites, and six files. The Windows PR job adds its named-pipe and
-atomic-publication/`.cmd` contracts for an exact total of 86 tests, thirteen
-suites, and eight files. Release builders deliberately retain their narrower
-44-test shared set: the Windows release subset excludes the two named-pipe-only
-PR tests and the benchmark fault contract, so it remains 47 tests, ten suites,
-and six files. Every result parser requires its exact reviewed suite, test, and
-file counts with no failed, pending, skipped, or todo tests.
+in its one-file allowlist. The `macos-native` job first runs the 62-test
+red-probe runner contract, including residual-process settlement on Darwin.
+The macOS and Windows native jobs then run a shared 80-test, eight-suite,
+five-file FND set. It combines the 44-test release-builder set with 36
+benchmark-harness fault contracts for process-tree containment, owned-root
+retention, exclusive artifact publication, minimal subprocess environments,
+bounded metadata commands, and provenance binding. macOS adds one Seatbelt test
+for an exact total of 81 tests, ten suites, and six files. Before its native
+allowlist, Windows requires the exact one-file FND red-probe audit summary and
+runs three forced-containment tests in one file. Its named-pipe and
+atomic-publication/`.cmd` contracts bring the native total to 86 tests,
+thirteen suites, and eight files. Release builders deliberately retain their
+narrower 44-test shared set: the Windows release subset excludes the two
+named-pipe-only PR tests and the benchmark fault contract, so it remains 47
+tests, ten suites, and six files. Native result parsers require the exact
+reviewed suite, test, and normalized file inventory with no failed, pending,
+skipped, or todo tests. The red-containment parser additionally requires
+exactly three passing per-file assertions while accepting Vitest's
+reporter-dependent suite aggregation.
 
 This narrow hosted check supplements the local required gate; it does not
 replace or authorize the broader test, typecheck, build, TUI, or release

@@ -126,6 +126,16 @@ export const REQUIRED_GATES = Object.freeze([
 // gatekeeper independently hashes this fixed inventory and compares it with a
 // root-owned approved digest before candidate code runs. Ordinary product and
 // test files remain reviewable without requiring a gate-policy rotation.
+export const REQUIRED_GATE_RED_PROBE_POLICY_PATHS = Object.freeze([
+  "runtime/native/agenc-process-broker.c",
+  "runtime/native/agenc-process-job-broker.cs",
+  "runtime/scripts/run-fnd-red-probes.mjs",
+  "runtime/src/utils/supervisedProcess.ts",
+  "runtime/tests/fnd/red-probes/manifest.json",
+  "runtime/tests/helpers/red-probe-bootstrap.mjs",
+  "runtime/tests/helpers/red-probe.ts",
+]);
+
 export const REQUIRED_GATE_POLICY_PATHS = Object.freeze([
   ".npmrc",
   ".github/workflows/platform-tests.yml",
@@ -168,6 +178,7 @@ export const REQUIRED_GATE_POLICY_PATHS = Object.freeze([
   "runtime/scripts/tui-gate-state.mjs",
   "runtime/scripts/hermetic-docker-seccomp.json",
   "runtime/scripts/hermetic-network-boundary.c",
+  ...REQUIRED_GATE_RED_PROBE_POLICY_PATHS,
   "runtime/scripts/run-hermetic-test-boundary.mjs",
   "runtime/scripts/run-hermetic-vitest.mjs",
   "runtime/scripts/write-build-version.mjs",
@@ -198,6 +209,24 @@ export const REQUIRED_GATE_POLICY_PATHS = Object.freeze([
   "scripts/systemd-worker-sandbox.mjs",
   "scripts/verify-required-gate-check.mjs",
 ]);
+
+export function assertRequiredGateRedProbePolicyClosure(policyPaths) {
+  if (!Array.isArray(policyPaths)) {
+    throw new Error("required-gate policy paths must be an array");
+  }
+  for (const requiredPath of REQUIRED_GATE_RED_PROBE_POLICY_PATHS) {
+    const occurrences = policyPaths.filter(
+      (candidatePath) => candidatePath === requiredPath,
+    ).length;
+    if (occurrences !== 1) {
+      throw new Error(
+        `required-gate red-probe policy closure must contain ${requiredPath} exactly once`,
+      );
+    }
+  }
+}
+
+assertRequiredGateRedProbePolicyClosure(REQUIRED_GATE_POLICY_PATHS);
 
 export const REQUIRED_GATE_REPOSITORY_ROOT = realpathSync(
   path.dirname(path.dirname(fileURLToPath(import.meta.url))),

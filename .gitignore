@@ -40,6 +40,7 @@ obj/
 /.wallet/
 *.json
 !/runtime/tests/fnd/fixtures/**/*.json
+!/runtime/tests/fnd/red-probes/manifest.json
 !/package-lock.json
 !/release-toolchain.json
 !/runtime/tsconfig.bundle.json

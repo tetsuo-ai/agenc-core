@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
+  "probeCount": 1,
+  "probes": [
+    {
+      "id": "intentional-transition-omission",
+      "task": "FND-001",
+      "classification": "harness-self-test",
+      "file": "tests/fnd/red-probes/intentional-transition-omission.red-probe.ts",
+      "fingerprint": "FND-001:HARNESS-SELF-TEST:INTENTIONAL-TRANSITION-OMISSION",
+      "sourceSha256": "6f55ecb0ae89d27ebd00ce05e46f53743e3608091790da206f1966566d57c329",
+      "timeoutMs": 10000
+    }
+  ]
+}

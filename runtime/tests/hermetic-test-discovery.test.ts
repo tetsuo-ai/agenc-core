@@ -532,6 +532,9 @@ describe("hermetic test discovery", () => {
     expect(pkg.scripts?.["typecheck:test-support"]).toBe(
       "tsc --noEmit --project tsconfig.test-support.json",
     );
+    expect(pkg.scripts?.["test:red-probes"]).toBe(
+      "node scripts/run-fnd-red-probes.mjs",
+    );
     expect(pkg.scripts?.["test:host-functional"]).toBe(
       "node scripts/run-hermetic-vitest.mjs run",
     );
@@ -543,7 +546,7 @@ describe("hermetic test discovery", () => {
     );
   });
 
-  it("runs test-support typechecking inside the authoritative boundary", async () => {
+  it("runs test-support typechecking and red probes inside the authoritative boundary", async () => {
     const boundaryUrl = new URL(
       "../scripts/run-hermetic-test-boundary.mjs",
       import.meta.url,
@@ -560,6 +563,7 @@ describe("hermetic test discovery", () => {
       "node ../node_modules/typescript/bin/tsc --noEmit";
     const supportTypecheck =
       "node ../node_modules/typescript/bin/tsc --noEmit --project tsconfig.test-support.json";
+    const redProbes = "node scripts/run-fnd-red-probes.mjs";
     const vitest =
       'exec node scripts/run-hermetic-vitest.mjs --require-zero-skips "$@"';
 
@@ -567,9 +571,10 @@ describe("hermetic test discovery", () => {
     expect(command.indexOf(supportTypecheck)).toBeGreaterThan(
       command.indexOf(productionTypecheck),
     );
-    expect(command.indexOf(vitest)).toBeGreaterThan(
+    expect(command.indexOf(redProbes)).toBeGreaterThan(
       command.indexOf(supportTypecheck),
     );
+    expect(command.indexOf(vitest)).toBeGreaterThan(command.indexOf(redProbes));
   });
 
   it("ignores ambient Git repository overrides when resolving its readonly metadata mount", async () => {

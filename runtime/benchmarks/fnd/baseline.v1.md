@@ -4,7 +4,7 @@ This artifact records bounded observations of known failures. Every row is
 informational: no current result is a passing performance threshold or gate.
 Generated inputs are synthetic and created only for the benchmark process.
 
-- JSON SHA-256: `8c72fc88fd10dfde2f91bd7cc3ce8028af552781b7b699db9931529cac0abd07`
+- JSON SHA-256: `03c77d2d209972343f72347ac33f60b1582393c566a2893fb995c650283cc07d`
 - Source revision: `925f3ec2860abf48e0c6c0830d135da2587a4d69`
 - Production tree: `runtime/src` at Git object `d802c0cd2dccdfa714252859bcd7e19605a8c8fb`
 - Loaded production closure: `64` module bindings across `5` cases
@@ -18,17 +18,17 @@ Generated inputs are synthetic and created only for the benchmark process.
 
 | Case | Input | Status | Median ms | MAD ms | Worker peak RSS bytes | RSS lower-bound bytes |
 | --- | ---: | --- | ---: | ---: | ---: | ---: |
-| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 5.985 | 0.384 | 92852224 | 92852224 |
-| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 16.198 | 0.569 | 122150912 | 122150912 |
-| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 38.803 | 1.026 | 136331264 | 136294400 |
-| `patch_delete_parser_suffix_slicing` | `hunkCount=8000` | `completed` | 6.689 | 0.774 | 123228160 | 123228160 |
-| `patch_delete_parser_suffix_slicing` | `hunkCount=16000` | `completed` | 30.571 | 1.720 | 157253632 | 157253632 |
-| `patch_delete_parser_suffix_slicing` | `hunkCount=32000` | `completed` | 355.764 | 3.343 | 263548928 | 234844160 |
-| `regex_fallback_catastrophic_backtracking` | `fileCount=1,repeatedCharacters=30` | `timed_out` | 2520.940 | 0.565 | n/a | 110346240 |
-| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=32,queryCodeUnits=8` | `completed` | 4.055 | 0.079 | 93421568 | 93421568 |
-| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=64,queryCodeUnits=8` | `completed` | 12.930 | 0.129 | 92778496 | 92778496 |
-| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=128,queryCodeUnits=8` | `completed` | 49.395 | 2.126 | 102354944 | 102354944 |
-| `fuzzy_tui_query_truncation` | `candidateCount=2,indexedQueryCodeUnits=64,queryCodeUnits=69` | `completed` | 0.016 | 0.003 | 80064512 | 80064512 |
+| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 6.948 | 0.712 | 90243072 | 90243072 |
+| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 17.555 | 1.824 | 120401920 | 120401920 |
+| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 43.803 | 2.894 | 132947968 | 132947968 |
+| `patch_delete_parser_suffix_slicing` | `hunkCount=8000` | `completed` | 6.021 | 0.371 | 121593856 | 121593856 |
+| `patch_delete_parser_suffix_slicing` | `hunkCount=16000` | `completed` | 30.596 | 5.291 | 158121984 | 157597696 |
+| `patch_delete_parser_suffix_slicing` | `hunkCount=32000` | `completed` | 343.640 | 1.055 | 261287936 | 232443904 |
+| `regex_fallback_catastrophic_backtracking` | `fileCount=1,repeatedCharacters=30` | `timed_out` | 2524.525 | 0.272 | n/a | 109490176 |
+| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=32,queryCodeUnits=8` | `completed` | 3.684 | 0.082 | 93925376 | 93925376 |
+| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=64,queryCodeUnits=8` | `completed` | 12.965 | 0.167 | 92688384 | 92688384 |
+| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=128,queryCodeUnits=8` | `completed` | 54.937 | 2.520 | 101728256 | 101728256 |
+| `fuzzy_tui_query_truncation` | `candidateCount=2,indexedQueryCodeUnits=64,queryCodeUnits=69` | `completed` | 0.013 | 0.001 | 79159296 | 79159296 |
 
 ## Known-failure policy
 

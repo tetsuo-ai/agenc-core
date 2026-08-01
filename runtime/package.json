@@ -42,6 +42,7 @@
     "validate:tui-core-parity": "npm run test:tui-core-parity",
     "test:tui-yolo-parity": "node scripts/run-hermetic-vitest.mjs run tests/tui/components/PromptInput/permissionModeChrome.test.ts tests/tui/components/FullscreenLayout.test.tsx tests/tui/components/PromptInput/PromptInputFooterLeftSide.render.test.tsx tests/tui/components/PromptInput/PromptInputFooterLeftSide.render.runtime-coverage.test.tsx tests/permissions/permission-mode.test.ts tests/app-server-client/index.test.ts --reporter=dot",
     "test:bun:isolated": "node scripts/run-bun-tests-isolated.mjs",
+    "test:red-probes": "node scripts/run-fnd-red-probes.mjs",
     "check:tui-command-visual-smoke": "node scripts/check-tui-command-visual-smoke.mjs",
     "check:tui-workbench-visual-smoke": "node scripts/check-tui-workbench-visual-smoke.mjs",
     "check:tui-workbench-transcript-scroll": "node scripts/check-tui-workbench-transcript-scroll.mjs",
