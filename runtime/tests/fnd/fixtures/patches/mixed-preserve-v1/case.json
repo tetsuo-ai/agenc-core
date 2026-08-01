@@ -1,0 +1,9 @@
+{
+  "format": "agenc.patch-byte-case.v1",
+  "source": "source.bin",
+  "patch": "patch.bin",
+  "expected": "expected.bin",
+  "sourceLineEndings": "mixed",
+  "sourceHasFinalNewline": true,
+  "targetContract": "use the nearest unchanged predecessor newline for a replacement and preserve every other boundary"
+}

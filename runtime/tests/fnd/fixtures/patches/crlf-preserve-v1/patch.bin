@@ -1,0 +1,6 @@
+*** Begin Patch
+*** Update File: sample.txt
+@@
+-beta
++BETA
+*** End Patch

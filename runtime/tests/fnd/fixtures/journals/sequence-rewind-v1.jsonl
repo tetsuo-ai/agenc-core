@@ -1,0 +1,4 @@
+{"type":"event_msg","payload":{"eventId":"event:1","id":"sequence-rewind-v1","seq":1,"msg":{"type":"turn_started","payload":{"turnId":"sequence-rewind-v1"}}},"eventVersion":1}
+{"type":"event_msg","payload":{"eventId":"event:2","id":"sequence-rewind-v1","seq":2,"msg":{"type":"agent_message","payload":{"message":"sequence two"}}},"eventVersion":1}
+{"type":"event_msg","payload":{"eventId":"event:3","id":"sequence-rewind-v1","seq":3,"msg":{"type":"agent_message","payload":{"message":"sequence three"}}},"eventVersion":1}
+{"type":"event_msg","payload":{"eventId":"fixture:sequence-rewind-terminal","id":"sequence-rewind-v1","seq":2,"msg":{"type":"turn_complete","payload":{"turnId":"sequence-rewind-v1"}}},"eventVersion":1}

@@ -1,0 +1,5 @@
+** -text
+*.bin binary
+.gitattributes text eol=lf
+README.md text eol=lf
+manifest.json text eol=lf

@@ -1,0 +1,31 @@
+{
+  "format": "agenc.sqlite-seed-recipe.v1",
+  "database": "state.sqlite",
+  "applyMigrationsThrough": 16,
+  "contractMigration": 2,
+  "scenarioOptions": {"idColumn": "source_id"},
+  "pathFields": {"inputCsvPath": "synthetic/input.csv", "outputCsvPath": "synthetic/output.csv"},
+  "statements": [
+    {
+      "sql": "INSERT INTO csv_agent_jobs (id, name, status, instruction, output_schema_json, input_headers_json, input_csv_path, output_csv_path, auto_export, max_runtime_seconds, created_at, updated_at, started_at, completed_at, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": ["legacy-csv-v2", "legacy CSV fixture", "running", "Process {task}", null, "[\"source_id\",\"task\"]", "synthetic/input.csv", "synthetic/output.csv", 1, 300, 1785456000, 1785456000, 1785456000, null, null]
+    },
+    {
+      "sql": "INSERT INTO csv_agent_job_items (job_id, item_id, row_index, source_id, row_json, status, assigned_thread_id, attempt_count, result_json, last_error, created_at, updated_at, completed_at, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": ["legacy-csv-v2", "pending-row", 0, "pending-row", "{\"source_id\":\"pending-row\",\"task\":\"pending synthetic row\"}", "pending", null, 0, null, null, 1785456000, 1785456000, null, null]
+    },
+    {
+      "sql": "INSERT INTO csv_agent_job_items (job_id, item_id, row_index, source_id, row_json, status, assigned_thread_id, attempt_count, result_json, last_error, created_at, updated_at, completed_at, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": ["legacy-csv-v2", "running-row", 1, "running-row", "{\"source_id\":\"running-row\",\"task\":\"running synthetic row\"}", "running", "thread-legacy-running", 1, null, null, 1785456000, 1785456001, null, null]
+    },
+    {
+      "sql": "INSERT INTO csv_agent_job_items (job_id, item_id, row_index, source_id, row_json, status, assigned_thread_id, attempt_count, result_json, last_error, created_at, updated_at, completed_at, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": ["legacy-csv-v2", "completed-row", 2, "completed-row", "{\"source_id\":\"completed-row\",\"task\":\"completed synthetic row\"}", "completed", "thread-legacy-completed", 1, "{\"summary\":\"synthetic result\"}", null, 1785456000, 1785456002, 1785456002, 1785456002]
+    }
+  ],
+  "observations": [
+    "migration 2 stores pending, running, and completed rows",
+    "the configured idColumn is not persisted in the legacy tables",
+    "the running row has no durable physical-effect outcome"
+  ]
+}

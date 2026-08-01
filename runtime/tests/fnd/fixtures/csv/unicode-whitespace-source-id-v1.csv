@@ -1,0 +1,3 @@
+source_id,task
+ ,"thin-space-only configured identity"
+"  padded-id  ","identity whose surrounding spaces are significant"

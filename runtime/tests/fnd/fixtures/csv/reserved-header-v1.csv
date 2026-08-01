@@ -1,0 +1,2 @@
+source_id,job_id,item_id,row_index,status,attempt_count,last_error,result_json,result_availability,reported_at,completed_at,task
+reserved-001,synthetic-job,synthetic-item,0,pending,0,,,not_produced,2026-07-31T00:00:00.000Z,,"reserved output collision fixture"

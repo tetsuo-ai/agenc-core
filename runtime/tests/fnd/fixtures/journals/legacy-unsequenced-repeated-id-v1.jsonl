@@ -1,0 +1,3 @@
+{"type":"event_msg","payload":{"id":"legacy-repeated","msg":{"type":"agent_message","payload":{"message":"identical synthetic body"}}},"eventVersion":1}
+{"type":"event_msg","payload":{"id":"legacy-repeated","msg":{"type":"agent_message","payload":{"message":"identical synthetic body"}}},"eventVersion":1}
+{"type":"event_msg","payload":{"id":"legacy-repeated","msg":{"type":"agent_message","payload":{"message":"distinct synthetic body"}}},"eventVersion":1}

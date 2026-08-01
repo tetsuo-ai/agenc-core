@@ -1,0 +1,2 @@
+{"type":"event_msg","payload":{"eventId":"event:1","id":"mixed-lanes-v1","seq":1,"msg":{"type":"turn_started","payload":{"turnId":"mixed-lanes-v1"}}},"eventVersion":1}
+{"type":"event_msg","payload":{"id":"mixed-lanes-v1","msg":{"type":"agent_message","payload":{"message":"legacy row in sequenced source"}}},"eventVersion":1}

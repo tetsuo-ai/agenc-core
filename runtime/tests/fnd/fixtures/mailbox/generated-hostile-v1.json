@@ -1,0 +1,23 @@
+{
+  "format": "agenc.hostile-value-recipe.v1",
+  "validMessageInput": {
+    "author": "synthetic-worker",
+    "recipient": "synthetic-parent",
+    "content": "synthetic mailbox content",
+    "triggerTurn": false,
+    "direction": "up"
+  },
+  "constructionSemantics": {
+    "attach_value": "clone validMessageInput and assign the generated value to metadata.hostile",
+    "metadata_root": "use the generated value itself as metadata without constructing a message"
+  },
+  "recipes": [
+    {"id": "broad-object", "measurement": "full_message", "construct": {"kind": "attach_value", "valueRecipe": {"kind": "object", "propertyCount": 10001, "value": "x"}}},
+    {"id": "oversize-string", "measurement": "full_message", "construct": {"kind": "attach_value", "valueRecipe": {"kind": "utf8_string", "byteLength": 1048577, "fill": "x"}}},
+    {"id": "sparse-array", "measurement": "full_message", "construct": {"kind": "attach_value", "valueRecipe": {"kind": "sparse_array", "length": 1000001, "entries": [[0, "first"], [1000000, "last"]]}}},
+    {"id": "undefined-leaf", "measurement": "full_message", "construct": {"kind": "attach_value", "valueRecipe": {"kind": "object", "properties": [{"key": "content", "valueKind": "undefined"}]}}},
+    {"id": "self-cycle", "measurement": "full_message", "construct": {"kind": "attach_value", "valueRecipe": {"kind": "cycle", "edge": ["value.self", "value"]}}},
+    {"id": "throwing-getter", "measurement": "metadata_only", "construct": {"kind": "metadata_root", "valueRecipe": {"kind": "accessor", "property": "content", "getter": "throw_synthetic_error"}}},
+    {"id": "throwing-proxy", "measurement": "metadata_only", "construct": {"kind": "metadata_root", "valueRecipe": {"kind": "proxy", "trap": "ownKeys", "behavior": "throw_synthetic_error"}}}
+  ]
+}

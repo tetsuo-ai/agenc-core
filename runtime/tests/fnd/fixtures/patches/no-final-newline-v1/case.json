@@ -1,0 +1,9 @@
+{
+  "format": "agenc.patch-byte-case.v1",
+  "source": "source.bin",
+  "patch": "patch.bin",
+  "expected": "expected.bin",
+  "sourceLineEndings": "lf",
+  "sourceHasFinalNewline": false,
+  "targetContract": "change the final line without inventing a final newline"
+}

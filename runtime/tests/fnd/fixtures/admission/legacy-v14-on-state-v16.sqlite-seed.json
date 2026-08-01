@@ -1,0 +1,72 @@
+{
+  "format": "agenc.sqlite-seed-recipe.v1",
+  "database": "state.sqlite",
+  "applyMigrationsThrough": 16,
+  "contractMigration": 14,
+  "statements": [
+    {
+      "id": "legacy-parent-id",
+      "sql": "INSERT INTO agent_jobs (id, kind, status, priority, input_json, created_at, updated_at, available_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": [
+        "legacy-parent-id",
+        "model_turn",
+        "queued",
+        0,
+        "{\"step\":{\"runId\":\"legacy-child\",\"stepId\":\"turn-1\",\"parentRunId\":\"legacy-parent-run\"},\"kind\":\"model_turn\",\"estimate\":{\"maxInputTokens\":20,\"maxOutputTokens\":20,\"maxCostUsd\":0.004},\"workspaceId\":\"workspace-a\",\"sessionId\":\"session-a\",\"parentId\":\"legacy-parent-scope\",\"autonomous\":false}",
+        "2026-07-31T00:00:00.000Z",
+        "2026-07-31T00:00:00.000Z",
+        "2026-07-31T00:00:00.000Z"
+      ]
+    },
+    {
+      "id": "missing-budget-identity",
+      "sql": "INSERT INTO agent_jobs (id, kind, status, priority, input_json, created_at, updated_at, available_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": [
+        "missing-budget-identity",
+        "model_turn",
+        "queued",
+        1,
+        "{\"step\":{\"runId\":\"legacy-direct\",\"stepId\":\"turn-1\"},\"kind\":\"model_turn\",\"estimate\":{\"maxInputTokens\":32,\"maxOutputTokens\":32,\"maxCostUsd\":0.008},\"workspaceId\":\"workspace-a\",\"sessionId\":\"session-a\",\"parentScopeId\":\"session-a\",\"autonomous\":false}",
+        "2026-07-31T00:00:01.000Z",
+        "2026-07-31T00:00:01.000Z",
+        "2026-07-31T00:00:01.000Z"
+      ]
+    },
+    {
+      "id": "dispatched-without-terminal-job",
+      "sql": "INSERT INTO agent_jobs (id, kind, status, priority, input_json, created_at, updated_at, available_at, admission_run_id, admission_step_id, admission_workspace_id, admission_session_id, admission_autonomous, admission_approval_required, admission_max_input_tokens, admission_max_output_tokens, admission_attempts, admission_queue_sequence, admission_dispatched_at, admission_reservation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": ["dispatched-without-terminal-job", "model_turn", "running", 2, "{\"step\":{\"runId\":\"dispatched-without-terminal\",\"stepId\":\"turn-1\"},\"kind\":\"model_turn\",\"estimate\":{\"maxInputTokens\":10,\"maxOutputTokens\":10,\"maxCostUsd\":0.004},\"workspaceId\":\"workspace-a\",\"sessionId\":\"session-a\",\"parentScopeId\":\"session-a\",\"autonomous\":false}", "2026-07-31T00:00:02.000Z", "2026-07-31T00:00:02.000Z", "2026-07-31T00:00:02.000Z", "dispatched-without-terminal", "turn-1", "workspace-a", "session-a", 0, 0, 10, 10, 1, 2, "2026-07-31T00:00:03.000Z", "reservation-dispatched" ]
+    },
+    {
+      "id": "dispatched-without-terminal-reservation",
+      "sql": "INSERT INTO execution_admission_reservations (reservation_id, job_id, run_id, step_id, attempt, kind, status, reserved_input_tokens, reserved_output_tokens, reserved_tokens, reserved_cost_nanos, dispatched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": ["reservation-dispatched", "dispatched-without-terminal-job", "dispatched-without-terminal", "turn-1", 1, "model_turn", "dispatched", 10, 10, 20, 4000000, "2026-07-31T00:00:03.000Z", "2026-07-31T00:00:02.000Z", "2026-07-31T00:00:03.000Z"]
+    },
+    {
+      "id": "reconciled-ambiguous-effect-job",
+      "sql": "INSERT INTO agent_jobs (id, kind, status, priority, input_json, created_at, updated_at, available_at, admission_run_id, admission_step_id, admission_workspace_id, admission_session_id, admission_autonomous, admission_approval_required, admission_max_input_tokens, admission_max_output_tokens, admission_attempts, admission_queue_sequence, admission_dispatched_at, admission_completed_at, admission_reservation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": ["reconciled-ambiguous-effect-job", "model_turn", "completed", 3, "{\"step\":{\"runId\":\"reconciled-ambiguous-effect\",\"stepId\":\"turn-1\"},\"kind\":\"model_turn\",\"estimate\":{\"maxInputTokens\":10,\"maxOutputTokens\":10,\"maxCostUsd\":0.004},\"workspaceId\":\"workspace-a\",\"sessionId\":\"session-a\",\"parentScopeId\":\"session-a\",\"autonomous\":false}", "2026-07-31T00:00:04.000Z", "2026-07-31T00:00:06.000Z", "2026-07-31T00:00:04.000Z", "reconciled-ambiguous-effect", "turn-1", "workspace-a", "session-a", 0, 0, 10, 10, 1, 3, "2026-07-31T00:00:05.000Z", "2026-07-31T00:00:06.000Z", "reservation-reconciled"]
+    },
+    {
+      "id": "reconciled-ambiguous-effect-reservation",
+      "sql": "INSERT INTO execution_admission_reservations (reservation_id, job_id, run_id, step_id, attempt, kind, status, reserved_input_tokens, reserved_output_tokens, reserved_tokens, reserved_cost_nanos, actual_input_tokens, actual_output_tokens, actual_tokens, actual_cost_nanos, dispatched_at, resolved_at, resolution_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": ["reservation-reconciled", "reconciled-ambiguous-effect-job", "reconciled-ambiguous-effect", "turn-1", 1, "model_turn", "reconciled", 10, 10, 20, 4000000, 8, 7, 15, 3000000, "2026-07-31T00:00:05.000Z", "2026-07-31T00:00:06.000Z", "provider_usage", "2026-07-31T00:00:04.000Z", "2026-07-31T00:00:06.000Z"]
+    },
+    {
+      "id": "held-unknown-without-effect-evidence-job",
+      "sql": "INSERT INTO agent_jobs (id, kind, status, priority, input_json, created_at, updated_at, available_at, admission_run_id, admission_step_id, admission_workspace_id, admission_session_id, admission_autonomous, admission_approval_required, admission_max_input_tokens, admission_max_output_tokens, admission_attempts, admission_queue_sequence, admission_dispatched_at, admission_reservation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": ["held-unknown-without-effect-evidence-job", "model_turn", "running", 4, "{\"step\":{\"runId\":\"held-unknown-without-effect-evidence\",\"stepId\":\"turn-1\"},\"kind\":\"model_turn\",\"estimate\":{\"maxInputTokens\":10,\"maxOutputTokens\":10,\"maxCostUsd\":0.004},\"workspaceId\":\"workspace-a\",\"sessionId\":\"session-a\",\"parentScopeId\":\"session-a\",\"autonomous\":false}", "2026-07-31T00:00:07.000Z", "2026-07-31T00:00:08.000Z", "2026-07-31T00:00:07.000Z", "held-unknown-without-effect-evidence", "turn-1", "workspace-a", "session-a", 0, 0, 10, 10, 1, 4, "2026-07-31T00:00:08.000Z", "reservation-held-unknown"]
+    },
+    {
+      "id": "held-unknown-without-effect-evidence-reservation",
+      "sql": "INSERT INTO execution_admission_reservations (reservation_id, job_id, run_id, step_id, attempt, kind, status, reserved_input_tokens, reserved_output_tokens, reserved_tokens, reserved_cost_nanos, dispatched_at, resolved_at, resolution_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "params": ["reservation-held-unknown", "held-unknown-without-effect-evidence-job", "held-unknown-without-effect-evidence", "turn-1", 1, "model_turn", "held_unknown", 10, 10, 20, 4000000, "2026-07-31T00:00:08.000Z", "2026-07-31T00:00:09.000Z", "usage_unknown", "2026-07-31T00:00:07.000Z", "2026-07-31T00:00:09.000Z"]
+    }
+  ],
+  "observations": [
+    "state schema 16 contains the migration-14 admission columns",
+    "the first legacy request uses obsolete parentId and has no budgetIdentity",
+    "the second request uses parentScopeId but has no budgetIdentity",
+    "dispatched, reconciled, and held_unknown reservations have no durable physical-outcome dimension"
+  ]
+}

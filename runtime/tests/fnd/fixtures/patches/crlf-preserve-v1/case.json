@@ -1,0 +1,9 @@
+{
+  "format": "agenc.patch-byte-case.v1",
+  "source": "source.bin",
+  "patch": "patch.bin",
+  "expected": "expected.bin",
+  "sourceLineEndings": "crlf",
+  "sourceHasFinalNewline": true,
+  "targetContract": "change one line without normalizing CRLF bytes"
+}

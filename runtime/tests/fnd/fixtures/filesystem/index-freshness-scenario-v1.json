@@ -1,0 +1,27 @@
+{
+  "format": "agenc.derived-index-scenario.v1",
+  "rootIdentity": "synthetic-root-001",
+  "operations": [
+    {"sequence": 1, "subsystem": "fuzzy_file", "operation": "create", "path": "src/alpha.txt", "content": "AAAA", "mtimeNs": "1000000000"},
+    {"sequence": 2, "subsystem": "fuzzy_file", "operation": "publish_generation", "generation": "fuzzy-g1", "expectedItemCount": 1},
+    {"sequence": 3, "subsystem": "fuzzy_file", "operation": "modify", "path": "src/alpha.txt", "content": "BBBB", "mtimeNs": "2000000000"},
+    {"sequence": 4, "subsystem": "fuzzy_file", "operation": "begin_rebuild", "generation": "fuzzy-g2"},
+    {"sequence": 5, "subsystem": "fuzzy_file", "operation": "query_during_rebuild", "expectedVisibleGeneration": "fuzzy-g1", "mustNotExposeGeneration": "fuzzy-g2"},
+    {"sequence": 6, "subsystem": "fuzzy_file", "operation": "rename", "from": "src/alpha.txt", "to": "src/renamed.txt"},
+    {"sequence": 7, "subsystem": "fuzzy_file", "operation": "modify", "path": "src/renamed.txt", "content": "CCCC", "mtimeNs": "2500000000"},
+    {"sequence": 8, "subsystem": "fuzzy_file", "operation": "create", "path": "src/deleted.txt", "content": "DELETE-ME", "mtimeNs": "3000000000"},
+    {"sequence": 9, "subsystem": "fuzzy_file", "operation": "delete", "path": "src/deleted.txt"},
+    {"sequence": 10, "subsystem": "fuzzy_file", "operation": "watcher_overflow", "generation": "fuzzy-g2", "expectedFreshness": "stale"},
+    {"sequence": 11, "subsystem": "fuzzy_file", "operation": "rebuild_failure", "generation": "fuzzy-g2", "reason": "synthetic_io_failure", "expectedVisibleGeneration": "fuzzy-g1"},
+    {"sequence": 12, "subsystem": "fuzzy_file", "operation": "explicit_refresh_timeout", "generation": "fuzzy-g3", "expectedResult": "pending", "expectedVisibleGeneration": "fuzzy-g1"},
+    {"sequence": 13, "subsystem": "fuzzy_file", "operation": "publish_generation", "generation": "fuzzy-g3", "expectedPaths": ["src/renamed.txt"]},
+    {"sequence": 14, "subsystem": "memory", "operation": "create", "relativePath": "memory/a.md", "content": "AAAA", "mtimeMs": 4000},
+    {"sequence": 15, "subsystem": "memory", "operation": "publish_generation", "generation": "memory-g1", "expectedRecords": [{"relativePath": "memory/a.md", "mtimeMs": 4000, "contentSha256": "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201"}]},
+    {"sequence": 16, "subsystem": "memory", "operation": "same_size_same_mtime_replace", "relativePath": "memory/a.md", "before": "AAAA", "after": "BBBB", "mtimeMs": 4000, "expectedContentSha256": "4a8d8134f29b0b7b60c126f5532bc9f5d9bb73037373cf6fb872d81f1dcefdfd"},
+    {"sequence": 17, "subsystem": "memory", "operation": "create", "relativePath": "memory/b.md", "content": "newer synthetic memory", "mtimeMs": 4000},
+    {"sequence": 18, "subsystem": "memory", "operation": "begin_rebuild", "generation": "memory-g2"},
+    {"sequence": 19, "subsystem": "memory", "operation": "query_during_rebuild", "expectedVisibleGeneration": "memory-g1", "mustNotExposeGeneration": "memory-g2"},
+    {"sequence": 20, "subsystem": "memory", "operation": "publish_generation", "generation": "memory-g2", "expectedRecords": [{"relativePath": "memory/a.md", "mtimeMs": 4000, "contentSha256": "4a8d8134f29b0b7b60c126f5532bc9f5d9bb73037373cf6fb872d81f1dcefdfd"}, {"relativePath": "memory/b.md", "mtimeMs": 4000, "contentSha256": "6a065ac557bb2d7d94a99affa36ddb8d6c0666ad9638602f54b21c3a855d71da"}]}
+  ],
+  "targetContract": "queries observe only complete generations; memory freshness uses content identity and a deterministic relativePath tie-break for equal mtimeMs"
+}

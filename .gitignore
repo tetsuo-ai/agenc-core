@@ -39,6 +39,7 @@ obj/
 # Keys (CRITICAL - never commit private keys)
 /.wallet/
 *.json
+!/runtime/tests/fnd/fixtures/**/*.json
 !/package-lock.json
 !/release-toolchain.json
 !/runtime/tsconfig.bundle.json

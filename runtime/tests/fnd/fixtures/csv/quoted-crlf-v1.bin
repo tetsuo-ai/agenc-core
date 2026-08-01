@@ -1,0 +1,5 @@
+source_id,task,notes
+quoted-001,"bare CR-><- bare LF->
+<- CRLF->
+<-","escaped ""quote"""
+quoted-002,"plain row","terminal row"

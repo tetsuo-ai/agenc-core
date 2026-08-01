@@ -1,0 +1,5 @@
+{"type":"event_msg","payload":{"eventId":"event:1","id":"checkpoint-pair-v1","seq":1,"msg":{"type":"turn_started","payload":{"turnId":"checkpoint-pair-v1","buildId":"0.13.0"}}},"eventVersion":1}
+{"type":"response_item","payload":{"role":"user","content":"read the synthetic record"},"eventVersion":1}
+{"type":"response_item","payload":{"role":"assistant","content":"","toolCalls":[{"id":"call-001","name":"synthetic_read","arguments":"{\"path\":\"fixture.txt\"}"}]},"eventVersion":1}
+{"type":"response_item","payload":{"role":"tool","content":"omega","toolCallId":"call-001","toolName":"synthetic_read"},"eventVersion":1}
+{"type":"event_msg","payload":{"eventId":"event:2","id":"checkpoint-pair-v1","seq":2,"msg":{"type":"turn_checkpoint","payload":{"turnId":"checkpoint-pair-v1","iterationIndex":1,"boundary":"iteration","checkpointSeq":1,"persistedMessageCount":3,"prefixHash":"68cb16728e869cd1b8392c333db38adf714d4eaaf1969e4e25617ecf634326ae","resumableState":{"turnCount":1,"recoveryReentryCount":0,"maxOutputTokensRecoveryCount":0,"continuationNudgeCount":0,"stopHookBlockingCount":0,"taskBudgetRemaining":4096}}}},"eventVersion":1}

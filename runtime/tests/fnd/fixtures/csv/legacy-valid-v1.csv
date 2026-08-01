@@ -1,0 +1,4 @@
+task,notes
+"summarize synthetic record","no configured id column"
+"preserve exact spacing","  exact synthetic value  "
+"preserve unicode","snowman ☃ and thin-space marker"

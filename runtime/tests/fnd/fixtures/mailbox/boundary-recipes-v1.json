@@ -1,0 +1,22 @@
+{
+  "format": "agenc.mailbox-boundary-recipes.v1",
+  "depthConvention": "the metadata root object is depth 1",
+  "validMessageInput": {
+    "author": "synthetic-worker",
+    "recipient": "synthetic-parent",
+    "content": "synthetic mailbox content",
+    "triggerTurn": false,
+    "direction": "up"
+  },
+  "constructionSemantics": {
+    "metadata_only": "decode the referenced JSON value as the complete metadata root; do not imply a message envelope",
+    "full_message": "clone validMessageInput, attach the referenced JSON value at metadata, then measure the complete message input"
+  },
+  "cases": [
+    {"id": "metadata-depth-64", "measurement": "metadata_only", "construct": {"kind": "fixture_json", "fixture": "depth-64-v1.json"}, "expected": "accepted"},
+    {"id": "metadata-depth-65", "measurement": "metadata_only", "construct": {"kind": "fixture_json", "fixture": "depth-65-v1.json"}, "expected": "rejected"},
+    {"id": "full-message-depth-64", "measurement": "full_message", "construct": {"kind": "attach_fixture_as_metadata", "fixture": "depth-64-v1.json"}, "expected": "accepted"},
+    {"id": "duplicate-key-metadata", "measurement": "metadata_only", "construct": {"kind": "fixture_raw_json", "fixture": "duplicate-key-v1.json"}, "expected": "rejected_duplicate_key"},
+    {"id": "inert-key-metadata", "measurement": "full_message", "construct": {"kind": "attach_fixture_as_metadata", "fixture": "inert-keys-v1.json"}, "expected": "accepted_inert_data"}
+  ]
+}
