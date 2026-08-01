@@ -512,6 +512,12 @@ describe("hermetic test discovery", () => {
     expect(pkg.scripts?.test).toBe(
       "node scripts/run-hermetic-test-boundary.mjs run",
     );
+    expect(pkg.scripts?.typecheck).toBe(
+      "tsc --noEmit && npm run typecheck:test-support",
+    );
+    expect(pkg.scripts?.["typecheck:test-support"]).toBe(
+      "tsc --noEmit --project tsconfig.test-support.json",
+    );
     expect(pkg.scripts?.["test:host-functional"]).toBe(
       "node scripts/run-hermetic-vitest.mjs run",
     );
@@ -520,6 +526,32 @@ describe("hermetic test discovery", () => {
     );
     expect(pkg.scripts?.["check:tui-v2-design-audit"]).toBe(
       "npm run build && node scripts/run-hermetic-vitest.mjs --design run --config vitest.design.config.ts && node scripts/check-tui-command-visual-smoke.mjs",
+    );
+  });
+
+  it("runs test-support typechecking inside the authoritative boundary", async () => {
+    const boundaryUrl = new URL(
+      "../scripts/run-hermetic-test-boundary.mjs",
+      import.meta.url,
+    );
+    boundaryUrl.searchParams.set("fnd-support-gate-sequence", String(Date.now()));
+    const boundary = (await import(/* @vite-ignore */ boundaryUrl.href)) as {
+      readonly HERMETIC_SUITE_COMMAND: string;
+    };
+    const command = boundary.HERMETIC_SUITE_COMMAND;
+    const productionTypecheck =
+      "node ../node_modules/typescript/bin/tsc --noEmit";
+    const supportTypecheck =
+      "node ../node_modules/typescript/bin/tsc --noEmit --project tsconfig.test-support.json";
+    const vitest =
+      'exec node scripts/run-hermetic-vitest.mjs --require-zero-skips "$@"';
+
+    expect(command.indexOf(productionTypecheck)).toBeGreaterThanOrEqual(0);
+    expect(command.indexOf(supportTypecheck)).toBeGreaterThan(
+      command.indexOf(productionTypecheck),
+    );
+    expect(command.indexOf(vitest)).toBeGreaterThan(
+      command.indexOf(supportTypecheck),
     );
   });
 

@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "outDir": "./dist-test-support",
+    "paths": {
+      "bun:bundle": ["./src/build/feature.ts"],
+      "bun:test": ["./tests/helpers/bun-test-shim.ts"],
+      "src/*": ["./src/*"]
+    },
+    "rootDir": ".",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "tests/helpers/abort-harness.ts",
+    "tests/helpers/bun-test-shim.ts",
+    "tests/helpers/controlled-async.ts",
+    "tests/helpers/deterministic-clock.ts",
+    "tests/helpers/failure-plan.ts",
+    "tests/helpers/seeded-rng.ts",
+    "tests/fnd/deterministic-primitives.test.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

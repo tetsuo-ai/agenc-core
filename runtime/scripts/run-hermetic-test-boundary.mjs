@@ -28,6 +28,11 @@ export const DOCKER_GATE_LABEL_ARGS = Object.freeze([
   "--label",
   "agenc.local-gate=true",
 ]);
+export const HERMETIC_SUITE_COMMAND =
+  'umask 077 && mkdir -p "$HOME" && chmod 700 "$HOME" && ' +
+  "node ../node_modules/typescript/bin/tsc --noEmit && " +
+  "node ../node_modules/typescript/bin/tsc --noEmit --project tsconfig.test-support.json && " +
+  'exec node scripts/run-hermetic-vitest.mjs --require-zero-skips "$@"';
 const DEFAULT_DOCKER_HOST = "unix:///var/run/docker.sock";
 export function resolveDockerHost(value = process.env.DOCKER_HOST) {
   if (value === undefined || value === "") return DEFAULT_DOCKER_HOST;
@@ -1014,7 +1019,7 @@ async function runRequiredGates(supervisorRoot) {
     observerBinary,
     "sh",
     "-c",
-    'umask 077 && mkdir -p "$HOME" && chmod 700 "$HOME" && node ../node_modules/typescript/bin/tsc --noEmit && exec node scripts/run-hermetic-vitest.mjs --require-zero-skips "$@"',
+    HERMETIC_SUITE_COMMAND,
     "agenc-hermetic-suite",
     ...requestedArgs,
   ]);

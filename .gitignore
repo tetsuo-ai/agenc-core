@@ -43,6 +43,7 @@ obj/
 !/package-lock.json
 !/release-toolchain.json
 !/runtime/tsconfig.bundle.json
+!/runtime/tsconfig.test-support.json
 !/runtime/src/eval-contract/contract-v1.schema.json
 !/runtime/src/eval-suites/suite-protocol-v1.schema.json
 !/runtime/src/eval-suites/suite-evidence-v1.schema.json

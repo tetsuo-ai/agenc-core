@@ -122,6 +122,10 @@ test("required gate inventory is complete, ordered, and bounded", () => {
       !path.isAbsolute(relativePath) && !relativePath.includes("..")
     ))
   ));
+  assert.ok(
+    REQUIRED_GATE_POLICY_PATHS.includes("runtime/tsconfig.test-support.json"),
+    "runtime/tsconfig.test-support.json is not hashed",
+  );
   const npm = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["--version"], {
     encoding: "utf8",
   });

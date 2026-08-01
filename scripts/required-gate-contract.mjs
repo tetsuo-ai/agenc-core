@@ -154,6 +154,7 @@ export const REQUIRED_GATE_POLICY_PATHS = Object.freeze([
   "runtime/package.json",
   "runtime/tsconfig.bundle.json",
   "runtime/tsconfig.json",
+  "runtime/tsconfig.test-support.json",
   "runtime/vitest.config.ts",
   "runtime/vitest.kernel.config.ts",
   "runtime/vitest.native.config.ts",
