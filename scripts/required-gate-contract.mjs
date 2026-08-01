@@ -133,6 +133,7 @@ export const REQUIRED_GATE_RED_PROBE_POLICY_PATHS = Object.freeze([
   "runtime/src/utils/supervisedProcess.ts",
   "runtime/tests/fnd/red-probes/manifest.json",
   "runtime/tests/helpers/red-probe-bootstrap.mjs",
+  "runtime/tests/helpers/red-probe-markdown-loader.mjs",
   "runtime/tests/helpers/red-probe.ts",
 ]);
 

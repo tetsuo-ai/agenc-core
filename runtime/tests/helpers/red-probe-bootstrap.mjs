@@ -1,7 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { readSync } from "node:fs";
 import { registerHooks } from "node:module";
-import { inflateRawSync } from "node:zlib";
+import { brotliDecompressSync } from "node:zlib";
 
 const BOOTSTRAP_ENVIRONMENT_VARIABLE = "AGENC_RED_PROBE_BOOTSTRAP_V1";
 const EXPECTED_EXIT_CODE = 86;
@@ -17,25 +17,35 @@ const FINAL_AUTHENTICATION_DOMAIN = "AGENC_RED_PROBE_FINAL_V1\0";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const MAXIMUM_HELPER_BYTES = 65_536;
 const MAXIMUM_COMPRESSED_HELPER_BYTES = MAXIMUM_HELPER_BYTES + 1_024;
+const MAXIMUM_MARKDOWN_LOADER_BYTES = 65_536;
+const MAXIMUM_COMPRESSED_MARKDOWN_LOADER_BYTES =
+  MAXIMUM_MARKDOWN_LOADER_BYTES + 1_024;
+const MAXIMUM_MARKDOWN_ASSETS = 64;
 const MAXIMUM_PROBE_BYTES = 65_536;
 const MAXIMUM_HANDOFF_BYTES =
   HANDOFF_MAGIC.byteLength + AUTHENTICATION_SECRET_BYTES + MAXIMUM_PROBE_BYTES;
 const HELPER_FACTORY = "createRedProbeAssertion";
+const MARKDOWN_LOADER_FACTORY = "createRedProbeMarkdownLoadHook";
 const CONFIGURATION_KEYS = Object.freeze([
   "fingerprint",
   "heartbeatIntervalMs",
   "helperRequestUrl",
-  "helperSourceDeflateBase64",
+  "helperSourceBrotliBase64",
   "helperSourceSha256",
   "helperSourceUrl",
   "id",
+  "markdownLoaderSourceBrotliBase64",
+  "markdownLoaderSourceSha256",
+  "markdownLoaderSourceUrl",
   "networkTripwireUrl",
   "probeSourceSha256",
   "probeSourceUrl",
+  "runtimeSourceRootUrl",
   "task",
   "tsxLoaderUrl",
 ]);
 const IDENTITY_KEYS = Object.freeze(["fingerprint", "id", "task"]);
+const MARKDOWN_ASSET_KEYS = Object.freeze(["path", "sha256"]);
 const createObject = Object.create;
 const createHmacSha256 = createHmac;
 const freeze = Object.freeze;
@@ -76,22 +86,28 @@ function decodeCanonicalBase64(encoded, maximumBytes, label) {
   return bytes;
 }
 
-function inflateHelperSource(encoded) {
+function decompressSupportSource(
+  encoded,
+  maximumCompressedBytes,
+  maximumBytes,
+  label,
+) {
   const compressed = decodeCanonicalBase64(
     encoded,
-    MAXIMUM_COMPRESSED_HELPER_BYTES,
-    "red-probe compressed helper source",
+    maximumCompressedBytes,
+    `red-probe compressed ${label} source`,
   );
   let source;
   try {
-    source = inflateRawSync(compressed, {
-      maxOutputLength: MAXIMUM_HELPER_BYTES,
+    source = brotliDecompressSync(compressed, {
+      maxOutputLength: maximumBytes,
+      rejectGarbageAfterEnd: true,
     });
   } catch {
-    throw new Error("red-probe compressed helper source is invalid");
+    throw new Error(`red-probe compressed ${label} source is invalid`);
   }
   if (source.byteLength === 0) {
-    throw new Error("red-probe helper source is missing");
+    throw new Error(`red-probe ${label} source is missing`);
   }
   return source;
 }
@@ -192,9 +208,26 @@ function loadConfiguration() {
   ) {
     throw new Error("red-probe bootstrap configuration is invalid");
   }
-  const helperSource = inflateHelperSource(value.helperSourceDeflateBase64);
+  const helperSource = decompressSupportSource(
+    value.helperSourceBrotliBase64,
+    MAXIMUM_COMPRESSED_HELPER_BYTES,
+    MAXIMUM_HELPER_BYTES,
+    "helper",
+  );
   if (sha256(helperSource) !== value.helperSourceSha256) {
     throw new Error("red-probe helper source digest does not match");
+  }
+  if (!SHA256_PATTERN.test(value.markdownLoaderSourceSha256)) {
+    throw new Error("red-probe markdown loader source digest is invalid");
+  }
+  const markdownLoaderSource = decompressSupportSource(
+    value.markdownLoaderSourceBrotliBase64,
+    MAXIMUM_COMPRESSED_MARKDOWN_LOADER_BYTES,
+    MAXIMUM_MARKDOWN_LOADER_BYTES,
+    "markdown loader",
+  );
+  if (sha256(markdownLoaderSource) !== value.markdownLoaderSourceSha256) {
+    throw new Error("red-probe markdown loader source digest does not match");
   }
   return freeze({
     fingerprint: value.fingerprint,
@@ -211,6 +244,13 @@ function loadConfiguration() {
       "ts",
     ),
     id: value.id,
+    markdownLoaderSource,
+    markdownLoaderSourceSha256: value.markdownLoaderSourceSha256,
+    markdownLoaderSourceUrl: parseCanonicalSupportUrl(
+      value.markdownLoaderSourceUrl,
+      "red-probe markdown loader source URL",
+      "/tests/helpers/red-probe-markdown-loader.mjs",
+    ),
     networkTripwireUrl: parseCanonicalSupportUrl(
       value.networkTripwireUrl,
       "red-probe network tripwire URL",
@@ -218,6 +258,11 @@ function loadConfiguration() {
     ),
     probeSourceSha256: value.probeSourceSha256,
     probeSourceUrl: parseCanonicalProbeSourceUrl(value.probeSourceUrl),
+    runtimeSourceRootUrl: parseCanonicalSupportUrl(
+      value.runtimeSourceRootUrl,
+      "red-probe runtime source root URL",
+      "/src/",
+    ),
     task: value.task,
     tsxLoaderUrl: parseCanonicalSupportUrl(
       value.tsxLoaderUrl,
@@ -295,6 +340,8 @@ const { authenticationSecret, probeSource } =
 await import(configuration.networkTripwireUrl);
 await import(configuration.tsxLoaderUrl);
 let expectedFailureReported = false;
+let markdownLoadHook;
+const loadedMarkdownAssets = new Map();
 
 function reportExpectedFailure(identity) {
   if (expectedFailureReported) {
@@ -315,14 +362,71 @@ function isExactHelperUrl(url) {
   );
 }
 
+function isExactMarkdownLoaderUrl(url) {
+  return url === configuration.markdownLoaderSourceUrl;
+}
+
 function assertAuthorizedHelperParent(parentUrl) {
   if (parentUrl !== import.meta.url) {
     throw new Error("red-probe helper import has an unauthorized parent");
   }
 }
 
+function assertAuthorizedMarkdownLoaderParent(parentUrl) {
+  if (parentUrl !== import.meta.url) {
+    throw new Error(
+      "red-probe markdown loader import has an unauthorized parent",
+    );
+  }
+}
+
+function recordLoadedMarkdownAsset(asset) {
+  if (
+    !hasExactKeys(asset, MARKDOWN_ASSET_KEYS) ||
+    typeof asset.path !== "string" ||
+    !asset.path.startsWith("src/") ||
+    !asset.path.endsWith(".md") ||
+    asset.path.includes("\\") ||
+    asset.path
+      .split("/")
+      .some(
+        (segment) => segment === "" || segment === "." || segment === "..",
+      ) ||
+    typeof asset.sha256 !== "string" ||
+    !SHA256_PATTERN.test(asset.sha256)
+  ) {
+    throw new Error("red-probe markdown asset evidence is invalid");
+  }
+  const existingDigest = loadedMarkdownAssets.get(asset.path);
+  if (existingDigest !== undefined && existingDigest !== asset.sha256) {
+    throw new Error("red-probe markdown asset changed across module loads");
+  }
+  if (
+    existingDigest === undefined &&
+    loadedMarkdownAssets.size >= MAXIMUM_MARKDOWN_ASSETS
+  ) {
+    throw new Error("red-probe markdown asset count exceeds its bound");
+  }
+  loadedMarkdownAssets.set(asset.path, asset.sha256);
+}
+
+function markdownAssetEvidence() {
+  return freeze(
+    [...loadedMarkdownAssets]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([path, digest]) => freeze({ path, sha256: digest })),
+  );
+}
+
 const helperHooks = registerHooks({
   load(url, context, nextLoad) {
+    if (url === configuration.markdownLoaderSourceUrl) {
+      return {
+        format: "module",
+        shortCircuit: true,
+        source: configuration.markdownLoaderSource,
+      };
+    }
     if (url === configuration.helperSourceUrl) {
       return {
         format: "module-typescript",
@@ -336,6 +440,9 @@ const helperHooks = registerHooks({
         shortCircuit: true,
         source: probeSource,
       };
+    }
+    if (markdownLoadHook !== undefined) {
+      return markdownLoadHook(url, context, nextLoad);
     }
     return nextLoad(url, context);
   },
@@ -357,6 +464,13 @@ const helperHooks = registerHooks({
         url: configuration.probeSourceUrl,
       };
     }
+    if (requestedUrl !== undefined && isExactMarkdownLoaderUrl(requestedUrl)) {
+      assertAuthorizedMarkdownLoaderParent(context.parentURL);
+      return {
+        shortCircuit: true,
+        url: configuration.markdownLoaderSourceUrl,
+      };
+    }
     if (requestedUrl !== undefined && isExactHelperUrl(requestedUrl)) {
       assertAuthorizedHelperParent(context.parentURL);
       return {
@@ -365,6 +479,14 @@ const helperHooks = registerHooks({
       };
     }
     const resolved = nextResolve(specifier, context);
+    if (isExactMarkdownLoaderUrl(resolved.url)) {
+      assertAuthorizedMarkdownLoaderParent(context.parentURL);
+      return {
+        ...resolved,
+        shortCircuit: true,
+        url: configuration.markdownLoaderSourceUrl,
+      };
+    }
     if (isExactHelperUrl(resolved.url)) {
       assertAuthorizedHelperParent(context.parentURL);
       return {
@@ -375,6 +497,20 @@ const helperHooks = registerHooks({
     }
     return resolved;
   },
+});
+
+const markdownLoaderModule = await import(
+  configuration.markdownLoaderSourceUrl
+);
+if (
+  typeof markdownLoaderModule[MARKDOWN_LOADER_FACTORY] !== "function" ||
+  markdownLoaderModule.MAXIMUM_RED_PROBE_MARKDOWN_ASSET_BYTES !== 256 * 1024
+) {
+  throw new Error("red-probe markdown loader contract is invalid");
+}
+markdownLoadHook = markdownLoaderModule[MARKDOWN_LOADER_FACTORY]({
+  runtimeSourceRootUrl: configuration.runtimeSourceRootUrl,
+  onAssetLoaded: recordLoadedMarkdownAsset,
 });
 
 let helperModule;
@@ -403,6 +539,18 @@ function writeHeartbeat() {
   );
 }
 
+const probeModule = await import(configuration.probeSourceUrl);
+if (
+  keys(probeModule).length !== 1 ||
+  !hasOwn(probeModule, "default") ||
+  typeof probeModule.default !== "function"
+) {
+  throw new Error("red-probe source does not export one canonical root runner");
+}
+
+// Static production imports can synchronously compile a large module graph on
+// a cold host. The hard per-probe deadline owns that bounded bootstrap phase;
+// heartbeat silence starts only once the reviewed root runner is ready to run.
 writeHeartbeat();
 const heartbeatTimer = scheduleInterval(
   writeHeartbeat,
@@ -423,6 +571,11 @@ function emitAuthenticatedExpectedRedResult() {
   evidence.assertions = 1;
   evidence.skipped = 0;
   evidence.todos = 0;
+  evidence.markdownSupport = freeze({
+    loaderSha256: configuration.markdownLoaderSourceSha256,
+    runtimeSourceRootUrl: configuration.runtimeSourceRootUrl,
+    assets: markdownAssetEvidence(),
+  });
   const authenticationTag = createHmacSha256("sha256", authenticationSecret)
     .update(FINAL_AUTHENTICATION_DOMAIN, "utf8")
     .update(stringifyJson(evidence), "utf8")
@@ -436,14 +589,6 @@ function emitAuthenticatedExpectedRedResult() {
   process.exitCode = EXPECTED_EXIT_CODE;
 }
 
-const probeModule = await import(configuration.probeSourceUrl);
-if (
-  keys(probeModule).length !== 1 ||
-  !hasOwn(probeModule, "default") ||
-  typeof probeModule.default !== "function"
-) {
-  throw new Error("red-probe source does not export one canonical root runner");
-}
 await probeModule.default(probeAssertion);
 emitAuthenticatedExpectedRedResult();
 

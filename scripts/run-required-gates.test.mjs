@@ -131,6 +131,7 @@ test("required gate inventory is complete, ordered, and bounded", () => {
     "runtime/src/utils/supervisedProcess.ts",
     "runtime/tests/fnd/red-probes/manifest.json",
     "runtime/tests/helpers/red-probe-bootstrap.mjs",
+    "runtime/tests/helpers/red-probe-markdown-loader.mjs",
     "runtime/tests/helpers/red-probe.ts",
   ];
   assert.deepEqual(

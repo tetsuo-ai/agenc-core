@@ -16,6 +16,7 @@
     "types": ["node", "vitest/globals"]
   },
   "include": [
+    "src/types/**/*.d.ts",
     "tests/helpers/abort-harness.ts",
     "tests/helpers/bounded-file-io.ts",
     "tests/helpers/bounded-repository-filesystem.ts",
@@ -47,6 +48,7 @@
     "tests/helpers/process-harness-contract.ts",
     "tests/helpers/process-workspace.ts",
     "tests/helpers/red-probe-bootstrap.mjs",
+    "tests/helpers/red-probe-markdown-loader.mjs",
     "tests/helpers/red-probe.ts",
     "tests/helpers/restart-harness.ts",
     "tests/helpers/seeded-rng.ts",
@@ -68,6 +70,7 @@
     "tests/fnd/process-repository-helpers.native.test.ts",
     "tests/fnd/process-repository-helpers.test.ts",
     "tests/fnd/red-probe-containment.test.ts",
+    "tests/fnd/red-probe-markdown-loader.test.ts",
     "tests/fnd/red-probe-runner.contract.test.ts",
     "tests/fnd/red-probes/**/*.red-probe.ts"
   ],

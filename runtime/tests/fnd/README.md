@@ -14,9 +14,48 @@ nonzero exit status and the exact registered defect fingerprint. Do not use
 `skip`, `todo`, `test.fails`, or an assertion whose success means the unsafe
 behavior remains present.
 
-Hang probes require a supervisor deadline and heartbeat. When a defect is
-fixed, promote its assertion into an ordinary test and verify that reversing
-the functional change in a disposable worktree makes that test fail.
+The initial P0 inventory contains twelve task-owned defect probes plus the
+FND-001 harness self-test, so the exact green audit summary is
+`files=13 expected-red=13 assertions=13 skipped=0 todo=0`. Each task-owned
+probe calls a production seam without a provider, public network, or
+uncontained subprocess:
+
+| Task | Current defect frozen red                                                                        | Desired assertion                                                                                                              |
+| ---- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| A1   | A caller deadline remains pending until the abort-ignoring physical tool call settles.           | Caller outcome becomes `timed_out` at the deadline while physical settlement remains independently owned and later observable. |
+| A2a  | A malformed interior canonical journal line is skipped and two later/earlier rows are projected. | Typed `malformed_json` with zero projected rows.                                                                               |
+| A2b  | Startup returns a running agent whose bound canonical journal is corrupt.                        | The corrupt run is non-executable and absent from recovery results.                                                            |
+| A3   | Substituting a tool-result body leaves the durable prefix digest unchanged.                      | The complete tool-result body changes the digest.                                                                              |
+| B1   | A CSV `__proto__` header is consumed by the inherited setter instead of round-tripping as data.  | An own inert `__proto__` field preserves the exact source value.                                                               |
+| B3a  | `../` in a workflow name escapes `.agenc/workflows` and dispatches the escaped command.          | Reject before dispatch.                                                                                                        |
+| C1   | One hundred one-character messages estimate to zero tokens.                                      | Every nonempty message frame contributes a nonzero floor.                                                                      |
+| C2   | The compaction policy tells the summarizer to obey instructions embedded in transcript context.  | Transcript instructions remain untrusted and cannot alter compaction policy.                                                   |
+| C3a  | Admission denial makes relevant memory recall return no candidates.                              | A deterministic lexical fallback returns the matching admitted file.                                                           |
+| D1   | Missing pinned ripgrep silently falls back to an unpinned JavaScript scan.                       | Fail with pinned-runtime remediation and perform no fallback search.                                                           |
+| D3   | Applying one patch hunk rewrites part of a CRLF file with LF.                                    | Preserve the file's CRLF convention exactly.                                                                                   |
+| E1a  | Recovery accepts and projects a JSONL record above the per-line byte ceiling.                    | Typed `line_limit` with zero projected rows.                                                                                   |
+
+Some production modules import repository-owned Markdown prompt assets. The
+red-probe bootstrap admits only exact `.md` files under the canonical
+non-symlink `runtime/src` root through a digest-pinned loader. It rejects path
+aliases, escapes, links, nonregular files, invalid UTF-8, mutation, and files
+over 256 KiB. The authenticated final record binds the loader digest, source
+root, and the canonical path and SHA-256 of every loaded Markdown asset.
+
+The FND-001 self-probe intentionally omits a required transition and proves the
+harness itself goes red; it does not claim a product defect remains and does not
+satisfy any task-owned P0 defect-probe gate.
+The twelve task-owned P0 acceptance probes are now registered alongside
+FND-001. When a product defect is fixed, promote its assertion into an ordinary
+test and verify that reversing the functional change in a disposable worktree
+makes that test fail.
+
+The hard per-probe deadline bounds authenticated bootstrap and cold static
+imports. Trusted heartbeat-silence monitoring begins immediately after the
+reviewed root runner is loaded and remains active through its execution.
+
+Product hang probes must add task-specific progress evidence in addition to the
+supervisor heartbeat; a silent timeout is not accepted as defect reproduction.
 
 ## Shared fixture catalog
 

@@ -68,6 +68,7 @@ function createFixture(options: FixtureOptions): string {
   temporaryRoots.push(fixtureRoot);
   const probeDirectory = join(fixtureRoot, "tests/fnd/red-probes");
   const helperDirectory = join(fixtureRoot, "tests/helpers");
+  mkdirSync(join(fixtureRoot, "src"), { recursive: true });
   mkdirSync(probeDirectory, { recursive: true });
   mkdirSync(helperDirectory, { recursive: true });
   copyFileSync(
@@ -77,6 +78,10 @@ function createFixture(options: FixtureOptions): string {
   copyFileSync(
     join(runtimeRoot, "tests/helpers/red-probe-bootstrap.mjs"),
     join(helperDirectory, "red-probe-bootstrap.mjs"),
+  );
+  copyFileSync(
+    join(runtimeRoot, "tests/helpers/red-probe-markdown-loader.mjs"),
+    join(helperDirectory, "red-probe-markdown-loader.mjs"),
   );
   writeFileSync(join(fixtureRoot, fixtureFile), options.source, "utf8");
   writeFileSync(

@@ -8,12 +8,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, matchesGlob, resolve } from "node:path";
+import { basename, dirname, join, matchesGlob, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -61,6 +63,8 @@ const jsonNodeOverflowCount = 16_384;
 const sourceAstNodeOverflowItems = 16_500;
 const reporterHandoffSymbolKey = "agenc.red-probe.report-expected-failure.v1";
 const finalAuthenticationDomain = "AGENC_RED_PROBE_FINAL_V1\0";
+const markdownLoaderSha256 =
+  "7fe828cfce5d415c2ac59b6d4b0226c41ebd86f531fb20a87c469359c571510f";
 const protocolAuthenticationSecret = Buffer.alloc(32, 0x11);
 const alternateProtocolAuthenticationSecret = Buffer.alloc(32, 0x22);
 const protocolEntry = Object.freeze({
@@ -74,6 +78,7 @@ interface FixtureOptions {
   readonly source?: string;
   readonly fingerprint?: string;
   readonly task?: string;
+  readonly temporaryDirectory?: string;
   readonly timeoutMs?: number;
 }
 
@@ -137,10 +142,15 @@ function probeSource(options: ProbeSourceOptions = {}): string {
 }
 
 function createFixture(options: FixtureOptions = {}): string {
-  const fixtureRoot = mkdtempSync(join(tmpdir(), "agenc-red-probe-contract-"));
+  const fixtureRoot = realpathSync(
+    mkdtempSync(
+      join(options.temporaryDirectory ?? tmpdir(), "agenc-red-probe-contract-"),
+    ),
+  );
   temporaryRoots.push(fixtureRoot);
   const probeDirectory = join(fixtureRoot, "tests/fnd/red-probes");
   const helperDirectory = join(fixtureRoot, "tests/helpers");
+  mkdirSync(join(fixtureRoot, "src"), { recursive: true });
   mkdirSync(probeDirectory, { recursive: true });
   mkdirSync(helperDirectory, { recursive: true });
   copyFileSync(
@@ -150,6 +160,10 @@ function createFixture(options: FixtureOptions = {}): string {
   copyFileSync(
     resolve(runtimeRoot, "tests/helpers/red-probe-bootstrap.mjs"),
     join(helperDirectory, "red-probe-bootstrap.mjs"),
+  );
+  copyFileSync(
+    resolve(runtimeRoot, "tests/helpers/red-probe-markdown-loader.mjs"),
+    join(helperDirectory, "red-probe-markdown-loader.mjs"),
   );
   const fingerprint = options.fingerprint ?? testFingerprint;
   const task = options.task ?? testTask;
@@ -210,6 +224,13 @@ function protocolFinalLine(
     assertions: 1,
     skipped: 0,
     todos: 0,
+    markdownSupport: {
+      loaderSha256: markdownLoaderSha256,
+      runtimeSourceRootUrl: pathToFileURL(
+        `${resolve(runtimeRoot, "src")}${sep}`,
+      ).href,
+      assets: [],
+    },
   };
   const authenticationTag = createHmac("sha256", authenticationSecret)
     .update(finalAuthenticationDomain, "utf8")
@@ -232,6 +253,13 @@ function observeProtocolLines(
         state,
         line,
         authenticationSecret,
+        {
+          loaderSha256: markdownLoaderSha256,
+          runtimeSourceRoot: resolve(runtimeRoot, "src"),
+          runtimeSourceRootUrl: pathToFileURL(
+            `${resolve(runtimeRoot, "src")}${sep}`,
+          ).href,
+        },
       ),
     createRedProbeProtocolState(),
   );
@@ -299,6 +327,77 @@ afterEach(() => {
 describe("FND red-probe supervisor", () => {
   it("audits the registered nonempty harness self-probe with zero skips and todos", async () => {
     await expect(auditRedProbes()).resolves.toEqual({
+      files: 13,
+      expectedRed: 13,
+      assertions: 13,
+      skipped: 0,
+      todos: 0,
+    });
+  });
+
+  it("loads and authenticates one bounded runtime markdown dependency", async () => {
+    const markdown = "repository-owned prompt asset\n";
+    const temporaryTarget = realpathSync(
+      mkdtempSync(join(tmpdir(), "agenc-red-probe-temp-target-")),
+    );
+    const temporaryAlias = `${temporaryTarget}-alias`;
+    temporaryRoots.push(temporaryAlias, temporaryTarget);
+    symlinkSync(
+      temporaryTarget,
+      temporaryAlias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const fixtureRoot = createFixture({
+      temporaryDirectory: temporaryAlias,
+      source: probeSource({
+        imports: ['import markdown from "../../../src/policy.md";'],
+        actual: "markdown",
+        expected: JSON.stringify("replacement prompt asset\n"),
+      }),
+    });
+    writeFileSync(join(fixtureRoot, "src/policy.md"), markdown, {
+      mode: 0o600,
+    });
+    expect(fixtureRoot).toBe(realpathSync(fixtureRoot));
+
+    await expect(auditRedProbes({ runtimeRoot: fixtureRoot })).resolves.toEqual(
+      {
+        files: 1,
+        expectedRed: 1,
+        assertions: 1,
+        skipped: 0,
+        todos: 0,
+      },
+    );
+  });
+
+  it("starts heartbeat silence only after bounded cold module loading", async () => {
+    const source = probeSource({
+      imports: [
+        'import { coldCapability } from "../../../src/cold-capability.js";',
+      ],
+      actual: "coldCapability()",
+      expected: "2",
+    });
+    const fixtureRoot = createFixture({ source, timeoutMs: 1_000 });
+    writeFileSync(
+      join(fixtureRoot, "src/cold-capability.ts"),
+      [
+        "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);",
+        "export function coldCapability(): number {",
+        "  return 1;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await expect(
+      auditRedProbes({
+        runtimeRoot: fixtureRoot,
+        testing: { heartbeatSilenceMs: 250 },
+      }),
+    ).resolves.toEqual({
       files: 1,
       expectedRed: 1,
       assertions: 1,

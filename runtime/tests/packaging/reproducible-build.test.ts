@@ -408,11 +408,11 @@ describe("reproducible install and release contract", () => {
     expect(macosJob).toContain("runs-on: macos-15");
     expect(macosJob).toContain("Run the exact macOS red-probe runner contract");
     expect(macosJob).toContain("tests/fnd/red-probe-runner.contract.test.ts");
-    expect(macosJob).toContain("numTotalTests: 62");
-    expect(macosJob).toContain("numPassedTests: 62");
-    expect(macosJob).toContain("testResult.assertionResults.length !== 62");
+    expect(macosJob).toContain("numTotalTests: 64");
+    expect(macosJob).toContain("numPassedTests: 64");
+    expect(macosJob).toContain("testResult.assertionResults.length !== 64");
     expect(macosJob).toContain(
-      "macOS red-probe runner passed 62 tests in 1 file with zero skipped",
+      "macOS red-probe runner passed 64 tests in 1 file with zero skipped",
     );
     expect(macosJob).toContain(
       "Run the exact macOS FND/native capability lane",
@@ -443,7 +443,7 @@ describe("reproducible install and release contract", () => {
     expect(windowsJob).toContain("Run the exact Windows FND red-probe audit");
     expect(windowsJob).toContain("node runtime/scripts/run-fnd-red-probes.mjs");
     expect(windowsJob).toContain(
-      "red probes: files=1 expected-red=1 assertions=1 skipped=0 todo=0",
+      "red probes: files=13 expected-red=13 assertions=13 skipped=0 todo=0",
     );
     expect(windowsJob).toContain(
       'if ($LASTEXITCODE -ne 0) { throw "Windows red-probe audit failed" }',
@@ -546,6 +546,7 @@ describe("reproducible install and release contract", () => {
     ) as { probes: Array<{ file: string }> };
     const digestBoundRedProbeSubjects = [
       "runtime/tests/helpers/red-probe-bootstrap.mjs",
+      "runtime/tests/helpers/red-probe-markdown-loader.mjs",
       "runtime/tests/helpers/red-probe.ts",
       ...redProbeManifest.probes.map(({ file }) => `runtime/${file}`),
     ];

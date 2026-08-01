@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { deflateRawSync } from "node:zlib";
+import { brotliCompressSync, constants as zlibConstants } from "node:zlib";
 
 import { getNodeValue, parseTree, printParseErrorCode } from "jsonc-parser";
 import {
@@ -64,6 +64,9 @@ const MAXIMUM_MANIFEST_BYTES = 65_536;
 const MAXIMUM_PROBE_BYTES = 65_536;
 const MAXIMUM_BOOTSTRAP_BYTES = 65_536;
 const MAXIMUM_HELPER_BYTES = 65_536;
+const MAXIMUM_MARKDOWN_LOADER_BYTES = 65_536;
+const MAXIMUM_MARKDOWN_ASSET_BYTES = 256 * 1024;
+const MAXIMUM_MARKDOWN_ASSETS = 64;
 const MAXIMUM_CHILD_OUTPUT_BYTES = 16_384;
 const RED_PROBE_AUTHENTICATION_SECRET_BYTES = 32;
 const RED_PROBE_HANDOFF_MAGIC = Buffer.from(
@@ -92,7 +95,7 @@ export const WINDOWS_PORTABLE_LAUNCH_MAXIMUM_CODE_UNITS =
   WINDOWS_LAUNCH_HEADROOM_CODE_UNITS;
 const WINDOWS_COMMAND_LINE_TERMINATOR_CODE_UNITS = 1;
 const WINDOWS_ENVIRONMENT_BLOCK_FINAL_TERMINATOR_CODE_UNITS = 1;
-const SUPPORT_SOURCE_COMPRESSION_LEVEL = 9;
+const SUPPORT_SOURCE_BROTLI_QUALITY = 11;
 const STDIN_MODULE_FILENAME = "[eval1].ts";
 const RED_PROBE_HEARTBEAT_INTERVAL_MS = 1_000;
 const RED_PROBE_HEARTBEAT_SILENCE_MS = 5_000;
@@ -148,6 +151,24 @@ const PROBE_KEYS = Object.freeze([
   "task",
   "timeoutMs",
 ]);
+const FINAL_RECORD_KEYS = Object.freeze([
+  "assertions",
+  "authenticationTag",
+  "fingerprint",
+  "id",
+  "markdownSupport",
+  "outcome",
+  "protocolVersion",
+  "skipped",
+  "task",
+  "todos",
+]);
+const MARKDOWN_SUPPORT_KEYS = Object.freeze([
+  "assets",
+  "loaderSha256",
+  "runtimeSourceRootUrl",
+]);
+const MARKDOWN_ASSET_KEYS = Object.freeze(["path", "sha256"]);
 const FORBIDDEN_TEST_METHODS = new Set([
   "fails",
   "only",
@@ -169,13 +190,17 @@ const FORBIDDEN_GLOBAL_IDENTIFIERS = new Set([
 const RED_PROBE_HELPER_PATH = "tests/helpers/red-probe.js";
 const RED_PROBE_HELPER_SOURCE_PATH = "tests/helpers/red-probe.ts";
 const RED_PROBE_BOOTSTRAP_PATH = "tests/helpers/red-probe-bootstrap.mjs";
+const RED_PROBE_MARKDOWN_LOADER_PATH =
+  "tests/helpers/red-probe-markdown-loader.mjs";
 const RED_PROBE_HELPER_FUNCTION = "expectDeepStrictEqualRedProbe";
 const RED_PROBE_HELPER_TYPE = "RedProbeAssertion";
 const RED_PROBE_RUNNER_FUNCTION = "runRedProbe";
 const RED_PROBE_BOOTSTRAP_SHA256 =
-  "7b386f69325f0c8d80c5667663bad34a74d9e18fad80ad355ac17a4a4323cd54";
+  "e083e73598e19897f03a7afa51be6261af042836fecbcb6a18125d77cc1083b7";
 const RED_PROBE_HELPER_SHA256 =
   "289471c65f3852d56e5c40ed95883697f8145b2e471b3eb0aab06660d1c1232a";
+const RED_PROBE_MARKDOWN_LOADER_SHA256 =
+  "7fe828cfce5d415c2ac59b6d4b0226c41ebd86f531fb20a87c469359c571510f";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const defaultRuntimeRoot = resolve(moduleDirectory, "..");
@@ -316,19 +341,23 @@ function readVerifiedSupportFile(
   return bytes;
 }
 
-function encodeDeflatedSource(bytes) {
-  return deflateRawSync(bytes, {
-    level: SUPPORT_SOURCE_COMPRESSION_LEVEL,
+function encodeBrotliSource(bytes) {
+  return brotliCompressSync(bytes, {
+    params: {
+      [zlibConstants.BROTLI_PARAM_MODE]: zlibConstants.BROTLI_MODE_TEXT,
+      [zlibConstants.BROTLI_PARAM_QUALITY]: SUPPORT_SOURCE_BROTLI_QUALITY,
+      [zlibConstants.BROTLI_PARAM_SIZE_HINT]: bytes.byteLength,
+    },
   }).toString("base64");
 }
 
 function createVerifiedBootstrapImportUrl(bytes, expectedDigest) {
-  const deflatedSource = encodeDeflatedSource(bytes);
+  const brotliSource = encodeBrotliSource(bytes);
   const wrapper = [
     'import { Buffer as B } from "node:buffer";',
     'import { createHash as H } from "node:crypto";',
-    'import { inflateRawSync as I } from "node:zlib";',
-    `const s=I(B.from(${JSON.stringify(deflatedSource)},"base64"),{maxOutputLength:${MAXIMUM_BOOTSTRAP_BYTES}});`,
+    'import { brotliDecompressSync as D } from "node:zlib";',
+    `const s=D(B.from(${JSON.stringify(brotliSource)},"base64"),{maxOutputLength:${MAXIMUM_BOOTSTRAP_BYTES},rejectGarbageAfterEnd:true});`,
     `if(H("sha256").update(s).digest("hex")!==${JSON.stringify(expectedDigest)})throw new Error("red-probe bootstrap transport digest does not match");`,
     'await import("data:text/javascript;base64,"+s.toString("base64"));',
   ].join("");
@@ -350,6 +379,27 @@ function loadRedProbeSupportGraph(runtimeRoot) {
     RED_PROBE_HELPER_SHA256,
     "red-probe helper",
   );
+  const markdownLoaderBytes = readVerifiedSupportFile(
+    runtimeRoot,
+    RED_PROBE_MARKDOWN_LOADER_PATH,
+    MAXIMUM_MARKDOWN_LOADER_BYTES,
+    RED_PROBE_MARKDOWN_LOADER_SHA256,
+    "red-probe markdown loader",
+  );
+  const runtimeSourceRoot = resolve(runtimeRoot, "src");
+  const runtimeSourceRootMetadata = lstatSync(runtimeSourceRoot, {
+    bigint: true,
+  });
+  if (
+    runtimeSourceRootMetadata.isSymbolicLink() ||
+    !runtimeSourceRootMetadata.isDirectory() ||
+    realpathSync(runtimeSourceRoot) !== runtimeSourceRoot
+  ) {
+    throw new Error(
+      "red-probe runtime source root is not a canonical non-symlink directory",
+    );
+  }
+  const runtimeSourceRootUrl = pathToFileURL(`${runtimeSourceRoot}${sep}`).href;
   return Object.freeze({
     bootstrapImportUrl: createVerifiedBootstrapImportUrl(
       bootstrapBytes,
@@ -357,12 +407,19 @@ function loadRedProbeSupportGraph(runtimeRoot) {
     ),
     helperRequestUrl: pathToFileURL(resolve(runtimeRoot, RED_PROBE_HELPER_PATH))
       .href,
-    helperSourceDeflateBase64: encodeDeflatedSource(helperBytes),
+    helperSourceBrotliBase64: encodeBrotliSource(helperBytes),
     helperSourceSha256: RED_PROBE_HELPER_SHA256,
     helperSourceUrl: pathToFileURL(
       resolve(runtimeRoot, RED_PROBE_HELPER_SOURCE_PATH),
     ).href,
+    markdownLoaderSourceBrotliBase64: encodeBrotliSource(markdownLoaderBytes),
+    markdownLoaderSourceSha256: RED_PROBE_MARKDOWN_LOADER_SHA256,
+    markdownLoaderSourceUrl: pathToFileURL(
+      resolve(runtimeRoot, RED_PROBE_MARKDOWN_LOADER_PATH),
+    ).href,
     networkTripwireUrl: pathToFileURL(networkTripwire).href,
+    runtimeSourceRoot,
+    runtimeSourceRootUrl,
     tsxLoaderUrl: pathToFileURL(tsxLoader).href,
   });
 }
@@ -894,7 +951,7 @@ function assertAuthenticationSecret(authenticationSecret) {
   }
 }
 
-function canonicalFinalEvidence(entry) {
+function canonicalFinalEvidence(entry, markdownSupport) {
   return {
     protocolVersion: RED_PROBE_PROTOCOL_VERSION,
     outcome: PROTOCOL_OUTCOME,
@@ -904,26 +961,91 @@ function canonicalFinalEvidence(entry) {
     assertions: 1,
     skipped: 0,
     todos: 0,
+    markdownSupport,
   };
 }
 
-function finalAuthenticationTag(entry, authenticationSecret) {
+function finalAuthenticationTag(evidence, authenticationSecret) {
   assertAuthenticationSecret(authenticationSecret);
   return createHmac("sha256", authenticationSecret)
     .update(FINAL_AUTHENTICATION_DOMAIN, "utf8")
-    .update(JSON.stringify(canonicalFinalEvidence(entry)), "utf8")
+    .update(JSON.stringify(evidence), "utf8")
     .digest("hex");
 }
 
-function expectedProtocolLine(entry, authenticationSecret) {
-  const evidence = canonicalFinalEvidence(entry);
+function expectedProtocolLine(entry, authenticationSecret, markdownSupport) {
+  const evidence = canonicalFinalEvidence(entry, markdownSupport);
   return `${RED_PROBE_PROTOCOL_PREFIX}${JSON.stringify({
     ...evidence,
-    authenticationTag: finalAuthenticationTag(entry, authenticationSecret),
+    authenticationTag: finalAuthenticationTag(evidence, authenticationSecret),
   })}\n`;
 }
 
-function isExpectedProtocolLine(entry, authenticationSecret, line) {
+function isCanonicalMarkdownAssetPath(path) {
+  return (
+    typeof path === "string" &&
+    path.startsWith("src/") &&
+    path.endsWith(".md") &&
+    !path.includes("\\") &&
+    path
+      .split("/")
+      .every((segment) => segment !== "" && segment !== "." && segment !== "..")
+  );
+}
+
+function canonicalMarkdownSupport(value, policy) {
+  if (
+    !hasExactKeys(value, MARKDOWN_SUPPORT_KEYS) ||
+    value.loaderSha256 !== policy.loaderSha256 ||
+    value.runtimeSourceRootUrl !== policy.runtimeSourceRootUrl ||
+    !Array.isArray(value.assets) ||
+    value.assets.length > MAXIMUM_MARKDOWN_ASSETS
+  ) {
+    return undefined;
+  }
+  const assets = [];
+  let previousPath;
+  for (const asset of value.assets) {
+    if (
+      !hasExactKeys(asset, MARKDOWN_ASSET_KEYS) ||
+      !isCanonicalMarkdownAssetPath(asset.path) ||
+      typeof asset.sha256 !== "string" ||
+      !SOURCE_SHA256_PATTERN.test(asset.sha256) ||
+      (previousPath !== undefined && asset.path <= previousPath)
+    ) {
+      return undefined;
+    }
+    const relativePath = asset.path.slice("src/".length);
+    const path = resolve(policy.runtimeSourceRoot, relativePath);
+    if (!isContainedPath(policy.runtimeSourceRoot, path)) return undefined;
+    let bytes;
+    try {
+      bytes = readBoundedRegularFile(
+        path,
+        MAXIMUM_MARKDOWN_ASSET_BYTES,
+        `red-probe markdown asset ${asset.path}`,
+      );
+      decodeUtf8(bytes, `red-probe markdown asset ${asset.path}`);
+    } catch {
+      return undefined;
+    }
+    if (sha256(bytes) !== asset.sha256) return undefined;
+    assets.push(Object.freeze({ path: asset.path, sha256: asset.sha256 }));
+    previousPath = asset.path;
+  }
+  return Object.freeze({
+    loaderSha256: policy.loaderSha256,
+    runtimeSourceRootUrl: policy.runtimeSourceRootUrl,
+    assets: Object.freeze(assets),
+  });
+}
+
+function isExpectedProtocolLine(
+  entry,
+  authenticationSecret,
+  line,
+  markdownPolicy,
+) {
   if (!line.startsWith(RED_PROBE_PROTOCOL_PREFIX) || !line.endsWith("\n")) {
     return false;
   }
@@ -933,6 +1055,7 @@ function isExpectedProtocolLine(entry, authenticationSecret, line) {
   } catch {
     return false;
   }
+  if (!hasExactKeys(record, FINAL_RECORD_KEYS)) return false;
   const actualTag = record?.authenticationTag;
   if (
     typeof actualTag !== "string" ||
@@ -940,7 +1063,13 @@ function isExpectedProtocolLine(entry, authenticationSecret, line) {
   ) {
     return false;
   }
-  const expectedTag = finalAuthenticationTag(entry, authenticationSecret);
+  const markdownSupport = canonicalMarkdownSupport(
+    record.markdownSupport,
+    markdownPolicy,
+  );
+  if (markdownSupport === undefined) return false;
+  const evidence = canonicalFinalEvidence(entry, markdownSupport);
+  const expectedTag = finalAuthenticationTag(evidence, authenticationSecret);
   if (
     !timingSafeEqual(
       Buffer.from(actualTag, "hex"),
@@ -949,7 +1078,9 @@ function isExpectedProtocolLine(entry, authenticationSecret, line) {
   ) {
     return false;
   }
-  return line === expectedProtocolLine(entry, authenticationSecret);
+  return (
+    line === expectedProtocolLine(entry, authenticationSecret, markdownSupport)
+  );
 }
 
 function expectedHeartbeatLine(entry, sequence) {
@@ -981,6 +1112,7 @@ export function observeRedProbeProtocolLine(
   state,
   line,
   authenticationSecret,
+  markdownPolicy,
 ) {
   const recordsObserved = state.recordsObserved + 1;
   if (state.protocolInvalid) {
@@ -1014,7 +1146,9 @@ export function observeRedProbeProtocolLine(
       recordsObserved,
     });
   }
-  if (isExpectedProtocolLine(entry, authenticationSecret, line)) {
+  if (
+    isExpectedProtocolLine(entry, authenticationSecret, line, markdownPolicy)
+  ) {
     return Object.freeze({
       ...state,
       finalRecordObserved: true,
@@ -1028,7 +1162,12 @@ export function observeRedProbeProtocolLine(
   });
 }
 
-function createHeartbeatMonitor(entry, authenticationSecret, silenceMs) {
+function createHeartbeatMonitor(
+  entry,
+  authenticationSecret,
+  silenceMs,
+  markdownPolicy,
+) {
   const abortController = new AbortController();
   let bufferedOutput = Buffer.alloc(0);
   let expired = false;
@@ -1066,6 +1205,7 @@ function createHeartbeatMonitor(entry, authenticationSecret, silenceMs) {
         protocolState,
         line,
         authenticationSecret,
+        markdownPolicy,
       );
       if (protocolState.protocolInvalid) continue;
       if (
@@ -1079,7 +1219,8 @@ function createHeartbeatMonitor(entry, authenticationSecret, silenceMs) {
     }
   };
 
-  arm();
+  // The hard per-probe deadline bounds authenticated bootstrap and cold static
+  // imports. Silence monitoring begins only after the first trusted heartbeat.
   return Object.freeze({
     close: disarm,
     observe,
@@ -1097,7 +1238,13 @@ function createHeartbeatMonitor(entry, authenticationSecret, silenceMs) {
   });
 }
 
-function isCanonicalProbeOutput(entry, bytes, heartbeat, authenticationSecret) {
+function isCanonicalProbeOutput(
+  entry,
+  bytes,
+  heartbeat,
+  authenticationSecret,
+  markdownPolicy,
+) {
   if (heartbeat.protocolInvalid || heartbeat.recordsObserved < 2) {
     return false;
   }
@@ -1108,7 +1255,12 @@ function isCanonicalProbeOutput(entry, bytes, heartbeat, authenticationSecret) {
 
   const finalRecord = records.at(-1);
   if (
-    !isExpectedProtocolLine(entry, authenticationSecret, `${finalRecord}\n`)
+    !isExpectedProtocolLine(
+      entry,
+      authenticationSecret,
+      `${finalRecord}\n`,
+      markdownPolicy,
+    )
   ) {
     return false;
   }
@@ -1226,13 +1378,18 @@ function createProbeEnvironment(runRoot, entry, supportGraph, probeSourceUrl) {
     fingerprint: entry.fingerprint,
     heartbeatIntervalMs: RED_PROBE_HEARTBEAT_INTERVAL_MS,
     helperRequestUrl: supportGraph.helperRequestUrl,
-    helperSourceDeflateBase64: supportGraph.helperSourceDeflateBase64,
+    helperSourceBrotliBase64: supportGraph.helperSourceBrotliBase64,
     helperSourceSha256: supportGraph.helperSourceSha256,
     helperSourceUrl: supportGraph.helperSourceUrl,
     id: entry.id,
+    markdownLoaderSourceBrotliBase64:
+      supportGraph.markdownLoaderSourceBrotliBase64,
+    markdownLoaderSourceSha256: supportGraph.markdownLoaderSourceSha256,
+    markdownLoaderSourceUrl: supportGraph.markdownLoaderSourceUrl,
     networkTripwireUrl: supportGraph.networkTripwireUrl,
     probeSourceSha256: entry.sourceSha256,
     probeSourceUrl,
+    runtimeSourceRootUrl: supportGraph.runtimeSourceRootUrl,
     task: entry.task,
     tsxLoaderUrl: supportGraph.tsxLoaderUrl,
   });
@@ -1277,11 +1434,13 @@ function spawnProbe(
   bootstrapImportUrl,
   authenticationSecret,
   heartbeatSilenceMs,
+  markdownPolicy,
 ) {
   const heartbeat = createHeartbeatMonitor(
     entry,
     authenticationSecret,
     heartbeatSilenceMs,
+    markdownPolicy,
   );
   const args = probeCommandArgs(bootstrapImportUrl);
   assertPortableWindowsLaunch(process.execPath, args, env);
@@ -1347,6 +1506,7 @@ function assertExpectedRedResult(
   result,
   heartbeat,
   authenticationSecret,
+  markdownPolicy,
 ) {
   if (heartbeat.expired && result.stopReason === "aborted") {
     throw new Error(
@@ -1383,6 +1543,7 @@ function assertExpectedRedResult(
       result.stdout,
       heartbeat,
       authenticationSecret,
+      markdownPolicy,
     ) ||
     result.stderr.byteLength !== 0
   ) {
@@ -1432,6 +1593,11 @@ export async function auditRedProbes(options = {}) {
   const discovered = discoverRedProbeFiles(runtimeRoot);
   assertExactInventory(manifest, discovered);
   const supportGraph = loadRedProbeSupportGraph(runtimeRoot);
+  const markdownPolicy = Object.freeze({
+    loaderSha256: supportGraph.markdownLoaderSourceSha256,
+    runtimeSourceRoot: supportGraph.runtimeSourceRoot,
+    runtimeSourceRootUrl: supportGraph.runtimeSourceRootUrl,
+  });
 
   const runRoot = createHermeticRunRoot("agr-", options.testing?.runBase);
   try {
@@ -1480,6 +1646,7 @@ export async function auditRedProbes(options = {}) {
         supportGraph.bootstrapImportUrl,
         authenticationSecret,
         heartbeatSilenceMs,
+        markdownPolicy,
       );
       assertNoNetworkAttempts(attemptLedger);
       assertExpectedRedResult(
@@ -1487,6 +1654,7 @@ export async function auditRedProbes(options = {}) {
         execution.result,
         execution.heartbeat,
         authenticationSecret,
+        markdownPolicy,
       );
     }
     return Object.freeze({

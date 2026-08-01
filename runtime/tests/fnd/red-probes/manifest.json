@@ -1,8 +1,116 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 1,
+  "probeCount": 13,
   "probes": [
+    {
+      "id": "a1-timeout-returns-before-physical-settlement",
+      "task": "A1",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/a1-timeout-returns-before-physical-settlement.red-probe.ts",
+      "fingerprint": "A1:TOOL-EXECUTION:DEADLINE-BEFORE-PHYSICAL-SETTLEMENT",
+      "sourceSha256": "3306c01d14f1bb9d312f431ae06aaff6edc8f4ad78cacd1aafef4b35295c87c3",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "a2a-malformed-canonical-journal",
+      "task": "A2a",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/a2a-malformed-canonical-journal.red-probe.ts",
+      "fingerprint": "A2A:RECOVERY:MALFORMED-CANONICAL-JOURNAL",
+      "sourceSha256": "122e91acad45d94524f3a0a16e6f56942f9d7fdb255b55d72c448e6265a93909",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "a2b-corrupt-journal-never-recoverable",
+      "task": "A2b",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/a2b-corrupt-journal-never-recoverable.red-probe.ts",
+      "fingerprint": "A2B:RECOVERY:CORRUPT-JOURNAL-NONEXECUTABLE",
+      "sourceSha256": "ee661eb50eb666aae76cefab4becac8f5ef1a960672aa05b9f90f4bec3e963b8",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "a3-tool-result-body-digest",
+      "task": "A3",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/a3-tool-result-body-digest.red-probe.ts",
+      "fingerprint": "A3:DURABLE-TURN:TOOL-RESULT-BODY-DIGEST",
+      "sourceSha256": "447d60061aa6144710cfc266831c2b119fa5d63ccddb625ae11a85211e819a98",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "b1-csv-prototype-header-roundtrip",
+      "task": "B1",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/b1-csv-prototype-header-roundtrip.red-probe.ts",
+      "fingerprint": "B1:CSV:PROTOTYPE-HEADER-INERT-ROUNDTRIP",
+      "sourceSha256": "33d9dab2eae101696d9245afd4b81eee96073592d2b7a6b2973f35b46b37b66d",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "b3a-workflow-name-path-traversal",
+      "task": "B3a",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/b3a-workflow-name-path-traversal.red-probe.ts",
+      "fingerprint": "B3A:WORKFLOW:NAME-PATH-TRAVERSAL",
+      "sourceSha256": "6a36ecb9ecf69b41c4832aada4a8ee79b1355a45d05ea2b80eaab2c2b8503eed",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "c1-one-character-message-frame-floor",
+      "task": "C1",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/c1-one-character-message-frame-floor.red-probe.ts",
+      "fingerprint": "C1:TOKEN-ACCOUNTING:ONE-CHARACTER-FRAME-FLOOR",
+      "sourceSha256": "0697b4dd602fe8f7ec7761dd99b8870eb854e2e1972c22963397e7529a05d8e2",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "c2-compaction-transcript-instruction-trust",
+      "task": "C2",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/c2-compaction-transcript-instruction-trust.red-probe.ts",
+      "fingerprint": "C2:COMPACTION:TRANSCRIPT-INSTRUCTION-TRUST",
+      "sourceSha256": "372c1ee37b9a02f6360438802a83edfa1fc5588a14451c1d094f811117020528",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "c3a-memory-recall-lexical-fallback",
+      "task": "C3a",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/c3a-memory-recall-lexical-fallback.red-probe.ts",
+      "fingerprint": "C3A:MEMORY:LEXICAL-FALLBACK-ON-ADMISSION-DENIAL",
+      "sourceSha256": "c2cecc398507cbf70640a142d5350e357830928e700f653b078218b5716c2700",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "d1-grep-pinned-binary-required",
+      "task": "D1",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/d1-grep-pinned-binary-required.red-probe.ts",
+      "fingerprint": "D1:GREP:PINNED-BINARY-REQUIRED",
+      "sourceSha256": "0900cdabdf84f840b8808c2ea8e02a8cb57829c37d5881c7c46dd3b4ad927d76",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "d3-apply-patch-crlf-fidelity",
+      "task": "D3",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/d3-apply-patch-crlf-fidelity.red-probe.ts",
+      "fingerprint": "D3:APPLY-PATCH:CRLF-FIDELITY",
+      "sourceSha256": "b6b6a214cf70565f237946bbfa922c439d550bce5ffb7bf2193f3a1d75ea802d",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "e1a-recovery-line-byte-limit",
+      "task": "E1a",
+      "classification": "defect",
+      "file": "tests/fnd/red-probes/e1a-recovery-line-byte-limit.red-probe.ts",
+      "fingerprint": "E1A:RECOVERY:LINE-BYTE-LIMIT",
+      "sourceSha256": "d605a0307f42c6a1613a10f9fb70840c5b3424ee99edfdfa07fdad47497f5a91",
+      "timeoutMs": 20000
+    },
     {
       "id": "intentional-transition-omission",
       "task": "FND-001",

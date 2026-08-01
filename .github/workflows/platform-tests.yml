@@ -989,8 +989,8 @@ jobs:
           if (!resultsPath) throw new Error("missing macOS red-probe results path");
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
           const exactCounts = {
-            numTotalTests: 62,
-            numPassedTests: 62,
+            numTotalTests: 64,
+            numPassedTests: 64,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1018,12 +1018,12 @@ jobs:
           if (
             testResult.status !== "passed" ||
             !Array.isArray(testResult.assertionResults) ||
-            testResult.assertionResults.length !== 62 ||
+            testResult.assertionResults.length !== 64 ||
             testResult.assertionResults.some(({ status }) => status !== "passed")
           ) {
-            throw new Error("macOS red-probe assertions were not exactly 62 passes");
+            throw new Error("macOS red-probe assertions were not exactly 64 passes");
           }
-          console.log("macOS red-probe runner passed 62 tests in 1 file with zero skipped");
+          console.log("macOS red-probe runner passed 64 tests in 1 file with zero skipped");
           NODE
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
@@ -1164,7 +1164,7 @@ jobs:
           $redProbeOutput = & node runtime/scripts/run-fnd-red-probes.mjs
           if ($LASTEXITCODE -ne 0) { throw "Windows red-probe audit failed" }
           $expectedRedProbeOutput = `
-            "red probes: files=1 expected-red=1 assertions=1 skipped=0 todo=0"
+            "red probes: files=13 expected-red=13 assertions=13 skipped=0 todo=0"
           if (($redProbeOutput | Out-String).Trim() -ne $expectedRedProbeOutput) {
             throw "Windows red-probe result contract failed: $redProbeOutput"
           }
