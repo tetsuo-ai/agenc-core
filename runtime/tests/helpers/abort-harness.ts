@@ -6,7 +6,41 @@ const ABORT_EVENT_TYPE = "abort";
 const FIRST_CHECKPOINT_SEQUENCE = 1;
 const OPTION_SEMANTICS_PROBE_EVENT_TYPE =
   "agenc-abort-harness-option-semantics-probe";
-const opaqueAbortListenerDepthBySignal = new WeakMap<AbortSignal, number>();
+const NativeAbortController = AbortController;
+const NativeEventTarget = EventTarget;
+const NativeMap = Map;
+const NativeProxy = Proxy;
+const NativeTextEncoder = TextEncoder;
+const NativeWeakMap = WeakMap;
+const nativeAbortControllerAbort = NativeAbortController.prototype.abort;
+const nativeEventTargetAdd = EventTarget.prototype.addEventListener;
+const nativeEventTargetRemove = EventTarget.prototype.removeEventListener;
+const nativeJsonStringify = JSON.stringify;
+const nativeMapDelete = NativeMap.prototype.delete;
+const nativeMapForEach = NativeMap.prototype.forEach;
+const nativeMapGet = NativeMap.prototype.get;
+const nativeMapSet = NativeMap.prototype.set;
+const nativeNumberIsSafeInteger = Number.isSafeInteger;
+const nativeObject = Object;
+const nativeObjectDefineProperty = Object.defineProperty;
+const nativeObjectFreeze = Object.freeze;
+const nativeObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const nativeObjectGetPrototypeOf = Object.getPrototypeOf;
+const nativeObjectIs = Object.is;
+const nativeReflectApply = Reflect.apply;
+const nativeReflectDeleteProperty = Reflect.deleteProperty;
+const nativeReflectGet = Reflect.get;
+const nativeString = String;
+const nativeSymbolToPrimitive = Symbol.toPrimitive;
+const nativeTextEncoderEncode = NativeTextEncoder.prototype.encode;
+const nativeWeakMapDelete = NativeWeakMap.prototype.delete;
+const nativeWeakMapGet = NativeWeakMap.prototype.get;
+const nativeWeakMapHas = NativeWeakMap.prototype.has;
+const nativeWeakMapSet = NativeWeakMap.prototype.set;
+const opaqueAbortListenerDepthBySignal = new NativeWeakMap<
+  AbortSignal,
+  number
+>();
 
 type AbortEventListener = EventListener | EventListenerObject;
 
@@ -86,8 +120,14 @@ interface NativeListenerOptionsObservation {
   readonly nativeOptions: unknown;
   capture(): boolean;
   once(): boolean;
+  passive(): boolean;
   externalSignal(): AbortSignal | undefined;
   releaseOpaqueTracking(): void;
+}
+
+interface NativeEventTypeObservation {
+  readonly nativeType: unknown;
+  normalizedType(): string | undefined;
 }
 
 interface ProvisionalExternalObserver {
@@ -119,8 +159,79 @@ interface PrimitiveRemovalCaptureObservation {
   readonly usesOriginalReceiver: boolean;
 }
 
+function appendArrayValue<T>(target: T[], value: T): void {
+  nativeObjectDefineProperty(target, nativeString(target.length), {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
+}
+
+function copyArray<T>(target: readonly T[]): T[] {
+  const copy: T[] = [];
+  for (let index = 0; index < target.length; index += 1) {
+    appendArrayValue(copy, target[index]!);
+  }
+  return copy;
+}
+
+function drainArray<T>(target: T[]): T[] {
+  const drained = copyArray(target);
+  target.length = 0;
+  return drained;
+}
+
+function deleteMapValue<K, V>(target: Map<K, V>, key: K): boolean {
+  return nativeReflectApply(nativeMapDelete, target, [key]) as boolean;
+}
+
+function forEachMapValue<K, V>(
+  target: Map<K, V>,
+  callback: (value: V) => void,
+): void {
+  nativeReflectApply(nativeMapForEach, target, [callback]);
+}
+
+function getMapValue<K, V>(target: Map<K, V>, key: K): V | undefined {
+  return nativeReflectApply(nativeMapGet, target, [key]) as V | undefined;
+}
+
+function setMapValue<K, V>(target: Map<K, V>, key: K, value: V): void {
+  nativeReflectApply(nativeMapSet, target, [key, value]);
+}
+
+function deleteWeakMapValue<K extends object, V>(
+  target: WeakMap<K, V>,
+  key: K,
+): boolean {
+  return nativeReflectApply(nativeWeakMapDelete, target, [key]) as boolean;
+}
+
+function getWeakMapValue<K extends object, V>(
+  target: WeakMap<K, V>,
+  key: K,
+): V | undefined {
+  return nativeReflectApply(nativeWeakMapGet, target, [key]) as V | undefined;
+}
+
+function hasWeakMapValue<K extends object, V>(
+  target: WeakMap<K, V>,
+  key: K,
+): boolean {
+  return nativeReflectApply(nativeWeakMapHas, target, [key]) as boolean;
+}
+
+function setWeakMapValue<K extends object, V>(
+  target: WeakMap<K, V>,
+  key: K,
+  value: V,
+): void {
+  nativeReflectApply(nativeWeakMapSet, target, [key, value]);
+}
+
 const abortSignalAbortedGetter = (() => {
-  const getter = Object.getOwnPropertyDescriptor(
+  const getter = nativeObjectGetOwnPropertyDescriptor(
     AbortSignal.prototype,
     "aborted",
   )?.get;
@@ -130,43 +241,58 @@ const abortSignalAbortedGetter = (() => {
   return getter as (this: AbortSignal) => boolean;
 })();
 
+const abortSignalReasonGetter = (() => {
+  const getter = nativeObjectGetOwnPropertyDescriptor(
+    AbortSignal.prototype,
+    "reason",
+  )?.get;
+  if (getter === undefined) {
+    throw new Error("AbortSignal.reason intrinsic is unavailable");
+  }
+  return getter as (this: AbortSignal) => unknown;
+})();
+
 function probeCaptureRemoval(
   addOptions: unknown,
   removeOptions: unknown,
 ): boolean {
-  const target = new EventTarget();
+  const target = new NativeEventTarget();
   let invoked = false;
   const listener = (): void => {
     invoked = true;
   };
-  Reflect.apply(target.addEventListener, target, [
+  nativeReflectApply(nativeEventTargetAdd, target, [
     OPTION_SEMANTICS_PROBE_EVENT_TYPE,
     listener,
     addOptions,
   ]);
-  Reflect.apply(target.removeEventListener, target, [
+  nativeReflectApply(nativeEventTargetRemove, target, [
     OPTION_SEMANTICS_PROBE_EVENT_TYPE,
     listener,
     removeOptions,
   ]);
   target.dispatchEvent(new Event(OPTION_SEMANTICS_PROBE_EVENT_TYPE));
-  target.removeEventListener(OPTION_SEMANTICS_PROBE_EVENT_TYPE, listener, {
-    capture: true,
-  });
-  target.removeEventListener(OPTION_SEMANTICS_PROBE_EVENT_TYPE, listener, {
-    capture: false,
-  });
+  nativeReflectApply(nativeEventTargetRemove, target, [
+    OPTION_SEMANTICS_PROBE_EVENT_TYPE,
+    listener,
+    { capture: true },
+  ]);
+  nativeReflectApply(nativeEventTargetRemove, target, [
+    OPTION_SEMANTICS_PROBE_EVENT_TYPE,
+    listener,
+    { capture: false },
+  ]);
   return !invoked;
 }
 
 function probeAddedCapture(addOptions: unknown): boolean {
-  const target = new EventTarget();
+  const target = new NativeEventTarget();
   let invoked = false;
   const listener = (): void => {
     invoked = true;
   };
   try {
-    Reflect.apply(target.addEventListener, target, [
+    nativeReflectApply(nativeEventTargetAdd, target, [
       OPTION_SEMANTICS_PROBE_EVENT_TYPE,
       listener,
       addOptions,
@@ -174,31 +300,35 @@ function probeAddedCapture(addOptions: unknown): boolean {
   } catch {
     return false;
   }
-  target.removeEventListener(OPTION_SEMANTICS_PROBE_EVENT_TYPE, listener, {
-    capture: true,
-  });
+  nativeReflectApply(nativeEventTargetRemove, target, [
+    OPTION_SEMANTICS_PROBE_EVENT_TYPE,
+    listener,
+    { capture: true },
+  ]);
   target.dispatchEvent(new Event(OPTION_SEMANTICS_PROBE_EVENT_TYPE));
-  target.removeEventListener(OPTION_SEMANTICS_PROBE_EVENT_TYPE, listener, {
-    capture: false,
-  });
+  nativeReflectApply(nativeEventTargetRemove, target, [
+    OPTION_SEMANTICS_PROBE_EVENT_TYPE,
+    listener,
+    { capture: false },
+  ]);
   return !invoked;
 }
 
 function probePrimitiveRemovalCapture(
   value: unknown,
 ): PrimitiveRemovalCaptureObservation {
-  const prototype = Object.getPrototypeOf(Object(value)) as object;
-  const originalDescriptor = Object.getOwnPropertyDescriptor(
+  const prototype = nativeObjectGetPrototypeOf(nativeObject(value)) as object;
+  const originalDescriptor = nativeObjectGetOwnPropertyDescriptor(
     prototype,
     "capture",
   );
   let captureReads = 0;
   let usesOriginalReceiver = true;
-  Object.defineProperty(prototype, "capture", {
+  nativeObjectDefineProperty(prototype, "capture", {
     configurable: true,
     get(this: unknown): boolean {
       captureReads += 1;
-      usesOriginalReceiver &&= Object.is(this, value);
+      usesOriginalReceiver &&= nativeObjectIs(this, value);
       return true;
     },
   });
@@ -206,12 +336,12 @@ function probePrimitiveRemovalCapture(
     probeCaptureRemoval({ capture: true }, value);
   } finally {
     if (originalDescriptor === undefined) {
-      Reflect.deleteProperty(prototype, "capture");
+      nativeReflectDeleteProperty(prototype, "capture");
     } else {
-      Object.defineProperty(prototype, "capture", originalDescriptor);
+      nativeObjectDefineProperty(prototype, "capture", originalDescriptor);
     }
   }
-  return Object.freeze({
+  return nativeObjectFreeze({
     readsCapture: captureReads > 0,
     usesOriginalReceiver: captureReads > 0 && usesOriginalReceiver,
   });
@@ -219,7 +349,7 @@ function probePrimitiveRemovalCapture(
 
 function detectNativeListenerOptionSemantics(): NativeListenerOptionSemantics {
   const truthyCapture = { capture: 1 as unknown as boolean };
-  const primitiveRemovalCapture = Object.freeze({
+  const primitiveRemovalCapture = nativeObjectFreeze({
     bigint: probePrimitiveRemovalCapture(1n),
     boolean: probePrimitiveRemovalCapture(true),
     number: probePrimitiveRemovalCapture(1),
@@ -230,8 +360,8 @@ function detectNativeListenerOptionSemantics(): NativeListenerOptionSemantics {
   // Node 26.5 and Bun 1.3 differ in removeEventListener's dictionary and
   // primitive capture conversion. Detect each primitive category instead of
   // assuming that either engine follows the other engine's interpretation.
-  return Object.freeze({
-    addTruthyPrimitiveMeansCapture: Object.freeze({
+  return nativeObjectFreeze({
+    addTruthyPrimitiveMeansCapture: nativeObjectFreeze({
       bigint: probeAddedCapture(1n),
       boolean: probeAddedCapture(true),
       number: probeAddedCapture(1),
@@ -242,21 +372,21 @@ function detectNativeListenerOptionSemantics(): NativeListenerOptionSemantics {
       { capture: true },
       truthyCapture,
     ),
-    removePrimitiveReadsCapture: Object.freeze({
+    removePrimitiveReadsCapture: nativeObjectFreeze({
       bigint: primitiveRemovalCapture.bigint.readsCapture,
       boolean: primitiveRemovalCapture.boolean.readsCapture,
       number: primitiveRemovalCapture.number.readsCapture,
       string: primitiveRemovalCapture.string.readsCapture,
       symbol: primitiveRemovalCapture.symbol.readsCapture,
     }),
-    removePrimitiveUsesOriginalReceiver: Object.freeze({
+    removePrimitiveUsesOriginalReceiver: nativeObjectFreeze({
       bigint: primitiveRemovalCapture.bigint.usesOriginalReceiver,
       boolean: primitiveRemovalCapture.boolean.usesOriginalReceiver,
       number: primitiveRemovalCapture.number.usesOriginalReceiver,
       string: primitiveRemovalCapture.string.usesOriginalReceiver,
       symbol: primitiveRemovalCapture.symbol.usesOriginalReceiver,
     }),
-    removeTruthyPrimitiveMeansCapture: Object.freeze({
+    removeTruthyPrimitiveMeansCapture: nativeObjectFreeze({
       bigint: probeCaptureRemoval({ capture: true }, 1n),
       boolean: probeCaptureRemoval({ capture: true }, true),
       number: probeCaptureRemoval({ capture: true }, 1),
@@ -272,7 +402,7 @@ function detectNativeListenerOptionSemantics(): NativeListenerOptionSemantics {
 const nativeListenerOptionSemantics = detectNativeListenerOptionSemantics();
 
 function normalizeOptionBoolean(value: unknown, coercesTruthy: boolean): boolean {
-  return coercesTruthy ? Boolean(value) : value === true;
+  return coercesTruthy ? !!value : value === true;
 }
 
 function isListenerOptionsObject(value: unknown): value is object {
@@ -305,20 +435,20 @@ function normalizePrimitiveCapture(
   const valueType = primitiveListenerOptionType(value);
   return valueType === undefined
     ? false
-    : Boolean(value) && semantics[valueType];
+    : !!value && semantics[valueType];
 }
 
 function normalizePrimitiveRemovalCapture(value: unknown): boolean {
   const valueType = primitiveListenerOptionType(value);
   if (valueType === undefined) return false;
   if (nativeListenerOptionSemantics.removePrimitiveReadsCapture[valueType]) {
-    const boxedValue = Object(value) as object;
+    const boxedValue = nativeObject(value) as object;
     const receiver = nativeListenerOptionSemantics
       .removePrimitiveUsesOriginalReceiver[valueType]
       ? value
       : boxedValue;
     return normalizeOptionBoolean(
-      Reflect.get(boxedValue, "capture", receiver),
+      nativeReflectGet(boxedValue, "capture", receiver),
       nativeListenerOptionSemantics.removeCaptureCoercesTruthy,
     );
   }
@@ -333,6 +463,30 @@ function isTrackableAbortListener(value: unknown): value is AbortEventListener {
     typeof value === "function" ||
     (typeof value === "object" && value !== null)
   );
+}
+
+function observeNativeEventType(type: unknown): NativeEventTypeObservation {
+  if (typeof type === "string") {
+    return {
+      nativeType: type,
+      normalizedType: () => type,
+    };
+  }
+
+  let normalizedType: string | undefined;
+  return {
+    nativeType: {
+      [nativeSymbolToPrimitive](): string {
+        normalizedType = nativeString(type);
+        return normalizedType;
+      },
+    },
+    normalizedType: () => normalizedType,
+  };
+}
+
+function normalizeNativeEventType(type: unknown): string {
+  return nativeString(type);
 }
 
 function assertWellFormedUnicode(value: string, label: string): void {
@@ -371,7 +525,11 @@ function validateLabel(value: string | undefined, fallback: string): string {
     );
   }
   assertWellFormedUnicode(label, "label");
-  const bytes = new TextEncoder().encode(label).byteLength;
+  const bytes = nativeReflectApply(
+    nativeTextEncoderEncode,
+    new NativeTextEncoder(),
+    [label],
+  ).byteLength;
   if (bytes > MAX_ABORT_HARNESS_LABEL_UTF8_BYTES) {
     throw new AbortHarnessError(
       "invalid_label",
@@ -385,41 +543,39 @@ function addNativeAbortListener(
   signal: AbortSignal,
   listener: EventListener,
 ): void {
-  EventTarget.prototype.addEventListener.call(
-    signal,
+  nativeReflectApply(nativeEventTargetAdd, signal, [
     ABORT_EVENT_TYPE,
     listener,
-  );
+  ]);
 }
 
 function removeNativeAbortListener(
   signal: AbortSignal,
   listener: EventListener,
 ): void {
-  EventTarget.prototype.removeEventListener.call(
-    signal,
+  nativeReflectApply(nativeEventTargetRemove, signal, [
     ABORT_EVENT_TYPE,
     listener,
-  );
+  ]);
 }
 
 function beginOpaqueAbortListenerTracking(signal: AbortSignal): void {
-  const depth = opaqueAbortListenerDepthBySignal.get(signal) ?? 0;
-  opaqueAbortListenerDepthBySignal.set(signal, depth + 1);
+  const depth = getWeakMapValue(opaqueAbortListenerDepthBySignal, signal) ?? 0;
+  setWeakMapValue(opaqueAbortListenerDepthBySignal, signal, depth + 1);
 }
 
 function endOpaqueAbortListenerTracking(signal: AbortSignal): void {
-  const depth = opaqueAbortListenerDepthBySignal.get(signal);
+  const depth = getWeakMapValue(opaqueAbortListenerDepthBySignal, signal);
   if (depth === undefined || depth <= 1) {
-    opaqueAbortListenerDepthBySignal.delete(signal);
+    deleteWeakMapValue(opaqueAbortListenerDepthBySignal, signal);
   } else {
-    opaqueAbortListenerDepthBySignal.set(signal, depth - 1);
+    setWeakMapValue(opaqueAbortListenerDepthBySignal, signal, depth - 1);
   }
 }
 
 function isNativeAbortSignal(value: unknown): value is AbortSignal {
   try {
-    abortSignalAbortedGetter.call(value as AbortSignal);
+    nativeReflectApply(abortSignalAbortedGetter, value, []);
     return true;
   } catch {
     return false;
@@ -427,7 +583,11 @@ function isNativeAbortSignal(value: unknown): value is AbortSignal {
 }
 
 function isSignalAborted(signal: AbortSignal): boolean {
-  return abortSignalAbortedGetter.call(signal) as boolean;
+  return nativeReflectApply(abortSignalAbortedGetter, signal, []) as boolean;
+}
+
+function getSignalReason(signal: AbortSignal): unknown {
+  return nativeReflectApply(abortSignalReasonGetter, signal, []);
 }
 
 function observeNativeListenerOptions(
@@ -443,6 +603,7 @@ function observeNativeListenerOptions(
       nativeOptions: options,
       capture: () => capture,
       once: () => false,
+      passive: () => false,
       externalSignal: () => undefined,
       releaseOpaqueTracking: () => {},
     };
@@ -450,18 +611,25 @@ function observeNativeListenerOptions(
 
   let captureValue: unknown = false;
   let onceValue: unknown = false;
+  let passiveValue: unknown = false;
   let signalValue: unknown;
   const opaqueSignals: AbortSignal[] = [];
-  const nativeOptions = new Proxy(options, {
+  const nativeOptions = new NativeProxy(options, {
     get(target, property): unknown {
-      const value = Reflect.get(target, property, target);
+      const value = nativeReflectGet(target, property, target);
       if (property === "capture") captureValue = value;
       if (property === "once") onceValue = value;
+      if (property === "passive") passiveValue = value;
       if (property === "signal") {
         signalValue = value;
         if (isNativeAbortSignal(value)) {
           beginOpaqueAbortListenerTracking(value);
-          opaqueSignals.push(value);
+          try {
+            appendArrayValue(opaqueSignals, value);
+          } catch (error) {
+            endOpaqueAbortListenerTracking(value);
+            throw error;
+          }
           onExternalSignal?.(value);
         }
       }
@@ -472,16 +640,23 @@ function observeNativeListenerOptions(
 
   return {
     nativeOptions,
-    capture: () => Boolean(captureValue),
-    once: () => Boolean(onceValue),
+    capture: () => !!captureValue,
+    once: () => !!onceValue,
+    passive: () => !!passiveValue,
     externalSignal: () =>
       isNativeAbortSignal(signalValue) ? signalValue : undefined,
     releaseOpaqueTracking(): void {
       if (released) return;
       released = true;
+      let cleanupError: unknown;
       for (let index = opaqueSignals.length - 1; index >= 0; index -= 1) {
-        endOpaqueAbortListenerTracking(opaqueSignals[index]!);
+        try {
+          endOpaqueAbortListenerTracking(opaqueSignals[index]!);
+        } catch (error) {
+          if (cleanupError === undefined) cleanupError = error;
+        }
       }
+      if (cleanupError !== undefined) throw cleanupError;
     },
   };
 }
@@ -491,7 +666,7 @@ function listenerKey(capture: boolean): "capture" | "bubble" {
 }
 
 function validateLimit(value: number, maximum: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+  if (!nativeNumberIsSafeInteger(value) || value < 1 || value > maximum) {
     throw new AbortHarnessError(
       "invalid_limit",
       `${label} must be a safe integer in [1, ${maximum}]`,
@@ -503,10 +678,11 @@ function validateLimit(value: number, maximum: number, label: string): number {
 /**
  * Instrument one native AbortController for deterministic test assertions.
  *
- * Only explicit `addEventListener("abort", ...)` registrations on this signal
- * are counted. Native engine-internal dependants, such as AbortSignal.any's
- * hidden subscription, remain intentionally opaque and must be asserted by
- * their observable propagated outcome.
+ * Only explicit registrations on this signal whose event type is `"abort"`
+ * after host-native string conversion are counted. Native engine-internal
+ * dependants, such as AbortSignal.any's hidden subscription, remain
+ * intentionally opaque and must be asserted by their observable propagated
+ * outcome.
  */
 export function createAbortHarness(
   labelInput?: string,
@@ -523,26 +699,51 @@ export function createAbortHarness(
     MAX_ABORT_HARNESS_TRACKED_LISTENERS,
     "trackedListenerLimit",
   );
-  const controller = new AbortController();
+  const controller = new NativeAbortController();
   const signal = controller.signal;
-  const originalAbort = controller.abort.bind(controller);
-  const originalAdd = signal.addEventListener.bind(signal);
-  const originalRemove = signal.removeEventListener.bind(signal);
-  const abortOwnDescriptor = Object.getOwnPropertyDescriptor(controller, "abort");
-  const addOwnDescriptor = Object.getOwnPropertyDescriptor(
+  const originalAbort = (reason?: unknown): void => {
+    nativeReflectApply(nativeAbortControllerAbort, controller, [reason]);
+  };
+  const originalAdd = (
+    type: string,
+    listener: AbortEventListener | null,
+    listenerOptions?: boolean | AddEventListenerOptions,
+  ): void => {
+    nativeReflectApply(nativeEventTargetAdd, signal, [
+      type,
+      listener,
+      listenerOptions,
+    ]);
+  };
+  const originalRemove = (
+    type: string,
+    listener: AbortEventListener | null,
+    listenerOptions?: boolean | EventListenerOptions,
+  ): void => {
+    nativeReflectApply(nativeEventTargetRemove, signal, [
+      type,
+      listener,
+      listenerOptions,
+    ]);
+  };
+  const abortOwnDescriptor = nativeObjectGetOwnPropertyDescriptor(
+    controller,
+    "abort",
+  );
+  const addOwnDescriptor = nativeObjectGetOwnPropertyDescriptor(
     signal,
     "addEventListener",
   );
-  const removeOwnDescriptor = Object.getOwnPropertyDescriptor(
+  const removeOwnDescriptor = nativeObjectGetOwnPropertyDescriptor(
     signal,
     "removeEventListener",
   );
 
-  const listenerRecords = new Map<
+  const listenerRecords = new NativeMap<
     AbortEventListener,
     Map<"capture" | "bubble", TrackedListener>
   >();
-  const checkpointOccurrences = new Map<string, number>();
+  const checkpointOccurrences = new NativeMap<string, number>();
   const checkpointLog: AbortCheckpoint[] = [];
   let abortRequestCount = 0;
   let abortEventCount = 0;
@@ -559,14 +760,23 @@ export function createAbortHarness(
   const lookupRecord = (
     listener: AbortEventListener,
     capture: boolean,
-  ): TrackedListener | undefined =>
-    listenerRecords.get(listener)?.get(listenerKey(capture));
+  ): TrackedListener | undefined => {
+    const byCapture = getMapValue(listenerRecords, listener);
+    return byCapture === undefined
+      ? undefined
+      : getMapValue(byCapture, listenerKey(capture));
+  };
 
   const deleteRecordMapping = (record: TrackedListener): void => {
-    const byCapture = listenerRecords.get(record.listener);
+    const byCapture = getMapValue(listenerRecords, record.listener);
     if (byCapture === undefined) return;
-    byCapture.delete(listenerKey(record.capture));
-    if (byCapture.size === 0) listenerRecords.delete(record.listener);
+    deleteMapValue(byCapture, listenerKey(record.capture));
+    if (
+      getMapValue(byCapture, "capture") === undefined &&
+      getMapValue(byCapture, "bubble") === undefined
+    ) {
+      deleteMapValue(listenerRecords, record.listener);
+    }
   };
 
   const removeRecord = (record: TrackedListener): boolean => {
@@ -590,23 +800,69 @@ export function createAbortHarness(
     return true;
   };
 
-  const trackedAdd = (
+  const replayObservedAdd = (
     type: string,
+    listener: AbortEventListener,
+    observation: NativeListenerOptionsObservation,
+  ): void => {
+    const externalSignal = observation.externalSignal();
+    if (externalSignal !== undefined) {
+      beginOpaqueAbortListenerTracking(externalSignal);
+    }
+    try {
+      nativeReflectApply(originalAdd, undefined, [
+        type,
+        listener,
+        {
+          capture: observation.capture(),
+          once: observation.once(),
+          passive: observation.passive(),
+          signal: externalSignal,
+        },
+      ]);
+    } finally {
+      if (externalSignal !== undefined) {
+        endOpaqueAbortListenerTracking(externalSignal);
+      }
+    }
+  };
+
+  const trackedAdd = function trackedAdd(
+    this: unknown,
+    type: unknown,
     listener: unknown,
     options?: unknown,
-  ): void => {
+  ): void {
+    if (this !== signal) {
+      nativeReflectApply(nativeEventTargetAdd, this, [type, listener, options]);
+      return;
+    }
+    if (restored) {
+      nativeReflectApply(nativeEventTargetAdd, signal, [
+        type,
+        listener,
+        options,
+      ]);
+      return;
+    }
     if (!isTrackableAbortListener(listener)) {
-      Reflect.apply(originalAdd, undefined, [type, listener, options]);
+      nativeReflectApply(originalAdd, undefined, [type, listener, options]);
       return;
     }
-    if (opaqueAbortListenerDepthBySignal.has(signal)) {
-      Reflect.apply(originalAdd, undefined, [type, listener, options]);
+    if (hasWeakMapValue(opaqueAbortListenerDepthBySignal, signal)) {
+      nativeReflectApply(originalAdd, undefined, [type, listener, options]);
       return;
     }
-    if (type !== ABORT_EVENT_TYPE) {
-      Reflect.apply(originalAdd, undefined, [type, listener, options]);
+    if (typeof type === "symbol") {
+      nativeReflectApply(originalAdd, undefined, [type, listener, options]);
       return;
     }
+    if (typeof type === "string" && type !== ABORT_EVENT_TYPE) {
+      nativeReflectApply(originalAdd, undefined, [type, listener, options]);
+      return;
+    }
+
+    const typeObservation = observeNativeEventType(type);
 
     let record: TrackedListener | undefined;
     const wrapped: EventListener = (event) => {
@@ -614,7 +870,7 @@ export function createAbortHarness(
       if (activeRecord === undefined) return;
       if (activeRecord.once) removeRecord(activeRecord);
       if (typeof activeRecord.listener === "function") {
-        activeRecord.listener.call(signal, event);
+        nativeReflectApply(activeRecord.listener, signal, [event]);
       } else {
         activeRecord.listener.handleEvent(event);
       }
@@ -623,13 +879,22 @@ export function createAbortHarness(
     const removeProvisionalExternalObservers = (
       retained?: ProvisionalExternalObserver,
     ): void => {
-      for (const observer of provisionalExternalObservers.splice(0)) {
+      const observers = drainArray(provisionalExternalObservers);
+      let cleanupError: unknown;
+      for (let index = 0; index < observers.length; index += 1) {
+        const observer = observers[index]!;
         if (observer === retained) {
-          provisionalExternalObservers.push(observer);
+          appendArrayValue(provisionalExternalObservers, observer);
         } else {
-          removeNativeAbortListener(observer.signal, observer.handler);
+          try {
+            removeNativeAbortListener(observer.signal, observer.handler);
+          } catch (error) {
+            appendArrayValue(provisionalExternalObservers, observer);
+            if (cleanupError === undefined) cleanupError = error;
+          }
         }
       }
+      if (cleanupError !== undefined) throw cleanupError;
     };
     const observation = observeNativeListenerOptions(options, (ownerSignal) => {
       const externalAbortHandler: EventListener = () => {
@@ -637,91 +902,212 @@ export function createAbortHarness(
         if (record?.active === true) removeRecord(record);
       };
       addNativeAbortListener(ownerSignal, externalAbortHandler);
-      provisionalExternalObservers.push({
-        signal: ownerSignal,
-        handler: externalAbortHandler,
-      });
+      try {
+        appendArrayValue(provisionalExternalObservers, {
+          signal: ownerSignal,
+          handler: externalAbortHandler,
+        });
+      } catch (error) {
+        removeNativeAbortListener(ownerSignal, externalAbortHandler);
+        throw error;
+      }
     });
     try {
-      Reflect.apply(originalAdd, undefined, [
-        ABORT_EVENT_TYPE,
+      nativeReflectApply(originalAdd, undefined, [
+        typeObservation.nativeType,
         wrapped,
         observation.nativeOptions,
       ]);
     } catch (error) {
-      originalRemove(ABORT_EVENT_TYPE, wrapped, {
-        capture: observation.capture(),
-      });
-      removeProvisionalExternalObservers();
+      const normalizedType = typeObservation.normalizedType();
+      if (normalizedType !== undefined) {
+        try {
+          originalRemove(normalizedType, wrapped, {
+            capture: observation.capture(),
+          });
+        } catch {
+          // Preserve the host-native registration error after best-effort rollback.
+        }
+      }
+      try {
+        removeProvisionalExternalObservers();
+      } catch {
+        // Preserve the host-native registration error after best-effort rollback.
+      }
       throw error;
     } finally {
       observation.releaseOpaqueTracking();
     }
 
-    const capture = observation.capture();
-    const externalSignal = observation.externalSignal();
-    const retainedExternalObserver = [...provisionalExternalObservers]
-      .reverse()
-      .find((observer) => observer.signal === externalSignal);
-    removeProvisionalExternalObservers(retainedExternalObserver);
-    const removeProvisionalListener = (): void => {
-      originalRemove(ABORT_EVENT_TYPE, wrapped, { capture });
-    };
-    if (
-      lookupRecord(listener, capture) !== undefined ||
-      (externalSignal !== undefined && isSignalAborted(externalSignal))
-    ) {
-      removeProvisionalListener();
-      removeProvisionalExternalObservers();
-      return;
-    }
-    if (activeListenerCount >= trackedListenerLimit) {
-      removeProvisionalListener();
-      removeProvisionalExternalObservers();
-      throw new AbortHarnessError(
-        "listener_limit",
-        `${label} exceeds ${trackedListenerLimit} active abort listeners`,
-      );
-    }
+    let normalizedType: string | undefined;
+    let capture = false;
+    let provisionalListenerPresent = false;
+    let finalizedRecord: TrackedListener | undefined;
+    try {
+      normalizedType = typeObservation.normalizedType();
+      if (normalizedType === undefined) {
+        const externalSignal = observation.externalSignal();
+        removeProvisionalExternalObservers();
+        if (
+          restored ||
+          (externalSignal !== undefined && isSignalAborted(externalSignal))
+        ) {
+          return;
+        }
+        throw new AbortHarnessError(
+          "instrumentation_unsupported",
+          `${label} could not observe native event-type conversion`,
+        );
+      }
 
-    const finalizedRecord: TrackedListener = {
-      listener,
-      wrapped,
-      capture,
-      once: observation.once(),
-      externalSignal,
-      externalAbortHandler: retainedExternalObserver?.handler,
-      active: false,
-    };
-    record = finalizedRecord;
+      capture = observation.capture();
+      provisionalListenerPresent = true;
+      const provisionalListenerType = normalizedType;
+      const removeProvisionalListener = (): void => {
+        if (!provisionalListenerPresent) return;
+        originalRemove(provisionalListenerType, wrapped, { capture });
+        provisionalListenerPresent = false;
+      };
 
-    let byCapture = listenerRecords.get(listener);
-    if (byCapture === undefined) {
-      byCapture = new Map();
-      listenerRecords.set(listener, byCapture);
+      if (restored) {
+        removeProvisionalListener();
+        removeProvisionalExternalObservers();
+        if (normalizedType !== ABORT_EVENT_TYPE) {
+          replayObservedAdd(normalizedType, listener, observation);
+        }
+        return;
+      }
+      if (normalizedType !== ABORT_EVENT_TYPE) {
+        removeProvisionalListener();
+        removeProvisionalExternalObservers();
+        replayObservedAdd(normalizedType, listener, observation);
+        return;
+      }
+
+      const externalSignal = observation.externalSignal();
+      let retainedExternalObserver: ProvisionalExternalObserver | undefined;
+      for (
+        let index = provisionalExternalObservers.length - 1;
+        index >= 0;
+        index -= 1
+      ) {
+        const observer = provisionalExternalObservers[index]!;
+        if (observer.signal === externalSignal) {
+          retainedExternalObserver = observer;
+          break;
+        }
+      }
+      removeProvisionalExternalObservers(retainedExternalObserver);
+      if (
+        lookupRecord(listener, capture) !== undefined ||
+        (externalSignal !== undefined && isSignalAborted(externalSignal))
+      ) {
+        removeProvisionalListener();
+        removeProvisionalExternalObservers();
+        return;
+      }
+      if (activeListenerCount >= trackedListenerLimit) {
+        removeProvisionalListener();
+        removeProvisionalExternalObservers();
+        throw new AbortHarnessError(
+          "listener_limit",
+          `${label} exceeds ${trackedListenerLimit} active abort listeners`,
+        );
+      }
+
+      finalizedRecord = {
+        listener,
+        wrapped,
+        capture,
+        once: observation.once(),
+        externalSignal,
+        externalAbortHandler: retainedExternalObserver?.handler,
+        active: false,
+      };
+      record = finalizedRecord;
+
+      let byCapture = getMapValue(listenerRecords, listener);
+      if (byCapture === undefined) {
+        byCapture = new NativeMap();
+        setMapValue(listenerRecords, listener, byCapture);
+      }
+      setMapValue(byCapture, listenerKey(capture), finalizedRecord);
+      finalizedRecord.active = true;
+      activeListenerCount += 1;
+      listenerAdds += 1;
+      provisionalListenerPresent = false;
+    } catch (error) {
+      if (finalizedRecord?.active === true) {
+        try {
+          removeRecord(finalizedRecord);
+        } catch {
+          // Continue rolling back the remaining provisional resources.
+        }
+      } else if (finalizedRecord !== undefined) {
+        try {
+          deleteRecordMapping(finalizedRecord);
+        } catch {
+          // Continue rolling back the remaining provisional resources.
+        }
+      }
+      if (provisionalListenerPresent && normalizedType !== undefined) {
+        try {
+          originalRemove(normalizedType, wrapped, { capture });
+        } catch {
+          // Continue rolling back the remaining provisional resources.
+        }
+      }
+      try {
+        removeProvisionalExternalObservers();
+      } catch {
+        // Preserve the original finalization error after best-effort rollback.
+      }
+      throw error;
     }
-    byCapture.set(listenerKey(capture), finalizedRecord);
-    finalizedRecord.active = true;
-    activeListenerCount += 1;
-    listenerAdds += 1;
   };
 
-  const trackedRemove = (
-    type: string,
+  const trackedRemove = function trackedRemove(
+    this: unknown,
+    type: unknown,
     listener: unknown,
     options?: unknown,
-  ): void => {
-    if (!isTrackableAbortListener(listener)) {
-      Reflect.apply(originalRemove, undefined, [type, listener, options]);
+  ): void {
+    if (this !== signal) {
+      nativeReflectApply(nativeEventTargetRemove, this, [
+        type,
+        listener,
+        options,
+      ]);
       return;
     }
-    if (type !== ABORT_EVENT_TYPE) {
-      Reflect.apply(originalRemove, undefined, [type, listener, options]);
+    if (restored) {
+      nativeReflectApply(nativeEventTargetRemove, signal, [
+        type,
+        listener,
+        options,
+      ]);
+      return;
+    }
+    if (!isTrackableAbortListener(listener)) {
+      nativeReflectApply(originalRemove, undefined, [type, listener, options]);
+      return;
+    }
+    if (typeof type === "symbol") {
+      nativeReflectApply(originalRemove, undefined, [type, listener, options]);
+      return;
+    }
+    const normalizedType = normalizeNativeEventType(type);
+    if (normalizedType !== ABORT_EVENT_TYPE) {
+      nativeReflectApply(originalRemove, undefined, [
+        normalizedType,
+        listener,
+        options,
+      ]);
       return;
     }
     const capture = isListenerOptionsObject(options)
       ? normalizeOptionBoolean(
-          Reflect.get(options, "capture"),
+          nativeReflectGet(options, "capture"),
           nativeListenerOptionSemantics.removeCaptureCoercesTruthy,
         )
       : normalizePrimitiveRemovalCapture(options);
@@ -730,20 +1116,28 @@ export function createAbortHarness(
   };
 
   try {
-    Object.defineProperty(controller, "abort", {
+    nativeObjectDefineProperty(controller, "abort", {
       configurable: true,
-      value(reason?: unknown): void {
+      value(this: unknown, reason?: unknown): void {
+        if (this !== controller) {
+          nativeReflectApply(nativeAbortControllerAbort, this, [reason]);
+          return;
+        }
+        if (restored) {
+          nativeReflectApply(nativeAbortControllerAbort, controller, [reason]);
+          return;
+        }
         abortRequestCount += 1;
         originalAbort(reason);
       },
       writable: true,
     });
-    Object.defineProperty(signal, "addEventListener", {
+    nativeObjectDefineProperty(signal, "addEventListener", {
       configurable: true,
       value: trackedAdd,
       writable: true,
     });
-    Object.defineProperty(signal, "removeEventListener", {
+    nativeObjectDefineProperty(signal, "removeEventListener", {
       configurable: true,
       value: trackedRemove,
       writable: true,
@@ -752,15 +1146,15 @@ export function createAbortHarness(
     originalRemove(ABORT_EVENT_TYPE, onNativeAbort);
     throw new AbortHarnessError(
       "instrumentation_unsupported",
-      `${label} cannot instrument native AbortController methods: ${String(error)}`,
+      `${label} cannot instrument native AbortController methods: ${nativeString(error)}`,
     );
   }
 
   const snapshot = (): AbortHarnessSnapshot =>
-    Object.freeze({
+    nativeObjectFreeze({
       label,
-      aborted: signal.aborted,
-      reason: signal.reason,
+      aborted: isSignalAborted(signal),
+      reason: getSignalReason(signal),
       abortRequestCount,
       abortEventCount,
       activeListenerCount,
@@ -776,9 +1170,9 @@ export function createAbortHarness(
     descriptor: PropertyDescriptor | undefined,
   ): void => {
     if (descriptor === undefined) {
-      Reflect.deleteProperty(target, property);
+      nativeReflectDeleteProperty(target, property);
     } else {
-      Object.defineProperty(target, property, descriptor);
+      nativeObjectDefineProperty(target, property, descriptor);
     }
   };
 
@@ -793,37 +1187,40 @@ export function createAbortHarness(
           `${label} exceeds ${checkpointLimit} checkpoints`,
         );
       }
-      const occurrence = (checkpointOccurrences.get(name) ?? 0) + 1;
-      checkpointOccurrences.set(name, occurrence);
-      const entry = Object.freeze({
+      const occurrence = (getMapValue(checkpointOccurrences, name) ?? 0) + 1;
+      setMapValue(checkpointOccurrences, name, occurrence);
+      const entry = nativeObjectFreeze({
         ...snapshot(),
         name,
         sequence: FIRST_CHECKPOINT_SEQUENCE + checkpointLog.length,
         occurrence,
       });
-      checkpointLog.push(entry);
+      appendArrayValue(checkpointLog, entry);
       return entry;
     },
     snapshot,
-    checkpoints: () => Object.freeze([...checkpointLog]),
+    checkpoints: () => nativeObjectFreeze(copyArray(checkpointLog)),
     assertCheckpointSequence(names: readonly string[]): void {
-      if (
-        names.length === checkpointLog.length &&
-        names.every((name, index) => name === checkpointLog[index]!.name)
-      ) {
+      let matches = names.length === checkpointLog.length;
+      for (let index = 0; matches && index < names.length; index += 1) {
+        matches = names[index] === checkpointLog[index]!.name;
+      }
+      if (matches) {
         return;
+      }
+      const actualNames: string[] = [];
+      for (let index = 0; index < checkpointLog.length; index += 1) {
+        appendArrayValue(actualNames, checkpointLog[index]!.name);
       }
       throw new AbortHarnessError(
         "checkpoint_mismatch",
-        `${label} checkpoints were ${JSON.stringify(
-          checkpointLog.map((entry) => entry.name),
-        )}, expected ${JSON.stringify(names)}`,
+        `${label} checkpoints were ${nativeJsonStringify(actualNames)}, expected ${nativeJsonStringify(names)}`,
       );
     },
     assertAborted(expected: ExpectedAbortState): void {
       if (
-        signal.aborted &&
-        Object.is(signal.reason, expected.reason) &&
+        isSignalAborted(signal) &&
+        nativeObjectIs(getSignalReason(signal), expected.reason) &&
         abortRequestCount === expected.requestCount &&
         abortEventCount === expected.eventCount
       ) {
@@ -843,9 +1240,11 @@ export function createAbortHarness(
     },
     restore(): void {
       if (restored) return;
-      for (const byCapture of [...listenerRecords.values()]) {
-        for (const record of [...byCapture.values()]) removeRecord(record);
-      }
+      forEachMapValue(listenerRecords, (byCapture) => {
+        forEachMapValue(byCapture, (record) => {
+          removeRecord(record);
+        });
+      });
       originalRemove(ABORT_EVENT_TYPE, onNativeAbort);
       restoreDescriptor(controller, "abort", abortOwnDescriptor);
       restoreDescriptor(signal, "addEventListener", addOwnDescriptor);
@@ -854,5 +1253,5 @@ export function createAbortHarness(
     },
   };
 
-  return Object.freeze(harness);
+  return nativeObjectFreeze(harness);
 }

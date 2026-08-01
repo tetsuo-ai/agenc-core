@@ -726,15 +726,108 @@ describe("controlled asynchronous work", () => {
     );
   });
 
-  test("rejects thenable controlled values without consuming the gate", () => {
-    const controlled = createControlledPromise<unknown>("thenable gate");
+  test("rejects promise reference values without consuming the gate", () => {
+    const controlled = createControlledPromise<string>("promise reference gate");
+    const resolveUnchecked = controlled.resolve as (value: unknown) => void;
     expectErrorCode(
-      () => controlled.resolve(Promise.resolve("value")),
+      () => resolveUnchecked(Promise.resolve("value")),
       ControlledAsyncError,
-      "thenable_value",
+      "reference_value",
     );
     controlled.assertPending();
     controlled.resolve("safe value");
+  });
+
+  test("rejects plain reference values without consuming the gate", async () => {
+    const controlled = createControlledPromise<string>("reference gate");
+    const observed = settleWithinMicrotasks(controlled.promise, { maxTurns: 2 });
+    const resolveUnchecked = controlled.resolve as (value: unknown) => void;
+
+    expectErrorCode(
+      () => resolveUnchecked(Object.freeze({ value: "not thenable" })),
+      ControlledAsyncError,
+      "reference_value",
+    );
+    controlled.assertPending();
+
+    controlled.resolve("safe primitive");
+    expect(controlled.state()).toEqual({
+      status: "fulfilled",
+      value: "safe primitive",
+    });
+    await expect(observed).resolves.toEqual({
+      status: "fulfilled",
+      value: "safe primitive",
+      turns: 1,
+    });
+  });
+
+  test("never reads a reentrant then getter before rejecting the value", async () => {
+    const controlled = createControlledPromise<string>("reentrant then gate");
+    const observed = settleWithinMicrotasks(controlled.promise, { maxTurns: 2 });
+    const resolveUnchecked = controlled.resolve as (value: unknown) => void;
+    const reentrantReason = Object.freeze({ code: "reentrant rejection" });
+    let thenAccesses = 0;
+    const referenceValue = {
+      get then(): undefined {
+        thenAccesses += 1;
+        controlled.reject(reentrantReason);
+        return undefined;
+      },
+    };
+
+    expectErrorCode(
+      () => resolveUnchecked(referenceValue),
+      ControlledAsyncError,
+      "reference_value",
+    );
+    expect(thenAccesses).toBe(0);
+    controlled.assertPending();
+
+    controlled.resolve("safe after reentrant value");
+    expect(controlled.state()).toEqual({
+      status: "fulfilled",
+      value: "safe after reentrant value",
+    });
+    await expect(observed).resolves.toEqual({
+      status: "fulfilled",
+      value: "safe after reentrant value",
+      turns: 1,
+    });
+  });
+
+  test("never reads a time-varying then getter before rejecting the value", async () => {
+    const controlled = createControlledPromise<string>("changing then gate");
+    const observed = settleWithinMicrotasks(controlled.promise, { maxTurns: 2 });
+    const resolveUnchecked = controlled.resolve as (value: unknown) => void;
+    let thenAccesses = 0;
+    const referenceValue = {
+      get then(): undefined | ((resolve: (value: string) => void) => void) {
+        thenAccesses += 1;
+        return thenAccesses === 1
+          ? undefined
+          : (resolve): void => resolve("assimilated value");
+      },
+    };
+
+    expectErrorCode(
+      () => resolveUnchecked(referenceValue),
+      ControlledAsyncError,
+      "reference_value",
+    );
+    expect(thenAccesses).toBe(0);
+    controlled.assertPending();
+
+    controlled.resolve("safe after changing value");
+    expect(controlled.state()).toEqual({
+      status: "fulfilled",
+      value: "safe after changing value",
+    });
+    await expect(observed).resolves.toEqual({
+      status: "fulfilled",
+      value: "safe after changing value",
+      turns: 1,
+    });
   });
 
   test("does not leave timeout-chain jobs after early settlement", async () => {
@@ -921,6 +1014,1029 @@ describe("abort harness", () => {
     } finally {
       harness.restore();
     }
+  });
+
+  test("invokes callable listeners without consulting their call property", () => {
+    const listenerKinds = ["shadowed", "proxy"] as const;
+    type ListenerKind = (typeof listenerKinds)[number];
+    interface InvocationSnapshot {
+      readonly bodyCalls: number;
+      readonly callPropertyReads: number;
+      readonly divertedCalls: number;
+      readonly proxyApplyCalls: number;
+      readonly replacementApplyCalls: number;
+      readonly receiverMatched: boolean;
+      readonly eventMatched: boolean;
+    }
+    const invoke = (
+      signal: AbortSignal,
+      listenerKind: ListenerKind,
+    ): InvocationSnapshot => {
+      const event = new Event("abort");
+      let bodyCalls = 0;
+      let callPropertyReads = 0;
+      let divertedCalls = 0;
+      let proxyApplyCalls = 0;
+      let replacementApplyCalls = 0;
+      let receiverMatched = false;
+      let eventMatched = false;
+      const originalReflectApply = Reflect.apply;
+      const target = function listenerBody(
+        this: unknown,
+        receivedEvent: Event,
+      ): void {
+        bodyCalls += 1;
+        receiverMatched = this === signal;
+        eventMatched = receivedEvent === event;
+      };
+      let listener: EventListener;
+      if (listenerKind === "shadowed") {
+        Object.defineProperty(target, "call", {
+          get(): () => void {
+            callPropertyReads += 1;
+            return () => {
+              divertedCalls += 1;
+            };
+          },
+        });
+        listener = target;
+      } else {
+        listener = new Proxy(target, {
+          get(proxyTarget, property, receiver): unknown {
+            if (property === "call") {
+              callPropertyReads += 1;
+              return () => {
+                divertedCalls += 1;
+              };
+            }
+            return Reflect.get(proxyTarget, property, receiver);
+          },
+          apply(proxyTarget, thisArgument, argumentsList): unknown {
+            proxyApplyCalls += 1;
+            return originalReflectApply(
+              proxyTarget,
+              thisArgument,
+              argumentsList,
+            );
+          },
+        });
+      }
+
+      signal.addEventListener("abort", listener);
+      const reflectApplyDescriptor = Object.getOwnPropertyDescriptor(
+        Reflect,
+        "apply",
+      );
+      Object.defineProperty(Reflect, "apply", {
+        configurable: true,
+        value(): never {
+          replacementApplyCalls += 1;
+          throw new Error("replacement Reflect.apply must not run");
+        },
+        writable: true,
+      });
+      try {
+        signal.dispatchEvent(event);
+      } finally {
+        if (reflectApplyDescriptor === undefined) {
+          Reflect.deleteProperty(Reflect, "apply");
+        } else {
+          Object.defineProperty(Reflect, "apply", reflectApplyDescriptor);
+        }
+      }
+
+      return {
+        bodyCalls,
+        callPropertyReads,
+        divertedCalls,
+        proxyApplyCalls,
+        replacementApplyCalls,
+        receiverMatched,
+        eventMatched,
+      };
+    };
+
+    for (const listenerKind of listenerKinds) {
+      const native = invoke(new AbortController().signal, listenerKind);
+      const harness = createAbortHarness(`callable ${listenerKind} listener`);
+      try {
+        const actual = invoke(harness.signal, listenerKind);
+        expect(actual).toEqual(native);
+        expect(actual).toMatchObject({
+          bodyCalls: 1,
+          callPropertyReads: 0,
+          divertedCalls: 0,
+          proxyApplyCalls: listenerKind === "proxy" ? 1 : 0,
+          replacementApplyCalls: 0,
+          receiverMatched: true,
+          eventMatched: true,
+        });
+      } finally {
+        harness.restore();
+      }
+    }
+  });
+
+  test("uses intrinsic boolean conversion after hostile option getters", () => {
+    const replacementModes = ["false", "throw"] as const;
+    type ReplacementMode = (typeof replacementModes)[number];
+    const exercise = (
+      signal: AbortSignal,
+      replacementMode: ReplacementMode,
+    ): {
+      readonly trace: readonly string[];
+      readonly error:
+        | { readonly name: string; readonly message: string }
+        | undefined;
+      readonly listenerCalls: number;
+      readonly replacementCalls: number;
+    } => {
+      const trace: string[] = [];
+      let listenerCalls = 0;
+      let replacementCalls = 0;
+      const booleanDescriptor = Object.getOwnPropertyDescriptor(
+        globalThis,
+        "Boolean",
+      );
+      const options = {} as AddEventListenerOptions;
+      Object.defineProperty(options, "capture", {
+        get(): boolean {
+          trace.push("options.capture");
+          Object.defineProperty(globalThis, "Boolean", {
+            configurable: true,
+            value(): boolean {
+              replacementCalls += 1;
+              if (replacementMode === "throw") {
+                throw new Error("replacement Boolean must not run");
+              }
+              return false;
+            },
+            writable: true,
+          });
+          return false;
+        },
+      });
+      for (const property of ["once", "passive"] as const) {
+        Object.defineProperty(options, property, {
+          get(): boolean {
+            trace.push(`options.${property}`);
+            return property === "once";
+          },
+        });
+      }
+      Object.defineProperty(options, "signal", {
+        get(): undefined {
+          trace.push("options.signal");
+          return undefined;
+        },
+      });
+
+      let error: unknown;
+      try {
+        signal.addEventListener(
+          "abort",
+          () => {
+            listenerCalls += 1;
+          },
+          options,
+        );
+      } catch (caught) {
+        error = caught;
+      } finally {
+        if (booleanDescriptor === undefined) {
+          Reflect.deleteProperty(globalThis, "Boolean");
+        } else {
+          Object.defineProperty(globalThis, "Boolean", booleanDescriptor);
+        }
+      }
+      signal.dispatchEvent(new Event("abort"));
+      signal.dispatchEvent(new Event("abort"));
+      return {
+        trace,
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : undefined,
+        listenerCalls,
+        replacementCalls,
+      };
+    };
+
+    for (const replacementMode of replacementModes) {
+      const native = exercise(
+        new AbortController().signal,
+        replacementMode,
+      );
+      const harness = createAbortHarness(
+        `Boolean replacement ${replacementMode}`,
+      );
+      try {
+        const actual = exercise(harness.signal, replacementMode);
+        expect(actual).toEqual(native);
+        expect(actual).toMatchObject({
+          error: undefined,
+          listenerCalls: 1,
+          replacementCalls: 0,
+        });
+        expect(harness.snapshot()).toMatchObject({
+          activeListenerCount: 0,
+          listenerAdds: 1,
+          listenerRemovals: 1,
+        });
+      } finally {
+        harness.restore();
+      }
+    }
+  });
+
+  test("survives mutable-intrinsic poisoning across listener finalization", () => {
+    const intrinsicApply = Reflect.apply;
+    const intrinsicDefineProperty = Object.defineProperty;
+    const intrinsicDeleteProperty = Reflect.deleteProperty;
+    const intrinsicGetOwnPropertyDescriptor =
+      Object.getOwnPropertyDescriptor;
+    const intrinsicGetPrototypeOf = Object.getPrototypeOf;
+    const intrinsicString = String;
+    const intrinsicArray = Array;
+    const intrinsicArrayPrototype = Array.prototype;
+    const eventTargetRemove = EventTarget.prototype.removeEventListener;
+    const mapIteratorPrototype = intrinsicGetPrototypeOf(
+      new Map().values(),
+    );
+    const arrayIteratorKey = Symbol.iterator;
+    const speciesKey = Symbol.species;
+
+    const exercise = (
+      signal: AbortSignal,
+      finalize: (listener: EventListener) => void,
+    ): {
+      readonly error:
+        | { readonly name: string; readonly message: string }
+        | undefined;
+      readonly listenerCalls: number;
+      readonly poisonCalls: number;
+    } => {
+      const owner = new AbortController();
+      const restorations: Array<() => void> = [];
+      let listenerCalls = 0;
+      let poisonCalls = 0;
+      const poison = (): never => {
+        poisonCalls += 1;
+        throw new Error("poisoned mutable intrinsic was consulted");
+      };
+      const appendRestoration = (restoration: () => void): void => {
+        intrinsicDefineProperty(
+          restorations,
+          intrinsicString(restorations.length),
+          {
+            configurable: true,
+            enumerable: true,
+            value: restoration,
+            writable: true,
+          },
+        );
+      };
+      const install = (
+        target: object,
+        property: PropertyKey,
+        descriptor: PropertyDescriptor,
+      ): void => {
+        const original = intrinsicGetOwnPropertyDescriptor(target, property);
+        appendRestoration(() => {
+          if (original === undefined) {
+            intrinsicDeleteProperty(target, property);
+          } else {
+            intrinsicDefineProperty(target, property, original);
+          }
+        });
+        intrinsicDefineProperty(target, property, descriptor);
+      };
+      const poisonMethod = (target: object, property: PropertyKey): void => {
+        install(target, property, {
+          configurable: true,
+          value: poison,
+          writable: true,
+        });
+      };
+      const poisonIntrinsics = (): void => {
+        for (const property of ["apply", "get", "deleteProperty"] as const) {
+          poisonMethod(Reflect, property);
+        }
+        for (const property of [
+          "defineProperty",
+          "freeze",
+          "getOwnPropertyDescriptor",
+          "getPrototypeOf",
+          "is",
+        ] as const) {
+          poisonMethod(Object, property);
+        }
+        poisonMethod(JSON, "stringify");
+        for (const property of ["get", "set", "delete", "forEach"] as const) {
+          poisonMethod(Map.prototype, property);
+        }
+        for (const property of ["get", "set", "delete", "has"] as const) {
+          poisonMethod(WeakMap.prototype, property);
+        }
+        for (const property of [
+          "push",
+          "slice",
+          "splice",
+          "reverse",
+          "find",
+        ] as const) {
+          poisonMethod(intrinsicArrayPrototype, property);
+        }
+        poisonMethod(mapIteratorPrototype, "next");
+        poisonMethod(mapIteratorPrototype, arrayIteratorKey);
+        install(intrinsicArray, speciesKey, {
+          configurable: true,
+          get: poison,
+        });
+        for (const property of [
+          "AbortController",
+          "Array",
+          "Map",
+          "Proxy",
+          "TextEncoder",
+          "WeakMap",
+        ] as const) {
+          poisonMethod(globalThis, property);
+        }
+        poisonMethod(Number, "isSafeInteger");
+        poisonMethod(intrinsicArrayPrototype, arrayIteratorKey);
+        install(intrinsicArrayPrototype, "0", {
+          configurable: true,
+          set: poison,
+        });
+      };
+      const restoreIntrinsics = (): void => {
+        for (let index = restorations.length - 1; index >= 0; index -= 1) {
+          restorations[index]!();
+        }
+      };
+
+      const options = {} as AddEventListenerOptions;
+      intrinsicDefineProperty(options, "capture", {
+        get(): boolean {
+          poisonIntrinsics();
+          return false;
+        },
+      });
+      intrinsicDefineProperty(options, "once", {
+        get(): boolean {
+          return false;
+        },
+      });
+      intrinsicDefineProperty(options, "passive", {
+        get(): boolean {
+          return false;
+        },
+      });
+      intrinsicDefineProperty(options, "signal", {
+        get(): AbortSignal {
+          return owner.signal;
+        },
+      });
+      const type = {
+        toString(): string {
+          return "abort";
+        },
+      };
+      const listener = (): void => {
+        listenerCalls += 1;
+      };
+      let error: unknown;
+      try {
+        intrinsicApply(signal.addEventListener, signal, [
+          type,
+          listener,
+          options,
+        ]);
+        signal.dispatchEvent(new Event("abort"));
+        finalize(listener);
+      } catch (caught) {
+        error = caught;
+      } finally {
+        restoreIntrinsics();
+      }
+
+      return {
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : undefined,
+        listenerCalls,
+        poisonCalls,
+      };
+    };
+
+    const nativeSignal = new AbortController().signal;
+    const native = exercise(nativeSignal, (listener) => {
+      intrinsicApply(eventTargetRemove, nativeSignal, ["abort", listener]);
+    });
+    const harness = createAbortHarness("mutable intrinsic poisoning");
+    const actual = exercise(harness.signal, () => harness.restore());
+    expect(actual).toEqual(native);
+    expect(actual).toEqual({
+      error: undefined,
+      listenerCalls: 1,
+      poisonCalls: 0,
+    });
+    expect(harness.snapshot()).toMatchObject({
+      activeListenerCount: 0,
+      listenerAdds: 1,
+      listenerRemovals: 1,
+      restored: true,
+    });
+  });
+
+  test("tracks abort listeners registered through native event-type coercion", () => {
+    interface EventTypeCase {
+      readonly label: string;
+      make(trace: string[]): unknown;
+    }
+    const eventTypeCases: readonly EventTypeCase[] = [
+      {
+        label: "boxed string",
+        make: () => new String("abort"),
+      },
+      {
+        label: "toString",
+        make: (trace) => ({
+          toString(): string {
+            trace.push("type.toString");
+            return "abort";
+          },
+        }),
+      },
+      {
+        label: "toString then valueOf",
+        make: (trace) => ({
+          toString(): object {
+            trace.push("type.toString");
+            return {};
+          },
+          valueOf(): string {
+            trace.push("type.valueOf");
+            return "abort";
+          },
+        }),
+      },
+    ];
+    const makeOptions = (trace: string[]): AddEventListenerOptions => {
+      const options = {} as AddEventListenerOptions;
+      for (const property of ["capture", "once", "passive"] as const) {
+        Object.defineProperty(options, property, {
+          get(): boolean {
+            trace.push(`options.${property}`);
+            return false;
+          },
+        });
+      }
+      Object.defineProperty(options, "signal", {
+        get(): undefined {
+          trace.push("options.signal");
+          return undefined;
+        },
+      });
+      return options;
+    };
+    const invokeAdd = (
+      signal: AbortSignal,
+      type: unknown,
+      listener: EventListener,
+      options: AddEventListenerOptions,
+    ): void => {
+      Reflect.apply(signal.addEventListener, signal, [
+        type,
+        listener,
+        options,
+      ]);
+    };
+
+    for (const eventTypeCase of eventTypeCases) {
+      const native = new AbortController();
+      const nativeTrace: string[] = [];
+      let nativeCalls = 0;
+      invokeAdd(
+        native.signal,
+        eventTypeCase.make(nativeTrace),
+        () => {
+          nativeCalls += 1;
+        },
+        makeOptions(nativeTrace),
+      );
+      native.signal.dispatchEvent(new Event("abort"));
+
+      const harness = createAbortHarness(`coerced add ${eventTypeCase.label}`);
+      const harnessTrace: string[] = [];
+      let harnessCalls = 0;
+      invokeAdd(
+        harness.signal,
+        eventTypeCase.make(harnessTrace),
+        () => {
+          harnessCalls += 1;
+        },
+        makeOptions(harnessTrace),
+      );
+      expect(harnessTrace).toEqual(nativeTrace);
+      expect(nativeCalls).toBe(1);
+      expect(harness.snapshot()).toMatchObject({
+        activeListenerCount: 1,
+        listenerAdds: 1,
+        listenerRemovals: 0,
+      });
+
+      harness.signal.dispatchEvent(new Event("abort"));
+      expect(harnessCalls).toBe(nativeCalls);
+      expect(harnessCalls).toBe(1);
+      harness.restore();
+      harness.signal.dispatchEvent(new Event("abort"));
+      expect(harnessCalls).toBe(1);
+      expect(harness.snapshot()).toMatchObject({
+        activeListenerCount: 0,
+        listenerAdds: 1,
+        listenerRemovals: 1,
+        restored: true,
+      });
+    }
+  });
+
+  test("matches native event-type conversion during removal and failure", () => {
+    const invoke = (
+      method: "addEventListener" | "removeEventListener",
+      signal: AbortSignal,
+      type: unknown,
+      listener: EventListener,
+      options: unknown,
+    ): unknown => {
+      try {
+        Reflect.apply(signal[method], signal, [type, listener, options]);
+        return undefined;
+      } catch (error) {
+        return error;
+      }
+    };
+    const errorShape = (
+      error: unknown,
+    ): { readonly name: string; readonly message: string } | undefined =>
+      error instanceof Error
+        ? { name: error.name, message: error.message }
+        : undefined;
+    const makeRemovalType = (trace: string[]): unknown => ({
+      toString(): string {
+        trace.push("type.toString");
+        return "abort";
+      },
+    });
+    const makeRemovalOptions = (trace: string[]): EventListenerOptions => {
+      const options = {} as EventListenerOptions;
+      Object.defineProperty(options, "capture", {
+        get(): boolean {
+          trace.push("options.capture");
+          return false;
+        },
+      });
+      return options;
+    };
+
+    const native = new AbortController();
+    const nativeTrace: string[] = [];
+    let nativeCalls = 0;
+    const nativeListener = (): void => {
+      nativeCalls += 1;
+    };
+    native.signal.addEventListener("abort", nativeListener);
+    invoke(
+      "removeEventListener",
+      native.signal,
+      makeRemovalType(nativeTrace),
+      nativeListener,
+      makeRemovalOptions(nativeTrace),
+    );
+    native.signal.dispatchEvent(new Event("abort"));
+
+    const harness = createAbortHarness("coerced removal");
+    const harnessTrace: string[] = [];
+    let harnessCalls = 0;
+    const harnessListener = (): void => {
+      harnessCalls += 1;
+    };
+    try {
+      harness.signal.addEventListener("abort", harnessListener);
+      invoke(
+        "removeEventListener",
+        harness.signal,
+        makeRemovalType(harnessTrace),
+        harnessListener,
+        makeRemovalOptions(harnessTrace),
+      );
+      harness.signal.dispatchEvent(new Event("abort"));
+      expect(harnessTrace).toEqual(nativeTrace);
+      expect(harnessCalls).toBe(nativeCalls);
+      expect(harness.snapshot()).toMatchObject({
+        activeListenerCount: 0,
+        listenerAdds: 1,
+        listenerRemovals: 1,
+      });
+    } finally {
+      harness.restore();
+    }
+
+    const injected = new Error("event type conversion failed");
+    const makeThrowingType = (trace: string[]): unknown => ({
+      toString(): never {
+        trace.push("type.toString");
+        throw injected;
+      },
+    });
+    const makeAddOptions = (trace: string[]): AddEventListenerOptions => {
+      const options = {} as AddEventListenerOptions;
+      for (const property of ["capture", "once", "passive"] as const) {
+        Object.defineProperty(options, property, {
+          get(): boolean {
+            trace.push(`options.${property}`);
+            return false;
+          },
+        });
+      }
+      Object.defineProperty(options, "signal", {
+        get(): undefined {
+          trace.push("options.signal");
+          return undefined;
+        },
+      });
+      return options;
+    };
+    const nativeFailureTrace: string[] = [];
+    const nativeFailure = new AbortController();
+    const nativeError = invoke(
+      "addEventListener",
+      nativeFailure.signal,
+      makeThrowingType(nativeFailureTrace),
+      () => {},
+      makeAddOptions(nativeFailureTrace),
+    );
+    const failureHarness = createAbortHarness("throwing event type");
+    const harnessFailureTrace: string[] = [];
+    try {
+      const harnessError = invoke(
+        "addEventListener",
+        failureHarness.signal,
+        makeThrowingType(harnessFailureTrace),
+        () => {},
+        makeAddOptions(harnessFailureTrace),
+      );
+      expect(harnessFailureTrace).toEqual(nativeFailureTrace);
+      expect(errorShape(harnessError)).toEqual(errorShape(nativeError));
+      expect(harnessError).toBe(injected);
+      expect(failureHarness.snapshot()).toMatchObject({
+        activeListenerCount: 0,
+        listenerAdds: 0,
+        listenerRemovals: 0,
+      });
+    } finally {
+      failureHarness.restore();
+    }
+    failureHarness.signal.dispatchEvent(new Event("abort"));
+  });
+
+  test("matches native no-op when an option signal aborts before registration", () => {
+    const abortPoints = [
+      "pre-aborted",
+      "capture",
+      "once",
+      "passive",
+      "signal",
+    ] as const;
+    type AbortPoint = (typeof abortPoints)[number];
+    const conversionModes = ["return", "throw"] as const;
+    type ConversionMode = (typeof conversionModes)[number];
+    interface ExerciseResult {
+      readonly trace: readonly string[];
+      readonly error:
+        | { readonly name: string; readonly message: string }
+        | undefined;
+      calls(): number;
+    }
+    const exercise = (
+      signal: AbortSignal,
+      abortPoint: AbortPoint,
+      conversionMode: ConversionMode,
+    ): ExerciseResult => {
+      const owner = new AbortController();
+      if (abortPoint === "pre-aborted") {
+        owner.abort("pre-aborted option signal");
+      }
+      const trace: string[] = [];
+      let listenerCalls = 0;
+      const type = {
+        toString(): string {
+          trace.push("type.toString");
+          if (conversionMode === "throw") {
+            throw new Error(`type conversion failed at ${abortPoint}`);
+          }
+          return "abort";
+        },
+      };
+      const options = {} as AddEventListenerOptions;
+      for (const property of ["capture", "once", "passive"] as const) {
+        Object.defineProperty(options, property, {
+          get(): boolean {
+            trace.push(`options.${property}`);
+            if (abortPoint === property) {
+              owner.abort(`aborted during ${property}`);
+            }
+            return false;
+          },
+        });
+      }
+      Object.defineProperty(options, "signal", {
+        get(): AbortSignal {
+          trace.push("options.signal");
+          if (abortPoint === "signal") {
+            owner.abort("aborted during signal");
+          }
+          return owner.signal;
+        },
+      });
+
+      let error: unknown;
+      try {
+        Reflect.apply(signal.addEventListener, signal, [
+          type,
+          () => {
+            listenerCalls += 1;
+          },
+          options,
+        ]);
+      } catch (caught) {
+        error = caught;
+      }
+      signal.dispatchEvent(new Event("abort"));
+      return {
+        trace,
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : undefined,
+        calls: () => listenerCalls,
+      };
+    };
+
+    for (const abortPoint of abortPoints) {
+      for (const conversionMode of conversionModes) {
+        const native = exercise(
+          new AbortController().signal,
+          abortPoint,
+          conversionMode,
+        );
+        const harness = createAbortHarness(
+          `option signal ${abortPoint} ${conversionMode}`,
+        );
+        const actual = exercise(
+          harness.signal,
+          abortPoint,
+          conversionMode,
+        );
+        try {
+          expect(actual.trace).toEqual(native.trace);
+          expect(actual.error).toEqual(native.error);
+          if (
+            conversionMode === "return" ||
+            !native.trace.includes("type.toString")
+          ) {
+            expect(actual.error).toBeUndefined();
+          } else {
+            expect(actual.error).toEqual({
+              name: "Error",
+              message: `type conversion failed at ${abortPoint}`,
+            });
+          }
+          expect(actual.calls()).toBe(native.calls());
+          expect(actual.calls()).toBe(0);
+          expect(harness.snapshot()).toMatchObject({
+            activeListenerCount: 0,
+            listenerAdds: 0,
+            listenerRemovals: 0,
+          });
+        } finally {
+          harness.restore();
+        }
+        harness.signal.dispatchEvent(new Event("abort"));
+        expect(actual.calls()).toBe(0);
+      }
+    }
+  });
+
+  test("does not finalize a coerced listener after reentrant restoration", () => {
+    const restorationPoints = ["type", "options"] as const;
+    type RestorationPoint = (typeof restorationPoints)[number];
+    const makeType = (
+      trace: string[],
+      restorationPoint: RestorationPoint,
+      restore: () => void,
+    ): unknown => ({
+      toString(): string {
+        trace.push("type.toString");
+        if (restorationPoint === "type") {
+          trace.push("restore");
+          restore();
+        }
+        return "abort";
+      },
+    });
+    const makeOptions = (
+      trace: string[],
+      restorationPoint: RestorationPoint,
+      restore: () => void,
+    ): AddEventListenerOptions => {
+      const options = {} as AddEventListenerOptions;
+      for (const property of ["capture", "once", "passive"] as const) {
+        Object.defineProperty(options, property, {
+          get(): boolean {
+            trace.push(`options.${property}`);
+            if (
+              property === "capture" &&
+              restorationPoint === "options"
+            ) {
+              trace.push("restore");
+              restore();
+            }
+            return false;
+          },
+        });
+      }
+      Object.defineProperty(options, "signal", {
+        get(): undefined {
+          trace.push("options.signal");
+          return undefined;
+        },
+      });
+      return options;
+    };
+    const invokeAdd = (
+      signal: AbortSignal,
+      type: unknown,
+      listener: EventListener,
+      options: AddEventListenerOptions,
+    ): void => {
+      Reflect.apply(signal.addEventListener, signal, [
+        type,
+        listener,
+        options,
+      ]);
+    };
+
+    for (const restorationPoint of restorationPoints) {
+      const native = new AbortController();
+      const nativeTrace: string[] = [];
+      const nativeListener = (): void => {};
+      invokeAdd(
+        native.signal,
+        makeType(nativeTrace, restorationPoint, () => {}),
+        nativeListener,
+        makeOptions(nativeTrace, restorationPoint, () => {}),
+      );
+      native.signal.removeEventListener("abort", nativeListener);
+
+      const harness = createAbortHarness(
+        `reentrant ${restorationPoint} restoration`,
+      );
+      const harnessTrace: string[] = [];
+      let harnessCalls = 0;
+      invokeAdd(
+        harness.signal,
+        makeType(harnessTrace, restorationPoint, () => harness.restore()),
+        () => {
+          harnessCalls += 1;
+        },
+        makeOptions(harnessTrace, restorationPoint, () => harness.restore()),
+      );
+
+      expect(harnessTrace).toEqual(nativeTrace);
+      expect(harness.snapshot()).toMatchObject({
+        activeListenerCount: 0,
+        listenerAdds: 0,
+        listenerRemovals: 0,
+        restored: true,
+      });
+      harness.signal.dispatchEvent(new Event("abort"));
+      expect(harnessCalls).toBe(0);
+    }
+  });
+
+  test("preserves borrowed receivers and cached post-restore methods", () => {
+    const captureError = (action: () => void): unknown => {
+      try {
+        action();
+        return undefined;
+      } catch (error) {
+        return error;
+      }
+    };
+    const errorShape = (
+      error: unknown,
+    ): { readonly name: string; readonly message: string } | undefined =>
+      error instanceof Error
+        ? { name: error.name, message: error.message }
+        : undefined;
+    const harness = createAbortHarness("borrowed receiver");
+    const cachedAdd = harness.signal.addEventListener;
+    const cachedRemove = harness.signal.removeEventListener;
+    const cachedAbort = harness.controller.abort;
+    const alternate = new AbortController();
+    let alternateCalls = 0;
+    const alternateListener = (): void => {
+      alternateCalls += 1;
+    };
+    try {
+      Reflect.apply(cachedAdd, alternate.signal, [
+        "abort",
+        alternateListener,
+      ]);
+      alternate.signal.dispatchEvent(new Event("abort"));
+      expect(alternateCalls).toBe(1);
+      Reflect.apply(cachedRemove, alternate.signal, [
+        "abort",
+        alternateListener,
+      ]);
+      alternate.signal.dispatchEvent(new Event("abort"));
+      expect(alternateCalls).toBe(1);
+
+      const alternateReason = Object.freeze({ kind: "borrowed abort" });
+      Reflect.apply(cachedAbort, alternate, [alternateReason]);
+      expect(alternate.signal.aborted).toBe(true);
+      expect(alternate.signal.reason).toBe(alternateReason);
+      expect(harness.snapshot()).toMatchObject({
+        abortRequestCount: 0,
+        activeListenerCount: 0,
+        listenerAdds: 0,
+        listenerRemovals: 0,
+      });
+
+      const nativeSignal = new AbortController().signal;
+      const nativeController = new AbortController();
+      const invalidReceiver = {};
+      const listener = (): void => {};
+      const nativeAddError = captureError(() => {
+        Reflect.apply(nativeSignal.addEventListener, invalidReceiver, [
+          "abort",
+          listener,
+        ]);
+      });
+      const harnessAddError = captureError(() => {
+        Reflect.apply(cachedAdd, invalidReceiver, ["abort", listener]);
+      });
+      expect(errorShape(harnessAddError)).toEqual(errorShape(nativeAddError));
+
+      const nativeRemoveError = captureError(() => {
+        Reflect.apply(nativeSignal.removeEventListener, invalidReceiver, [
+          "abort",
+          listener,
+        ]);
+      });
+      const harnessRemoveError = captureError(() => {
+        Reflect.apply(cachedRemove, invalidReceiver, ["abort", listener]);
+      });
+      expect(errorShape(harnessRemoveError)).toEqual(
+        errorShape(nativeRemoveError),
+      );
+
+      const nativeAbortError = captureError(() => {
+        Reflect.apply(nativeController.abort, invalidReceiver, []);
+      });
+      const harnessAbortError = captureError(() => {
+        Reflect.apply(cachedAbort, invalidReceiver, []);
+      });
+      expect(errorShape(harnessAbortError)).toEqual(
+        errorShape(nativeAbortError),
+      );
+    } finally {
+      harness.restore();
+    }
+
+    let restoredCalls = 0;
+    const restoredListener = (): void => {
+      restoredCalls += 1;
+    };
+    Reflect.apply(cachedAdd, harness.signal, ["abort", restoredListener]);
+    harness.signal.dispatchEvent(new Event("abort"));
+    expect(restoredCalls).toBe(1);
+    Reflect.apply(cachedRemove, harness.signal, ["abort", restoredListener]);
+    harness.signal.dispatchEvent(new Event("abort"));
+    expect(restoredCalls).toBe(1);
+    const restoredReason = Object.freeze({ kind: "cached abort" });
+    Reflect.apply(cachedAbort, harness.controller, [restoredReason]);
+    expect(harness.snapshot()).toMatchObject({
+      aborted: true,
+      reason: restoredReason,
+      abortRequestCount: 0,
+      abortEventCount: 0,
+      activeListenerCount: 0,
+      restored: true,
+    });
   });
 
   test("preserves native same-signal cancellation without counting hidden listeners", () => {

@@ -10,7 +10,7 @@ export type ControlledAsyncErrorCode =
   | "invalid_turn_count"
   | "microtask_limit"
   | "predicate_async"
-  | "thenable_value"
+  | "reference_value"
   | "unexpected_pending"
   | "unexpected_settled";
 
@@ -24,12 +24,26 @@ export class ControlledAsyncError extends Error {
   }
 }
 
-export type ControlledPromiseState<T> =
+/**
+ * Primitive fulfillment types; `void` preserves idiomatic `Promise<void>`
+ * gates. Runtime values are revalidated before settlement.
+ */
+export type ControlledPromiseValue =
+  | null
+  | undefined
+  | void
+  | boolean
+  | number
+  | bigint
+  | string
+  | symbol;
+
+export type ControlledPromiseState<T extends ControlledPromiseValue> =
   | { readonly status: "pending" }
   | { readonly status: "fulfilled"; readonly value: T }
   | { readonly status: "rejected"; readonly reason: unknown };
 
-export interface ControlledPromise<T> {
+export interface ControlledPromise<T extends ControlledPromiseValue> {
   readonly promise: Promise<T>;
   state(): ControlledPromiseState<T>;
   resolve(value: T): void;
@@ -79,6 +93,13 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
     (typeof value === "object" && value !== null) ||
     typeof value === "function"
   ) && typeof (value as { readonly then?: unknown }).then === "function";
+}
+
+function isReferenceValue(value: unknown): boolean {
+  return (
+    (typeof value === "object" && value !== null) ||
+    typeof value === "function"
+  );
 }
 
 function assertWellFormedUnicode(value: string, label: string): void {
@@ -193,8 +214,18 @@ function getSharedPromiseObservation<T>(
   return observation;
 }
 
-/** Create a manually settled promise that rejects duplicate terminal calls. */
-export function createControlledPromise<T>(
+/**
+ * Create a manually settled promise that rejects duplicate terminal calls.
+ *
+ * Fulfillment is deliberately limited to ECMAScript primitives. Native promise
+ * resolution must inspect and may assimilate the `then` property of every
+ * reference value. Refusing those values keeps settlement synchronous and
+ * prevents hostile accessors or proxies from making recorded state disagree
+ * with the promise's actual outcome.
+ */
+export function createControlledPromise<
+  T extends ControlledPromiseValue = ControlledPromiseValue,
+>(
   labelInput?: string,
 ): ControlledPromise<T> {
   const label = validateLabel(labelInput, "controlled promise");
@@ -219,10 +250,10 @@ export function createControlledPromise<T>(
     state: () => state,
     resolve(value: T): void {
       assertPendingForSettlement();
-      if (isThenable(value)) {
+      if (isReferenceValue(value)) {
         throw new ControlledAsyncError(
-          "thenable_value",
-          `${label} does not accept thenable resolution values`,
+          "reference_value",
+          `${label} accepts only primitive resolution values because native promises inspect and assimilate reference values`,
         );
       }
       state = Object.freeze({ status: "fulfilled", value });
