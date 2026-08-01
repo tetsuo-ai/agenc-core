@@ -158,7 +158,10 @@ import {
   type TransactionGuardContext,
 } from "../transaction-guard/index.js";
 import type { TransactionGuardConfig } from "../config/schema.js";
-import { attachPendingPhysicalSettlement } from "./physical-settlement.js";
+import {
+  attachPendingPhysicalSettlement,
+  readPendingPhysicalSettlement,
+} from "./physical-settlement.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -633,18 +636,19 @@ export async function withTimeoutAndAbort<T>(
   if (opts.signal?.aborted) {
     throw makeAbortError(opts.signal.reason);
   }
-
-  let physical: Promise<T>;
-  try {
-    physical = fn();
-  } catch (error) {
-    physical = Promise.reject(error);
-  }
-  if (opts.timeoutMs === null && opts.signal === undefined) return physical;
+  if (opts.timeoutMs === null && opts.signal === undefined) return fn();
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   let onAbort: (() => void) | null = null;
   let callerStopped = false;
+  let resolvePhysical!: (value: T | PromiseLike<T>) => void;
+  let rejectPhysical!: (reason?: unknown) => void;
+  // Create the settlement before starting `fn`, so a re-entrant abort can
+  // attach to it without moving physical startup to a later microtask.
+  const physical = new Promise<T>((resolve, reject) => {
+    resolvePhysical = resolve;
+    rejectPhysical = reject;
+  });
 
   const cleanup = () => {
     if (timer) {
@@ -687,6 +691,9 @@ export async function withTimeoutAndAbort<T>(
         stop("abort", makeAbortError(reason), reason);
       };
       opts.signal.addEventListener("abort", onAbort, { once: true });
+      // Close the check/listener gap for a signal that became aborted while
+      // this wrapper was being initialized.
+      if (opts.signal.aborted) onAbort();
     }
     if (timeoutMs !== null) {
       timer = setTimeout(() => {
@@ -698,9 +705,23 @@ export async function withTimeoutAndAbort<T>(
       }
     }
   });
+  // Attach both race handlers before physical startup. If `fn` re-entrantly
+  // aborts and then throws, settlement order (abort first) determines the
+  // caller outcome instead of the array order of two pre-settled promises.
+  const raced = Promise.race([physical, callerStop]);
+
+  if (callerStopped) {
+    rejectPhysical(makeAbortError(opts.signal?.reason));
+  } else {
+    try {
+      resolvePhysical(fn());
+    } catch (error) {
+      rejectPhysical(error);
+    }
+  }
 
   try {
-    return await Promise.race([physical, callerStop]);
+    return await raced;
   } finally {
     cleanup();
   }
@@ -2008,36 +2029,7 @@ export async function runToolUse(
     unsubscribeMode = null;
   };
 
-  let dispatch: ToolDispatchResult;
-  try {
-    dispatch = await withTimeoutAndAbort(
-      async () => {
-        opts.onEffectBoundaryCrossed?.();
-        const result = await tool.execute(argsForTool);
-        return {
-          content: result.content,
-          isError: result.isError,
-          ...(result.contentItems !== undefined
-            ? { contentItems: result.contentItems }
-            : {}),
-          ...(result.codeModeResult !== undefined
-            ? { codeModeResult: result.codeModeResult }
-            : {}),
-          metadata: result.metadata,
-          admissionUsage: result.admissionUsage,
-          effectDisposition: result.effectDisposition,
-        } satisfies ToolDispatchResult;
-      },
-      {
-        timeoutMs,
-        toolName: tool.name,
-        ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
-        ...(opts.abortController !== undefined
-          ? { abortController: opts.abortController }
-          : {}),
-      },
-    );
-  } catch (err) {
+  const reportExecutionError = (err: unknown): ToolErrorClass => {
     const cls = classifyToolError(err);
     const message = err instanceof Error ? err.message : String(err);
 
@@ -2090,6 +2082,15 @@ export async function runToolUse(
         });
       }
     }
+
+    return cls;
+  };
+
+  const finishPhysicalFailure = async (
+    err: unknown,
+    hookSignal: AbortSignal | undefined,
+  ): Promise<ToolErrorClass> => {
+    const cls = reportExecutionError(err);
     const failureHooks = opts.failureHooks ?? [];
     if (failureHooks.length > 0) {
       await runPostToolUseFailureHooks(
@@ -2100,7 +2101,7 @@ export async function runToolUse(
           args: inputForTool,
           error: err,
           isInterrupt: cls === "aborted" || cls === "shell_interrupted",
-          ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
+          ...(hookSignal !== undefined ? { signal: hookSignal } : {}),
         },
         (hookErr, idx) => {
           opts.onHookError?.("failure", hookErr, idx);
@@ -2115,7 +2116,7 @@ export async function runToolUse(
         // Race the drain/timeout signal: a wedged failure hook is dropped
         // (records-so-far returned) so the lock-wrapped fn() settles; the
         // original tool error still bubbles below (unchanged).
-        effectiveSignal,
+        hookSignal,
         (idx) => {
           emitHookAttachment(
             opts.eventLog,
@@ -2134,7 +2135,218 @@ export async function runToolUse(
         },
       );
     }
+    return cls;
+  };
+
+  const finishPhysicalSuccess = async (
+    dispatch: ToolDispatchResult,
+    hookSignal: AbortSignal | undefined,
+  ): Promise<ToolDispatchResult> => {
+    // Step 6: PostToolUse hooks. A late physical settlement passes no caller
+    // signal: caller timeout/abort is not physical failure and must not cancel
+    // success-side context, auto-fix, or audit processing.
+    const postHooks = opts.postHooks ?? [];
+    let finalDispatch = dispatch;
+    const admissionUsage = dispatch.admissionUsage;
+    if (postHooks.length > 0) {
+      const postDecision = await runPostToolUseHooks(
+        postHooks,
+        {
+          invocation,
+          tool,
+          args: inputForTool,
+          result: finalDispatch,
+          ...(hookSignal !== undefined ? { signal: hookSignal } : {}),
+        },
+        (err, idx) => {
+          opts.onHookError?.("post", err, idx);
+          emitHookAttachment(
+            opts.eventLog,
+            subId,
+            "hook_error_during_execution",
+            `PostToolUse:${tool.name} threw: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        },
+        opts.onHookTiming,
+        // The signal in `base` is raced by the hook loop. It is omitted for a
+        // late physical settlement because that caller signal has stopped.
+        (idx) => {
+          emitHookAttachment(
+            opts.eventLog,
+            subId,
+            "hook_cancelled",
+            `PostToolUse:${tool.name}#${idx} cancelled (drain/timeout); rewritten result preserved (continue)`,
+          );
+        },
+        (idx) => {
+          emitHookAttachment(
+            opts.eventLog,
+            subId,
+            "hook_orphaned",
+            `PostToolUse:${tool.name}#${idx} ignored its cancel signal; lock reclaimed, hook task orphaned`,
+          );
+        },
+      );
+      finalDispatch = postDecision.result;
+      for (const context of postDecision.additionalContexts) {
+        emitHookAttachment(
+          opts.eventLog,
+          subId,
+          "hook_additional_context",
+          `PostToolUse:${tool.name} context: ${context}`,
+        );
+      }
+      if (postDecision.additionalContexts.length > 0) {
+        opts.onHookAdditionalContext?.(postDecision.additionalContexts);
+      }
+      for (const blockingError of postDecision.blockingErrors) {
+        emitHookAttachment(
+          opts.eventLog,
+          subId,
+          "hook_blocking_error",
+          `PostToolUse:${tool.name} blocking error: ${blockingError}`,
+        );
+      }
+      if (postDecision.kind === "stop") {
+        shouldPreventContinuation = true;
+        emitHookAttachment(
+          opts.eventLog,
+          subId,
+          "hook_stopped_continuation",
+          `PostToolUse:${tool.name} stopped execution${postDecision.stopReason ? `: ${postDecision.stopReason}` : ""}`,
+        );
+      } else if (postDecision.kind === "preventContinuation") {
+        shouldPreventContinuation = true;
+        emitHookAttachment(
+          opts.eventLog,
+          subId,
+          "hook_stopped_continuation",
+          `PostToolUse:${tool.name} prevented continuation${postDecision.stopReason ? `: ${postDecision.stopReason}` : ""}`,
+        );
+      }
+    }
+
+    // PreToolUse preventContinuation is emitted only after physical success.
+    if (prePreventContinuation) {
+      emitHookAttachment(
+        opts.eventLog,
+        subId,
+        "hook_stopped_continuation",
+        `PreToolUse:${tool.name} prevented continuation${prePreventContinuation.stopReason ? `: ${prePreventContinuation.stopReason}` : ""}`,
+      );
+    }
+
+    // Step 7: cap/offload the complete successful result before exposing its
+    // settlement to either the live caller or the durability supervisor.
+    const maxResultBytes = computeEffectiveMaxResultBytes({
+      content: finalDispatch.content,
+      contextWindowTokens: opts.contextWindowTokens,
+      toolMaxResultBytes: tool.maxResultBytes,
+    });
+    const capped = await offloadOrCapToolResult({
+      content: finalDispatch.content,
+      toolUseId: invocation.callId,
+      maxBytes: maxResultBytes,
+      bytesPerToken: bytesPerTokenForContent(finalDispatch.content),
+      contextWindowTokens: opts.contextWindowTokens,
+    });
+    if (capped.truncated && opts.eventLog) {
+      const disposition =
+        capped.persistedPath !== undefined
+          ? `offloaded to ${capped.persistedPath}`
+          : `truncated to ${maxResultBytes}B`;
+      emitWarningEvent(
+        opts.eventLog,
+        subId,
+        "tool_result_truncated",
+        `tool ${toolNameDisplay(invocation.toolName)} output ${capped.originalBytes}B ${disposition} (I-15)`,
+      );
+    }
+
+    const {
+      contentItems,
+      admissionUsage: _rewrittenAdmissionUsage,
+      preventContinuation: _rewrittenPreventContinuation,
+      ...dispatchWithoutDerivedFields
+    } = finalDispatch;
+    return {
+      ...dispatchWithoutDerivedFields,
+      content: capped.content,
+      ...(contentItems !== undefined && !capped.truncated
+        ? { contentItems }
+        : {}),
+      ...(admissionUsage !== undefined ? { admissionUsage } : {}),
+      ...(shouldPreventContinuation ? { preventContinuation: true } : {}),
+    };
+  };
+
+  let physicalStarted = false;
+  const executePhysical = async (): Promise<ToolDispatchResult> => {
+    physicalStarted = true;
+    opts.onEffectBoundaryCrossed?.();
+    const result = await tool.execute(argsForTool);
+    return {
+      content: result.content,
+      isError: result.isError,
+      ...(result.contentItems !== undefined
+        ? { contentItems: result.contentItems }
+        : {}),
+      ...(result.codeModeResult !== undefined
+        ? { codeModeResult: result.codeModeResult }
+        : {}),
+      metadata: result.metadata,
+      admissionUsage: result.admissionUsage,
+      effectDisposition: result.effectDisposition,
+    };
+  };
+
+  let dispatch: ToolDispatchResult;
+  let rawExecutionSettled = false;
+  try {
+    const rawDispatch = await withTimeoutAndAbort(executePhysical, {
+      timeoutMs,
+      toolName: tool.name,
+      ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
+      ...(opts.abortController !== undefined
+        ? { abortController: opts.abortController }
+        : {}),
+    });
+    rawExecutionSettled = true;
+    dispatch = await finishPhysicalSuccess(rawDispatch, effectiveSignal);
     cleanupModeSub();
+  } catch (err) {
+    const pending = readPendingPhysicalSettlement<ToolDispatchResult>(err);
+    let cls: ToolErrorClass;
+    if (pending !== undefined) {
+      const lateSettlement = pending.settlement
+        .then(
+          (rawDispatch) => finishPhysicalSuccess(rawDispatch, undefined),
+          async (physicalError: unknown) => {
+            await finishPhysicalFailure(physicalError, undefined);
+            throw physicalError;
+          },
+        )
+        .finally(cleanupModeSub);
+      // A direct `runToolUse` caller may not install a durability observer.
+      // Mark the derived rejection handled without changing what observers see.
+      void lateSettlement.catch(() => {});
+      attachPendingPhysicalSettlement(err as object, {
+        callerStop: pending.callerStop,
+        callerStoppedAt: pending.callerStoppedAt,
+        settlement: lateSettlement,
+      });
+      cls = reportExecutionError(err);
+    } else {
+      try {
+        cls =
+          physicalStarted && !rawExecutionSettled
+            ? await finishPhysicalFailure(err, effectiveSignal)
+            : reportExecutionError(err);
+      } finally {
+        cleanupModeSub();
+      }
+    }
+
     if (opts.throwOnExecutionError) {
       throw err instanceof Error ? err : new Error(String(err));
     }
@@ -2142,9 +2354,7 @@ export async function runToolUse(
     //   aborted → INTERRUPT_MESSAGE_FOR_TOOL_USE
     //   otherwise → formatError (covers timeout, mcp, shell, tool_threw)
     const terminalContent =
-      cls === "aborted"
-        ? INTERRUPT_MESSAGE_FOR_TOOL_USE
-        : formatError(err);
+      cls === "aborted" ? INTERRUPT_MESSAGE_FOR_TOOL_USE : formatError(err);
     return errorOutput({
       invocation,
       content: terminalContent,
@@ -2152,161 +2362,30 @@ export async function runToolUse(
     });
   }
 
-  // Step 6: PostToolUse hooks.
-  const postHooks = opts.postHooks ?? [];
-  let finalDispatch = dispatch;
-  const admissionUsage = dispatch.admissionUsage;
-  if (postHooks.length > 0) {
-    const postDecision = await runPostToolUseHooks(
-      postHooks,
-      {
-        invocation,
-        tool,
-        args: inputForTool,
-        result: finalDispatch,
-        ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
-      },
-      (err, idx) => {
-        opts.onHookError?.("post", err, idx);
-        emitHookAttachment(
-          opts.eventLog,
-          subId,
-          "hook_error_during_execution",
-          `PostToolUse:${tool.name} threw: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      },
-      opts.onHookTiming,
-      // The signal in `base` is now RACED by the loop (not just plumbed):
-      // a wedged post-hook resolves fail-safe `continue` (the tool already
-      // ran) so this lock-wrapped fn() settles and releases the guard.
-      (idx) => {
-        emitHookAttachment(
-          opts.eventLog,
-          subId,
-          "hook_cancelled",
-          `PostToolUse:${tool.name}#${idx} cancelled (drain/timeout); rewritten result preserved (continue)`,
-        );
-      },
-      (idx) => {
-        emitHookAttachment(
-          opts.eventLog,
-          subId,
-          "hook_orphaned",
-          `PostToolUse:${tool.name}#${idx} ignored its cancel signal; lock reclaimed, hook task orphaned`,
-        );
-      },
-    );
-    finalDispatch = postDecision.result;
-    for (const c of postDecision.additionalContexts) {
-      emitHookAttachment(
-        opts.eventLog,
-        subId,
-        "hook_additional_context",
-        `PostToolUse:${tool.name} context: ${c}`,
-      );
-    }
-    if (postDecision.additionalContexts.length > 0) {
-      opts.onHookAdditionalContext?.(postDecision.additionalContexts);
-    }
-    for (const be of postDecision.blockingErrors) {
-      emitHookAttachment(
-        opts.eventLog,
-        subId,
-        "hook_blocking_error",
-        `PostToolUse:${tool.name} blocking error: ${be}`,
-      );
-    }
-    if (postDecision.kind === "stop") {
-      shouldPreventContinuation = true;
-      emitHookAttachment(
-        opts.eventLog,
-        subId,
-        "hook_stopped_continuation",
-        `PostToolUse:${tool.name} stopped execution${postDecision.stopReason ? `: ${postDecision.stopReason}` : ""}`,
-      );
-    } else if (postDecision.kind === "preventContinuation") {
-      shouldPreventContinuation = true;
-      emitHookAttachment(
-        opts.eventLog,
-        subId,
-        "hook_stopped_continuation",
-        `PostToolUse:${tool.name} prevented continuation${postDecision.stopReason ? `: ${postDecision.stopReason}` : ""}`,
-      );
-    }
-  }
-
-  // donor TS `shouldPreventContinuation` parity — when a PreToolUse
-  // hook set `preventContinuation`, emit the attachment now that the
-  // tool has actually run successfully.
-  if (prePreventContinuation) {
-    emitHookAttachment(
-      opts.eventLog,
-      subId,
-      "hook_stopped_continuation",
-      `PreToolUse:${tool.name} prevented continuation${prePreventContinuation.stopReason ? `: ${prePreventContinuation.stopReason}` : ""}`,
-    );
-  }
-
-  // Step 7: I-15 result-size cap — now model-aware AND an OFFLOAD, not a
-  // guillotine (Technique D). The effective cap scales to the dispatch
-  // layer's context window so a single result can never overflow a
-  // small-window model, while large-window models keep the fixed 400 KB
-  // ceiling; a per-tool `tool.maxResultBytes` override still wins. When a
-  // result exceeds the cap we now persist the FULL output to the session
-  // tool-results store and inject a REFERENCE (head preview + path +
-  // "read range to continue") instead of blindly truncating-and-losing —
-  // so the data is recoverable via FileRead. Persist failure falls back
-  // to the legacy truncation so the hard cap is always enforced.
-  const maxResultBytes = computeEffectiveMaxResultBytes({
-    content: finalDispatch.content,
-    contextWindowTokens: opts.contextWindowTokens,
-    toolMaxResultBytes: tool.maxResultBytes,
-  });
-  const capped = await offloadOrCapToolResult({
-    content: finalDispatch.content,
-    toolUseId: invocation.callId,
-    maxBytes: maxResultBytes,
-    bytesPerToken: bytesPerTokenForContent(finalDispatch.content),
-    contextWindowTokens: opts.contextWindowTokens,
-  });
-  if (capped.truncated && opts.eventLog) {
-    const disposition =
-      capped.persistedPath !== undefined
-        ? `offloaded to ${capped.persistedPath}`
-        : `truncated to ${maxResultBytes}B`;
-    emitWarningEvent(
-      opts.eventLog,
-      subId,
-      "tool_result_truncated",
-      `tool ${toolNameDisplay(invocation.toolName)} output ${capped.originalBytes}B ${disposition} (I-15)`,
-    );
-  }
-
-  cleanupModeSub();
-  if (finalDispatch.contentItems !== undefined && !capped.truncated) {
+  if (dispatch.contentItems !== undefined) {
     const output = functionToolOutputFromContent({
       callId: invocation.callId,
       toolName: invocation.toolName,
       payload: invocation.payload,
-      body: finalDispatch.contentItems,
-      isError: finalDispatch.isError === true,
+      body: dispatch.contentItems,
+      isError: dispatch.isError === true,
       durationMs: performance.now() - startedAt,
-      ...(finalDispatch.metadata !== undefined
-        ? { metadata: finalDispatch.metadata }
+      ...(dispatch.metadata !== undefined
+        ? { metadata: dispatch.metadata }
         : {}),
     });
-    RICH_OUTPUT_CONTENT_ITEMS.set(output, finalDispatch.contentItems);
-    if (finalDispatch.codeModeResult !== undefined) {
-      STRUCTURED_CODE_MODE_RESULTS.set(output, finalDispatch.codeModeResult);
+    RICH_OUTPUT_CONTENT_ITEMS.set(output, dispatch.contentItems);
+    if (dispatch.codeModeResult !== undefined) {
+      STRUCTURED_CODE_MODE_RESULTS.set(output, dispatch.codeModeResult);
     }
-    if (shouldPreventContinuation) {
+    if (dispatch.preventContinuation === true) {
       PREVENT_CONTINUATION_OUTPUTS.add(output);
     }
-    if (admissionUsage !== undefined) {
-      ADMISSION_USAGE_OUTPUTS.set(output, admissionUsage);
+    if (dispatch.admissionUsage !== undefined) {
+      ADMISSION_USAGE_OUTPUTS.set(output, dispatch.admissionUsage);
     }
-    if (finalDispatch.effectDisposition !== undefined) {
-      EFFECT_DISPOSITIONS.set(output, finalDispatch.effectDisposition);
+    if (dispatch.effectDisposition !== undefined) {
+      EFFECT_DISPOSITIONS.set(output, dispatch.effectDisposition);
     }
     return output;
   }
@@ -2314,24 +2393,24 @@ export async function runToolUse(
     callId: invocation.callId,
     toolName: invocation.toolName,
     payload: invocation.payload,
-    content: capped.content,
-    isError: finalDispatch.isError === true,
+    content: dispatch.content,
+    isError: dispatch.isError === true,
     durationMs: performance.now() - startedAt,
-    ...(finalDispatch.metadata !== undefined
-      ? { metadata: finalDispatch.metadata }
+    ...(dispatch.metadata !== undefined
+      ? { metadata: dispatch.metadata }
       : {}),
   });
-  if (finalDispatch.codeModeResult !== undefined) {
-    STRUCTURED_CODE_MODE_RESULTS.set(output, finalDispatch.codeModeResult);
+  if (dispatch.codeModeResult !== undefined) {
+    STRUCTURED_CODE_MODE_RESULTS.set(output, dispatch.codeModeResult);
   }
-  if (shouldPreventContinuation) {
+  if (dispatch.preventContinuation === true) {
     PREVENT_CONTINUATION_OUTPUTS.add(output);
   }
-  if (admissionUsage !== undefined) {
-    ADMISSION_USAGE_OUTPUTS.set(output, admissionUsage);
+  if (dispatch.admissionUsage !== undefined) {
+    ADMISSION_USAGE_OUTPUTS.set(output, dispatch.admissionUsage);
   }
-  if (finalDispatch.effectDisposition !== undefined) {
-    EFFECT_DISPOSITIONS.set(output, finalDispatch.effectDisposition);
+  if (dispatch.effectDisposition !== undefined) {
+    EFFECT_DISPOSITIONS.set(output, dispatch.effectDisposition);
   }
   return output;
 }

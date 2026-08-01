@@ -35,10 +35,7 @@ const OPENED_AT = "2026-07-18T00:00:00.000Z";
 const REVIEW_SHA256 = "b".repeat(64);
 const created: string[] = [];
 
-function operatorReview(
-  reviewedAt: string,
-  actorId = "operator-test",
-) {
+function operatorReview(reviewedAt: string, actorId = "operator-test") {
   return createOperatorEffectReviewResolution({
     disposition: "confirmed_committed",
     actorId,
@@ -163,9 +160,9 @@ describe("M4 effect restart recovery", () => {
     const cwd = workspace();
     const runId = "run-side-effect";
     const original = store(cwd, runId);
-    expect(original.append(intent(runId, "side-effecting"), { durable: true })).toBe(
-      true,
-    );
+    expect(
+      original.append(intent(runId, "side-effecting"), { durable: true }),
+    ).toBe(true);
     original.close();
 
     const resumed = store(cwd, runId, true);
@@ -187,7 +184,6 @@ describe("M4 effect restart recovery", () => {
         },
       },
     });
-
     const paths = resolveStateDatabasePaths({ cwd });
     const driver = openStateDatabasePaths(paths);
     try {
@@ -290,7 +286,9 @@ describe("M4 effect restart recovery", () => {
         ["step-1", "unknown_outcome"],
         ["step-2", "unknown_outcome"],
       ]);
-      expect(listUnresolvedUnknownOutcomeEffects(driver, runId)).toHaveLength(2);
+      expect(listUnresolvedUnknownOutcomeEffects(driver, runId)).toHaveLength(
+        2,
+      );
     } finally {
       driver.close();
       resumed.close();
@@ -303,9 +301,9 @@ describe("M4 effect restart recovery", () => {
     const runId = "run-before-dispatch";
     const original = store(cwd, runId);
     reserveToolStep(cwd, runId);
-    expect(original.append(intent(runId, "side-effecting"), { durable: true })).toBe(
-      true,
-    );
+    expect(
+      original.append(intent(runId, "side-effecting"), { durable: true }),
+    ).toBe(true);
     original.close();
 
     const resumed = store(cwd, runId, true);
@@ -379,9 +377,9 @@ describe("M4 effect restart recovery", () => {
     const cwd = workspace();
     const runId = "run-idempotent";
     const original = store(cwd, runId);
-    expect(original.append(intent(runId, "idempotent"), { durable: true })).toBe(
-      true,
-    );
+    expect(
+      original.append(intent(runId, "idempotent"), { durable: true }),
+    ).toBe(true);
     original.close();
 
     const resumed = store(cwd, runId, true);
@@ -402,6 +400,29 @@ describe("M4 effect restart recovery", () => {
         },
       },
     });
+    expect(
+      resumed.assertToolEffectAttemptAllowed({
+        callId: "call-1",
+        recoveryCategory: "idempotent",
+        idempotencyKey: "sha256:safe-retry",
+      }),
+    ).toBe(2);
+    resumed.close();
+
+    const recoveredAgain = store(cwd, runId, true);
+    expect(
+      recoveredAgain.assertToolEffectAttemptAllowed({
+        callId: "call-1",
+        recoveryCategory: "idempotent",
+        idempotencyKey: "sha256:safe-retry",
+      }),
+    ).toBe(2);
+    expect(
+      recoveredAgain
+        .readAll()
+        .filter((item) => item.type === "event_msg")
+        .map((item) => item.payload.msg.type),
+    ).toEqual(["effect_intent", "recovery_decision"]);
 
     const paths = resolveStateDatabasePaths({ cwd });
     const driver = openStateDatabasePaths(paths);
@@ -419,7 +440,7 @@ describe("M4 effect restart recovery", () => {
       expect(listUnresolvedUnknownOutcomeEffects(driver, runId)).toEqual([]);
     } finally {
       driver.close();
-      resumed.close();
+      recoveredAgain.close();
       created.push(paths.projectDir);
     }
   });
@@ -428,9 +449,9 @@ describe("M4 effect restart recovery", () => {
     const cwd = workspace();
     const runId = "run-reviewed";
     const original = store(cwd, runId);
-    expect(original.append(intent(runId, "side-effecting"), { durable: true })).toBe(
-      true,
-    );
+    expect(
+      original.append(intent(runId, "side-effecting"), { durable: true }),
+    ).toBe(true);
     original.close();
     const recovered = store(cwd, runId, true);
     recovered.close();
@@ -690,14 +711,16 @@ describe("M4 effect restart recovery", () => {
           finishedAt: "2026-07-18T00:00:30.000Z",
         },
       });
-      driver.prepareState(
-        `CREATE TRIGGER test_abort_legacy_review_projection
+      driver
+        .prepareState(
+          `CREATE TRIGGER test_abort_legacy_review_projection
          BEFORE UPDATE ON in_flight_tool_calls
          WHEN OLD.status = 'poisoned' AND NEW.status = 'unknown_resolved'
          BEGIN
            SELECT RAISE(ABORT, 'simulated crash before legacy gate projection');
          END`,
-      ).run();
+        )
+        .run();
 
       expect(() =>
         resolveDurableEffectReview(driver, {
@@ -717,7 +740,9 @@ describe("M4 effect restart recovery", () => {
       expect(runs.getEffect(runId, "tool:turn-1:call-1")).toMatchObject({
         reviewStatus: "pending",
       });
-      expect(listUnresolvedUnknownOutcomeEffects(driver, runId)).toHaveLength(1);
+      expect(listUnresolvedUnknownOutcomeEffects(driver, runId)).toHaveLength(
+        1,
+      );
       driver
         .prepareState("DROP TRIGGER test_abort_legacy_review_projection")
         .run();
@@ -971,9 +996,9 @@ describe("M4 effect restart recovery", () => {
     const runId = "run-review-correlation-collision";
     const reviewEventId = operatorReviewEventId(runId);
     const original = store(cwd, runId);
-    expect(original.append(intent(runId, "side-effecting"), { durable: true })).toBe(
-      true,
-    );
+    expect(
+      original.append(intent(runId, "side-effecting"), { durable: true }),
+    ).toBe(true);
     expect(
       original.append(
         {

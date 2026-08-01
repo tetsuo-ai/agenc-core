@@ -496,6 +496,108 @@ describe("runAdmittedToolCall", () => {
     expect(intents[1].seq).toBeGreaterThan(intents[0].seq!);
   });
 
+  it("allocates a fresh durable step for an authorized recovered attempt", async () => {
+    const state = toolHarness();
+    const assertToolEffectAttemptAllowed = vi.fn(() => 2);
+    Object.assign(state.session.rolloutStore!, {
+      assertToolEffectAttemptAllowed,
+    });
+    const tool = {
+      name: "read.recovered",
+      recoveryCategory: "idempotent",
+    } as unknown as Tool;
+    const invoke = vi.fn(async ({ crossEffectBoundary }) => {
+      crossEffectBoundary();
+      return { content: "recovered result" };
+    });
+
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-recovered",
+        tool,
+        args: { path: "same" },
+        invoke,
+      }),
+    ).resolves.toMatchObject({ content: "recovered result" });
+
+    expect(assertToolEffectAttemptAllowed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: "call-recovered",
+        recoveryCategory: "idempotent",
+      }),
+    );
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stepId: "tool:turn-1:call-recovered:dispatch2",
+      }),
+      undefined,
+    );
+    expect(state.effectEvents[0]?.msg).toMatchObject({
+      type: "effect_intent",
+      payload: {
+        stepId: "tool:turn-1:call-recovered:dispatch2",
+        attempt: 2,
+      },
+    });
+    expect(invoke).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an explicit non-error unknown disposition review-locked", async () => {
+    const state = toolHarness();
+    const tool = {
+      name: "write.unknown-receipt",
+      recoveryCategory: "side-effecting",
+    } as unknown as Tool;
+
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-unknown-receipt",
+        tool,
+        args: {},
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return {
+            content: "request accepted but state could not be observed",
+            effectDisposition: {
+              disposition: "remains_unknown",
+              evidenceKind: "provider_receipt",
+              evidenceRef: "provider-receipt:unknown-1",
+              evidenceSha256: "c".repeat(64),
+            },
+          };
+        },
+      }),
+    ).resolves.toMatchObject({
+      content: "request accepted but state could not be observed",
+    });
+
+    expect(state.effectEvents.map((event) => event.msg.type)).toEqual([
+      "effect_intent",
+      "effect_unknown_outcome",
+    ]);
+    expect(state.effectEvents.at(-1)?.msg).toMatchObject({
+      type: "effect_unknown_outcome",
+      payload: {
+        outcome: "unknown_outcome",
+        reason: "adapter_reported_unknown_effect_disposition",
+      },
+    });
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "dependent-call",
+        tool,
+        args: {},
+        invoke: async () => ({ content: "must not run" }),
+      }),
+    ).rejects.toMatchObject({ code: "UNKNOWN_OUTCOME_MUTATION_BLOCKED" });
+  });
+
   it("records an unacknowledged non-idempotent exception as unknown", async () => {
     const state = toolHarness();
     const tool = {
@@ -732,9 +834,7 @@ describe("runAdmittedToolCall", () => {
     ).rejects.toBe(callerTimeout);
 
     expect(state.acknowledgeCompletion).not.toHaveBeenCalled();
-    expect(state.effectEvents.at(-1)?.msg.type).toBe(
-      "effect_unknown_outcome",
-    );
+    expect(state.effectEvents.at(-1)?.msg.type).toBe("effect_unknown_outcome");
     physical.resolve({ content: "physically committed" });
     await vi.waitFor(() => {
       expect(state.effectEvents.at(-1)?.msg.type).toBe(
@@ -813,6 +913,13 @@ describe("runAdmittedToolCall", () => {
 
   it("closes an idempotent rendezvous only after durable settlement work", async () => {
     const state = toolHarness();
+    const assertToolEffectAttemptAllowed = vi
+      .fn<() => number>()
+      .mockReturnValueOnce(1)
+      .mockReturnValueOnce(2);
+    Object.assign(state.session.rolloutStore!, {
+      assertToolEffectAttemptAllowed,
+    });
     const physical = Promise.withResolvers<{ content: string }>();
     const callerTimeout = new Error("caller deadline elapsed");
     attachPendingPhysicalSettlement(callerTimeout, {
@@ -875,6 +982,33 @@ describe("runAdmittedToolCall", () => {
       "effect_intent",
       "effect_result",
     ]);
+
+    const laterInvoke = vi.fn(
+      async ({ crossEffectBoundary }: { crossEffectBoundary: () => void }) => {
+        crossEffectBoundary();
+        return { content: "safe same-key replay" };
+      },
+    );
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-rendezvous",
+        tool,
+        args: { path: "same" },
+        invoke: laterInvoke,
+      }),
+    ).resolves.toMatchObject({ content: "safe same-key replay" });
+    expect(laterInvoke).toHaveBeenCalledOnce();
+    expect(assertToolEffectAttemptAllowed).toHaveBeenCalledTimes(2);
+    expect(state.acquire).toHaveBeenCalledTimes(2);
+    expect(state.acquire.mock.calls[1]?.[0]).toMatchObject({
+      stepId: "tool:turn-1:call-rendezvous:dispatch2",
+    });
+    expect(state.effectEvents[2]?.msg).toMatchObject({
+      type: "effect_intent",
+      payload: { attempt: 2 },
+    });
   });
 
   it("suppresses late system review after a live operator resolution", async () => {
@@ -955,9 +1089,9 @@ describe("runAdmittedToolCall", () => {
       "tool-reservation",
       "physical_settlement_exceeded_shutdown_drain",
     );
-    expect(effectSettlementMetrics(state.session).occupiedPostTimeoutLeases).toBe(
-      0,
-    );
+    expect(
+      effectSettlementMetrics(state.session).occupiedPostTimeoutLeases,
+    ).toBe(0);
   });
 
   it("keeps a late rejected settlement unknown and blocks dependent effects", async () => {
@@ -1023,5 +1157,69 @@ describe("runAdmittedToolCall", () => {
       code: "UNKNOWN_OUTCOME_MUTATION_BLOCKED",
     });
     expect(state.acquire).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an explicit late non-error unknown disposition pending", async () => {
+    const state = toolHarness();
+    const physical = Promise.withResolvers<{
+      content: string;
+      effectDisposition: {
+        disposition: "remains_unknown";
+        evidenceKind: "provider_receipt";
+        evidenceRef: string;
+        evidenceSha256: string;
+      };
+    }>();
+    const callerTimeout = new Error("caller deadline elapsed");
+    attachPendingPhysicalSettlement(callerTimeout, {
+      callerStop: "timeout",
+      callerStoppedAt: "2026-07-18T00:00:00.000Z",
+      settlement: physical.promise,
+    });
+    const tool = {
+      name: "write.late-unknown-receipt",
+      recoveryCategory: "side-effecting",
+    } as unknown as Tool;
+
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-late-unknown-receipt",
+        tool,
+        args: {},
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          throw callerTimeout;
+        },
+      }),
+    ).rejects.toBe(callerTimeout);
+
+    physical.resolve({
+      content: "request accepted but state could not be observed",
+      effectDisposition: {
+        disposition: "remains_unknown",
+        evidenceKind: "provider_receipt",
+        evidenceRef: "provider-receipt:late-unknown-1",
+        evidenceSha256: "d".repeat(64),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(state.effectEvents.at(-1)?.msg).toMatchObject({
+        type: "effect_review_resolved",
+        payload: {
+          resolution: {
+            disposition: "remains_unknown",
+            evidenceRef: "provider-receipt:late-unknown-1",
+            evidenceSha256: "d".repeat(64),
+            workflowStatus: "pending",
+          },
+        },
+      });
+      expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+    });
+    expect(
+      state.effectEvents.filter((event) => event.msg.type === "effect_result"),
+    ).toHaveLength(0);
   });
 });

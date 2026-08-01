@@ -191,9 +191,7 @@ describe("StateRunDurabilityRepository", () => {
         eventId: "event-reopen-3",
         reason: "too_early",
       }),
-    ).toThrowError(
-      expect.objectContaining({ code: "RUN_EPOCH_NOT_TERMINAL" }),
-    );
+    ).toThrowError(expect.objectContaining({ code: "RUN_EPOCH_NOT_TERMINAL" }));
 
     runs.recordTerminalResult({
       epoch: 2,
@@ -211,9 +209,9 @@ describe("StateRunDurabilityRepository", () => {
       epoch: 2,
       status: "failed",
     });
-    expect(runs.listTerminalHistory("run-1").map((item) => item.epoch)).toEqual([
-      1, 2,
-    ]);
+    expect(runs.listTerminalHistory("run-1").map((item) => item.epoch)).toEqual(
+      [1, 2],
+    );
   });
 
   it("review-locks unknown mutations and rejects late outcome laundering", () => {
@@ -464,6 +462,66 @@ describe("StateRunDurabilityRepository", () => {
     );
   });
 
+  it("permits only durable same-key recovery of an unsettled idempotent attempt", () => {
+    runs.ensureInitialEpoch({ runId: "run-1", openedAt: T0 });
+    const gate = (options: {
+      readonly idempotencyKey: string;
+      readonly retrySafeDeferredStepIds?: ReadonlySet<string>;
+    }) =>
+      runs.assertEffectAttemptAllowed({
+        sessionId: "session-1",
+        callId: "call-read",
+        recoveryCategory: "idempotent",
+        ...options,
+      });
+
+    expect(gate({ idempotencyKey: "sha256:stable-read" })).toBe(1);
+    runs.beginEffect({
+      runId: "run-1",
+      epoch: 1,
+      stepId: "tool:turn-1:call-read",
+      sessionId: "session-1",
+      callId: "call-read",
+      toolName: "FileRead",
+      recoveryCategory: "idempotent",
+      idempotencyKey: "sha256:stable-read",
+      intentDigest: "sha256:read-attempt-1",
+      eventId: "event-read-attempt-1",
+      eventSequence: 1,
+      intentAt: T0,
+    });
+
+    expect(() => gate({ idempotencyKey: "sha256:stable-read" })).toThrowError(
+      expect.objectContaining({ code: "RUN_EFFECT_OUTCOME_CONFLICT" }),
+    );
+    expect(
+      gate({
+        idempotencyKey: "sha256:stable-read",
+        retrySafeDeferredStepIds: new Set(["tool:turn-1:call-read"]),
+      }),
+    ).toBe(2);
+    expect(() =>
+      gate({
+        idempotencyKey: "sha256:different-read",
+        retrySafeDeferredStepIds: new Set(["tool:turn-1:call-read"]),
+      }),
+    ).toThrowError(
+      expect.objectContaining({ code: "RUN_EFFECT_OUTCOME_CONFLICT" }),
+    );
+
+    runs.completeEffect({
+      runId: "run-1",
+      stepId: "tool:turn-1:call-read",
+      outcome: "committed",
+      effectBoundary: "crossed",
+      eventId: "event-read-result-1",
+      eventSequence: 2,
+      resultDigest: "sha256:read-result-1",
+      completedAt: T1,
+    });
+    expect(gate({ idempotencyKey: "sha256:stable-read" })).toBe(2);
+  });
+
   it("tracks historical rollout sources and makes retirement gaps explicit", () => {
     runs.ensureInitialEpoch({ runId: "run-1", openedAt: T0 });
     const first = runs.bindJournalSource({
@@ -501,7 +559,9 @@ describe("StateRunDurabilityRepository", () => {
       boundAt: T1,
     });
     const bindings = runs.listJournalBindings("run-1", 1);
-    expect(bindings.map((binding) => [binding.sourcePath, binding.active])).toEqual([
+    expect(
+      bindings.map((binding) => [binding.sourcePath, binding.active]),
+    ).toEqual([
       ["/rollouts/run-1-a.jsonl", false],
       ["/rollouts/run-1-b.jsonl", true],
     ]);
@@ -576,27 +636,31 @@ describe("StateRunDurabilityRepository", () => {
       lastSequence: 4,
       boundAt: T0,
     });
-    driver.prepareState(
-      `INSERT INTO threads (thread_id, created_at, updated_at)
+    driver
+      .prepareState(
+        `INSERT INTO threads (thread_id, created_at, updated_at)
        VALUES ('run-1', ?, ?)`,
-    ).run(T0, T0);
-    driver.prepareState(
-      `INSERT INTO thread_rollout_items (
+      )
+      .run(T0, T0);
+    driver
+      .prepareState(
+        `INSERT INTO thread_rollout_items (
          thread_id, source_path, line_number, byte_offset, item_index,
          item_type, event_id, event_seq, payload_json, line_hash
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      "run-1",
-      "/rollouts/retired.jsonl",
-      1,
-      0,
-      1,
-      "event_msg",
-      "event-9",
-      9,
-      "{}",
-      "sha256:line",
-    );
+      )
+      .run(
+        "run-1",
+        "/rollouts/retired.jsonl",
+        1,
+        0,
+        1,
+        "event_msg",
+        "event-9",
+        9,
+        "{}",
+        "sha256:line",
+      );
 
     expect(() =>
       driver.transactionImmediate(() => {
@@ -608,7 +672,9 @@ describe("StateRunDurabilityRepository", () => {
         throw new Error("roll back outer prune transaction");
       }),
     ).toThrow(/roll back outer prune transaction/);
-    expect(runs.getJournalBinding("/rollouts/retired.jsonl")?.active).toBe(true);
+    expect(runs.getJournalBinding("/rollouts/retired.jsonl")?.active).toBe(
+      true,
+    );
 
     const retired = runs.retireJournalSource({
       sourcePath: "/rollouts/retired.jsonl",

@@ -298,6 +298,7 @@ function appendEffectIntent(params: {
   readonly session: Session;
   readonly runId: string;
   readonly stepId: string;
+  readonly attempt: number;
   readonly callId: string;
   readonly tool: Tool;
   readonly args: Readonly<Record<string, unknown>>;
@@ -307,6 +308,7 @@ function appendEffectIntent(params: {
     version: 1,
     runId: params.runId,
     stepId: params.stepId,
+    attempt: params.attempt,
     callId: params.callId,
     toolName: params.tool.name,
     recoveryCategory: params.recoveryCategory,
@@ -334,7 +336,7 @@ function appendEffectIntent(params: {
     recoveryCategory: params.recoveryCategory,
     ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
     intentDigest,
-    attempt: 1,
+    attempt: params.attempt,
     recordedAt: new Date().toISOString(),
   };
   const commit = appendEffectEvent(params.session, {
@@ -535,6 +537,20 @@ function settlementResolution(
       domainAction: "retry_new_attempt",
     };
   }
+  if (disposition?.disposition === "remains_unknown") {
+    return {
+      version: 1,
+      kind: "effect_review_resolution",
+      disposition: "remains_unknown",
+      actorKind: "system_settlement",
+      actorId: "effect-settlement-supervisor",
+      evidenceKind: disposition.evidenceKind,
+      evidenceRef: disposition.evidenceRef,
+      evidenceSha256: disposition.evidenceSha256,
+      reviewedAt,
+      workflowStatus: "pending",
+    };
+  }
   const noEffectEvidence = readEffectBoundaryNotCrossed(error, reviewedAt);
   if (noEffectEvidence !== undefined) {
     return {
@@ -567,10 +583,13 @@ function settlementResolution(
       domainAction: "mark_completed",
     };
   }
-  const evidence = result === undefined ? errorEvidence(error) : {
-    resultDigest: physicalResultDigest(result),
-    isError: result.isError === true,
-  };
+  const evidence =
+    result === undefined
+      ? errorEvidence(error)
+      : {
+          resultDigest: physicalResultDigest(result),
+          isError: result.isError === true,
+        };
   const evidenceRef = `physical-settlement:unresolved:${context.callId}`;
   return {
     version: 1,
@@ -599,7 +618,10 @@ function reconcileToolUsage(
   missingUsageReason = "missing_tool_usage",
 ): "provider_overrun" | undefined {
   if (client === undefined) return undefined;
-  if (result?.admissionUsage !== undefined && !validUsage(result.admissionUsage)) {
+  if (
+    result?.admissionUsage !== undefined &&
+    !validUsage(result.admissionUsage)
+  ) {
     client.holdUnknown(reservationId, "invalid_tool_usage");
     incrementEffectSettlementMetric(session, "heldAccounting");
     return undefined;
@@ -706,7 +728,6 @@ export async function runAdmittedToolCall(
     throw new AdmissionDeniedError("admission_kernel_unavailable");
   }
 
-  const stepId = `tool:${params.turnId}:${params.callId}${params.stepIdSuffix ?? ""}`;
   const logicalRunId = client?.scope.runId ?? params.session.conversationId;
   const idempotencyKey =
     category === "idempotent"
@@ -733,20 +754,26 @@ export async function runAdmittedToolCall(
     }
   }
 
-  const retryGate = params.session.rolloutStore as
-    | {
-        assertToolEffectAttemptAllowed?(options: {
-          readonly callId: string;
-          readonly recoveryCategory: ToolRecoveryCategory;
-          readonly idempotencyKey?: string;
-        }): void;
-      }
-    | null;
-  retryGate?.assertToolEffectAttemptAllowed?.({
-    callId: params.callId,
-    recoveryCategory: category,
-    ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
-  });
+  const retryGate = params.session.rolloutStore as {
+    assertToolEffectAttemptAllowed?(options: {
+      readonly callId: string;
+      readonly recoveryCategory: ToolRecoveryCategory;
+      readonly idempotencyKey?: string;
+    }): number;
+  } | null;
+  const attempt =
+    retryGate?.assertToolEffectAttemptAllowed?.({
+      callId: params.callId,
+      recoveryCategory: category,
+      ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+    }) ?? 1;
+  if (!Number.isSafeInteger(attempt) || attempt < 1) {
+    throw new AdmissionDeniedError("effect_attempt_number_invalid");
+  }
+  const retrySuffix = attempt > 1 ? `:dispatch${attempt}` : "";
+  const stepId =
+    `tool:${params.turnId}:${params.callId}` +
+    (params.stepIdSuffix ?? retrySuffix);
 
   const estimate = params.tool.admissionEstimate?.(params.args) ?? {
     maxInputTokens: 0,
@@ -794,6 +821,7 @@ export async function runAdmittedToolCall(
       session: params.session,
       runId,
       stepId: durableStepId,
+      attempt,
       callId: params.callId,
       tool: params.tool,
       args: params.args,
@@ -854,25 +882,30 @@ export async function runAdmittedToolCall(
       });
     } else if (
       category !== "idempotent" &&
-      result.isError === true &&
-      disposition?.disposition !== "confirmed_committed" &&
-      disposition?.disposition !== "confirmed_no_effect"
+      (disposition?.disposition === "remains_unknown" ||
+        (result.isError === true &&
+          disposition?.disposition !== "confirmed_committed" &&
+          disposition?.disposition !== "confirmed_no_effect"))
     ) {
       poisonLiveEffect(params.session, liveIdentity(journal));
       commit = appendEffectUnknownOutcome(
         params.session,
         journal,
-        "tool_error_result_without_authoritative_effect_disposition",
+        disposition?.disposition === "remains_unknown"
+          ? "adapter_reported_unknown_effect_disposition"
+          : "tool_error_result_without_authoritative_effect_disposition",
       );
     } else {
       commit = appendEffectResult(params.session, journal, {
         outcome:
           disposition?.disposition === "confirmed_no_effect"
             ? "failed"
-            : disposition?.disposition === "confirmed_committed" ||
-                result.isError !== true
-              ? "committed"
-              : "failed",
+            : disposition?.disposition === "remains_unknown"
+              ? "failed"
+              : disposition?.disposition === "confirmed_committed" ||
+                  result.isError !== true
+                ? "committed"
+                : "failed",
         effectBoundary: "crossed",
         ...(disposition?.disposition === "confirmed_no_effect"
           ? {
@@ -883,9 +916,7 @@ export async function runAdmittedToolCall(
             }
           : {}),
         result,
-        ...(reservationId !== undefined
-          ? { evidence: { reservationId } }
-          : {}),
+        ...(reservationId !== undefined ? { evidence: { reservationId } } : {}),
       });
     }
     effectClosed = true;
@@ -926,11 +957,7 @@ export async function runAdmittedToolCall(
       let unknownEvent: Event | undefined;
       let unknownProjected = false;
       const ensureUnknownRecorded = (): void => {
-        if (
-          unknownProjected ||
-          category === "idempotent" ||
-          !boundaryCrossed
-        ) {
+        if (unknownProjected || category === "idempotent" || !boundaryCrossed) {
           return;
         }
         if (unknownEvent !== undefined) {
@@ -1010,18 +1037,13 @@ export async function runAdmittedToolCall(
                   ? "tool_cancelled_after_dispatch"
                   : "tool_timeout_after_dispatch",
               );
-              incrementEffectSettlementMetric(
-                params.session,
-                "heldAccounting",
-              );
+              incrementEffectSettlementMetric(params.session, "heldAccounting");
             } else {
               reconcileToolUsage(
                 client,
                 reservationId,
                 estimate,
-                settlement.kind === "fulfilled"
-                  ? settlement.value
-                  : undefined,
+                settlement.kind === "fulfilled" ? settlement.value : undefined,
                 params.session,
               );
             }
@@ -1057,9 +1079,7 @@ export async function runAdmittedToolCall(
               }
             } else if (category === "idempotent" && !effectClosed) {
               const result =
-                settlement.kind === "fulfilled"
-                  ? settlement.value
-                  : undefined;
+                settlement.kind === "fulfilled" ? settlement.value : undefined;
               const disposition = validateToolEffectDispositionEvidence(
                 result?.effectDisposition,
               );
@@ -1068,11 +1088,13 @@ export async function runAdmittedToolCall(
                 outcome:
                   disposition?.disposition === "confirmed_no_effect"
                     ? "failed"
-                    : result !== undefined &&
-                        (result.isError !== true ||
-                          disposition?.disposition === "confirmed_committed")
-                      ? "committed"
-                      : "failed",
+                    : disposition?.disposition === "remains_unknown"
+                      ? "failed"
+                      : result !== undefined &&
+                          (result.isError !== true ||
+                            disposition?.disposition === "confirmed_committed")
+                        ? "committed"
+                        : "failed",
                 effectBoundary: "crossed",
                 ...(disposition?.disposition === "confirmed_no_effect"
                   ? {
@@ -1112,10 +1134,7 @@ export async function runAdmittedToolCall(
                 reservationId,
                 "physical_settlement_exceeded_shutdown_drain",
               );
-              incrementEffectSettlementMetric(
-                params.session,
-                "heldAccounting",
-              );
+              incrementEffectSettlementMetric(params.session, "heldAccounting");
               admissionSettled = true;
             }
           } catch (shutdownError) {
@@ -1124,10 +1143,7 @@ export async function runAdmittedToolCall(
                 reservationId,
                 "physical_settlement_shutdown_processing_failed",
               );
-              incrementEffectSettlementMetric(
-                params.session,
-                "heldAccounting",
-              );
+              incrementEffectSettlementMetric(params.session, "heldAccounting");
               admissionSettled = true;
             }
             throw shutdownError;

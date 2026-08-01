@@ -97,9 +97,7 @@ export interface DurableRunEffect {
 }
 
 export type RunJournalGapReason =
-  | "retention"
-  | "corruption_truncated"
-  | "compaction";
+  "retention" | "corruption_truncated" | "compaction";
 
 export interface RunJournalBinding {
   readonly runId: RunId;
@@ -328,7 +326,9 @@ export class StateRunDurabilityRepository {
           `run ${params.runId} current epoch does not match ${params.fromEpoch}`,
         );
       }
-      if (this.getTerminalResult(params.runId, params.fromEpoch) === undefined) {
+      if (
+        this.getTerminalResult(params.runId, params.fromEpoch) === undefined
+      ) {
         throw conflict(
           "RUN_EPOCH_NOT_TERMINAL",
           `run ${params.runId} epoch ${params.fromEpoch} is not terminal`,
@@ -344,9 +344,7 @@ export class StateRunDurabilityRepository {
 
       const nextEpoch = params.fromEpoch + 1;
       this.driver
-        .prepareState<
-          [string, number, string, string, number, string]
-        >(
+        .prepareState<[string, number, string, string, number, string]>(
           `INSERT INTO run_lifecycle_epochs (
              run_id, epoch, opened_at, opened_event_id,
              reopened_from_epoch, reopen_reason
@@ -430,7 +428,11 @@ export class StateRunDurabilityRepository {
         );
       return {
         applied: true,
-        value: { ...params.result, epoch: params.epoch, eventId: params.eventId },
+        value: {
+          ...params.result,
+          epoch: params.epoch,
+          eventId: params.eventId,
+        },
       };
     });
   }
@@ -450,9 +452,7 @@ export class StateRunDurabilityRepository {
     return row === undefined ? undefined : terminalFromRow(row);
   }
 
-  getCurrentTerminalResult(
-    runId: RunId,
-  ): DurableRunTerminalRecord | undefined {
+  getCurrentTerminalResult(runId: RunId): DurableRunTerminalRecord | undefined {
     const current = this.currentEpoch(runId);
     return current === undefined
       ? undefined
@@ -671,8 +671,16 @@ export class StateRunDurabilityRepository {
     readonly callId: string;
     readonly recoveryCategory: ToolRecoveryCategory;
     readonly idempotencyKey?: string;
-  }): void {
-    const prior = this.listEffectsBySessionCall(params.sessionId, params.callId);
+    /**
+     * Canonical steps whose dangling idempotent intent was recovered after
+     * process restart and durably classified as `retry_safe_deferred`.
+     */
+    readonly retrySafeDeferredStepIds?: ReadonlySet<string>;
+  }): number {
+    const prior = this.listEffectsBySessionCall(
+      params.sessionId,
+      params.callId,
+    );
     for (const effect of prior) {
       if (params.recoveryCategory === "idempotent") {
         if (
@@ -684,12 +692,15 @@ export class StateRunDurabilityRepository {
             `tool call ${params.callId} cannot change its durable idempotency key`,
           );
         }
-        if (effect.outcome === "failed" || effect.outcome === "cancelled") {
+        if (
+          effect.outcome !== undefined ||
+          params.retrySafeDeferredStepIds?.has(effect.stepId) === true
+        ) {
           continue;
         }
         throw conflict(
           "RUN_EFFECT_OUTCOME_CONFLICT",
-          `tool call ${params.callId} retains its original idempotent attempt; rendezvous or explicit same-key recovery is required`,
+          `tool call ${params.callId} retains a live idempotent attempt; rendezvous or durable retry-safe recovery is required`,
         );
       }
       if (effect.noEffectEvidence !== undefined) continue;
@@ -707,6 +718,7 @@ export class StateRunDurabilityRepository {
         `tool call ${params.callId} has no authoritative no-effect proof and cannot be dispatched again`,
       );
     }
+    return prior.length + 1;
   }
 
   /**
@@ -791,7 +803,10 @@ export class StateRunDurabilityRepository {
         if (reviewContent === existingContent) {
           return { applied: false, value: existing };
         }
-        if (existing.reviewStatus === "pending" && params.resolution.workflowStatus !== "pending") {
+        if (
+          existing.reviewStatus === "pending" &&
+          params.resolution.workflowStatus !== "pending"
+        ) {
           // A later authoritative/operator resolution may close a prior
           // remains-unknown system observation. The canonical journal retains
           // both events; this row is only the latest rebuildable projection.
@@ -976,7 +991,12 @@ export class StateRunDurabilityRepository {
            SET first_available_sequence = ?, last_sequence = ?, updated_at = ?
            WHERE source_path = ?`,
         )
-        .run(first, last, required(params.updatedAt, "updatedAt"), params.sourcePath);
+        .run(
+          first,
+          last,
+          required(params.updatedAt, "updatedAt"),
+          params.sourcePath,
+        );
       return this.requireJournalBinding(params.sourcePath);
     });
   }
@@ -1199,15 +1219,22 @@ export class StateRunDurabilityRepository {
       } else if (params.unknownReason !== undefined) {
         throw new TypeError("unknownReason requires unknown_outcome");
       }
-      if (params.outcome !== "unknown_outcome" && params.effectBoundary === undefined) {
-        throw new TypeError("effectBoundary is required for a terminal effect result");
+      if (
+        params.outcome !== "unknown_outcome" &&
+        params.effectBoundary === undefined
+      ) {
+        throw new TypeError(
+          "effectBoundary is required for a terminal effect result",
+        );
       }
       if (
         params.noEffectEvidence !== undefined &&
         params.outcome !== "failed" &&
         params.outcome !== "cancelled"
       ) {
-        throw new TypeError("noEffectEvidence requires failed or cancelled outcome");
+        throw new TypeError(
+          "noEffectEvidence requires failed or cancelled outcome",
+        );
       }
       validateNoEffectEvidence(params.noEffectEvidence);
       this.assertSequenceUnclaimed(params.runId, params.eventSequence);
@@ -1271,10 +1298,7 @@ export class StateRunDurabilityRepository {
     return binding;
   }
 
-  private assertSequenceUnclaimed(
-    runId: RunId,
-    sequence: number | null,
-  ): void {
+  private assertSequenceUnclaimed(runId: RunId, sequence: number | null): void {
     if (sequence === null) return;
     const normalized = positiveInteger(sequence, "sequence");
     const effect = this.driver
@@ -1435,9 +1459,7 @@ function journalBindingFromRow(row: JournalBindingRow): RunJournalBinding {
     ...(row.first_available_sequence !== null
       ? { firstAvailableSequence: row.first_available_sequence }
       : {}),
-    ...(row.last_sequence !== null
-      ? { lastSequence: row.last_sequence }
-      : {}),
+    ...(row.last_sequence !== null ? { lastSequence: row.last_sequence } : {}),
     ...(row.retired_through_sequence !== null
       ? { retiredThroughSequence: row.retired_through_sequence }
       : {}),
@@ -1551,7 +1573,10 @@ function validateNoEffectEvidence(
 function validateEffectReviewResolution(
   resolution: EffectReviewResolution,
 ): void {
-  if (resolution.version !== 1 || resolution.kind !== "effect_review_resolution") {
+  if (
+    resolution.version !== 1 ||
+    resolution.kind !== "effect_review_resolution"
+  ) {
     throw new TypeError("effect review resolution version/kind is invalid");
   }
   required(resolution.actorId, "review.actorId");
@@ -1662,7 +1687,8 @@ function validateBounds(
 }
 
 function required(value: string, name: string): string {
-  if (value.trim().length === 0) throw new TypeError(`${name} must not be empty`);
+  if (value.trim().length === 0)
+    throw new TypeError(`${name} must not be empty`);
   return value;
 }
 

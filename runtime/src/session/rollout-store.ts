@@ -131,6 +131,7 @@ export class RolloutStore {
   private readonly stateDriver: StateSqliteDriver;
   private readonly threadSpawnEdgeRepo: ThreadSpawnEdgeRepository;
   private readonly runDurabilityRepo: StateRunDurabilityRepository;
+  private readonly retrySafeDeferredEffectSteps = new Set<string>();
   private openedAt: string | undefined;
   private openedEpoch: number | undefined;
 
@@ -399,10 +400,15 @@ export class RolloutStore {
     readonly callId: string;
     readonly recoveryCategory: ToolRecoveryCategory;
     readonly idempotencyKey?: string;
-  }): void {
-    this.runDurabilityRepo.assertEffectAttemptAllowed({
+  }): number {
+    return this.runDurabilityRepo.assertEffectAttemptAllowed({
       sessionId: this.sessionId,
       ...options,
+      ...(options.recoveryCategory === "idempotent"
+        ? {
+            retrySafeDeferredStepIds: this.retrySafeDeferredEffectSteps,
+          }
+        : {}),
     });
   }
 
@@ -623,6 +629,7 @@ export class RolloutStore {
   }
 
   private recoverEffectProjectionOnOpen(): void {
+    this.retrySafeDeferredEffectSteps.clear();
     const events = this.store
       .readAll()
       .filter(
@@ -683,6 +690,7 @@ export class RolloutStore {
           recoveryEvidenceKey(intentEventId, intent.seq),
         )
       ) {
+        this.retrySafeDeferredEffectSteps.add(payload.stepId);
         continue;
       }
       const preferredEventId =
@@ -774,6 +782,9 @@ export class RolloutStore {
         throw new Error(`failed to commit recovery event ${eventId}`);
       }
       existingEventIds.add(eventId);
+      if (recovery.msg.type === "recovery_decision") {
+        this.retrySafeDeferredEffectSteps.add(payload.stepId);
+      }
       if (
         recovery.msg.type === "effect_unknown_outcome" ||
         recovery.msg.type === "effect_result"
@@ -1063,8 +1074,7 @@ function recoveryNoEffectProof(options: {
   readonly recordedAt: string;
   readonly admissionStatus: string | undefined;
 }): EffectNoEffectProof {
-  const evidenceRef =
-    `admission-recovery:not-dispatched:${options.runId}:${options.stepId}`;
+  const evidenceRef = `admission-recovery:not-dispatched:${options.runId}:${options.stepId}`;
   return {
     version: 1,
     kind: "effect_no_effect_proof",
