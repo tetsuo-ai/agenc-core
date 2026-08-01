@@ -17,12 +17,18 @@
   },
   "include": [
     "tests/helpers/abort-harness.ts",
+    "tests/helpers/bounded-file-io.ts",
     "tests/helpers/bun-test-shim.ts",
     "tests/helpers/controlled-async.ts",
     "tests/helpers/deterministic-clock.ts",
     "tests/helpers/failure-plan.ts",
+    "tests/helpers/portable-repository-path.ts",
     "tests/helpers/seeded-rng.ts",
-    "tests/fnd/deterministic-primitives.test.ts"
+    "tests/helpers/unicode-15-1-repertoire.ts",
+    "tests/fnd/bounded-file-io.test.ts",
+    "tests/fnd/deterministic-primitives.test.ts",
+    "tests/fnd/portable-repository-path.bun.test.ts",
+    "tests/fnd/portable-repository-path.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
