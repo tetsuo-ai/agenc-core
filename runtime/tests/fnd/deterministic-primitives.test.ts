@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { getEventListeners } from "node:events";
 
 import {
   AbortHarnessError,
@@ -1016,6 +1017,1200 @@ describe("abort harness", () => {
     }
   });
 
+  test("delegates removal for listeners registered through the native prototype", () => {
+    const nativeAdd = EventTarget.prototype.addEventListener;
+    const nativeRemove = EventTarget.prototype.removeEventListener;
+    const captureValues = [false, true] as const;
+
+    for (const capture of captureValues) {
+      const harness = createAbortHarness(
+        `prototype-direct listener capture=${String(capture)}`,
+      );
+      let calls = 0;
+      let captureReads = 0;
+      const listener = (): void => {
+        calls += 1;
+      };
+      const removalOptions = {
+        get capture(): boolean {
+          captureReads += 1;
+          return capture;
+        },
+      };
+      try {
+        Reflect.apply(nativeAdd, harness.signal, [
+          "abort",
+          listener,
+          { capture },
+        ]);
+        harness.signal.removeEventListener(
+          "abort",
+          listener,
+          removalOptions,
+        );
+        harness.signal.dispatchEvent(new Event("abort"));
+
+        expect(calls).toBe(0);
+        expect(captureReads).toBe(1);
+        expect(harness.snapshot()).toMatchObject({
+          activeListenerCount: 0,
+          listenerAdds: 0,
+          listenerRemovals: 0,
+        });
+        harness.assertNoActiveListeners();
+      } finally {
+        Reflect.apply(nativeRemove, harness.signal, [
+          "abort",
+          listener,
+          { capture },
+        ]);
+        harness.restore();
+      }
+    }
+  });
+
+  test("preserves removal parity across opaque duplicates and reentrant conversion", () => {
+    const nativeAdd = EventTarget.prototype.addEventListener;
+    const nativeRemove = EventTarget.prototype.removeEventListener;
+    const captureValues = [false, true] as const;
+    const conversionKinds = ["capture", "type"] as const;
+
+    for (const capture of captureValues) {
+      const duplicateHarness = createAbortHarness(
+        `opaque duplicate capture=${String(capture)}`,
+      );
+      let duplicateCalls = 0;
+      const duplicateListener = (): void => {
+        duplicateCalls += 1;
+      };
+      try {
+        Reflect.apply(nativeAdd, duplicateHarness.signal, [
+          "abort",
+          duplicateListener,
+          { capture },
+        ]);
+        duplicateHarness.signal.addEventListener(
+          "abort",
+          duplicateListener,
+          { capture },
+        );
+        duplicateHarness.signal.removeEventListener(
+          "abort",
+          duplicateListener,
+          { capture },
+        );
+        duplicateHarness.signal.dispatchEvent(new Event("abort"));
+
+        expect(duplicateCalls).toBe(0);
+        expect(duplicateHarness.snapshot()).toMatchObject({
+          activeListenerCount: 0,
+          listenerAdds: 1,
+          listenerRemovals: 1,
+        });
+      } finally {
+        Reflect.apply(nativeRemove, duplicateHarness.signal, [
+          "abort",
+          duplicateListener,
+          { capture },
+        ]);
+        duplicateHarness.restore();
+      }
+
+      for (const conversionKind of conversionKinds) {
+        const harness = createAbortHarness(
+          `reentrant ${conversionKind} removal capture=${String(capture)}`,
+        );
+        const conversionError = new Error(
+          `${conversionKind} conversion failed intentionally`,
+        );
+        let calls = 0;
+        let conversions = 0;
+        const listener = (): void => {
+          calls += 1;
+        };
+        const addDuplicate = (): void => {
+          harness.signal.addEventListener("abort", listener, { capture });
+        };
+        const eventType =
+          conversionKind === "type"
+            ? ({
+                [Symbol.toPrimitive](): never {
+                  conversions += 1;
+                  addDuplicate();
+                  throw conversionError;
+                },
+              } as unknown as string)
+            : "abort";
+        const removalOptions =
+          conversionKind === "capture"
+            ? {
+                get capture(): never {
+                  conversions += 1;
+                  addDuplicate();
+                  throw conversionError;
+                },
+              }
+            : { capture };
+        try {
+          Reflect.apply(nativeAdd, harness.signal, [
+            "abort",
+            listener,
+            { capture },
+          ]);
+          expect(() =>
+            harness.signal.removeEventListener(
+              eventType,
+              listener,
+              removalOptions,
+            ),
+          ).toThrow(conversionError);
+          harness.signal.dispatchEvent(new Event("abort"));
+
+          expect(conversions).toBe(1);
+          expect(calls).toBe(1);
+          expect(harness.snapshot()).toMatchObject({
+            activeListenerCount: 0,
+            listenerAdds: 0,
+            listenerRemovals: 0,
+          });
+        } finally {
+          Reflect.apply(nativeRemove, harness.signal, [
+            "abort",
+            listener,
+            { capture },
+          ]);
+          harness.restore();
+        }
+      }
+    }
+  });
+
+  test("scopes opaque removal reentrancy to the exact listener identity", () => {
+    const nativeAdd = EventTarget.prototype.addEventListener;
+    const nativeRemove = EventTarget.prototype.removeEventListener;
+    const captureValues = [false, true] as const;
+
+    for (const capture of captureValues) {
+      const oppositeHarness = createAbortHarness(
+        `opposite capture removal=${String(capture)}`,
+      );
+      const conversionError = new Error("capture conversion failed");
+      let oppositeCalls = 0;
+      const oppositeListener = (): void => {
+        oppositeCalls += 1;
+      };
+      try {
+        Reflect.apply(nativeAdd, oppositeHarness.signal, [
+          "abort",
+          oppositeListener,
+          { capture },
+        ]);
+        oppositeHarness.signal.addEventListener("abort", oppositeListener, {
+          capture: !capture,
+        });
+        expect(() =>
+          oppositeHarness.signal.removeEventListener(
+            "abort",
+            oppositeListener,
+            {
+              get capture(): never {
+                oppositeHarness.signal.addEventListener(
+                  "abort",
+                  oppositeListener,
+                  { capture },
+                );
+                throw conversionError;
+              },
+            },
+          ),
+        ).toThrow(conversionError);
+        oppositeHarness.signal.dispatchEvent(new Event("abort"));
+
+        expect(oppositeCalls).toBe(2);
+        expect(oppositeHarness.snapshot()).toMatchObject({
+          activeListenerCount: 1,
+          listenerAdds: 1,
+          listenerRemovals: 0,
+        });
+      } finally {
+        Reflect.apply(nativeRemove, oppositeHarness.signal, [
+          "abort",
+          oppositeListener,
+          { capture },
+        ]);
+        oppositeHarness.signal.removeEventListener(
+          "abort",
+          oppositeListener,
+          { capture: !capture },
+        );
+        oppositeHarness.restore();
+      }
+
+      const unrelatedHarness = createAbortHarness(
+        `unrelated removal reentrancy capture=${String(capture)}`,
+      );
+      const unrelatedError = new Error("unrelated conversion failed");
+      let outerCalls = 0;
+      let unrelatedCalls = 0;
+      const outerListener = (): void => {
+        outerCalls += 1;
+      };
+      const unrelatedListener = (): void => {
+        unrelatedCalls += 1;
+      };
+      try {
+        unrelatedHarness.signal.addEventListener("abort", outerListener, {
+          capture,
+        });
+        expect(() =>
+          unrelatedHarness.signal.removeEventListener(
+            "abort",
+            outerListener,
+            {
+              get capture(): never {
+                unrelatedHarness.signal.addEventListener(
+                  "abort",
+                  unrelatedListener,
+                );
+                throw unrelatedError;
+              },
+            },
+          ),
+        ).toThrow(unrelatedError);
+        unrelatedHarness.signal.dispatchEvent(new Event("abort"));
+
+        expect(outerCalls).toBe(1);
+        expect(unrelatedCalls).toBe(1);
+        expect(unrelatedHarness.snapshot()).toMatchObject({
+          activeListenerCount: 2,
+          listenerAdds: 2,
+          listenerRemovals: 0,
+        });
+      } finally {
+        unrelatedHarness.signal.removeEventListener(
+          "abort",
+          outerListener,
+          { capture },
+        );
+        unrelatedHarness.signal.removeEventListener(
+          "abort",
+          unrelatedListener,
+        );
+        unrelatedHarness.restore();
+      }
+    }
+  });
+
+  test("matches native duplicate owner-signal cancellation on each runtime", () => {
+    const captureValues = [false, true] as const;
+    const exercise = (
+      signal: AbortSignal,
+      capture: boolean,
+    ): {
+      readonly calls: () => number;
+      readonly listener: EventListener;
+      readonly owners: readonly [AbortController, AbortController];
+    } => {
+      const owners = [new AbortController(), new AbortController()] as const;
+      let calls = 0;
+      const listener = (): void => {
+        calls += 1;
+      };
+      signal.addEventListener("abort", listener, { capture });
+      signal.addEventListener("abort", listener, {
+        capture,
+        signal: owners[0].signal,
+      });
+      signal.addEventListener("abort", listener, {
+        capture,
+        signal: owners[1].signal,
+      });
+      owners[1].abort("cancel duplicate registration");
+      signal.dispatchEvent(new Event("abort"));
+      signal.dispatchEvent(new Event("abort"));
+      return { calls: () => calls, listener, owners };
+    };
+
+    for (const capture of captureValues) {
+      const nativeController = new AbortController();
+      const native = exercise(nativeController.signal, capture);
+      const harness = createAbortHarness(
+        `duplicate owner signals capture=${String(capture)}`,
+      );
+      const actual = exercise(harness.signal, capture);
+      try {
+        expect(actual.calls()).toBe(native.calls());
+        native.owners[0].abort("prove native retained owner behavior");
+        actual.owners[0].abort("prove harness retained owner behavior");
+        nativeController.signal.dispatchEvent(new Event("abort"));
+        harness.signal.dispatchEvent(new Event("abort"));
+        expect(actual.calls()).toBe(native.calls());
+        expect(harness.snapshot()).toMatchObject({
+          activeListenerCount: native.calls() === 0 ? 0 : 1,
+          listenerAdds: 1,
+          listenerRemovals: native.calls() === 0 ? 1 : 0,
+        });
+      } finally {
+        nativeController.signal.removeEventListener(
+          "abort",
+          native.listener,
+          { capture },
+        );
+        harness.signal.removeEventListener("abort", actual.listener, {
+          capture,
+        });
+        harness.restore();
+      }
+    }
+  });
+
+  test("matches native synthetic owner-signal cancellation semantics", () => {
+    const captureValues = [false, true] as const;
+    const exercise = (
+      signal: AbortSignal,
+      capture: boolean,
+    ): { readonly calls: number; readonly listener: EventListener } => {
+      const owner = new AbortController();
+      let calls = 0;
+      const listener = (): void => {
+        calls += 1;
+      };
+      signal.addEventListener("abort", listener, {
+        capture,
+        once: true,
+        signal: owner.signal,
+      });
+      owner.signal.dispatchEvent(new Event("abort"));
+      signal.addEventListener("abort", listener, { capture });
+      signal.dispatchEvent(new Event("abort"));
+      signal.dispatchEvent(new Event("abort"));
+      return { calls, listener };
+    };
+
+    for (const capture of captureValues) {
+      const nativeTarget = new AbortController();
+      const native = exercise(nativeTarget.signal, capture);
+      const harness = createAbortHarness(
+        `synthetic owner cancellation capture=${String(capture)}`,
+      );
+      const actual = exercise(harness.signal, capture);
+      try {
+        expect(actual.calls).toBe(native.calls);
+        expect(harness.snapshot()).toMatchObject({
+          activeListenerCount: native.calls === 2 ? 1 : 0,
+          listenerAdds: native.calls === 2 ? 2 : 1,
+          listenerRemovals: 1,
+        });
+      } finally {
+        nativeTarget.signal.removeEventListener("abort", native.listener, {
+          capture,
+        });
+        harness.signal.removeEventListener("abort", actual.listener, {
+          capture,
+        });
+        harness.restore();
+      }
+    }
+  });
+
+  test("matches native owner cancellation despite stopped event propagation", () => {
+    const captureValues = [false, true] as const;
+    const registrationModes = ["initial", "duplicate"] as const;
+    const exercise = (
+      signal: AbortSignal,
+      capture: boolean,
+      registrationMode: (typeof registrationModes)[number],
+    ): {
+      readonly calls: () => number;
+      readonly listener: EventListener;
+      readonly owner: AbortController;
+    } => {
+      const owner = new AbortController();
+      owner.signal.addEventListener("abort", (event) => {
+        event.stopImmediatePropagation();
+      });
+      let calls = 0;
+      const listener = (): void => {
+        calls += 1;
+      };
+      if (registrationMode === "duplicate") {
+        signal.addEventListener("abort", listener, { capture });
+      }
+      signal.addEventListener("abort", listener, {
+        capture,
+        signal: owner.signal,
+      });
+      owner.abort("cancel behind stopImmediatePropagation");
+      signal.dispatchEvent(new Event("abort"));
+      return { calls: () => calls, listener, owner };
+    };
+
+    for (const capture of captureValues) {
+      for (const registrationMode of registrationModes) {
+        const nativeController = new AbortController();
+        const native = exercise(
+          nativeController.signal,
+          capture,
+          registrationMode,
+        );
+        const harness = createAbortHarness(
+          `stopped owner propagation ${registrationMode} capture=${String(capture)}`,
+        );
+        const actual = exercise(harness.signal, capture, registrationMode);
+        try {
+          expect(actual.calls()).toBe(native.calls());
+          expect(harness.snapshot()).toMatchObject({
+            activeListenerCount: native.calls() === 0 ? 0 : 1,
+            listenerAdds: 1,
+            listenerRemovals: native.calls() === 0 ? 1 : 0,
+          });
+        } finally {
+          nativeController.signal.removeEventListener(
+            "abort",
+            native.listener,
+            { capture },
+          );
+          harness.signal.removeEventListener("abort", actual.listener, {
+            capture,
+          });
+          harness.restore();
+        }
+      }
+    }
+  });
+
+  test("matches native owner cancellation at its registration-order slot", () => {
+    const captureValues = [false, true] as const;
+    const registrationModes = ["initial", "duplicate"] as const;
+    const ownerListenerPositions = ["before", "after"] as const;
+    const propagationModes = ["continue", "stop"] as const;
+    type RegistrationMode = (typeof registrationModes)[number];
+    type OwnerListenerPosition = (typeof ownerListenerPositions)[number];
+    type PropagationMode = (typeof propagationModes)[number];
+    interface ExerciseResult {
+      readonly calls: number;
+      readonly callsDuringOwnerListener: number;
+      readonly listener: EventListener;
+      readonly owner: AbortController;
+    }
+    const exercise = (
+      signal: AbortSignal,
+      capture: boolean,
+      registrationMode: RegistrationMode,
+      ownerListenerPosition: OwnerListenerPosition,
+      propagationMode: PropagationMode,
+      inspect: () => void,
+    ): ExerciseResult => {
+      const owner = new AbortController();
+      let calls = 0;
+      let callsDuringOwnerListener = 0;
+      const listener = (): void => {
+        calls += 1;
+      };
+      const ownerListener = (event: Event): void => {
+        if (propagationMode === "stop") {
+          event.stopImmediatePropagation();
+        }
+        inspect();
+        signal.dispatchEvent(new Event("abort"));
+        callsDuringOwnerListener = calls;
+      };
+      if (ownerListenerPosition === "before") {
+        owner.signal.addEventListener("abort", ownerListener);
+      }
+      if (registrationMode === "duplicate") {
+        signal.addEventListener("abort", listener, { capture });
+      }
+      signal.addEventListener("abort", listener, {
+        capture,
+        signal: owner.signal,
+      });
+      if (ownerListenerPosition === "after") {
+        owner.signal.addEventListener("abort", ownerListener);
+      }
+      owner.abort("exercise owner cancellation ordering");
+      signal.dispatchEvent(new Event("abort"));
+      return { calls, callsDuringOwnerListener, listener, owner };
+    };
+
+    for (const capture of captureValues) {
+      for (const registrationMode of registrationModes) {
+        for (const ownerListenerPosition of ownerListenerPositions) {
+          for (const propagationMode of propagationModes) {
+            const nativeTarget = new AbortController();
+            const native = exercise(
+              nativeTarget.signal,
+              capture,
+              registrationMode,
+              ownerListenerPosition,
+              propagationMode,
+              () => {},
+            );
+            const harness = createAbortHarness(
+              `owner order ${registrationMode} ${ownerListenerPosition} ${propagationMode} capture=${String(capture)}`,
+            );
+            let activeDuringOwnerListener = -1;
+            const actual = exercise(
+              harness.signal,
+              capture,
+              registrationMode,
+              ownerListenerPosition,
+              propagationMode,
+              () => {
+                activeDuringOwnerListener =
+                  harness.snapshot().activeListenerCount;
+              },
+            );
+            try {
+              expect(actual.calls).toBe(native.calls);
+              const expectedActiveAfterAbort =
+                native.calls > native.callsDuringOwnerListener ? 1 : 0;
+              expect(activeDuringOwnerListener).toBe(
+                native.callsDuringOwnerListener > 0 ? 1 : 0,
+              );
+              expect(harness.snapshot()).toMatchObject({
+                activeListenerCount: expectedActiveAfterAbort,
+                listenerAdds: 1,
+                listenerRemovals: expectedActiveAfterAbort === 0 ? 1 : 0,
+              });
+            } finally {
+              nativeTarget.signal.removeEventListener(
+                "abort",
+                native.listener,
+                { capture },
+              );
+              harness.signal.removeEventListener("abort", actual.listener, {
+                capture,
+              });
+              harness.restore();
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test("matches native reentrant registration during owner cancellation", () => {
+    const captureValues = [false, true] as const;
+    const registrationModes = ["initial", "duplicate"] as const;
+    const ownerListenerPositions = ["before", "after"] as const;
+    const propagationModes = ["continue", "stop"] as const;
+    type RegistrationMode = (typeof registrationModes)[number];
+    type OwnerListenerPosition = (typeof ownerListenerPositions)[number];
+    type PropagationMode = (typeof propagationModes)[number];
+    interface ExerciseResult {
+      readonly calls: number;
+      readonly callsDuringOwnerListener: number;
+      readonly listener: EventListener;
+    }
+    const exercise = (
+      signal: AbortSignal,
+      capture: boolean,
+      registrationMode: RegistrationMode,
+      ownerListenerPosition: OwnerListenerPosition,
+      propagationMode: PropagationMode,
+    ): ExerciseResult => {
+      const owner = new AbortController();
+      let calls = 0;
+      let callsDuringOwnerListener = 0;
+      const listener = (): void => {
+        calls += 1;
+      };
+      const ownerListener = (event: Event): void => {
+        if (propagationMode === "stop") {
+          event.stopImmediatePropagation();
+        }
+        signal.addEventListener("abort", listener, { capture });
+        signal.dispatchEvent(new Event("abort"));
+        callsDuringOwnerListener = calls;
+      };
+      if (ownerListenerPosition === "before") {
+        owner.signal.addEventListener("abort", ownerListener);
+      }
+      if (registrationMode === "duplicate") {
+        signal.addEventListener("abort", listener, { capture });
+      }
+      signal.addEventListener("abort", listener, {
+        capture,
+        signal: owner.signal,
+      });
+      if (ownerListenerPosition === "after") {
+        owner.signal.addEventListener("abort", ownerListener);
+      }
+      owner.abort("exercise reentrant registration ordering");
+      signal.dispatchEvent(new Event("abort"));
+      return { calls, callsDuringOwnerListener, listener };
+    };
+
+    for (const capture of captureValues) {
+      for (const registrationMode of registrationModes) {
+        for (const ownerListenerPosition of ownerListenerPositions) {
+          for (const propagationMode of propagationModes) {
+            const nativeTarget = new AbortController();
+            const native = exercise(
+              nativeTarget.signal,
+              capture,
+              registrationMode,
+              ownerListenerPosition,
+              propagationMode,
+            );
+            const harness = createAbortHarness(
+              `reentrant owner add ${registrationMode} ${ownerListenerPosition} ${propagationMode} capture=${String(capture)}`,
+            );
+            const actual = exercise(
+              harness.signal,
+              capture,
+              registrationMode,
+              ownerListenerPosition,
+              propagationMode,
+            );
+            try {
+              expect(actual.callsDuringOwnerListener).toBe(
+                native.callsDuringOwnerListener,
+              );
+              expect(actual.calls).toBe(native.calls);
+              const snapshot = harness.snapshot();
+              expect(snapshot.activeListenerCount).toBe(
+                native.calls > native.callsDuringOwnerListener ? 1 : 0,
+              );
+              expect(snapshot.listenerAdds - snapshot.listenerRemovals).toBe(
+                snapshot.activeListenerCount,
+              );
+            } finally {
+              nativeTarget.signal.removeEventListener(
+                "abort",
+                native.listener,
+                { capture },
+              );
+              harness.signal.removeEventListener("abort", actual.listener, {
+                capture,
+              });
+              harness.restore();
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test("matches native owner carry across synchronous once re-registration", () => {
+    const captureValues = [false, true] as const;
+    const readdModes = ["none", "different", "same", "pre-aborted"] as const;
+    type ReaddMode = (typeof readdModes)[number];
+    interface ExerciseResult {
+      readonly calls: number;
+      readonly listener: EventListener;
+    }
+    const exercise = (
+      signal: AbortSignal,
+      capture: boolean,
+      readdMode: ReaddMode,
+    ): ExerciseResult => {
+      const originalOwner = new AbortController();
+      const alternateOwner = new AbortController();
+      if (readdMode === "pre-aborted") {
+        alternateOwner.abort("pre-abort alternate owner");
+      }
+      let calls = 0;
+      const listener = (): void => {
+        calls += 1;
+        if (calls !== 1) return;
+        if (readdMode === "none") {
+          signal.addEventListener("abort", listener, { capture });
+          return;
+        }
+        signal.addEventListener("abort", listener, {
+          capture,
+          signal:
+            readdMode === "same"
+              ? originalOwner.signal
+              : alternateOwner.signal,
+        });
+      };
+      signal.addEventListener("abort", listener, {
+        capture,
+        once: true,
+        signal: originalOwner.signal,
+      });
+      signal.dispatchEvent(new Event("abort"));
+      originalOwner.abort("cancel original owner association");
+      signal.dispatchEvent(new Event("abort"));
+      return { calls, listener };
+    };
+
+    for (const capture of captureValues) {
+      for (const readdMode of readdModes) {
+        const nativeTarget = new AbortController();
+        const native = exercise(nativeTarget.signal, capture, readdMode);
+        const harness = createAbortHarness(
+          `once owner carry ${readdMode} capture=${String(capture)}`,
+        );
+        const actual = exercise(harness.signal, capture, readdMode);
+        try {
+          expect(actual.calls).toBe(native.calls);
+          const snapshot = harness.snapshot();
+          expect(snapshot.listenerAdds - snapshot.listenerRemovals).toBe(
+            snapshot.activeListenerCount,
+          );
+          expect(snapshot.activeListenerCount).toBe(
+            native.calls === 2 ? 1 : 0,
+          );
+        } finally {
+          nativeTarget.signal.removeEventListener("abort", native.listener, {
+            capture,
+          });
+          harness.signal.removeEventListener("abort", actual.listener, {
+            capture,
+          });
+          harness.restore();
+        }
+      }
+    }
+  });
+
+  test("matches dormant owner associations across listener retirement", () => {
+    const captureValues = [false, true] as const;
+    const retirementModes = ["explicit", "once", "other-owner"] as const;
+    type RetirementMode = (typeof retirementModes)[number];
+    const exercise = (
+      signal: AbortSignal,
+      capture: boolean,
+      retirementMode: RetirementMode,
+    ): { readonly calls: number; readonly listener: EventListener } => {
+      const firstOwner = new AbortController();
+      const secondOwner = new AbortController();
+      let calls = 0;
+      const listener = (): void => {
+        calls += 1;
+      };
+
+      if (retirementMode === "explicit") {
+        signal.addEventListener("abort", listener, {
+          capture,
+          signal: firstOwner.signal,
+        });
+        signal.removeEventListener("abort", listener, { capture });
+      } else if (retirementMode === "once") {
+        signal.addEventListener("abort", listener, {
+          capture,
+          once: true,
+          signal: firstOwner.signal,
+        });
+        signal.dispatchEvent(new Event("abort"));
+      } else {
+        signal.addEventListener("abort", listener, {
+          capture,
+          signal: firstOwner.signal,
+        });
+        signal.addEventListener("abort", listener, {
+          capture,
+          signal: secondOwner.signal,
+        });
+        firstOwner.abort("consume the first owner association");
+      }
+
+      signal.addEventListener("abort", listener, { capture, once: true });
+      const cancellingOwner =
+        retirementMode === "other-owner" ? secondOwner : firstOwner;
+      cancellingOwner.abort("exercise a dormant owner association");
+      signal.addEventListener("abort", listener, { capture });
+      signal.dispatchEvent(new Event("abort"));
+      signal.dispatchEvent(new Event("abort"));
+      return { calls, listener };
+    };
+
+    for (const capture of captureValues) {
+      for (const retirementMode of retirementModes) {
+        const nativeTarget = new AbortController();
+        const native = exercise(
+          nativeTarget.signal,
+          capture,
+          retirementMode,
+        );
+        const harness = createAbortHarness(
+          `dormant owner ${retirementMode} capture=${String(capture)}`,
+        );
+        const actual = exercise(harness.signal, capture, retirementMode);
+        try {
+          expect(actual.calls).toBe(native.calls);
+          const retainedCallCount = retirementMode === "once" ? 3 : 2;
+          const expectedActive = Number(
+            native.calls === retainedCallCount,
+          );
+          expect(harness.snapshot()).toMatchObject({
+            activeListenerCount: expectedActive,
+            listenerAdds: expectedActive === 1 ? 3 : 2,
+            listenerRemovals: 2,
+          });
+        } finally {
+          nativeTarget.signal.removeEventListener("abort", native.listener, {
+            capture,
+          });
+          harness.signal.removeEventListener("abort", actual.listener, {
+            capture,
+          });
+          harness.restore();
+        }
+      }
+    }
+  });
+
+  test("reuses a carried owner association at its configured bound", () => {
+    const captureValues = [false, true] as const;
+    const exercise = (
+      signal: AbortSignal,
+      owner: AbortController,
+      capture: boolean,
+    ): { readonly calls: number; readonly listener: EventListener } => {
+      let calls = 0;
+      const listener = (): void => {
+        calls += 1;
+        signal.addEventListener("abort", listener, {
+          capture,
+          signal: owner.signal,
+        });
+      };
+      signal.addEventListener("abort", listener, {
+        capture,
+        once: true,
+        signal: owner.signal,
+      });
+      signal.dispatchEvent(new Event("abort"));
+      owner.abort("cancel the synchronous re-registration");
+      signal.dispatchEvent(new Event("abort"));
+      return { calls, listener };
+    };
+
+    for (const capture of captureValues) {
+      const nativeTarget = new AbortController();
+      const native = exercise(
+        nativeTarget.signal,
+        new AbortController(),
+        capture,
+      );
+      const harness = createAbortHarness(
+        `bounded carried owner capture=${String(capture)}`,
+        { trackedListenerLimit: 1 },
+      );
+      const actual = exercise(
+        harness.signal,
+        new AbortController(),
+        capture,
+      );
+      try {
+        expect(actual.calls).toBe(native.calls);
+        expect(harness.snapshot()).toMatchObject({
+          activeListenerCount: 0,
+          listenerAdds: 2,
+          listenerRemovals: 2,
+        });
+      } finally {
+        nativeTarget.signal.removeEventListener("abort", native.listener, {
+          capture,
+        });
+        harness.signal.removeEventListener("abort", actual.listener, {
+          capture,
+        });
+        harness.restore();
+      }
+    }
+  });
+
+  test("matches owner retention after failed event-type conversion", () => {
+    const captureValues = [false, true] as const;
+    const exercise = (
+      signal: AbortSignal,
+      capture: boolean,
+    ): {
+      readonly calls: number;
+      readonly conversions: number;
+      readonly listener: EventListener;
+    } => {
+      const owner = new AbortController();
+      let calls = 0;
+      let conversions = 0;
+      let conversionFails = true;
+      const type = {
+        toString(): string {
+          conversions += 1;
+          if (conversionFails) {
+            throw new Error("intentional first event-type failure");
+          }
+          return "abort";
+        },
+      };
+      const listener = (): void => {
+        calls += 1;
+      };
+      try {
+        Reflect.apply(signal.addEventListener, signal, [
+          type,
+          listener,
+          { capture, signal: owner.signal },
+        ]);
+      } catch {
+        conversionFails = false;
+      }
+      signal.addEventListener("abort", listener, { capture, once: true });
+      owner.abort("consume failed registration association");
+      signal.addEventListener("abort", listener, { capture });
+      signal.dispatchEvent(new Event("abort"));
+      signal.dispatchEvent(new Event("abort"));
+      return { calls, conversions, listener };
+    };
+
+    for (const capture of captureValues) {
+      const nativeTarget = new AbortController();
+      const native = exercise(nativeTarget.signal, capture);
+      const harness = createAbortHarness(
+        `failed type owner retention capture=${String(capture)}`,
+      );
+      const actual = exercise(harness.signal, capture);
+      try {
+        expect(actual.calls).toBe(native.calls);
+        expect(actual.conversions).toBe(native.conversions);
+        const expectedActive = native.calls === 2 ? 1 : 0;
+        expect(harness.snapshot()).toMatchObject({
+          activeListenerCount: expectedActive,
+          listenerAdds: expectedActive === 1 ? 2 : 1,
+          listenerRemovals: 1,
+        });
+      } finally {
+        nativeTarget.signal.removeEventListener("abort", native.listener, {
+          capture,
+        });
+        harness.signal.removeEventListener("abort", actual.listener, {
+          capture,
+        });
+        harness.restore();
+      }
+    }
+  });
+
+  test("tracks a successful owner after a conditional failed association", () => {
+    const captureValues = [false, true] as const;
+    const exercise = (
+      signal: AbortSignal,
+      capture: boolean,
+    ): {
+      readonly calls: number;
+      readonly conversions: number;
+      readonly listener: EventListener;
+    } => {
+      const owner = new AbortController();
+      let calls = 0;
+      let conversions = 0;
+      let conversionFails = true;
+      const type = {
+        toString(): string {
+          conversions += 1;
+          if (conversionFails) {
+            throw new Error("intentional conditional association failure");
+          }
+          return "not-abort";
+        },
+      };
+      const listener = (): void => {
+        calls += 1;
+      };
+      try {
+        Reflect.apply(signal.addEventListener, signal, [
+          type,
+          listener,
+          { capture, signal: owner.signal },
+        ]);
+      } catch {
+        conversionFails = false;
+      }
+      signal.addEventListener("abort", listener, {
+        capture,
+        signal: owner.signal,
+      });
+      owner.abort("consume conditional and unconditional associations");
+      signal.dispatchEvent(new Event("abort"));
+      return { calls, conversions, listener };
+    };
+
+    for (const capture of captureValues) {
+      const nativeTarget = new AbortController();
+      const native = exercise(nativeTarget.signal, capture);
+      const harness = createAbortHarness(
+        `conditional then successful owner capture=${String(capture)}`,
+      );
+      const actual = exercise(harness.signal, capture);
+      try {
+        expect(actual.calls).toBe(native.calls);
+        expect(actual.conversions).toBe(native.conversions);
+        expect(harness.snapshot()).toMatchObject({
+          activeListenerCount: 0,
+          listenerAdds: 1,
+          listenerRemovals: 1,
+        });
+      } finally {
+        nativeTarget.signal.removeEventListener("abort", native.listener, {
+          capture,
+        });
+        harness.signal.removeEventListener("abort", actual.listener, {
+          capture,
+        });
+        harness.restore();
+      }
+    }
+  });
+
+  test("rejects overridden owner-signal surfaces fail-closed", () => {
+    const captureValues = [false, true] as const;
+    const registrationModes = ["initial", "duplicate"] as const;
+    const ownerStates = ["live", "pre-aborted"] as const;
+    type RegistrationMode = (typeof registrationModes)[number];
+    type OwnerState = (typeof ownerStates)[number];
+    interface ExerciseResult {
+      readonly calls: number;
+      readonly error: unknown;
+      readonly listener: EventListener;
+      readonly ownerSurfaceReads: number;
+    }
+    const exercise = (
+      signal: AbortSignal,
+      capture: boolean,
+      registrationMode: RegistrationMode,
+      ownerState: OwnerState,
+    ): ExerciseResult => {
+      const owner = new AbortController();
+      if (ownerState === "pre-aborted") {
+        owner.abort("pre-abort hostile owner");
+      }
+      let ownerSurfaceReads = 0;
+      const failOwnerSurface = (): never => {
+        ownerSurfaceReads += 1;
+        throw new Error("hostile owner surface was consulted");
+      };
+      Object.defineProperty(owner.signal, "aborted", {
+        configurable: true,
+        get: failOwnerSurface,
+      });
+      Object.defineProperty(owner.signal, "addEventListener", {
+        configurable: true,
+        value: failOwnerSurface,
+      });
+      Object.defineProperty(owner.signal, "removeEventListener", {
+        configurable: true,
+        value: failOwnerSurface,
+      });
+      let calls = 0;
+      const listener = (): void => {
+        calls += 1;
+      };
+      let error: unknown;
+      try {
+        if (registrationMode === "duplicate") {
+          signal.addEventListener("abort", listener, { capture });
+        }
+        signal.addEventListener("abort", listener, {
+          capture,
+          signal: owner.signal,
+        });
+        if (ownerState === "live") {
+          owner.abort("abort hostile owner");
+        }
+        signal.dispatchEvent(new Event("abort"));
+      } catch (caught) {
+        error = caught;
+      }
+      return {
+        calls,
+        error,
+        listener,
+        ownerSurfaceReads,
+      };
+    };
+
+    for (const capture of captureValues) {
+      for (const registrationMode of registrationModes) {
+        for (const ownerState of ownerStates) {
+          const harness = createAbortHarness(
+            `hostile owner ${registrationMode} ${ownerState} capture=${String(capture)}`,
+          );
+          const actual = exercise(
+            harness.signal,
+            capture,
+            registrationMode,
+            ownerState,
+          );
+          try {
+            expect(actual.error).toBeInstanceOf(AbortHarnessError);
+            expect(actual.error).toMatchObject({
+              code: "instrumentation_unsupported",
+            });
+            expect(actual.calls).toBe(0);
+            expect(actual.ownerSurfaceReads).toBe(0);
+            const expectedActive =
+              registrationMode === "duplicate" ? 1 : 0;
+            expect(harness.snapshot()).toMatchObject({
+              activeListenerCount: expectedActive,
+              listenerAdds: expectedActive,
+              listenerRemovals: 0,
+            });
+          } finally {
+            harness.signal.removeEventListener("abort", actual.listener, {
+              capture,
+            });
+            harness.restore();
+          }
+        }
+      }
+    }
+  });
+
+  test("rejects mutated active-harness owner surfaces fail-closed", () => {
+    const surfaces = [
+      "aborted",
+      "addEventListener",
+      "removeEventListener",
+    ] as const;
+
+    for (const surface of surfaces) {
+      const owner = createAbortHarness(`mutated owner ${surface}`);
+      const target = createAbortHarness(`mutated owner target ${surface}`);
+      const listener = (): void => {};
+      let hostileSurfaceCalls = 0;
+      const hostileSurface = (): never => {
+        hostileSurfaceCalls += 1;
+        throw new Error(`mutated owner ${surface} was invoked`);
+      };
+      try {
+        Object.defineProperty(
+          owner.signal,
+          surface,
+          surface === "aborted"
+            ? { configurable: true, get: hostileSurface }
+            : {
+                configurable: true,
+                value: hostileSurface,
+                writable: true,
+              },
+        );
+        expectErrorCode(
+          () =>
+            target.signal.addEventListener("abort", listener, {
+              signal: owner.signal,
+            }),
+          AbortHarnessError,
+          "instrumentation_unsupported",
+        );
+        expect(hostileSurfaceCalls).toBe(0);
+        expect(target.snapshot()).toMatchObject({
+          activeListenerCount: 0,
+          listenerAdds: 0,
+          listenerRemovals: 0,
+        });
+      } finally {
+        target.restore();
+        owner.restore();
+      }
+    }
+  });
+
   test("invokes callable listeners without consulting their call property", () => {
     const listenerKinds = ["shadowed", "proxy"] as const;
     type ListenerKind = (typeof listenerKinds)[number];
@@ -1560,6 +2755,73 @@ describe("abort harness", () => {
         listenerRemovals: 1,
         restored: true,
       });
+    }
+  });
+
+  test("matches native owner abort reentrancy during event-type conversion", () => {
+    interface ExerciseResult {
+      readonly calls: number;
+      readonly listener: EventListener;
+      readonly trace: readonly string[];
+    }
+    const exercise = (signal: AbortSignal): ExerciseResult => {
+      const owner = new AbortController();
+      const trace: string[] = [];
+      let conversions = 0;
+      let calls = 0;
+      const type = {
+        toString(): string {
+          conversions += 1;
+          const conversion = conversions;
+          trace.push(`type.${conversion}.enter`);
+          if (conversion === 1) {
+            owner.abort("abort during outer event-type conversion");
+          }
+          trace.push(`type.${conversion}.return`);
+          return conversion === 1 ? "abort" : "cleanup-only";
+        },
+      };
+      const options = {} as AddEventListenerOptions;
+      for (const property of ["capture", "once", "passive"] as const) {
+        Object.defineProperty(options, property, {
+          get(): boolean {
+            trace.push(`options.${property}`);
+            return false;
+          },
+        });
+      }
+      Object.defineProperty(options, "signal", {
+        get(): AbortSignal {
+          trace.push("options.signal");
+          return owner.signal;
+        },
+      });
+      const listener = (): void => {
+        calls += 1;
+      };
+
+      Reflect.apply(signal.addEventListener, signal, [type, listener, options]);
+      signal.dispatchEvent(new Event("abort"));
+      signal.dispatchEvent(new Event("cleanup-only"));
+      return { calls, listener, trace };
+    };
+
+    const nativeTarget = new AbortController();
+    const native = exercise(nativeTarget.signal);
+    const harness = createAbortHarness("owner abort during event type");
+    const actual = exercise(harness.signal);
+    try {
+      expect(actual.trace).toEqual(native.trace);
+      expect(actual.calls).toBe(native.calls);
+      expect(harness.snapshot()).toMatchObject({
+        activeListenerCount: native.calls === 0 ? 0 : 1,
+        listenerAdds: native.calls === 0 ? 0 : 1,
+        listenerRemovals: 0,
+      });
+    } finally {
+      nativeTarget.signal.removeEventListener("abort", native.listener);
+      harness.signal.removeEventListener("abort", actual.listener);
+      harness.restore();
     }
   });
 
@@ -3124,6 +4386,340 @@ describe("abort harness", () => {
       harness.restore();
     }
     expect(harness.snapshot()).toMatchObject({ restored: true });
+  });
+
+  test("treats pre-aborted owner registration as a no-op at capacity", () => {
+    const makeOptions = (
+      trace: string[],
+      owner: AbortController,
+    ): AddEventListenerOptions => {
+      const options = {} as AddEventListenerOptions;
+      for (const property of ["capture", "once", "passive"] as const) {
+        Object.defineProperty(options, property, {
+          get(): boolean {
+            trace.push(property);
+            return false;
+          },
+        });
+      }
+      Object.defineProperty(options, "signal", {
+        get(): AbortSignal {
+          trace.push("signal");
+          return owner.signal;
+        },
+      });
+      return options;
+    };
+
+    const nativeTarget = new AbortController();
+    const nativeOwner = new AbortController();
+    nativeOwner.abort("native pre-aborted owner");
+    const nativeTrace: string[] = [];
+    let nativeCalls = 0;
+    nativeTarget.signal.addEventListener(
+      "abort",
+      () => {
+        nativeCalls += 1;
+      },
+      makeOptions(nativeTrace, nativeOwner),
+    );
+    nativeTarget.signal.dispatchEvent(new Event("abort"));
+
+    const harness = createAbortHarness("pre-aborted owner at capacity", {
+      trackedListenerLimit: 1,
+    });
+    const retained = (): void => {};
+    const owner = new AbortController();
+    owner.abort("harness pre-aborted owner");
+    const actualTrace: string[] = [];
+    let actualCalls = 0;
+    try {
+      harness.signal.addEventListener("abort", retained);
+      expect(() =>
+        harness.signal.addEventListener(
+          "abort",
+          () => {
+            actualCalls += 1;
+          },
+          makeOptions(actualTrace, owner),
+        ),
+      ).not.toThrow();
+      harness.signal.dispatchEvent(new Event("abort"));
+      expect(actualTrace).toEqual(nativeTrace);
+      expect(actualCalls).toBe(nativeCalls);
+      expect(harness.snapshot()).toMatchObject({
+        activeListenerCount: 1,
+        listenerAdds: 1,
+        listenerRemovals: 0,
+      });
+    } finally {
+      harness.signal.removeEventListener("abort", retained);
+      harness.restore();
+    }
+  });
+
+  test("reconciles owner cancellation before rejecting at capacity", () => {
+    const nativeTarget = new AbortController();
+    const nativeOwner = new AbortController();
+    let nativeCallsDuringOwnerListener = 0;
+    const nativeListener = (): void => {
+      nativeCallsDuringOwnerListener += 1;
+    };
+    nativeOwner.signal.addEventListener("abort", () => {
+      nativeTarget.signal.dispatchEvent(new Event("abort"));
+    });
+    nativeTarget.signal.addEventListener("abort", nativeListener, {
+      signal: nativeOwner.signal,
+    });
+    nativeOwner.abort("probe cancellation order at capacity");
+    nativeTarget.signal.removeEventListener("abort", nativeListener);
+
+    if (nativeCallsDuringOwnerListener !== 0) return;
+
+    const harness = createAbortHarness("owner cancellation at capacity", {
+      trackedListenerLimit: 1,
+    });
+    const owner = new AbortController();
+    const cancelled = (): void => {};
+    let replacementCalls = 0;
+    const replacement = (): void => {
+      replacementCalls += 1;
+    };
+    let addError: unknown;
+    owner.signal.addEventListener("abort", () => {
+      try {
+        harness.signal.addEventListener("abort", replacement);
+      } catch (error) {
+        addError = error;
+      }
+    });
+    try {
+      harness.signal.addEventListener("abort", cancelled, {
+        signal: owner.signal,
+      });
+      owner.abort("free capacity before nested registration");
+      harness.signal.dispatchEvent(new Event("abort"));
+      expect(addError).toBeUndefined();
+      expect(replacementCalls).toBe(1);
+      expect(harness.snapshot()).toMatchObject({
+        activeListenerCount: 1,
+        listenerAdds: 2,
+        listenerRemovals: 1,
+      });
+    } finally {
+      harness.signal.removeEventListener("abort", cancelled);
+      harness.signal.removeEventListener("abort", replacement);
+      harness.restore();
+    }
+  });
+
+  test("bounds retained owner-signal observers across listener records", () => {
+    const probeTarget = new AbortController();
+    const probeOwner = new AbortController();
+    let probeCalls = 0;
+    const probeListener = (): void => {
+      probeCalls += 1;
+    };
+    probeTarget.signal.addEventListener("abort", probeListener);
+    probeTarget.signal.addEventListener("abort", probeListener, {
+      signal: probeOwner.signal,
+    });
+    probeOwner.abort("probe duplicate owner semantics");
+    probeTarget.signal.dispatchEvent(new Event("abort"));
+    const duplicateOwnerIsRetained = probeCalls === 0;
+    probeTarget.signal.removeEventListener("abort", probeListener);
+
+    const harness = createAbortHarness("bounded owner observers", {
+      trackedListenerLimit: 2,
+    });
+    const owners = [
+      new AbortController(),
+      new AbortController(),
+      new AbortController(),
+    ] as const;
+    const first = (): void => {};
+    const second = (): void => {};
+    try {
+      harness.signal.addEventListener("abort", first, {
+        signal: owners[0].signal,
+      });
+      harness.signal.addEventListener("abort", first, {
+        signal: owners[1].signal,
+      });
+      if (duplicateOwnerIsRetained) {
+        expectErrorCode(
+          () =>
+            harness.signal.addEventListener("abort", second, {
+              signal: owners[2].signal,
+            }),
+          AbortHarnessError,
+          "listener_limit",
+        );
+        expect(harness.snapshot().activeListenerCount).toBe(1);
+      } else {
+        harness.signal.addEventListener("abort", second, {
+          signal: owners[2].signal,
+        });
+        expect(harness.snapshot().activeListenerCount).toBe(2);
+      }
+    } finally {
+      harness.restore();
+      for (const owner of owners) {
+        owner.abort("owner observer cleanup");
+      }
+    }
+  });
+
+  test("fails closed when failed conversion retention exceeds the observer bound", () => {
+    const injected = new Error("bounded type conversion failure");
+    const probeTarget = new AbortController();
+    const probeOwner = new AbortController();
+    let probeConversionFails = true;
+    let probeCalls = 0;
+    const probeType = {
+      toString(): string {
+        if (probeConversionFails) throw injected;
+        return "abort";
+      },
+    };
+    const probeListener = (): void => {
+      probeCalls += 1;
+    };
+    try {
+      Reflect.apply(probeTarget.signal.addEventListener, probeTarget.signal, [
+        probeType,
+        probeListener,
+        { signal: probeOwner.signal },
+      ]);
+    } catch {
+      // The native failure establishes whether this runtime retains its owner.
+    } finally {
+      probeConversionFails = false;
+    }
+    probeTarget.signal.addEventListener("abort", probeListener);
+    probeOwner.abort("probe failed-conversion retention");
+    probeTarget.signal.dispatchEvent(new Event("abort"));
+    const nativeRetainsFailedAssociation = probeCalls === 0;
+    probeTarget.signal.removeEventListener("abort", probeListener);
+
+    const harness = createAbortHarness("bounded failed conversion", {
+      trackedListenerLimit: 1,
+    });
+    const retainedOwner = new AbortController();
+    const rejectedOwner = new AbortController();
+    let conversionFails = true;
+    let calls = 0;
+    const type = {
+      toString(): string {
+        if (conversionFails) throw injected;
+        return "abort";
+      },
+    };
+    const listener = (): void => {
+      calls += 1;
+    };
+    let actualError: unknown;
+    try {
+      harness.signal.addEventListener("abort", listener, {
+        signal: retainedOwner.signal,
+      });
+      try {
+        Reflect.apply(harness.signal.addEventListener, harness.signal, [
+          type,
+          listener,
+          { signal: rejectedOwner.signal },
+        ]);
+      } catch (error) {
+        actualError = error;
+      } finally {
+        conversionFails = false;
+      }
+
+      if (nativeRetainsFailedAssociation) {
+        expect(actualError).toBeInstanceOf(AbortHarnessError);
+        expect(actualError).toMatchObject({ code: "listener_limit" });
+      } else {
+        expect(actualError).toBe(injected);
+      }
+      expect(getEventListeners(rejectedOwner.signal, "abort")).toHaveLength(0);
+      rejectedOwner.abort("prove rejected association was discarded");
+      harness.signal.dispatchEvent(new Event("abort"));
+      expect(calls).toBe(1);
+      expect(harness.snapshot()).toMatchObject({
+        activeListenerCount: 1,
+        listenerAdds: 1,
+        listenerRemovals: 0,
+      });
+    } finally {
+      harness.restore();
+      retainedOwner.abort("release retained association");
+      rejectedOwner.abort("release rejected association");
+    }
+  });
+
+  test("does not multiply native owner associations or leak rejected ones", () => {
+    const duplicateCount = 5;
+    const nativeOwner = new AbortController();
+    const nativeTarget = new AbortController();
+    const nativeListener = (): void => {};
+    nativeTarget.signal.addEventListener("abort", nativeListener);
+    for (let index = 0; index < duplicateCount; index += 1) {
+      nativeTarget.signal.addEventListener("abort", nativeListener, {
+        signal: nativeOwner.signal,
+      });
+    }
+    const nativeAssociationCount = getEventListeners(
+      nativeOwner.signal,
+      "abort",
+    ).length;
+    nativeTarget.signal.removeEventListener("abort", nativeListener);
+    const nativeResidualCount = getEventListeners(
+      nativeOwner.signal,
+      "abort",
+    ).length;
+
+    const owner = new AbortController();
+    const harness = createAbortHarness("owner association lifecycle", {
+      trackedListenerLimit: 1,
+    });
+    const listener = (): void => {};
+    harness.signal.addEventListener("abort", listener);
+    for (let index = 0; index < duplicateCount; index += 1) {
+      harness.signal.addEventListener("abort", listener, {
+        signal: owner.signal,
+      });
+    }
+    expect(getEventListeners(owner.signal, "abort").length).toBeLessThanOrEqual(
+      nativeAssociationCount + 1,
+    );
+    harness.restore();
+    expect(getEventListeners(owner.signal, "abort")).toHaveLength(
+      nativeResidualCount,
+    );
+
+    const rejectedOwner = new AbortController();
+    const bounded = createAbortHarness("rejected owner association", {
+      trackedListenerLimit: 1,
+    });
+    try {
+      bounded.signal.addEventListener("abort", () => {});
+      expectErrorCode(
+        () =>
+          bounded.signal.addEventListener("abort", () => {}, {
+            get signal(): AbortSignal {
+              return rejectedOwner.signal;
+            },
+          }),
+        AbortHarnessError,
+        "listener_limit",
+      );
+      expect(getEventListeners(rejectedOwner.signal, "abort")).toHaveLength(0);
+    } finally {
+      bounded.restore();
+      nativeOwner.abort("release native association probes");
+      owner.abort("release harness association probes");
+      rejectedOwner.abort("prove rejected owner retained nothing");
+    }
   });
 
   test("remains a native signal and propagates through AbortSignal.any", () => {
