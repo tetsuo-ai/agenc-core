@@ -488,10 +488,28 @@ function verifyBoundary(
     expectIdempotentSecondRecovery(report);
     return;
   }
-  if (
-    failpoint === "after_tool_spawn" ||
-    failpoint === "before_tool_ack_commit"
-  ) {
+  if (failpoint === "after_tool_spawn") {
+    // The exact effect boundary is crossed after admission is durably marked
+    // dispatched and immediately before the adapter starts the operation.
+    // Crashing at that instruction can therefore leave no observable receipt,
+    // but absence of a receipt is not authoritative no-effect evidence.
+    expect(report.toolPhysicalAttempts).toBe(0);
+    expect(report.admission?.reservations[0]?.status).toBe("held_unknown");
+    expect(report.admission?.effect).toMatchObject({
+      outcome: "unknown_outcome",
+      reviewStatus: "pending",
+    });
+    expect(report.admission?.effectRecovery).toBe(
+      "review_locked_unknown_outcome",
+    );
+    expect(report.admission?.pendingEffectReviews).toBe(1);
+    expect(report.canonicalEventCounts.effect_intent).toBe(1);
+    expect(report.canonicalEventCounts.effect_result ?? 0).toBe(0);
+    expect(report.canonicalEventCounts.effect_unknown_outcome).toBe(1);
+    expectIdempotentSecondRecovery(report);
+    return;
+  }
+  if (failpoint === "before_tool_ack_commit") {
     expect(report.toolPhysicalAttempts).toBe(1);
     expect(report.admission?.reservations[0]?.status).toBe("held_unknown");
     expect(report.admission?.effect).toMatchObject({

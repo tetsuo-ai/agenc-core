@@ -239,7 +239,7 @@ describe('MCP resource attachment admission', () => {
     expect(readResource).not.toHaveBeenCalled()
   })
 
-  it('forwards lease cancellation to the raw RPC and holds its journal outcome', async () => {
+  it('forwards lease cancellation and reconciles the idempotent RPC settlement', async () => {
     const leaseController = new AbortController()
     const state = admissionHarness({
       acquire: async input =>
@@ -273,12 +273,15 @@ describe('MCP resource attachment admission', () => {
     )
     expect(rawSignal.aborted).toBe(true)
     expect(rawSignal.reason).toBe(cancellation)
-    expect(state.admission.holdUnknown).toHaveBeenCalledWith(
+    await vi.waitFor(() => {
+      expect(state.admission.acknowledgeCompletion).toHaveBeenCalledWith(
+        'resource-cancelled',
+      )
+    })
+    expect(state.admission.reconcile).toHaveBeenCalledWith(
       'resource-cancelled',
-      'tool_cancelled_after_dispatch',
+      { inputTokens: 0, outputTokens: 0, costUsd: 0 },
     )
-    expect(state.admission.acknowledgeCompletion).toHaveBeenCalledWith(
-      'resource-cancelled',
-    )
+    expect(state.admission.holdUnknown).not.toHaveBeenCalled()
   })
 })

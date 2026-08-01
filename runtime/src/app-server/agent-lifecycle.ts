@@ -9,7 +9,10 @@
 
 import { AsyncLock } from "../utils/async-lock.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
-import { resolveDurableEffectReview } from "../state/effect-review.js";
+import {
+  createOperatorEffectReviewResolution,
+  resolveDurableEffectReview,
+} from "../state/effect-review.js";
 import { listUnresolvedUnknownOutcomeEffects } from "../state/unknown-outcome-gate.js";
 import {
   requireAbsoluteWorkspaceCwd,
@@ -1656,10 +1659,9 @@ export class AgenCDaemonAgentManager {
         `AgenC daemon session not found or closed: ${params.sessionId}`,
       );
     }
-    // Operator review of unknown-outcome effects through the LIVE session —
-    // the CLI path (`agenc state resolve-tool-call`) cannot append while the
-    // daemon holds the rollout lock, so the TUI /resolve goes through here.
-    // Same-process appends pass the process-level lock.
+    // The production runner appends through the Session that owns the live
+    // journal lease. The offline resolver remains only for injected runners
+    // and legacy rows that have no live canonical effect journal.
     if (session.cwd === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
@@ -1670,26 +1672,35 @@ export class AgenCDaemonAgentManager {
     try {
       const reviewedAt = new Date().toISOString();
       const reviewedBy = params.reviewer?.trim() || "tui_operator";
-      const candidates =
-        params.toolCallId !== undefined
-          ? [
-              {
-                sessionId: params.sessionId,
-                toolCallId: params.toolCallId,
-                toolName: "",
-                startedAt: "",
-              },
-            ]
-          : [...listUnresolvedUnknownOutcomeEffects(driver, params.sessionId)];
+      const resolution = createOperatorEffectReviewResolution({
+        disposition: params.disposition,
+        actorId: reviewedBy,
+        evidenceRef: params.evidenceRef,
+        evidenceSha256: params.evidenceSha256,
+        reviewedAt,
+      });
+      const candidates = [
+        {
+          sessionId: params.sessionId,
+          toolCallId: params.toolCallId,
+          toolName: "",
+          startedAt: "",
+        },
+      ];
       const resolved: SessionResolveToolCallResult["resolved"][number][] = [];
       for (const effect of candidates) {
-        const outcome = resolveDurableEffectReview(driver, {
+        const reviewOptions = {
           sessionId: params.sessionId,
           toolCallId: effect.toolCallId,
-          reviewedAt,
-          reviewedBy,
-          resolution: "human_verified",
-        });
+          resolution,
+        } as const;
+        const outcome =
+          this.#runner?.resolveLiveEffectReview !== undefined
+            ? await this.#runner.resolveLiveEffectReview(
+                session.agentId,
+                reviewOptions,
+              )
+            : resolveDurableEffectReview(driver, reviewOptions);
         if (outcome.kind === "resolved") {
           resolved.push({
             toolCallId: effect.toolCallId,

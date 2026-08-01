@@ -2812,7 +2812,13 @@ type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
   cancelActiveTurn?: (reason?: string) => Promise<void>;
   clearDaemonSession?: () => Promise<void>;
   resolveDaemonToolCall?: (params: {
-    readonly toolCallId?: string;
+    readonly toolCallId: string;
+    readonly disposition:
+      | "confirmed_committed"
+      | "confirmed_no_effect"
+      | "remains_unknown";
+    readonly evidenceRef: string;
+    readonly evidenceSha256: string;
     readonly reviewer?: string;
   }) => Promise<unknown>;
   getDaemonSessionSnapshot?: () => Promise<unknown>;
@@ -3642,7 +3648,13 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // the first real turn, so before that there is nothing to resolve —
     // report a clean empty result instead of throwing.
     resolveDaemonToolCall: async (params: {
-      readonly toolCallId?: string;
+      readonly toolCallId: string;
+      readonly disposition:
+        | "confirmed_committed"
+        | "confirmed_no_effect"
+        | "remains_unknown";
+      readonly evidenceRef: string;
+      readonly evidenceSha256: string;
       readonly reviewer?: string;
     }) => {
       if (liveSession === null) {

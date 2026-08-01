@@ -382,8 +382,9 @@ export async function setupSessionMemoryFile(
     tool: SESSION_MEMORY_SETUP_TOOL,
     args: { memory_path: memoryPath },
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
-    invoke: async ({ signal }) => {
+    invoke: async ({ signal, crossEffectBoundary }) => {
       signal.throwIfAborted();
+      crossEffectBoundary();
       await mkdir(memoryDir, { recursive: true, mode: 0o700 });
       signal.throwIfAborted();
 

@@ -200,16 +200,19 @@ live session:
 
 ```bash
 AGENC_REVIEWER_ID=operator_7 \
-  agenc state resolve-tool-call <session-id> <tool-call-id>
+  agenc state resolve-tool-call <session-id> <tool-call-id> \
+    <confirmed_committed|confirmed_no_effect|remains_unknown> \
+    <evidence-ref> <evidence-sha256>
 ```
 
 For an M4 effect, the command takes the canonical journal's single-writer
 lease, verifies the matching `effect_unknown_outcome`, and appends and fsyncs
 one idempotent `effect_review_resolved` event before either SQLite review
-projection advances. The event records the run, step, call, reviewer,
-`human_verified` resolution, and review time. It lifts the mutation gate only
-after no unresolved effects remain; it never reruns the tool or changes the
-unknown physical outcome into a fabricated success. Reviewer identity falls
+projection advances. The event records the run, step, call, typed disposition,
+reviewer, evidence reference and SHA-256, workflow status, domain action, and
+review time. It lifts the mutation gate only for a terminal typed disposition;
+it never reruns the tool or changes the unknown physical outcome into a
+fabricated success. Reviewer identity falls
 back from `AGENC_REVIEWER_ID` to `USER`, `USERNAME`, then `local_operator`.
 
 This is an explicit post-terminal audit exception when `run_terminal` already

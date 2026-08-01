@@ -106,6 +106,7 @@ import {
 import type { Session } from "./session/session.js";
 import { runAdmittedToolCall } from "./budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "./budget/admission-client.js";
+import type { ToolEffectDispositionEvidence } from "./contracts/run-contracts.js";
 
 export interface ToolDispatchResult {
   readonly content: string;
@@ -120,6 +121,8 @@ export interface ToolDispatchResult {
   readonly preventContinuation?: boolean;
   /** Authoritative metered usage, kept outside provider-visible content. */
   readonly admissionUsage?: ToolAdmissionUsage;
+  /** Authoritative adapter evidence, kept outside provider-visible content. */
+  readonly effectDisposition?: ToolEffectDispositionEvidence;
 }
 
 export interface CodeModeNestedToolDispatch {
@@ -1105,6 +1108,7 @@ export function buildToolRegistry(
         contentItems: result.contentItems,
         metadata: result.metadata,
         admissionUsage: result.admissionUsage,
+        effectDisposition: result.effectDisposition,
       };
     };
     const session = options.getSession?.() ?? null;
@@ -1121,7 +1125,10 @@ export function buildToolRegistry(
       tool: spec.tool,
       args,
       ...(opts.abortSignal !== undefined ? { signal: opts.abortSignal } : {}),
-      invoke: ({ signal }) => invoke(signal),
+      invoke: ({ signal, crossEffectBoundary }) => {
+        crossEffectBoundary();
+        return invoke(signal);
+      },
     });
   }
 

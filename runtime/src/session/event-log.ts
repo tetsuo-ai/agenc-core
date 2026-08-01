@@ -23,7 +23,10 @@ import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { AdmissionJournalEvent } from "../budget/admission-types.js";
 import type {
+  EffectBoundary,
+  EffectNoEffectProof,
   EffectOutcome,
+  EffectReviewResolution,
   RunTerminalStatus,
   RunUsageTotals,
 } from "../contracts/run-contracts.js";
@@ -408,6 +411,9 @@ export interface WarningEvent {
  * store.
  */
 export interface EffectIntentEvent {
+  /** Absent only on legacy v1 journal fixtures. */
+  readonly formatVersion?: 2;
+  readonly minimumReaderRuntime?: string;
   readonly runId: string;
   readonly stepId: string;
   readonly callId: string;
@@ -426,6 +432,9 @@ export interface EffectIntentEvent {
  * a late result without explicit review.
  */
 export interface EffectResultEvent {
+  /** Absent only on legacy v1 journal fixtures. */
+  readonly formatVersion?: 2;
+  readonly minimumReaderRuntime?: string;
   readonly runId: string;
   readonly stepId: string;
   readonly callId: string;
@@ -434,6 +443,8 @@ export interface EffectResultEvent {
   readonly idempotencyKey?: string;
   readonly intentEventSeq: number;
   readonly outcome: Exclude<EffectOutcome, "unknown_outcome">;
+  readonly effectBoundary?: EffectBoundary;
+  readonly noEffectEvidence?: EffectNoEffectProof;
   readonly resultDigest?: string;
   readonly evidence?: Readonly<Record<string, unknown>>;
   readonly recordedAt: string;
@@ -445,6 +456,9 @@ export interface EffectResultEvent {
  * review lock, not a retry signal.
  */
 export interface EffectUnknownOutcomeEvent {
+  /** Absent only on legacy v1 journal fixtures. */
+  readonly formatVersion?: 2;
+  readonly minimumReaderRuntime?: string;
   readonly runId: string;
   readonly stepId: string;
   readonly callId: string;
@@ -458,8 +472,16 @@ export interface EffectUnknownOutcomeEvent {
   readonly recordedAt: string;
 }
 
-/** Fsync-durable human resolution of an unknown effect outcome. */
-export interface EffectReviewResolvedEvent {
+/** Fsync-durable typed resolution/disposition of an unknown effect outcome. */
+export interface EffectReviewResolutionEvent {
+  readonly runId: string;
+  readonly stepId: string;
+  readonly callId: string;
+  readonly resolution: EffectReviewResolution;
+}
+
+/** Legacy v1 review shape. Readers preserve it but never treat it as proof. */
+export interface LegacyEffectReviewResolvedEvent {
   readonly runId: string;
   readonly stepId: string;
   readonly callId: string;
@@ -467,6 +489,10 @@ export interface EffectReviewResolvedEvent {
   readonly reviewedBy: string;
   readonly reviewedAt: string;
 }
+
+export type EffectReviewResolvedEvent =
+  | EffectReviewResolutionEvent
+  | LegacyEffectReviewResolvedEvent;
 
 /**
  * Fsync-durable declaration that an immutable content artifact is about to be

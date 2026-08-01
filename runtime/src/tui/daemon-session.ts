@@ -175,7 +175,13 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   emitPhaseEvent?(event: PhaseEvent): void;
   clearDaemonSession?(): Promise<void>;
   resolveDaemonToolCall?(params: {
-    readonly toolCallId?: string;
+    readonly toolCallId: string;
+    readonly disposition:
+      | "confirmed_committed"
+      | "confirmed_no_effect"
+      | "remains_unknown";
+    readonly evidenceRef: string;
+    readonly evidenceSha256: string;
     readonly reviewer?: string;
   }): Promise<SessionResolveToolCallResult>;
   getDaemonSessionSnapshot?(): Promise<SessionSnapshotResult>;
@@ -996,14 +1002,21 @@ export function createDaemonTuiSession<
       await client.request("session.clear", { sessionId });
     },
     resolveDaemonToolCall: async (params: {
-      readonly toolCallId?: string;
+      readonly toolCallId: string;
+      readonly disposition:
+        | "confirmed_committed"
+        | "confirmed_no_effect"
+        | "remains_unknown";
+      readonly evidenceRef: string;
+      readonly evidenceSha256: string;
       readonly reviewer?: string;
     }) =>
       client.request("session.resolveToolCall", {
         sessionId,
-        ...(params.toolCallId !== undefined
-          ? { toolCallId: params.toolCallId }
-          : {}),
+        toolCallId: params.toolCallId,
+        disposition: params.disposition,
+        evidenceRef: params.evidenceRef,
+        evidenceSha256: params.evidenceSha256,
         ...(params.reviewer !== undefined ? { reviewer: params.reviewer } : {}),
       }),
     getDaemonSessionSnapshot: async () =>

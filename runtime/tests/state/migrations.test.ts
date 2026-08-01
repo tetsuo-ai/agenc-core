@@ -55,7 +55,7 @@ describe("state migration registry", () => {
 
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -74,6 +74,7 @@ describe("state migration registry", () => {
       "execution_admission_schema",
       "run_durability_schema",
       "run_effects_session_call_step_index",
+      "effect_evidence_v2",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -108,6 +109,7 @@ describe("state migration registry", () => {
       "014_execution_admission_schema.ts",
       "015_run_durability_schema.ts",
       "016_run_effects_session_call_step_index.ts",
+      "017_effect_evidence_v2.ts",
     ]);
   });
 
@@ -147,6 +149,13 @@ describe("state migration registry", () => {
           )
           .get(),
       ).toEqual({ version: 16, name: "run_effects_session_call_step_index" });
+      expect(
+        db
+          .prepare<[], { version: number; name: string }>(
+            "SELECT version, name FROM schema_migrations WHERE version = 17",
+          )
+          .get(),
+      ).toEqual({ version: 17, name: "effect_evidence_v2" });
 
       const effectIndexes = db
         .prepare<[], { name: string }>("PRAGMA index_list(run_effects)")
@@ -214,6 +223,128 @@ describe("state migration registry", () => {
       expect(identityPlan.join("\n")).toContain(
         "idx_thread_rollout_items_replay_source_identity",
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("migrates ambiguous v1 outcomes and reviews fail closed", () => {
+    const db = new Database(":memory:");
+    try {
+      applyMigrations(db, STATE_DB_MIGRATIONS.slice(0, 16));
+      db.prepare(
+        `INSERT INTO run_lifecycle_epochs (run_id, epoch, opened_at)
+         VALUES ('legacy-run', 1, '2026-07-18T00:00:00.000Z')`,
+      ).run();
+      const insert = db.prepare(
+        `INSERT INTO run_effects (
+           run_id, step_id, epoch, session_id, call_id, tool_name,
+           recovery_category, idempotency_key, intent_digest,
+           intent_event_id, intent_sequence, intent_at, outcome,
+           result_event_id, result_sequence, completed_at, review_status,
+           unknown_reason, reviewed_at, reviewed_by, review_resolution,
+           review_event_id
+         ) VALUES (
+           'legacy-run', ?, 1, 'legacy-session', ?, 'legacy-tool',
+           ?, ?, 'intent-digest', ?, ?, '2026-07-18T00:00:00.000Z', ?,
+           ?, ?, '2026-07-18T00:00:01.000Z', ?, ?, ?, ?, ?, ?
+         )`,
+      );
+      insert.run(
+        "side-failed",
+        "call-side",
+        "side-effecting",
+        null,
+        "intent-side",
+        1,
+        "failed",
+        "result-side",
+        2,
+        "none",
+        null,
+        null,
+        null,
+        null,
+        null,
+      );
+      insert.run(
+        "idempotent-failed",
+        "call-idempotent",
+        "idempotent",
+        "stable-key",
+        "intent-idempotent",
+        3,
+        "failed",
+        "result-idempotent",
+        4,
+        "none",
+        null,
+        null,
+        null,
+        null,
+        null,
+      );
+      insert.run(
+        "legacy-reviewed",
+        "call-reviewed",
+        "side-effecting",
+        null,
+        "intent-reviewed",
+        5,
+        "unknown_outcome",
+        "result-reviewed",
+        6,
+        "resolved",
+        "ack_lost",
+        "2026-07-18T00:00:02.000Z",
+        "legacy-operator",
+        "human_verified",
+        "legacy-review-event",
+      );
+
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+
+      const rows = db
+        .prepare<
+          [],
+          {
+            step_id: string;
+            effect_format_version: number;
+            outcome: string;
+            effect_boundary: string | null;
+            unknown_reason: string | null;
+            review_status: string | null;
+            review_disposition: string | null;
+            legacy_review_json: string | null;
+          }
+        >(
+          `SELECT step_id, effect_format_version, outcome, effect_boundary,
+                  unknown_reason, review_status, review_disposition,
+                  legacy_review_json
+           FROM run_effects ORDER BY intent_sequence`,
+        )
+        .all();
+      expect(rows[0]).toMatchObject({
+        step_id: "side-failed",
+        effect_format_version: 1,
+        outcome: "unknown_outcome",
+        effect_boundary: null,
+        unknown_reason: "legacy_ambiguous_terminal_evidence",
+        review_status: "pending",
+      });
+      expect(rows[1]).toMatchObject({
+        step_id: "idempotent-failed",
+        outcome: "failed",
+        effect_boundary: "crossed",
+        review_status: null,
+      });
+      expect(rows[2]).toMatchObject({
+        step_id: "legacy-reviewed",
+        outcome: "unknown_outcome",
+        review_status: "pending",
+        review_disposition: null,
+      });
+      expect(rows[2]?.legacy_review_json).toContain("human_verified");
     } finally {
       db.close();
     }

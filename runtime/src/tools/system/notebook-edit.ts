@@ -5,6 +5,7 @@ import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { isRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { Tool, ToolResult } from "../types.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import {
   getSessionReadSnapshot,
   hasSessionRead,
@@ -30,10 +31,25 @@ export interface NotebookEditToolConfig extends WorkspaceFileMutationTestHooks {
 }
 
 function json(value: Record<string, unknown>, isError = false): ToolResult {
+  const content = JSON.stringify(value);
   return {
-    content: JSON.stringify(value),
+    content,
     ...(isError ? { isError: true } : {}),
+    ...(isError
+      ? {
+          effectDisposition: createToolEffectDispositionEvidence({
+            disposition: "confirmed_no_effect",
+            evidenceKind: "boundary_not_crossed",
+            evidenceRef: "tool:NotebookEdit:pre-mutation",
+            evidenceMaterial: content,
+          }),
+        }
+      : {}),
   };
+}
+
+function ambiguousMutationErrorJson(value: Record<string, unknown>): ToolResult {
+  return { content: JSON.stringify(value), isError: true };
 }
 
 function parseNotebookCellIndex(cellId: string): number | undefined {
@@ -384,9 +400,8 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
           testHooks: config,
         });
       } catch (error) {
-        return json(
+        return ambiguousMutationErrorJson(
           { error: error instanceof Error ? error.message : String(error) },
-          true,
         );
       }
       if (sessionId !== undefined) {

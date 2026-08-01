@@ -76,6 +76,13 @@ import {
 import { applyModelSwitch, readSessionSelection } from "../commands/model.js";
 import { applyProviderSwitch } from "../commands/provider.js";
 import { resolveProfile } from "../config/profiles.js";
+import { resolveLiveEffectPoison } from "../budget/effect-settlement-supervisor.js";
+import {
+  resolveLiveDurableEffectReview,
+  type ResolveDurableEffectReviewOptions,
+  type ResolveDurableEffectReviewResult,
+} from "../state/effect-review.js";
+import { openStateDatabases } from "../state/sqlite-driver.js";
 
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { applyUnattendedPermissionPolicyToContext } from "../permissions/unattended-policy.js";
@@ -384,6 +391,10 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: { readonly sessionId: string },
   ): Promise<SessionTranscriptResult>;
+  resolveLiveEffectReview?(
+    agentId: string,
+    params: ResolveDurableEffectReviewOptions,
+  ): Promise<ResolveDurableEffectReviewResult>;
   addMcpServer?(
     agentId: string,
     params: AgenCBackgroundAgentMcpAddServerParams,
@@ -1695,6 +1706,52 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       if (text.length > 0) messages.push({ role: item.role, text });
     }
     return { sessionId: params.sessionId, messages };
+  }
+
+  async resolveLiveEffectReview(
+    agentId: string,
+    params: ResolveDurableEffectReviewOptions,
+  ): Promise<ResolveDurableEffectReviewResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    if (active.bootstrap.session.conversationId !== params.sessionId) {
+      throw new Error(
+        `AgenC daemon agent ${agentId} does not own session ${params.sessionId}`,
+      );
+    }
+    const driver = openStateDatabases({ cwd: active.bootstrap.workspaceRoot });
+    try {
+      const outcome = resolveLiveDurableEffectReview(driver, params, {
+        readAll: () => active.bootstrap.rolloutStore.readAll(),
+        append: (eventId, payload) =>
+          active.bootstrap.session.emit(
+            {
+              eventId,
+              id: eventId,
+              msg: { type: "effect_review_resolved", payload },
+            },
+            { durable: true },
+          ),
+        project: (event) =>
+          active.bootstrap.rolloutStore.recordEffectEvent(event),
+      });
+      if (
+        outcome.kind !== "not_found" &&
+        outcome.durable &&
+        params.resolution.workflowStatus !== "pending"
+      ) {
+        resolveLiveEffectPoison(active.bootstrap.session, {
+          callId: params.toolCallId,
+          ...(outcome.runId !== undefined ? { runId: outcome.runId } : {}),
+          ...(outcome.stepId !== undefined ? { stepId: outcome.stepId } : {}),
+        });
+      }
+      return outcome;
+    } finally {
+      driver.close();
+    }
   }
 
   // Read the global session-level cache stats tracker (lives in the

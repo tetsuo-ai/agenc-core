@@ -2,6 +2,9 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import type {
+  EffectBoundary,
+  EffectNoEffectProof,
+  EffectReviewResolution,
   RunTerminalResult,
   RunTerminalStatus,
   RunUsageTotals,
@@ -641,6 +644,14 @@ function projectEffectIntent(
     eventId: row.event_id,
     eventSequence: row.event_seq,
     intentAt: requireString(payload.recordedAt, "recordedAt"),
+    effectFormatVersion: effectFormatVersion(payload),
+    ...(optionalString(payload.minimumReaderRuntime) !== undefined
+      ? {
+          minimumReaderRuntime: optionalString(
+            payload.minimumReaderRuntime,
+          ),
+        }
+      : {}),
     projection: "canonical_replay",
   });
 }
@@ -670,10 +681,41 @@ function projectEffectResult(
   ) {
     throw invalidEvent(row, runId, "effect_result has no matching intent");
   }
+  if (
+    effectFormatVersion(payload) === 1 &&
+    category !== "idempotent" &&
+    (outcome === "failed" || outcome === "cancelled")
+  ) {
+    repository.markEffectUnknown({
+      runId,
+      stepId,
+      eventId: row.event_id,
+      eventSequence: row.event_seq,
+      reason: "legacy_ambiguous_terminal_evidence",
+      ...(payload.evidence !== undefined ? { evidence: payload.evidence } : {}),
+      observedAt: recordedAt,
+    });
+    recordInFlightToolCallUnknownOutcome(driver, {
+      sessionId: existing.sessionId,
+      agentId: runId,
+      toolCallId: callId,
+      toolName,
+      observedAt: recordedAt,
+      recoveryCategory: category,
+    });
+    return;
+  }
   repository.completeEffect({
     runId,
     stepId,
     outcome,
+    effectBoundary: effectBoundary(payload) ?? "crossed",
+    ...(payload.noEffectEvidence !== undefined
+      ? {
+          noEffectEvidence:
+            payload.noEffectEvidence as unknown as EffectNoEffectProof,
+        }
+      : {}),
     eventId: row.event_id,
     eventSequence: row.event_seq,
     ...(optionalString(payload.resultDigest) !== undefined
@@ -756,6 +798,12 @@ function projectEffectReview(
 ): void {
   const stepId = requireString(payload.stepId, "stepId");
   const callId = requireString(payload.callId, "callId");
+  if (typeof payload.resolution === "string") {
+    // Legacy arbitrary review labels are evidence only; they cannot prove a
+    // disposition or lift the mutation gate.
+    return;
+  }
+  const resolution = effectReviewResolution(payload.resolution);
   const existing = repository.getEffect(runId, stepId);
   if (
     existing === undefined ||
@@ -763,8 +811,7 @@ function projectEffectReview(
     existing.sessionId !== row.thread_id ||
     existing.outcome !== "unknown_outcome" ||
     existing.resultSequence === undefined ||
-    row.event_seq <= existing.resultSequence ||
-    row.event_id !== `effect-review:${runId}:${stepId}`
+    row.event_seq <= existing.resultSequence
   ) {
     throw invalidEvent(row, runId, "effect review has no matching intent");
   }
@@ -772,9 +819,7 @@ function projectEffectReview(
     repository.resolveEffectReview({
       runId,
       stepId,
-      reviewedAt: requireString(payload.reviewedAt, "reviewedAt"),
-      reviewedBy: requireString(payload.reviewedBy, "reviewedBy"),
-      resolution: requireString(payload.resolution, "resolution"),
+      resolution,
       eventId: row.event_id,
       evidence: {
         callId,
@@ -782,11 +827,38 @@ function projectEffectReview(
         source: "canonical_run_journal",
       },
     });
-    resolveUnknownOutcomeEffect(driver, {
-      sessionId: existing.sessionId,
-      toolCallId: callId,
-    });
+    if (resolution.workflowStatus !== "pending") {
+      resolveUnknownOutcomeEffect(driver, {
+        sessionId: existing.sessionId,
+        toolCallId: callId,
+      });
+    }
   });
+}
+
+function effectFormatVersion(payload: JsonObject): 1 | 2 {
+  if (payload.formatVersion === undefined) return 1;
+  if (payload.formatVersion === 2) return 2;
+  throw new TypeError(`unsupported effect evidence format ${String(payload.formatVersion)}`);
+}
+
+function effectBoundary(payload: JsonObject): EffectBoundary | undefined {
+  if (payload.effectBoundary === undefined) return undefined;
+  if (
+    payload.effectBoundary === "not_crossed" ||
+    payload.effectBoundary === "crossed"
+  ) {
+    return payload.effectBoundary;
+  }
+  throw new TypeError("invalid effect boundary evidence");
+}
+
+function effectReviewResolution(value: unknown): EffectReviewResolution {
+  const record = asRecord(value);
+  if (record === undefined) {
+    throw new TypeError("effect review resolution must be an object");
+  }
+  return record as unknown as EffectReviewResolution;
 }
 
 function bindSource(

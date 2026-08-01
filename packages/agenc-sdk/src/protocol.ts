@@ -279,8 +279,13 @@ export interface SessionCancelTurnParams extends JsonObject {
 
 export interface SessionResolveToolCallParams extends JsonObject {
   readonly sessionId: string;
-  /** When omitted, every pending unknown-outcome effect in the session is resolved. */
-  readonly toolCallId?: string;
+  readonly toolCallId: string;
+  readonly disposition:
+    | "confirmed_committed"
+    | "confirmed_no_effect"
+    | "remains_unknown";
+  readonly evidenceRef: string;
+  readonly evidenceSha256: string;
   readonly reviewer?: string;
 }
 

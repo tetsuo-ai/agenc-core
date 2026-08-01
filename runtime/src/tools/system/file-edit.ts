@@ -40,6 +40,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   getSessionReadSnapshot,
@@ -78,6 +79,21 @@ const READ_BEFORE_WRITE_ERROR =
 
 const SESSION_ID_MISSING_ERROR =
   "file_edit was invoked without a session id. The runtime injects this automatically; if you are calling the tool from a unit test, pass __testBypassSessionGuard:true to opt out of read-before-write enforcement.";
+
+function preMutationErrorResult(
+  message: string,
+  toolName: typeof FILE_EDIT_TOOL_NAME | typeof FILE_MULTI_EDIT_TOOL_NAME,
+): ToolResult {
+  return {
+    ...errorResult(message),
+    effectDisposition: createToolEffectDispositionEvidence({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: `tool:${toolName}:pre-mutation`,
+      evidenceMaterial: message,
+    }),
+  };
+}
 
 /**
  * Test-only opt-out of the read-before-write session guard. Production
@@ -882,7 +898,10 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         rawArgs,
       );
       if (!safe.safe) {
-        return errorResult(`Access denied: ${safe.reason}`);
+        return preMutationErrorResult(
+          `Access denied: ${safe.reason}`,
+          FILE_EDIT_TOOL_NAME,
+        );
       }
       const absoluteFilePath = safe.resolved;
 
@@ -976,10 +995,16 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       if (sessionId !== undefined) {
         recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
         if (!isAuthorizingSessionRead(recordedSnapshot)) {
-          return errorResult(READ_BEFORE_WRITE_ERROR);
+          return preMutationErrorResult(
+            READ_BEFORE_WRITE_ERROR,
+            FILE_EDIT_TOOL_NAME,
+          );
         }
       } else if (!bypassSessionGuard) {
-        return errorResult(SESSION_ID_MISSING_ERROR);
+        return preMutationErrorResult(
+          SESSION_ID_MISSING_ERROR,
+          FILE_EDIT_TOOL_NAME,
+        );
       }
 
       // Modification-time staleness check. We compare the file's
@@ -1217,7 +1242,10 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         rawArgs,
       );
       if (!safe.safe) {
-        return errorResult(`Access denied: ${safe.reason}`);
+        return preMutationErrorResult(
+          `Access denied: ${safe.reason}`,
+          FILE_MULTI_EDIT_TOOL_NAME,
+        );
       }
       const absoluteFilePath = safe.resolved;
 
@@ -1309,10 +1337,16 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       if (sessionId !== undefined) {
         recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
         if (!isAuthorizingSessionRead(recordedSnapshot)) {
-          return errorResult(READ_BEFORE_WRITE_ERROR);
+          return preMutationErrorResult(
+            READ_BEFORE_WRITE_ERROR,
+            FILE_MULTI_EDIT_TOOL_NAME,
+          );
         }
       } else if (!bypassSessionGuard) {
-        return errorResult(SESSION_ID_MISSING_ERROR);
+        return preMutationErrorResult(
+          SESSION_ID_MISSING_ERROR,
+          FILE_MULTI_EDIT_TOOL_NAME,
+        );
       }
 
       if (sessionId !== undefined) {

@@ -9,6 +9,19 @@
 
 export type JSONSchema = Record<string, unknown>;
 
+export interface ToolEffectDispositionEvidence {
+  readonly disposition:
+    | "confirmed_committed"
+    | "confirmed_no_effect"
+    | "remains_unknown";
+  readonly evidenceKind:
+    | "provider_receipt"
+    | "idempotency_lookup"
+    | "boundary_not_crossed";
+  readonly evidenceRef: string;
+  readonly evidenceSha256: string;
+}
+
 export interface ToolResult {
   content: string;
   isError?: boolean;
@@ -18,6 +31,7 @@ export interface ToolResult {
     readonly outputTokens: number;
     readonly costUsd: number;
   };
+  effectDisposition?: ToolEffectDispositionEvidence;
 }
 
 export type ToolRecoveryCategory =

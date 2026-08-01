@@ -76,6 +76,7 @@ import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
 import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { BudgetTracker } from "../conversation/token-budget.js";
+import { shutdownEffectSettlementSupervisor } from "../budget/effect-settlement-supervisor.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
 import type { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
@@ -5117,6 +5118,7 @@ export class Session {
     }
     let durableCloseError: unknown;
     try {
+      await shutdownEffectSettlementSupervisor(this, MAX_DRAIN_MS);
       let drainedOperationCount = 0;
       while (this.pendingDurableOperations.size > 0) {
         const pending = [...this.pendingDurableOperations];

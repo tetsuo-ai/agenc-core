@@ -19,7 +19,11 @@ import {
 import {
   listUnresolvedUnknownOutcomeEffects,
 } from "../state/unknown-outcome-gate.js";
-import { resolveDurableEffectReview } from "../state/effect-review.js";
+import {
+  createOperatorEffectReviewResolution,
+  resolveDurableEffectReview,
+} from "../state/effect-review.js";
+import type { EffectReviewDisposition } from "../contracts/run-contracts.js";
 
 export type AgenCStateCliCommand =
   | { readonly kind: "export"; readonly agentId: string }
@@ -28,6 +32,9 @@ export type AgenCStateCliCommand =
       readonly kind: "resolve-tool-call";
       readonly sessionId: string;
       readonly toolCallId: string;
+      readonly disposition: EffectReviewDisposition;
+      readonly evidenceRef: string;
+      readonly evidenceSha256: string;
     }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
@@ -51,21 +58,19 @@ export function formatAgenCStateCliHelpText(): string {
   return [
     "Usage: agenc state export <agent-id>",
     "       agenc state import",
-    "       agenc state resolve-tool-call <session-id> <tool-call-id>",
+    "       agenc state resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>",
     "",
     "Commands:",
     "  export <agent-id>    Print a JSON state export for one agent",
     "  import               Read a JSON state export from stdin and import it",
-    "  resolve-tool-call <session-id> <tool-call-id>",
-    "                       Review-resolve one unknown-outcome (poisoned) tool",
-    "                       call so the session's side-effecting mutation gate",
-    "                       lifts. Resolution asserts a human verified whether",
-    "                       the effect happened; it never re-runs the tool.",
+    "  resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>",
+    "                       Record a typed, evidence-bound review disposition.",
+    "                       Dispositions: confirmed_committed, confirmed_no_effect, remains_unknown.",
     "",
     "Examples:",
     "  agenc state export agent_123 > state.json",
     "  agenc state import < state.json",
-    "  agenc state resolve-tool-call session_abc call_42",
+    "  agenc state resolve-tool-call session_abc call_42 confirmed_no_effect receipt:42 <sha256>",
   ].join("\n");
 }
 
@@ -106,26 +111,56 @@ export function parseAgenCStateCliArgs(
   if (action === "resolve-tool-call") {
     const sessionId = argv[2]?.trim();
     const toolCallId = argv[3]?.trim();
+    const disposition = argv[4]?.trim();
+    const evidenceRef = argv[5]?.trim();
+    const evidenceSha256 = argv[6]?.trim();
     if (
       sessionId === undefined ||
       sessionId.length === 0 ||
       toolCallId === undefined ||
-      toolCallId.length === 0
+      toolCallId.length === 0 ||
+      disposition === undefined ||
+      evidenceRef === undefined ||
+      evidenceRef.length === 0 ||
+      evidenceSha256 === undefined
     ) {
       return {
         kind: "error",
         message:
-          "state resolve-tool-call requires <session-id> and <tool-call-id>",
+          "state resolve-tool-call requires <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>",
       };
     }
-    if (argv.length > 4) {
+    if (
+      disposition !== "confirmed_committed" &&
+      disposition !== "confirmed_no_effect" &&
+      disposition !== "remains_unknown"
+    ) {
+      return {
+        kind: "error",
+        message: "state resolve-tool-call disposition must be confirmed_committed, confirmed_no_effect, or remains_unknown",
+      };
+    }
+    if (!/^[0-9a-f]{64}$/u.test(evidenceSha256)) {
+      return {
+        kind: "error",
+        message: "state resolve-tool-call evidence-sha256 must be 64 lowercase hexadecimal characters",
+      };
+    }
+    if (argv.length > 7) {
       return {
         kind: "error",
         message:
-          "state resolve-tool-call accepts exactly <session-id> <tool-call-id>",
+          "state resolve-tool-call accepts exactly five arguments after the action",
       };
     }
-    return { kind: "resolve-tool-call", sessionId, toolCallId };
+    return {
+      kind: "resolve-tool-call",
+      sessionId,
+      toolCallId,
+      disposition,
+      evidenceRef,
+      evidenceSha256,
+    };
   }
   return {
     kind: "error",
@@ -156,7 +191,7 @@ export async function runAgenCStateCli(
 }
 
 function runStateResolveToolCall(
-  command: { readonly sessionId: string; readonly toolCallId: string },
+  command: Extract<AgenCStateCliCommand, { readonly kind: "resolve-tool-call" }>,
   io: AgenCStateCliIo,
   options: AgenCStateCliOptions,
 ): number {
@@ -165,13 +200,17 @@ function runStateResolveToolCall(
       const resolved = resolveDurableEffectReview(driver, {
         sessionId: command.sessionId,
         toolCallId: command.toolCallId,
-        reviewedAt: options.now?.() ?? new Date().toISOString(),
-        reviewedBy:
-          options.env?.AGENC_REVIEWER_ID?.trim() ||
-          options.env?.USER?.trim() ||
-          options.env?.USERNAME?.trim() ||
-          "local_operator",
-        resolution: "human_verified",
+        resolution: createOperatorEffectReviewResolution({
+          disposition: command.disposition,
+          evidenceRef: command.evidenceRef,
+          evidenceSha256: command.evidenceSha256,
+          reviewedAt: options.now?.() ?? new Date().toISOString(),
+          actorId:
+            options.env?.AGENC_REVIEWER_ID?.trim() ||
+            options.env?.USER?.trim() ||
+            options.env?.USERNAME?.trim() ||
+            "local_operator",
+        }),
       });
       if (resolved.kind === "not_found") {
         const unresolved = listUnresolvedUnknownOutcomeEffects(
@@ -193,7 +232,7 @@ function runStateResolveToolCall(
           (resolved.durable
             ? ` with canonical review event ${resolved.eventId} at sequence ${resolved.sequence}`
             : "") +
-          `; the side-effecting mutation gate lifts once no unresolved effects remain.\n`,
+          `; the non-idempotent mutation gate lifts once no unresolved effects remain.\n`,
       );
       return 0;
     });

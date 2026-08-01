@@ -295,13 +295,16 @@ describe("createPromptBridge", () => {
 
     physical.resolve({ messages: [] });
     await rejection;
-    expect(state.admission.holdUnknown).toHaveBeenCalledWith(
+    await vi.waitFor(() => {
+      expect(state.admission.acknowledgeCompletion).toHaveBeenCalledWith(
+        "prompt-reservation",
+      );
+    });
+    expect(state.admission.reconcile).toHaveBeenCalledWith(
       "prompt-reservation",
-      "tool_cancelled_after_dispatch",
+      { inputTokens: 0, outputTokens: 0, costUsd: 0 },
     );
-    expect(state.admission.acknowledgeCompletion).toHaveBeenCalledWith(
-      "prompt-reservation",
-    );
+    expect(state.admission.holdUnknown).not.toHaveBeenCalled();
   });
 
   it("aborts on timeout but awaits an abort-ignoring RPC before releasing capacity", async () => {

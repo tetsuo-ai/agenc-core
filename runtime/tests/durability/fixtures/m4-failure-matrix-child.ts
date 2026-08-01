@@ -365,6 +365,10 @@ async function createEffectProjection(paths: FixturePaths) {
           runId: payload.runId,
           stepId: payload.stepId,
           outcome: payload.outcome,
+          effectBoundary: payload.effectBoundary ?? "crossed",
+          ...(payload.noEffectEvidence !== undefined
+            ? { noEffectEvidence: payload.noEffectEvidence }
+            : {}),
           eventId: event.eventId,
           eventSequence: sequence,
           ...(payload.resultDigest !== undefined
@@ -442,7 +446,8 @@ async function crashTool(paths: FixturePaths): Promise<never> {
     callId: "call-1",
     tool: tool as never,
     args: { value: "one physical effect" },
-    invoke: async () => {
+    invoke: async ({ crossEffectBoundary }) => {
+      crossEffectBoundary();
       appendJsonDurably(paths.toolReceipt, { invocation: 1 });
       return {
         content: "ok",

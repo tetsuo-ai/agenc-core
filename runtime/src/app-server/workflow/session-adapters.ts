@@ -43,6 +43,10 @@ import { delegate } from "../../agents/delegate.js";
 import type { AgentPath } from "../../agents/registry.js";
 import type { ExecutionAdmissionKernel } from "../../budget/execution-admission-kernel.js";
 import type { AuthBackend } from "../../auth/backend.js";
+import {
+  EFFECT_EVIDENCE_FORMAT_VERSION,
+  EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
+} from "../../contracts/run-contracts.js";
 import type {
   EffectIntentEvent,
   EffectResultEvent,
@@ -380,6 +384,8 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
   appendIntent(input: Parameters<WorkflowRunJournal["appendIntent"]>[0]) {
     const callId = input.callId ?? input.stepId;
     const payload: EffectIntentEvent = {
+      formatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
+      minimumReaderRuntime: EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
       runId: this.runId,
       stepId: input.stepId,
       callId,
@@ -416,6 +422,8 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
       eventId,
       eventSequence: sequence,
       intentAt: input.intentAt,
+      effectFormatVersion: payload.formatVersion,
+      minimumReaderRuntime: payload.minimumReaderRuntime,
     });
     this.#contexts.set(input.stepId, {
       callId,
@@ -432,6 +440,8 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
   appendResult(input: Parameters<WorkflowRunJournal["appendResult"]>[0]) {
     const context = this.#stepContext(input.stepId);
     const payload: EffectResultEvent = {
+      formatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
+      minimumReaderRuntime: EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
       runId: this.runId,
       stepId: input.stepId,
       callId: context.callId,
@@ -442,6 +452,7 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
         : {}),
       intentEventSeq: context.intentEventSeq,
       outcome: input.outcome,
+      effectBoundary: "crossed",
       ...(input.resultDigest !== undefined
         ? { resultDigest: input.resultDigest }
         : {}),
@@ -460,6 +471,7 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
       runId: this.runId,
       stepId: input.stepId,
       outcome: input.outcome,
+      effectBoundary: "crossed",
       eventId,
       eventSequence: sequence,
       ...(input.resultDigest !== undefined
@@ -474,6 +486,8 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
   appendUnknown(input: Parameters<WorkflowRunJournal["appendUnknown"]>[0]) {
     const context = this.#stepContext(input.stepId);
     const payload: EffectUnknownOutcomeEvent = {
+      formatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
+      minimumReaderRuntime: EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
       runId: this.runId,
       stepId: input.stepId,
       callId: context.callId,

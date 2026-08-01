@@ -11,6 +11,7 @@ import type { FunctionCallOutputContentItem } from "./context.js";
 import type { PermissionResult } from "../permissions/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import type { PermissionDefaultMode } from "../config/schema.js";
+import type { ToolEffectDispositionEvidence } from "../contracts/run-contracts.js";
 
 /**
  * JSON Schema type alias.
@@ -98,6 +99,11 @@ export interface ToolResult {
   metadata?: Record<string, unknown>;
   /** Authoritative metered usage for this tool invocation, when charged. */
   admissionUsage?: ToolAdmissionUsage;
+  /**
+   * Durable physical-outcome evidence supplied by the operation adapter. This
+   * field is execution-only and is never copied into provider-visible content.
+   */
+  effectDisposition?: ToolEffectDispositionEvidence;
 }
 
 export interface ToolAdmissionEstimate {

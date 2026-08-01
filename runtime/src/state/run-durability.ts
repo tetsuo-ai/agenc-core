@@ -1,8 +1,16 @@
 import type {
+  EffectBoundary,
+  EffectNoEffectProof,
   EffectOutcome,
+  EffectReviewResolution,
+  EffectReviewWorkflowStatus,
   RunId,
   RunTerminalResult,
   RunUsageTotals,
+} from "../contracts/run-contracts.js";
+import {
+  EFFECT_EVIDENCE_FORMAT_VERSION,
+  EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
 } from "../contracts/run-contracts.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { stableStringify } from "../utils/stableStringify.js";
@@ -50,7 +58,7 @@ export interface DurableRunTerminalRecord extends RunTerminalResult {
   readonly eventId: string;
 }
 
-export type EffectReviewStatus = "none" | "pending" | "resolved";
+export type EffectReviewStatus = "none" | EffectReviewWorkflowStatus;
 
 export interface DurableRunEffect {
   readonly runId: RunId;
@@ -66,7 +74,11 @@ export interface DurableRunEffect {
   readonly intentEventId: string;
   readonly intentSequence: number;
   readonly intentAt: string;
+  readonly effectFormatVersion: 1 | 2;
+  readonly minimumReaderRuntime?: string;
   readonly outcome?: EffectOutcome;
+  readonly effectBoundary?: EffectBoundary;
+  readonly noEffectEvidence?: EffectNoEffectProof;
   readonly resultEventId?: string;
   readonly resultSequence?: number;
   readonly resultDigest?: string;
@@ -80,6 +92,8 @@ export interface DurableRunEffect {
   readonly reviewResolution?: string;
   readonly reviewEventId?: string;
   readonly reviewEvidence?: unknown;
+  readonly review?: EffectReviewResolution;
+  readonly legacyReview?: unknown;
 }
 
 export type RunJournalGapReason =
@@ -139,7 +153,11 @@ interface EffectRow {
   readonly intent_event_id: string;
   readonly intent_sequence: number;
   readonly intent_at: string;
+  readonly effect_format_version: 1 | 2;
+  readonly minimum_reader_runtime: string | null;
   readonly outcome: EffectOutcome | null;
+  readonly effect_boundary: EffectBoundary | null;
+  readonly no_effect_evidence_json: string | null;
   readonly result_event_id: string | null;
   readonly result_sequence: number | null;
   readonly result_digest: string | null;
@@ -147,12 +165,21 @@ interface EffectRow {
   readonly evidence_json: string | null;
   readonly unknown_reason: string | null;
   readonly completed_at: string | null;
-  readonly review_status: EffectReviewStatus;
+  readonly review_status: Exclude<EffectReviewStatus, "none"> | null;
   readonly reviewed_at: string | null;
   readonly reviewed_by: string | null;
   readonly review_resolution: string | null;
   readonly review_event_id: string | null;
   readonly review_evidence_json: string | null;
+  readonly review_resolution_version: number | null;
+  readonly review_disposition: EffectReviewResolution["disposition"] | null;
+  readonly review_actor_kind: EffectReviewResolution["actorKind"] | null;
+  readonly review_actor_id: string | null;
+  readonly review_evidence_kind: EffectReviewResolution["evidenceKind"] | null;
+  readonly review_evidence_ref: string | null;
+  readonly review_evidence_sha256: string | null;
+  readonly review_domain_action: EffectReviewResolution["domainAction"] | null;
+  readonly legacy_review_json: string | null;
 }
 
 interface JournalBindingRow {
@@ -174,10 +201,13 @@ interface JournalBindingRow {
 const EFFECT_COLUMNS = `
   run_id, step_id, epoch, child_run_id, session_id, call_id, tool_name,
   recovery_category, idempotency_key, intent_digest, intent_event_id,
-  intent_sequence, intent_at, outcome, result_event_id, result_sequence,
-  result_digest, result_json, evidence_json, unknown_reason, completed_at,
+  intent_sequence, intent_at, effect_format_version, minimum_reader_runtime,
+  outcome, effect_boundary, no_effect_evidence_json, result_event_id,
+  result_sequence, result_digest, result_json, evidence_json, unknown_reason, completed_at,
   review_status, reviewed_at, reviewed_by, review_resolution, review_event_id,
-  review_evidence_json`;
+  review_evidence_json, review_resolution_version, review_disposition,
+  review_actor_kind, review_actor_id, review_evidence_kind, review_evidence_ref,
+  review_evidence_sha256, review_domain_action, legacy_review_json`;
 
 const JOURNAL_BINDING_COLUMNS = `
   run_id, epoch, child_run_id, session_id, source_path, active,
@@ -456,6 +486,9 @@ export class StateRunDurabilityRepository {
     readonly eventId: string;
     readonly eventSequence: number;
     readonly intentAt: string;
+    /** Canonical journal format. Omitted only by live v2 writers. */
+    readonly effectFormatVersion?: 1 | 2;
+    readonly minimumReaderRuntime?: string;
     /** Internal rebuild path for already-terminal canonical history. */
     readonly projection?: "canonical_replay";
   }): DurableWriteOutcome<DurableRunEffect> {
@@ -484,7 +517,8 @@ export class StateRunDurabilityRepository {
         );
       }
       if (
-        params.recoveryCategory === "side-effecting" &&
+        (params.recoveryCategory === "side-effecting" ||
+          params.recoveryCategory === "interactive") &&
         params.projection !== "canonical_replay"
       ) {
         this.assertDependentMutationAllowed(params.runId);
@@ -504,13 +538,29 @@ export class StateRunDurabilityRepository {
         );
       }
       this.assertSequenceUnclaimed(params.runId, params.eventSequence);
+      const effectFormatVersion =
+        params.effectFormatVersion ?? EFFECT_EVIDENCE_FORMAT_VERSION;
+      const minimumReaderRuntime =
+        effectFormatVersion === EFFECT_EVIDENCE_FORMAT_VERSION
+          ? (params.minimumReaderRuntime ??
+            EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME)
+          : undefined;
+      if (
+        effectFormatVersion === 1 &&
+        params.minimumReaderRuntime !== undefined
+      ) {
+        throw new TypeError(
+          "legacy effect evidence cannot declare a minimum reader runtime",
+        );
+      }
       this.driver
         .prepareState(
           `INSERT INTO run_effects (
              run_id, step_id, epoch, child_run_id, session_id, call_id, tool_name,
              recovery_category, idempotency_key, intent_digest,
-             intent_event_id, intent_sequence, intent_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             intent_event_id, intent_sequence, intent_at, effect_format_version,
+             minimum_reader_runtime
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           required(params.runId, "runId"),
@@ -526,6 +576,8 @@ export class StateRunDurabilityRepository {
           required(params.eventId, "eventId"),
           positiveInteger(params.eventSequence, "eventSequence"),
           required(params.intentAt, "intentAt"),
+          effectFormatVersion,
+          minimumReaderRuntime ?? null,
         );
       return {
         applied: true,
@@ -538,6 +590,8 @@ export class StateRunDurabilityRepository {
     readonly runId: RunId;
     readonly stepId: string;
     readonly outcome: Exclude<EffectOutcome, "unknown_outcome">;
+    readonly effectBoundary: EffectBoundary;
+    readonly noEffectEvidence?: EffectNoEffectProof;
     readonly eventId: string;
     readonly eventSequence: number;
     readonly resultDigest?: string;
@@ -589,10 +643,70 @@ export class StateRunDurabilityRepository {
         `SELECT ${EFFECT_COLUMNS}
          FROM run_effects
          WHERE session_id = ? AND call_id = ?
+         ORDER BY CASE WHEN review_status = 'pending' THEN 0 ELSE 1 END,
+                  intent_sequence DESC
          LIMIT 1`,
       )
       .get(sessionId, callId);
     return row === undefined ? undefined : effectFromRow(row);
+  }
+
+  listEffectsBySessionCall(
+    sessionId: string,
+    callId: string,
+  ): readonly DurableRunEffect[] {
+    return this.driver
+      .prepareState<[string, string], EffectRow>(
+        `SELECT ${EFFECT_COLUMNS}
+         FROM run_effects
+         WHERE session_id = ? AND call_id = ?
+         ORDER BY intent_sequence ASC, step_id ASC`,
+      )
+      .all(sessionId, callId)
+      .map(effectFromRow);
+  }
+
+  assertEffectAttemptAllowed(params: {
+    readonly sessionId: string;
+    readonly callId: string;
+    readonly recoveryCategory: ToolRecoveryCategory;
+    readonly idempotencyKey?: string;
+  }): void {
+    const prior = this.listEffectsBySessionCall(params.sessionId, params.callId);
+    for (const effect of prior) {
+      if (params.recoveryCategory === "idempotent") {
+        if (
+          params.idempotencyKey === undefined ||
+          effect.idempotencyKey !== params.idempotencyKey
+        ) {
+          throw conflict(
+            "RUN_EFFECT_OUTCOME_CONFLICT",
+            `tool call ${params.callId} cannot change its durable idempotency key`,
+          );
+        }
+        if (effect.outcome === "failed" || effect.outcome === "cancelled") {
+          continue;
+        }
+        throw conflict(
+          "RUN_EFFECT_OUTCOME_CONFLICT",
+          `tool call ${params.callId} retains its original idempotent attempt; rendezvous or explicit same-key recovery is required`,
+        );
+      }
+      if (effect.noEffectEvidence !== undefined) continue;
+      if (
+        effect.review?.disposition === "confirmed_no_effect" &&
+        effect.review.domainAction === "retry_new_attempt" &&
+        effect.review.workflowStatus === "resolved"
+      ) {
+        continue;
+      }
+      throw conflict(
+        effect.outcome === "unknown_outcome" || effect.outcome === undefined
+          ? "RUN_EFFECT_REVIEW_REQUIRED"
+          : "RUN_EFFECT_OUTCOME_CONFLICT",
+        `tool call ${params.callId} has no authoritative no-effect proof and cannot be dispatched again`,
+      );
+    }
   }
 
   /**
@@ -650,9 +764,7 @@ export class StateRunDurabilityRepository {
   resolveEffectReview(params: {
     readonly runId: RunId;
     readonly stepId: string;
-    readonly reviewedAt: string;
-    readonly reviewedBy: string;
-    readonly resolution: string;
+    readonly resolution: EffectReviewResolution;
     readonly eventId: string;
     readonly evidence?: unknown;
   }): DurableWriteOutcome<DurableRunEffect> {
@@ -664,24 +776,36 @@ export class StateRunDurabilityRepository {
           `run ${params.runId} step ${params.stepId} has no durable effect`,
         );
       }
+      validateEffectReviewResolution(params.resolution);
       const reviewContent = stableStringify({
-        reviewedAt: params.reviewedAt,
-        reviewedBy: params.reviewedBy,
         resolution: params.resolution,
         eventId: params.eventId,
         evidence: params.evidence ?? null,
       });
-      if (existing.reviewStatus === "resolved") {
+      if (existing.review !== undefined) {
         const existingContent = stableStringify({
-          reviewedAt: existing.reviewedAt,
-          reviewedBy: existing.reviewedBy,
-          resolution: existing.reviewResolution,
+          resolution: existing.review,
           eventId: existing.reviewEventId,
           evidence: existing.reviewEvidence ?? null,
         });
         if (reviewContent === existingContent) {
           return { applied: false, value: existing };
         }
+        if (existing.reviewStatus === "pending" && params.resolution.workflowStatus !== "pending") {
+          // A later authoritative/operator resolution may close a prior
+          // remains-unknown system observation. The canonical journal retains
+          // both events; this row is only the latest rebuildable projection.
+        } else {
+          throw conflict(
+            "RUN_EFFECT_REVIEW_CONFLICT",
+            `run ${params.runId} step ${params.stepId} already has a different review resolution`,
+          );
+        }
+      }
+      if (
+        existing.reviewStatus === "resolved" ||
+        existing.reviewStatus === "abandoned"
+      ) {
         throw conflict(
           "RUN_EFFECT_REVIEW_CONFLICT",
           `run ${params.runId} step ${params.stepId} already has a different review resolution`,
@@ -699,17 +823,30 @@ export class StateRunDurabilityRepository {
       this.driver
         .prepareState(
           `UPDATE run_effects
-           SET review_status = 'resolved', reviewed_at = ?, reviewed_by = ?,
+           SET review_status = ?, reviewed_at = ?, reviewed_by = ?,
                review_resolution = ?, review_event_id = ?,
-               review_evidence_json = ?
+               review_evidence_json = ?, review_resolution_version = ?,
+               review_disposition = ?, review_actor_kind = ?,
+               review_actor_id = ?, review_evidence_kind = ?,
+               review_evidence_ref = ?, review_evidence_sha256 = ?,
+               review_domain_action = ?
            WHERE run_id = ? AND step_id = ? AND review_status = 'pending'`,
         )
         .run(
-          required(params.reviewedAt, "reviewedAt"),
-          required(params.reviewedBy, "reviewedBy"),
-          required(params.resolution, "resolution"),
+          params.resolution.workflowStatus,
+          required(params.resolution.reviewedAt, "reviewedAt"),
+          required(params.resolution.actorId, "actorId"),
+          params.resolution.disposition,
           required(params.eventId, "eventId"),
           serializeOptionalJson(params.evidence),
+          params.resolution.version,
+          params.resolution.disposition,
+          params.resolution.actorKind,
+          params.resolution.actorId,
+          params.resolution.evidenceKind,
+          params.resolution.evidenceRef,
+          params.resolution.evidenceSha256,
+          params.resolution.domainAction ?? null,
           params.runId,
           params.stepId,
         );
@@ -1023,6 +1160,8 @@ export class StateRunDurabilityRepository {
     readonly resultDigest?: string;
     readonly result?: unknown;
     readonly evidence?: unknown;
+    readonly effectBoundary?: EffectBoundary;
+    readonly noEffectEvidence?: EffectNoEffectProof;
     readonly completedAt: string;
     readonly unknownReason?: string;
   }): DurableWriteOutcome<DurableRunEffect> {
@@ -1060,17 +1199,31 @@ export class StateRunDurabilityRepository {
       } else if (params.unknownReason !== undefined) {
         throw new TypeError("unknownReason requires unknown_outcome");
       }
+      if (params.outcome !== "unknown_outcome" && params.effectBoundary === undefined) {
+        throw new TypeError("effectBoundary is required for a terminal effect result");
+      }
+      if (
+        params.noEffectEvidence !== undefined &&
+        params.outcome !== "failed" &&
+        params.outcome !== "cancelled"
+      ) {
+        throw new TypeError("noEffectEvidence requires failed or cancelled outcome");
+      }
+      validateNoEffectEvidence(params.noEffectEvidence);
       this.assertSequenceUnclaimed(params.runId, params.eventSequence);
       this.driver
         .prepareState(
           `UPDATE run_effects
-           SET outcome = ?, result_event_id = ?, result_sequence = ?,
+           SET outcome = ?, effect_boundary = ?, no_effect_evidence_json = ?,
+               result_event_id = ?, result_sequence = ?,
                result_digest = ?, result_json = ?, evidence_json = ?,
                unknown_reason = ?, completed_at = ?, review_status = ?
            WHERE run_id = ? AND step_id = ? AND outcome IS NULL`,
         )
         .run(
           params.outcome,
+          params.effectBoundary ?? null,
+          serializeOptionalJson(params.noEffectEvidence),
           required(params.eventId, "eventId"),
           positiveInteger(params.eventSequence, "eventSequence"),
           optionalRequired(params.resultDigest, "resultDigest"),
@@ -1078,7 +1231,7 @@ export class StateRunDurabilityRepository {
           serializeOptionalJson(params.evidence),
           optionalRequired(params.unknownReason, "unknownReason"),
           required(params.completedAt, "completedAt"),
-          params.outcome === "unknown_outcome" ? "pending" : "none",
+          params.outcome === "unknown_outcome" ? "pending" : null,
           params.runId,
           params.stepId,
         );
@@ -1196,7 +1349,21 @@ function effectFromRow(row: EffectRow): DurableRunEffect {
     intentEventId: row.intent_event_id,
     intentSequence: row.intent_sequence,
     intentAt: row.intent_at,
+    effectFormatVersion: row.effect_format_version,
+    ...(row.minimum_reader_runtime !== null
+      ? { minimumReaderRuntime: row.minimum_reader_runtime }
+      : {}),
     ...(row.outcome !== null ? { outcome: row.outcome } : {}),
+    ...(row.effect_boundary !== null
+      ? { effectBoundary: row.effect_boundary }
+      : {}),
+    ...(row.no_effect_evidence_json !== null
+      ? {
+          noEffectEvidence: parseJson(
+            row.no_effect_evidence_json,
+          ) as EffectNoEffectProof,
+        }
+      : {}),
     ...(row.result_event_id !== null
       ? { resultEventId: row.result_event_id }
       : {}),
@@ -1212,7 +1379,7 @@ function effectFromRow(row: EffectRow): DurableRunEffect {
       ? { unknownReason: row.unknown_reason }
       : {}),
     ...(row.completed_at !== null ? { completedAt: row.completed_at } : {}),
-    reviewStatus: row.review_status,
+    reviewStatus: row.review_status ?? "none",
     ...(row.reviewed_at !== null ? { reviewedAt: row.reviewed_at } : {}),
     ...(row.reviewed_by !== null ? { reviewedBy: row.reviewed_by } : {}),
     ...(row.review_resolution !== null
@@ -1223,6 +1390,36 @@ function effectFromRow(row: EffectRow): DurableRunEffect {
       : {}),
     ...(row.review_evidence_json !== null
       ? { reviewEvidence: parseJson(row.review_evidence_json) }
+      : {}),
+    ...(row.review_resolution_version === 1 &&
+    row.review_disposition !== null &&
+    row.review_actor_kind !== null &&
+    row.review_actor_id !== null &&
+    row.review_evidence_kind !== null &&
+    row.review_evidence_ref !== null &&
+    row.review_evidence_sha256 !== null &&
+    row.review_status !== null &&
+    row.reviewed_at !== null
+      ? {
+          review: {
+            version: 1,
+            kind: "effect_review_resolution",
+            disposition: row.review_disposition,
+            actorKind: row.review_actor_kind,
+            actorId: row.review_actor_id,
+            evidenceKind: row.review_evidence_kind,
+            evidenceRef: row.review_evidence_ref,
+            evidenceSha256: row.review_evidence_sha256,
+            reviewedAt: row.reviewed_at,
+            workflowStatus: row.review_status,
+            ...(row.review_domain_action !== null
+              ? { domainAction: row.review_domain_action }
+              : {}),
+          } satisfies EffectReviewResolution,
+        }
+      : {}),
+    ...(row.legacy_review_json !== null
+      ? { legacyReview: parseJson(row.legacy_review_json) }
       : {}),
   };
 }
@@ -1270,8 +1467,12 @@ function effectIntentContent(
         readonly eventId: string;
         readonly eventSequence: number;
         readonly intentAt: string;
+        readonly effectFormatVersion?: 1 | 2;
+        readonly minimumReaderRuntime?: string;
       },
 ): string {
+  const formatVersion =
+    effect.effectFormatVersion ?? EFFECT_EVIDENCE_FORMAT_VERSION;
   return stableStringify({
     runId: effect.runId,
     epoch: effect.epoch,
@@ -1287,6 +1488,12 @@ function effectIntentContent(
     eventSequence:
       "intentSequence" in effect ? effect.intentSequence : effect.eventSequence,
     intentAt: effect.intentAt,
+    effectFormatVersion: formatVersion,
+    minimumReaderRuntime:
+      effect.minimumReaderRuntime ??
+      (formatVersion === EFFECT_EVIDENCE_FORMAT_VERSION
+        ? EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME
+        : null),
   });
 }
 
@@ -1300,6 +1507,8 @@ function effectOutcomeContent(
         readonly resultDigest?: string;
         readonly result?: unknown;
         readonly evidence?: unknown;
+        readonly effectBoundary?: EffectBoundary;
+        readonly noEffectEvidence?: EffectNoEffectProof;
         readonly completedAt: string;
         readonly unknownReason?: string;
       },
@@ -1312,9 +1521,83 @@ function effectOutcomeContent(
     resultDigest: effect.resultDigest ?? null,
     result: effect.result ?? null,
     evidence: effect.evidence ?? null,
+    effectBoundary: effect.effectBoundary ?? null,
+    noEffectEvidence: effect.noEffectEvidence ?? null,
     completedAt: effect.completedAt,
     unknownReason: effect.unknownReason ?? null,
   });
+}
+
+function validateNoEffectEvidence(
+  proof: EffectNoEffectProof | undefined,
+): void {
+  if (proof === undefined) return;
+  if (
+    proof.version !== 1 ||
+    proof.kind !== "effect_no_effect_proof" ||
+    (proof.evidenceKind !== "provider_receipt" &&
+      proof.evidenceKind !== "idempotency_lookup" &&
+      proof.evidenceKind !== "boundary_not_crossed")
+  ) {
+    throw new TypeError("no-effect evidence is invalid");
+  }
+  required(proof.evidenceRef, "noEffectEvidence.evidenceRef");
+  required(proof.observedAt, "noEffectEvidence.observedAt");
+  if (!/^[0-9a-f]{64}$/u.test(proof.evidenceSha256)) {
+    throw new TypeError("no-effect evidence digest must be lowercase sha256");
+  }
+}
+
+function validateEffectReviewResolution(
+  resolution: EffectReviewResolution,
+): void {
+  if (resolution.version !== 1 || resolution.kind !== "effect_review_resolution") {
+    throw new TypeError("effect review resolution version/kind is invalid");
+  }
+  required(resolution.actorId, "review.actorId");
+  required(resolution.evidenceRef, "review.evidenceRef");
+  required(resolution.reviewedAt, "review.reviewedAt");
+  if (!/^[0-9a-f]{64}$/u.test(resolution.evidenceSha256)) {
+    throw new TypeError("review evidence digest must be lowercase sha256");
+  }
+  if (
+    resolution.actorKind === "system_settlement" &&
+    resolution.evidenceKind === "operator_evidence"
+  ) {
+    throw new TypeError("system settlement cannot assert operator evidence");
+  }
+  if (resolution.workflowStatus === "pending") {
+    if (
+      resolution.disposition !== "remains_unknown" ||
+      resolution.domainAction !== undefined
+    ) {
+      throw new TypeError(
+        "pending effect review must remain unknown without a domain action",
+      );
+    }
+    return;
+  }
+  const isCommittedResolution =
+    resolution.workflowStatus === "resolved" &&
+    resolution.disposition === "confirmed_committed" &&
+    resolution.domainAction === "mark_completed";
+  const isNoEffectResolution =
+    resolution.workflowStatus === "resolved" &&
+    resolution.disposition === "confirmed_no_effect" &&
+    resolution.domainAction === "retry_new_attempt";
+  const isAbandonedResolution =
+    resolution.workflowStatus === "abandoned" &&
+    resolution.disposition === "remains_unknown" &&
+    resolution.domainAction === "abandon_item";
+  if (
+    !isCommittedResolution &&
+    !isNoEffectResolution &&
+    !isAbandonedResolution
+  ) {
+    throw new TypeError(
+      "terminal effect review disposition, workflow status, and domain action disagree",
+    );
+  }
 }
 
 function terminalContent(result: RunTerminalResult): string {

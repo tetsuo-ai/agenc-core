@@ -96,6 +96,7 @@ import {
   defaultAvailableApprovalDecisions,
 } from "../sandbox/escalation/approvals.js";
 import { asRecord } from "../utils/record.js";
+import { readPendingPhysicalSettlement } from "./physical-settlement.js";
 
 export { requestApproval };
 export type {
@@ -280,6 +281,25 @@ export function defaultToolRetryPolicy(err: unknown): RetryDecision {
     return { kind: "retry", reason: "transient error", delayMs: 500 };
   }
   return { kind: "bubble" };
+}
+
+/**
+ * Retry only when the operation contract proves replay safe. Caller-stop
+ * errors always retain their original physical settlement observer, so a
+ * second physical dispatch must never race that observer.
+ */
+export function retryPolicyForTool(
+  tool: Tool,
+  error: unknown,
+): RetryDecision {
+  const decision = defaultToolRetryPolicy(error);
+  if (decision.kind !== "retry") return decision;
+  if (readPendingPhysicalSettlement(error) !== undefined) {
+    return { kind: "bubble" };
+  }
+  return (tool.recoveryCategory ?? "side-effecting") === "idempotent"
+    ? decision
+    : { kind: "bubble" };
 }
 
 /** Back-compat wrapper (old signature took no args, always bubbled). */
@@ -787,7 +807,7 @@ export async function orchestrateToolCall<T>(
             ? { additionalPermissions }
             : {}),
         }),
-      onFailure: defaultToolRetryPolicy,
+      onFailure: (error) => retryPolicyForTool(opts.tool, error),
       ...(opts.maxAttempts !== undefined ? { maxAttempts: opts.maxAttempts } : {}),
       ...(opts.sleep !== undefined ? { sleep: opts.sleep } : {}),
     });

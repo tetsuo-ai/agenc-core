@@ -26,6 +26,7 @@
  */
 
 import path from "node:path";
+import { markEffectBoundaryNotCrossed } from "../tools/effect-boundary.js";
 
 // ---------------------------------------------------------------------
 // Leaf types
@@ -312,6 +313,9 @@ export class SandboxDeniedError extends Error {
     this.denial = detail.denial;
     this.target = detail.target;
     this.policy = detail.policy;
+    markEffectBoundaryNotCrossed(this, {
+      evidenceRef: `sandbox_policy_pre_dispatch:${detail.denial}`,
+    });
   }
 }
 

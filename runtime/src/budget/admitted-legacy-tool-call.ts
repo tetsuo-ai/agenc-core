@@ -60,6 +60,7 @@ export async function runAdmittedSessionBoundToolCall<T>(
     args: params.args,
     ...(params.signal !== undefined ? { signal: params.signal } : {}),
     invoke: async (context) => {
+      context.crossEffectBoundary();
       result = await params.invoke(context);
       return params.toDispatchResult(result);
     },
@@ -89,6 +90,7 @@ export async function runAdmittedLegacyToolCall<T>(
     return params.invoke({
       signal: params.context.abortController.signal,
       abortController: params.context.abortController,
+      crossEffectBoundary: () => {},
     });
   }
 

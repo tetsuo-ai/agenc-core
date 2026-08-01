@@ -496,6 +496,9 @@ function readWorkflowEffects(
     intentEventId: row.intent_event_id,
     intentSequence: row.intent_sequence,
     intentAt: row.intent_at,
+    // The inspection reader supports databases created before evidence-v2;
+    // rows returned by this legacy projection therefore carry format v1.
+    effectFormatVersion: 1,
     ...(row.outcome !== null ? { outcome: row.outcome as EffectOutcome } : {}),
     ...(row.result_sequence !== null
       ? { resultSequence: row.result_sequence }

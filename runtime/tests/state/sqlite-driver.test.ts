@@ -16,6 +16,7 @@ import {
   resolveStateDatabasePaths,
   STATE_PRE_V15_BACKUP_FILENAME,
   STATE_PRE_V12_BACKUP_FILENAME,
+  STATE_PRE_V17_BACKUP_FILENAME,
 } from "./sqlite-driver.js";
 import { STATE_DB_MIGRATIONS } from "./migrations/index.js";
 
@@ -199,7 +200,7 @@ describe("openStateDatabases", () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
           .get()?.version,
-      ).toBe(16);
+      ).toBe(17);
     } finally {
       driver.close();
     }
@@ -417,6 +418,56 @@ describe("openStateDatabases", () => {
       ).toEqual({ objective: "preserve me" });
     } finally {
       restored.close();
+    }
+  });
+
+  it("creates a restorable pre-v17 backup before the effect evidence cutover", () => {
+    const paths = resolveStateDatabasePaths({ cwd });
+    mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
+    const v16 = new Database(paths.stateDbPath);
+    try {
+      applyMigrations(
+        v16,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version < 17),
+      );
+      v16.prepare(
+        `INSERT INTO run_lifecycle_epochs (run_id, epoch, opened_at)
+         VALUES ('pre-v17-run', 1, '2026-07-18T00:00:00.000Z')`,
+      ).run();
+    } finally {
+      v16.close();
+    }
+
+    const upgraded = openStateDatabases({ cwd });
+    upgraded.close();
+
+    const backupPath = join(
+      paths.projectDir,
+      STATE_PRE_V17_BACKUP_FILENAME,
+    );
+    expect(existsSync(backupPath)).toBe(true);
+    const backup = new Database(backupPath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      expect(
+        backup
+          .prepare("SELECT MAX(version) AS version FROM schema_migrations")
+          .get(),
+      ).toEqual({ version: 16 });
+      expect(
+        backup
+          .prepare(
+            "SELECT run_id FROM run_lifecycle_epochs WHERE run_id = 'pre-v17-run'",
+          )
+          .get(),
+      ).toEqual({ run_id: "pre-v17-run" });
+      expect(backup.prepare("PRAGMA integrity_check").get()).toEqual({
+        integrity_check: "ok",
+      });
+    } finally {
+      backup.close();
     }
   });
 });

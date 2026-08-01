@@ -9,7 +9,10 @@
  * decoupled.
  */
 
-import type { Tool } from "./tools-types.js";
+import type {
+  Tool,
+  ToolEffectDispositionEvidence,
+} from "./tools-types.js";
 
 // Permissive LLMTool / LLMToolCall shapes — the agent code never inspects
 // these fields, it just forwards them to the parent dispatch().
@@ -27,6 +30,7 @@ export interface ToolDispatchResult {
     readonly outputTokens: number;
     readonly costUsd: number;
   };
+  readonly effectDisposition?: ToolEffectDispositionEvidence;
 }
 
 export interface ToolRegistry {

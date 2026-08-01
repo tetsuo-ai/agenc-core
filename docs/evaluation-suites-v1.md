@@ -181,7 +181,7 @@ counts must match the actual loss (capability buffers are a follow-up) — and
 uncertain effect: the STATE LAYER refuses to record a new side-effecting
 mutation for a session holding an unresolved `poisoned` effect — a typed
 error until explicit review via
-`agenc state resolve-tool-call <session-id> <tool-call-id>` — and
+`agenc state resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>` — and
 review-locks poisoned rows against status/category rewrites. The running
 daemon today only FLAGS violations (its snapshot observer records
 already-dispatched calls); live pre-dispatch refusal is the M3 admission

@@ -169,6 +169,101 @@ export const EFFECT_OUTCOMES = [
 ] as const;
 export type EffectOutcome = (typeof EFFECT_OUTCOMES)[number];
 
+/**
+ * Canonical effect evidence written by the A1 caller/admission/effect cutover.
+ * Version 1 rows remain readable only as legacy evidence and are never used as
+ * proof that a possibly dispatched effect is retryable.
+ */
+export const EFFECT_EVIDENCE_FORMAT_VERSION = 2 as const;
+export const EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME = "0.14.0" as const;
+
+export const EFFECT_BOUNDARIES = ["not_crossed", "crossed"] as const;
+export type EffectBoundary = (typeof EFFECT_BOUNDARIES)[number];
+
+export const EFFECT_REVIEW_DISPOSITIONS = [
+  "confirmed_committed",
+  "confirmed_no_effect",
+  "remains_unknown",
+] as const;
+export type EffectReviewDisposition =
+  (typeof EFFECT_REVIEW_DISPOSITIONS)[number];
+
+export const EFFECT_REVIEW_ACTOR_KINDS = [
+  "system_settlement",
+  "operator",
+] as const;
+export type EffectReviewActorKind =
+  (typeof EFFECT_REVIEW_ACTOR_KINDS)[number];
+
+export const EFFECT_REVIEW_EVIDENCE_KINDS = [
+  "provider_receipt",
+  "idempotency_lookup",
+  "boundary_not_crossed",
+  "operator_evidence",
+] as const;
+export type EffectReviewEvidenceKind =
+  (typeof EFFECT_REVIEW_EVIDENCE_KINDS)[number];
+
+export const EFFECT_REVIEW_WORKFLOW_STATUSES = [
+  "pending",
+  "resolved",
+  "abandoned",
+] as const;
+export type EffectReviewWorkflowStatus =
+  (typeof EFFECT_REVIEW_WORKFLOW_STATUSES)[number];
+
+export const EFFECT_REVIEW_DOMAIN_ACTIONS = [
+  "mark_completed",
+  "retry_new_attempt",
+  "abandon_item",
+] as const;
+export type EffectReviewDomainAction =
+  (typeof EFFECT_REVIEW_DOMAIN_ACTIONS)[number];
+
+export interface EffectNoEffectProof {
+  readonly version: 1;
+  readonly kind: "effect_no_effect_proof";
+  readonly evidenceKind:
+    | "provider_receipt"
+    | "idempotency_lookup"
+    | "boundary_not_crossed";
+  readonly evidenceRef: string;
+  readonly evidenceSha256: string;
+  readonly observedAt: string;
+}
+
+/**
+ * Typed disposition appended after an immutable unknown-outcome record. A
+ * pending disposition deliberately leaves the mutation/retry gate closed.
+ */
+export interface EffectReviewResolution {
+  readonly version: 1;
+  readonly kind: "effect_review_resolution";
+  readonly disposition: EffectReviewDisposition;
+  readonly actorKind: EffectReviewActorKind;
+  readonly actorId: string;
+  readonly evidenceKind: EffectReviewEvidenceKind;
+  readonly evidenceRef: string;
+  readonly evidenceSha256: string;
+  readonly reviewedAt: string;
+  readonly workflowStatus: EffectReviewWorkflowStatus;
+  readonly domainAction?: EffectReviewDomainAction;
+}
+
+/**
+ * Adapter-supplied authoritative evidence. It is kept out of provider-visible
+ * tool content and may be used only by the durable admitted-call boundary.
+ */
+export interface ToolEffectDispositionEvidence {
+  readonly disposition: EffectReviewDisposition;
+  readonly evidenceKind: Exclude<
+    EffectReviewEvidenceKind,
+    "operator_evidence"
+  >;
+  readonly evidenceRef: string;
+  readonly evidenceSha256: string;
+}
+
 export interface EffectRecord {
   readonly step: RunStepIdentity;
   readonly toolName: string;

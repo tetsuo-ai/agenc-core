@@ -471,26 +471,32 @@ agenc permissions approve --session session_123 call_456
 ```text
 agenc state export <agent-id>
 agenc state import
-agenc state resolve-tool-call <session-id> <tool-call-id>
+agenc state resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>
 ```
 
 | Command | Meaning |
 | --- | --- |
 | `export <agent-id>` | Print a JSON state export for one agent |
 | `import` | Read a JSON state export from stdin and import it |
-| `resolve-tool-call <session-id> <tool-call-id>` | Record an operator review for one unresolved `unknown_outcome` tool call and lift the session's side-effecting mutation gate once no unresolved effects remain |
+| `resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>` | Record a typed, evidence-bound operator disposition for one unresolved `unknown_outcome` tool call |
 
 ```bash
 agenc state export agent_123 > state.json
 agenc state import < state.json
 AGENC_REVIEWER_ID=operator_7 \
-  agenc state resolve-tool-call session_abc call_42
+  agenc state resolve-tool-call session_abc call_42 \
+    confirmed_no_effect operator-report:INC-42 <64-character-sha256>
 ```
 
 Run `resolve-tool-call` from the affected session's project directory after
 stopping the live session. For an M4 effect, it appends and fsyncs a canonical
 `effect_review_resolved` event before advancing the SQLite review projection;
-it never reruns the tool or rewrites `unknown_outcome` as success. Reviewer
+it never reruns the tool or rewrites `unknown_outcome` as success. Valid
+dispositions are `confirmed_committed`, `confirmed_no_effect`, and
+`remains_unknown`; the last explicitly abandons the blocked domain item while
+preserving the uncertain physical outcome. The evidence reference identifies
+an operator-controlled receipt/report and the digest binds its exact bytes.
+Reviewer
 identity comes from `AGENC_REVIEWER_ID`, then `USER` / `USERNAME`, with
 `local_operator` as the final fallback. If the requested call is not found,
 the error lists any unresolved calls known for that session.

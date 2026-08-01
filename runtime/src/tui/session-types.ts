@@ -128,7 +128,13 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   emitPhaseEvent?(event: PhaseEvent): void;
   clearDaemonSession?(): Promise<void>;
   resolveDaemonToolCall?(params: {
-    readonly toolCallId?: string;
+    readonly toolCallId: string;
+    readonly disposition:
+      | "confirmed_committed"
+      | "confirmed_no_effect"
+      | "remains_unknown";
+    readonly evidenceRef: string;
+    readonly evidenceSha256: string;
     readonly reviewer?: string;
   }): Promise<{
     readonly sessionId: string;

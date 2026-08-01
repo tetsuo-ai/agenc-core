@@ -158,6 +158,7 @@ import {
   type TransactionGuardContext,
 } from "../transaction-guard/index.js";
 import type { TransactionGuardConfig } from "../config/schema.js";
+import { attachPendingPhysicalSettlement } from "./physical-settlement.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -290,6 +291,10 @@ const PREVENT_CONTINUATION_OUTPUTS = new WeakSet<ToolOutput>();
 const ADMISSION_USAGE_OUTPUTS = new WeakMap<
   ToolOutput,
   NonNullable<ToolDispatchResult["admissionUsage"]>
+>();
+const EFFECT_DISPOSITIONS = new WeakMap<
+  ToolOutput,
+  NonNullable<ToolDispatchResult["effectDisposition"]>
 >();
 
 /** Appended marker when a result is truncated. */
@@ -569,12 +574,14 @@ async function offloadOrCapToolResult(args: {
 
 export class ToolTimeoutError extends Error {
   readonly reason = "timeout" as const;
+  readonly callerStoppedAt: string;
   constructor(
     readonly toolName: string,
     readonly timeoutMs: number,
   ) {
     super(`tool ${toolName} exceeded ${timeoutMs}ms timeout`);
     this.name = "ToolTimeoutError";
+    this.callerStoppedAt = new Date().toISOString();
   }
 }
 
@@ -627,11 +634,17 @@ export async function withTimeoutAndAbort<T>(
     throw makeAbortError(opts.signal.reason);
   }
 
+  let physical: Promise<T>;
+  try {
+    physical = fn();
+  } catch (error) {
+    physical = Promise.reject(error);
+  }
+  if (opts.timeoutMs === null && opts.signal === undefined) return physical;
+
   let timer: ReturnType<typeof setTimeout> | null = null;
   let onAbort: (() => void) | null = null;
-  let timedOut = false;
-  let callerAborted = false;
-  let callerAbortReason: unknown;
+  let callerStopped = false;
 
   const cleanup = () => {
     if (timer) {
@@ -644,57 +657,50 @@ export async function withTimeoutAndAbort<T>(
     }
   };
   const timeoutMs = opts.timeoutMs;
-  if (opts.signal) {
-    onAbort = () => {
-      callerAborted = true;
-      callerAbortReason = opts.signal?.reason;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
+  const callerStop = new Promise<never>((_resolve, reject) => {
+    const stop = (
+      kind: "timeout" | "abort",
+      error: Error,
+      reason: unknown,
+    ): void => {
+      if (callerStopped) return;
+      callerStopped = true;
+      attachPendingPhysicalSettlement(error, {
+        callerStop: kind,
+        callerStoppedAt:
+          error instanceof ToolTimeoutError
+            ? error.callerStoppedAt
+            : new Date().toISOString(),
+        settlement: physical,
+      });
+      reject(error);
       if (
         opts.abortController !== undefined &&
         !opts.abortController.signal.aborted
       ) {
-        opts.abortController.abort(callerAbortReason);
+        opts.abortController.abort(reason);
       }
     };
-    opts.signal.addEventListener("abort", onAbort, { once: true });
-  }
-  if (timeoutMs !== null) {
-    timer = setTimeout(() => {
-      timedOut = true;
-      if (
-        opts.abortController !== undefined &&
-        !opts.abortController.signal.aborted
-      ) {
-        opts.abortController.abort(
-          `tool timeout: ${opts.toolName} exceeded ${timeoutMs}ms`,
-        );
-      }
-    }, timeoutMs);
-    if (typeof (timer as { unref?: () => void }).unref === "function") {
-      (timer as { unref: () => void }).unref();
+    if (opts.signal) {
+      onAbort = () => {
+        const reason = opts.signal?.reason;
+        stop("abort", makeAbortError(reason), reason);
+      };
+      opts.signal.addEventListener("abort", onAbort, { once: true });
     }
-  }
+    if (timeoutMs !== null) {
+      timer = setTimeout(() => {
+        const reason = `tool timeout: ${opts.toolName} exceeded ${timeoutMs}ms`;
+        stop("timeout", new ToolTimeoutError(opts.toolName, timeoutMs), reason);
+      }, timeoutMs);
+      if (typeof (timer as { unref?: () => void }).unref === "function") {
+        (timer as { unref: () => void }).unref();
+      }
+    }
+  });
 
   try {
-    // Cancellation and deadlines actively abort cooperative tools, but this
-    // boundary intentionally remains pending until the physical tool promise
-    // settles. The enclosing execution-admission lease must not release a
-    // concurrency slot while an abort-ignoring effect is still live.
-    const value = await fn();
-    if (timedOut && timeoutMs !== null) {
-      throw new ToolTimeoutError(opts.toolName, timeoutMs);
-    }
-    if (callerAborted) throw makeAbortError(callerAbortReason);
-    return value;
-  } catch (error) {
-    if (timedOut && timeoutMs !== null) {
-      throw new ToolTimeoutError(opts.toolName, timeoutMs);
-    }
-    if (callerAborted) throw makeAbortError(callerAbortReason);
-    throw error;
+    return await Promise.race([physical, callerStop]);
   } finally {
     cleanup();
   }
@@ -1304,6 +1310,8 @@ export interface RunToolUseOptions {
    * absent the cap falls back to the fixed `DEFAULT_MAX_TOOL_RESULT_BYTES`.
    */
   readonly contextWindowTokens?: number;
+  /** Durable admission boundary invoked immediately before `Tool.execute`. */
+  readonly onEffectBoundaryCrossed?: () => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2004,6 +2012,7 @@ export async function runToolUse(
   try {
     dispatch = await withTimeoutAndAbort(
       async () => {
+        opts.onEffectBoundaryCrossed?.();
         const result = await tool.execute(argsForTool);
         return {
           content: result.content,
@@ -2016,6 +2025,7 @@ export async function runToolUse(
             : {}),
           metadata: result.metadata,
           admissionUsage: result.admissionUsage,
+          effectDisposition: result.effectDisposition,
         } satisfies ToolDispatchResult;
       },
       {
@@ -2295,6 +2305,9 @@ export async function runToolUse(
     if (admissionUsage !== undefined) {
       ADMISSION_USAGE_OUTPUTS.set(output, admissionUsage);
     }
+    if (finalDispatch.effectDisposition !== undefined) {
+      EFFECT_DISPOSITIONS.set(output, finalDispatch.effectDisposition);
+    }
     return output;
   }
   const output = functionToolOutput({
@@ -2316,6 +2329,9 @@ export async function runToolUse(
   }
   if (admissionUsage !== undefined) {
     ADMISSION_USAGE_OUTPUTS.set(output, admissionUsage);
+  }
+  if (finalDispatch.effectDisposition !== undefined) {
+    EFFECT_DISPOSITIONS.set(output, finalDispatch.effectDisposition);
   }
   return output;
 }
@@ -2352,6 +2368,9 @@ export async function executeToolDispatch(
       : {}),
     ...(ADMISSION_USAGE_OUTPUTS.get(output) !== undefined
       ? { admissionUsage: ADMISSION_USAGE_OUTPUTS.get(output)! }
+      : {}),
+    ...(EFFECT_DISPOSITIONS.get(output) !== undefined
+      ? { effectDisposition: EFFECT_DISPOSITIONS.get(output)! }
       : {}),
     metadata: output.metadata ? { ...output.metadata } : undefined,
   };

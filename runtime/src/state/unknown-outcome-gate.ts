@@ -7,9 +7,8 @@
  * cannot prove (the acknowledgement was lost in a crash window). Until a
  * reviewer explicitly resolves it, recording a NEW side-effecting tool call
  * in the same session is refused — the runtime must not stack possibly-
- * duplicate mutations on top of an unproven one. Idempotent and interactive
- * calls are not gated: replays are safe by contract and interactive calls
- * carry their own human in the loop.
+ * duplicate mutations on top of an unproven one. Only explicitly idempotent
+ * calls bypass the gate; interactive effects can still mutate external state.
  *
  * Enforcement points:
  *   - `recordInFlightToolCallStart` (the durable commit point) enforces the
@@ -24,7 +23,8 @@
  *
  * Resolution is explicit review, never automatic:
  * `resolveUnknownOutcomeEffect` (surfaced as
- * `agenc state resolve-tool-call <session-id> <tool-call-id>`) marks the
+ * `agenc state resolve-tool-call <session-id> <tool-call-id> <disposition>
+ * <evidence-ref> <evidence-sha256>`) marks the
  * effect `unknown_resolved` — terminal, no longer re-surfaced by recovery,
  * and the gate lifts.
  */
@@ -65,7 +65,8 @@ export class UnknownOutcomeMutationBlockedError extends Error {
       `session ${sessionId} has ${blocking.length} unresolved unknown-outcome ` +
         `effect(s) [${summary}]; new side-effecting tool calls are blocked ` +
         `until each is reviewed and resolved with ` +
-        `\`agenc state resolve-tool-call ${sessionId} <tool-call-id>\``,
+        `\`agenc state resolve-tool-call ${sessionId} <tool-call-id> ` +
+        `<disposition> <evidence-ref> <evidence-sha256>\``,
     );
     this.name = "UnknownOutcomeMutationBlockedError";
     this.sessionId = sessionId;
@@ -78,7 +79,7 @@ export function listUnresolvedUnknownOutcomeEffects(
   driver: StateSqliteDriver,
   sessionId: string,
 ): readonly UnresolvedUnknownOutcomeEffect[] {
-  return driver
+  const legacy = driver
     .prepareState<
       [string],
       {
@@ -100,11 +101,58 @@ export function listUnresolvedUnknownOutcomeEffects(
       toolName: row.tool_name ?? "",
       startedAt: row.started_at ?? "",
     }));
+  const hasDurableEffects =
+    driver
+      .prepareState<
+        [string],
+        { readonly present: number }
+      >(
+        `SELECT 1 AS present
+         FROM sqlite_master
+         WHERE type = 'table' AND name = ?`,
+      )
+      .get("run_effects") !== undefined;
+  const durable = hasDurableEffects
+    ? driver
+        .prepareState<
+          [string],
+          {
+            session_id: string;
+            tool_call_id: string;
+            tool_name: string;
+            started_at: string;
+          }
+        >(
+          `SELECT session_id, call_id AS tool_call_id,
+                  tool_name, intent_at AS started_at
+           FROM run_effects
+           WHERE session_id = ?
+             AND recovery_category IN ('side-effecting', 'interactive')
+             AND (outcome IS NULL OR review_status = 'pending')
+           ORDER BY intent_sequence ASC, step_id ASC`,
+        )
+        .all(sessionId)
+        .map((row) => ({
+          sessionId: row.session_id,
+          toolCallId: row.tool_call_id,
+          toolName: row.tool_name,
+          startedAt: row.started_at,
+        }))
+    : [];
+  const unique = new Map<string, UnresolvedUnknownOutcomeEffect>();
+  for (const effect of [...legacy, ...durable]) {
+    unique.set(`${effect.sessionId}\0${effect.toolCallId}`, effect);
+  }
+  return [...unique.values()].sort(
+    (left, right) =>
+      left.startedAt.localeCompare(right.startedAt) ||
+      left.toolCallId.localeCompare(right.toolCallId),
+  );
 }
 
 /**
  * Decide whether a new tool call of `recoveryCategory` may be recorded /
- * dispatched for `sessionId`. Only side-effecting mutations are gated.
+ * dispatched for `sessionId`. Every non-idempotent mutation is gated.
  * The category must already be normalized (callers use
  * `normalizeToolRecoveryCategory`); this module deliberately does not
  * import the normalizer to keep the dependency one-directional.
@@ -116,7 +164,7 @@ export function checkUnknownOutcomeMutationGate(
     readonly recoveryCategory: ToolRecoveryCategory;
   },
 ): UnknownOutcomeGateDecision {
-  if (options.recoveryCategory !== "side-effecting") return { allowed: true };
+  if (options.recoveryCategory === "idempotent") return { allowed: true };
   const blocking = listUnresolvedUnknownOutcomeEffects(
     driver,
     options.sessionId,

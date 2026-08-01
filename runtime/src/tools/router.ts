@@ -742,7 +742,7 @@ export class ToolRouter {
               ...(directDispatchAttempt > 1
                 ? { stepIdSuffix: `:dispatch${directDispatchAttempt}` }
                 : {}),
-              invoke: ({ signal, abortController }) =>
+              invoke: ({ signal, abortController, crossEffectBoundary }) =>
                 executeToolDispatch({
                   rawArgs: dispatchRawArgs,
                   signal,
@@ -754,6 +754,7 @@ export class ToolRouter {
                   approvalAlreadyResolved: dispatchContext.approvalResolved,
                   runtimeAttemptContext,
                   abortController,
+                  onEffectBoundaryCrossed: crossEffectBoundary,
                   ...(directContextWindowTokens !== undefined
                     ? { contextWindowTokens: directContextWindowTokens }
                     : {}),
@@ -1320,7 +1321,7 @@ export class ToolRouter {
             ...(orchestrateDispatchAttempt > 1
               ? { stepIdSuffix: `:dispatch${orchestrateDispatchAttempt}` }
               : {}),
-            invoke: ({ abortController }) =>
+            invoke: ({ abortController, crossEffectBoundary }) =>
               executeToolDispatch(
                 rawDispatchOptions(dispatchRawArgs, {
                   ...withoutPermissionEvaluator(
@@ -1339,6 +1340,7 @@ export class ToolRouter {
                     : {}),
                   approvalAlreadyResolved: dispatchContext.approvalResolved,
                   abortController,
+                  onEffectBoundaryCrossed: crossEffectBoundary,
                   subId: toolCall.id,
                   runtimeAttemptContext,
                 }),
@@ -1749,6 +1751,7 @@ function rawDispatchOptions(
     readonly prePreventContinuation?: { readonly stopReason?: string };
     readonly approvalAlreadyResolved?: boolean;
     readonly runtimeAttemptContext?: ToolRuntimeAttemptContext;
+    readonly onEffectBoundaryCrossed?: () => void;
   },
 ) {
   const contextWindowTokens = effectiveContextWindowTokens(opts.turn);
@@ -1788,6 +1791,9 @@ function rawDispatchOptions(
       : {}),
     ...(opts.runtimeAttemptContext !== undefined
       ? { runtimeAttemptContext: opts.runtimeAttemptContext }
+      : {}),
+    ...(opts.onEffectBoundaryCrossed !== undefined
+      ? { onEffectBoundaryCrossed: opts.onEffectBoundaryCrossed }
       : {}),
     ...(opts.permissionAuditLogger !== undefined
       ? { permissionAuditLogger: opts.permissionAuditLogger }

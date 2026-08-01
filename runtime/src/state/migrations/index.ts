@@ -15,6 +15,7 @@ import { threadListingIndexesMigration } from "./013_thread_listing_indexes.js";
 import { executionAdmissionSchemaMigration } from "./014_execution_admission_schema.js";
 import { runDurabilitySchemaMigration } from "./015_run_durability_schema.js";
 import { runEffectsSessionCallStepIndexMigration } from "./016_run_effects_session_call_step_index.js";
+import { effectEvidenceV2Migration } from "./017_effect_evidence_v2.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -37,6 +38,7 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   executionAdmissionSchemaMigration,
   runDurabilitySchemaMigration,
   runEffectsSessionCallStepIndexMigration,
+  effectEvidenceV2Migration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [

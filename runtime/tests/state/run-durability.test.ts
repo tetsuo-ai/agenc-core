@@ -2,7 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { RunTerminalResult } from "../../src/contracts/run-contracts.js";
+import type {
+  EffectReviewResolution,
+  RunTerminalResult,
+} from "../../src/contracts/run-contracts.js";
 import {
   RunDurabilityConflictError,
   StateRunDurabilityRepository,
@@ -21,6 +24,23 @@ const T0 = "2026-07-18T00:00:00.000Z";
 const T1 = "2026-07-18T00:00:01.000Z";
 const T2 = "2026-07-18T00:00:02.000Z";
 const T3 = "2026-07-18T00:00:03.000Z";
+const REVIEW_DIGEST = "a".repeat(64);
+
+function committedReview(reviewedAt = T2) {
+  return {
+    version: 1 as const,
+    kind: "effect_review_resolution" as const,
+    disposition: "confirmed_committed" as const,
+    actorKind: "operator" as const,
+    actorId: "operator-1",
+    evidenceKind: "operator_evidence" as const,
+    evidenceRef: "incident:INC-1",
+    evidenceSha256: REVIEW_DIGEST,
+    reviewedAt,
+    workflowStatus: "resolved" as const,
+    domainAction: "mark_completed" as const,
+  };
+}
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "agenc-run-durability-home-"));
@@ -232,6 +252,7 @@ describe("StateRunDurabilityRepository", () => {
         runId: "run-1",
         stepId: "step-write",
         outcome: "committed",
+        effectBoundary: "crossed",
         eventId: "event-late-success",
         eventSequence: 3,
         completedAt: T2,
@@ -287,9 +308,7 @@ describe("StateRunDurabilityRepository", () => {
     const reviewed = runs.resolveEffectReview({
       runId: "run-1",
       stepId: "step-write",
-      reviewedAt: T2,
-      reviewedBy: "operator-1",
-      resolution: "manual_remediation",
+      resolution: committedReview(),
       eventId: "event-review",
       evidence: { ticket: "INC-1" },
     });
@@ -302,9 +321,7 @@ describe("StateRunDurabilityRepository", () => {
       runs.resolveEffectReview({
         runId: "run-1",
         stepId: "step-write",
-        reviewedAt: T2,
-        reviewedBy: "operator-1",
-        resolution: "manual_remediation",
+        resolution: committedReview(),
         eventId: "event-review",
         evidence: { ticket: "INC-1" },
       }).applied,
@@ -313,9 +330,11 @@ describe("StateRunDurabilityRepository", () => {
       runs.resolveEffectReview({
         runId: "run-1",
         stepId: "step-write",
-        reviewedAt: T3,
-        reviewedBy: "operator-2",
-        resolution: "confirmed_committed",
+        resolution: {
+          ...committedReview(T3),
+          actorId: "operator-2",
+          evidenceRef: "incident:INC-2",
+        },
         eventId: "event-review-conflict",
       }),
     ).toThrowError(
@@ -333,6 +352,74 @@ describe("StateRunDurabilityRepository", () => {
     expect(runs.getEffect("run-1", "step-write")?.outcome).toBe(
       "unknown_outcome",
     );
+  });
+
+  it("rejects review dispositions whose workflow action disagrees", () => {
+    runs.ensureInitialEpoch({ runId: "run-1", openedAt: T0 });
+    beginSideEffect();
+    runs.markEffectUnknown({
+      runId: "run-1",
+      stepId: "step-write",
+      eventId: "event-unknown",
+      eventSequence: 2,
+      reason: "acknowledgement_lost",
+      observedAt: T1,
+    });
+    const evidence = {
+      version: 1 as const,
+      kind: "effect_review_resolution" as const,
+      actorKind: "operator" as const,
+      actorId: "operator-1",
+      evidenceKind: "operator_evidence" as const,
+      evidenceRef: "incident:INC-invalid",
+      evidenceSha256: REVIEW_DIGEST,
+      reviewedAt: T2,
+    };
+    const invalid: readonly EffectReviewResolution[] = [
+      {
+        ...evidence,
+        disposition: "confirmed_committed",
+        workflowStatus: "resolved",
+        domainAction: "retry_new_attempt",
+      },
+      {
+        ...evidence,
+        disposition: "confirmed_no_effect",
+        workflowStatus: "resolved",
+        domainAction: "mark_completed",
+      },
+      {
+        ...evidence,
+        disposition: "remains_unknown",
+        workflowStatus: "resolved",
+        domainAction: "mark_completed",
+      },
+      {
+        ...evidence,
+        disposition: "confirmed_committed",
+        workflowStatus: "abandoned",
+        domainAction: "abandon_item",
+      },
+      {
+        ...evidence,
+        disposition: "confirmed_no_effect",
+        workflowStatus: "pending",
+      },
+    ];
+
+    for (const [index, resolution] of invalid.entries()) {
+      expect(() =>
+        runs.resolveEffectReview({
+          runId: "run-1",
+          stepId: "step-write",
+          resolution,
+          eventId: `event-invalid-review-${index}`,
+        }),
+      ).toThrow(/pending effect review|workflow status.*disagree/);
+    }
+    expect(runs.getEffect("run-1", "step-write")).toMatchObject({
+      reviewStatus: "pending",
+    });
   });
 
   it("requires durable idempotency keys and unique projected event sequences", () => {
@@ -359,6 +446,7 @@ describe("StateRunDurabilityRepository", () => {
       runId: "run-1",
       stepId: "step-a",
       outcome: "committed",
+      effectBoundary: "crossed",
       eventId: "event-result-a",
       eventSequence: 2,
       resultDigest: "sha256:result",
@@ -561,6 +649,7 @@ describe("StateRunDurabilityRepository", () => {
       runId: "run-1",
       stepId: "step-write",
       outcome: "committed",
+      effectBoundary: "crossed",
       eventId: "event-result",
       eventSequence: 2,
       completedAt: T1,

@@ -229,7 +229,8 @@ describe("admitted execution boundaries with the durable kernel", () => {
       tool,
       args: {},
       signal: controller.signal,
-      invoke: async () => {
+      invoke: async ({ crossEffectBoundary }) => {
+        crossEffectBoundary();
         firstInvoked.resolve();
         // This tool deliberately ignores its dispatch AbortSignal and resolves
         // successfully after cancellation is already durable.
@@ -246,7 +247,8 @@ describe("admitted execution boundaries with the durable kernel", () => {
       callId: "replacement",
       tool,
       args: {},
-      invoke: async () => {
+      invoke: async ({ crossEffectBoundary }) => {
+        crossEffectBoundary();
         replacementInvoked = true;
         return { content: "replacement" };
       },
@@ -356,7 +358,10 @@ describe("admitted execution boundaries with the durable kernel", () => {
       callId: "missing",
       tool,
       args: {},
-      invoke: async () => ({ content: "unknown" }),
+      invoke: async ({ crossEffectBoundary }) => {
+        crossEffectBoundary();
+        return { content: "unknown" };
+      },
     });
     await expect(
       runAdmittedToolCall({
@@ -365,7 +370,8 @@ describe("admitted execution boundaries with the durable kernel", () => {
         callId: "failed",
         tool,
         args: {},
-        invoke: async () => {
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
           throw new Error("effect acknowledgement lost");
         },
       }),
@@ -381,7 +387,7 @@ describe("admitted execution boundaries with the durable kernel", () => {
       },
       {
         stepId: "tool:turn:1:failed",
-        reason: "tool_failed_after_dispatch",
+        reason: "tool_failed_after_effect_boundary",
       },
     ]);
     expect(kernel.activeCount).toBe(0);

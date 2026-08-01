@@ -3,11 +3,20 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import {
+  EFFECT_EVIDENCE_FORMAT_VERSION,
+  EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
+  type EffectBoundary,
+  type EffectNoEffectProof,
+  type EffectReviewResolution,
+  type ToolEffectDispositionEvidence,
+} from "../contracts/run-contracts.js";
+import {
   M4DurabilityFailpointError,
   hitM4DurabilityFailpoint,
 } from "../durability/failpoints.js";
 import type {
   EffectIntentEvent,
+  EffectReviewResolvedEvent,
   EffectResultEvent,
   EffectUnknownOutcomeEvent,
   Event,
@@ -16,7 +25,25 @@ import type {
 import type { Session } from "../session/session.js";
 import type { Tool, ToolRecoveryCategory } from "../tools/types.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
-import { AdmissionDeniedError } from "./admission-client.js";
+import {
+  readEffectBoundaryNotCrossed,
+  validateToolEffectDispositionEvidence,
+} from "../tools/effect-boundary.js";
+import { readPendingPhysicalSettlement } from "../tools/physical-settlement.js";
+import {
+  AdmissionDeniedError,
+  type ExecutionAdmissionClient,
+} from "./admission-client.js";
+import {
+  assertNoLiveUnknownEffect,
+  clearLiveEffectPoison,
+  incrementEffectSettlementMetric,
+  liveEffectWasExternallyResolved,
+  poisonLiveEffect,
+  readIdempotentRendezvous,
+  registerEffectSettlementObserver,
+  type LiveEffectIdentity,
+} from "./effect-settlement-supervisor.js";
 
 export interface AdmittedToolCallOptions {
   readonly session: Session;
@@ -44,6 +71,8 @@ export interface AdmittedToolCallOptions {
 export interface AdmittedToolDispatchContext {
   readonly signal: AbortSignal;
   readonly abortController: AbortController;
+  /** Cross exactly once, immediately before the physical effect starts. */
+  readonly crossEffectBoundary: () => void;
 }
 
 /**
@@ -64,6 +93,24 @@ interface EffectJournalContext {
   readonly idempotencyKey?: string;
   readonly intentDigest: string;
   readonly intentEventSeq: number;
+}
+
+interface EffectEventCommit {
+  readonly event?: Event;
+  readonly projectionError?: unknown;
+}
+
+class EffectProjectionAfterCommitError extends Error {
+  constructor(
+    readonly event: Event,
+    options: { readonly cause: unknown },
+  ) {
+    super(
+      `durable ${event.msg.type} event ${event.eventId ?? event.id} could not be projected`,
+      options,
+    );
+    this.name = "EffectProjectionAfterCommitError";
+  }
 }
 
 function recoveryCategory(tool: Tool): ToolRecoveryCategory {
@@ -163,6 +210,22 @@ function effectDigest(value: unknown): string {
     .digest("hex");
 }
 
+function logicalIdempotencyKey(params: {
+  readonly runId: string;
+  readonly callId: string;
+  readonly toolName: string;
+  readonly args: Readonly<Record<string, unknown>>;
+}): string {
+  return `sha256:${effectDigest({
+    version: 1,
+    runId: params.runId,
+    callId: params.callId,
+    toolName: params.toolName,
+    args: params.args,
+    purpose: "idempotency",
+  })}`;
+}
+
 function effectProjection(
   session: Session,
 ): ToolEffectDurabilityProjection | undefined {
@@ -183,16 +246,19 @@ function appendEffectEvent(
     EventMsg,
     {
       readonly type:
-        "effect_intent" | "effect_result" | "effect_unknown_outcome";
+        | "effect_intent"
+        | "effect_result"
+        | "effect_unknown_outcome"
+        | "effect_review_resolved";
     }
   >,
-): Event | undefined {
+): EffectEventCommit {
   const emit = (session as { readonly emit?: Session["emit"] }).emit;
   if (session.rolloutStore == null || typeof emit !== "function") {
     if (session.services?.admissionRequired !== false) {
       throw new AdmissionDeniedError("effect_journal_unavailable");
     }
-    return undefined;
+    return {};
   }
   const event = emit.call(
     session,
@@ -202,8 +268,30 @@ function appendEffectEvent(
   if (!Number.isSafeInteger(event.seq) || (event.seq ?? 0) <= 0) {
     throw new AdmissionDeniedError("effect_journal_sequence_missing");
   }
-  effectProjection(session)?.recordEffectEvent(event);
-  return event;
+  try {
+    effectProjection(session)?.recordEffectEvent(event);
+    return { event };
+  } catch (projectionError) {
+    return { event, projectionError };
+  }
+}
+
+function requireEffectProjection(commit: EffectEventCommit): void {
+  if (commit.projectionError === undefined) return;
+  if (commit.event === undefined) throw commit.projectionError;
+  throw new EffectProjectionAfterCommitError(commit.event, {
+    cause: commit.projectionError,
+  });
+}
+
+function projectCommittedEffectEvent(session: Session, event: Event): void {
+  try {
+    effectProjection(session)?.recordEffectEvent(event);
+  } catch (projectionError) {
+    throw new EffectProjectionAfterCommitError(event, {
+      cause: projectionError,
+    });
+  }
 }
 
 function appendEffectIntent(params: {
@@ -215,7 +303,7 @@ function appendEffectIntent(params: {
   readonly args: Readonly<Record<string, unknown>>;
   readonly recoveryCategory: ToolRecoveryCategory;
 }): EffectJournalContext {
-  const identity = {
+  const intentIdentity = {
     version: 1,
     runId: params.runId,
     stepId: params.stepId,
@@ -224,12 +312,21 @@ function appendEffectIntent(params: {
     recoveryCategory: params.recoveryCategory,
     args: params.args,
   } as const;
-  const intentDigest = effectDigest(identity);
+  const intentDigest = effectDigest(intentIdentity);
+  // Physical retry suffixes deliberately do not participate. Every retry of
+  // one logical call must rendezvous on the original key.
   const idempotencyKey =
     params.recoveryCategory === "idempotent"
-      ? `sha256:${effectDigest({ ...identity, purpose: "idempotency" })}`
+      ? logicalIdempotencyKey({
+          runId: params.runId,
+          callId: params.callId,
+          toolName: params.tool.name,
+          args: params.args,
+        })
       : undefined;
   const payload: EffectIntentEvent = {
+    formatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
+    minimumReaderRuntime: EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
     runId: params.runId,
     stepId: params.stepId,
     callId: params.callId,
@@ -240,13 +337,14 @@ function appendEffectIntent(params: {
     attempt: 1,
     recordedAt: new Date().toISOString(),
   };
-  const event = appendEffectEvent(params.session, {
+  const commit = appendEffectEvent(params.session, {
     type: "effect_intent",
     payload,
   });
+  requireEffectProjection(commit);
   return {
     ...payload,
-    intentEventSeq: event?.seq ?? 0,
+    intentEventSeq: commit.event?.seq ?? 0,
   };
 }
 
@@ -255,11 +353,15 @@ function appendEffectResult(
   context: EffectJournalContext,
   options: {
     readonly outcome: EffectResultEvent["outcome"];
+    readonly effectBoundary?: EffectBoundary;
+    readonly noEffectEvidence?: EffectNoEffectProof;
     readonly result?: ToolDispatchResult;
     readonly evidence?: Readonly<Record<string, unknown>>;
   },
-): void {
+): EffectEventCommit {
   const payload: EffectResultEvent = {
+    formatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
+    minimumReaderRuntime: EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
     runId: context.runId,
     stepId: context.stepId,
     callId: context.callId,
@@ -270,6 +372,10 @@ function appendEffectResult(
       : {}),
     intentEventSeq: context.intentEventSeq,
     outcome: options.outcome,
+    effectBoundary: options.effectBoundary,
+    ...(options.noEffectEvidence !== undefined
+      ? { noEffectEvidence: options.noEffectEvidence }
+      : {}),
     ...(options.result !== undefined
       ? {
           resultDigest: effectDigest({
@@ -284,16 +390,19 @@ function appendEffectResult(
     recordedAt: new Date().toISOString(),
   };
   hitM4DurabilityFailpoint("before_tool_ack_commit");
-  appendEffectEvent(session, { type: "effect_result", payload });
+  const commit = appendEffectEvent(session, { type: "effect_result", payload });
   hitM4DurabilityFailpoint("after_tool_ack_commit");
+  return commit;
 }
 
 function appendEffectUnknownOutcome(
   session: Session,
   context: EffectJournalContext,
   reason: string,
-): void {
+): EffectEventCommit {
   const payload: EffectUnknownOutcomeEvent = {
+    formatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
+    minimumReaderRuntime: EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
     runId: context.runId,
     stepId: context.stepId,
     callId: context.callId,
@@ -309,8 +418,29 @@ function appendEffectUnknownOutcome(
     recordedAt: new Date().toISOString(),
   };
   hitM4DurabilityFailpoint("before_tool_ack_commit");
-  appendEffectEvent(session, { type: "effect_unknown_outcome", payload });
+  const commit = appendEffectEvent(session, {
+    type: "effect_unknown_outcome",
+    payload,
+  });
   hitM4DurabilityFailpoint("after_tool_ack_commit");
+  return commit;
+}
+
+function appendEffectReview(
+  session: Session,
+  context: EffectJournalContext,
+  resolution: EffectReviewResolution,
+): EffectEventCommit {
+  const payload: EffectReviewResolvedEvent = {
+    runId: context.runId,
+    stepId: context.stepId,
+    callId: context.callId,
+    resolution,
+  };
+  return appendEffectEvent(session, {
+    type: "effect_review_resolved",
+    payload,
+  });
 }
 
 function errorEvidence(error: unknown): Readonly<Record<string, unknown>> {
@@ -322,27 +452,180 @@ function errorEvidence(error: unknown): Readonly<Record<string, unknown>> {
   };
 }
 
-/**
- * Determinate failures: the tool provably did NOT perform its effect, so the
- * outcome is known — recording `unknown_outcome` instead poisons the whole
- * session behind the M4 operator-review gate for routine, recoverable errors.
- *
- * Two structural cases (no imports of the heavy tools/execution chains):
- *   - Tool-reported timeout (`ToolTimeoutError.reason === "timeout"`): the
- *     tool explicitly says it did not complete (observed: a slow write_stdin
- *     wait blocked every later side-effecting call).
- *   - `SandboxDeniedError`: the sandbox policy check runs BEFORE the process
- *     is spawned, so a denial is pre-effect by construction (observed: plan
- *     mode + `2>/dev/null` self-poisoned the session, and the escalated
- *     retry then surfaced the gate message — not the real denial — to the
- *     model).
- */
-function isDeterminateToolFailure(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  if ((error as { readonly reason?: unknown }).reason === "timeout") {
-    return true;
+function noEffectProof(
+  context: EffectJournalContext,
+  observedAt: string,
+  error?: unknown,
+): EffectNoEffectProof {
+  const trusted = readEffectBoundaryNotCrossed(error, observedAt);
+  if (trusted !== undefined) return trusted;
+  const evidenceRef = `admission-boundary:not-crossed:${context.runId}:${context.stepId}`;
+  return {
+    version: 1,
+    kind: "effect_no_effect_proof",
+    evidenceKind: "boundary_not_crossed",
+    evidenceRef,
+    evidenceSha256: effectDigest({ evidenceRef, observedAt }),
+    observedAt,
+  };
+}
+
+function dispositionNoEffectProof(
+  evidence: ToolEffectDispositionEvidence,
+  observedAt: string,
+): EffectNoEffectProof {
+  if (evidence.disposition !== "confirmed_no_effect") {
+    throw new TypeError("confirmed no-effect evidence is required");
   }
-  return error.name === "SandboxDeniedError";
+  return {
+    version: 1,
+    kind: "effect_no_effect_proof",
+    evidenceKind: evidence.evidenceKind,
+    evidenceRef: evidence.evidenceRef,
+    evidenceSha256: evidence.evidenceSha256,
+    observedAt,
+  };
+}
+
+function physicalResultDigest(result: ToolDispatchResult): string {
+  return effectDigest({
+    content: result.content,
+    isError: result.isError === true,
+    preventContinuation: result.preventContinuation === true,
+    admissionUsage: result.admissionUsage ?? null,
+  });
+}
+
+function settlementResolution(
+  context: EffectJournalContext,
+  result: ToolDispatchResult | undefined,
+  error: unknown,
+  reviewedAt: string,
+): EffectReviewResolution {
+  const disposition = validateToolEffectDispositionEvidence(
+    result?.effectDisposition,
+  );
+  if (disposition?.disposition === "confirmed_committed") {
+    return {
+      version: 1,
+      kind: "effect_review_resolution",
+      disposition: "confirmed_committed",
+      actorKind: "system_settlement",
+      actorId: "effect-settlement-supervisor",
+      evidenceKind: disposition.evidenceKind,
+      evidenceRef: disposition.evidenceRef,
+      evidenceSha256: disposition.evidenceSha256,
+      reviewedAt,
+      workflowStatus: "resolved",
+      domainAction: "mark_completed",
+    };
+  }
+  if (disposition?.disposition === "confirmed_no_effect") {
+    return {
+      version: 1,
+      kind: "effect_review_resolution",
+      disposition: "confirmed_no_effect",
+      actorKind: "system_settlement",
+      actorId: "effect-settlement-supervisor",
+      evidenceKind: disposition.evidenceKind,
+      evidenceRef: disposition.evidenceRef,
+      evidenceSha256: disposition.evidenceSha256,
+      reviewedAt,
+      workflowStatus: "resolved",
+      domainAction: "retry_new_attempt",
+    };
+  }
+  const noEffectEvidence = readEffectBoundaryNotCrossed(error, reviewedAt);
+  if (noEffectEvidence !== undefined) {
+    return {
+      version: 1,
+      kind: "effect_review_resolution",
+      disposition: "confirmed_no_effect",
+      actorKind: "system_settlement",
+      actorId: "effect-settlement-supervisor",
+      evidenceKind: noEffectEvidence.evidenceKind,
+      evidenceRef: noEffectEvidence.evidenceRef,
+      evidenceSha256: noEffectEvidence.evidenceSha256,
+      reviewedAt,
+      workflowStatus: "resolved",
+      domainAction: "retry_new_attempt",
+    };
+  }
+  if (result !== undefined && result.isError !== true) {
+    const evidenceRef = `physical-settlement:${context.callId}`;
+    return {
+      version: 1,
+      kind: "effect_review_resolution",
+      disposition: "confirmed_committed",
+      actorKind: "system_settlement",
+      actorId: "effect-settlement-supervisor",
+      evidenceKind: "provider_receipt",
+      evidenceRef,
+      evidenceSha256: physicalResultDigest(result),
+      reviewedAt,
+      workflowStatus: "resolved",
+      domainAction: "mark_completed",
+    };
+  }
+  const evidence = result === undefined ? errorEvidence(error) : {
+    resultDigest: physicalResultDigest(result),
+    isError: result.isError === true,
+  };
+  const evidenceRef = `physical-settlement:unresolved:${context.callId}`;
+  return {
+    version: 1,
+    kind: "effect_review_resolution",
+    disposition: "remains_unknown",
+    actorKind: "system_settlement",
+    actorId: "effect-settlement-supervisor",
+    evidenceKind: "provider_receipt",
+    evidenceRef,
+    evidenceSha256: effectDigest(evidence),
+    reviewedAt,
+    workflowStatus: "pending",
+  };
+}
+
+function reconcileToolUsage(
+  client: ExecutionAdmissionClient | undefined,
+  reservationId: string,
+  estimate: {
+    readonly maxInputTokens: number;
+    readonly maxOutputTokens: number;
+    readonly maxCostUsd: number | null;
+  },
+  result: ToolDispatchResult | undefined,
+  session: Session,
+  missingUsageReason = "missing_tool_usage",
+): "provider_overrun" | undefined {
+  if (client === undefined) return undefined;
+  if (result?.admissionUsage !== undefined && !validUsage(result.admissionUsage)) {
+    client.holdUnknown(reservationId, "invalid_tool_usage");
+    incrementEffectSettlementMetric(session, "heldAccounting");
+    return undefined;
+  }
+  if (validUsage(result?.admissionUsage)) {
+    const outcome = client.reconcile(reservationId, result.admissionUsage);
+    if (outcome.outcome === "provider_overrun") {
+      session.abortTerminal("provider_overrun");
+      void session.services?.agentControl.shutdownAgentTree?.(
+        session.conversationId,
+      );
+      return "provider_overrun";
+    }
+    return undefined;
+  }
+  if (isZeroBound(estimate)) {
+    client.reconcile(reservationId, {
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+    });
+    return undefined;
+  }
+  client.holdUnknown(reservationId, missingUsageReason);
+  incrementEffectSettlementMetric(session, "heldAccounting");
+  return undefined;
 }
 
 /**
@@ -351,276 +634,10 @@ function isDeterminateToolFailure(error: unknown): boolean {
  * capacity. Model-backed tools make their nested charged calls through the
  * model boundary and therefore do not double-charge here.
  */
-export async function runAdmittedToolCall(
-  params: AdmittedToolCallOptions,
-): Promise<ToolDispatchResult> {
-  const category = recoveryCategory(params.tool);
-  params.session.rolloutStore?.assertToolAdmissionAllowed(category);
-  const stepId = `tool:${params.turnId}:${params.callId}${params.stepIdSuffix ?? ""}`;
-
-  const client = params.session.services?.executionAdmission;
-  if (client === undefined) {
-    if (params.session.services?.admissionRequired !== false) {
-      throw new AdmissionDeniedError("admission_kernel_unavailable");
-    }
-    const dispatch = createDispatchContext(params.signal);
-    let effect: EffectJournalContext | undefined;
-    let dispatched = false;
-    let acknowledgementStarted = false;
-    let acknowledged = false;
-    try {
-      effect = appendEffectIntent({
-        session: params.session,
-        runId: params.session.conversationId,
-        stepId,
-        callId: params.callId,
-        tool: params.tool,
-        args: params.args,
-        recoveryCategory: category,
-      });
-      const cancelledBeforeDispatch = cancellationAfterDispatch(
-        dispatch.context.signal,
-      );
-      if (cancelledBeforeDispatch !== undefined) {
-        acknowledgementStarted = true;
-        appendEffectResult(params.session, effect, {
-          outcome: "cancelled",
-          evidence: { reason: "cancelled_before_dispatch" },
-        });
-        acknowledged = true;
-        throw cancelledBeforeDispatch;
-      }
-      hitM4DurabilityFailpoint("before_tool_spawn");
-      dispatched = true;
-      const pending = params.invoke(dispatch.context);
-      hitM4DurabilityFailpoint("after_tool_spawn");
-      const result = await pending;
-      acknowledgementStarted = true;
-      appendEffectResult(params.session, effect, {
-        outcome: result.isError === true ? "failed" : "committed",
-        result,
-      });
-      acknowledged = true;
-      // The physical tool result won the race with cancellation. Preserve it
-      // so streamed tool history remains complete and the committed effect
-      // evidence agrees with the caller-visible outcome. Admission-backed
-      // calls have a separate durable cancellation authority below.
-      return result;
-    } catch (error) {
-      if (error instanceof M4DurabilityFailpointError) throw error;
-      if (effect !== undefined && !acknowledgementStarted && !acknowledged) {
-        acknowledgementStarted = true;
-        if (dispatched && category !== "idempotent") {
-          if (isDeterminateToolFailure(error)) {
-            appendEffectResult(params.session, effect, {
-              outcome: "failed",
-              evidence: errorEvidence(error),
-            });
-          } else {
-            appendEffectUnknownOutcome(
-              params.session,
-              effect,
-              dispatch.context.signal.aborted
-                ? "tool_cancelled_after_dispatch"
-                : "tool_failed_after_dispatch_without_acknowledgement",
-            );
-          }
-        } else {
-          appendEffectResult(params.session, effect, {
-            outcome: dispatch.context.signal.aborted ? "cancelled" : "failed",
-            evidence: errorEvidence(error),
-          });
-        }
-        acknowledged = true;
-      }
-      throw error;
-    } finally {
-      dispatch.cleanup();
-    }
-  }
-
-  // Missing pricing is never interpreted as free. Core local tools are
-  // explicitly decorated with a zero bound by the registry; extension and
-  // future tools remain unpriced until their owner supplies a contract.
-  const estimate = params.tool.admissionEstimate?.(params.args) ?? {
-    maxInputTokens: 0,
-    maxOutputTokens: 0,
-    maxCostUsd: null,
-  };
-  const lease = await client.acquire(
-    {
-      stepId,
-      kind: "tool_exec",
-      sessionId: params.session.conversationId,
-      parentScopeId: params.turnId,
-      maxInputTokens: estimate.maxInputTokens,
-      maxOutputTokens: estimate.maxOutputTokens,
-      maxCostUsd: estimate.maxCostUsd,
-    },
-    params.signal,
-  );
-  const reservationId = lease.reservation.reservationId;
-  const dispatch = createDispatchContext(lease.signal);
-  let effect: EffectJournalContext | undefined;
-  let dispatched = false;
-  let settled = false;
-  let lateCancellation: Error | undefined;
-  let acknowledgementStarted = false;
-  let acknowledged = false;
-  let crashInjected = false;
-  try {
-    effect = appendEffectIntent({
-      session: params.session,
-      runId: lease.reservation.step.runId,
-      stepId: lease.reservation.step.stepId,
-      callId: params.callId,
-      tool: params.tool,
-      args: params.args,
-      recoveryCategory: category,
-    });
-    const cancelledBeforeDispatch = cancellationAfterDispatch(
-      dispatch.context.signal,
-    );
-    if (cancelledBeforeDispatch !== undefined) {
-      acknowledgementStarted = true;
-      appendEffectResult(params.session, effect, {
-        outcome: "cancelled",
-        evidence: { reason: "cancelled_before_dispatch" },
-      });
-      acknowledged = true;
-      client.void(reservationId, "tool_cancelled_before_dispatch");
-      settled = true;
-      throw cancelledBeforeDispatch;
-    }
-    hitM4DurabilityFailpoint("before_tool_spawn");
-    client.markDispatched(reservationId, {
-      boundary: "tool_effect",
-      details: {
-        toolName: params.tool.name,
-        recoveryCategory: category,
-        maxCostUsd: estimate.maxCostUsd,
-      },
-    });
-    dispatched = true;
-    const pending = params.invoke(dispatch.context);
-    hitM4DurabilityFailpoint("after_tool_spawn");
-    const result = await pending;
-    // Snapshot cancellation at physical effect settlement. Reconciliation can
-    // itself abort on overrun and must not be mistaken for an earlier cancel.
-    lateCancellation = cancellationAfterDispatch(lease.signal);
-    acknowledgementStarted = true;
-    appendEffectResult(params.session, effect, {
-      outcome: result.isError === true ? "failed" : "committed",
-      result,
-      evidence: { reservationId },
-    });
-    acknowledged = true;
-    if (
-      result.admissionUsage !== undefined &&
-      !validUsage(result.admissionUsage)
-    ) {
-      client.holdUnknown(reservationId, "invalid_tool_usage");
-      settled = true;
-    } else if (validUsage(result.admissionUsage)) {
-      const outcome = client.reconcile(reservationId, result.admissionUsage);
-      settled = true;
-      if (outcome.outcome === "provider_overrun") {
-        params.session.abortTerminal("provider_overrun");
-        void params.session.services?.agentControl.shutdownAgentTree?.(
-          params.session.conversationId,
-        );
-        if (lateCancellation !== undefined) throw lateCancellation;
-        throw new AdmissionDeniedError("provider_overrun");
-      }
-    } else if (isZeroBound(estimate)) {
-      client.reconcile(reservationId, {
-        inputTokens: 0,
-        outputTokens: 0,
-        costUsd: 0,
-      });
-      settled = true;
-    } else {
-      client.holdUnknown(reservationId, "missing_tool_usage");
-      settled = true;
-    }
-    // Preserve any late authoritative usage, but an abort-ignoring tool must
-    // not turn a durably cancelled effect back into caller-visible success.
-    if (lateCancellation !== undefined) throw lateCancellation;
-    return result;
-  } catch (error) {
-    if (error instanceof M4DurabilityFailpointError) {
-      crashInjected = true;
-      throw error;
-    }
-    if (effect !== undefined && !acknowledgementStarted && !acknowledged) {
-      acknowledgementStarted = true;
-      if (dispatched && category !== "idempotent") {
-        if (isDeterminateToolFailure(error)) {
-          appendEffectResult(params.session, effect, {
-            outcome: "failed",
-            evidence: {
-              reservationId,
-              ...errorEvidence(error),
-            },
-          });
-        } else {
-          appendEffectUnknownOutcome(
-            params.session,
-            effect,
-            dispatch.context.signal.aborted
-              ? "tool_cancelled_after_dispatch"
-              : "tool_failed_after_dispatch_without_acknowledgement",
-          );
-        }
-      } else {
-        appendEffectResult(params.session, effect, {
-          outcome: dispatch.context.signal.aborted ? "cancelled" : "failed",
-          evidence: {
-            reservationId,
-            ...errorEvidence(error),
-          },
-        });
-      }
-      acknowledged = true;
-    }
-    if (settled) {
-      throw error;
-    } else if (dispatched && dispatch.context.signal.aborted) {
-      if (
-        params.tool.cancellationUsage === "zero" &&
-        isZeroBound(estimate)
-      ) {
-        client.reconcile(reservationId, {
-          inputTokens: 0,
-          outputTokens: 0,
-          costUsd: 0,
-        });
-      } else {
-        client.holdUnknown(reservationId, "tool_cancelled_after_dispatch");
-      }
-      settled = true;
-    } else if (dispatched && isZeroBound(estimate)) {
-      client.reconcile(reservationId, {
-        inputTokens: 0,
-        outputTokens: 0,
-        costUsd: 0,
-      });
-    } else if (dispatched) {
-      client.holdUnknown(reservationId, "tool_failed_after_dispatch");
-    } else {
-      client.void(reservationId, "tool_failed_before_dispatch");
-    }
-    if (lateCancellation !== undefined) throw lateCancellation;
-    throw error;
-  } finally {
-    // Cancellation records the durable unknown outcome at once while keeping
-    // live capacity occupied until even an abort-ignoring tool promise settles.
-    if (!crashInjected) client.acknowledgeCompletion(reservationId);
-    dispatch.cleanup();
-  }
-}
-
-function createDispatchContext(source?: AbortSignal): {
+function createDispatchContext(
+  source?: AbortSignal,
+  onCross: () => void = () => {},
+): {
   readonly context: AdmittedToolDispatchContext;
   readonly cleanup: () => void;
 } {
@@ -634,8 +651,593 @@ function createDispatchContext(source?: AbortSignal): {
   } else {
     source?.addEventListener("abort", forwardAbort, { once: true });
   }
+  const crossEffectBoundary = (): void => {
+    if (abortController.signal.aborted) {
+      const reason = abortController.signal.reason;
+      throw reason instanceof Error
+        ? reason
+        : new AdmissionDeniedError(
+            "tool_cancelled_before_dispatch",
+            "cancelled",
+          );
+    }
+    onCross();
+  };
   return {
-    context: { signal: abortController.signal, abortController },
+    context: {
+      signal: abortController.signal,
+      abortController,
+      crossEffectBoundary,
+    },
     cleanup: () => source?.removeEventListener("abort", forwardAbort),
   };
+}
+
+function liveIdentity(context: EffectJournalContext): LiveEffectIdentity {
+  return {
+    runId: context.runId,
+    stepId: context.stepId,
+    callId: context.callId,
+    toolName: context.toolName,
+    recoveryCategory: context.recoveryCategory,
+    ...(context.idempotencyKey !== undefined
+      ? { idempotencyKey: context.idempotencyKey }
+      : {}),
+  };
+}
+
+/**
+ * Run an admitted tool while keeping caller completion separate from physical
+ * settlement. A timeout/abort may stop the caller, but it never fabricates a
+ * failed/no-effect outcome and never releases the physical concurrency lease.
+ */
+export async function runAdmittedToolCall(
+  params: AdmittedToolCallOptions,
+): Promise<ToolDispatchResult> {
+  const category = recoveryCategory(params.tool);
+  assertNoLiveUnknownEffect(params.session, category);
+  params.session.rolloutStore?.assertToolAdmissionAllowed(category);
+
+  const client = params.session.services?.executionAdmission;
+  if (
+    client === undefined &&
+    params.session.services?.admissionRequired !== false
+  ) {
+    throw new AdmissionDeniedError("admission_kernel_unavailable");
+  }
+
+  const stepId = `tool:${params.turnId}:${params.callId}${params.stepIdSuffix ?? ""}`;
+  const logicalRunId = client?.scope.runId ?? params.session.conversationId;
+  const idempotencyKey =
+    category === "idempotent"
+      ? logicalIdempotencyKey({
+          runId: logicalRunId,
+          callId: params.callId,
+          toolName: params.tool.name,
+          args: params.args,
+        })
+      : undefined;
+  if (idempotencyKey !== undefined) {
+    const active = readIdempotentRendezvous<ToolDispatchResult>(
+      params.session,
+      idempotencyKey,
+    );
+    if (active !== undefined) {
+      const outcome = await active;
+      if (outcome.kind === "observer_failed") throw outcome.reason;
+      throw new AdmissionDeniedError(
+        outcome.kind === "forced_shutdown"
+          ? "idempotent_effect_settlement_forced_during_shutdown"
+          : "idempotent_effect_settled_after_caller_stop",
+      );
+    }
+  }
+
+  const retryGate = params.session.rolloutStore as
+    | {
+        assertToolEffectAttemptAllowed?(options: {
+          readonly callId: string;
+          readonly recoveryCategory: ToolRecoveryCategory;
+          readonly idempotencyKey?: string;
+        }): void;
+      }
+    | null;
+  retryGate?.assertToolEffectAttemptAllowed?.({
+    callId: params.callId,
+    recoveryCategory: category,
+    ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+  });
+
+  const estimate = params.tool.admissionEstimate?.(params.args) ?? {
+    maxInputTokens: 0,
+    maxOutputTokens: 0,
+    maxCostUsd: null,
+  };
+  const lease =
+    client === undefined
+      ? undefined
+      : await client.acquire(
+          {
+            stepId,
+            kind: "tool_exec",
+            sessionId: params.session.conversationId,
+            parentScopeId: params.turnId,
+            maxInputTokens: estimate.maxInputTokens,
+            maxOutputTokens: estimate.maxOutputTokens,
+            maxCostUsd: estimate.maxCostUsd,
+          },
+          params.signal,
+        );
+  const reservationId = lease?.reservation.reservationId;
+  const runId = lease?.reservation.step.runId ?? logicalRunId;
+  const durableStepId = lease?.reservation.step.stepId ?? stepId;
+  let boundaryCrossed = false;
+  const dispatch = createDispatchContext(lease?.signal ?? params.signal, () => {
+    if (boundaryCrossed) return;
+    if (reservationId !== undefined) {
+      client?.markDispatched(reservationId, {
+        boundary: "tool_effect",
+        details: {
+          toolName: params.tool.name,
+          recoveryCategory: category,
+          maxCostUsd: estimate.maxCostUsd,
+        },
+      });
+    }
+    boundaryCrossed = true;
+    hitM4DurabilityFailpoint("after_tool_spawn");
+  });
+
+  let journal: EffectJournalContext;
+  try {
+    journal = appendEffectIntent({
+      session: params.session,
+      runId,
+      stepId: durableStepId,
+      callId: params.callId,
+      tool: params.tool,
+      args: params.args,
+      recoveryCategory: category,
+    });
+  } catch (error) {
+    if (reservationId !== undefined) {
+      client?.void(reservationId, "effect_intent_commit_failed");
+      client?.acknowledgeCompletion(reservationId);
+    }
+    dispatch.cleanup();
+    throw error;
+  }
+
+  let effectClosed = false;
+  let admissionSettled = false;
+  let observerOwnsPhysical = false;
+  let crashInjected = false;
+  try {
+    const cancelledBeforeDispatch = cancellationAfterDispatch(
+      dispatch.context.signal,
+    );
+    if (cancelledBeforeDispatch !== undefined) {
+      const observedAt = new Date().toISOString();
+      const commit = appendEffectResult(params.session, journal, {
+        outcome: "cancelled",
+        effectBoundary: "not_crossed",
+        noEffectEvidence: noEffectProof(journal, observedAt),
+        evidence: { reason: "cancelled_before_dispatch" },
+      });
+      effectClosed = true;
+      if (reservationId !== undefined) {
+        client?.void(reservationId, "tool_cancelled_before_dispatch");
+        admissionSettled = true;
+      }
+      requireEffectProjection(commit);
+      throw cancelledBeforeDispatch;
+    }
+
+    hitM4DurabilityFailpoint("before_tool_spawn");
+    const result = await params.invoke(dispatch.context);
+    const lateCancellation = cancellationAfterDispatch(
+      lease?.signal ?? dispatch.context.signal,
+    );
+    const recordedAt = new Date().toISOString();
+    const disposition = validateToolEffectDispositionEvidence(
+      result.effectDisposition,
+    );
+    let commit: EffectEventCommit;
+
+    if (!boundaryCrossed) {
+      commit = appendEffectResult(params.session, journal, {
+        outcome: result.isError === true ? "failed" : "cancelled",
+        effectBoundary: "not_crossed",
+        noEffectEvidence: noEffectProof(journal, recordedAt),
+        result,
+        evidence: { reason: "dispatch_returned_before_effect_boundary" },
+      });
+    } else if (
+      category !== "idempotent" &&
+      result.isError === true &&
+      disposition?.disposition !== "confirmed_committed" &&
+      disposition?.disposition !== "confirmed_no_effect"
+    ) {
+      poisonLiveEffect(params.session, liveIdentity(journal));
+      commit = appendEffectUnknownOutcome(
+        params.session,
+        journal,
+        "tool_error_result_without_authoritative_effect_disposition",
+      );
+    } else {
+      commit = appendEffectResult(params.session, journal, {
+        outcome:
+          disposition?.disposition === "confirmed_no_effect"
+            ? "failed"
+            : disposition?.disposition === "confirmed_committed" ||
+                result.isError !== true
+              ? "committed"
+              : "failed",
+        effectBoundary: "crossed",
+        ...(disposition?.disposition === "confirmed_no_effect"
+          ? {
+              noEffectEvidence: dispositionNoEffectProof(
+                disposition,
+                recordedAt,
+              ),
+            }
+          : {}),
+        result,
+        ...(reservationId !== undefined
+          ? { evidence: { reservationId } }
+          : {}),
+      });
+    }
+    effectClosed = true;
+
+    if (reservationId !== undefined) {
+      const accounting = reconcileToolUsage(
+        client,
+        reservationId,
+        estimate,
+        result,
+        params.session,
+      );
+      admissionSettled = true;
+      if (accounting === "provider_overrun") {
+        if (lateCancellation !== undefined) throw lateCancellation;
+        throw new AdmissionDeniedError("provider_overrun");
+      }
+    }
+    requireEffectProjection(commit);
+    if (lateCancellation !== undefined && category !== "idempotent") {
+      throw lateCancellation;
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof M4DurabilityFailpointError) {
+      crashInjected = true;
+      throw error;
+    }
+    if (effectClosed) throw error;
+
+    const pending = readPendingPhysicalSettlement<ToolDispatchResult>(error);
+    if (pending !== undefined) {
+      if (pending.callerStop === "timeout") {
+        incrementEffectSettlementMetric(params.session, "callerTimeouts");
+      } else {
+        incrementEffectSettlementMetric(params.session, "callerAborts");
+      }
+      let unknownEvent: Event | undefined;
+      let unknownProjected = false;
+      const ensureUnknownRecorded = (): void => {
+        if (
+          unknownProjected ||
+          category === "idempotent" ||
+          !boundaryCrossed
+        ) {
+          return;
+        }
+        if (unknownEvent !== undefined) {
+          projectCommittedEffectEvent(params.session, unknownEvent);
+          unknownProjected = true;
+          return;
+        }
+        const commit = appendEffectUnknownOutcome(
+          params.session,
+          journal,
+          pending.callerStop === "timeout"
+            ? "caller_timeout_after_effect_boundary"
+            : "caller_abort_after_effect_boundary",
+        );
+        unknownEvent = commit.event;
+        requireEffectProjection(commit);
+        unknownProjected = true;
+      };
+
+      let callerProjectionError: unknown;
+      if (!boundaryCrossed) {
+        const observedAt = new Date().toISOString();
+        const commit = appendEffectResult(params.session, journal, {
+          outcome: "cancelled",
+          effectBoundary: "not_crossed",
+          noEffectEvidence: noEffectProof(journal, observedAt, error),
+          evidence: {
+            reason: `${pending.callerStop}_before_effect_boundary`,
+          },
+        });
+        effectClosed = true;
+        if (reservationId !== undefined) {
+          client?.void(
+            reservationId,
+            `tool_${pending.callerStop}_before_dispatch`,
+          );
+          admissionSettled = true;
+        }
+        try {
+          requireEffectProjection(commit);
+        } catch (projectionError) {
+          callerProjectionError = projectionError;
+        }
+      } else if (category !== "idempotent") {
+        poisonLiveEffect(params.session, liveIdentity(journal));
+        try {
+          ensureUnknownRecorded();
+        } catch (unknownError) {
+          if (unknownError instanceof M4DurabilityFailpointError) {
+            crashInjected = true;
+            throw unknownError;
+          }
+          callerProjectionError = unknownError;
+          // The supervisor retries before appending any late disposition.
+        }
+      }
+
+      const identity = liveIdentity(journal);
+      const observation = registerEffectSettlementObserver(params.session, {
+        identity,
+        settlement: pending.settlement,
+        onSettled: async (settlement) => {
+          const settleAdmission = (): void => {
+            if (reservationId === undefined || admissionSettled) return;
+            const rejectionWithoutNoEffectProof =
+              settlement.kind === "rejected" &&
+              category !== "idempotent" &&
+              boundaryCrossed &&
+              readEffectBoundaryNotCrossed(
+                settlement.reason,
+                new Date().toISOString(),
+              ) === undefined;
+            if (rejectionWithoutNoEffectProof) {
+              client?.holdUnknown(
+                reservationId,
+                pending.callerStop === "abort"
+                  ? "tool_cancelled_after_dispatch"
+                  : "tool_timeout_after_dispatch",
+              );
+              incrementEffectSettlementMetric(
+                params.session,
+                "heldAccounting",
+              );
+            } else {
+              reconcileToolUsage(
+                client,
+                reservationId,
+                estimate,
+                settlement.kind === "fulfilled"
+                  ? settlement.value
+                  : undefined,
+                params.session,
+              );
+            }
+            admissionSettled = true;
+          };
+          try {
+            if (category !== "idempotent" && boundaryCrossed) {
+              ensureUnknownRecorded();
+              if (!liveEffectWasExternallyResolved(params.session, identity)) {
+                const resolution = settlementResolution(
+                  journal,
+                  settlement.kind === "fulfilled"
+                    ? settlement.value
+                    : undefined,
+                  settlement.kind === "rejected"
+                    ? settlement.reason
+                    : undefined,
+                  new Date().toISOString(),
+                );
+                const commit = appendEffectReview(
+                  params.session,
+                  journal,
+                  resolution,
+                );
+                requireEffectProjection(commit);
+                if (resolution.workflowStatus !== "pending") {
+                  clearLiveEffectPoison(params.session, identity);
+                  incrementEffectSettlementMetric(
+                    params.session,
+                    "lateReviewResolutions",
+                  );
+                }
+              }
+            } else if (category === "idempotent" && !effectClosed) {
+              const result =
+                settlement.kind === "fulfilled"
+                  ? settlement.value
+                  : undefined;
+              const disposition = validateToolEffectDispositionEvidence(
+                result?.effectDisposition,
+              );
+              const settledAt = new Date().toISOString();
+              const commit = appendEffectResult(params.session, journal, {
+                outcome:
+                  disposition?.disposition === "confirmed_no_effect"
+                    ? "failed"
+                    : result !== undefined &&
+                        (result.isError !== true ||
+                          disposition?.disposition === "confirmed_committed")
+                      ? "committed"
+                      : "failed",
+                effectBoundary: "crossed",
+                ...(disposition?.disposition === "confirmed_no_effect"
+                  ? {
+                      noEffectEvidence: dispositionNoEffectProof(
+                        disposition,
+                        settledAt,
+                      ),
+                    }
+                  : {}),
+                ...(result !== undefined ? { result } : {}),
+                evidence:
+                  settlement.kind === "rejected"
+                    ? errorEvidence(settlement.reason)
+                    : { latePhysicalSettlement: true },
+              });
+              effectClosed = true;
+              requireEffectProjection(commit);
+            }
+            settleAdmission();
+          } catch (settlementError) {
+            settleAdmission();
+            throw settlementError;
+          } finally {
+            if (reservationId !== undefined) {
+              client?.acknowledgeCompletion(reservationId);
+            }
+            dispatch.cleanup();
+          }
+        },
+        onForcedShutdown: async () => {
+          try {
+            if (category !== "idempotent" && boundaryCrossed) {
+              ensureUnknownRecorded();
+            }
+            if (reservationId !== undefined && !admissionSettled) {
+              client?.holdUnknown(
+                reservationId,
+                "physical_settlement_exceeded_shutdown_drain",
+              );
+              incrementEffectSettlementMetric(
+                params.session,
+                "heldAccounting",
+              );
+              admissionSettled = true;
+            }
+          } catch (shutdownError) {
+            if (reservationId !== undefined && !admissionSettled) {
+              client?.holdUnknown(
+                reservationId,
+                "physical_settlement_shutdown_processing_failed",
+              );
+              incrementEffectSettlementMetric(
+                params.session,
+                "heldAccounting",
+              );
+              admissionSettled = true;
+            }
+            throw shutdownError;
+          } finally {
+            if (reservationId !== undefined) {
+              client?.acknowledgeCompletion(reservationId);
+            }
+            dispatch.cleanup();
+          }
+        },
+      });
+      observerOwnsPhysical = true;
+      void observation;
+      if (callerProjectionError !== undefined) {
+        throw callerProjectionError;
+      }
+      throw error;
+    }
+
+    const observedAt = new Date().toISOString();
+    const authoritativeNoEffect = readEffectBoundaryNotCrossed(
+      error,
+      observedAt,
+    );
+    if (!boundaryCrossed || authoritativeNoEffect !== undefined) {
+      const commit = appendEffectResult(params.session, journal, {
+        outcome: dispatch.context.signal.aborted ? "cancelled" : "failed",
+        effectBoundary: boundaryCrossed ? "crossed" : "not_crossed",
+        noEffectEvidence:
+          authoritativeNoEffect ?? noEffectProof(journal, observedAt, error),
+        evidence: errorEvidence(error),
+      });
+      if (reservationId !== undefined) {
+        if (boundaryCrossed) {
+          reconcileToolUsage(
+            client,
+            reservationId,
+            estimate,
+            undefined,
+            params.session,
+            "no_effect_usage_unavailable",
+          );
+        } else {
+          client?.void(reservationId, "tool_failed_before_dispatch");
+        }
+        admissionSettled = true;
+      }
+      effectClosed = true;
+      requireEffectProjection(commit);
+    } else if (category !== "idempotent") {
+      poisonLiveEffect(params.session, liveIdentity(journal));
+      const commit = appendEffectUnknownOutcome(
+        params.session,
+        journal,
+        dispatch.context.signal.aborted
+          ? "tool_cancelled_after_effect_boundary"
+          : "tool_failed_after_effect_boundary_without_disposition",
+      );
+      if (reservationId !== undefined) {
+        reconcileToolUsage(
+          client,
+          reservationId,
+          estimate,
+          undefined,
+          params.session,
+          "tool_failed_after_effect_boundary",
+        );
+        admissionSettled = true;
+      }
+      effectClosed = true;
+      requireEffectProjection(commit);
+    } else {
+      const commit = appendEffectResult(params.session, journal, {
+        outcome: dispatch.context.signal.aborted ? "cancelled" : "failed",
+        effectBoundary: "crossed",
+        evidence: errorEvidence(error),
+      });
+      if (reservationId !== undefined) {
+        reconcileToolUsage(
+          client,
+          reservationId,
+          estimate,
+          undefined,
+          params.session,
+          "tool_failed_after_effect_boundary",
+        );
+        admissionSettled = true;
+      }
+      effectClosed = true;
+      requireEffectProjection(commit);
+    }
+    throw error;
+  } finally {
+    if (!observerOwnsPhysical && !crashInjected) {
+      if (reservationId !== undefined && !admissionSettled) {
+        if (boundaryCrossed) {
+          client?.holdUnknown(
+            reservationId,
+            "effect_completion_processing_failed",
+          );
+          incrementEffectSettlementMetric(params.session, "heldAccounting");
+        } else {
+          client?.void(reservationId, "tool_failed_before_dispatch");
+        }
+        admissionSettled = true;
+      }
+      if (reservationId !== undefined) {
+        client?.acknowledgeCompletion(reservationId);
+      }
+      dispatch.cleanup();
+    }
+  }
 }

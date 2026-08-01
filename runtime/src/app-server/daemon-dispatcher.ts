@@ -2328,9 +2328,38 @@ function validateSessionResolveToolCallParams(
 ): SessionResolveToolCallParams {
   const validated = validateObjectShape(params, {
     methodName: "session.resolveToolCall",
-    stringFields: ["sessionId", "toolCallId", "reviewer"],
+    stringFields: [
+      "sessionId",
+      "toolCallId",
+      "disposition",
+      "evidenceRef",
+      "evidenceSha256",
+      "reviewer",
+    ],
   });
   validateRequiredString(validated, "session.resolveToolCall", "sessionId");
+  validateRequiredString(validated, "session.resolveToolCall", "toolCallId");
+  validateRequiredString(validated, "session.resolveToolCall", "evidenceRef");
+  validateRequiredString(
+    validated,
+    "session.resolveToolCall",
+    "evidenceSha256",
+  );
+  const disposition = validated.disposition;
+  if (
+    disposition !== "confirmed_committed" &&
+    disposition !== "confirmed_no_effect" &&
+    disposition !== "remains_unknown"
+  ) {
+    throw invalidParams(
+      "session.resolveToolCall disposition must be confirmed_committed, confirmed_no_effect, or remains_unknown",
+    );
+  }
+  if (!/^[0-9a-f]{64}$/u.test(String(validated.evidenceSha256))) {
+    throw invalidParams(
+      "session.resolveToolCall evidenceSha256 must be lowercase sha256",
+    );
+  }
   return validated as SessionResolveToolCallParams;
 }
 

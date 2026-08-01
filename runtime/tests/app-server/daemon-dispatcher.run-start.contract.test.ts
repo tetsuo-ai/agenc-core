@@ -111,6 +111,7 @@ class TestJournal implements WorkflowRunJournal {
       runId: this.runId,
       stepId: input.stepId,
       outcome: input.outcome,
+      effectBoundary: "crossed",
       eventId: ref.eventId,
       eventSequence: ref.sequence,
       ...(input.resultDigest !== undefined

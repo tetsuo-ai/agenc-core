@@ -5397,6 +5397,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
       concurrencyClass: SHARED_READ,
       metadata: { mutating: false },
       isReadOnly: true,
+      recoveryCategory: "idempotent",
       execute: async () => {
         markToolStarted();
         markToolCompleted();

@@ -18,6 +18,7 @@ import {
 } from "./execution.js";
 import type { Tool } from "./types.js";
 import type { ToolInvocation } from "./context.js";
+import { readPendingPhysicalSettlement } from "./physical-settlement.js";
 import { buildGuardianApprovalRequest } from "../permissions/guardian/approval-request.js";
 import type { GuardianApprovalReviewOptions } from "../permissions/guardian/reviewer.js";
 import type {
@@ -130,7 +131,7 @@ describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
     expect(resolveTimeoutMs(tool, { timeoutMs: 5_000 })).toBeNull();
   });
 
-  test("timer records ToolTimeoutError but waits for physical settlement", async () => {
+  test("timer stops the caller promptly and exposes physical settlement", async () => {
     vi.useFakeTimers();
     try {
       const physical = Promise.withResolvers<string>();
@@ -149,16 +150,21 @@ describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
       );
 
       await vi.advanceTimersByTimeAsync(50);
-      expect(settled).toBe(false);
+      await Promise.resolve();
+      expect(settled).toBe(true);
 
+      const error = await running.catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ToolTimeoutError);
+      const pending = readPendingPhysicalSettlement<string>(error);
+      expect(pending?.callerStop).toBe("timeout");
       physical.resolve("late result");
-      await expect(running).rejects.toThrow(ToolTimeoutError);
+      await expect(pending?.settlement).resolves.toBe("late result");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  test("signal abort preempts timer but waits for physical settlement", async () => {
+  test("signal abort preempts timer without waiting for physical settlement", async () => {
     const ctl = new AbortController();
     const physical = Promise.withResolvers<string>();
     let settled = false;
@@ -177,14 +183,15 @@ describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
     );
 
     ctl.abort("user");
-    await Promise.resolve();
-    expect(settled).toBe(false);
-
+    const error = await running.catch((caught: unknown) => caught);
+    expect(settled).toBe(true);
+    const pending = readPendingPhysicalSettlement<string>(error);
+    expect(pending?.callerStop).toBe("abort");
     physical.resolve("late result");
-    await expect(running).rejects.toThrow(/user|aborted/);
+    await expect(pending?.settlement).resolves.toBe("late result");
   });
 
-  test("null timeout preserves abort semantics without releasing early", async () => {
+  test("null timeout still separates abort from physical settlement", async () => {
     const ctl = new AbortController();
     const physical = Promise.withResolvers<string>();
     let settled = false;
@@ -203,11 +210,11 @@ describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
     );
 
     ctl.abort("user");
-    await Promise.resolve();
-    expect(settled).toBe(false);
-
+    const error = await running.catch((caught: unknown) => caught);
+    expect(settled).toBe(true);
+    const pending = readPendingPhysicalSettlement<string>(error);
     physical.resolve("late result");
-    await expect(running).rejects.toThrow(/user|aborted/);
+    await expect(pending?.settlement).resolves.toBe("late result");
   });
 
   test("timeout aborts the provided controller so the underlying tool can cancel", async () => {
@@ -234,10 +241,13 @@ describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
       await vi.advanceTimersByTimeAsync(20);
       expect(ctl.signal.aborted).toBe(true);
       expect(String(ctl.signal.reason)).toContain("tool timeout");
-      expect(settled).toBe(false);
+      await Promise.resolve();
+      expect(settled).toBe(true);
 
+      const error = await running.catch((caught: unknown) => caught);
+      const pending = readPendingPhysicalSettlement<string>(error);
       physical.resolve("late result");
-      await expect(running).rejects.toThrow(ToolTimeoutError);
+      await expect(pending?.settlement).resolves.toBe("late result");
     } finally {
       vi.useRealTimers();
     }
@@ -526,7 +536,7 @@ describe("runToolUse end-to-end", () => {
     expect(seenSurface).toBe("tool");
   });
 
-  test("I-9 timeout waits for a stalled tool to physically settle", async () => {
+  test("I-9 timeout returns before a stalled tool physically settles", async () => {
     const tool: Tool = {
       name: "stuck",
       description: "",

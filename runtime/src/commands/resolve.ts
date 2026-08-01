@@ -7,8 +7,7 @@
  * (`agenc state resolve-tool-call`) cannot run while the daemon holds the
  * session lock — this command resolves through the live daemon instead.
  *
- * Usage: /resolve            — resolve every pending unknown-outcome effect
- *        /resolve <call-id>  — resolve one specific effect
+ * Usage: /resolve <call-id> <disposition> <evidence-ref> <evidence-sha256>
  */
 
 import {
@@ -19,7 +18,13 @@ import {
 
 type ResolvableSession = {
   readonly resolveDaemonToolCall?: (params: {
-    readonly toolCallId?: string;
+    readonly toolCallId: string;
+    readonly disposition:
+      | "confirmed_committed"
+      | "confirmed_no_effect"
+      | "remains_unknown";
+    readonly evidenceRef: string;
+    readonly evidenceSha256: string;
     readonly reviewer?: string;
   }) => Promise<{
     readonly sessionId: string;
@@ -45,20 +50,38 @@ export const resolveCommand: SlashCommand = {
         return {
           kind: "error",
           message:
-            "This session cannot resolve effects here — close the session and run `agenc state resolve-tool-call <session-id> <tool-call-id>` from the project directory.",
+            "This session cannot resolve effects here — close the session and run `agenc state resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>` from the project directory.",
         };
       }
-      const toolCallId = ctx.argsRaw.trim() || undefined;
+      const [toolCallId, disposition, evidenceRef, evidenceSha256, extra] =
+        ctx.argsRaw.trim().split(/\s+/u);
+      if (
+        toolCallId === undefined ||
+        evidenceRef === undefined ||
+        evidenceSha256 === undefined ||
+        extra !== undefined ||
+        (disposition !== "confirmed_committed" &&
+          disposition !== "confirmed_no_effect" &&
+          disposition !== "remains_unknown") ||
+        !/^[0-9a-f]{64}$/u.test(evidenceSha256)
+      ) {
+        return {
+          kind: "error",
+          message:
+            "Usage: /resolve <call-id> <confirmed_committed|confirmed_no_effect|remains_unknown> <evidence-ref> <evidence-sha256>",
+        };
+      }
       const result = await session.resolveDaemonToolCall({
-        ...(toolCallId !== undefined ? { toolCallId } : {}),
+        toolCallId,
+        disposition,
+        evidenceRef,
+        evidenceSha256,
         reviewer: "tui_operator",
       });
       if (result.resolved.length === 0) {
         return {
           kind: "text",
-          text: toolCallId !== undefined
-            ? `No pending unknown-outcome effect '${toolCallId}' in this session (nothing blocked).`
-            : "No pending unknown-outcome effects — the session is not blocked.",
+          text: `No pending unknown-outcome effect '${toolCallId}' in this session (nothing blocked).`,
         };
       }
       const lines = result.resolved.map(

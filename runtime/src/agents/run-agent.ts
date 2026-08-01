@@ -2179,12 +2179,13 @@ export function buildFilteredRegistry(
               : session.nextInternalSubId(),
           tool: baseTool,
           args: prepared.args,
-          invoke: async ({ signal }) => {
+          invoke: async ({ signal, crossEffectBoundary }) => {
             Object.defineProperty(prepared.args, "__abortSignal", {
               value: signal,
               enumerable: false,
               configurable: true,
             });
+            crossEffectBoundary();
             return childToolResultToDispatchResult(
               await baseTool.execute(prepared.args),
             );
@@ -2227,6 +2228,9 @@ function childToolResultToDispatchResult(
     ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
     ...(result.admissionUsage !== undefined
       ? { admissionUsage: result.admissionUsage }
+      : {}),
+    ...(result.effectDisposition !== undefined
+      ? { effectDisposition: result.effectDisposition }
       : {}),
   };
 }

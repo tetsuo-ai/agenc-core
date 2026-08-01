@@ -26,6 +26,7 @@ import {
 } from "./migrations/index.js";
 import { AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION } from "./migrations/012_agent_role_workspace_provenance.js";
 import { RUN_DURABILITY_SCHEMA_VERSION } from "./migrations/015_run_durability_schema.js";
+import { EFFECT_EVIDENCE_V2_SCHEMA_VERSION } from "./migrations/017_effect_evidence_v2.js";
 import { replayAtomicSessionSnapshotWrites } from "./atomic-snapshot-writes.js";
 
 export interface OpenStateDatabaseOptions {
@@ -44,6 +45,7 @@ export const STATE_DATABASE_FILENAME = "agenc-state_1.sqlite";
 export const LOGS_DATABASE_FILENAME = "agenc-logs_1.sqlite";
 export const STATE_PRE_V12_BACKUP_FILENAME = "agenc-state_1.pre-v12.sqlite";
 export const STATE_PRE_V15_BACKUP_FILENAME = "agenc-state_1.pre-v15.sqlite";
+export const STATE_PRE_V17_BACKUP_FILENAME = "agenc-state_1.pre-v17.sqlite";
 
 export type SqliteDatabase = BetterSqlite3.Database;
 export type SqliteStatement<
@@ -264,6 +266,14 @@ function applyStateMigrations(
           STATE_PRE_V15_BACKUP_FILENAME,
           RUN_DURABILITY_SCHEMA_VERSION,
           "pre-v15",
+        );
+      }
+      if (maxApplied < EFFECT_EVIDENCE_V2_SCHEMA_VERSION) {
+        createPreMigrationStateBackupLocked(
+          paths,
+          STATE_PRE_V17_BACKUP_FILENAME,
+          EFFECT_EVIDENCE_V2_SCHEMA_VERSION,
+          "pre-v17",
         );
       }
     }

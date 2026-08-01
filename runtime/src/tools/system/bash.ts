@@ -51,6 +51,7 @@ import {
   spawnContainedProcess,
   terminateProcessTreeAndWait,
 } from "../../utils/supervisedProcess.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -104,7 +105,29 @@ function errorResult(
     content: message,
     isError: true,
     ...(metadata !== undefined ? { metadata } : {}),
+    effectDisposition: createToolEffectDispositionEvidence({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: "tool:system.bash:pre-dispatch",
+      evidenceMaterial: message,
+    }),
   };
+}
+
+function processExitDisposition(options: {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly shellMode: boolean;
+  readonly exitCode: number | null;
+  readonly timedOut: boolean;
+  readonly aborted: boolean;
+}) {
+  return createToolEffectDispositionEvidence({
+    disposition: "confirmed_committed",
+    evidenceKind: "provider_receipt",
+    evidenceRef: "tool:system.bash:process-exit",
+    evidenceMaterial: JSON.stringify(options),
+  });
 }
 
 function toText(value: unknown): string {
@@ -535,6 +558,14 @@ function runSpawnedCommand(params: {
       resolve({
         content: displayOutput.content,
         isError: isError || undefined,
+        effectDisposition: processExitDisposition({
+          command: params.metadataCommand,
+          args: params.metadataArgs,
+          shellMode: params.shellMode,
+          exitCode,
+          timedOut,
+          aborted,
+        }),
         metadata: {
           command: params.metadataCommand,
           args: params.metadataArgs,
@@ -1451,6 +1482,14 @@ export function createBashTool(config?: BashToolConfig): Tool {
               resolve({
                 content: displayOutput.content,
                 isError: true,
+                effectDisposition: processExitDisposition({
+                  command,
+                  args: execArgs,
+                  shellMode: false,
+                  exitCode,
+                  timedOut: isTimeout,
+                  aborted: abortSignal?.aborted === true,
+                }),
                 metadata: {
                   command,
                   args: execArgs,
@@ -1480,6 +1519,14 @@ export function createBashTool(config?: BashToolConfig): Tool {
             });
             resolve({
               content: displayOutput.content,
+              effectDisposition: processExitDisposition({
+                command,
+                args: execArgs,
+                shellMode: false,
+                exitCode: 0,
+                timedOut: false,
+                aborted: false,
+              }),
               metadata: {
                 command,
                 args: execArgs,

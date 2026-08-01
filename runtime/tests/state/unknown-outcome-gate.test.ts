@@ -1,7 +1,7 @@
 // M4 unknown-outcome mutation gate: while a session holds an unresolved
 // poisoned (unknown-outcome) effect, recording a NEW side-effecting tool
 // call is refused with a typed error until a reviewer explicitly resolves
-// the effect. Idempotent/interactive calls and other sessions stay
+// the effect. Only idempotent calls and calls in other sessions stay
 // unaffected; the daemon's post-dispatch snapshot observer uses "flag"
 // mode, which records reality but surfaces the violation.
 
@@ -105,14 +105,14 @@ describe("unknown-outcome mutation gate", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("does not gate idempotent or interactive calls, or other sessions", () => {
+  it("gates interactive effects but permits idempotent calls and other sessions", () => {
     poisonCall("call_poisoned");
     expect(() =>
       startCall({ toolCallId: "call_read", recoveryCategory: "idempotent" }),
     ).not.toThrow();
     expect(() =>
       startCall({ toolCallId: "call_ask", recoveryCategory: "interactive" }),
-    ).not.toThrow();
+    ).toThrow(UnknownOutcomeMutationBlockedError);
     expect(() =>
       startCall({ sessionId: "session_other", toolCallId: "call_elsewhere" }),
     ).not.toThrow();
@@ -193,11 +193,17 @@ describe("unknown-outcome mutation gate", () => {
       "resolve-tool-call",
       "session_gate",
       "call_poisoned",
+      "confirmed_no_effect",
+      "operator-observation:call_poisoned",
+      "a".repeat(64),
     ]);
     expect(command).toEqual({
       kind: "resolve-tool-call",
       sessionId: "session_gate",
       toolCallId: "call_poisoned",
+      disposition: "confirmed_no_effect",
+      evidenceRef: "operator-observation:call_poisoned",
+      evidenceSha256: "a".repeat(64),
     });
     expect(await runAgenCStateCli(command!, { driver, io })).toBe(0);
     expect(out.join("")).toContain("Resolved unknown-outcome tool call");

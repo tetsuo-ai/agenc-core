@@ -57,6 +57,11 @@ import { resolveUnknownOutcomeEffect } from "../state/unknown-outcome-gate.js";
 import { getAgenCConfigHomeDir } from "../utils/envUtils.js";
 import { sanitizePath } from "../utils/path.js";
 import { isRecord } from "../utils/record.js";
+import {
+  EFFECT_EVIDENCE_FORMAT_VERSION,
+  EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
+  type EffectNoEffectProof,
+} from "../contracts/run-contracts.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
   /** Flush interval in ms. Default 100. */
@@ -246,15 +251,47 @@ export class RolloutStore {
         eventId,
         eventSequence: sequence!,
         intentAt: payload.recordedAt,
+        effectFormatVersion: payload.formatVersion ?? 1,
+        ...(payload.minimumReaderRuntime !== undefined
+          ? { minimumReaderRuntime: payload.minimumReaderRuntime }
+          : {}),
       });
       return;
     }
     if (message.type === "effect_result") {
       const payload = message.payload;
+      if (
+        payload.formatVersion === undefined &&
+        payload.recoveryCategory !== "idempotent" &&
+        (payload.outcome === "failed" || payload.outcome === "cancelled")
+      ) {
+        this.runDurabilityRepo.markEffectUnknown({
+          runId: payload.runId,
+          stepId: payload.stepId,
+          eventId,
+          eventSequence: sequence!,
+          reason: "legacy_ambiguous_terminal_evidence",
+          evidence: payload.evidence,
+          observedAt: payload.recordedAt,
+        });
+        recordInFlightToolCallUnknownOutcome(this.stateDriver, {
+          sessionId: this.sessionId,
+          agentId: payload.runId,
+          toolCallId: payload.callId,
+          toolName: payload.toolName,
+          observedAt: payload.recordedAt,
+          recoveryCategory: payload.recoveryCategory,
+        });
+        return;
+      }
       this.runDurabilityRepo.completeEffect({
         runId: payload.runId,
         stepId: payload.stepId,
         outcome: payload.outcome,
+        effectBoundary: payload.effectBoundary ?? "crossed",
+        ...(payload.noEffectEvidence !== undefined
+          ? { noEffectEvidence: payload.noEffectEvidence }
+          : {}),
         eventId,
         eventSequence: sequence!,
         ...(payload.resultDigest !== undefined
@@ -293,6 +330,11 @@ export class RolloutStore {
     }
     if (message.type === "effect_review_resolved") {
       const payload = message.payload;
+      if (typeof payload.resolution === "string") {
+        // Legacy arbitrary labels are retained in the canonical journal but
+        // can never lift an unknown-outcome mutation gate.
+        return;
+      }
       const effect = this.runDurabilityRepo.getEffect(
         payload.runId,
         payload.stepId,
@@ -305,8 +347,6 @@ export class RolloutStore {
       this.runDurabilityRepo.resolveEffectReview({
         runId: payload.runId,
         stepId: payload.stepId,
-        reviewedAt: payload.reviewedAt,
-        reviewedBy: payload.reviewedBy,
         resolution: payload.resolution,
         eventId,
         evidence: {
@@ -315,10 +355,12 @@ export class RolloutStore {
           source: "canonical_run_journal",
         },
       });
-      resolveUnknownOutcomeEffect(this.stateDriver, {
-        sessionId: effect.sessionId,
-        toolCallId: effect.callId,
-      });
+      if (payload.resolution.workflowStatus !== "pending") {
+        resolveUnknownOutcomeEffect(this.stateDriver, {
+          sessionId: effect.sessionId,
+          toolCallId: effect.callId,
+        });
+      }
     }
   }
 
@@ -350,6 +392,18 @@ export class RolloutStore {
         decision.blocking,
       );
     }
+  }
+
+  /** Fail closed unless prior attempts prove an automatic re-dispatch safe. */
+  assertToolEffectAttemptAllowed(options: {
+    readonly callId: string;
+    readonly recoveryCategory: ToolRecoveryCategory;
+    readonly idempotencyKey?: string;
+  }): void {
+    this.runDurabilityRepo.assertEffectAttemptAllowed({
+      sessionId: this.sessionId,
+      ...options,
+    });
   }
 
   get isDegraded(): boolean {
@@ -668,6 +722,9 @@ export class RolloutStore {
                 msg: {
                   type: "effect_result",
                   payload: {
+                    formatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
+                    minimumReaderRuntime:
+                      EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
                     runId: payload.runId,
                     stepId: payload.stepId,
                     callId: payload.callId,
@@ -675,6 +732,13 @@ export class RolloutStore {
                     recoveryCategory: payload.recoveryCategory,
                     intentEventSeq: intent.seq,
                     outcome: "cancelled",
+                    effectBoundary: "not_crossed",
+                    noEffectEvidence: recoveryNoEffectProof({
+                      runId: payload.runId,
+                      stepId: payload.stepId,
+                      recordedAt,
+                      admissionStatus,
+                    }),
                     evidence: {
                       reason: "daemon_recovered_before_effect_dispatch",
                       admissionStatus,
@@ -690,6 +754,9 @@ export class RolloutStore {
                 msg: {
                   type: "effect_unknown_outcome",
                   payload: {
+                    formatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
+                    minimumReaderRuntime:
+                      EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
                     runId: payload.runId,
                     stepId: payload.stepId,
                     callId: payload.callId,
@@ -988,6 +1055,33 @@ function uniqueRecoveryEventId(
 
 function recoveryEvidenceKey(eventId: string, sequence: number): string {
   return `${sequence}\0${eventId}`;
+}
+
+function recoveryNoEffectProof(options: {
+  readonly runId: string;
+  readonly stepId: string;
+  readonly recordedAt: string;
+  readonly admissionStatus: string | undefined;
+}): EffectNoEffectProof {
+  const evidenceRef =
+    `admission-recovery:not-dispatched:${options.runId}:${options.stepId}`;
+  return {
+    version: 1,
+    kind: "effect_no_effect_proof",
+    evidenceKind: "boundary_not_crossed",
+    evidenceRef,
+    evidenceSha256: createHash("sha256")
+      .update(
+        JSON.stringify({
+          evidenceRef,
+          admissionStatus: options.admissionStatus ?? null,
+          recordedAt: options.recordedAt,
+        }),
+        "utf8",
+      )
+      .digest("hex"),
+    observedAt: options.recordedAt,
+  };
 }
 
 function normalizeThreadSpawnEdgesSnapshot(

@@ -193,7 +193,7 @@ describe("canonical legacy tool admission", () => {
     expect(runtimeFileRead.execute).not.toHaveBeenCalled();
   });
 
-  it("forwards lease cancellation to the canonical effect and holds its outcome unknown", async () => {
+  it("forwards lease cancellation and reconciles the idempotent effect after settlement", async () => {
     const leaseController = new AbortController();
     const state = admissionHarness(leaseController.signal);
     runtimeFileRead.estimate.mockReturnValue({
@@ -229,10 +229,13 @@ describe("canonical legacy tool admission", () => {
 
     await expect(call).rejects.toBe(cancellation);
     expect(effectSignal.aborted).toBe(true);
-    expect(state.admission.holdUnknown).toHaveBeenCalledWith(
-      expect.any(String),
-      "tool_cancelled_after_dispatch",
-    );
+    await vi.waitFor(() => {
+      expect(state.admission.reconcile).toHaveBeenCalledWith(
+        expect.any(String),
+        { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      );
+    });
+    expect(state.admission.holdUnknown).not.toHaveBeenCalled();
   });
 
   it("does not double-admit a call carrying the authenticated router context", async () => {

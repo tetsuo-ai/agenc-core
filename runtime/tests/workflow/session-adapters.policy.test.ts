@@ -31,8 +31,13 @@ import {
 import type { WorkflowRunSessionPolicy } from "../../src/app-server/workflow/verified-change-controller.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { readStartupCliFlags } from "../../src/bin/startup-selection.js";
+import {
+  EFFECT_EVIDENCE_FORMAT_VERSION,
+  EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
+} from "../../src/contracts/run-contracts.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import type { ToolPermissionContext } from "../../src/permissions/types.js";
+import { EventLog, type Event } from "../../src/session/event-log.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import {
   openStateDatabases,
@@ -53,6 +58,7 @@ let cwd: string;
 let driver: StateSqliteDriver;
 let repo: StateRunDurabilityRepository;
 let bootstrapCalls: FakeBootstrapCall[];
+let bootstrapEvents: Event[];
 let resolvedPolicies: (WorkflowRunSessionPolicy | undefined)[];
 
 beforeEach(() => {
@@ -62,6 +68,7 @@ beforeEach(() => {
   driver = openStateDatabases({ cwd, agencHome: home });
   repo = new StateRunDurabilityRepository(driver);
   bootstrapCalls = [];
+  bootstrapEvents = [];
   resolvedPolicies = [];
 });
 
@@ -98,6 +105,8 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
     }
   }
   const registry = new PermissionModeRegistry(baseContext(mode));
+  const eventLog = new EventLog();
+  eventLog.subscribe((event) => bootstrapEvents.push(event));
   bootstrapCalls.push({
     argv,
     registry,
@@ -108,6 +117,7 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
     session: {
       conversationId: options.conversationId ?? RUN_ID,
       permissionModeRegistry: registry,
+      emit: (event: Event) => eventLog.emit(event),
       services: {},
     },
     rolloutStore: { runEpoch: 1 },
@@ -249,6 +259,69 @@ describe("A2 — spec permission policy on the run session", () => {
       "bypassPermissions",
     ]);
     expect(readStartupCliFlags(argv).permissionMode).toBe("plan");
+  });
+});
+
+describe("A1 — effect evidence format", () => {
+  it("writes v2 intent and unknown evidence that canonical replay accepts", async () => {
+    const seams = makeSeams();
+    const journal = await seams.journal.open(RUN_ID, { repoPath: cwd });
+    const intentAt = "2026-07-18T00:00:00.000Z";
+    const observedAt = "2026-07-18T00:00:01.000Z";
+    repo.ensureInitialEpoch({ runId: RUN_ID, openedAt: intentAt });
+    const intentRef = journal.appendIntent({
+      stepId: "workflow:implement#1",
+      callId: "workflow-call-1",
+      toolName: "workflow.spawn",
+      recoveryCategory: "side-effecting",
+      intentDigest: "sha256:workflow-intent",
+      intentAt,
+    });
+    journal.appendUnknown({
+      stepId: "workflow:implement#1",
+      reason: "worker_outcome_unavailable",
+      observedAt,
+    });
+
+    const intentEvent = bootstrapEvents.find(
+      (event) => event.msg.type === "effect_intent",
+    );
+    const unknownEvent = bootstrapEvents.find(
+      (event) => event.msg.type === "effect_unknown_outcome",
+    );
+    expect(intentEvent?.msg).toMatchObject({
+      type: "effect_intent",
+      payload: {
+        formatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
+        minimumReaderRuntime: EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
+      },
+    });
+    expect(unknownEvent?.msg).toMatchObject({
+      type: "effect_unknown_outcome",
+      payload: {
+        formatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
+        minimumReaderRuntime: EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
+      },
+    });
+    expect(
+      repo.beginEffect({
+        runId: RUN_ID,
+        epoch: journal.epoch,
+        stepId: "workflow:implement#1",
+        sessionId: journal.sessionId,
+        callId: "workflow-call-1",
+        toolName: "workflow.spawn",
+        recoveryCategory: "side-effecting",
+        intentDigest: "sha256:workflow-intent",
+        eventId: intentRef.eventId,
+        eventSequence: intentRef.sequence,
+        intentAt,
+        effectFormatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
+        minimumReaderRuntime: EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
+        projection: "canonical_replay",
+      }).applied,
+    ).toBe(false);
+    await journal.close();
   });
 });
 

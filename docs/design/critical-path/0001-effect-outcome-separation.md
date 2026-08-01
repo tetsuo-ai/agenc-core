@@ -101,6 +101,12 @@ state defaults to unknown, never failed/no-effect. Writers and every retry
 reader switch in one merge-safe sequence. Each persisted boundary records its
 format/minimum-reader requirement.
 
+The cutover uses `run_effects.effect_format_version = 2` with minimum reader
+runtime `0.14.0`. Schema migration v17 preserves every legacy review payload,
+converts ambiguous non-idempotent v1 `failed` / `cancelled` rows to pending
+`unknown_outcome`, and creates a verified pre-v17 database backup. Legacy
+free-form review labels remain audit evidence but cannot lift the gate.
+
 ## Rollback
 
 Rollback disables new dispatch or automatic retry while the minimum compatible
