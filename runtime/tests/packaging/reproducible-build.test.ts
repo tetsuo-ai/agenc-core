@@ -255,8 +255,10 @@ describe("reproducible install and release contract", () => {
     for (const inventory of [
       "45 passing macOS tests in eight suites across five files",
       "47 passing Windows tests in ten suites across six files",
-      "shared 44-test, seven-suite, four-file FND set",
-      "49 tests, eleven suites, and seven files",
+      "same 44-test, seven-suite, four-file FND set",
+      "shared 80-test, eight-suite, five-file FND set",
+      "81 tests, ten suites, and six files",
+      "86 tests, thirteen suites, and eight files",
     ]) {
       expect(normalizedCiRequiredGates).toContain(inventory);
     }
@@ -407,6 +409,9 @@ describe("reproducible install and release contract", () => {
     expect(macosJob).toContain(
       "Run the exact macOS FND/native capability lane",
     );
+    expect(macosJob).toContain(
+      "tests/fnd/benchmark-harness-faults.test.ts",
+    );
     expect(macosJob).toContain("tests/fnd/bounded-file-io.test.ts");
     expect(macosJob).toContain("tests/fnd/fnd-fixtures.test.ts");
     expect(macosJob).toContain("tests/fnd/portable-repository-path.test.ts");
@@ -415,10 +420,10 @@ describe("reproducible install and release contract", () => {
     );
     expect(macosJob).toContain("tests/tools/runtimes/runtime.darwin.test.ts");
     expect(macosJob).toContain("--config vitest.native.config.ts");
-    expect(macosJob).toContain("numTotalTestSuites: 8");
-    expect(macosJob).toContain("numTotalTests: 45");
+    expect(macosJob).toContain("numTotalTestSuites: 10");
+    expect(macosJob).toContain("numTotalTests: 81");
     expect(macosJob).toContain(
-      "macOS FND/native capability lane passed 45 tests in 5 files with zero skipped",
+      "macOS FND/native capability lane passed 81 tests in 6 files with zero skipped",
     );
 
     const windowsJob = workflow.slice(workflow.indexOf("\n  windows-native:"));
@@ -435,6 +440,9 @@ describe("reproducible install and release contract", () => {
     expect(windowsJob).toContain(
       "tests/durability/atomic-artifact.win32.test.ts",
     );
+    expect(windowsJob).toContain(
+      "tests/fnd/benchmark-harness-faults.test.ts",
+    );
     expect(windowsJob).toContain("tests/fnd/bounded-file-io.test.ts");
     expect(windowsJob).toContain("tests/fnd/fnd-fixtures.test.ts");
     expect(windowsJob).toContain("tests/fnd/portable-repository-path.test.ts");
@@ -443,8 +451,8 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).toContain("tests/utils/execFileNoThrow.win32.test.ts");
     expect(windowsJob).toContain("--config vitest.native.config.ts");
-    expect(windowsJob).toContain("numTotalTestSuites: 11");
-    expect(windowsJob).toContain("numTotalTests: 49");
+    expect(windowsJob).toContain("numTotalTestSuites: 13");
+    expect(windowsJob).toContain("numTotalTests: 86");
     expect(windowsJob).toContain(
       "npm.cmd ci --ignore-scripts --no-audit --no-fund",
     );
@@ -454,7 +462,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).not.toContain("npm_config_build_from_source");
     expect(windowsJob).toContain(
-      "Windows FND/native capability lane passed 49 tests in 7 files with zero skipped",
+      "Windows FND/native capability lane passed 86 tests in 8 files with zero skipped",
     );
 
     expect(
@@ -491,7 +499,12 @@ describe("reproducible install and release contract", () => {
         join(workspace, target).replaceAll("\\", "/"),
       );
     });
-    const lfSubjects = [...binSubjects, "package-lock.json"];
+    const lfSubjects = [
+      ...binSubjects,
+      "package-lock.json",
+      "runtime/benchmarks/fnd/baseline.v1.json",
+      "runtime/benchmarks/fnd/baseline.v1.md",
+    ];
     const attributes = execFileSync(
       "git",
       ["check-attr", "eol", "--", ...lfSubjects],

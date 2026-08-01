@@ -912,14 +912,18 @@ postcondition; this narrow lane is not an OS egress boundary.
 The `neovim` job similarly provisions the official digest- and byte-pinned
 Neovim 0.12.1 Linux binary and requires all four real-process lifecycle tests
 in its one-file allowlist. The `macos-native` and `windows-native` jobs first
-run the shared 44-test, seven-suite, four-file FND set used by release builders.
-The macOS job adds one Seatbelt test for an exact total of 45 tests, eight
-suites, and five files. The Windows PR job adds its named-pipe and
-atomic-publication/`.cmd` contracts for an exact total of 49 tests, eleven
-suites, and seven files; the Windows release subset excludes the two
-named-pipe-only PR tests and therefore contains 47 tests, ten suites, and six
-files. Every result parser requires its exact reviewed suite, test, and file
-counts with no failed, pending, skipped, or todo tests.
+run a shared 80-test, eight-suite, five-file FND set. It combines the 44-test
+release-builder set with 36 benchmark-harness fault contracts for process-tree
+containment, owned-root retention, exclusive artifact publication, minimal
+subprocess environments, bounded metadata commands, and provenance binding.
+The macOS job adds one Seatbelt test for an exact total of 81 tests, ten
+suites, and six files. The Windows PR job adds its named-pipe and
+atomic-publication/`.cmd` contracts for an exact total of 86 tests, thirteen
+suites, and eight files. Release builders deliberately retain their narrower
+44-test shared set: the Windows release subset excludes the two named-pipe-only
+PR tests and the benchmark fault contract, so it remains 47 tests, ten suites,
+and six files. Every result parser requires its exact reviewed suite, test, and
+file counts with no failed, pending, skipped, or todo tests.
 
 This narrow hosted check supplements the local required gate; it does not
 replace or authorize the broader test, typecheck, build, TUI, or release

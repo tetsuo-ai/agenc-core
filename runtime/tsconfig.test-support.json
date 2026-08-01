@@ -50,6 +50,8 @@
     "tests/helpers/seeded-rng.ts",
     "tests/helpers/temp-workspace.ts",
     "tests/helpers/unicode-15-1-repertoire.ts",
+    "tests/fnd/benchmark-baselines.contract.test.ts",
+    "tests/fnd/benchmark-harness-faults.test.ts",
     "tests/fnd/bounded-file-io.test.ts",
     "tests/fnd/bounded-repository-git.test.ts",
     "tests/fnd/bounded-repository-transaction-races.test.ts",

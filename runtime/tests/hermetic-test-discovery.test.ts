@@ -61,6 +61,7 @@ const NATIVE_TEST_FILES = [
 ] as const;
 
 const HOSTED_FND_TEST_FILES = [
+  "tests/fnd/benchmark-harness-faults.test.ts",
   "tests/fnd/bounded-file-io.test.ts",
   "tests/fnd/fnd-fixtures.test.ts",
   "tests/fnd/portable-repository-path.test.ts",

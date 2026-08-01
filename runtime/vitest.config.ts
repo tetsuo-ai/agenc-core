@@ -125,6 +125,7 @@ export const NATIVE_TEST_INCLUDE = Object.freeze([
 
 /** Portable FND contracts repeated by every supported native builder. */
 export const HOSTED_FND_TEST_INCLUDE = Object.freeze([
+  'tests/fnd/benchmark-harness-faults.test.ts',
   'tests/fnd/bounded-file-io.test.ts',
   'tests/fnd/fnd-fixtures.test.ts',
   'tests/fnd/portable-repository-path.test.ts',

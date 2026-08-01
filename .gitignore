@@ -66,6 +66,7 @@ obj/
 !docs/api-baseline/*.json
 !docs/security/fender-medium-baseline.json
 !docs/security/fender-full-baseline.json
+!runtime/benchmarks/fnd/*.json
 !mcp/security-stack.mcp.json
 !mcp/tests/fixtures/golden/*.json
 !scripts/idl/*.json

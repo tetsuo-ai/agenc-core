@@ -60,6 +60,8 @@
     "check:eval-contract": "tsx src/eval-contract/cli.ts",
     "check:eval-suites": "tsx src/eval-suites/cli.ts",
     "check:eval-regression": "node scripts/check-eval-regression.mjs",
+    "benchmark:fnd-baseline": "node benchmarks/fnd/run-baselines.mjs",
+    "check:fnd-benchmark-baseline": "node benchmarks/fnd/run-baselines.mjs --check",
     "test": "node scripts/run-hermetic-test-boundary.mjs run",
     "test:host-functional": "node scripts/run-hermetic-vitest.mjs run",
     "test:kernel": "node scripts/run-hermetic-vitest.mjs --require-zero-skips run --config vitest.kernel.config.ts",
