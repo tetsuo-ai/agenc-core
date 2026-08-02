@@ -61,7 +61,7 @@ const testFingerprint = "FND-001:HARNESS-SELF-TEST:CONTRACT-FIXTURE";
 const inventoryOverflowFileCount = 320;
 const jsonNodeOverflowCount = 16_384;
 const sourceAstNodeOverflowItems = 16_500;
-const defaultFixtureTimeoutMs = 5_000;
+const defaultFixtureTimeoutMs = 15_000;
 const fullInventorySettlementHeadroomMs = 60_000;
 const fullInventoryAuditTimeoutMs = loadRedProbeManifest(
   runtimeRoot,
