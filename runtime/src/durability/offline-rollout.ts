@@ -42,6 +42,97 @@ export interface PinnedOfflineRollout {
   sync(): void;
 }
 
+export interface PinnedOfflineRolloutSnapshot {
+  readonly size: number;
+  readonly mtimeMs: number;
+}
+
+export interface PinnedOfflineRolloutReader {
+  readonly sourcePath: string;
+  /** Current metadata from the retained read-only source descriptor. */
+  stat(): PinnedOfflineRolloutSnapshot;
+  /** Re-read the same retained descriptor from byte zero in bounded chunks. */
+  scanChunks(
+    chunkByteLength: number,
+    consume: (chunk: Uint8Array) => void,
+  ): PinnedOfflineRolloutSnapshot;
+  /** Prove the retained inode and pathname still match the captured snapshot. */
+  assertSnapshot(snapshot: PinnedOfflineRolloutSnapshot): void;
+}
+
+/**
+ * Hold the canonical session lease and one read-only source descriptor across
+ * multiple scans. Unlike the mutation lease, this never truncates a partial
+ * tail and therefore cannot hide strict-recovery evidence.
+ */
+export function withPinnedOfflineRolloutReadLease<T>(
+  options: {
+    readonly projectDir: string;
+    readonly sessionId: string;
+    readonly sourcePath: string;
+  },
+  operation: (rollout: PinnedOfflineRolloutReader) => T,
+): T {
+  const scope = offlineRolloutScope(options);
+  const pinned = pinOfflineRollout(scope);
+  const lockPath = join(
+    pinned.sessionDirectory.operationPath,
+    `${scope.sourceName}.lock`,
+  );
+  const lock = new SessionLock(lockPath);
+  let fd: number | undefined;
+  try {
+    assertNotHeldByCurrentProcess(lockPath, scope.sourcePath);
+    lock.acquire();
+    assertPinnedDirectoriesCurrent(scope, pinned);
+    assertSourcePathIdentity(scope, pinned, pinned.sourceIdentity);
+    fd = openSync(
+      join(pinned.sessionDirectory.operationPath, scope.sourceName),
+      fsConstants.O_RDONLY | noFollowFlag(),
+    );
+    assertOpenSourceIdentity(scope, pinned, fd);
+    const sourceFd = fd;
+    const rollout: PinnedOfflineRolloutReader = {
+      sourcePath: scope.sourcePath,
+      stat: () => descriptorSnapshot(scope, pinned, sourceFd),
+      scanChunks: (chunkByteLength, consume) => {
+        if (!Number.isSafeInteger(chunkByteLength) || chunkByteLength <= 0) {
+          throw new TypeError(
+            "recovery scan chunk size must be a positive integer",
+          );
+        }
+        const before = descriptorSnapshot(scope, pinned, sourceFd);
+        const chunk = Buffer.allocUnsafe(
+          Math.min(chunkByteLength, Math.max(1, before.size)),
+        );
+        let position = 0;
+        while (position < before.size) {
+          const requested = Math.min(chunk.byteLength, before.size - position);
+          const read = readSync(sourceFd, chunk, 0, requested, position);
+          if (read !== requested) {
+            throw new OfflineRolloutUnsafePathError(
+              scope.sourcePath,
+              "source changed during descriptor-pinned recovery read",
+            );
+          }
+          consume(chunk.subarray(0, read));
+          position += read;
+        }
+        assertDescriptorSnapshot(scope, pinned, sourceFd, before);
+        return before;
+      },
+      assertSnapshot: (snapshot) => {
+        assertDescriptorSnapshot(scope, pinned, sourceFd, snapshot);
+      },
+    };
+    return operation(rollout);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    lock.release();
+    closePinnedOfflineRollout(pinned);
+  }
+}
+
 /**
  * Mutate a stopped canonical rollout without reopening any trusted object by
  * pathname. The exact project/root/session directory chain and source inode
@@ -371,6 +462,31 @@ function assertOpenSourceIdentity(
   }
 }
 
+function descriptorSnapshot(
+  scope: OfflineRolloutScope,
+  pinned: PinnedOfflineRolloutState,
+  fd: number,
+): PinnedOfflineRolloutSnapshot {
+  assertOpenSourceIdentity(scope, pinned, fd);
+  const current = fstatSync(fd);
+  return Object.freeze({ size: current.size, mtimeMs: current.mtimeMs });
+}
+
+function assertDescriptorSnapshot(
+  scope: OfflineRolloutScope,
+  pinned: PinnedOfflineRolloutState,
+  fd: number,
+  expected: PinnedOfflineRolloutSnapshot,
+): void {
+  const current = descriptorSnapshot(scope, pinned, fd);
+  if (current.size !== expected.size || current.mtimeMs !== expected.mtimeMs) {
+    throw new OfflineRolloutUnsafePathError(
+      scope.sourcePath,
+      "source changed during descriptor-pinned recovery scan",
+    );
+  }
+}
+
 function closePinnedOfflineRollout(pinned: PinnedOfflineRolloutState): void {
   closeSync(pinned.sessionDirectory.fd);
   closeSync(pinned.journalRoot.fd);
@@ -475,7 +591,9 @@ function appendAndSync(fd: number, content: string, sourcePath: string): void {
   while (offset < bytes.length) {
     const written = writeSync(fd, bytes, offset, bytes.length - offset);
     if (written <= 0) {
-      throw new Error(`failed to append offline canonical rollout ${sourcePath}`);
+      throw new Error(
+        `failed to append offline canonical rollout ${sourcePath}`,
+      );
     }
     offset += written;
   }
@@ -489,7 +607,11 @@ function assertNotHeldByCurrentProcess(
   if (!existsSync(lockPath)) return;
   try {
     const lockStat = lstatSync(lockPath);
-    if (!lockStat.isFile() || lockStat.isSymbolicLink() || lockStat.nlink !== 1) {
+    if (
+      !lockStat.isFile() ||
+      lockStat.isSymbolicLink() ||
+      lockStat.nlink !== 1
+    ) {
       throw new OfflineRolloutUnsafePathError(
         sourcePath,
         "journal lease path is not a regular file",

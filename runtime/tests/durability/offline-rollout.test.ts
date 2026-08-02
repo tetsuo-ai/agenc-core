@@ -12,7 +12,10 @@ import { basename, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { withPinnedOfflineRolloutLease } from "../../src/durability/offline-rollout.js";
+import {
+  withPinnedOfflineRolloutLease,
+  withPinnedOfflineRolloutReadLease,
+} from "../../src/durability/offline-rollout.js";
 
 const created: string[] = [];
 
@@ -111,7 +114,10 @@ describe.skipIf(process.platform === "win32")(
         }),
       ).toThrow(/directory changed during offline mutation/);
       expect(
-        readFileSync(join(originalDirectory, basename(target.sourcePath)), "utf8"),
+        readFileSync(
+          join(originalDirectory, basename(target.sourcePath)),
+          "utf8",
+        ),
       ).toBe("committed\n");
       expect(readFileSync(target.sourcePath, "utf8")).toBe("replacement\n");
     });
@@ -130,6 +136,23 @@ describe.skipIf(process.platform === "win32")(
       });
       expect(readFileSync(target.sourcePath, "utf8")).toBe(
         "committed\nreview\n",
+      );
+    });
+
+    it("keeps an unterminated tail intact under the strict read-only lease", () => {
+      const target = fixture();
+      writeFileSync(target.sourcePath, "committed\npartial", { mode: 0o600 });
+      const chunks: Buffer[] = [];
+
+      withPinnedOfflineRolloutReadLease(target, (rollout) => {
+        const snapshot = rollout.stat();
+        rollout.scanChunks(3, (chunk) => chunks.push(Buffer.from(chunk)));
+        rollout.assertSnapshot(snapshot);
+      });
+
+      expect(Buffer.concat(chunks).toString("utf8")).toBe("committed\npartial");
+      expect(readFileSync(target.sourcePath, "utf8")).toBe(
+        "committed\npartial",
       );
     });
   },

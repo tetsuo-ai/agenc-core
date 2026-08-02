@@ -10,16 +10,17 @@ import {
   statSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import {
-  parseRolloutLine,
-  type RolloutItem,
-} from "../session/rollout-item.js";
-import {
-  StateThreadRepository,
-  type RolloutItemRow,
-} from "./threads.js";
+import { parseRolloutLine, type RolloutItem } from "../session/rollout-item.js";
+import { StateThreadRepository, type RolloutItemRow } from "./threads.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { validateCanonicalJournalText } from "./recovery-journal-contract.js";
+import { MAX_RECOVERY_CANONICAL_LINE_BYTES } from "./recovery-contract.js";
+import {
+  withPinnedCanonicalJournalTwoPass,
+  type PinnedCanonicalJournalProof,
+  type RecoveryDescriptorBudget,
+  type RecoveryFileLimitOverrides,
+} from "./recovery-file.js";
 
 export interface BackfillProjectRolloutsOptions {
   readonly projectDir: string;
@@ -159,31 +160,129 @@ export function backfillPinnedRolloutContent(options: {
     itemIndex += 1;
   }
   const now = new Date(options.mtimeMs).toISOString();
-  threads.commitRolloutProjection(
-    () => {
-      mergeThreadFromMeta({
-        threads,
-        threadId,
-        rolloutPath,
-        archived: options.archived,
-        now,
-        createdAt: firstMeta?.payload.timestamp,
-        metaForUpdate: latestMeta?.payload,
-        metaForCreate: firstMeta?.payload,
-      });
-      threads.replaceRolloutItems({
-        threadId,
-        sourcePath: rolloutPath,
-        items,
-        mtimeMs: options.mtimeMs,
-        size: journal.sourceByteLength,
-        sha256: journal.sourceSha256,
-        lineCount: journal.physicalLineCount + 1,
-      });
-    },
-    options.validateCanonical,
-  );
+  threads.commitRolloutProjection(() => {
+    mergeThreadFromMeta({
+      threads,
+      threadId,
+      rolloutPath,
+      archived: options.archived,
+      now,
+      createdAt: firstMeta?.payload.timestamp,
+      metaForUpdate: latestMeta?.payload,
+      metaForCreate: firstMeta?.payload,
+    });
+    threads.replaceRolloutItems({
+      threadId,
+      sourcePath: rolloutPath,
+      items,
+      mtimeMs: options.mtimeMs,
+      size: journal.sourceByteLength,
+      sha256: journal.sourceSha256,
+      lineCount: journal.physicalLineCount + 1,
+    });
+  }, options.validateCanonical);
   return { itemsIndexed: items.length };
+}
+
+export interface BackfillPinnedRolloutFileResult {
+  readonly itemsIndexed: number;
+  readonly proof: PinnedCanonicalJournalProof;
+}
+
+/**
+ * Strictly validate and project one retained rollout without reopening it or
+ * retaining its records. Pass one proves the complete source; pass two emits
+ * one row at a time inside the projection transaction.
+ */
+export function backfillPinnedRolloutFile(options: {
+  readonly projectDir: string;
+  readonly sessionId: string;
+  readonly rolloutPath: string;
+  readonly archived?: boolean;
+  readonly threads: StateThreadRepository;
+  readonly expectedRunId?: string;
+  readonly expectedEpoch?: number;
+  readonly terminalPolicy?: "allow_missing" | "require_terminal";
+  readonly limits?: RecoveryFileLimitOverrides;
+  readonly descriptorBudget?: RecoveryDescriptorBudget;
+  readonly nowMilliseconds?: () => number;
+  readonly afterValidationPass?: (proof: PinnedCanonicalJournalProof) => void;
+}): BackfillPinnedRolloutFileResult {
+  let firstMeta: Extract<RolloutItem, { type: "session_meta" }> | undefined;
+  let latestMeta: Extract<RolloutItem, { type: "session_meta" }> | undefined;
+  return withPinnedCanonicalJournalTwoPass(
+    {
+      projectDir: options.projectDir,
+      sessionId: options.sessionId,
+      sourcePath: options.rolloutPath,
+      terminalPolicy: options.terminalPolicy ?? "allow_missing",
+      ...(options.expectedRunId !== undefined
+        ? { expectedRunId: options.expectedRunId }
+        : {}),
+      ...(options.expectedEpoch !== undefined
+        ? { expectedEpoch: options.expectedEpoch }
+        : {}),
+      ...(options.limits !== undefined ? { limits: options.limits } : {}),
+      ...(options.descriptorBudget !== undefined
+        ? { descriptorBudget: options.descriptorBudget }
+        : {}),
+      ...(options.nowMilliseconds !== undefined
+        ? { nowMilliseconds: options.nowMilliseconds }
+        : {}),
+      ...(options.afterValidationPass !== undefined
+        ? { afterValidationPass: options.afterValidationPass }
+        : {}),
+      observeValidatedRecord: (record) => {
+        if (record.item.type !== "session_meta") return;
+        firstMeta ??= record.item;
+        latestMeta = record.item;
+      },
+    },
+    (journal) => {
+      const threadId = threadIdFromRolloutPath(options.rolloutPath);
+      const now = new Date(journal.proof.snapshot.mtimeMs).toISOString();
+      const itemsIndexed = journal.proof.recordCount;
+      options.threads.commitRolloutProjection(() => {
+        mergeThreadFromMeta({
+          threads: options.threads,
+          threadId,
+          rolloutPath: options.rolloutPath,
+          archived: options.archived,
+          now,
+          createdAt: firstMeta?.payload.timestamp,
+          metaForUpdate: latestMeta?.payload,
+          metaForCreate: firstMeta?.payload,
+        });
+        let itemIndex = 0;
+        options.threads.replaceRolloutItemsFromProducer({
+          threadId,
+          sourcePath: options.rolloutPath,
+          expectedItemCount: journal.proof.recordCount,
+          mtimeMs: journal.proof.snapshot.mtimeMs,
+          size: journal.proof.sourceByteLength,
+          sha256: journal.proof.sourceSha256,
+          lineCount: journal.proof.physicalLineCount + 1,
+          produce: (insert) => {
+            journal.replay((record) => {
+              insert(
+                rolloutItemRow(
+                  record.item,
+                  record.lineNumber,
+                  record.byteOffset,
+                  itemIndex,
+                  {
+                    lineSha256: record.lineSha256,
+                  },
+                ),
+              );
+              itemIndex += 1;
+            });
+          },
+        });
+      }, journal.assertPinned);
+      return Object.freeze({ itemsIndexed, proof: journal.proof });
+    },
+  );
 }
 
 function reindexWholeRolloutFile(args: {
@@ -196,6 +295,7 @@ function reindexWholeRolloutFile(args: {
   const { rolloutPath, threads, stat } = args;
   const raw = readRolloutSnapshot(args.snapshotFd, rolloutPath, 0, stat.size);
   assertTerminatedJsonl(raw, rolloutPath);
+  assertTolerantLineByteCeiling(raw, rolloutPath);
   const threadId = threadIdFromRolloutPath(rolloutPath);
   const items: RolloutItemRow[] = [];
   let byteOffset = 0;
@@ -274,6 +374,7 @@ function indexAppendedTail(args: {
 }): { readonly itemsIndexed: number } {
   const { rolloutPath, threads, stat, existing, tail } = args;
   assertTerminatedJsonl(tail, rolloutPath);
+  assertTolerantLineByteCeiling(tail, rolloutPath);
   const threadId = threadIdFromRolloutPath(rolloutPath);
   const items: RolloutItemRow[] = [];
   // Prior content occupied line numbers 1..(lineCount-1) plus a trailing empty
@@ -396,6 +497,38 @@ function unterminatedRollout(rolloutPath: string): Error {
   );
 }
 
+/** Compatibility code expected by the frozen E1a probe; durable incidents use
+ * the schema-backed `line_byte_limit` integrity reason. */
+class TolerantRolloutLineLimitError extends Error {
+  readonly reasonCode = "line_limit";
+
+  constructor(rolloutPath: string, lineNumber: number) {
+    super(
+      `canonical rollout line ${lineNumber} exceeds ${MAX_RECOVERY_CANONICAL_LINE_BYTES} bytes: ${rolloutPath}`,
+    );
+    this.name = "TolerantRolloutLineLimitError";
+  }
+}
+
+function assertTolerantLineByteCeiling(
+  content: string,
+  rolloutPath: string,
+): void {
+  const bytes = Buffer.from(content, "utf8");
+  let lineStart = 0;
+  let lineNumber = 1;
+  for (let offset = 0; offset < bytes.byteLength; offset += 1) {
+    if (bytes[offset] !== 0x0a) continue;
+    const carriageReturn = offset > lineStart && bytes[offset - 1] === 0x0d;
+    const lineBytes = offset - lineStart - (carriageReturn ? 1 : 0);
+    if (lineBytes > MAX_RECOVERY_CANONICAL_LINE_BYTES) {
+      throw new TolerantRolloutLineLimitError(rolloutPath, lineNumber);
+    }
+    lineStart = offset + 1;
+    lineNumber += 1;
+  }
+}
+
 function rolloutItemRow(
   parsed: RolloutItem,
   lineNumber: number,
@@ -423,9 +556,7 @@ function rolloutItemRow(
 }
 
 function canonicalProjectedEventId(
-  event: Extract<RolloutItem, { readonly type: "event_msg" }>[
-    "payload"
-  ],
+  event: Extract<RolloutItem, { readonly type: "event_msg" }>["payload"],
 ): string {
   if (typeof event.eventId === "string" && event.eventId.length > 0) {
     return event.eventId;
@@ -453,11 +584,9 @@ function mergeThreadFromMeta(args: {
   // falls back to the latest meta timestamp (or `now`).
   readonly updatedAt?: string | undefined;
   readonly metaForUpdate:
-    | Extract<RolloutItem, { type: "session_meta" }>["payload"]
-    | undefined;
+    Extract<RolloutItem, { type: "session_meta" }>["payload"] | undefined;
   readonly metaForCreate:
-    | Extract<RolloutItem, { type: "session_meta" }>["payload"]
-    | undefined;
+    Extract<RolloutItem, { type: "session_meta" }>["payload"] | undefined;
 }): void {
   const { metaForUpdate, metaForCreate } = args;
   const archivedAt = args.archived === true ? args.now : undefined;
@@ -626,6 +755,8 @@ function threadIdFromRolloutPath(path: string): string {
   return match?.[2] ?? basename(join(path, ".."));
 }
 
-function normalizeMemoryMode(value: unknown): "enabled" | "disabled" | undefined {
+function normalizeMemoryMode(
+  value: unknown,
+): "enabled" | "disabled" | undefined {
   return value === "enabled" || value === "disabled" ? value : undefined;
 }

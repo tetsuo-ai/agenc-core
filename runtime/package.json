@@ -35,6 +35,7 @@
     "typecheck:test-support": "tsc --noEmit --project tsconfig.test-support.json",
     "check:package-entrypoints": "node scripts/check-package-entrypoints.mjs",
     "check:sdk-generated-types": "node scripts/check-sdk-generated-types.mjs",
+    "check:recovery-million-event": "tsx scripts/check-recovery-million-event.ts",
     "check:tui-runtime-startup": "node scripts/check-tui-runtime-startup.mjs",
     "check:tui-e2e": "node scripts/check-tui-e2e/runner.mjs",
     "check:tui-workbench-buffer-neovim": "node scripts/check-tui-workbench-buffer-neovim.mjs",

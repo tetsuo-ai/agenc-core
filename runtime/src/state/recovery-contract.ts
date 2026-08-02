@@ -60,6 +60,17 @@ export const MAX_RECOVERY_CURSOR_UTF8_BYTES = 1_024;
 export const MAX_RECOVERY_ID_UTF8_BYTES = 512;
 export const MAX_RECOVERY_SOURCE_PATH_UTF8_BYTES = 16_384;
 
+/** E1a canonical-file ceilings. Tests may lower them, never raise them. */
+export const MAX_RECOVERY_CANONICAL_LINE_BYTES = 4_194_304;
+export const MAX_RECOVERY_CANONICAL_SOURCE_BYTES = 1_073_741_824;
+export const MAX_RECOVERY_CANONICAL_EVENTS = 2_000_000;
+export const MAX_RECOVERY_SCAN_MILLISECONDS = 300_000;
+export const MAX_RECOVERY_STARTUP_READ_BYTES =
+  MAX_RECOVERY_CANONICAL_SOURCE_BYTES * 2;
+export const RECOVERY_SCAN_CHUNK_BYTES = 65_536;
+export const RECOVERY_PINNED_DESCRIPTOR_COST = 4;
+export const MAX_RECOVERY_PINNED_DESCRIPTORS = 16;
+
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 
 export interface RecoveryIntegrityFacts {
@@ -82,6 +93,26 @@ export class CanonicalJournalIntegrityError extends Error {
     this.name = "CanonicalJournalIntegrityError";
     this.reasonCode = reasonCode;
     this.facts = Object.freeze({ ...facts });
+  }
+}
+
+/**
+ * Operational recovery failures are retryable evidence, not proof that the
+ * canonical bytes are corrupt.
+ */
+export class RecoveryOperationalError extends Error {
+  readonly reasonCode: RecoveryDeferredReasonCode;
+  readonly errorClass: string;
+
+  constructor(
+    reasonCode: RecoveryDeferredReasonCode,
+    message: string,
+    errorClass = "RECOVERY_OPERATIONAL",
+  ) {
+    super(message);
+    this.name = "RecoveryOperationalError";
+    this.reasonCode = reasonCode;
+    this.errorClass = errorClass;
   }
 }
 
@@ -156,7 +187,10 @@ export function requiredRecoveryText(
   return value;
 }
 
-function domainSeparatedDigest(domain: string, parts: readonly string[]): string {
+function domainSeparatedDigest(
+  domain: string,
+  parts: readonly string[],
+): string {
   const hash = createHash("sha256");
   appendLengthPrefixed(hash, domain);
   for (const part of parts) appendLengthPrefixed(hash, part);

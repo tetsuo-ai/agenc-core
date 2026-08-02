@@ -10,6 +10,9 @@ import {
 } from "../session/event-log.js";
 import {
   CanonicalJournalIntegrityError,
+  MAX_RECOVERY_CANONICAL_EVENTS,
+  MAX_RECOVERY_CANONICAL_LINE_BYTES,
+  MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
   assertRecoverySha256,
   type RecoveryIntegrityFacts,
   type RecoveryIntegrityReasonCode,
@@ -33,6 +36,7 @@ export interface StrictCanonicalJournalRecord {
 
 export interface StrictCanonicalJournal {
   readonly records: readonly StrictCanonicalJournalRecord[];
+  readonly recordCount: number;
   readonly format: CanonicalJournalFormat;
   readonly sourceSha256: string;
   readonly sourceByteLength: number;
@@ -47,6 +51,28 @@ export interface StrictCanonicalJournalOptions {
   readonly expectedEpoch?: number;
   readonly terminalPolicy?: "allow_missing" | "require_terminal";
   readonly trustedSourceSha256?: string;
+  /** Retain parsed rows for small in-memory callers. E1a disables this. */
+  readonly retainRecords?: boolean;
+  /** Consume one bounded row as it is validated. */
+  readonly onRecord?: (record: StrictCanonicalJournalRecord) => void;
+  /** Disk-backed identity registry used by E1a's first pass. */
+  readonly identityRegistry?: CanonicalJournalIdentityRegistry;
+  /**
+   * A second pass anchored to `trustedSourceSha256` may omit O(N) identity
+   * state. A digest mismatch rolls its surrounding projection transaction
+   * back before commit.
+   */
+  readonly identityPolicy?: "validate" | "trusted_replay";
+  readonly maxLineBytes?: number;
+  readonly maxSourceBytes?: number;
+  readonly maxEvents?: number;
+  /** Throws a typed operational error when an outer scan budget expires. */
+  readonly checkOperationalBudget?: () => void;
+}
+
+export interface CanonicalJournalIdentityRegistry {
+  claimEventId(eventId: string): boolean;
+  claimTerminalKey(terminalKey: string): boolean;
 }
 
 const MAX_CANONICAL_JSON_DEPTH = 128;
@@ -79,10 +105,14 @@ export class StrictCanonicalJournalValidator {
   readonly #terminalKeys = new Set<string>();
   readonly #pendingChunks: Buffer[] = [];
   #pendingByteLength = 0;
+  readonly #maxLineBytes: number;
+  readonly #maxSourceBytes: number;
+  readonly #maxEvents: number;
   #sourceByteLength = 0;
   #processedByteLength = 0;
   #physicalLineCount = 0;
   #eventCount = 0;
+  #recordCount = 0;
   #terminalCount = 0;
   #matchingTerminalCount = 0;
   #format: CanonicalJournalFormat = "empty";
@@ -94,13 +124,46 @@ export class StrictCanonicalJournalValidator {
     if (options.trustedSourceSha256 !== undefined) {
       assertRecoverySha256(options.trustedSourceSha256, "trustedSourceSha256");
     }
+    if (
+      options.identityPolicy === "trusted_replay" &&
+      options.trustedSourceSha256 === undefined
+    ) {
+      throw new TypeError(
+        "trusted_replay identity policy requires trustedSourceSha256",
+      );
+    }
+    this.#maxLineBytes = boundedCeiling(
+      options.maxLineBytes,
+      MAX_RECOVERY_CANONICAL_LINE_BYTES,
+      "maxLineBytes",
+    );
+    this.#maxSourceBytes = boundedCeiling(
+      options.maxSourceBytes,
+      MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
+      "maxSourceBytes",
+    );
+    this.#maxEvents = boundedCeiling(
+      options.maxEvents,
+      MAX_RECOVERY_CANONICAL_EVENTS,
+      "maxEvents",
+    );
   }
 
   push(chunk: Uint8Array): void {
     if (this.#finished)
       throw new Error("canonical journal validator is closed");
+    this.#options.checkOperationalBudget?.();
     const bytes = Buffer.from(chunk);
     if (bytes.byteLength === 0) return;
+    if (this.#sourceByteLength + bytes.byteLength > this.#maxSourceBytes) {
+      this.#fail(
+        "source_byte_limit",
+        "canonical journal exceeds its source byte ceiling",
+        {
+          byteOffset: this.#sourceByteLength,
+        },
+      );
+    }
     this.#sourceHash.update(bytes);
     this.#sourceByteLength += bytes.byteLength;
     let start = 0;
@@ -128,6 +191,16 @@ export class StrictCanonicalJournalValidator {
       const tail = Buffer.from(bytes.subarray(start));
       this.#pendingChunks.push(tail);
       this.#pendingByteLength += tail.byteLength;
+    }
+    if (this.#pendingByteLength > this.#maxLineBytes + 1) {
+      this.#fail(
+        "line_byte_limit",
+        "canonical journal record exceeds its line byte ceiling",
+        {
+          lineNumber: this.#physicalLineCount + 1,
+          byteOffset: this.#processedByteLength,
+        },
+      );
     }
   }
 
@@ -166,6 +239,7 @@ export class StrictCanonicalJournalValidator {
     }
     return Object.freeze({
       records: Object.freeze(this.#records.slice()),
+      recordCount: this.#recordCount,
       format: this.#format,
       sourceSha256,
       sourceByteLength: this.#sourceByteLength,
@@ -177,6 +251,7 @@ export class StrictCanonicalJournalValidator {
   }
 
   #acceptPhysicalLine(physical: Buffer): void {
+    this.#options.checkOperationalBudget?.();
     const lineNumber = this.#physicalLineCount + 1;
     const byteOffset = this.#processedByteLength;
     this.#physicalLineCount = lineNumber;
@@ -185,6 +260,16 @@ export class StrictCanonicalJournalValidator {
     let content = physical.subarray(0, physical.byteLength - 1);
     if (content.at(-1) === CARRIAGE_RETURN_BYTE) {
       content = content.subarray(0, -1);
+    }
+    if (content.byteLength > this.#maxLineBytes) {
+      this.#fail(
+        "line_byte_limit",
+        "canonical journal record exceeds its line byte ceiling",
+        {
+          lineNumber,
+          byteOffset,
+        },
+      );
     }
     if (content.byteLength === 0) {
       this.#fail(
@@ -222,16 +307,17 @@ export class StrictCanonicalJournalValidator {
       );
     }
     const item = this.#validateRolloutItem(parsed, lineNumber, byteOffset);
-    this.#records.push(
-      Object.freeze({
-        item,
-        lineNumber,
-        byteOffset,
-        encodedByteLength: content.byteLength,
-        lineSha256: createHash("sha256").update(content).digest("hex"),
-        rollingSha256: this.#rollingHash.copy().digest("hex"),
-      }),
-    );
+    const record = Object.freeze({
+      item,
+      lineNumber,
+      byteOffset,
+      encodedByteLength: content.byteLength,
+      lineSha256: createHash("sha256").update(content).digest("hex"),
+      rollingSha256: this.#rollingHash.copy().digest("hex"),
+    });
+    this.#recordCount += 1;
+    if (this.#options.retainRecords !== false) this.#records.push(record);
+    this.#options.onRecord?.(record);
   }
 
   #validateRolloutItem(
@@ -352,6 +438,13 @@ export class StrictCanonicalJournalValidator {
     facts: RecoveryIntegrityFacts,
   ): void {
     this.#eventCount += 1;
+    if (this.#eventCount > this.#maxEvents) {
+      this.#fail(
+        "event_limit",
+        "canonical journal exceeds its event ceiling",
+        facts,
+      );
+    }
     if (typeof payload.id !== "string" || payload.id.length === 0) {
       this.#fail(
         "schema_invalid",
@@ -456,13 +549,6 @@ export class StrictCanonicalJournalValidator {
         sequenceFacts,
       );
     }
-    if (this.#eventIds.has(eventId)) {
-      this.#fail(
-        "identity_conflict",
-        "canonical journal reuses an event id",
-        sequenceFacts,
-      );
-    }
     const reserved = /^event:([1-9]\d*)$/u.exec(eventId)?.[1];
     if (reserved !== undefined && Number(reserved) !== sequence) {
       this.#fail(
@@ -471,7 +557,17 @@ export class StrictCanonicalJournalValidator {
         sequenceFacts,
       );
     }
-    this.#eventIds.add(eventId);
+    if (
+      reserved === undefined &&
+      this.#options.identityPolicy !== "trusted_replay" &&
+      !this.#claimEventId(eventId)
+    ) {
+      this.#fail(
+        "identity_conflict",
+        "canonical journal reuses an event id",
+        sequenceFacts,
+      );
+    }
     this.#nextSequence = sequence + 1;
   }
 
@@ -512,14 +608,16 @@ export class StrictCanonicalJournalValidator {
       );
     }
     const key = `${payload.runId}\u0000${String(payload.epoch)}`;
-    if (this.#terminalKeys.has(key)) {
+    if (
+      this.#options.identityPolicy !== "trusted_replay" &&
+      !this.#claimTerminalKey(key)
+    ) {
       this.#fail(
         "duplicate_terminal",
         "canonical journal contains duplicate run terminals",
         facts,
       );
     }
-    this.#terminalKeys.add(key);
     this.#terminalCount += 1;
     this.#matchingTerminalCount += 1;
   }
@@ -530,6 +628,24 @@ export class StrictCanonicalJournalValidator {
     facts: RecoveryIntegrityFacts = {},
   ): never {
     throw new CanonicalJournalIntegrityError(reasonCode, message, facts);
+  }
+
+  #claimEventId(eventId: string): boolean {
+    if (this.#options.identityRegistry !== undefined) {
+      return this.#options.identityRegistry.claimEventId(eventId);
+    }
+    if (this.#eventIds.has(eventId)) return false;
+    this.#eventIds.add(eventId);
+    return true;
+  }
+
+  #claimTerminalKey(terminalKey: string): boolean {
+    if (this.#options.identityRegistry !== undefined) {
+      return this.#options.identityRegistry.claimTerminalKey(terminalKey);
+    }
+    if (this.#terminalKeys.has(terminalKey)) return false;
+    this.#terminalKeys.add(terminalKey);
+    return true;
   }
 }
 
@@ -560,13 +676,30 @@ function decodeCanonicalUtf8(
     throw new CanonicalJournalIntegrityError(
       "malformed_json",
       "canonical journal record is not valid UTF-8",
-      { lineNumber, byteOffset },
+      {
+        lineNumber,
+        byteOffset,
+      },
     );
   }
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function boundedCeiling(
+  requested: number | undefined,
+  maximum: number,
+  label: string,
+): number {
+  const value = requested ?? maximum;
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new TypeError(
+      `${label} must be a positive integer no greater than ${maximum}`,
+    );
+  }
+  return value;
 }
 
 /** JSON is parsed first; this bounded walk exists solely to reject duplicate keys. */

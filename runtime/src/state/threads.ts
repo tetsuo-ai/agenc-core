@@ -85,10 +85,7 @@ export class StateThreadRepository {
    * at the final synchronous boundary before SQLite commits. Any failed
    * validation rolls back both thread metadata and rollout/receipt rows.
    */
-  commitRolloutProjection<T>(
-    apply: () => T,
-    validateCanonical: () => void,
-  ): T {
+  commitRolloutProjection<T>(apply: () => T, validateCanonical: () => void): T {
     return this.driver.transactionImmediate(() => {
       const result = apply();
       validateCanonical();
@@ -414,6 +411,67 @@ export class StateThreadRepository {
   }
 
   /**
+   * Replace a validated rollout projection without retaining an O(N) row
+   * array. The producer runs inside the surrounding SQLite transaction and
+   * emits one bounded row at a time.
+   */
+  replaceRolloutItemsFromProducer(params: {
+    readonly threadId: ThreadId;
+    readonly sourcePath: string;
+    readonly produce: (insert: (item: RolloutItemRow) => void) => void;
+    readonly expectedItemCount: number;
+    readonly mtimeMs: number;
+    readonly size: number;
+    readonly sha256: string;
+    readonly lineCount: number;
+  }): void {
+    this.driver.transaction(() => {
+      this.driver
+        .prepareState<[ThreadId, string]>(
+          "DELETE FROM thread_rollout_items WHERE thread_id = ? AND source_path = ?",
+        )
+        .run(params.threadId, params.sourcePath);
+      const insert = this.driver.prepareState(
+        `INSERT INTO thread_rollout_items (
+          thread_id, source_path, line_number, byte_offset, item_index,
+          item_type, event_version, event_id, event_seq, payload_json, line_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      let itemCount = 0;
+      params.produce((item) => {
+        insert.run(
+          params.threadId,
+          params.sourcePath,
+          item.lineNumber,
+          item.byteOffset,
+          item.itemIndex,
+          item.itemType,
+          item.eventVersion ?? null,
+          item.eventId ?? null,
+          item.eventSeq ?? null,
+          item.payloadJson,
+          item.lineHash,
+        );
+        itemCount += 1;
+      });
+      if (itemCount !== params.expectedItemCount) {
+        throw new Error(
+          `canonical rollout replay produced ${itemCount} rows; expected ${params.expectedItemCount}`,
+        );
+      }
+      this.writeBackfillReceipts({
+        threadId: params.threadId,
+        sourcePath: params.sourcePath,
+        mtimeMs: params.mtimeMs,
+        size: params.size,
+        sha256: params.sha256,
+        lineCount: params.lineCount,
+        itemCount,
+      });
+    });
+  }
+
+  /**
    * Drop every SQLite mirror row that points at `sourcePath` — the indexed
    * rollout lines plus the backfill/receipt bookkeeping that tracks the file.
    * Used by the retention sweep so the `thread_rollout_items` mirror cannot
@@ -536,11 +594,17 @@ function rowToThread(row: ThreadRow): IndexedThreadRecord {
     updatedAt: row.updated_at,
     ...(row.name !== null ? { name: row.name } : {}),
     ...(row.model !== null ? { model: row.model } : {}),
-    ...(row.model_provider !== null ? { modelProvider: row.model_provider } : {}),
+    ...(row.model_provider !== null
+      ? { modelProvider: row.model_provider }
+      : {}),
     ...(row.archived_at !== null ? { archivedAt: row.archived_at } : {}),
     ...(row.cwd !== null ? { cwd: row.cwd } : {}),
-    ...(row.source_json !== null ? { source: parseSource(row.source_json) } : {}),
-    ...(row.forked_from_id !== null ? { forkedFromId: row.forked_from_id } : {}),
+    ...(row.source_json !== null
+      ? { source: parseSource(row.source_json) }
+      : {}),
+    ...(row.forked_from_id !== null
+      ? { forkedFromId: row.forked_from_id }
+      : {}),
     ...(row.memory_mode === "enabled" || row.memory_mode === "disabled"
       ? { memoryMode: row.memory_mode }
       : {}),
