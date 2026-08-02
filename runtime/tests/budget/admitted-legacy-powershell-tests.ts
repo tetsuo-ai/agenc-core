@@ -90,7 +90,12 @@ function admissionHarness(signal = new AbortController().signal) {
       admissionRequired: true,
     },
   } as unknown as Session;
-  return { admission, acquire, session };
+  return {
+    admission,
+    acquire,
+    session,
+    effectEvents: effectJournal.effectEvents,
+  };
 }
 
 function toolContext(broker: SandboxExecutionBroker) {
@@ -168,44 +173,45 @@ export function registerDirectPowerShellAdmissionTests(
         );
       });
     } else {
-      it(
-        "forwards lease cancellation into the running PowerShell process",
-        async () => {
-          const leaseController = new AbortController();
-          const state = admissionHarness(leaseController.signal);
-          const broker = new SandboxExecutionBroker({
-            mode: "danger_full_access",
-            cwd: process.cwd(),
-          });
-          const started = Promise.withResolvers<void>();
-          shellProbe.onExec = () => started.resolve();
+      it("forwards lease cancellation into the running PowerShell process", async () => {
+        const leaseController = new AbortController();
+        const state = admissionHarness(leaseController.signal);
+        const broker = new SandboxExecutionBroker({
+          mode: "danger_full_access",
+          cwd: process.cwd(),
+        });
+        const started = Promise.withResolvers<void>();
+        shellProbe.onExec = () => started.resolve();
 
-          const call = runWithCurrentRuntimeSession(state.session, () =>
-            PowerShellTool.call(
-              { command: "Start-Sleep -Seconds 30", timeout: 35_000 },
-              toolContext(broker),
-              undefined as never,
-              undefined as never,
-            ),
-          );
-          await started.promise;
-          const effectSignal = shellProbe.signals.at(-1)!;
-          const cancellation = new AdmissionDeniedError(
-            "parent_cancelled",
-            "cancelled",
-          );
-          leaseController.abort(cancellation);
+        const call = runWithCurrentRuntimeSession(state.session, () =>
+          PowerShellTool.call(
+            { command: "Start-Sleep -Seconds 30", timeout: 35_000 },
+            toolContext(broker),
+            undefined as never,
+            undefined as never,
+          ),
+        );
+        await started.promise;
+        const effectSignal = shellProbe.signals.at(-1)!;
+        const cancellation = new AdmissionDeniedError(
+          "parent_cancelled",
+          "cancelled",
+        );
+        leaseController.abort(cancellation);
 
-          await expect(call).rejects.toBeDefined();
-          expect(effectSignal.aborted).toBe(true);
-          expect(effectSignal.reason).toBe(cancellation);
-          expect(state.admission.holdUnknown).toHaveBeenCalledWith(
-            expect.any(String),
-            "tool_cancelled_after_dispatch",
-          );
-        },
-        10_000,
-      );
+        await expect(call).rejects.toBeDefined();
+        expect(effectSignal.aborted).toBe(true);
+        expect(effectSignal.reason).toBe(cancellation);
+        expect(state.admission.reconcile).toHaveBeenCalledWith(
+          expect.any(String),
+          { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+        );
+        expect(state.admission.holdUnknown).not.toHaveBeenCalled();
+        expect(state.effectEvents.at(-1)?.msg).toMatchObject({
+          type: "effect_unknown_outcome",
+          payload: { reason: "tool_cancelled_after_effect_boundary" },
+        });
+      }, 10_000);
     }
   });
 }
