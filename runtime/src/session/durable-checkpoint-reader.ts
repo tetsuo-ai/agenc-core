@@ -281,6 +281,7 @@ export function computeCheckpointPrefixHashV2(
  */
 export function validateCheckpointPrefixV2(params: {
   readonly checkpoint: TurnCheckpointV2Event;
+  readonly expectedRunId: string;
   readonly messages: ReadonlyArray<ToolResultIntegrityResponseItem>;
   readonly projection: ToolPairProjection;
   readonly projectionId: string;
@@ -360,6 +361,7 @@ export function validateCheckpointPrefixV2(params: {
       projectionId: params.projectionId,
       sourceKey: params.sourceKey,
       requireResultIntegrity: true,
+      expectedRunId: params.expectedRunId,
     },
   );
   if (toolPairs.status !== "valid") return toolPairs;
@@ -453,7 +455,7 @@ function parseCheckpointBase(
       "iterationIndex",
     ),
     boundary,
-    checkpointSeq: nonNegativeInteger(payload.checkpointSeq, "checkpointSeq"),
+    checkpointSeq: positiveInteger(payload.checkpointSeq, "checkpointSeq"),
     persistedMessageCount: nonNegativeInteger(
       payload.persistedMessageCount,
       "persistedMessageCount",
@@ -695,6 +697,13 @@ function writeOptionalString(
 function nonNegativeInteger(value: unknown, field: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
     throw malformed(`${field} must be a non-negative safe integer`);
+  }
+  return value as number;
+}
+
+function positiveInteger(value: unknown, field: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw malformed(`${field} must be a positive safe integer`);
   }
   return value as number;
 }

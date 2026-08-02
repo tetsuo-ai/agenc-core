@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_CANONICAL_BODY_DEPTH,
+  MAX_CANONICAL_BODY_NODES,
   ToolResultCanonicalizationError,
   createToolResultIntegrity,
   deterministicToolResultId,
@@ -33,15 +34,117 @@ describe("tool-result integrity", () => {
     expect(left.nested).toEqual({ b: 2, a: 1 });
   });
 
+  it("rejects ill-formed UTF-16 instead of aliasing it to the replacement character", () => {
+    const replacementCharacter = "\ufffd";
+    const malformedStrings = ["\ud800", "\udc00"];
+
+    expect(digestToolResultBody(replacementCharacter)).toMatchObject({
+      byteLength: 3,
+    });
+    expect(
+      deterministicToolResultId("run-unicode", replacementCharacter),
+    ).toMatch(/^tool-result:[0-9a-f]{64}$/);
+
+    for (const malformed of malformedStrings) {
+      expect(() => digestToolResultBody(malformed)).toThrowError(
+        expect.objectContaining<ToolResultCanonicalizationError>({
+          kind: "integrity_failure",
+          code: "unsupported_body_value",
+        }),
+      );
+      expect(() => digestToolResultBody({ [malformed]: "value" })).toThrowError(
+        expect.objectContaining<ToolResultCanonicalizationError>({
+          code: "unsupported_body_value",
+        }),
+      );
+      expect(() =>
+        deterministicToolResultId("run-unicode", malformed),
+      ).toThrowError(
+        expect.objectContaining<ToolResultCanonicalizationError>({
+          code: "unsupported_body_value",
+        }),
+      );
+    }
+
+    const replacementIntegrity = createToolResultIntegrity({
+      runId: "run-unicode",
+      toolCallId: replacementCharacter,
+      content: "body",
+    });
+    for (const malformed of malformedStrings) {
+      expect(
+        verifyToolResultIntegrity({
+          integrity: {
+            ...replacementIntegrity,
+            toolCallId: malformed,
+          },
+          expectedRunId: "run-unicode",
+          toolCallId: malformed,
+          content: "body",
+        }),
+      ).toMatchObject({
+        status: "invalid",
+        failure: { code: "invalid_integrity_metadata" },
+      });
+    }
+  });
+
+  it("rejects non-finite values instead of aliasing their persisted identity to null", () => {
+    const nullIntegrity = createToolResultIntegrity({
+      runId: "run-number",
+      toolCallId: "call-number",
+      content: null,
+    });
+
+    for (const nonFinite of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ]) {
+      expect(() => digestToolResultBody(nonFinite)).toThrowError(
+        expect.objectContaining<ToolResultCanonicalizationError>({
+          kind: "integrity_failure",
+          code: "unsupported_body_value",
+        }),
+      );
+      expect(
+        verifyToolResultIntegrity({
+          integrity: nullIntegrity,
+          expectedRunId: "run-number",
+          toolCallId: "call-number",
+          content: nonFinite,
+        }),
+      ).toMatchObject({
+        status: "invalid",
+        failure: { code: "unsupported_body_value" },
+      });
+    }
+  });
+
+  it("preflights object width against the remaining canonical node budget", () => {
+    expect(digestToolResultBody({ a: 1, b: 2 }, { maxNodes: 3 })).toEqual(
+      digestToolResultBody({ b: 2, a: 1 }, { maxNodes: 3 }),
+    );
+    expect(() =>
+      digestToolResultBody({ a: 1, b: 2, c: 3 }, { maxNodes: 3 }),
+    ).toThrowError(
+      expect.objectContaining<ToolResultCanonicalizationError>({
+        kind: "operational_deferral",
+        code: "canonical_body_node_limit",
+      }),
+    );
+    expect(() =>
+      digestToolResultBody({}, { maxNodes: MAX_CANONICAL_BODY_NODES + 1 }),
+    ).toThrowError(/maxNodes/);
+  });
+
   it("derives result identity from the complete run and call identities", () => {
     const sharedPrefix = "call-".repeat(700);
     const left = deterministicToolResultId("run-a", `${sharedPrefix}a`);
     const right = deterministicToolResultId("run-a", `${sharedPrefix}b`);
 
     expect(left).not.toBe(right);
-    expect(left).toBe(
-      deterministicToolResultId("run-a", `${sharedPrefix}a`),
-    );
+    expect(left).toBe(deterministicToolResultId("run-a", `${sharedPrefix}a`));
     expect(left).not.toBe(
       deterministicToolResultId("run-b", `${sharedPrefix}a`),
     );
@@ -117,9 +220,7 @@ describe("tool-result integrity", () => {
     ["truncation", "alph"],
     ["array reorder", ["omega", "alpha"]],
   ])("detects %s corruption of a persisted body", (_label, corrupted) => {
-    const content = Array.isArray(corrupted)
-      ? ["alpha", "omega"]
-      : "alpha";
+    const content = Array.isArray(corrupted) ? ["alpha", "omega"] : "alpha";
     const integrity = createToolResultIntegrity({
       runId: "run-corruption",
       toolCallId: "call-corruption",

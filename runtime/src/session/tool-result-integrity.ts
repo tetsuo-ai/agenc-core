@@ -44,10 +44,7 @@ const enum CanonicalTag {
   ObjectKey = 0x07,
 }
 
-export type ToolResultRepresentation =
-  | "original"
-  | "compacted"
-  | "truncated";
+export type ToolResultRepresentation = "original" | "compacted" | "truncated";
 
 export interface ToolResultBodyIdentity {
   readonly digest: string;
@@ -85,8 +82,7 @@ export type ToolResultIntegrityFailureCode =
   | "unsupported_body_value";
 
 export type ToolResultIntegrityDeferralCode =
-  | "canonical_body_depth_limit"
-  | "canonical_body_node_limit";
+  "canonical_body_depth_limit" | "canonical_body_node_limit";
 
 export interface ToolResultIntegrityFailure {
   readonly kind: "integrity_failure";
@@ -118,8 +114,7 @@ export type ToolResultIntegrityVerification =
 export class ToolResultCanonicalizationError extends Error {
   constructor(
     readonly code:
-      | ToolResultIntegrityFailureCode
-      | ToolResultIntegrityDeferralCode,
+      ToolResultIntegrityFailureCode | ToolResultIntegrityDeferralCode,
     readonly kind: "integrity_failure" | "operational_deferral",
     message: string,
   ) {
@@ -165,6 +160,8 @@ export class CanonicalSha256Writer {
   }
 
   writeString(label: string, value: string, countPayload = true): void {
+    assertWellFormedUtf16(label, "canonical field label");
+    assertWellFormedUtf16(value, label);
     const labelBytes = Buffer.from(label, "utf8");
     const valueByteLength = Buffer.byteLength(value, "utf8");
     this.#hash.update(encodeUnsignedLength(labelBytes.length));
@@ -179,11 +176,15 @@ export class CanonicalSha256Writer {
   }
 }
 
-export function digestToolResultBody(content: unknown): ToolResultBodyIdentity {
+export function digestToolResultBody(
+  content: unknown,
+  limits: { readonly maxNodes?: number } = {},
+): ToolResultBodyIdentity {
+  const maxNodes = boundedCanonicalNodeLimit(limits.maxNodes);
   const writer = new CanonicalSha256Writer(TOOL_RESULT_BODY_DIGEST_DOMAIN);
   const activeObjects = new WeakSet<object>();
   const visited = { nodes: 0 };
-  writeCanonicalValue(writer, content, 0, activeObjects, visited);
+  writeCanonicalValue(writer, content, 0, activeObjects, visited, maxNodes);
   return {
     digest: writer.digest(),
     byteLength: writer.payloadByteLength,
@@ -195,11 +196,7 @@ export function deterministicToolResultId(
   toolCallId: string,
 ): string {
   assertBoundedIdentity(runId, "runId", MAX_TOOL_RESULT_SCOPE_ID_BYTES);
-  assertBoundedIdentity(
-    toolCallId,
-    "toolCallId",
-    MAX_TOOL_CALL_ID_UTF8_BYTES,
-  );
+  assertBoundedIdentity(toolCallId, "toolCallId", MAX_TOOL_CALL_ID_UTF8_BYTES);
   const writer = new CanonicalSha256Writer(TOOL_RESULT_ID_DOMAIN);
   writer.writeString("run-id", runId);
   writer.writeString("tool-call-id", toolCallId);
@@ -281,7 +278,9 @@ export function verifyToolResultIntegrity(params: {
   } catch (error) {
     return canonicalizationFailure(error);
   }
-  if (!constantTimeDigestEqual(bodyIdentity.digest, integrity.persisted.digest)) {
+  if (
+    !constantTimeDigestEqual(bodyIdentity.digest, integrity.persisted.digest)
+  ) {
     return invalid(
       "persisted_body_digest_mismatch",
       `persisted body digest does not match tool result ${formatIdentityForLog(params.toolCallId)}`,
@@ -340,9 +339,15 @@ function parseToolResultIntegrity(
   value: unknown,
 ):
   | { readonly status: "valid"; readonly integrity: ToolResultIntegrity }
-  | { readonly status: "invalid"; readonly failure: ToolResultIntegrityFailure } {
+  | {
+      readonly status: "invalid";
+      readonly failure: ToolResultIntegrityFailure;
+    } {
   if (!isRecord(value) || !hasExactKeys(value, INTEGRITY_KEYS)) {
-    return invalid("invalid_integrity_metadata", "tool result integrity metadata is missing");
+    return invalid(
+      "invalid_integrity_metadata",
+      "tool result integrity metadata is missing",
+    );
   }
   if (
     value.version !== TOOL_RESULT_INTEGRITY_VERSION ||
@@ -415,6 +420,7 @@ function writeCanonicalValue(
   depth: number,
   activeObjects: WeakSet<object>,
   visited: { nodes: number },
+  maxNodes: number,
 ): void {
   if (depth > MAX_CANONICAL_BODY_DEPTH) {
     throw new ToolResultCanonicalizationError(
@@ -424,11 +430,11 @@ function writeCanonicalValue(
     );
   }
   visited.nodes += 1;
-  if (visited.nodes > MAX_CANONICAL_BODY_NODES) {
+  if (visited.nodes > maxNodes) {
     throw new ToolResultCanonicalizationError(
       "canonical_body_node_limit",
       "operational_deferral",
-      `tool result canonicalization exceeds ${MAX_CANONICAL_BODY_NODES} values`,
+      `tool result canonicalization exceeds ${maxNodes} values`,
     );
   }
 
@@ -443,11 +449,15 @@ function writeCanonicalValue(
     return;
   }
   if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new ToolResultCanonicalizationError(
+        "unsupported_body_value",
+        "integrity_failure",
+        "tool result body contains a non-finite number",
+      );
+    }
     writer.writeTag(CanonicalTag.Number);
-    writer.writeString(
-      "number",
-      Number.isFinite(value) ? JSON.stringify(value) : "null",
-    );
+    writer.writeString("number", JSON.stringify(value));
     return;
   }
   if (typeof value === "string") {
@@ -481,6 +491,7 @@ function writeCanonicalValue(
           depth + 1,
           activeObjects,
           visited,
+          maxNodes,
         );
       }
       return;
@@ -495,6 +506,7 @@ function writeCanonicalValue(
       );
     }
     const record = value as Record<string, unknown>;
+    assertEnumerableOwnKeyBudget(record, maxNodes - visited.nodes);
     const keys = Object.keys(record)
       .filter((key) => record[key] !== undefined)
       .sort();
@@ -509,6 +521,7 @@ function writeCanonicalValue(
         depth + 1,
         activeObjects,
         visited,
+        maxNodes,
       );
     }
   } finally {
@@ -527,12 +540,70 @@ function assertBoundedIdentity(
   field: string,
   maxBytes: number,
 ): void {
+  assertWellFormedUtf16(value, field);
   const byteLength = Buffer.byteLength(value, "utf8");
   if (value.length === 0 || value.trim().length === 0) {
     throw new Error(`${field} must not be empty`);
   }
   if (byteLength > maxBytes) {
     throw new Error(`${field} exceeds ${maxBytes} UTF-8 bytes`);
+  }
+}
+
+function assertWellFormedUtf16(value: string, field: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        index += 1;
+        continue;
+      }
+      throw illFormedString(field);
+    }
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw illFormedString(field);
+    }
+  }
+}
+
+function illFormedString(field: string): ToolResultCanonicalizationError {
+  return new ToolResultCanonicalizationError(
+    "unsupported_body_value",
+    "integrity_failure",
+    `${field} must contain well-formed UTF-16`,
+  );
+}
+
+function boundedCanonicalNodeLimit(value: number | undefined): number {
+  if (value === undefined) return MAX_CANONICAL_BODY_NODES;
+  if (
+    !Number.isSafeInteger(value) ||
+    value <= 0 ||
+    value > MAX_CANONICAL_BODY_NODES
+  ) {
+    throw new Error(
+      `maxNodes must be a positive safe integer no greater than ${MAX_CANONICAL_BODY_NODES}`,
+    );
+  }
+  return value;
+}
+
+function assertEnumerableOwnKeyBudget(
+  value: Record<string, unknown>,
+  remainingNodes: number,
+): void {
+  let keyCount = 0;
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    keyCount += 1;
+    if (keyCount > remainingNodes) {
+      throw new ToolResultCanonicalizationError(
+        "canonical_body_node_limit",
+        "operational_deferral",
+        "tool result canonicalization exceeds the remaining object-key budget",
+      );
+    }
   }
 }
 
@@ -550,10 +621,7 @@ function canonicalizationFailure(
         },
       };
     }
-    return invalid(
-      error.code as ToolResultIntegrityFailureCode,
-      error.message,
-    );
+    return invalid(error.code as ToolResultIntegrityFailureCode, error.message);
   }
   throw error;
 }

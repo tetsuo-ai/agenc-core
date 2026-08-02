@@ -4,11 +4,15 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  computeCheckpointPrefixHashV2,
   DurableCheckpointReadError,
   readTurnCheckpoint,
   validateCheckpointPrefixV2,
 } from "../../src/session/durable-checkpoint-reader.js";
-import { planLegacyDurableCheckpointUpgrade } from "../../src/session/durable-checkpoint-upgrade.js";
+import {
+  MAX_CHECKPOINT_UPGRADE_PREFIX_WORK,
+  planLegacyDurableCheckpointUpgrade,
+} from "../../src/session/durable-checkpoint-upgrade.js";
 import {
   ROLLOUT_SCHEMA_VERSION,
   type TurnCheckpointV2Event,
@@ -138,6 +142,24 @@ describe("durable checkpoint v2 reader", () => {
     ).toThrowError(/unversioned fields/);
   });
 
+  it("rejects checkpoint sequence zero for every readable version", () => {
+    const legacy = { ...legacyCheckpoint("a".repeat(64)), checkpointSeq: 0 };
+    const explicitV1 = { ...legacy, checkpointVersion: 1 };
+    const v2 = {
+      ...legacy,
+      checkpointVersion: 2,
+      toolResultIntegrityVersion: 1,
+    };
+
+    for (const checkpoint of [legacy, explicitV1, v2]) {
+      expect(() => readTurnCheckpoint(checkpoint)).toThrowError(
+        expect.objectContaining<DurableCheckpointReadError>({
+          code: "checkpoint_shape_invalid",
+        }),
+      );
+    }
+  });
+
   it("authenticates an upgraded prefix and rejects body substitution", () => {
     const upgraded = upgradedFixture(
       "legacy-v1-tool-result-a.jsonl",
@@ -148,6 +170,7 @@ describe("durable checkpoint v2 reader", () => {
     expect(
       validateCheckpointPrefixV2({
         checkpoint,
+        expectedRunId: "checkpoint-pair-v1",
         messages: history,
         projection,
         projectionId: "validate-alpha",
@@ -161,6 +184,7 @@ describe("durable checkpoint v2 reader", () => {
     expect(
       validateCheckpointPrefixV2({
         checkpoint,
+        expectedRunId: "checkpoint-pair-v1",
         messages: substituted,
         projection,
         projectionId: "validate-substitution",
@@ -183,6 +207,7 @@ describe("durable checkpoint v2 reader", () => {
     expect(
       validateCheckpointPrefixV2({
         checkpoint: v2Checkpoint(upgraded),
+        expectedRunId: "checkpoint-pair-v1",
         messages: responseHistory(upgraded),
         projection,
         projectionId: "validate-bounded",
@@ -208,6 +233,7 @@ describe("durable checkpoint v2 reader", () => {
     expect(
       validateCheckpointPrefixV2({
         checkpoint: v2Checkpoint(upgraded),
+        expectedRunId: "checkpoint-pair-v1",
         messages: malformed as unknown as ResponseItem[],
         projection,
         projectionId: "validate-malformed-response",
@@ -231,6 +257,7 @@ describe("durable checkpoint v2 reader", () => {
     expect(
       validateCheckpointPrefixV2({
         checkpoint: v2Checkpoint(upgraded),
+        expectedRunId: "checkpoint-pair-v1",
         messages: withResponseExtension as ResponseItem[],
         projection,
         projectionId: "validate-unversioned-response",
@@ -255,6 +282,7 @@ describe("durable checkpoint v2 reader", () => {
     expect(
       validateCheckpointPrefixV2({
         checkpoint: v2Checkpoint(upgraded),
+        expectedRunId: "checkpoint-pair-v1",
         messages: withCallExtension as ResponseItem[],
         projection,
         projectionId: "validate-unversioned-call",
@@ -263,6 +291,98 @@ describe("durable checkpoint v2 reader", () => {
     ).toMatchObject({
       status: "invalid",
       failure: { code: "checkpoint_response_shape_invalid" },
+    });
+  });
+
+  it("rejects UTF-8 replacement aliases in a v2 checkpoint prefix", () => {
+    const replacementHistory: ToolResultIntegrityResponseItem[] = [
+      { role: "user", content: "\ufffd" },
+    ];
+    const checkpoint = checkpointForHistory(replacementHistory);
+
+    expect(
+      validateCheckpointPrefixV2({
+        checkpoint,
+        expectedRunId: "unicode-run",
+        messages: replacementHistory,
+        projection,
+        projectionId: "validate-unicode-replacement",
+        sourceKey: "unicode-replacement",
+      }),
+    ).toMatchObject({ status: "valid" });
+
+    for (const malformed of ["\ud800", "\udc00"]) {
+      expect(() =>
+        computeCheckpointPrefixHashV2(
+          [{ role: "user", content: malformed }],
+          1,
+        ),
+      ).toThrowError(
+        expect.objectContaining({ code: "unsupported_body_value" }),
+      );
+      expect(
+        validateCheckpointPrefixV2({
+          checkpoint,
+          expectedRunId: "unicode-run",
+          messages: [{ role: "user", content: malformed }],
+          projection,
+          projectionId: `validate-unicode-${malformed.charCodeAt(0)}`,
+          sourceKey: "unicode-malformed",
+        }),
+      ).toMatchObject({
+        status: "invalid",
+        failure: {
+          code: "checkpoint_prefix_body_invalid",
+          cause: { code: "unsupported_body_value" },
+        },
+      });
+    }
+  });
+
+  it("binds a wholly cross-run v2 prefix to its expected durable run", () => {
+    const history = toolPairHistory([
+      { callId: "cross-run-call", integrityRunId: "another-run" },
+    ]);
+
+    expect(
+      validateCheckpointPrefixV2({
+        checkpoint: checkpointForHistory(history),
+        expectedRunId: "owning-run",
+        messages: history,
+        projection,
+        projectionId: "validate-cross-run-prefix",
+        sourceKey: "cross-run-prefix",
+      }),
+    ).toMatchObject({
+      status: "invalid",
+      failure: {
+        code: "tool_result_integrity_invalid",
+        cause: { code: "run_id_mismatch" },
+      },
+    });
+  });
+
+  it("rejects mixed integrity run IDs inside one v2 prefix", () => {
+    const history = toolPairHistory([
+      { callId: "owning-call", integrityRunId: "owning-run" },
+      { callId: "foreign-call", integrityRunId: "another-run" },
+    ]);
+
+    expect(
+      validateCheckpointPrefixV2({
+        checkpoint: checkpointForHistory(history),
+        expectedRunId: "owning-run",
+        messages: history,
+        projection,
+        projectionId: "validate-mixed-run-prefix",
+        sourceKey: "mixed-run-prefix",
+      }),
+    ).toMatchObject({
+      status: "invalid",
+      failure: {
+        code: "tool_result_integrity_invalid",
+        cause: { code: "run_id_mismatch" },
+      },
     });
   });
 });
@@ -523,6 +643,139 @@ describe("legacy durable checkpoint upgrade planner", () => {
     });
   });
 
+  it("rejects non-finite tool results before they can be persisted", () => {
+    for (const content of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ]) {
+      expect(
+        planLegacyDurableCheckpointUpgrade({
+          items: [
+            {
+              type: "response_item",
+              payload: {
+                role: "tool",
+                toolCallId: "non-finite-call",
+                content,
+              },
+            },
+          ],
+          runId: "non-finite-run",
+          projection,
+          projectionId: "plan-non-finite",
+          sourceKey: "non-finite",
+        }),
+      ).toMatchObject({
+        status: "invalid",
+        failure: {
+          code: "tool_result_integrity_invalid",
+          cause: { code: "unsupported_body_value" },
+        },
+      });
+    }
+  });
+
+  it(
+    "accumulates large response histories in linear time",
+    { timeout: 5_000 },
+    () => {
+      const responseCount = 50_000;
+      const items: RolloutItem[] = Array.from(
+        { length: responseCount },
+        (_, index) => ({
+          type: "response_item" as const,
+          payload: { role: "user" as const, content: `message-${index}` },
+        }),
+      );
+
+      const outcome = planLegacyDurableCheckpointUpgrade({
+        items,
+        runId: "linear-history-run",
+        projection,
+        projectionId: "plan-linear-history",
+        sourceKey: "linear-history",
+      });
+
+      expect(outcome).toMatchObject({
+        status: "planned",
+        plan: {
+          upgradedItems: expect.objectContaining({ length: responseCount }),
+        },
+      });
+    },
+  );
+
+  it("defers repeated checkpoints at the aggregate prefix-work bound", () => {
+    const firstMessage: ToolResultIntegrityResponseItem = {
+      role: "user",
+      content: "first",
+    };
+    const secondMessage: ToolResultIntegrityResponseItem = {
+      role: "assistant",
+      content: "second",
+    };
+    const firstHistory = [firstMessage];
+    const secondHistory = [firstMessage, secondMessage];
+    const items: RolloutItem[] = [
+      {
+        type: "session_meta",
+        payload: {
+          sessionId: "aggregate-run",
+          timestamp: "2026-08-01T00:00:00.000Z",
+          cwd: "/workspace",
+          originator: "test",
+          agencVersion: "0.13.0",
+          rolloutSchemaVersion: 2,
+        },
+      },
+      { type: "response_item", payload: firstMessage },
+      checkpointItem(checkpointForHistory(firstHistory)),
+      { type: "response_item", payload: secondMessage },
+      checkpointItem(checkpointForHistory(secondHistory)),
+    ];
+
+    expect(
+      planLegacyDurableCheckpointUpgrade({
+        items,
+        runId: "aggregate-run",
+        projection,
+        projectionId: "plan-aggregate-bound",
+        sourceKey: "aggregate-bound",
+        maxCheckpointPrefixWork: 3,
+      }),
+    ).toMatchObject({
+      status: "deferred",
+      failure: {
+        code: "checkpoint_prefix_work_limit",
+        itemIndex: 4,
+      },
+    });
+  });
+
+  it("does not allow callers to disable or widen the prefix-work bound", () => {
+    const base = {
+      items: [] as RolloutItem[],
+      runId: "bounded-run",
+      projection,
+      projectionId: "plan-invalid-bound",
+      sourceKey: "invalid-bound",
+    };
+
+    expect(() =>
+      planLegacyDurableCheckpointUpgrade({
+        ...base,
+        maxCheckpointPrefixWork: 0,
+      }),
+    ).toThrowError(/positive safe integer/);
+    expect(() =>
+      planLegacyDurableCheckpointUpgrade({
+        ...base,
+        maxCheckpointPrefixWork: MAX_CHECKPOINT_UPGRADE_PREFIX_WORK + 1,
+      }),
+    ).toThrowError(/no greater than/);
+  });
+
   it("leaves the legacy prefix hash behavior untouched for the A3b cutover", () => {
     const alpha = loadFixture("legacy-v1-tool-result-a.jsonl");
     const omega = loadFixture("legacy-v1-tool-result-body-substitution.jsonl");
@@ -600,6 +853,60 @@ function v2Checkpoint(
     }
   }
   throw new Error("checkpoint is missing");
+}
+
+function checkpointForHistory(
+  history: ReadonlyArray<ToolResultIntegrityResponseItem>,
+): TurnCheckpointV2Event {
+  const readable = readTurnCheckpoint({
+    ...legacyCheckpoint(computeCheckpointPrefixHashV2(history, history.length)),
+    checkpointVersion: 2,
+    toolResultIntegrityVersion: 1,
+    persistedMessageCount: history.length,
+  });
+  if (readable.version !== 2) throw new Error("checkpoint is not v2");
+  return readable.checkpoint;
+}
+
+function checkpointItem(checkpoint: TurnCheckpointV2Event): RolloutItem {
+  return {
+    type: "event_msg",
+    payload: {
+      eventId: `checkpoint:${checkpoint.checkpointSeq}`,
+      id: "checkpoint-event",
+      seq: checkpoint.checkpointSeq,
+      msg: { type: "turn_checkpoint", payload: checkpoint },
+    },
+  };
+}
+
+function toolPairHistory(
+  calls: ReadonlyArray<{
+    readonly callId: string;
+    readonly integrityRunId: string;
+  }>,
+): ToolResultIntegrityResponseItem[] {
+  return [
+    {
+      role: "assistant",
+      content: "",
+      toolCalls: calls.map(({ callId }) => ({
+        id: callId,
+        name: "read",
+      })),
+    },
+    ...calls.map(({ callId, integrityRunId }) => ({
+      role: "tool" as const,
+      content: `result-${callId}`,
+      toolCallId: callId,
+      toolName: "read",
+      toolResultIntegrity: createToolResultIntegrity({
+        runId: integrityRunId,
+        toolCallId: callId,
+        content: `result-${callId}`,
+      }),
+    })),
+  ];
 }
 
 function legacyCheckpoint(prefixHash: string): Record<string, unknown> {

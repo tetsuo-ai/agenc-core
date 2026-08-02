@@ -50,8 +50,14 @@ export interface ToolPairProjectionSummary {
  */
 export interface ToolPairProjection {
   runAtomically<T>(operation: () => T): T;
-  reset(params: { readonly projectionId: string; readonly sourceKey: string }): void;
-  find(projectionId: string, callId: string): ToolPairProjectionRecord | undefined;
+  reset(params: {
+    readonly projectionId: string;
+    readonly sourceKey: string;
+  }): void;
+  find(
+    projectionId: string,
+    callId: string,
+  ): ToolPairProjectionRecord | undefined;
   insertCall(projectionId: string, record: ToolPairProjectionRecord): boolean;
   resolveCall(params: {
     readonly projectionId: string;
@@ -121,15 +127,26 @@ export type ToolPairValidationOutcome =
       readonly summary: ToolPairProjectionSummary;
     };
 
-export interface ToolPairValidationOptions {
+interface ToolPairValidationLimits {
   readonly projectionId: string;
   readonly sourceKey: string;
-  readonly requireResultIntegrity?: boolean;
   readonly maxToolCalls?: number;
   readonly maxOpenToolCalls?: number;
   readonly maxToolCallIdBytes?: number;
   readonly maxIndexBytes?: number;
 }
+
+export type ToolPairValidationOptions = ToolPairValidationLimits &
+  (
+    | {
+        readonly requireResultIntegrity: true;
+        readonly expectedRunId: string;
+      }
+    | {
+        readonly requireResultIntegrity?: false;
+        readonly expectedRunId?: never;
+      }
+  );
 
 interface OpenToolCall {
   readonly toolName: string;
@@ -170,8 +187,14 @@ export function validateToolPairSequence(
       });
       const finishFailure = (
         outcome:
-          | { readonly status: "invalid"; readonly failure: ToolPairIntegrityFailure }
-          | { readonly status: "deferred"; readonly failure: ToolPairOperationalDeferral },
+          | {
+              readonly status: "invalid";
+              readonly failure: ToolPairIntegrityFailure;
+            }
+          | {
+              readonly status: "deferred";
+              readonly failure: ToolPairOperationalDeferral;
+            },
       ): ToolPairValidationOutcome => {
         latestSummary = summary();
         projection.fail(options.projectionId, latestSummary, outcome.failure);
@@ -212,7 +235,10 @@ export function validateToolPairSequence(
                 ),
               );
             }
-            if (typeof call.name !== "string" || call.name.trim().length === 0) {
+            if (
+              typeof call.name !== "string" ||
+              call.name.trim().length === 0
+            ) {
               return finishFailure(
                 invalid(
                   "assistant_tool_call_name_missing",
@@ -315,7 +341,10 @@ export function validateToolPairSequence(
           }
           const openCall = openCalls.get(message.toolCallId);
           if (openCall === undefined) {
-            const exact = projection.find(options.projectionId, message.toolCallId);
+            const exact = projection.find(
+              options.projectionId,
+              message.toolCallId,
+            );
             if (exact?.resultIndex !== undefined) {
               return finishFailure(
                 invalid(
@@ -354,6 +383,7 @@ export function validateToolPairSequence(
           if (options.requireResultIntegrity === true) {
             const verified = verifyToolResultIntegrity({
               integrity: message.toolResultIntegrity,
+              expectedRunId: options.expectedRunId,
               toolCallId: message.toolCallId,
               content: message.content,
             });
@@ -509,7 +539,9 @@ function emptySummary(): ToolPairProjectionSummary {
   };
 }
 
-function summarizeOpenIds(openCalls: ReadonlyMap<string, OpenToolCall>): string {
+function summarizeOpenIds(
+  openCalls: ReadonlyMap<string, OpenToolCall>,
+): string {
   const values: string[] = [];
   for (const callId of openCalls.keys()) {
     values.push(formatIdentityForLog(callId));

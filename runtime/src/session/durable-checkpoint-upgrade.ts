@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { computePrefixHash } from "./durable-turns.js";
-import { emptyReducedState, reduce } from "./event-log-reducer.js";
 import type { TurnCheckpointV2Event } from "./event-log.js";
 import type {
   RolloutItem,
@@ -10,6 +9,7 @@ import {
   DURABLE_CHECKPOINT_READ_VERSION,
   DURABLE_ROLLOUT_SCHEMA_V2,
   DurableCheckpointReadError,
+  MAX_CHECKPOINT_PREFIX_MESSAGES,
   computeCheckpointPrefixHashV2,
   readTurnCheckpoint,
   validateCheckpointPrefixV2,
@@ -31,6 +31,12 @@ import type {
 } from "./tool-pair-validator.js";
 
 const UPGRADE_PROJECTION_ID_DOMAIN = "agenc.checkpoint-upgrade-projection.v1";
+// V2 validation visits the prefix for shape, tool-pair, and digest checks.
+const V2_CHECKPOINT_PREFIX_PASSES = 3;
+// Legacy promotion additionally computes the new and legacy prefix digests.
+const LEGACY_CHECKPOINT_PREFIX_PASSES = 5;
+export const MAX_CHECKPOINT_UPGRADE_PREFIX_WORK =
+  MAX_CHECKPOINT_PREFIX_MESSAGES * LEGACY_CHECKPOINT_PREFIX_PASSES;
 
 export interface DurableCheckpointUpgradePlan {
   readonly sourceSchemaVersion: number;
@@ -62,7 +68,9 @@ export interface DurableCheckpointUpgradeFailure {
 export interface DurableCheckpointUpgradeDeferral {
   readonly kind: "operational_deferral";
   readonly code:
-    "tool_result_integrity_deferred" | "checkpoint_validation_deferred";
+    | "tool_result_integrity_deferred"
+    | "checkpoint_validation_deferred"
+    | "checkpoint_prefix_work_limit";
   readonly itemIndex: number | null;
   readonly reason: string;
   readonly cause?:
@@ -93,7 +101,11 @@ export function planLegacyDurableCheckpointUpgrade(params: {
   readonly projection: ToolPairProjection;
   readonly projectionId: string;
   readonly sourceKey: string;
+  readonly maxCheckpointPrefixWork?: number;
 }): DurableCheckpointUpgradeOutcome {
+  const maxCheckpointPrefixWork = positiveWorkLimit(
+    params.maxCheckpointPrefixWork ?? MAX_CHECKPOINT_UPGRADE_PREFIX_WORK,
+  );
   const sourceSchemaInfo = findSourceSchemaVersion(params.items);
   if (sourceSchemaInfo.mixed) {
     return invalid(
@@ -112,7 +124,8 @@ export function planLegacyDurableCheckpointUpgrade(params: {
   }
 
   const transformed: RolloutItem[] = [];
-  let state = emptyReducedState();
+  let history: ToolResultIntegrityResponseItem[] = [];
+  let checkpointPrefixWork = 0;
   let toolResultsSealed = 0;
   let checkpointsUpgraded = 0;
   let checkpointsValidated = 0;
@@ -206,20 +219,44 @@ export function planLegacyDurableCheckpointUpgrade(params: {
         );
       }
 
+      const persistedMessageCount = readable.checkpoint.persistedMessageCount;
+      if (persistedMessageCount > history.length) {
+        return invalid(
+          "checkpoint_invalid",
+          itemIndex,
+          `checkpoint requires ${persistedMessageCount} messages but only ${history.length} precede it`,
+        );
+      }
+      const prefixPasses =
+        readable.version === 1
+          ? LEGACY_CHECKPOINT_PREFIX_PASSES
+          : V2_CHECKPOINT_PREFIX_PASSES;
+      const reservedWork = reserveCheckpointPrefixWork(
+        checkpointPrefixWork,
+        persistedMessageCount,
+        prefixPasses,
+        maxCheckpointPrefixWork,
+      );
+      if (reservedWork === undefined) {
+        return {
+          status: "deferred",
+          failure: {
+            kind: "operational_deferral",
+            code: "checkpoint_prefix_work_limit",
+            itemIndex,
+            reason: `checkpoint validation would exceed the aggregate prefix-work limit of ${maxCheckpointPrefixWork} message visits`,
+          },
+        };
+      }
+      checkpointPrefixWork = reservedWork;
+
       let checkpoint: TurnCheckpointV2Event;
       if (readable.version === 1) {
-        if (readable.checkpoint.persistedMessageCount > state.history.length) {
-          return invalid(
-            "checkpoint_invalid",
-            itemIndex,
-            `checkpoint requires ${readable.checkpoint.persistedMessageCount} messages but only ${state.history.length} precede it`,
-          );
-        }
         let prefixHash: string;
         try {
           prefixHash = computeCheckpointPrefixHashV2(
-            state.history,
-            readable.checkpoint.persistedMessageCount,
+            history,
+            persistedMessageCount,
           );
         } catch (error) {
           const mapped = canonicalizationOutcome(error, itemIndex);
@@ -250,7 +287,8 @@ export function planLegacyDurableCheckpointUpgrade(params: {
 
       const validation = validateCheckpointPrefixV2({
         checkpoint,
-        messages: state.history,
+        expectedRunId: params.runId,
+        messages: history,
         projection: params.projection,
         projectionId: checkpointProjectionId(params.projectionId),
         sourceKey: params.sourceKey,
@@ -277,8 +315,8 @@ export function planLegacyDurableCheckpointUpgrade(params: {
       }
       if (readable.version === 1) {
         const legacyPrefixHash = computePrefixHash(
-          state.history,
-          readable.checkpoint.persistedMessageCount,
+          history,
+          persistedMessageCount,
         );
         if (
           !constantTimeDigestEqual(
@@ -297,7 +335,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
     }
 
     transformed.push(item);
-    state = reduce(state, item).state;
+    history = updateUpgradeHistory(history, item);
   }
 
   return {
@@ -313,6 +351,47 @@ export function planLegacyDurableCheckpointUpgrade(params: {
       upgradedItems: transformed,
     },
   };
+}
+
+function updateUpgradeHistory(
+  history: ToolResultIntegrityResponseItem[],
+  item: RolloutItem,
+): ToolResultIntegrityResponseItem[] {
+  if (item.type === "response_item") {
+    history.push(item.payload);
+    return history;
+  }
+  if (
+    item.type === "compacted" &&
+    item.payload.replacementHistory !== undefined
+  ) {
+    return Array.from(item.payload.replacementHistory);
+  }
+  return history;
+}
+
+function positiveWorkLimit(value: number): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value <= 0 ||
+    value > MAX_CHECKPOINT_UPGRADE_PREFIX_WORK
+  ) {
+    throw new Error(
+      `maxCheckpointPrefixWork must be a positive safe integer no greater than ${MAX_CHECKPOINT_UPGRADE_PREFIX_WORK}`,
+    );
+  }
+  return value;
+}
+
+function reserveCheckpointPrefixWork(
+  used: number,
+  messageCount: number,
+  passCount: number,
+  limit: number,
+): number | undefined {
+  const remaining = limit - used;
+  if (messageCount > Math.floor(remaining / passCount)) return undefined;
+  return used + messageCount * passCount;
 }
 
 type SealResponseOutcome =
