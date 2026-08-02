@@ -1452,20 +1452,6 @@ describe("FND red-probe supervisor", () => {
       error: "did not exit expected-red",
     },
     {
-      name: "getter-thrown AssertionError",
-      source: probeSource({
-        imports: ['import { AssertionError } from "node:assert";'],
-        beforeAssertion: [
-          "const actual = { get value() {",
-          '  throw new AssertionError({ actual: 1, expected: 2, operator: "deepStrictEqual" });',
-          "} };",
-        ],
-        actual: "actual",
-        expected: "{ value: 2 }",
-      }),
-      error: "did not exit expected-red",
-    },
-    {
       name: "wrong fingerprint",
       source: probeSource({
         fingerprint: "FND-001:HARNESS-SELF-TEST:WRONG-FINGERPRINT",
@@ -1510,6 +1496,40 @@ describe("FND red-probe supervisor", () => {
     const fixtureRoot = createFixture({ source, timeoutMs });
     await expect(auditRedProbes({ runtimeRoot: fixtureRoot })).rejects.toThrow(
       error,
+    );
+  });
+
+  it("rejects a getter-thrown AssertionError without platform-dependent fatal formatting", async () => {
+    const fixtureRoot = createFixture({
+      source: probeSource({
+        imports: [
+          'import { AssertionError } from "node:assert";',
+          'import "../../helpers/assertion-error-exit.mjs";',
+        ],
+        beforeAssertion: [
+          "const actual = { get value() {",
+          '  throw new AssertionError({ actual: 1, expected: 2, operator: "deepStrictEqual" });',
+          "} };",
+        ],
+        actual: "actual",
+        expected: "{ value: 2 }",
+      }),
+    });
+    writeFixtureHelperModule(
+      fixtureRoot,
+      "assertion-error-exit.mjs",
+      [
+        'import { AssertionError } from "node:assert";',
+        'process.once("uncaughtException", (error) => {',
+        "  if (!(error instanceof AssertionError)) throw error;",
+        "  process.exitCode = 1;",
+        "});",
+        "",
+      ].join("\n"),
+    );
+
+    await expect(auditRedProbes({ runtimeRoot: fixtureRoot })).rejects.toThrow(
+      "did not exit expected-red",
     );
   });
 

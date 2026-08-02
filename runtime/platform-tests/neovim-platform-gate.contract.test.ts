@@ -259,9 +259,19 @@ describe("hosted Neovim platform gate contract", () => {
     const dirtyProofWaitIndex = killScenario.indexOf(
       "const dirtyProof = await waitForExactFileText(",
     );
+    const dirtyProcessingFenceIndex = killScenario.indexOf(
+      'session.send("\\x1b")',
+      dirtyInputIndex,
+    );
+    const dirtyNormalProofIndex = killScenario.indexOf(
+      "embedded Neovim marker processing before hosted-platform termination",
+      dirtyProcessingFenceIndex,
+    );
     expect(dirtyAcknowledgementIndex).toBeGreaterThan(-1);
     expect(dirtyInputIndex).toBeGreaterThan(dirtyAcknowledgementIndex);
-    expect(dirtyProofWaitIndex).toBeGreaterThan(dirtyInputIndex);
+    expect(dirtyProcessingFenceIndex).toBeGreaterThan(dirtyInputIndex);
+    expect(dirtyNormalProofIndex).toBeGreaterThan(dirtyProcessingFenceIndex);
+    expect(dirtyProofWaitIndex).toBeGreaterThan(dirtyNormalProofIndex);
     expect(
       killScenario.slice(dirtyInputIndex),
     ).not.toContain("runEmbeddedNeovimCommand");

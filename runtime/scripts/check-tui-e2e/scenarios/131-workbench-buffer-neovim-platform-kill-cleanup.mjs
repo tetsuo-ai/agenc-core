@@ -87,6 +87,18 @@ export default async function (session) {
     session.send("o");
     await sleep(80);
     await session.type("UNSAVED_PLATFORM_KILL_MARK", { perCharMs: 15 });
+    // nvim_input acknowledges buffer acceptance, not editor processing. Send
+    // Escape after the marker and require Neovim's mode notification before
+    // trusting the TextChangedI proof. The marker precedes Escape in the same
+    // serialized provider queue, so NORMAL is a processing fence without
+    // saving the dirty buffer or replacing the end-to-end PTY input path.
+    session.send("\x1b");
+    await waitForFrameText(
+      session,
+      /\[embedded Neovim [^,\n]+,\s*normal,\s*ready(?:,|\])/iu,
+      "embedded Neovim marker processing before hosted-platform termination",
+      5_000,
+    );
     const expectedDirtyProof =
       `${originalTarget}UNSAVED_PLATFORM_KILL_MARK\n`;
     const dirtyProof = await waitForExactFileText(
