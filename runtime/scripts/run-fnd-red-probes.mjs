@@ -60,6 +60,7 @@ const RED_PROBE_SUFFIX = ".red-probe.ts";
 const RED_PROBE_DIRECTORY = "tests/fnd/red-probes";
 const MINIMUM_TIMEOUT_MS = 100;
 const MAXIMUM_TIMEOUT_MS = 30_000;
+const MINIMUM_READY_HEARTBEATS = 2;
 const MAXIMUM_MANIFEST_BYTES = 65_536;
 const MAXIMUM_PROBE_BYTES = 65_536;
 const MAXIMUM_BOOTSTRAP_BYTES = 65_536;
@@ -196,7 +197,7 @@ const RED_PROBE_HELPER_FUNCTION = "expectDeepStrictEqualRedProbe";
 const RED_PROBE_HELPER_TYPE = "RedProbeAssertion";
 const RED_PROBE_RUNNER_FUNCTION = "runRedProbe";
 const RED_PROBE_BOOTSTRAP_SHA256 =
-  "e083e73598e19897f03a7afa51be6261af042836fecbcb6a18125d77cc1083b7";
+  "4a444d943222ab3bf552a058a0d5f0798b23cffd9daa8f0969fb020c9d9f544a";
 const RED_PROBE_HELPER_SHA256 =
   "289471c65f3852d56e5c40ed95883697f8145b2e471b3eb0aab06660d1c1232a";
 const RED_PROBE_MARKDOWN_LOADER_SHA256 =
@@ -1147,6 +1148,7 @@ export function observeRedProbeProtocolLine(
     });
   }
   if (
+    state.expectedSequence > MINIMUM_READY_HEARTBEATS &&
     isExpectedProtocolLine(entry, authenticationSecret, line, markdownPolicy)
   ) {
     return Object.freeze({
@@ -1210,7 +1212,8 @@ function createHeartbeatMonitor(
       if (protocolState.protocolInvalid) continue;
       if (
         protocolState.expectedSequence ===
-        previousState.expectedSequence + 1
+          previousState.expectedSequence + 1 &&
+        previousState.expectedSequence >= MINIMUM_READY_HEARTBEATS
       ) {
         arm();
       } else if (protocolState.finalRecordObserved) {
@@ -1220,7 +1223,8 @@ function createHeartbeatMonitor(
   };
 
   // The hard per-probe deadline bounds authenticated bootstrap and cold static
-  // imports. Silence monitoring begins only after the first trusted heartbeat.
+  // imports. Heartbeat 1 seals that boundary; silence monitoring begins only
+  // when heartbeat 2 proves that the canonical root runner is ready.
   return Object.freeze({
     close: disarm,
     observe,
@@ -1245,7 +1249,11 @@ function isCanonicalProbeOutput(
   authenticationSecret,
   markdownPolicy,
 ) {
-  if (heartbeat.protocolInvalid || heartbeat.recordsObserved < 2) {
+  if (
+    heartbeat.protocolInvalid ||
+    heartbeat.observedHeartbeats < MINIMUM_READY_HEARTBEATS ||
+    heartbeat.recordsObserved < MINIMUM_READY_HEARTBEATS + 1
+  ) {
     return false;
   }
   const output = bytes.toString("utf8");

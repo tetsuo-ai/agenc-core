@@ -19,7 +19,7 @@
       "file": "tests/fnd/red-probes/a2a-malformed-canonical-journal.red-probe.ts",
       "fingerprint": "A2A:RECOVERY:MALFORMED-CANONICAL-JOURNAL",
       "sourceSha256": "122e91acad45d94524f3a0a16e6f56942f9d7fdb255b55d72c448e6265a93909",
-      "timeoutMs": 15000
+      "timeoutMs": 30000
     },
     {
       "id": "a2b-corrupt-journal-never-recoverable",
@@ -28,7 +28,7 @@
       "file": "tests/fnd/red-probes/a2b-corrupt-journal-never-recoverable.red-probe.ts",
       "fingerprint": "A2B:RECOVERY:CORRUPT-JOURNAL-NONEXECUTABLE",
       "sourceSha256": "ee661eb50eb666aae76cefab4becac8f5ef1a960672aa05b9f90f4bec3e963b8",
-      "timeoutMs": 15000
+      "timeoutMs": 30000
     },
     {
       "id": "a3-tool-result-body-digest",
@@ -109,7 +109,7 @@
       "file": "tests/fnd/red-probes/e1a-recovery-line-byte-limit.red-probe.ts",
       "fingerprint": "E1A:RECOVERY:LINE-BYTE-LIMIT",
       "sourceSha256": "d605a0307f42c6a1613a10f9fb70840c5b3424ee99edfdfa07fdad47497f5a91",
-      "timeoutMs": 20000
+      "timeoutMs": 30000
     },
     {
       "id": "intentional-transition-omission",

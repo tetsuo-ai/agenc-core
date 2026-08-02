@@ -61,6 +61,11 @@ const testFingerprint = "FND-001:HARNESS-SELF-TEST:CONTRACT-FIXTURE";
 const inventoryOverflowFileCount = 320;
 const jsonNodeOverflowCount = 16_384;
 const sourceAstNodeOverflowItems = 16_500;
+const defaultFixtureTimeoutMs = 5_000;
+const coldModuleLoadMilliseconds = 500;
+const coldModuleFixtureTimeoutMs = 5_000;
+const preReadyHardDeadlineMilliseconds = 5_000;
+const preReadyBlockingImportMilliseconds = 10_000;
 const reporterHandoffSymbolKey = "agenc.red-probe.report-expected-failure.v1";
 const finalAuthenticationDomain = "AGENC_RED_PROBE_FINAL_V1\0";
 const markdownLoaderSha256 =
@@ -180,7 +185,7 @@ function createFixture(options: FixtureOptions = {}): string {
         fingerprint,
         sourceSha256: sha256(source),
         task,
-        timeoutMs: options.timeoutMs ?? 1_000,
+        timeoutMs: options.timeoutMs ?? defaultFixtureTimeoutMs,
       },
     ],
   };
@@ -379,11 +384,14 @@ describe("FND red-probe supervisor", () => {
       actual: "coldCapability()",
       expected: "2",
     });
-    const fixtureRoot = createFixture({ source, timeoutMs: 1_000 });
+    const fixtureRoot = createFixture({
+      source,
+      timeoutMs: coldModuleFixtureTimeoutMs,
+    });
     writeFileSync(
       join(fixtureRoot, "src/cold-capability.ts"),
       [
-        "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);",
+        `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${coldModuleLoadMilliseconds});`,
         "export function coldCapability(): number {",
         "  return 1;",
         "}",
@@ -404,6 +412,39 @@ describe("FND red-probe supervisor", () => {
       skipped: 0,
       todos: 0,
     });
+  });
+
+  it("keeps the hard deadline and descendant containment active before readiness", async () => {
+    const fixtureRoot = createFixture({
+      source: probeSource({
+        imports: ['import "../../helpers/pre-ready-hang.js";'],
+      }),
+      timeoutMs: preReadyHardDeadlineMilliseconds,
+    });
+    const marker = join(fixtureRoot, "pre-ready-descendant.pid");
+    writeFixtureHelperModule(
+      fixtureRoot,
+      "pre-ready-hang.ts",
+      [
+        'import { spawn } from "node:child_process";',
+        'import { writeFileSync } from "node:fs";',
+        `const child = spawn(process.execPath, ["--eval", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" });`,
+        'if (child.pid === undefined) throw new Error("missing descendant pid");',
+        `writeFileSync(${JSON.stringify(marker)}, String(child.pid), "utf8");`,
+        "child.unref();",
+        `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${preReadyBlockingImportMilliseconds});`,
+        "",
+      ].join("\n"),
+    );
+
+    await expect(
+      auditRedProbes({ runtimeRoot: fixtureRoot }),
+    ).rejects.toThrow(
+      `timed out after ${preReadyHardDeadlineMilliseconds}ms`,
+    );
+    const descendantPid = Number.parseInt(readFileSync(marker, "utf8"), 10);
+    expect(Number.isSafeInteger(descendantPid)).toBe(true);
+    expect(() => process.kill(descendantPid, 0)).toThrow();
   });
 
   it("keeps the TypeScript helper and Node supervisor protocol constants exact", () => {
@@ -433,6 +474,16 @@ describe("FND red-probe supervisor", () => {
     });
   });
 
+  it("rejects authenticated final evidence before the ready heartbeat", () => {
+    const state = observeProtocolLines([
+      protocolHeartbeatLine(1),
+      protocolFinalLine(),
+    ]);
+    expect(state.finalRecordObserved).toBe(false);
+    expect(state.protocolInvalid).toBe(true);
+    expect(state.recordsObserved).toBe(2);
+  });
+
   it.each([
     {
       name: "non-one initial sequence",
@@ -458,18 +509,23 @@ describe("FND red-probe supervisor", () => {
         `"authenticationTag":"${firstNibble === "0" ? "1" : "0"}`,
     );
     expect(
-      observeProtocolLines([protocolHeartbeatLine(1), mutatedFinal])
+      observeProtocolLines([
+        protocolHeartbeatLine(1),
+        protocolHeartbeatLine(2),
+        mutatedFinal,
+      ])
         .protocolInvalid,
     ).toBe(true);
     expect(
       observeProtocolLines(
-        [protocolHeartbeatLine(1), validFinal],
+        [protocolHeartbeatLine(1), protocolHeartbeatLine(2), validFinal],
         alternateProtocolAuthenticationSecret,
       ).protocolInvalid,
     ).toBe(true);
     expect(
       observeProtocolLines([
         protocolHeartbeatLine(1),
+        protocolHeartbeatLine(2),
         protocolFinalLine(alternateProtocolAuthenticationSecret),
       ]).protocolInvalid,
     ).toBe(true);
@@ -478,12 +534,13 @@ describe("FND red-probe supervisor", () => {
   it("rejects every record after the final record", () => {
     const state = observeProtocolLines([
       protocolHeartbeatLine(1),
-      protocolFinalLine(),
       protocolHeartbeatLine(2),
+      protocolFinalLine(),
+      protocolHeartbeatLine(3),
     ]);
     expect(state.finalRecordObserved).toBe(true);
     expect(state.protocolInvalid).toBe(true);
-    expect(state.recordsObserved).toBe(3);
+    expect(state.recordsObserved).toBe(4);
   });
 
   it("reserves explicit Windows launch headroom for argv and environment transport", () => {

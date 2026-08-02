@@ -51,8 +51,11 @@ test and verify that reversing the functional change in a disposable worktree
 makes that test fail.
 
 The hard per-probe deadline bounds authenticated bootstrap and cold static
-imports. Trusted heartbeat-silence monitoring begins immediately after the
-reviewed root runner is loaded and remains active through its execution.
+imports. Trusted heartbeat sequence 1 seals the bootstrap capability boundary
+before probe-owned imports; sequence 2 proves that the reviewed root runner is
+loaded. Heartbeat-silence monitoring begins only at sequence 2 and remains
+active through execution, while the independent hard deadline remains active
+from process spawn.
 
 Product hang probes must add task-specific progress evidence in addition to the
 supervisor heartbeat; a silent timeout is not accepted as defect reproduction.

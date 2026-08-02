@@ -539,6 +539,12 @@ function writeHeartbeat() {
   );
 }
 
+// Sequence 1 seals the trusted bootstrap boundary before any probe-owned
+// dependency executes. The supervisor records it but deliberately waits for
+// sequence 2 before arming heartbeat-silence supervision: a cold static import
+// can synchronously occupy the event loop, while the independent hard deadline
+// still bounds this phase from process spawn.
+writeHeartbeat();
 const probeModule = await import(configuration.probeSourceUrl);
 if (
   keys(probeModule).length !== 1 ||
@@ -548,9 +554,8 @@ if (
   throw new Error("red-probe source does not export one canonical root runner");
 }
 
-// Static production imports can synchronously compile a large module graph on
-// a cold host. The hard per-probe deadline owns that bounded bootstrap phase;
-// heartbeat silence starts only once the reviewed root runner is ready to run.
+// Sequence 2 authenticates the ready boundary. The supervisor arms its shorter
+// silence deadline on this record and on every later periodic heartbeat.
 writeHeartbeat();
 const heartbeatTimer = scheduleInterval(
   writeHeartbeat,

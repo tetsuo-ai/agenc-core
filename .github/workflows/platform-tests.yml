@@ -989,8 +989,8 @@ jobs:
           if (!resultsPath) throw new Error("missing macOS red-probe results path");
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
           const exactCounts = {
-            numTotalTests: 64,
-            numPassedTests: 64,
+            numTotalTests: 66,
+            numPassedTests: 66,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1018,12 +1018,12 @@ jobs:
           if (
             testResult.status !== "passed" ||
             !Array.isArray(testResult.assertionResults) ||
-            testResult.assertionResults.length !== 64 ||
+            testResult.assertionResults.length !== 66 ||
             testResult.assertionResults.some(({ status }) => status !== "passed")
           ) {
-            throw new Error("macOS red-probe assertions were not exactly 64 passes");
+            throw new Error("macOS red-probe assertions were not exactly 66 passes");
           }
-          console.log("macOS red-probe runner passed 64 tests in 1 file with zero skipped");
+          console.log("macOS red-probe runner passed 66 tests in 1 file with zero skipped");
           NODE
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
