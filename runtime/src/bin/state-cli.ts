@@ -34,7 +34,7 @@ import {
   assertRecoverySha256,
 } from "../state/recovery-contract.js";
 
-type RecoveryCollection = "quarantine" | "deferred";
+export type RecoveryCollection = "quarantine" | "deferred";
 
 interface RecoveryListCommand {
   readonly kind: "recovery-list";
@@ -52,7 +52,7 @@ interface RecoveryShowCommand {
   readonly json: boolean;
 }
 
-interface RecoveryMutationCommand {
+export interface RecoveryMutationCommand {
   readonly kind: "recovery-mutation";
   readonly collection: RecoveryCollection;
   readonly action: "rescan" | "retry" | "abandon";

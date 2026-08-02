@@ -88,6 +88,14 @@ event array. Any content mismatch rolls back the entire projection. A2b binds
 quarantine, deferral, and abandonment exclusions into every executable
 recovery selector.
 
+The E1a mechanism keeps the same read-only descriptor and session lease across
+both passes. Its first pass uses disk-backed exact identity claims; its second
+pass is anchored to the first digest and streams rows directly into the
+projection transaction. Per-source line/byte/event ceilings are integrity
+failures. Aggregate read/time and descriptor ceilings are operational blocks.
+The mutation adapter is available for explicit injection, but remains absent
+from normal CLI startup until A2b completes selector cutover.
+
 ## Migration and rollout
 
 The order is fixed: A2a types/schema/readers, E1a bounded two-pass mechanism and
@@ -95,11 +103,11 @@ A3 resume validation, then A2b authoritative caller cutover. Initial strict
 diagnostics may run against copies, but production authority ultimately fails
 closed.
 
-The A2a landing validates only descriptor-pinned content already supplied to
-the projection seam and installs the durable evidence/operator model. Tolerant
-non-authoritative indexing remains for compatibility. Operator mutation
-commands intentionally fail closed until E1a and A2b install the strict replay
-adapter and exclusions together.
+The A2a landing installed the strict byte contract and durable evidence model;
+E1a adds bounded descriptor-pinned two-pass I/O and the opt-in mutation
+adapter. Tolerant non-authoritative indexing remains for compatibility.
+Operator mutation commands intentionally fail closed by default until A2b
+installs the adapter and exclusions together.
 
 ## Rollback
 

@@ -189,6 +189,16 @@ canonical identity conflicts, terminal-binding defects, and trusted digest
 mismatches fail the whole projection. The ordinary rollout index may still
 skip malformed rows because it is not executable recovery authority.
 
+The strict file mechanism holds the session lease and one read-only source
+descriptor across two bounded scans. Validation uses a disk-backed uniqueness
+registry and retains no event array; the digest-anchored second pass emits one
+row at a time inside the SQLite projection transaction. The final descriptor
+identity, size, mtime, and digest proof runs immediately before commit. Named
+ceilings cover line bytes, source bytes, event count, aggregate two-pass read
+bytes, elapsed scan time, and descriptor reservations. Integrity ceilings are
+quarantine reasons; aggregate time/byte and descriptor pressure remain
+retryable operational failures.
+
 Schema v18 adds bounded `run_recovery_quarantine`,
 `run_recovery_quarantine_observations`, `run_recovery_deferred`, and immutable
 `run_recovery_abandonments` metadata. Identical observations increment their
@@ -196,8 +206,9 @@ existing incident or block; recurrence after resolution creates a linked new
 generation. Only old resolved history may be pruned. Active and abandoned
 evidence is never removed to make a run executable. Local `agenc state recovery
 … list/show` commands inspect redacted metadata even when the daemon cannot
-start. Mutations remain fail-closed until descriptor-pinned two-pass replay and
-all executable recovery selectors consume these exclusions.
+start. E1a provides an explicitly injected strict rescan/retry/abandon adapter,
+but the normal CLI deliberately does not install it until A2b makes every
+executable recovery selector consume these exclusions.
 
 `AGENC_HOME` is a single-host trust and locking boundary. It must live on a
 local filesystem with reliable SQLite OS locks and atomic same-filesystem

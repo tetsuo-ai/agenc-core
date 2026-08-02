@@ -493,7 +493,7 @@ agenc state recovery deferred abandon <block-id> --confirm-run-id <run-id> --con
 | `resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>` | Record a typed, evidence-bound operator disposition for one unresolved `unknown_outcome` tool call |
 | `recovery quarantine list/show` | Inspect bounded source-integrity evidence offline |
 | `recovery deferred list/show` | Inspect bounded operational blocks and retry metadata offline |
-| `recovery … rescan/retry/abandon` | Reserved mutation grammar requiring exact confirmations; fails closed until strict replay and recovery-selector cutover are installed |
+| `recovery … rescan/retry/abandon` | Reserved mutation grammar requiring exact confirmations; the E1a adapter is opt-in until recovery-selector cutover |
 
 ```bash
 agenc state export agent_123 > state.json
@@ -520,9 +520,11 @@ the error lists any unresolved calls known for that session.
 Recovery list and show commands expose only bounded, secret-redacted metadata;
 they never print a malformed source record or journal payload. Pages contain
 at most 100 records and use an opaque, collection/state-bound keyset cursor.
-There is deliberately no `clear` or delete command. Until descriptor-pinned
-strict replay and the executable-selector cutover are present, mutation
-commands return an error and leave the incident or operational block active.
+There is deliberately no `clear` or delete command. The descriptor-pinned E1a
+adapter validates twice and resolves evidence in the projection transaction,
+but ordinary CLI startup does not inject it yet. Until the A2b executable-
+selector cutover is present, mutation commands return an error and leave the
+incident or operational block active.
 
 ---
 
