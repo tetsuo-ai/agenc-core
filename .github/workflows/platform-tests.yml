@@ -1260,6 +1260,7 @@ jobs:
             tests/fnd/portable-repository-path.test.ts `
             tests/fnd/process-repository-helpers.native.test.ts `
             tests/utils/execFileNoThrow.win32.test.ts `
+            tests/workspace/bound-helper-transport.win32.test.ts `
             --config vitest.native.config.ts `
             --allowOnly=false `
             --reporter=verbose `
@@ -1282,14 +1283,15 @@ jobs:
             "tests/fnd/portable-repository-path.test.ts",
             "tests/fnd/process-repository-helpers.native.test.ts",
             "tests/utils/execFileNoThrow.win32.test.ts",
+            "tests/workspace/bound-helper-transport.win32.test.ts",
           ];
           const exactCounts = {
-            numTotalTestSuites: 13,
-            numPassedTestSuites: 13,
+            numTotalTestSuites: 14,
+            numPassedTestSuites: 14,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 86,
-            numPassedTests: 86,
+            numTotalTests: 88,
+            numPassedTests: 88,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1312,7 +1314,7 @@ jobs:
               `Windows-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("Windows FND/native capability lane passed 86 tests in 8 files with zero skipped");
+          console.log("Windows FND/native capability lane passed 88 tests in 9 files with zero skipped");
           '@ | node --input-type=module - $results
           if ($LASTEXITCODE -ne 0) { throw "Windows native result contract failed" }
           if (-not [string]::IsNullOrWhiteSpace(

@@ -858,7 +858,7 @@ repeat the local verification plan. The candidate phase of
 `release-runtime.yml` runs the exact native-only allowlist after its first clean
 install and
 requires the recorded result to contain 45 passing macOS tests in eight suites
-across five files or 47 passing Windows tests in ten suites across six files,
+across five files or 49 passing Windows tests in eleven suites across seven files,
 with zero failed, pending, skipped, or todo tests. Both candidate lanes begin
 with the same 44-test, seven-suite, four-file FND set for bounded file I/O,
 fixture loading, portable paths, and process containment. macOS adds one
@@ -931,11 +931,12 @@ bounded metadata commands, and provenance binding. macOS adds one Seatbelt test
 for an exact total of 81 tests, ten suites, and six files. Before its native
 allowlist, Windows requires the exact one-file FND red-probe audit summary and
 runs three forced-containment tests in one file. Its named-pipe and
-atomic-publication/`.cmd` contracts bring the native total to 86 tests,
-thirteen suites, and eight files. Release builders deliberately retain their
+atomic-publication/`.cmd` and bound-helper transport contracts bring the native
+total to 88 tests, fourteen suites, and nine files. Release builders deliberately retain their
 narrower 44-test shared set: the Windows release subset excludes the two
-named-pipe-only PR tests and the benchmark fault contract, so it remains 47
-tests, ten suites, and six files. Native result parsers require the exact
+named-pipe-only PR tests and the benchmark fault contract, while retaining the
+two bound-helper transport tests, so it remains 49 tests, eleven suites, and
+seven files. Native result parsers require the exact
 reviewed suite, test, and normalized file inventory with no failed, pending,
 skipped, or todo tests. The red-containment parser additionally requires
 exactly three passing per-file assertions while accepting Vitest's

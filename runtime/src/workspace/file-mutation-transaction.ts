@@ -3,8 +3,10 @@ import type { BigIntStats, Stats } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { once } from "node:events";
+import type { Writable } from "node:stream";
 import {
   basename,
   dirname,
@@ -23,7 +25,7 @@ import {
   type WorkspaceMutationAdmission,
   type WorkspaceMutationObservedState,
 } from "./mutation-coordinator.js";
-import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
+import { windowsCommandLineUtf16CodeUnits } from "../utils/supervisedProcess.js";
 
 type WorkspaceMutationAdmissionResult =
   WorkspaceMutationAdmission | { readonly decision: "uncoordinated" };
@@ -382,6 +384,292 @@ interface BoundHelperMessage {
   readonly stopReason?: WorkspaceBoundProcessStopReason;
   readonly spawnError?: string;
   readonly missing?: boolean;
+}
+
+const BOUND_SOURCE_PIPE_FD = 3;
+const BOUND_WORKER_SOURCE_PIPE_FD = 4;
+const MAX_BOUND_HELPER_SOURCE_BYTES = 131_072;
+const WINDOWS_CREATE_PROCESS_UTF16_CODE_UNIT_LIMIT = 32_767;
+const WINDOWS_BOUND_HELPER_LAUNCH_HEADROOM_UTF16_CODE_UNITS = 8_192;
+export const MAX_BOUND_HELPER_WINDOWS_LAUNCH_UTF16_CODE_UNITS =
+  WINDOWS_CREATE_PROCESS_UTF16_CODE_UNIT_LIMIT -
+  WINDOWS_BOUND_HELPER_LAUNCH_HEADROOM_UTF16_CODE_UNITS;
+const UTF16_HIGH_SURROGATE_START = 0xd800;
+const UTF16_HIGH_SURROGATE_END = 0xdbff;
+const UTF16_LOW_SURROGATE_START = 0xdc00;
+const UTF16_LOW_SURROGATE_END = 0xdfff;
+const BOUND_SOURCE_PIPE_BOOTSTRAP = String.raw`
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+
+const SOURCE_PIPE_FD = ${BOUND_SOURCE_PIPE_FD};
+const MAX_SOURCE_BYTES = ${MAX_BOUND_HELPER_SOURCE_BYTES};
+const expectedDigest = process.argv[1] ?? "";
+const expectedBytes = Number(process.argv[2]);
+if (
+  !/^[0-9a-f]{64}$/u.test(expectedDigest) ||
+  !Number.isSafeInteger(expectedBytes) ||
+  expectedBytes < 1 ||
+  expectedBytes > MAX_SOURCE_BYTES
+) {
+  throw new Error("invalid authenticated helper source header");
+}
+const parts = [];
+let receivedBytes = 0;
+for await (const rawChunk of createReadStream("", {
+  fd: SOURCE_PIPE_FD,
+  autoClose: true,
+})) {
+  const chunk = Buffer.from(rawChunk);
+  receivedBytes += chunk.length;
+  if (receivedBytes > expectedBytes || receivedBytes > MAX_SOURCE_BYTES) {
+    throw new Error("authenticated helper source exceeds its declared boundary");
+  }
+  parts.push(chunk);
+}
+if (receivedBytes !== expectedBytes) {
+  throw new Error("authenticated helper source ended before its declared boundary");
+}
+const source = Buffer.concat(parts, receivedBytes);
+const actualDigest = createHash("sha256").update(source).digest("hex");
+if (actualDigest !== expectedDigest) {
+  throw new Error("authenticated helper source digest mismatch");
+}
+await import("data:text/javascript;base64," + source.toString("base64"));
+`;
+
+interface BoundSourceDescriptor {
+  readonly bytes: Buffer;
+  readonly digest: string;
+}
+
+function isWellFormedUtf16(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (
+      codeUnit >= UTF16_HIGH_SURROGATE_START &&
+      codeUnit <= UTF16_HIGH_SURROGATE_END
+    ) {
+      const following = value.charCodeAt(index + 1);
+      if (
+        following < UTF16_LOW_SURROGATE_START ||
+        following > UTF16_LOW_SURROGATE_END
+      ) {
+        return false;
+      }
+      index += 1;
+    } else if (
+      codeUnit >= UTF16_LOW_SURROGATE_START &&
+      codeUnit <= UTF16_LOW_SURROGATE_END
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+interface BoundHelperLaunchPlan {
+  readonly directoryArgs: readonly string[];
+  readonly workerArgs: readonly string[];
+  readonly environment: Readonly<Record<string, string>>;
+  readonly directoryCommandLineUtf16CodeUnits: number;
+  readonly workerCommandLineUtf16CodeUnits: number;
+  readonly environmentUtf16CodeUnits: number;
+}
+
+function describeBoundSource(source: string): BoundSourceDescriptor {
+  const bytes = Buffer.from(source, "utf8");
+  if (bytes.length < 1 || bytes.length > MAX_BOUND_HELPER_SOURCE_BYTES) {
+    throw new Error(
+      `authenticated helper source is ${bytes.length} bytes; maximum is ${MAX_BOUND_HELPER_SOURCE_BYTES}`,
+    );
+  }
+  return {
+    bytes,
+    digest: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+function sourceBootstrapArgs(
+  source: BoundSourceDescriptor,
+  trailingArguments: readonly string[] = [],
+): readonly string[] {
+  return [
+    "--input-type=module",
+    "--eval",
+    BOUND_SOURCE_PIPE_BOOTSTRAP,
+    source.digest,
+    String(source.bytes.length),
+    ...trailingArguments,
+  ];
+}
+
+function copyWindowsBootstrapEnvironment(
+  target: Record<string, string>,
+  source: NodeJS.ProcessEnv,
+): void {
+  for (const canonicalName of ["SystemRoot", "WINDIR"] as const) {
+    const entry = Object.entries(source).find(
+      ([name, value]) =>
+        value !== undefined &&
+        name.toUpperCase() === canonicalName.toUpperCase(),
+    );
+    if (entry?.[1] !== undefined) target[canonicalName] = entry[1];
+  }
+}
+
+function createBoundHelperEnvironment(
+  useNoFollow: boolean,
+  platform: NodeJS.Platform,
+  source: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const environment: Record<string, string> = {
+    NODE_OPTIONS: "",
+    NODE_PATH: "",
+    AGENC_BOUND_READ_USE_NOFOLLOW: useNoFollow ? "1" : "0",
+  };
+  if (platform === "win32") {
+    copyWindowsBootstrapEnvironment(environment, source);
+  }
+  return environment;
+}
+
+function windowsEnvironmentBlockUtf16CodeUnits(
+  environment: Readonly<Record<string, string>>,
+): number {
+  let codeUnits = 1;
+  for (const [name, value] of Object.entries(environment)) {
+    if (
+      name.length === 0 ||
+      name.includes("=") ||
+      name.includes("\0") ||
+      value.includes("\0") ||
+      !isWellFormedUtf16(name) ||
+      !isWellFormedUtf16(value)
+    ) {
+      throw new Error("bound helper environment is not serializable");
+    }
+    const entryCodeUnits = name.length + 1 + value.length + 1;
+    if (entryCodeUnits > WINDOWS_CREATE_PROCESS_UTF16_CODE_UNIT_LIMIT) {
+      throw new Error(
+        `bound helper environment entry ${name} exceeds the Windows UTF-16 boundary`,
+      );
+    }
+    codeUnits += entryCodeUnits;
+  }
+  return Math.max(codeUnits, 2);
+}
+
+function createBoundHelperLaunchPlan(input: {
+  readonly executable: string;
+  readonly platform: NodeJS.Platform;
+  readonly processEnvironment: NodeJS.ProcessEnv;
+  readonly useNoFollow: boolean;
+  readonly directorySource: BoundSourceDescriptor;
+  readonly workerSource: BoundSourceDescriptor;
+}): BoundHelperLaunchPlan {
+  if (
+    !isWellFormedUtf16(input.executable) ||
+    input.executable.includes("\0")
+  ) {
+    throw new Error("bound helper executable is not serializable");
+  }
+  const environment = createBoundHelperEnvironment(
+    input.useNoFollow,
+    input.platform,
+    input.processEnvironment,
+  );
+  const workerArgs = sourceBootstrapArgs(input.workerSource);
+  const directoryArgs = sourceBootstrapArgs(input.directorySource, [
+    input.workerSource.digest,
+    String(input.workerSource.bytes.length),
+  ]);
+  const plan: BoundHelperLaunchPlan = {
+    directoryArgs,
+    workerArgs,
+    environment,
+    directoryCommandLineUtf16CodeUnits: windowsCommandLineUtf16CodeUnits(
+      input.executable,
+      directoryArgs,
+    ),
+    workerCommandLineUtf16CodeUnits: windowsCommandLineUtf16CodeUnits(
+      input.executable,
+      workerArgs,
+    ),
+    environmentUtf16CodeUnits:
+      windowsEnvironmentBlockUtf16CodeUnits(environment),
+  };
+  if (input.platform === "win32") {
+    for (const [label, codeUnits] of [
+      ["directory", plan.directoryCommandLineUtf16CodeUnits],
+      ["read worker", plan.workerCommandLineUtf16CodeUnits],
+      ["environment", plan.environmentUtf16CodeUnits],
+    ] as const) {
+      if (codeUnits > MAX_BOUND_HELPER_WINDOWS_LAUNCH_UTF16_CODE_UNITS) {
+        throw new Error(
+          `${label} launch is ${codeUnits} UTF-16 code units; bounded Windows maximum is ${MAX_BOUND_HELPER_WINDOWS_LAUNCH_UTF16_CODE_UNITS}`,
+        );
+      }
+    }
+  }
+  return plan;
+}
+
+async function writeBoundSourcePipe(
+  child: ChildProcessWithoutNullStreams,
+  descriptor: number,
+  source: BoundSourceDescriptor,
+): Promise<void> {
+  const pipe = (child.stdio as readonly unknown[])[descriptor] as
+    | Writable
+    | null
+    | undefined;
+  if (pipe === null || pipe === undefined || typeof pipe.end !== "function") {
+    throw new Error(`bound helper source pipe ${descriptor} is unavailable`);
+  }
+  await new Promise<void>((resolveWrite, rejectWrite) => {
+    let settled = false;
+    const settle = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (error === undefined) resolveWrite();
+      else rejectWrite(error);
+    };
+    pipe.once("error", settle);
+    pipe.end(source.bytes, () => settle());
+  });
+}
+
+export function __workspaceBoundHelperLaunchPlanForTests(input: {
+  readonly executable: string;
+  readonly platform: NodeJS.Platform;
+  readonly processEnvironment?: NodeJS.ProcessEnv;
+  readonly useNoFollow?: boolean;
+}): BoundHelperLaunchPlan {
+  return createBoundHelperLaunchPlan({
+    ...input,
+    processEnvironment: input.processEnvironment ?? {},
+    useNoFollow: input.useNoFollow ?? true,
+    directorySource: describeBoundSource(BOUND_DIRECTORY_HELPER_SOURCE),
+    workerSource: describeBoundSource(BOUND_READ_WORKER_SOURCE),
+  });
+}
+
+export function __workspaceBoundSourceBootstrapForTests(
+  source: string,
+): {
+  readonly args: readonly string[];
+  readonly bytes: Buffer;
+  readonly sourcePipeDescriptor: number;
+  readonly maximumSourceBytes: number;
+} {
+  const descriptor = describeBoundSource(source);
+  return {
+    args: sourceBootstrapArgs(descriptor),
+    bytes: descriptor.bytes,
+    sourcePipeDescriptor: BOUND_SOURCE_PIPE_FD,
+    maximumSourceBytes: MAX_BOUND_HELPER_SOURCE_BYTES,
+  };
 }
 
 const STRUCTURED_RIPGREP_LIMITER_SOURCE = String.raw`
@@ -1482,7 +1770,7 @@ try {
 const BOUND_DIRECTORY_HELPER_SOURCE = String.raw`
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import {
   link,
   lstat,
@@ -1498,6 +1786,61 @@ import { isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 
 ${STRUCTURED_RIPGREP_LIMITER_SOURCE}
+
+const SOURCE_PIPE_BOOTSTRAP = ${JSON.stringify(BOUND_SOURCE_PIPE_BOOTSTRAP)};
+const SOURCE_PIPE_FD = ${BOUND_SOURCE_PIPE_FD};
+const WORKER_SOURCE_PIPE_FD = ${BOUND_WORKER_SOURCE_PIPE_FD};
+const MAX_SOURCE_BYTES = ${MAX_BOUND_HELPER_SOURCE_BYTES};
+const readAuthenticatedSource = async (descriptor, expectedDigest, expectedBytes) => {
+  if (
+    !/^[0-9a-f]{64}$/u.test(expectedDigest) ||
+    !Number.isSafeInteger(expectedBytes) ||
+    expectedBytes < 1 ||
+    expectedBytes > MAX_SOURCE_BYTES
+  ) {
+    throw Object.assign(new Error("invalid authenticated worker source header"), {
+      code: "CAPABILITY_UNAVAILABLE",
+    });
+  }
+  const parts = [];
+  let receivedBytes = 0;
+  for await (const rawChunk of createReadStream("", {
+    fd: descriptor,
+    autoClose: true,
+  })) {
+    const chunk = Buffer.from(rawChunk);
+    receivedBytes += chunk.length;
+    if (receivedBytes > expectedBytes || receivedBytes > MAX_SOURCE_BYTES) {
+      throw Object.assign(
+        new Error("authenticated worker source exceeds its declared boundary"),
+        { code: "CAPABILITY_UNAVAILABLE" },
+      );
+    }
+    parts.push(chunk);
+  }
+  if (receivedBytes !== expectedBytes) {
+    throw Object.assign(
+      new Error("authenticated worker source ended before its declared boundary"),
+      { code: "CAPABILITY_UNAVAILABLE" },
+    );
+  }
+  const source = Buffer.concat(parts, receivedBytes);
+  if (createHash("sha256").update(source).digest("hex") !== expectedDigest) {
+    throw Object.assign(
+      new Error("authenticated worker source digest mismatch"),
+      { code: "CAPABILITY_UNAVAILABLE" },
+    );
+  }
+  return source;
+};
+const expectedBoundReadWorkerDigest = process.argv[3] ?? "";
+const expectedBoundReadWorkerBytes = Number(process.argv[4]);
+const boundReadWorkerBytes = await readAuthenticatedSource(
+  WORKER_SOURCE_PIPE_FD,
+  expectedBoundReadWorkerDigest,
+  expectedBoundReadWorkerBytes,
+);
+const boundReadWorkerSource = boundReadWorkerBytes.toString("utf8");
 
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const identity = (value) => ({
@@ -1528,13 +1871,20 @@ const validSegment = (value) =>
   !value.includes("/") &&
   (process.platform !== "win32" || !value.includes("\\"));
 const noFollow = constants.O_NOFOLLOW ?? 0;
-const boundReadWorkerSource = Buffer.from(
-  process.env.AGENC_BOUND_READ_WORKER_SOURCE_BASE64 ?? "",
-  "base64",
-).toString("utf8");
-delete process.env.AGENC_BOUND_READ_WORKER_SOURCE_BASE64;
 const boundReadUseNoFollow =
   process.env.AGENC_BOUND_READ_USE_NOFOLLOW !== "0";
+const boundReadWorkerEnvironment = {
+  NODE_OPTIONS: "",
+  NODE_PATH: "",
+  ...(process.platform === "win32" &&
+  typeof process.env.SystemRoot === "string"
+    ? { SystemRoot: process.env.SystemRoot }
+    : {}),
+  ...(process.platform === "win32" && typeof process.env.WINDIR === "string"
+    ? { WINDIR: process.env.WINDIR }
+    : {}),
+  AGENC_BOUND_READ_USE_NOFOLLOW: boundReadUseNoFollow ? "1" : "0",
+};
 delete process.env.AGENC_BOUND_READ_USE_NOFOLLOW;
 let targetParentBound = false;
 let effectStarted = false;
@@ -1574,17 +1924,18 @@ const runBoundReadWorker = async (command) => {
   }
   const child = spawn(
     process.execPath,
-    ["--input-type=module", "--eval", boundReadWorkerSource],
+    [
+      "--input-type=module",
+      "--eval",
+      SOURCE_PIPE_BOOTSTRAP,
+      expectedBoundReadWorkerDigest,
+      String(boundReadWorkerBytes.length),
+    ],
     {
       cwd: ".",
-      env: {
-        ...process.env,
-        NODE_OPTIONS: "",
-        NODE_PATH: "",
-        AGENC_BOUND_READ_USE_NOFOLLOW: boundReadUseNoFollow ? "1" : "0",
-      },
+      env: boundReadWorkerEnvironment,
       windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe", "overlapped"],
     },
   );
   activeChild = child;
@@ -1607,16 +1958,65 @@ const runBoundReadWorker = async (command) => {
   child.once("error", (error) => {
     spawnError = error;
   });
-  child.stdin.end(JSON.stringify({
-    ...command,
-    rootIdentity: boundReadDirectoryIdentity,
-  }));
-  const closed = await new Promise((resolveClose) => {
+  const closedPromise = new Promise((resolveClose) => {
     child.once("close", (exitCode, signal) =>
       resolveClose({ exitCode, signal }),
     );
   });
+  const sourceWrite = new Promise((resolveWrite, rejectWrite) => {
+    const pipe = child.stdio[SOURCE_PIPE_FD];
+    if (pipe === null || pipe === undefined || typeof pipe.end !== "function") {
+      rejectWrite(new Error("bound read worker source pipe is unavailable"));
+      return;
+    }
+    let settled = false;
+    const settle = (error) => {
+      if (settled) return;
+      settled = true;
+      if (error === undefined) resolveWrite();
+      else rejectWrite(error);
+    };
+    pipe.once("error", settle);
+    pipe.end(boundReadWorkerBytes, () => settle());
+  });
+  const sourceWriteOutcome = sourceWrite.then(
+    () => undefined,
+    (error) => {
+      child.kill();
+      return error instanceof Error ? error : new Error(String(error));
+    },
+  );
+  const stdinWriteOutcome = new Promise((resolveWrite) => {
+    let settled = false;
+    const settle = (error) => {
+      if (settled) return;
+      settled = true;
+      if (error !== undefined) child.kill();
+      resolveWrite(
+        error === undefined
+          ? undefined
+          : error instanceof Error
+            ? error
+            : new Error(String(error)),
+      );
+    };
+    child.stdin.once("error", settle);
+    child.stdin.end(
+      JSON.stringify({
+        ...command,
+        rootIdentity: boundReadDirectoryIdentity,
+      }),
+      () => settle(undefined),
+    );
+  });
+  const [closed, sourceWriteError, stdinWriteError] = await Promise.all([
+    closedPromise,
+    sourceWriteOutcome,
+    stdinWriteOutcome,
+  ]);
   activeChild = null;
+  if (sourceWriteError !== undefined) throw sourceWriteError;
+  if (stdinWriteError !== undefined) throw stdinWriteError;
   if (spawnError !== undefined) throw spawnError;
   if (outputBytes > maxWorkerOutputBytes) {
     throw Object.assign(new Error("bound read worker output exceeded limit"), {
@@ -2311,6 +2711,23 @@ try {
 }
 `;
 
+const BOUND_READ_WORKER_DESCRIPTOR = describeBoundSource(
+  BOUND_READ_WORKER_SOURCE,
+);
+const BOUND_DIRECTORY_HELPER_DESCRIPTOR = describeBoundSource(
+  BOUND_DIRECTORY_HELPER_SOURCE,
+);
+let workspaceBoundReadWorkerSourceTransformForTests:
+  | ((source: Buffer) => Buffer)
+  | undefined;
+
+/** Test-only seam for proving fd4 authentication fails before helper readiness. */
+export function __setWorkspaceBoundReadWorkerSourceTransformForTests(
+  transform: ((source: Buffer) => Buffer) | undefined,
+): void {
+  workspaceBoundReadWorkerSourceTransformForTests = transform;
+}
+
 class BoundDirectoryHelper {
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #anchorPath: string;
@@ -2371,33 +2788,50 @@ class BoundDirectoryHelper {
     expectedReadRootIdentity?: BoundReadIdentity,
     useNoFollow = true,
   ): Promise<BoundDirectoryHelper> {
-    const child = spawn(
-      process.execPath,
-      ["--input-type=module", "--eval", BOUND_DIRECTORY_HELPER_SOURCE],
-      {
-        cwd: identity.anchorPath,
-        env: {
-          ...scrubEnvForChildProcess(process.env),
-          NODE_OPTIONS: "",
-          NODE_PATH: "",
-          AGENC_BOUND_READ_WORKER_SOURCE_BASE64: Buffer.from(
-            BOUND_READ_WORKER_SOURCE,
-            "utf8",
-          ).toString("base64"),
-          AGENC_BOUND_READ_USE_NOFOLLOW:
-            useNoFollow &&
-            typeof constants.O_NOFOLLOW === "number" &&
-            constants.O_NOFOLLOW !== 0
-              ? "1"
-              : "0",
-        },
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      },
-    );
+    const noFollowEnabled =
+      useNoFollow &&
+      typeof constants.O_NOFOLLOW === "number" &&
+      constants.O_NOFOLLOW !== 0;
+    const launchPlan = createBoundHelperLaunchPlan({
+      executable: process.execPath,
+      platform: process.platform,
+      processEnvironment: process.env,
+      useNoFollow: noFollowEnabled,
+      directorySource: BOUND_DIRECTORY_HELPER_DESCRIPTOR,
+      workerSource: BOUND_READ_WORKER_DESCRIPTOR,
+    });
+    const child = spawn(process.execPath, launchPlan.directoryArgs, {
+      cwd: identity.anchorPath,
+      env: { ...launchPlan.environment },
+      stdio: ["pipe", "pipe", "pipe", "overlapped", "overlapped"],
+      windowsHide: true,
+    }) as unknown as ChildProcessWithoutNullStreams;
     const helper = new BoundDirectoryHelper(child, identity.anchorPath);
     try {
-      const ready = await helper.#nextMessage();
+      const workerWireSource =
+        workspaceBoundReadWorkerSourceTransformForTests === undefined
+          ? BOUND_READ_WORKER_DESCRIPTOR
+          : {
+              ...BOUND_READ_WORKER_DESCRIPTOR,
+              bytes: workspaceBoundReadWorkerSourceTransformForTests(
+                Buffer.from(BOUND_READ_WORKER_DESCRIPTOR.bytes),
+              ),
+            };
+      const [, ready] = await Promise.all([
+        Promise.all([
+          writeBoundSourcePipe(
+            child,
+            BOUND_SOURCE_PIPE_FD,
+            BOUND_DIRECTORY_HELPER_DESCRIPTOR,
+          ),
+          writeBoundSourcePipe(
+            child,
+            BOUND_WORKER_SOURCE_PIPE_FD,
+            workerWireSource,
+          ),
+        ]),
+        helper.#nextMessage(),
+      ]);
       if (
         ready.type !== "ready" ||
         ready.identity === undefined ||

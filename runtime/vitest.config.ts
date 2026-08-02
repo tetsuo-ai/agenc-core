@@ -121,6 +121,7 @@ export const NATIVE_TEST_INCLUDE = Object.freeze([
   "tests/fnd/process-repository-helpers.native.test.ts",
   "tests/tools/runtimes/runtime.darwin.test.ts",
   "tests/utils/execFileNoThrow.win32.test.ts",
+  "tests/workspace/bound-helper-transport.win32.test.ts",
 ]);
 
 /** Portable FND contracts repeated by every supported native builder. */

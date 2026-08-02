@@ -8,27 +8,189 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
   __setWorkspaceBoundReadNoFollowForTests,
+  __setWorkspaceBoundReadWorkerSourceTransformForTests,
+  __workspaceBoundHelperLaunchPlanForTests,
+  __workspaceBoundSourceBootstrapForTests,
   bindWorkspaceDirectoryReadCapability,
   bindWorkspaceFileReadCapability,
+  MAX_BOUND_HELPER_WINDOWS_LAUNCH_UTF16_CODE_UNITS,
 } from "../../src/workspace/file-mutation-transaction.js";
+
+async function runSourceBootstrap(
+  args: readonly string[],
+  source: Buffer,
+): Promise<{
+  readonly exitCode: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}> {
+  const child = spawn(process.execPath, args, {
+    env: { NODE_OPTIONS: "", NODE_PATH: "" },
+    stdio: ["ignore", "pipe", "pipe", "overlapped"],
+    windowsHide: true,
+  });
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  child.stdout.on("data", (chunk: Buffer) => stdout.push(Buffer.from(chunk)));
+  child.stderr.on("data", (chunk: Buffer) => stderr.push(Buffer.from(chunk)));
+  const sourcePipe = child.stdio[3] as Writable | null;
+  if (sourcePipe === null) {
+    child.kill();
+    throw new Error("source bootstrap pipe was not created");
+  }
+  sourcePipe.on("error", () => undefined);
+  const closed = once(child, "close") as Promise<
+    [number | null, NodeJS.Signals | null]
+  >;
+  sourcePipe.end(source);
+  const [exitCode, signal] = await closed;
+  return {
+    exitCode,
+    signal,
+    stdout: Buffer.concat(stdout).toString("utf8"),
+    stderr: Buffer.concat(stderr).toString("utf8"),
+  };
+}
 
 describe("descriptor-bound file reads", () => {
   let root = "";
 
   afterEach(async () => {
     __setWorkspaceBoundReadNoFollowForTests(undefined);
+    __setWorkspaceBoundReadWorkerSourceTransformForTests(undefined);
     if (root.length > 0) {
       await rm(root, { recursive: true, force: true });
       root = "";
     }
   });
+
+  test("keeps the production helper launch plan below Windows process boundaries", () => {
+    const plan = __workspaceBoundHelperLaunchPlanForTests({
+      executable: String.raw`C:\Program Files\nodejs\node.exe`,
+      platform: "win32",
+      processEnvironment: {
+        PATH: "ignored-path".repeat(10_000),
+        XAI_API_KEY: "ignored-secret",
+        SystemRoot: String.raw`C:\Windows`,
+        WINDIR: String.raw`C:\Windows`,
+      },
+    });
+
+    expect(plan.directoryCommandLineUtf16CodeUnits).toBeLessThanOrEqual(
+      MAX_BOUND_HELPER_WINDOWS_LAUNCH_UTF16_CODE_UNITS,
+    );
+    expect(plan.workerCommandLineUtf16CodeUnits).toBeLessThanOrEqual(
+      MAX_BOUND_HELPER_WINDOWS_LAUNCH_UTF16_CODE_UNITS,
+    );
+    expect(plan.environmentUtf16CodeUnits).toBeLessThanOrEqual(
+      MAX_BOUND_HELPER_WINDOWS_LAUNCH_UTF16_CODE_UNITS,
+    );
+    expect(plan.environment).toEqual({
+      NODE_OPTIONS: "",
+      NODE_PATH: "",
+      AGENC_BOUND_READ_USE_NOFOLLOW: "1",
+      SystemRoot: String.raw`C:\Windows`,
+      WINDIR: String.raw`C:\Windows`,
+    });
+    expect(plan.directoryArgs.join("\n")).not.toContain(
+      "const createStructuredRipgrepLimiter",
+    );
+    expect(plan.workerArgs.join("\n")).not.toContain(
+      "const createStructuredRipgrepLimiter",
+    );
+  });
+
+  test("authenticates the exact source frame before importing it", async () => {
+    const transport = __workspaceBoundSourceBootstrapForTests(
+      'process.stdout.write("authenticated-source-ok");',
+    );
+    const result = await runSourceBootstrap(transport.args, transport.bytes);
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      signal: null,
+      stdout: "authenticated-source-ok",
+      stderr: "",
+    });
+  });
+
+  test.each([
+    {
+      name: "digest mismatch",
+      mutate: (bytes: Buffer) => {
+        const changed = Buffer.from(bytes);
+        changed[0] ^= 1;
+        return changed;
+      },
+      expected: /digest mismatch/iu,
+    },
+    {
+      name: "truncated frame",
+      mutate: (bytes: Buffer) => bytes.subarray(0, bytes.length - 1),
+      expected: /ended before its declared boundary/iu,
+    },
+    {
+      name: "trailing bytes",
+      mutate: (bytes: Buffer) => Buffer.concat([bytes, Buffer.from("x")]),
+      expected: /exceeds its declared boundary/iu,
+    },
+  ])("rejects a $name", async ({ mutate, expected }) => {
+    const transport = __workspaceBoundSourceBootstrapForTests(
+      'process.stdout.write("must-not-import");',
+    );
+    const result = await runSourceBootstrap(
+      transport.args,
+      mutate(transport.bytes),
+    );
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).not.toContain("must-not-import");
+    expect(result.stderr).toMatch(expected);
+  });
+
+  test("rejects an oversized helper source before spawn", () => {
+    const maximum = __workspaceBoundSourceBootstrapForTests("export {};")
+      .maximumSourceBytes;
+    expect(() =>
+      __workspaceBoundSourceBootstrapForTests("x".repeat(maximum + 1)),
+    ).toThrowError(/maximum/iu);
+  });
+
+  test.each([
+    {
+      name: "corrupted",
+      transform: (source: Buffer) => {
+        const changed = Buffer.from(source);
+        changed[0] ^= 1;
+        return changed;
+      },
+    },
+    {
+      name: "truncated",
+      transform: (source: Buffer) => source.subarray(0, source.length - 1),
+    },
+  ])(
+    "rejects a $name fd4 worker frame before helper readiness",
+    async ({ transform }) => {
+      root = await mkdtemp(join(tmpdir(), "agenc-bound-read-fd4-"));
+      __setWorkspaceBoundReadWorkerSourceTransformForTests(transform);
+
+      await expect(
+        bindWorkspaceDirectoryReadCapability(root),
+      ).rejects.toThrow(/helper|capability|source/iu);
+    },
+  );
 
   test("portable no-O_NOFOLLOW fallback rejects a replaced leaf", async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-bound-read-"));
