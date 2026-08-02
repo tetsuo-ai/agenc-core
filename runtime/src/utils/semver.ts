@@ -6,57 +6,53 @@
  * The npm semver fallback always uses { loose: true }.
  */
 
-import { createRequire } from 'node:module'
-
-const requireFromModule = createRequire(import.meta.url)
-
-let _npmSemver: typeof import('semver') | undefined
-
-function getNpmSemver(): typeof import('semver') {
-  if (!_npmSemver) {
-    _npmSemver = requireFromModule('semver') as typeof import('semver')
-  }
-  return _npmSemver
-}
+import {
+  compare as compareSemver,
+  gt as gtSemver,
+  gte as gteSemver,
+  lt as ltSemver,
+  lte as lteSemver,
+  satisfies as satisfiesSemver,
+} from 'semver'
 
 export function gt(a: string, b: string): boolean {
   if (typeof Bun !== 'undefined') {
     return Bun.semver.order(a, b) === 1
   }
-  return getNpmSemver().gt(a, b, { loose: true })
+  return gtSemver(a, b, { loose: true })
 }
 
 export function gte(a: string, b: string): boolean {
   if (typeof Bun !== 'undefined') {
     return Bun.semver.order(a, b) >= 0
   }
-  return getNpmSemver().gte(a, b, { loose: true })
+  return gteSemver(a, b, { loose: true })
 }
 
 export function lt(a: string, b: string): boolean {
   if (typeof Bun !== 'undefined') {
     return Bun.semver.order(a, b) === -1
   }
-  return getNpmSemver().lt(a, b, { loose: true })
+  return ltSemver(a, b, { loose: true })
 }
 
 export function lte(a: string, b: string): boolean {
   if (typeof Bun !== 'undefined') {
     return Bun.semver.order(a, b) <= 0
   }
-  return getNpmSemver().lte(a, b, { loose: true })
+  return lteSemver(a, b, { loose: true })
 }
 
 export function satisfies(version: string, range: string): boolean {
   if (typeof Bun !== 'undefined') {
     return Bun.semver.satisfies(version, range)
   }
-  return getNpmSemver().satisfies(version, range, { loose: true })
+  return satisfiesSemver(version, range, { loose: true })
 }
 
 export function order(a: string, b: string): -1 | 0 | 1 {
   if (typeof Bun !== 'undefined') {
     return Bun.semver.order(a, b)
   }
-  return getNpmSemver().compare(a, b, { loose: true })
+  return compareSemver(a, b, { loose: true })
 }

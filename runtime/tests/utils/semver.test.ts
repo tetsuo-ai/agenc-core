@@ -1,6 +1,10 @@
 import { execFileSync } from 'node:child_process'
-import { resolve } from 'node:path'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
+import { build } from 'esbuild'
 import { describe, expect, test } from 'vitest'
 
 const runtimeRoot = resolve(import.meta.dirname, '../..')
@@ -26,5 +30,43 @@ describe('semver utilities', () => {
         },
       ),
     ).toBe('')
+  })
+
+  test('bundles the Node fallback without an installed semver package', async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), 'agenc-semver-bundle-'))
+    const artifact = join(artifactRoot, 'semver.mjs')
+
+    try {
+      await build({
+        entryPoints: [resolve(runtimeRoot, 'src/utils/semver.ts')],
+        outfile: artifact,
+        bundle: true,
+        format: 'esm',
+        platform: 'node',
+        target: 'node26',
+      })
+
+      const source = [
+        `import { satisfies } from ${JSON.stringify(pathToFileURL(artifact).href)};`,
+        'if (!satisfies("26.5.0", ">=26.5.0 <27.0.0")) process.exitCode = 1;',
+      ].join('\n')
+
+      expect(
+        execFileSync(
+          process.execPath,
+          ['--input-type=module', '--eval', source],
+          {
+            cwd: artifactRoot,
+            encoding: 'utf8',
+            env: {
+              ...process.env,
+              NODE_OPTIONS: '',
+            },
+          },
+        ),
+      ).toBe('')
+    } finally {
+      await rm(artifactRoot, { recursive: true, force: true })
+    }
   })
 })
