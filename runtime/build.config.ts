@@ -656,7 +656,6 @@ const external = [
   'axios',
   'fflate',
   'google-auth-library',
-  'semver',
   'sharp',
   'yaml',
   '@mendable/firecrawl-js',

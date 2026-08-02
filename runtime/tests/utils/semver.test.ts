@@ -7,6 +7,8 @@ import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 import { describe, expect, test } from 'vitest'
 
+import runtimeBuildConfig from '../../build.config'
+
 const runtimeRoot = resolve(import.meta.dirname, '../..')
 
 describe('semver utilities', () => {
@@ -32,7 +34,7 @@ describe('semver utilities', () => {
     ).toBe('')
   })
 
-  test('bundles the Node fallback without an installed semver package', async () => {
+  test('production-bundles the Node fallback without an installed semver package', async () => {
     const artifactRoot = await mkdtemp(join(tmpdir(), 'agenc-semver-bundle-'))
     const artifact = join(artifactRoot, 'semver.mjs')
 
@@ -41,9 +43,10 @@ describe('semver utilities', () => {
         entryPoints: [resolve(runtimeRoot, 'src/utils/semver.ts')],
         outfile: artifact,
         bundle: true,
-        format: 'esm',
-        platform: 'node',
-        target: 'node26',
+        external: runtimeBuildConfig.external,
+        format: runtimeBuildConfig.format[0] as 'esm',
+        platform: runtimeBuildConfig.platform as 'node',
+        target: runtimeBuildConfig.target,
       })
 
       const source = [
