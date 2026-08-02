@@ -19,6 +19,7 @@ import {
   type RolloutItemRow,
 } from "./threads.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import { validateCanonicalJournalText } from "./recovery-journal-contract.js";
 
 export interface BackfillProjectRolloutsOptions {
   readonly projectDir: string;
@@ -136,37 +137,26 @@ export function backfillPinnedRolloutContent(options: {
   readonly validateCanonical: () => void;
 }): { readonly itemsIndexed: number } {
   const { rolloutPath, raw, threads } = options;
-  assertTerminatedJsonl(raw, rolloutPath);
+  const journal = validateCanonicalJournalText(raw, {
+    terminalPolicy: "allow_missing",
+  });
   const threadId = threadIdFromRolloutPath(rolloutPath);
   const items: RolloutItemRow[] = [];
-  let byteOffset = 0;
   let itemIndex = 0;
   let firstMeta: Extract<RolloutItem, { type: "session_meta" }> | undefined;
   let latestMeta: Extract<RolloutItem, { type: "session_meta" }> | undefined;
-  const lines = raw.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i]!;
-    const lineBytes = Buffer.byteLength(line) + 1;
-    if (line.trim().length === 0) {
-      byteOffset += lineBytes;
-      continue;
+  for (const record of journal.records) {
+    const parsed = record.item;
+    if (parsed.type === "session_meta") {
+      firstMeta ??= parsed;
+      latestMeta = parsed;
     }
-    let parsed: RolloutItem | null;
-    try {
-      parsed = parseRolloutLine(line);
-    } catch {
-      byteOffset += lineBytes;
-      continue;
-    }
-    if (parsed !== null) {
-      if (parsed.type === "session_meta") {
-        firstMeta ??= parsed;
-        latestMeta = parsed;
-      }
-      items.push(rolloutItemRow(parsed, i + 1, byteOffset, itemIndex, line));
-      itemIndex += 1;
-    }
-    byteOffset += lineBytes;
+    items.push(
+      rolloutItemRow(parsed, record.lineNumber, record.byteOffset, itemIndex, {
+        lineSha256: record.lineSha256,
+      }),
+    );
+    itemIndex += 1;
   }
   const now = new Date(options.mtimeMs).toISOString();
   threads.commitRolloutProjection(
@@ -186,9 +176,9 @@ export function backfillPinnedRolloutContent(options: {
         sourcePath: rolloutPath,
         items,
         mtimeMs: options.mtimeMs,
-        size: Buffer.byteLength(raw),
-        sha256: createHash("sha256").update(raw).digest("hex"),
-        lineCount: lines.length,
+        size: journal.sourceByteLength,
+        sha256: journal.sourceSha256,
+        lineCount: journal.physicalLineCount + 1,
       });
     },
     options.validateCanonical,
@@ -234,7 +224,9 @@ function reindexWholeRolloutFile(args: {
         firstMeta ??= parsed;
         latestMeta = parsed;
       }
-      items.push(rolloutItemRow(parsed, i + 1, byteOffset, itemIndex, line));
+      items.push(
+        rolloutItemRow(parsed, i + 1, byteOffset, itemIndex, { rawLine: line }),
+      );
       itemIndex += 1;
     }
     byteOffset += lineBytes;
@@ -317,7 +309,11 @@ function indexAppendedTail(args: {
         firstMeta ??= parsed;
         latestMeta = parsed;
       }
-      items.push(rolloutItemRow(parsed, lineNumber, byteOffset, itemIndex, line));
+      items.push(
+        rolloutItemRow(parsed, lineNumber, byteOffset, itemIndex, {
+          rawLine: line,
+        }),
+      );
       itemIndex += 1;
     }
     byteOffset += lineBytes;
@@ -405,7 +401,7 @@ function rolloutItemRow(
   lineNumber: number,
   byteOffset: number,
   itemIndex: number,
-  line: string,
+  source: { readonly rawLine: string } | { readonly lineSha256: string },
 ): RolloutItemRow {
   return {
     lineNumber,
@@ -419,7 +415,10 @@ function rolloutItemRow(
         : undefined,
     eventSeq: parsed.type === "event_msg" ? parsed.payload.seq : undefined,
     payloadJson: JSON.stringify(parsed.payload),
-    lineHash: createHash("sha256").update(line).digest("hex"),
+    lineHash:
+      "lineSha256" in source
+        ? source.lineSha256
+        : createHash("sha256").update(source.rawLine).digest("hex"),
   };
 }
 

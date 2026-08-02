@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted target; implementation pending |
+| Status | Accepted; A2a contract implemented, E1a/A2b cutover pending |
 | Audit snapshot | `d2b228e87ea63bd6a5d93e6f599f36bce88d672b` |
 | Audit date | 2026-07-31 |
 | Owners | Strict recovery contracts (A2a), bounded projection (E1a), and authoritative recovery cutover (A2b) |
@@ -94,6 +94,12 @@ The order is fixed: A2a types/schema/readers, E1a bounded two-pass mechanism and
 A3 resume validation, then A2b authoritative caller cutover. Initial strict
 diagnostics may run against copies, but production authority ultimately fails
 closed.
+
+The A2a landing validates only descriptor-pinned content already supplied to
+the projection seam and installs the durable evidence/operator model. Tolerant
+non-authoritative indexing remains for compatibility. Operator mutation
+commands intentionally fail closed until E1a and A2b install the strict replay
+adapter and exclusions together.
 
 ## Rollback
 

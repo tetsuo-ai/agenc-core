@@ -176,6 +176,20 @@ function convergeRun(params: {
       }
 
       const target = selectTargetBinding(params.bindings);
+      const targetRecords = canonical.filter(
+        (record) => record.sourcePath === target.sourcePath,
+      );
+      const targetHasLegacyEvents = targetRecords.some(
+        (record) => record.sequence === undefined,
+      );
+      const targetHasSequencedEvents = targetRecords.some(
+        (record) => record.sequence !== undefined,
+      );
+      if (targetHasLegacyEvents && targetHasSequencedEvents) {
+        throw new Error(
+          `run ${params.runId} canonical admission recovery found mixed legacy and sequenced event lanes`,
+        );
+      }
       if (
         missing.length > 0 &&
         canonicalTailIsTerminal(index.ordered, params.runId)
@@ -186,17 +200,26 @@ function convergeRun(params: {
       }
       let lastSequence = index.lastSequence;
       const appended = missing.map((payload): CanonicalEventRecord => {
-        lastSequence += 1;
-        const event: Event = {
-          eventId: payload.eventId,
-          id: payload.eventId,
-          seq: lastSequence,
-          msg: { type: "execution_admission", payload },
-        };
+        // A legacy source cannot acquire a sequenced suffix. Until E1a can
+        // upgrade the whole source under its writer lease, recovery appends a
+        // legacy envelope whose payload still carries the durable admission
+        // identity. A new/empty or sequenced source uses canonical sequence.
+        const event: Event = targetHasLegacyEvents
+          ? {
+              id: payload.eventId,
+              msg: { type: "execution_admission", payload },
+            }
+          : {
+              eventId: payload.eventId,
+              id: payload.eventId,
+              seq: (lastSequence += 1),
+              msg: { type: "execution_admission", payload },
+            };
+        const sequence = canonicalSequence(event);
         return {
           event,
-          eventId: payload.eventId,
-          sequence: lastSequence,
+          eventId: canonicalEventId(event, sequence),
+          sequence,
           signature: stableStringify(event),
           sourcePath: target.sourcePath,
         };
@@ -471,8 +494,11 @@ function assertAdmissionMatch(
   canonical: Event,
   admission: AdmissionJournalEvent,
 ): void {
+  const envelopeIdentityMatches =
+    canonical.eventId === admission.eventId ||
+    (canonical.eventId === undefined && canonical.seq === undefined);
   if (
-    canonical.eventId !== admission.eventId ||
+    !envelopeIdentityMatches ||
     canonical.id !== admission.eventId ||
     canonical.msg.type !== "execution_admission" ||
     stableStringify(canonical.msg.payload) !== stableStringify(admission)

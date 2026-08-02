@@ -9,6 +9,7 @@ import {
   type AgenCStateCliIo,
 } from "./state-cli.js";
 import { openStateDatabases, type StateSqliteDriver } from "../state/sqlite-driver.js";
+import { StateRecoveryIncidentRepository } from "../state/recovery-incidents.js";
 
 function createIo(): AgenCStateCliIo & {
   readonly stdoutText: () => string;
@@ -80,6 +81,150 @@ describe("AgenC state CLI", () => {
     expect(formatAgenCStateCliHelpText()).toContain("agenc state export");
     expect(formatAgenCStateCliHelpText()).toContain("agenc state import");
     expect(formatAgenCStateCliHelpText()).toContain("Examples:");
+  });
+
+  it("parses the bounded recovery inspection and confirmation grammar", () => {
+    expect(
+      parseAgenCStateCliArgs([
+        "state",
+        "recovery",
+        "quarantine",
+        "list",
+        "--limit",
+        "25",
+        "--state",
+        "all",
+        "--json",
+      ]),
+    ).toEqual({
+      kind: "recovery-list",
+      collection: "quarantine",
+      limit: 25,
+      state: "all",
+      json: true,
+    });
+    expect(
+      parseAgenCStateCliArgs([
+        "state",
+        "recovery",
+        "deferred",
+        "show",
+        "block-1",
+        "--json",
+      ]),
+    ).toEqual({
+      kind: "recovery-show",
+      collection: "deferred",
+      id: "block-1",
+      json: true,
+    });
+    expect(
+      parseAgenCStateCliArgs([
+        "state",
+        "recovery",
+        "quarantine",
+        "abandon",
+        "incident-1",
+        "--confirm-run-id",
+        "run-1",
+        "--confirm-source-sha256",
+        "a".repeat(64),
+        "--reason",
+        "source cannot be recovered",
+      ]),
+    ).toMatchObject({
+      kind: "recovery-mutation",
+      action: "abandon",
+      confirmedRunId: "run-1",
+      confirmedSourceSha256: "a".repeat(64),
+    });
+    expect(
+      parseAgenCStateCliArgs([
+        "state",
+        "recovery",
+        "quarantine",
+        "rescan",
+        "incident-1",
+      ]),
+    ).toMatchObject({ kind: "error", message: expect.stringContaining("--confirm-source-sha256") });
+    expect(
+      parseAgenCStateCliArgs([
+        "state",
+        "recovery",
+        "quarantine",
+        "list",
+        "--limit",
+        "101",
+      ]),
+    ).toMatchObject({ kind: "error", message: expect.stringContaining("between 1 and 100") });
+  });
+
+  it("lists and shows safe recovery evidence offline", async () => {
+    const repository = new StateRecoveryIncidentRepository(driver);
+    const incident = repository.recordQuarantine({
+      runId: "run-cli",
+      sourceKind: "run_journal",
+      sourcePath: "/journal/run-cli.jsonl",
+      reasonCode: "malformed_json",
+      safeDetail: { message: "invalid JSON", XAI_API_KEY: "never-print-this" },
+      sourceSizeBytes: 100,
+      sourceMtimeMs: 5,
+      sourceSha256: "a".repeat(64),
+      detectedAtMs: 10,
+      facts: { lineNumber: 2, byteOffset: 50 },
+    });
+    const listIo = createIo();
+    await expect(
+      runAgenCStateCli(
+        {
+          kind: "recovery-list",
+          collection: "quarantine",
+          limit: 100,
+          state: "active",
+          json: true,
+        },
+        { driver, io: listIo },
+      ),
+    ).resolves.toBe(0);
+    const listed = JSON.parse(listIo.stdoutText()) as {
+      readonly items: readonly { readonly quarantineId: string; readonly safeDetail: string }[];
+    };
+    expect(listed.items[0]?.quarantineId).toBe(incident.quarantineId);
+    expect(listIo.stdoutText()).not.toContain("never-print-this");
+
+    const showIo = createIo();
+    await expect(
+      runAgenCStateCli(
+        {
+          kind: "recovery-show",
+          collection: "quarantine",
+          id: incident.quarantineId,
+          json: false,
+        },
+        { driver, io: showIo },
+      ),
+    ).resolves.toBe(0);
+    expect(showIo.stdoutText()).toContain(incident.quarantineId);
+    expect(showIo.stdoutText()).toContain("malformed_json");
+  });
+
+  it("keeps all recovery mutations fail-closed until the cutover adapter exists", async () => {
+    const io = createIo();
+    await expect(
+      runAgenCStateCli(
+        {
+          kind: "recovery-mutation",
+          collection: "quarantine",
+          action: "rescan",
+          id: "incident-1",
+          confirmedSourceSha256: "a".repeat(64),
+        },
+        { driver, io },
+      ),
+    ).resolves.toBe(1);
+    expect(io.stdoutText()).toBe("");
+    expect(io.stderrText()).toContain("executable-selector cutover");
+    expect(io.stderrText()).toContain("evidence remains active");
   });
 
   it("prints exported state JSON and imports it from stdin", async () => {

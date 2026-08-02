@@ -200,7 +200,7 @@ describe("openStateDatabases", () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
           .get()?.version,
-      ).toBe(17);
+      ).toBe(18);
     } finally {
       driver.close();
     }

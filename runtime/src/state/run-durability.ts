@@ -15,6 +15,8 @@ import {
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { stableStringify } from "../utils/stableStringify.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import { assertRecoverySha256 } from "./recovery-contract.js";
+import type { CanonicalJournalFormat } from "./recovery-journal-contract.js";
 
 export type RunDurabilityConflictCode =
   | "RUN_EPOCH_CONFLICT"
@@ -111,6 +113,11 @@ export interface RunJournalBinding {
   readonly retiredThroughSequence?: number;
   readonly gapReason?: RunJournalGapReason;
   readonly gapObservedAt?: string;
+  readonly authoritativeSourceSha256?: string;
+  readonly authoritativeSourceSizeBytes?: number;
+  readonly authoritativeSourceMtimeMs?: number;
+  readonly journalFormat?: Exclude<CanonicalJournalFormat, "empty">;
+  readonly minimumReaderRuntime?: string;
   readonly boundAt: string;
   readonly updatedAt: string;
 }
@@ -192,6 +199,11 @@ interface JournalBindingRow {
   readonly retired_through_sequence: number | null;
   readonly gap_reason: RunJournalGapReason | null;
   readonly gap_observed_at: string | null;
+  readonly authoritative_source_sha256: string | null;
+  readonly authoritative_source_size_bytes: number | null;
+  readonly authoritative_source_mtime_ms: number | null;
+  readonly journal_format: Exclude<CanonicalJournalFormat, "empty"> | null;
+  readonly minimum_reader_runtime: string | null;
   readonly bound_at: string;
   readonly updated_at: string;
 }
@@ -210,7 +222,9 @@ const EFFECT_COLUMNS = `
 const JOURNAL_BINDING_COLUMNS = `
   run_id, epoch, child_run_id, session_id, source_path, active,
   first_available_sequence, last_sequence, retired_through_sequence,
-  gap_reason, gap_observed_at, bound_at, updated_at`;
+  gap_reason, gap_observed_at, authoritative_source_sha256,
+  authoritative_source_size_bytes, authoritative_source_mtime_ms,
+  journal_format, minimum_reader_runtime, bound_at, updated_at`;
 
 /**
  * Durable run lifecycle/effect state plus bindings into the canonical rollout
@@ -1001,6 +1015,74 @@ export class StateRunDurabilityRepository {
     });
   }
 
+  /**
+   * Bind a descriptor-stable strict scan to this source. A fresh digest alone
+   * is not authority; callers invoke this only in the transaction that proves
+   * descriptor stability through projection commit.
+   */
+  bindAuthoritativeJournalEvidence(params: {
+    readonly sourcePath: string;
+    readonly sourceSha256: string;
+    readonly sourceSizeBytes: number;
+    readonly sourceMtimeMs: number;
+    readonly journalFormat: Exclude<CanonicalJournalFormat, "empty">;
+    readonly minimumReaderRuntime: string;
+    readonly updatedAt: string;
+  }): RunJournalBinding {
+    return this.driver.transactionImmediate(() => {
+      const existing = this.requireJournalBinding(params.sourcePath);
+      const sourceSha256 = assertRecoverySha256(
+        params.sourceSha256,
+        "sourceSha256",
+      );
+      const sourceSizeBytes = nonNegativeInteger(
+        params.sourceSizeBytes,
+        "sourceSizeBytes",
+      );
+      const sourceMtimeMs = nonNegativeInteger(
+        params.sourceMtimeMs,
+        "sourceMtimeMs",
+      );
+      if (
+        existing.authoritativeSourceSha256 !== undefined &&
+        (existing.authoritativeSourceSha256 !== sourceSha256 ||
+          existing.authoritativeSourceSizeBytes !== sourceSizeBytes ||
+          existing.authoritativeSourceMtimeMs !== sourceMtimeMs ||
+          existing.journalFormat !== params.journalFormat)
+      ) {
+        throw conflict(
+          "RUN_JOURNAL_BINDING_CONFLICT",
+          `rollout source ${params.sourcePath} already has different authoritative evidence`,
+        );
+      }
+      if (
+        params.journalFormat !== "sequenced_v1" &&
+        params.journalFormat !== "legacy_unsequenced_v1"
+      ) {
+        throw new TypeError("journalFormat is invalid");
+      }
+      this.driver
+        .prepareState(
+          `UPDATE run_journal_bindings
+           SET authoritative_source_sha256 = ?,
+               authoritative_source_size_bytes = ?,
+               authoritative_source_mtime_ms = ?, journal_format = ?,
+               minimum_reader_runtime = ?, updated_at = ?
+           WHERE source_path = ?`,
+        )
+        .run(
+          sourceSha256,
+          sourceSizeBytes,
+          sourceMtimeMs,
+          params.journalFormat,
+          required(params.minimumReaderRuntime, "minimumReaderRuntime"),
+          required(params.updatedAt, "updatedAt"),
+          params.sourcePath,
+        );
+      return this.requireJournalBinding(params.sourcePath);
+    });
+  }
+
   markJournalGap(params: {
     readonly sourcePath: string;
     readonly retiredThroughSequence: number;
@@ -1466,6 +1548,21 @@ function journalBindingFromRow(row: JournalBindingRow): RunJournalBinding {
     ...(row.gap_reason !== null ? { gapReason: row.gap_reason } : {}),
     ...(row.gap_observed_at !== null
       ? { gapObservedAt: row.gap_observed_at }
+      : {}),
+    ...(row.authoritative_source_sha256 !== null
+      ? { authoritativeSourceSha256: row.authoritative_source_sha256 }
+      : {}),
+    ...(row.authoritative_source_size_bytes !== null
+      ? { authoritativeSourceSizeBytes: row.authoritative_source_size_bytes }
+      : {}),
+    ...(row.authoritative_source_mtime_ms !== null
+      ? { authoritativeSourceMtimeMs: row.authoritative_source_mtime_ms }
+      : {}),
+    ...(row.journal_format !== null
+      ? { journalFormat: row.journal_format }
+      : {}),
+    ...(row.minimum_reader_runtime !== null
+      ? { minimumReaderRuntime: row.minimum_reader_runtime }
       : {}),
     boundAt: row.bound_at,
     updatedAt: row.updated_at,

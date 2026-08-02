@@ -133,7 +133,7 @@ The daemon and runtime persist under one home. Relocate with an absolute
 | `runtime/<version>/<artifact-key>-sha256-<digest>/`                | Immutable content-addressed, ABI-keyed runtimes; staged/backup promotion is crash-recoverable                                        |
 | `runtime/.activation-lock.sqlite` / `.activation-transaction.json` | `AGENC_HOME` activation lock and durable roll-forward journal; canonical wrapper locks live in a private per-user registry           |
 | `gateway/`                                                         | Gateway sessions map, pairing, webchat token, heartbeat session id, control plane                                                    |
-| `projects/<slug>/`                                                 | Per-project SQLite state (including execution admission and schema-v15 run/effect projections) + canonical `sessions/<id>/` rollouts |
+| `projects/<slug>/`                                                 | Per-project SQLite state (including execution admission, run/effect projections, and schema-v18 bounded recovery evidence) + canonical `sessions/<id>/` rollouts |
 | `projects/<slug>/agenc-state_1.pre-v15.sqlite`                     | Automatic verified rollback snapshot created before upgrading an existing project database to schema v15                             |
 | `sessions/` (project-scoped)                                       | Canonical append-only JSONL rollouts + advisory `index.json` (atomic tmp+fsync+rename)                                               |
 | logs / state DBs                                                   | SQLite state + logs databases under project/home layout                                                                              |
@@ -143,8 +143,8 @@ Optional trajectory export writes redacted rollout items via
 
 ### Durable run event path
 
-The rollout JSONL is the event authority. Schema-v15 SQLite tables are
-rebuildable lifecycle/effect/query projections, and `thread_rollout_items` is
+The rollout JSONL is the event authority. SQLite lifecycle/effect/query tables
+are rebuildable projections, and `thread_rollout_items` is
 the replay index. Durable events are sequenced, appended, and fsynced before
 they reach either live subscriber surface:
 
@@ -178,6 +178,26 @@ explicit `event_gap`; a cursor beyond the canonical tail surfaces
 `cursor_ahead`. Neither case advances silently. Details and the 15-point
 `SIGKILL` acceptance matrix are in
 [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md).
+
+### Strict recovery evidence
+
+Canonical recovery and conversational indexing have distinct contracts.
+Descriptor-pinned canonical content is validated as one strict source before
+any projection transaction begins: malformed JSON, duplicate object keys,
+unsupported schemas, mixed legacy/sequenced lanes, sequence defects,
+canonical identity conflicts, terminal-binding defects, and trusted digest
+mismatches fail the whole projection. The ordinary rollout index may still
+skip malformed rows because it is not executable recovery authority.
+
+Schema v18 adds bounded `run_recovery_quarantine`,
+`run_recovery_quarantine_observations`, `run_recovery_deferred`, and immutable
+`run_recovery_abandonments` metadata. Identical observations increment their
+existing incident or block; recurrence after resolution creates a linked new
+generation. Only old resolved history may be pruned. Active and abandoned
+evidence is never removed to make a run executable. Local `agenc state recovery
+… list/show` commands inspect redacted metadata even when the daemon cannot
+start. Mutations remain fail-closed until descriptor-pinned two-pass replay and
+all executable recovery selectors consume these exclusions.
 
 `AGENC_HOME` is a single-host trust and locking boundary. It must live on a
 local filesystem with reliable SQLite OS locks and atomic same-filesystem

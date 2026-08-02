@@ -55,7 +55,7 @@ describe("state migration registry", () => {
 
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -75,6 +75,7 @@ describe("state migration registry", () => {
       "run_durability_schema",
       "run_effects_session_call_step_index",
       "effect_evidence_v2",
+      "run_recovery_schema",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -110,7 +111,64 @@ describe("state migration registry", () => {
       "015_run_durability_schema.ts",
       "016_run_effects_session_call_step_index.ts",
       "017_effect_evidence_v2.ts",
+      "018_run_recovery_schema.ts",
     ]);
+  });
+
+  it("upgrades persisted effect-evidence v17 state to recovery schema v18 additively", () => {
+    const db = new Database(":memory:");
+    try {
+      applyMigrations(
+        db,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version <= 17),
+      );
+      db.exec(`
+        INSERT INTO run_lifecycle_epochs (run_id, epoch, opened_at)
+        VALUES ('v17-run', 1, '2026-08-01T00:00:00.000Z');
+        INSERT INTO run_journal_bindings (
+          run_id, epoch, child_run_id, session_id, source_path, active,
+          first_available_sequence, last_sequence, bound_at, updated_at
+        ) VALUES (
+          'v17-run', 1, 'v17-run', 'v17-session', '/rollouts/v17.jsonl', 1,
+          1, 3, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
+        );
+      `);
+
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+
+      expect(
+        db
+          .prepare(
+            `SELECT run_id, first_available_sequence, last_sequence,
+                    authoritative_source_sha256, journal_format,
+                    minimum_reader_runtime
+             FROM run_journal_bindings
+             WHERE source_path = '/rollouts/v17.jsonl'`,
+          )
+          .get(),
+      ).toEqual({
+        run_id: "v17-run",
+        first_available_sequence: 1,
+        last_sequence: 3,
+        authoritative_source_sha256: null,
+        journal_format: null,
+        minimum_reader_runtime: null,
+      });
+      expect(
+        db
+          .prepare("SELECT version, name FROM schema_migrations WHERE version = 18")
+          .get(),
+      ).toEqual({ version: 18, name: "run_recovery_schema" });
+      expect(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'run_recovery_quarantine'",
+          )
+          .get(),
+      ).toEqual({ name: "run_recovery_quarantine" });
+    } finally {
+      db.close();
+    }
   });
 
   it("adds durable run state without copying canonical rollout event payloads", () => {
@@ -132,6 +190,10 @@ describe("state migration registry", () => {
         "run_effects",
         "run_journal_bindings",
         "run_lifecycle_epochs",
+        "run_recovery_abandonments",
+        "run_recovery_deferred",
+        "run_recovery_quarantine",
+        "run_recovery_quarantine_observations",
         "run_terminal_results",
       ]);
       expect(tables).not.toContain("run_journal_events");
@@ -156,6 +218,27 @@ describe("state migration registry", () => {
           )
           .get(),
       ).toEqual({ version: 17, name: "effect_evidence_v2" });
+      expect(
+        db
+          .prepare<[], { version: number; name: string }>(
+            "SELECT version, name FROM schema_migrations WHERE version = 18",
+          )
+          .get(),
+      ).toEqual({ version: 18, name: "run_recovery_schema" });
+
+      const journalColumns = db
+        .prepare<[], { name: string }>("PRAGMA table_info(run_journal_bindings)")
+        .all()
+        .map((row) => row.name);
+      expect(journalColumns).toEqual(
+        expect.arrayContaining([
+          "authoritative_source_sha256",
+          "authoritative_source_size_bytes",
+          "authoritative_source_mtime_ms",
+          "journal_format",
+          "minimum_reader_runtime",
+        ]),
+      );
 
       const effectIndexes = db
         .prepare<[], { name: string }>("PRAGMA index_list(run_effects)")

@@ -472,6 +472,14 @@ agenc permissions approve --session session_123 call_456
 agenc state export <agent-id>
 agenc state import
 agenc state resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>
+agenc state recovery quarantine list [--limit N] [--cursor C] [--state active|repaired|abandoned|all] [--json]
+agenc state recovery quarantine show <quarantine-id> [--json]
+agenc state recovery quarantine rescan <quarantine-id> --confirm-source-sha256 <sha256>
+agenc state recovery quarantine abandon <quarantine-id> --confirm-run-id <run-id> --confirm-source-sha256 <sha256> --reason <text>
+agenc state recovery deferred list [--limit N] [--cursor C] [--state active|resolved|abandoned|all] [--json]
+agenc state recovery deferred show <block-id> [--json]
+agenc state recovery deferred retry <block-id>
+agenc state recovery deferred abandon <block-id> --confirm-run-id <run-id> --confirm-source-sha256 <sha256> --reason <text>
 ```
 
 | Command | Meaning |
@@ -479,6 +487,9 @@ agenc state resolve-tool-call <session-id> <tool-call-id> <disposition> <evidenc
 | `export <agent-id>` | Print a JSON state export for one agent |
 | `import` | Read a JSON state export from stdin and import it |
 | `resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>` | Record a typed, evidence-bound operator disposition for one unresolved `unknown_outcome` tool call |
+| `recovery quarantine list/show` | Inspect bounded source-integrity evidence offline |
+| `recovery deferred list/show` | Inspect bounded operational blocks and retry metadata offline |
+| `recovery … rescan/retry/abandon` | Reserved mutation grammar requiring exact confirmations; fails closed until strict replay and recovery-selector cutover are installed |
 
 ```bash
 agenc state export agent_123 > state.json
@@ -486,6 +497,8 @@ agenc state import < state.json
 AGENC_REVIEWER_ID=operator_7 \
   agenc state resolve-tool-call session_abc call_42 \
     confirmed_no_effect operator-report:INC-42 <64-character-sha256>
+agenc state recovery quarantine list --state active --json
+agenc state recovery deferred show <block-id> --json
 ```
 
 Run `resolve-tool-call` from the affected session's project directory after
@@ -496,10 +509,16 @@ dispositions are `confirmed_committed`, `confirmed_no_effect`, and
 `remains_unknown`; the last explicitly abandons the blocked domain item while
 preserving the uncertain physical outcome. The evidence reference identifies
 an operator-controlled receipt/report and the digest binds its exact bytes.
-Reviewer
-identity comes from `AGENC_REVIEWER_ID`, then `USER` / `USERNAME`, with
+Reviewer identity comes from `AGENC_REVIEWER_ID`, then `USER` / `USERNAME`, with
 `local_operator` as the final fallback. If the requested call is not found,
 the error lists any unresolved calls known for that session.
+
+Recovery list and show commands expose only bounded, secret-redacted metadata;
+they never print a malformed source record or journal payload. Pages contain
+at most 100 records and use an opaque, collection/state-bound keyset cursor.
+There is deliberately no `clear` or delete command. Until descriptor-pinned
+strict replay and the executable-selector cutover are present, mutation
+commands return an error and leave the incident or operational block active.
 
 ---
 

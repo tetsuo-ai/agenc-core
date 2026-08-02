@@ -708,6 +708,47 @@ describe("StateRunDurabilityRepository", () => {
     ).toEqual({ applied: false, value: undefined });
   });
 
+  it("binds authoritative strict-scan evidence without reusing a stale backfill digest", () => {
+    runs.ensureInitialEpoch({ runId: "run-1", openedAt: T0 });
+    runs.bindJournalSource({
+      runId: "run-1",
+      epoch: 1,
+      childRunId: "run-1",
+      sessionId: "session-1",
+      sourcePath: "/rollouts/authoritative.jsonl",
+      boundAt: T0,
+    });
+    const bound = runs.bindAuthoritativeJournalEvidence({
+      sourcePath: "/rollouts/authoritative.jsonl",
+      sourceSha256: "a".repeat(64),
+      sourceSizeBytes: 123,
+      sourceMtimeMs: 456,
+      journalFormat: "sequenced_v1",
+      minimumReaderRuntime: "0.13.0",
+      updatedAt: T1,
+    });
+    expect(bound).toMatchObject({
+      authoritativeSourceSha256: "a".repeat(64),
+      authoritativeSourceSizeBytes: 123,
+      authoritativeSourceMtimeMs: 456,
+      journalFormat: "sequenced_v1",
+      minimumReaderRuntime: "0.13.0",
+    });
+    expect(() =>
+      runs.bindAuthoritativeJournalEvidence({
+        sourcePath: "/rollouts/authoritative.jsonl",
+        sourceSha256: "b".repeat(64),
+        sourceSizeBytes: 123,
+        sourceMtimeMs: 456,
+        journalFormat: "sequenced_v1",
+        minimumReaderRuntime: "0.13.0",
+        updatedAt: T2,
+      }),
+    ).toThrowError(
+      expect.objectContaining({ code: "RUN_JOURNAL_BINDING_CONFLICT" }),
+    );
+  });
+
   it("survives repository reopen without losing terminal, effect, or binding state", () => {
     runs.ensureInitialEpoch({ runId: "run-1", openedAt: T0 });
     beginSideEffect();
