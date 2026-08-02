@@ -417,6 +417,62 @@ describe("native count selection, identity, and caching", () => {
     expect(countTokens).toHaveBeenCalledTimes(1);
   });
 
+  test("binds the provider call and cache entry to an immutable request snapshot", async () => {
+    let observedRequest: TokenAccountingRequest | undefined;
+    const countTokens = vi.fn(async (request: TokenAccountingRequest) => {
+      observedRequest = request;
+      return completeCount(20);
+    });
+    const countCapability = capability(countTokens);
+    const service = new TokenAccountingService();
+    const request = accountingRequest("before", {
+      options: {
+        maxOutputTokens: 64,
+        systemPrompt: "before",
+        tools: [structuredClone(TOOL)],
+      },
+    });
+
+    const pending = service.count(request, { capability: countCapability });
+    (request.messages[0] as { content: string }).content = "after";
+    const mutableOptions = request.options as {
+      systemPrompt: string;
+      tools: Array<{
+        function: { description: string };
+      }>;
+    };
+    mutableOptions.systemPrompt = "after";
+    mutableOptions.tools[0]!.function.description = "mutated after digest";
+
+    await expect(pending).resolves.toMatchObject({ cacheStatus: "miss" });
+    expect(observedRequest).toMatchObject({
+      messages: [{ role: "user", content: "before" }],
+      options: {
+        systemPrompt: "before",
+        tools: [
+          {
+            function: { description: "Look up one value" },
+          },
+        ],
+      },
+    });
+    expect(Object.isFrozen(observedRequest)).toBe(true);
+    expect(Object.isFrozen(observedRequest?.messages[0])).toBe(true);
+    expect(Object.isFrozen(observedRequest?.options.tools?.[0])).toBe(true);
+
+    const equivalent = accountingRequest("before", {
+      options: {
+        maxOutputTokens: 64,
+        systemPrompt: "before",
+        tools: [structuredClone(TOOL)],
+      },
+    });
+    await expect(
+      service.count(equivalent, { capability: countCapability }),
+    ).resolves.toMatchObject({ cacheStatus: "hit" });
+    expect(countTokens).toHaveBeenCalledTimes(1);
+  });
+
   test("strips credentials/query but separates endpoint paths and revisions", async () => {
     expect(
       canonicalTokenEndpointIdentity(

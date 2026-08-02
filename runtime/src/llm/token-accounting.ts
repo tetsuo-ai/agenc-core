@@ -771,13 +771,15 @@ function prepareAccountingRequest(
   capability: ProviderTokenCountCapability | undefined,
   maxRequestBytes: number,
 ): PreparedAccountingRequest {
+  let snapshot: TokenAccountingRequest;
   let promptIdentity: Readonly<Record<string, unknown>>;
   let cacheIdentity: Readonly<Record<string, unknown>>;
   let serializedCacheIdentity: string;
   try {
-    promptIdentity = promptIdentityForRequest(request);
+    snapshot = snapshotAccountingRequest(request);
+    promptIdentity = promptIdentityForRequest(snapshot);
     cacheIdentity = cacheIdentityForRequest(
-      request,
+      snapshot,
       promptIdentity,
       capability,
     );
@@ -800,10 +802,46 @@ function prepareAccountingRequest(
     .update(serializedCacheIdentity, "utf8")
     .digest("hex");
   return {
-    request,
+    request: snapshot,
     digest,
-    fallback: conservativeFallbackResult(request, promptIdentity),
+    fallback: conservativeFallbackResult(snapshot, promptIdentity),
   };
+}
+
+function snapshotAccountingRequest(
+  request: TokenAccountingRequest,
+): TokenAccountingRequest {
+  const options = request.options;
+  const snapshotOptions: LLMChatOptions = Object.freeze({
+    ...options,
+    ...(options.stopSequences !== undefined
+      ? { stopSequences: canonicalSnapshot(options.stopSequences) }
+      : {}),
+    ...(options.toolRouting !== undefined
+      ? { toolRouting: canonicalSnapshot(options.toolRouting) }
+      : {}),
+    ...(options.tools !== undefined
+      ? { tools: canonicalSnapshot(options.tools) }
+      : {}),
+    ...(options.toolChoice !== undefined
+      ? { toolChoice: canonicalSnapshot(options.toolChoice) }
+      : {}),
+    ...(options.structuredOutput !== undefined
+      ? { structuredOutput: canonicalSnapshot(options.structuredOutput) }
+      : {}),
+  });
+  return Object.freeze({
+    ...request,
+    messages: canonicalSnapshot(
+      prepareMessagesForWire(request.messages, snapshotOptions),
+    ),
+    options: snapshotOptions,
+    ...(request.providerNativeTools !== undefined
+      ? {
+          providerNativeTools: canonicalSnapshot(request.providerNativeTools),
+        }
+      : {}),
+  });
 }
 
 function promptIdentityForRequest(
@@ -819,6 +857,7 @@ function promptIdentityForRequest(
     toolChoice: options.toolChoice ?? null,
     structuredOutput: options.structuredOutput ?? null,
     providerFraming: {
+      model: options.model ?? null,
       parallelToolCalls: options.parallelToolCalls ?? null,
       reasoningEffort: options.reasoningEffort ?? null,
       reasoningSummary: options.reasoningSummary ?? null,
@@ -1140,6 +1179,16 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(canonicalize(value, new Set()));
 }
 
+function canonicalSnapshot<T>(value: T): T {
+  return freezeCanonicalValue(canonicalize(value, new Set())) as T;
+}
+
+function freezeCanonicalValue(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  for (const entry of Object.values(value)) freezeCanonicalValue(entry);
+  return Object.freeze(value);
+}
+
 function canonicalize(value: unknown, ancestors: Set<object>): unknown {
   if (
     value === null ||
@@ -1195,7 +1244,8 @@ function invokeProviderTokenCount(
   request: TokenAccountingRequest,
   signal: AbortSignal,
 ): Promise<ProviderNativeTokenCountResult> {
-  return Promise.resolve().then(() => capability.countTokens(request, signal));
+  const countTokens = capability.countTokens.bind(capability);
+  return Promise.resolve().then(() => countTokens(request, signal));
 }
 
 function positiveLimit(value: number | undefined, fallback: number): number {
