@@ -3,15 +3,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openFndFixtureCatalog } from "../helpers/fnd-fixtures.js";
+import { KNOWN_EVENT_TYPES } from "../../src/session/event-log.js";
 import { backfillPinnedRolloutContent } from "./backfill.js";
-import {
-  CanonicalJournalIntegrityError,
-} from "./recovery-contract.js";
+import { CanonicalJournalIntegrityError } from "./recovery-contract.js";
 import {
   StrictCanonicalJournalValidator,
   validateCanonicalJournalBytes,
   validateCanonicalJournalText,
 } from "./recovery-journal-contract.js";
+import {
+  CANONICAL_EVENT_SCHEMA_TYPES,
+  CANONICAL_ROLLOUT_SCHEMA_TYPES,
+  isCanonicalEventPayload,
+  isCanonicalRolloutPayload,
+} from "./recovery-journal-schema.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
 import { StateThreadRepository } from "./threads.js";
 
@@ -59,13 +64,16 @@ describe("strict canonical journal contract", () => {
     ["journal.sequence-rewind.v1", "sequence_rewind"],
     ["journal.mixed-lanes.v1", "legacy_format_violation"],
     ["journal.interrupted-tail.v1", "unterminated_record"],
-  ] as const)("rejects %s with stable reason %s", async (fixtureId, reasonCode) => {
-    const catalog = await openFndFixtureCatalog();
-    const bytes = await catalog.bytes(fixtureId);
-    expect(() => validateCanonicalJournalBytes(bytes)).toThrow(
-      expect.objectContaining({ reasonCode }),
-    );
-  });
+  ] as const)(
+    "rejects %s with stable reason %s",
+    async (fixtureId, reasonCode) => {
+      const catalog = await openFndFixtureCatalog();
+      const bytes = await catalog.bytes(fixtureId);
+      expect(() => validateCanonicalJournalBytes(bytes)).toThrow(
+        expect.objectContaining({ reasonCode }),
+      );
+    },
+  );
 
   it("retains exact byte facts across CRLF and chunk boundaries", () => {
     const first = validEvent(1, "turn_started").trimEnd();
@@ -113,12 +121,16 @@ describe("strict canonical journal contract", () => {
       validateCanonicalJournalText(started, {
         terminalPolicy: "require_terminal",
       }),
-    ).toThrow(expect.objectContaining({ reasonCode: "required_terminal_missing" }));
+    ).toThrow(
+      expect.objectContaining({ reasonCode: "required_terminal_missing" }),
+    );
   });
 
   it("rejects invalid UTF-8 without replacement decoding", () => {
     const bytes = Buffer.concat([
-      Buffer.from('{"type":"response_item","payload":{"role":"user","content":"'),
+      Buffer.from(
+        '{"type":"response_item","payload":{"role":"user","content":"',
+      ),
       Buffer.from([0xff]),
       Buffer.from('"}}\n'),
     ]);
@@ -133,6 +145,68 @@ describe("strict canonical journal contract", () => {
     ).toThrow(
       expect.objectContaining({ reasonCode: "unsupported_format_version" }),
     );
+  });
+
+  it.each([
+    ["response_item", {}],
+    ["compacted", {}],
+    ["turn_context", {}],
+    ["session_state", { agentTask: 42 }],
+  ] as const)(
+    "rejects an invalid %s payload before normalization",
+    (type, payload) => {
+      expect(() =>
+        validateCanonicalJournalText(
+          `${JSON.stringify({
+            type,
+            payload,
+            eventVersion: 1,
+          })}\n`,
+        ),
+      ).toThrow(expect.objectContaining({ reasonCode: "schema_invalid" }));
+    },
+  );
+
+  it("rejects invalid payloads for known event variants", () => {
+    expect(() =>
+      validateCanonicalJournalText(validEvent(1, "agent_message", {})),
+    ).toThrow(expect.objectContaining({ reasonCode: "schema_invalid" }));
+  });
+
+  it("keeps an exhaustive fail-closed schema for every rollout discriminant", () => {
+    expect(CANONICAL_ROLLOUT_SCHEMA_TYPES).toEqual([
+      "compacted",
+      "event_msg",
+      "response_item",
+      "session_meta",
+      "session_state",
+      "turn_context",
+    ]);
+    for (const type of CANONICAL_ROLLOUT_SCHEMA_TYPES) {
+      const missingRequiredFields = type === "session_state" ? null : {};
+      expect(
+        isCanonicalRolloutPayload(type, missingRequiredFields),
+        `${type} accepted a payload without its required runtime shape`,
+      ).toBe(false);
+    }
+  });
+
+  it("keeps an exhaustive fail-closed schema for every known event discriminant", () => {
+    expect(CANONICAL_EVENT_SCHEMA_TYPES).toEqual([...KNOWN_EVENT_TYPES].sort());
+    const eventsWithoutRequiredFields = new Set([
+      "context_compacted",
+      "protocol_stake",
+      "token_count",
+    ]);
+    for (const type of KNOWN_EVENT_TYPES) {
+      const missingRequiredFields = eventsWithoutRequiredFields.has(type)
+        ? null
+        : {};
+      expect(
+        isCanonicalEventPayload(type, missingRequiredFields),
+        `${type} accepted a payload without its required runtime shape`,
+      ).toBe(false);
+    }
   });
 });
 
@@ -168,14 +242,18 @@ describe("strict pinned rollout projection", () => {
   });
 });
 
-function validEvent(sequence: number, type: string): string {
+function validEvent(
+  sequence: number,
+  type: string,
+  payload: Record<string, unknown> = { turnId: "strict-test" },
+): string {
   return `${JSON.stringify({
     type: "event_msg",
     payload: {
       eventId: `event:${sequence}`,
       id: "strict-test",
       seq: sequence,
-      msg: { type, payload: { turnId: "strict-test" } },
+      msg: { type, payload },
     },
     eventVersion: 1,
   })}\n`;

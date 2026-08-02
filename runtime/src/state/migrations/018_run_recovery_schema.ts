@@ -58,6 +58,7 @@ CREATE TABLE run_recovery_quarantine (
   source_size_bytes INTEGER NOT NULL,
   source_mtime_ms INTEGER NOT NULL,
   source_sha256 TEXT NOT NULL,
+  confirmed_source_sha256 TEXT,
   first_detected_at_ms INTEGER NOT NULL,
   last_detected_at_ms INTEGER NOT NULL,
   detection_count INTEGER NOT NULL DEFAULT 1,
@@ -94,18 +95,32 @@ CREATE TABLE run_recovery_quarantine (
     length(source_sha256) = 64
     AND source_sha256 NOT GLOB '*[^0-9a-f]*'
   ),
+  CHECK (
+    confirmed_source_sha256 IS NULL OR (
+      length(confirmed_source_sha256) = 64
+      AND confirmed_source_sha256 NOT GLOB '*[^0-9a-f]*'
+    )
+  ),
   CHECK (first_detected_at_ms >= 0),
   CHECK (last_detected_at_ms >= first_detected_at_ms),
   CHECK (detection_count > 0),
   CHECK (state IN ('active', 'repaired', 'abandoned')),
   CHECK (
     (state = 'active' AND resolved_at_ms IS NULL
-      AND resolution_actor IS NULL AND resolution_note IS NULL)
+      AND resolution_actor IS NULL AND resolution_note IS NULL
+      AND confirmed_source_sha256 IS NULL)
     OR
-    (state IN ('repaired', 'abandoned') AND resolved_at_ms IS NOT NULL
+    (state = 'repaired' AND resolved_at_ms IS NOT NULL
       AND resolution_actor IS NOT NULL AND length(resolution_actor) > 0
       AND resolution_note IS NOT NULL
-      AND length(CAST(resolution_note AS BLOB)) <= 2048)
+      AND length(CAST(resolution_note AS BLOB)) <= 2048
+      AND confirmed_source_sha256 IS NOT NULL)
+    OR
+    (state = 'abandoned' AND resolved_at_ms IS NOT NULL
+      AND resolution_actor IS NOT NULL AND length(resolution_actor) > 0
+      AND resolution_note IS NOT NULL
+      AND length(CAST(resolution_note AS BLOB)) <= 2048
+      AND confirmed_source_sha256 IS NULL)
   ),
   CHECK (
     supersedes_quarantine_id IS NULL
@@ -154,6 +169,20 @@ WHEN NOT (
 )
 BEGIN
   SELECT RAISE(ABORT, 'recovery quarantine state cannot move backwards');
+END;
+
+CREATE TRIGGER run_recovery_quarantine_confirmation_immutable
+BEFORE UPDATE OF confirmed_source_sha256 ON run_recovery_quarantine
+WHEN
+  OLD.confirmed_source_sha256 IS NOT NEW.confirmed_source_sha256
+  AND NOT (
+    OLD.state = 'active'
+    AND NEW.state = 'repaired'
+    AND OLD.confirmed_source_sha256 IS NULL
+    AND NEW.confirmed_source_sha256 IS NOT NULL
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'recovery repair confirmation is immutable');
 END;
 
 CREATE TABLE run_recovery_quarantine_observations (

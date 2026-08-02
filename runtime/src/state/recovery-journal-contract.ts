@@ -14,11 +14,13 @@ import {
   type RecoveryIntegrityFacts,
   type RecoveryIntegrityReasonCode,
 } from "./recovery-contract.js";
+import {
+  isCanonicalEventPayload,
+  isCanonicalRolloutPayload,
+} from "./recovery-journal-schema.js";
 
 export type CanonicalJournalFormat =
-  | "empty"
-  | "sequenced_v1"
-  | "legacy_unsequenced_v1";
+  "empty" | "sequenced_v1" | "legacy_unsequenced_v1";
 
 export interface StrictCanonicalJournalRecord {
   readonly item: RolloutItem;
@@ -95,7 +97,8 @@ export class StrictCanonicalJournalValidator {
   }
 
   push(chunk: Uint8Array): void {
-    if (this.#finished) throw new Error("canonical journal validator is closed");
+    if (this.#finished)
+      throw new Error("canonical journal validator is closed");
     const bytes = Buffer.from(chunk);
     if (bytes.byteLength === 0) return;
     this.#sourceHash.update(bytes);
@@ -129,26 +132,37 @@ export class StrictCanonicalJournalValidator {
   }
 
   finish(): StrictCanonicalJournal {
-    if (this.#finished) throw new Error("canonical journal validator is closed");
+    if (this.#finished)
+      throw new Error("canonical journal validator is closed");
     this.#finished = true;
     if (this.#pendingByteLength > 0) {
-      this.#fail("unterminated_record", "canonical journal ends without a newline", {
-        lineNumber: this.#physicalLineCount + 1,
-        byteOffset: this.#processedByteLength,
-      });
+      this.#fail(
+        "unterminated_record",
+        "canonical journal ends without a newline",
+        {
+          lineNumber: this.#physicalLineCount + 1,
+          byteOffset: this.#processedByteLength,
+        },
+      );
     }
     const sourceSha256 = this.#sourceHash.digest("hex");
     if (
       this.#options.trustedSourceSha256 !== undefined &&
       sourceSha256 !== this.#options.trustedSourceSha256
     ) {
-      this.#fail("source_hash_mismatch", "canonical journal digest does not match its durable binding");
+      this.#fail(
+        "source_hash_mismatch",
+        "canonical journal digest does not match its durable binding",
+      );
     }
     if (
       this.#options.terminalPolicy === "require_terminal" &&
       this.#matchingTerminalCount === 0
     ) {
-      this.#fail("required_terminal_missing", "canonical journal is missing its required terminal");
+      this.#fail(
+        "required_terminal_missing",
+        "canonical journal is missing its required terminal",
+      );
     }
     return Object.freeze({
       records: Object.freeze(this.#records.slice()),
@@ -173,39 +187,51 @@ export class StrictCanonicalJournalValidator {
       content = content.subarray(0, -1);
     }
     if (content.byteLength === 0) {
-      this.#fail("schema_invalid", "canonical journal contains a blank record", {
-        lineNumber,
-        byteOffset,
-      });
+      this.#fail(
+        "schema_invalid",
+        "canonical journal contains a blank record",
+        {
+          lineNumber,
+          byteOffset,
+        },
+      );
     }
     const line = decodeCanonicalUtf8(content, lineNumber, byteOffset);
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
     } catch {
-      this.#fail("malformed_json", "canonical journal contains malformed JSON", {
-        lineNumber,
-        byteOffset,
-      });
+      this.#fail(
+        "malformed_json",
+        "canonical journal contains malformed JSON",
+        {
+          lineNumber,
+          byteOffset,
+        },
+      );
     }
     try {
       assertNoDuplicateJsonObjectKeys(line);
     } catch (error) {
       this.#fail(
         "schema_invalid",
-        error instanceof Error ? error.message : "canonical JSON object contains duplicate keys",
+        error instanceof Error
+          ? error.message
+          : "canonical JSON object contains duplicate keys",
         { lineNumber, byteOffset },
       );
     }
     const item = this.#validateRolloutItem(parsed, lineNumber, byteOffset);
-    this.#records.push(Object.freeze({
-      item,
-      lineNumber,
-      byteOffset,
-      encodedByteLength: content.byteLength,
-      lineSha256: createHash("sha256").update(content).digest("hex"),
-      rollingSha256: this.#rollingHash.copy().digest("hex"),
-    }));
+    this.#records.push(
+      Object.freeze({
+        item,
+        lineNumber,
+        byteOffset,
+        encodedByteLength: content.byteLength,
+        lineSha256: createHash("sha256").update(content).digest("hex"),
+        rollingSha256: this.#rollingHash.copy().digest("hex"),
+      }),
+    );
   }
 
   #validateRolloutItem(
@@ -215,7 +241,11 @@ export class StrictCanonicalJournalValidator {
   ): RolloutItem {
     const facts = { lineNumber, byteOffset };
     if (!isPlainRecord(value)) {
-      this.#fail("schema_invalid", "canonical journal record must be a JSON object", facts);
+      this.#fail(
+        "schema_invalid",
+        "canonical journal record must be a JSON object",
+        facts,
+      );
     }
     const type = value.type;
     if (typeof type !== "string" || !KNOWN_CANONICAL_TYPES.has(type)) {
@@ -226,7 +256,18 @@ export class StrictCanonicalJournalValidator {
       );
     }
     if (!isPlainRecord(value.payload)) {
-      this.#fail("schema_invalid", "canonical journal record payload must be an object", facts);
+      this.#fail(
+        "schema_invalid",
+        "canonical journal record payload must be an object",
+        facts,
+      );
+    }
+    if (!isCanonicalRolloutPayload(type, value.payload)) {
+      this.#fail(
+        "schema_invalid",
+        `canonical ${type} payload does not match the runtime schema`,
+        facts,
+      );
     }
     if (
       value.eventVersion !== undefined &&
@@ -238,11 +279,16 @@ export class StrictCanonicalJournalValidator {
         facts,
       );
     }
-    if (type === "session_meta") this.#validateSessionMeta(value.payload, facts);
+    if (type === "session_meta")
+      this.#validateSessionMeta(value.payload, facts);
     if (type === "event_msg") this.#validateEvent(value.payload, facts);
     const item = parseRolloutLine(JSON.stringify(value));
     if (item === null || item.type === "unknown") {
-      this.#fail("schema_invalid", "canonical journal record could not be normalized", facts);
+      this.#fail(
+        "schema_invalid",
+        "canonical journal record could not be normalized",
+        facts,
+      );
     }
     return item;
   }
@@ -251,9 +297,19 @@ export class StrictCanonicalJournalValidator {
     payload: Record<string, unknown>,
     facts: RecoveryIntegrityFacts,
   ): void {
-    for (const key of ["sessionId", "timestamp", "cwd", "originator", "agencVersion"] as const) {
+    for (const key of [
+      "sessionId",
+      "timestamp",
+      "cwd",
+      "originator",
+      "agencVersion",
+    ] as const) {
       if (typeof payload[key] !== "string" || payload[key].length === 0) {
-        this.#fail("schema_invalid", `canonical session metadata has an invalid ${key}`, facts);
+        this.#fail(
+          "schema_invalid",
+          `canonical session metadata has an invalid ${key}`,
+          facts,
+        );
       }
     }
     if (payload.rolloutSchemaVersion !== ROLLOUT_SCHEMA_VERSION) {
@@ -271,10 +327,22 @@ export class StrictCanonicalJournalValidator {
   ): void {
     this.#eventCount += 1;
     if (typeof payload.id !== "string" || payload.id.length === 0) {
-      this.#fail("schema_invalid", "canonical event has an invalid envelope id", facts);
+      this.#fail(
+        "schema_invalid",
+        "canonical event has an invalid envelope id",
+        facts,
+      );
     }
-    if (!isPlainRecord(payload.msg) || typeof payload.msg.type !== "string" || payload.msg.type.length === 0) {
-      this.#fail("schema_invalid", "canonical event has an invalid message envelope", facts);
+    if (
+      !isPlainRecord(payload.msg) ||
+      typeof payload.msg.type !== "string" ||
+      payload.msg.type.length === 0
+    ) {
+      this.#fail(
+        "schema_invalid",
+        "canonical event has an invalid message envelope",
+        facts,
+      );
     }
     if (
       !isKnownEventType(payload.msg.type) &&
@@ -286,27 +354,58 @@ export class StrictCanonicalJournalValidator {
         facts,
       );
     }
+    if (!isCanonicalEventPayload(payload.msg.type, payload.msg.payload)) {
+      this.#fail(
+        "schema_invalid",
+        `canonical ${payload.msg.type} event payload does not match the runtime schema`,
+        facts,
+      );
+    }
     const sequence = payload.seq;
     if (sequence === undefined) {
       if (payload.eventId !== undefined) {
-        this.#fail("legacy_format_violation", "legacy event cannot carry a canonical event id without a sequence", facts);
+        this.#fail(
+          "legacy_format_violation",
+          "legacy event cannot carry a canonical event id without a sequence",
+          facts,
+        );
       }
       if (this.#format === "sequenced_v1") {
-        this.#fail("legacy_format_violation", "canonical journal mixes sequenced and legacy events", facts);
+        this.#fail(
+          "legacy_format_violation",
+          "canonical journal mixes sequenced and legacy events",
+          facts,
+        );
       }
       this.#format = "legacy_unsequenced_v1";
     } else {
       if (!Number.isSafeInteger(sequence) || (sequence as number) <= 0) {
-        this.#fail("schema_invalid", "canonical event sequence must be a positive safe integer", facts);
+        this.#fail(
+          "schema_invalid",
+          "canonical event sequence must be a positive safe integer",
+          facts,
+        );
       }
       if (typeof payload.eventId !== "string" || payload.eventId.length === 0) {
-        this.#fail("schema_invalid", "sequenced canonical event is missing its event id", facts);
+        this.#fail(
+          "schema_invalid",
+          "sequenced canonical event is missing its event id",
+          facts,
+        );
       }
       if (this.#format === "legacy_unsequenced_v1") {
-        this.#fail("legacy_format_violation", "canonical journal mixes legacy and sequenced events", facts);
+        this.#fail(
+          "legacy_format_violation",
+          "canonical journal mixes legacy and sequenced events",
+          facts,
+        );
       }
       this.#format = "sequenced_v1";
-      this.#validateSequence(sequence as number, payload.eventId as string, facts);
+      this.#validateSequence(
+        sequence as number,
+        payload.eventId as string,
+        facts,
+      );
     }
     if (payload.msg.type === "run_terminal") {
       this.#validateTerminal(payload.msg.payload, facts);
@@ -335,14 +434,26 @@ export class StrictCanonicalJournalValidator {
       );
     }
     if (sequence > this.#nextSequence) {
-      this.#fail("sequence_gap", "canonical journal event sequence is not contiguous", sequenceFacts);
+      this.#fail(
+        "sequence_gap",
+        "canonical journal event sequence is not contiguous",
+        sequenceFacts,
+      );
     }
     if (this.#eventIds.has(eventId)) {
-      this.#fail("identity_conflict", "canonical journal reuses an event id", sequenceFacts);
+      this.#fail(
+        "identity_conflict",
+        "canonical journal reuses an event id",
+        sequenceFacts,
+      );
     }
     const reserved = /^event:([1-9]\d*)$/u.exec(eventId)?.[1];
     if (reserved !== undefined && Number(reserved) !== sequence) {
-      this.#fail("identity_conflict", "canonical event id conflicts with its sequence", sequenceFacts);
+      this.#fail(
+        "identity_conflict",
+        "canonical event id conflicts with its sequence",
+        sequenceFacts,
+      );
     }
     this.#eventIds.add(eventId);
     this.#nextSequence = sequence + 1;
@@ -350,7 +461,11 @@ export class StrictCanonicalJournalValidator {
 
   #validateTerminal(payload: unknown, facts: RecoveryIntegrityFacts): void {
     if (!isPlainRecord(payload)) {
-      this.#fail("schema_invalid", "run terminal payload must be an object", facts);
+      this.#fail(
+        "schema_invalid",
+        "run terminal payload must be an object",
+        facts,
+      );
     }
     if (
       typeof payload.runId !== "string" ||
@@ -364,17 +479,29 @@ export class StrictCanonicalJournalValidator {
       this.#options.expectedRunId !== undefined &&
       payload.runId !== this.#options.expectedRunId
     ) {
-      this.#fail("terminal_binding_mismatch", "run terminal belongs to another run", facts);
+      this.#fail(
+        "terminal_binding_mismatch",
+        "run terminal belongs to another run",
+        facts,
+      );
     }
     if (
       this.#options.expectedEpoch !== undefined &&
       payload.epoch !== this.#options.expectedEpoch
     ) {
-      this.#fail("terminal_binding_mismatch", "run terminal belongs to another epoch", facts);
+      this.#fail(
+        "terminal_binding_mismatch",
+        "run terminal belongs to another epoch",
+        facts,
+      );
     }
     const key = `${payload.runId}\u0000${String(payload.epoch)}`;
     if (this.#terminalKeys.has(key)) {
-      this.#fail("duplicate_terminal", "canonical journal contains duplicate run terminals", facts);
+      this.#fail(
+        "duplicate_terminal",
+        "canonical journal contains duplicate run terminals",
+        facts,
+      );
     }
     this.#terminalKeys.add(key);
     this.#terminalCount += 1;
@@ -441,11 +568,13 @@ class DuplicateKeyScanner {
     this.#skipWhitespace();
     this.#value(0);
     this.#skipWhitespace();
-    if (this.#offset !== this.input.length) throw new Error("canonical JSON has trailing content");
+    if (this.#offset !== this.input.length)
+      throw new Error("canonical JSON has trailing content");
   }
 
   #value(depth: number): void {
-    if (depth > MAX_CANONICAL_JSON_DEPTH) throw new Error("canonical JSON nesting exceeds its limit");
+    if (depth > MAX_CANONICAL_JSON_DEPTH)
+      throw new Error("canonical JSON nesting exceeds its limit");
     const token = this.input[this.#offset];
     if (token === "{") return this.#object(depth + 1);
     if (token === "[") return this.#array(depth + 1);
@@ -453,7 +582,10 @@ class DuplicateKeyScanner {
       this.#string();
       return;
     }
-    while (this.#offset < this.input.length && !/[\s,}\]]/u.test(this.input[this.#offset]!)) {
+    while (
+      this.#offset < this.input.length &&
+      !/[\s,}\]]/u.test(this.input[this.#offset]!)
+    ) {
       this.#offset += 1;
     }
   }
@@ -468,7 +600,10 @@ class DuplicateKeyScanner {
     }
     while (this.#offset < this.input.length) {
       const key = this.#string();
-      if (keys.has(key)) throw new Error(`canonical JSON object contains duplicate key ${JSON.stringify(key)}`);
+      if (keys.has(key))
+        throw new Error(
+          `canonical JSON object contains duplicate key ${JSON.stringify(key)}`,
+        );
       keys.add(key);
       this.#skipWhitespace();
       this.#expect(":");
@@ -512,13 +647,15 @@ class DuplicateKeyScanner {
         this.#offset += 1;
         continue;
       }
-      if (token === '"') return JSON.parse(this.input.slice(start, this.#offset)) as string;
+      if (token === '"')
+        return JSON.parse(this.input.slice(start, this.#offset)) as string;
     }
     throw new Error("canonical JSON contains an unterminated string");
   }
 
   #expect(token: string): void {
-    if (this.input[this.#offset] !== token) throw new Error(`canonical JSON expected ${token}`);
+    if (this.input[this.#offset] !== token)
+      throw new Error(`canonical JSON expected ${token}`);
     this.#offset += 1;
   }
 

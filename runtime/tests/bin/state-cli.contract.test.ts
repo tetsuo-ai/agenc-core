@@ -8,7 +8,10 @@ import {
   runAgenCStateCli,
   type AgenCStateCliIo,
 } from "./state-cli.js";
-import { openStateDatabases, type StateSqliteDriver } from "../state/sqlite-driver.js";
+import {
+  openStateDatabases,
+  type StateSqliteDriver,
+} from "../state/sqlite-driver.js";
 import { StateRecoveryIncidentRepository } from "../state/recovery-incidents.js";
 
 function createIo(): AgenCStateCliIo & {
@@ -145,8 +148,26 @@ describe("AgenC state CLI", () => {
         "quarantine",
         "rescan",
         "incident-1",
+        "--confirm-source-sha256",
+        "b".repeat(64),
       ]),
-    ).toMatchObject({ kind: "error", message: expect.stringContaining("--confirm-source-sha256") });
+    ).toMatchObject({
+      kind: "recovery-mutation",
+      action: "rescan",
+      confirmedSourceSha256: "b".repeat(64),
+    });
+    expect(
+      parseAgenCStateCliArgs([
+        "state",
+        "recovery",
+        "quarantine",
+        "rescan",
+        "incident-1",
+      ]),
+    ).toMatchObject({
+      kind: "error",
+      message: expect.stringContaining("--confirm-source-sha256"),
+    });
     expect(
       parseAgenCStateCliArgs([
         "state",
@@ -156,7 +177,10 @@ describe("AgenC state CLI", () => {
         "--limit",
         "101",
       ]),
-    ).toMatchObject({ kind: "error", message: expect.stringContaining("between 1 and 100") });
+    ).toMatchObject({
+      kind: "error",
+      message: expect.stringContaining("between 1 and 100"),
+    });
   });
 
   it("lists and shows safe recovery evidence offline", async () => {
@@ -187,7 +211,10 @@ describe("AgenC state CLI", () => {
       ),
     ).resolves.toBe(0);
     const listed = JSON.parse(listIo.stdoutText()) as {
-      readonly items: readonly { readonly quarantineId: string; readonly safeDetail: string }[];
+      readonly items: readonly {
+        readonly quarantineId: string;
+        readonly safeDetail: string;
+      }[];
     };
     expect(listed.items[0]?.quarantineId).toBe(incident.quarantineId);
     expect(listIo.stdoutText()).not.toContain("never-print-this");
@@ -355,10 +382,7 @@ function seedAgentState(stateDriver: StateSqliteDriver): void {
     );
 }
 
-function agentExists(
-  stateDriver: StateSqliteDriver,
-  agentId: string,
-): boolean {
+function agentExists(stateDriver: StateSqliteDriver, agentId: string): boolean {
   return (
     stateDriver
       .prepareState<[string], { count: number }>(

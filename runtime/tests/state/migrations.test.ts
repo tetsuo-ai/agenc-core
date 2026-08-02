@@ -156,7 +156,9 @@ describe("state migration registry", () => {
       });
       expect(
         db
-          .prepare("SELECT version, name FROM schema_migrations WHERE version = 18")
+          .prepare(
+            "SELECT version, name FROM schema_migrations WHERE version = 18",
+          )
           .get(),
       ).toEqual({ version: 18, name: "run_recovery_schema" });
       expect(
@@ -227,7 +229,9 @@ describe("state migration registry", () => {
       ).toEqual({ version: 18, name: "run_recovery_schema" });
 
       const journalColumns = db
-        .prepare<[], { name: string }>("PRAGMA table_info(run_journal_bindings)")
+        .prepare<[], { name: string }>(
+          "PRAGMA table_info(run_journal_bindings)",
+        )
         .all()
         .map((row) => row.name);
       expect(journalColumns).toEqual(
@@ -237,6 +241,20 @@ describe("state migration registry", () => {
           "authoritative_source_mtime_ms",
           "journal_format",
           "minimum_reader_runtime",
+        ]),
+      );
+      const quarantineColumns = db
+        .prepare<[], { name: string }>(
+          "PRAGMA table_info(run_recovery_quarantine)",
+        )
+        .all()
+        .map((row) => row.name);
+      expect(quarantineColumns).toEqual(
+        expect.arrayContaining([
+          "source_sha256",
+          "confirmed_source_sha256",
+          "state",
+          "resolved_at_ms",
         ]),
       );
 

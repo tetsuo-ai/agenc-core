@@ -27,7 +27,9 @@ import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export class RecoveryHistoryLimitError extends Error {
   constructor(readonly scope: "quarantine" | "deferred") {
-    super(`durable ${scope} history is full and has no resolved evidence that may be pruned`);
+    super(
+      `durable ${scope} history is full and has no resolved evidence that may be pruned`,
+    );
     this.name = "RecoveryHistoryLimitError";
   }
 }
@@ -49,7 +51,10 @@ export interface RecoveryQuarantineIncident extends RecoveryIntegrityFacts {
   readonly safeDetail: string;
   readonly sourceSizeBytes: number;
   readonly sourceMtimeMs: number;
+  /** Immutable digest of the source bytes that originally caused quarantine. */
   readonly sourceSha256: string;
+  /** Digest returned by the successful strict replay that cleared exclusion. */
+  readonly confirmedSourceSha256?: string;
   readonly firstDetectedAtMs: number;
   readonly lastDetectedAtMs: number;
   readonly detectionCount: number;
@@ -101,6 +106,11 @@ export interface RecoveryPage<T> {
   readonly nextCursor?: string;
 }
 
+export interface RecoveryStrictReplayConfirmation {
+  /** SHA-256 computed from the descriptor-pinned bytes that were replayed. */
+  readonly sourceSha256: string;
+}
+
 interface QuarantineRow {
   readonly quarantine_id: string;
   readonly incident_fingerprint: string;
@@ -116,6 +126,7 @@ interface QuarantineRow {
   readonly source_size_bytes: number;
   readonly source_mtime_ms: number;
   readonly source_sha256: string;
+  readonly confirmed_source_sha256: string | null;
   readonly first_detected_at_ms: number;
   readonly last_detected_at_ms: number;
   readonly detection_count: number;
@@ -174,6 +185,7 @@ const QUARANTINE_COLUMNS = `
   quarantine_id, incident_fingerprint, run_id, source_kind, source_path,
   reason_code, safe_detail, line_number, byte_offset, expected_sequence,
   observed_sequence, source_size_bytes, source_mtime_ms, source_sha256,
+  confirmed_source_sha256,
   first_detected_at_ms, last_detected_at_ms, detection_count, state,
   resolved_at_ms, resolution_actor, resolution_note,
   supersedes_quarantine_id, minimum_reader_runtime`;
@@ -260,15 +272,21 @@ export class StateRecoveryIncidentRepository {
 
       this.makeQuarantineHistoryRoom(normalized.runId);
       const supersedes = this.driver
-        .prepareState<[string, RecoverySourceKind, string], { quarantine_id: string }>(
+        .prepareState<
+          [string, RecoverySourceKind, string],
+          { quarantine_id: string }
+        >(
           `SELECT quarantine_id
            FROM run_recovery_quarantine
            WHERE run_id = ? AND source_kind = ? AND source_path = ?
            ORDER BY first_detected_at_ms DESC, quarantine_id DESC
            LIMIT 1`,
         )
-        .get(normalized.runId, normalized.sourceKind, normalized.sourcePath)
-        ?.quarantine_id;
+        .get(
+          normalized.runId,
+          normalized.sourceKind,
+          normalized.sourcePath,
+        )?.quarantine_id;
       const quarantineId = randomUUID();
       this.driver
         .prepareState(
@@ -315,11 +333,13 @@ export class StateRecoveryIncidentRepository {
     return row === undefined ? undefined : quarantineFromRow(row);
   }
 
-  listQuarantines(options: {
-    readonly state?: RecoveryIncidentState | "all";
-    readonly limit?: number;
-    readonly cursor?: string;
-  } = {}): RecoveryPage<RecoveryQuarantineIncident> {
+  listQuarantines(
+    options: {
+      readonly state?: RecoveryIncidentState | "all";
+      readonly limit?: number;
+      readonly cursor?: string;
+    } = {},
+  ): RecoveryPage<RecoveryQuarantineIncident> {
     const state = options.state ?? "active";
     const limit = pageLimit(options.limit);
     const cursor = decodeCursor(options.cursor, "quarantine", state);
@@ -363,28 +383,41 @@ export class StateRecoveryIncidentRepository {
   repairQuarantine(
     params: {
       readonly quarantineId: string;
-      readonly expectedSourceSha256: string;
+      readonly confirmedSourceSha256: string;
       readonly actor: string;
       readonly note: string;
       readonly resolvedAtMs: number;
     },
-    strictReplayInTransaction: (incident: RecoveryQuarantineIncident) => void,
+    strictReplayInTransaction: (
+      incident: RecoveryQuarantineIncident,
+    ) => RecoveryStrictReplayConfirmation,
   ): RecoveryQuarantineIncident {
     return this.driver.transactionImmediate(() => {
       const incident = this.requireActiveQuarantine(params.quarantineId);
-      if (
-        incident.sourceSha256 !==
-        assertRecoverySha256(params.expectedSourceSha256, "expectedSourceSha256")
-      ) {
-        throw new Error("confirmed source digest does not match quarantined evidence");
+      const confirmedSourceSha256 = assertRecoverySha256(
+        params.confirmedSourceSha256,
+        "confirmedSourceSha256",
+      );
+      const replay = strictReplayInTransaction(incident);
+      if (replay === null || typeof replay !== "object") {
+        throw new Error("strict replay did not return current source evidence");
       }
-      strictReplayInTransaction(incident);
+      const replayedSourceSha256 = assertRecoverySha256(
+        replay.sourceSha256,
+        "strictReplay.sourceSha256",
+      );
+      if (replayedSourceSha256 !== confirmedSourceSha256) {
+        throw new Error(
+          "confirmed current source digest does not match successful strict replay",
+        );
+      }
       this.resolveQuarantineRow(
         incident.quarantineId,
         "repaired",
         params.actor,
         params.note,
         params.resolvedAtMs,
+        confirmedSourceSha256,
       );
       return this.requireQuarantine(incident.quarantineId);
     });
@@ -400,14 +433,22 @@ export class StateRecoveryIncidentRepository {
   }): RecoveryAbandonment {
     return this.driver.transactionImmediate(() => {
       const incident = this.requireActiveQuarantine(params.quarantineId);
-      if (incident.runId !== requiredRecoveryText(params.expectedRunId, "expectedRunId")) {
+      if (
+        incident.runId !==
+        requiredRecoveryText(params.expectedRunId, "expectedRunId")
+      ) {
         throw new Error("confirmed run id does not match quarantined evidence");
       }
       if (
         incident.sourceSha256 !==
-        assertRecoverySha256(params.expectedSourceSha256, "expectedSourceSha256")
+        assertRecoverySha256(
+          params.expectedSourceSha256,
+          "expectedSourceSha256",
+        )
       ) {
-        throw new Error("confirmed source digest does not match quarantined evidence");
+        throw new Error(
+          "confirmed source digest does not match quarantined evidence",
+        );
       }
       const abandonment = this.insertAbandonment({
         runId: incident.runId,
@@ -509,11 +550,13 @@ export class StateRecoveryIncidentRepository {
     return row === undefined ? undefined : deferredFromRow(row);
   }
 
-  listDeferred(options: {
-    readonly state?: RecoveryDeferredState | "all";
-    readonly limit?: number;
-    readonly cursor?: string;
-  } = {}): RecoveryPage<RecoveryDeferredBlock> {
+  listDeferred(
+    options: {
+      readonly state?: RecoveryDeferredState | "all";
+      readonly limit?: number;
+      readonly cursor?: string;
+    } = {},
+  ): RecoveryPage<RecoveryDeferredBlock> {
     const state = options.state ?? "active";
     const limit = pageLimit(options.limit);
     const cursor = decodeCursor(options.cursor, "deferred", state);
@@ -587,7 +630,10 @@ export class StateRecoveryIncidentRepository {
   }): RecoveryAbandonment {
     return this.driver.transactionImmediate(() => {
       const block = this.requireActiveDeferred(params.blockId);
-      if (block.runId !== requiredRecoveryText(params.expectedRunId, "expectedRunId")) {
+      if (
+        block.runId !==
+        requiredRecoveryText(params.expectedRunId, "expectedRunId")
+      ) {
         throw new Error("confirmed run id does not match deferred evidence");
       }
       const abandonment = this.insertAbandonment({
@@ -646,12 +692,13 @@ export class StateRecoveryIncidentRepository {
         .run(finding.detectedAtMs, existing.observation_id);
       return;
     }
-    const count = this.driver
-      .prepareState<[string], { count: number }>(
-        `SELECT COUNT(*) AS count
+    const count =
+      this.driver
+        .prepareState<[string], { count: number }>(
+          `SELECT COUNT(*) AS count
          FROM run_recovery_quarantine_observations WHERE quarantine_id = ?`,
-      )
-      .get(quarantineId)?.count ?? 0;
+        )
+        .get(quarantineId)?.count ?? 0;
     if (count >= MAX_RECOVERY_QUARANTINE_OBSERVATIONS_PER_INCIDENT) return;
     this.driver
       .prepareState(
@@ -683,12 +730,15 @@ export class StateRecoveryIncidentRepository {
     actor: string,
     note: string,
     atMs: number,
+    confirmedSourceSha256?: string,
   ): void {
     this.driver
-      .prepareState<[RecoveryIncidentState, number, string, string, string]>(
+      .prepareState<
+        [RecoveryIncidentState, number, string, string, string | null, string]
+      >(
         `UPDATE run_recovery_quarantine
          SET state = ?, resolved_at_ms = ?, resolution_actor = ?,
-             resolution_note = ?
+             resolution_note = ?, confirmed_source_sha256 = ?
          WHERE quarantine_id = ? AND state = 'active'`,
       )
       .run(
@@ -696,6 +746,7 @@ export class StateRecoveryIncidentRepository {
         nonNegativeSafeInteger(atMs, "resolvedAtMs"),
         requiredRecoveryText(actor, "actor"),
         boundedRecoveryNote(note),
+        confirmedSourceSha256 ?? null,
         quarantineId,
       );
   }
@@ -787,25 +838,31 @@ export class StateRecoveryIncidentRepository {
 
   private requireQuarantine(quarantineId: string): RecoveryQuarantineIncident {
     const incident = this.getQuarantine(quarantineId);
-    if (incident === undefined) throw new Error(`recovery quarantine not found: ${quarantineId}`);
+    if (incident === undefined)
+      throw new Error(`recovery quarantine not found: ${quarantineId}`);
     return incident;
   }
 
-  private requireActiveQuarantine(quarantineId: string): RecoveryQuarantineIncident {
+  private requireActiveQuarantine(
+    quarantineId: string,
+  ): RecoveryQuarantineIncident {
     const incident = this.requireQuarantine(quarantineId);
-    if (incident.state !== "active") throw new Error(`recovery quarantine is ${incident.state}`);
+    if (incident.state !== "active")
+      throw new Error(`recovery quarantine is ${incident.state}`);
     return incident;
   }
 
   private requireDeferred(blockId: string): RecoveryDeferredBlock {
     const block = this.getDeferred(blockId);
-    if (block === undefined) throw new Error(`recovery deferred block not found: ${blockId}`);
+    if (block === undefined)
+      throw new Error(`recovery deferred block not found: ${blockId}`);
     return block;
   }
 
   private requireActiveDeferred(blockId: string): RecoveryDeferredBlock {
     const block = this.requireDeferred(blockId);
-    if (block.state !== "active") throw new Error(`recovery deferred block is ${block.state}`);
+    if (block.state !== "active")
+      throw new Error(`recovery deferred block is ${block.state}`);
     return block;
   }
 }
@@ -832,8 +889,14 @@ function normalizeQuarantineInput(params: {
     ),
     reasonCode: params.reasonCode,
     safeDetail: boundedRecoveryDetail(params.safeDetail),
-    sourceSizeBytes: nonNegativeSafeInteger(params.sourceSizeBytes, "sourceSizeBytes"),
-    sourceMtimeMs: nonNegativeSafeInteger(params.sourceMtimeMs, "sourceMtimeMs"),
+    sourceSizeBytes: nonNegativeSafeInteger(
+      params.sourceSizeBytes,
+      "sourceSizeBytes",
+    ),
+    sourceMtimeMs: nonNegativeSafeInteger(
+      params.sourceMtimeMs,
+      "sourceMtimeMs",
+    ),
     sourceSha256: assertRecoverySha256(params.sourceSha256, "sourceSha256"),
     detectedAtMs: nonNegativeSafeInteger(params.detectedAtMs, "detectedAtMs"),
     facts: normalizeFacts(params.facts),
@@ -856,7 +919,8 @@ function normalizeDeferredInput(params: {
 }) {
   const failedAtMs = nonNegativeSafeInteger(params.failedAtMs, "failedAtMs");
   const nextRetryMs = nonNegativeSafeInteger(params.nextRetryMs, "nextRetryMs");
-  if (nextRetryMs < failedAtMs) throw new TypeError("nextRetryMs precedes failedAtMs");
+  if (nextRetryMs < failedAtMs)
+    throw new TypeError("nextRetryMs precedes failedAtMs");
   const normalized = {
     runId: requiredRecoveryText(params.runId, "runId"),
     sourceKind: sourceKind(params.sourceKind),
@@ -877,7 +941,9 @@ function normalizeDeferredInput(params: {
   };
 }
 
-function normalizeFacts(facts: RecoveryIntegrityFacts | undefined): RecoveryIntegrityFacts {
+function normalizeFacts(
+  facts: RecoveryIntegrityFacts | undefined,
+): RecoveryIntegrityFacts {
   return Object.freeze({
     ...(facts?.lineNumber !== undefined
       ? { lineNumber: positiveSafeInteger(facts.lineNumber, "lineNumber") }
@@ -886,10 +952,20 @@ function normalizeFacts(facts: RecoveryIntegrityFacts | undefined): RecoveryInte
       ? { byteOffset: nonNegativeSafeInteger(facts.byteOffset, "byteOffset") }
       : {}),
     ...(facts?.expectedSequence !== undefined
-      ? { expectedSequence: positiveSafeInteger(facts.expectedSequence, "expectedSequence") }
+      ? {
+          expectedSequence: positiveSafeInteger(
+            facts.expectedSequence,
+            "expectedSequence",
+          ),
+        }
       : {}),
     ...(facts?.observedSequence !== undefined
-      ? { observedSequence: positiveSafeInteger(facts.observedSequence, "observedSequence") }
+      ? {
+          observedSequence: positiveSafeInteger(
+            facts.observedSequence,
+            "observedSequence",
+          ),
+        }
       : {}),
   });
 }
@@ -905,18 +981,31 @@ function quarantineFromRow(row: QuarantineRow): RecoveryQuarantineIncident {
     safeDetail: row.safe_detail,
     ...(row.line_number !== null ? { lineNumber: row.line_number } : {}),
     ...(row.byte_offset !== null ? { byteOffset: row.byte_offset } : {}),
-    ...(row.expected_sequence !== null ? { expectedSequence: row.expected_sequence } : {}),
-    ...(row.observed_sequence !== null ? { observedSequence: row.observed_sequence } : {}),
+    ...(row.expected_sequence !== null
+      ? { expectedSequence: row.expected_sequence }
+      : {}),
+    ...(row.observed_sequence !== null
+      ? { observedSequence: row.observed_sequence }
+      : {}),
     sourceSizeBytes: row.source_size_bytes,
     sourceMtimeMs: row.source_mtime_ms,
     sourceSha256: row.source_sha256,
+    ...(row.confirmed_source_sha256 !== null
+      ? { confirmedSourceSha256: row.confirmed_source_sha256 }
+      : {}),
     firstDetectedAtMs: row.first_detected_at_ms,
     lastDetectedAtMs: row.last_detected_at_ms,
     detectionCount: row.detection_count,
     state: row.state,
-    ...(row.resolved_at_ms !== null ? { resolvedAtMs: row.resolved_at_ms } : {}),
-    ...(row.resolution_actor !== null ? { resolutionActor: row.resolution_actor } : {}),
-    ...(row.resolution_note !== null ? { resolutionNote: row.resolution_note } : {}),
+    ...(row.resolved_at_ms !== null
+      ? { resolvedAtMs: row.resolved_at_ms }
+      : {}),
+    ...(row.resolution_actor !== null
+      ? { resolutionActor: row.resolution_actor }
+      : {}),
+    ...(row.resolution_note !== null
+      ? { resolutionNote: row.resolution_note }
+      : {}),
     ...(row.supersedes_quarantine_id !== null
       ? { supersedesQuarantineId: row.supersedes_quarantine_id }
       : {}),
@@ -939,10 +1028,18 @@ function deferredFromRow(row: DeferredRow): RecoveryDeferredBlock {
     lastFailedAtMs: row.last_failed_at_ms,
     nextRetryMs: row.next_retry_ms,
     state: row.state,
-    ...(row.resolved_at_ms !== null ? { resolvedAtMs: row.resolved_at_ms } : {}),
-    ...(row.resolution_actor !== null ? { resolutionActor: row.resolution_actor } : {}),
-    ...(row.resolution_note !== null ? { resolutionNote: row.resolution_note } : {}),
-    ...(row.supersedes_block_id !== null ? { supersedesBlockId: row.supersedes_block_id } : {}),
+    ...(row.resolved_at_ms !== null
+      ? { resolvedAtMs: row.resolved_at_ms }
+      : {}),
+    ...(row.resolution_actor !== null
+      ? { resolutionActor: row.resolution_actor }
+      : {}),
+    ...(row.resolution_note !== null
+      ? { resolutionNote: row.resolution_note }
+      : {}),
+    ...(row.supersedes_block_id !== null
+      ? { supersedesBlockId: row.supersedes_block_id }
+      : {}),
     minimumReaderRuntime: row.minimum_reader_runtime,
   });
 }
@@ -965,8 +1062,14 @@ function abandonmentFromRow(row: AbandonmentRow): RecoveryAbandonment {
 
 function pageLimit(limit: number | undefined): number {
   if (limit === undefined) return MAX_RECOVERY_HISTORY_PAGE_SIZE;
-  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_RECOVERY_HISTORY_PAGE_SIZE) {
-    throw new TypeError(`page limit must be between 1 and ${MAX_RECOVERY_HISTORY_PAGE_SIZE}`);
+  if (
+    !Number.isSafeInteger(limit) ||
+    limit <= 0 ||
+    limit > MAX_RECOVERY_HISTORY_PAGE_SIZE
+  ) {
+    throw new TypeError(
+      `page limit must be between 1 and ${MAX_RECOVERY_HISTORY_PAGE_SIZE}`,
+    );
   }
   return limit;
 }
@@ -990,11 +1093,7 @@ function decodeCursor(
   } catch {
     throw new RecoveryCursorError();
   }
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    Array.isArray(value)
-  ) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new RecoveryCursorError();
   }
   const candidate = value as Record<string, unknown>;
@@ -1026,11 +1125,12 @@ function pruneResolvedHistory(
     readonly scope: "quarantine" | "deferred";
   },
 ): void {
-  const runCount = driver
-    .prepareState<[string], { count: number }>(
-      `SELECT COUNT(*) AS count FROM ${options.table} WHERE run_id = ?`,
-    )
-    .get(options.runId)?.count ?? 0;
+  const runCount =
+    driver
+      .prepareState<[string], { count: number }>(
+        `SELECT COUNT(*) AS count FROM ${options.table} WHERE run_id = ?`,
+      )
+      .get(options.runId)?.count ?? 0;
   if (runCount >= options.perRunLimit) {
     const deleted = driver
       .prepareState<[string, string]>(
@@ -1044,11 +1144,12 @@ function pruneResolvedHistory(
       .run(options.runId, options.resolvedState).changes;
     if (deleted === 0) throw new RecoveryHistoryLimitError(options.scope);
   }
-  const total = driver
-    .prepareState<[], { count: number }>(
-      `SELECT COUNT(*) AS count FROM ${options.table}`,
-    )
-    .get()?.count ?? 0;
+  const total =
+    driver
+      .prepareState<[], { count: number }>(
+        `SELECT COUNT(*) AS count FROM ${options.table}`,
+      )
+      .get()?.count ?? 0;
   if (total >= options.totalLimit) {
     const deleted = driver
       .prepareState<[string]>(

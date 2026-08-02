@@ -98,7 +98,7 @@ describe("StateRecoveryIncidentRepository", () => {
       repository.repairQuarantine(
         {
           quarantineId: first.quarantineId,
-          expectedSourceSha256: first.sourceSha256,
+          confirmedSourceSha256: first.sourceSha256,
           actor: "operator-1",
           note: "strict replay",
           resolvedAtMs: 20,
@@ -118,16 +118,19 @@ describe("StateRecoveryIncidentRepository", () => {
       state: "active",
       detectionCount: 1,
     });
+    expect(repository.getQuarantine(first.quarantineId)).not.toHaveProperty(
+      "confirmedSourceSha256",
+    );
 
     const repaired = repository.repairQuarantine(
       {
         quarantineId: first.quarantineId,
-        expectedSourceSha256: first.sourceSha256,
+        confirmedSourceSha256: first.sourceSha256,
         actor: "operator-1",
         note: "strict replay succeeded",
         resolvedAtMs: 21,
       },
-      () => {},
+      () => ({ sourceSha256: first.sourceSha256 }),
     );
     expect(repaired.state).toBe("repaired");
     const recurrence = repository.recordQuarantine({
@@ -136,6 +139,85 @@ describe("StateRecoveryIncidentRepository", () => {
     });
     expect(recurrence.quarantineId).not.toBe(first.quarantineId);
     expect(recurrence.supersedesQuarantineId).toBe(first.quarantineId);
+  });
+
+  it("binds repair resolution to the current digest returned by strict replay", () => {
+    const originalDigest = "a".repeat(64);
+    const repairedDigest = "b".repeat(64);
+    const staleConfirmation = repository.recordQuarantine({
+      ...quarantineInput(),
+      sourceSha256: originalDigest,
+    });
+    driver
+      .prepareState(
+        "CREATE TABLE recovery_test_exclusions (quarantine_id TEXT PRIMARY KEY)",
+      )
+      .run();
+    driver
+      .prepareState<[string]>(
+        "INSERT INTO recovery_test_exclusions (quarantine_id) VALUES (?)",
+      )
+      .run(staleConfirmation.quarantineId);
+
+    expect(() =>
+      repository.repairQuarantine(
+        {
+          quarantineId: staleConfirmation.quarantineId,
+          confirmedSourceSha256: originalDigest,
+          actor: "operator-1",
+          note: "stale digest must not clear exclusion",
+          resolvedAtMs: 20,
+        },
+        () => {
+          driver
+            .prepareState<[string]>(
+              "DELETE FROM recovery_test_exclusions WHERE quarantine_id = ?",
+            )
+            .run(staleConfirmation.quarantineId);
+          return { sourceSha256: repairedDigest };
+        },
+      ),
+    ).toThrow(/current source digest/i);
+    expect(
+      repository.getQuarantine(staleConfirmation.quarantineId)?.state,
+    ).toBe("active");
+    expect(
+      driver
+        .prepareState<[string], { count: number }>(
+          "SELECT COUNT(*) AS count FROM recovery_test_exclusions WHERE quarantine_id = ?",
+        )
+        .get(staleConfirmation.quarantineId)?.count,
+    ).toBe(1);
+
+    const currentConfirmation = repository.recordQuarantine({
+      ...quarantineInput(),
+      sourcePath: "/journal/run-1-second.jsonl",
+      sourceSha256: originalDigest,
+      detectedAtMs: 21,
+    });
+    const repaired = repository.repairQuarantine(
+      {
+        quarantineId: currentConfirmation.quarantineId,
+        confirmedSourceSha256: repairedDigest,
+        actor: "operator-1",
+        note: "strict replay bound the repaired source",
+        resolvedAtMs: 22,
+      },
+      () => ({ sourceSha256: repairedDigest }),
+    );
+    expect(repaired).toMatchObject({
+      state: "repaired",
+      sourceSha256: originalDigest,
+      confirmedSourceSha256: repairedDigest,
+    });
+    expect(() =>
+      driver
+        .prepareState<[string, string]>(
+          `UPDATE run_recovery_quarantine
+           SET confirmed_source_sha256 = ? WHERE quarantine_id = ?`,
+        )
+        .run("c".repeat(64), currentConfirmation.quarantineId),
+    ).toThrow(/confirmation is immutable/);
   });
 
   it("requires exact confirmations and writes an immutable abandonment tombstone", () => {
@@ -244,11 +326,15 @@ describe("StateRecoveryIncidentRepository", () => {
       cursor: first.nextCursor,
     });
     expect(second.items).toHaveLength(1);
-    expect(new Set([...first.items, ...second.items].map((item) => item.runId)).size).toBe(101);
-    expect(() => repository.listQuarantines({ limit: 101 })).toThrow(/between 1 and 100/);
-    expect(() =>
-      repository.listDeferred({ cursor: first.nextCursor }),
-    ).toThrow(RecoveryCursorError);
+    expect(
+      new Set([...first.items, ...second.items].map((item) => item.runId)).size,
+    ).toBe(101);
+    expect(() => repository.listQuarantines({ limit: 101 })).toThrow(
+      /between 1 and 100/,
+    );
+    expect(() => repository.listDeferred({ cursor: first.nextCursor })).toThrow(
+      RecoveryCursorError,
+    );
     expect(() => repository.listQuarantines({ cursor: "not-json" })).toThrow(
       RecoveryCursorError,
     );
