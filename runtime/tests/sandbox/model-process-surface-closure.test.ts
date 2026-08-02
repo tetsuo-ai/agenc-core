@@ -324,7 +324,7 @@ describe("model-controlled helper process sandbox closure", () => {
         capturePath: capture,
         cwd: transformedCwd,
         label: "glob",
-        stdout: `${match}\n`,
+        stdout: "globbed.ts\0",
       }),
     );
     const args = { pattern: "**/*.ts", path: root };

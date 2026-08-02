@@ -2,6 +2,7 @@ import {
   link,
   mkdir,
   mkdtemp,
+  readFile,
   rename,
   rm,
   symlink,
@@ -334,39 +335,71 @@ describe("descriptor-bound file reads", () => {
     },
   );
 
-  test.runIf(process.platform === "win32")(
+  test(
     "normalizes Windows dot prefixes, separators, and Unicode case before excluding dirty paths",
     async () => {
-      root = await mkdtemp(join(tmpdir(), "agenc-bound-read-win-paths-"));
-      const producer = join(root, "wire-producer.mjs");
-      const wire = Buffer.from(".\\CAF\u00c9\\Dirty.ts\0clean.ts\0", "utf8");
-      await writeFile(
-        producer,
-        `process.stdout.write(Buffer.from(${JSON.stringify(wire.toString("base64"))}, "base64"));\n`,
+      const transactionSource = await readFile(
+        new URL(
+          "../../src/workspace/file-mutation-transaction.ts",
+          import.meta.url,
+        ),
         "utf8",
       );
-      const capability = await bindWorkspaceDirectoryReadCapability(root);
-
+      const limiterSourcePrefix =
+        "const STRUCTURED_RIPGREP_LIMITER_SOURCE = String.raw`\n";
+      const limiterSourceSuffix =
+        "\n`;\n\nconst BOUND_READ_WORKER_SOURCE";
+      const limiterSourceStart = transactionSource.indexOf(limiterSourcePrefix);
+      const limiterSourceEnd = transactionSource.indexOf(
+        limiterSourceSuffix,
+        limiterSourceStart + limiterSourcePrefix.length,
+      );
+      if (limiterSourceStart < 0 || limiterSourceEnd < 0) {
+        throw new Error("structured ripgrep limiter source was not found");
+      }
+      const limiterSource = transactionSource.slice(
+        limiterSourceStart + limiterSourcePrefix.length,
+        limiterSourceEnd,
+      );
+      const createLimiter = Function(
+        `${limiterSource}\nreturn createStructuredRipgrepLimiter;`,
+      )() as (value: {
+        readonly outputMode: "files_with_matches";
+        readonly maximumLines: number;
+        readonly maximumRecordBytes: number;
+        readonly excludedPaths: readonly string[];
+      }) => {
+        readonly consume: (chunk: Buffer) => {
+          readonly captureParts: readonly Buffer[];
+          readonly reached: boolean;
+        };
+      };
+      const wire = Buffer.from(".\\CAF\u00c9\\Dirty.ts\0clean.ts\0", "utf8");
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      );
+      if (platformDescriptor?.configurable !== true) {
+        throw new Error("process.platform is not configurable for this test");
+      }
       try {
-        const result = await capability.runRipgrep({
-          program: process.execPath,
-          args: [producer],
-          env: {},
-          timeoutMs: 5_000,
-          maxOutputBytes: 4_096,
-          structuredLineLimit: {
-            outputMode: "files_with_matches",
-            maximumLines: 1,
-            maximumRecordBytes: 1_024,
-            excludedPaths: ["caf\u00e9/dirty.ts"],
-          },
+        Object.defineProperty(process, "platform", {
+          ...platformDescriptor,
+          value: "win32",
         });
+        const result = createLimiter({
+          outputMode: "files_with_matches",
+          maximumLines: 1,
+          maximumRecordBytes: 1_024,
+          excludedPaths: ["caf\u00e9/dirty.ts"],
+        }).consume(wire);
 
-        expect(result.spawnError).toBeUndefined();
-        expect(result.killedAfterLimit).toBe(true);
-        expect(result.stdout).toEqual(Buffer.from("clean.ts\0", "utf8"));
+        expect(result.reached).toBe(true);
+        expect(Buffer.concat(result.captureParts)).toEqual(
+          Buffer.from("clean.ts\0", "utf8"),
+        );
       } finally {
-        await capability.dispose();
+        Object.defineProperty(process, "platform", platformDescriptor);
       }
     },
   );
