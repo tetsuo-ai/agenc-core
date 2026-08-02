@@ -535,6 +535,14 @@ const agencBareSrcAlias = {
   },
 };
 
+const noExternal = ['semver', 'supports-hyperlinks'];
+
+function isBundledBareImport(source: string): boolean {
+  return noExternal.some(
+    (packageName) => source === packageName || source.startsWith(`${packageName}/`),
+  );
+}
+
 function resolveRelativeAgenCSource(importer: string, source: string): string | null {
   const absoluteImporter = isAbsolute(importer) ? importer : resolve(runtimeRoot, importer);
   const direct = existingSourceFile(resolve(dirname(absoluteImporter), source));
@@ -568,6 +576,9 @@ const agencOptionalExternal = {
         return null;
       }
       if (args.path === 'bun:bundle' || args.path.startsWith('node:')) {
+        return null;
+      }
+      if (isBundledBareImport(args.path)) {
         return null;
       }
       if (args.path.startsWith('./') || args.path.startsWith('../')) {
@@ -606,8 +617,10 @@ const agencKnownMissingOptionalExternal = {
 };
 
 export const __agencBuildConfigTest = {
+  agencOptionalExternal,
   featureFlagLiteral,
   inlineCopiedTreeFeatureCalls,
+  isBundledBareImport,
   isKnownMissingOptionalModule,
   publicPackageName,
   relocatedTuiSourceRoots,
@@ -680,7 +693,7 @@ export default defineConfig({
   target: 'es2022',
   sourcemap: true,
   external,
-  noExternal: ['supports-hyperlinks'],
+  noExternal,
   esbuildPlugins: [
     agencFeatureFlagInline,
     agencBareSrcAlias,

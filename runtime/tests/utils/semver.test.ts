@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 import { describe, expect, test } from 'vitest'
 
-import runtimeBuildConfig from '../../build.config'
+import runtimeBuildConfig, { __agencBuildConfigTest } from '../../build.config'
 
 const runtimeRoot = resolve(import.meta.dirname, '../..')
 
@@ -45,6 +45,7 @@ describe('semver utilities', () => {
         bundle: true,
         external: runtimeBuildConfig.external,
         format: runtimeBuildConfig.format[0] as 'esm',
+        plugins: [__agencBuildConfigTest.agencOptionalExternal],
         platform: runtimeBuildConfig.platform as 'node',
         target: runtimeBuildConfig.target,
       })
