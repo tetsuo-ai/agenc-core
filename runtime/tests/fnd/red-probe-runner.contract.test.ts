@@ -62,6 +62,14 @@ const inventoryOverflowFileCount = 320;
 const jsonNodeOverflowCount = 16_384;
 const sourceAstNodeOverflowItems = 16_500;
 const defaultFixtureTimeoutMs = 5_000;
+const fullInventorySettlementHeadroomMs = 60_000;
+const fullInventoryAuditTimeoutMs = loadRedProbeManifest(
+  runtimeRoot,
+).probes.reduce(
+  (totalMs: number, probe: { readonly timeoutMs: number }) =>
+    totalMs + probe.timeoutMs,
+  fullInventorySettlementHeadroomMs,
+);
 const coldModuleLoadMilliseconds = 500;
 const coldModuleFixtureTimeoutMs = 5_000;
 const preReadyHardDeadlineMilliseconds = 5_000;
@@ -330,15 +338,22 @@ afterEach(() => {
 });
 
 describe("FND red-probe supervisor", () => {
-  it("audits the registered nonempty harness self-probe with zero skips and todos", async () => {
-    await expect(auditRedProbes()).resolves.toEqual({
-      files: 13,
-      expectedRed: 13,
-      assertions: 13,
-      skipped: 0,
-      todos: 0,
-    });
-  });
+  it(
+    "audits the registered nonempty harness self-probe with zero skips and todos",
+    async () => {
+      await expect(auditRedProbes()).resolves.toEqual({
+        files: 13,
+        expectedRed: 13,
+        assertions: 13,
+        skipped: 0,
+        todos: 0,
+      });
+    },
+    // Each probe has its own hard deadline. The outer test must cover the
+    // complete sequential inventory plus bounded supervisor settlement so a
+    // loaded hosted runner reports the owning probe instead of Vitest timeout.
+    fullInventoryAuditTimeoutMs,
+  );
 
   it("loads and authenticates one bounded runtime markdown dependency", async () => {
     const markdown = "repository-owned prompt asset\n";
