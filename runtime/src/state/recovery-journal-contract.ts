@@ -262,6 +262,9 @@ export class StrictCanonicalJournalValidator {
         facts,
       );
     }
+    if (type === "event_msg") {
+      this.#rejectUnsupportedEventType(value.payload, facts);
+    }
     if (!isCanonicalRolloutPayload(type, value.payload)) {
       this.#fail(
         "schema_invalid",
@@ -291,6 +294,29 @@ export class StrictCanonicalJournalValidator {
       );
     }
     return item;
+  }
+
+  #rejectUnsupportedEventType(
+    payload: Record<string, unknown>,
+    facts: RecoveryIntegrityFacts,
+  ): void {
+    if (
+      !isPlainRecord(payload.msg) ||
+      typeof payload.msg.type !== "string" ||
+      payload.msg.type.length === 0
+    ) {
+      return;
+    }
+    if (
+      !isKnownEventType(payload.msg.type) &&
+      !LEGACY_EVENT_TYPE_ALIASES.has(payload.msg.type)
+    ) {
+      this.#fail(
+        "unsupported_format_version",
+        "canonical event message type is not supported by this runtime",
+        facts,
+      );
+    }
   }
 
   #validateSessionMeta(
@@ -341,16 +367,6 @@ export class StrictCanonicalJournalValidator {
       this.#fail(
         "schema_invalid",
         "canonical event has an invalid message envelope",
-        facts,
-      );
-    }
-    if (
-      !isKnownEventType(payload.msg.type) &&
-      !LEGACY_EVENT_TYPE_ALIASES.has(payload.msg.type)
-    ) {
-      this.#fail(
-        "unsupported_format_version",
-        "canonical event message type is not supported by this runtime",
         facts,
       );
     }

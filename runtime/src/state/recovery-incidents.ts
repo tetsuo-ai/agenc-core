@@ -893,7 +893,7 @@ function normalizeQuarantineInput(params: {
       params.sourceSizeBytes,
       "sourceSizeBytes",
     ),
-    sourceMtimeMs: nonNegativeSafeInteger(
+    sourceMtimeMs: nonNegativeFiniteNumber(
       params.sourceMtimeMs,
       "sourceMtimeMs",
     ),
@@ -1175,6 +1175,13 @@ function sourceKind(value: RecoverySourceKind): RecoverySourceKind {
 function positiveSafeInteger(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new TypeError(`${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
+function nonNegativeFiniteNumber(value: number, label: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(label + " must be a non-negative finite number");
   }
   return value;
 }

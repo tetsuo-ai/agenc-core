@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -53,6 +62,20 @@ describe("StateRecoveryIncidentRepository", () => {
       byteOffset: 512,
     });
     expect(incident.safeDetail).not.toContain("source bytes");
+  });
+
+  it("preserves fractional descriptor mtime evidence without truncation", () => {
+    const source = fractionalDescriptorEvidence(root);
+    const incident = repository.recordQuarantine({
+      ...quarantineInput(),
+      sourcePath: source.path,
+      sourceSizeBytes: source.sizeBytes,
+      sourceMtimeMs: source.mtimeMs,
+    });
+
+    expect(Number.isInteger(source.mtimeMs)).toBe(false);
+    expect(incident.sourceSizeBytes).toBe(source.sizeBytes);
+    expect(incident.sourceMtimeMs).toBe(source.mtimeMs);
   });
 
   it("records identical detections idempotently and bounds distinct observations", () => {
@@ -390,6 +413,24 @@ function quarantineInput() {
     detectedAtMs: 10,
     facts: { lineNumber: 1, byteOffset: 0 },
   };
+}
+
+function fractionalDescriptorEvidence(directory: string): {
+  readonly path: string;
+  readonly sizeBytes: number;
+  readonly mtimeMs: number;
+} {
+  const path = join(directory, "descriptor-evidence.jsonl");
+  writeFileSync(path, '{"type":"session_state","payload":{}}\n');
+  const timestampSeconds = 1_700_000_000.123_456;
+  utimesSync(path, timestampSeconds, timestampSeconds);
+  const descriptor = openSync(path, "r");
+  try {
+    const stats = fstatSync(descriptor);
+    return { path, sizeBytes: stats.size, mtimeMs: stats.mtimeMs };
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function deferredInput() {

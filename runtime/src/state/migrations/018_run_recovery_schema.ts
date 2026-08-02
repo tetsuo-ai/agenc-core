@@ -26,7 +26,7 @@ ALTER TABLE run_journal_bindings
       OR authoritative_source_size_bytes >= 0
     );
 ALTER TABLE run_journal_bindings
-  ADD COLUMN authoritative_source_mtime_ms INTEGER
+  ADD COLUMN authoritative_source_mtime_ms REAL
     CHECK (
       authoritative_source_mtime_ms IS NULL
       OR authoritative_source_mtime_ms >= 0
@@ -56,7 +56,7 @@ CREATE TABLE run_recovery_quarantine (
   expected_sequence INTEGER,
   observed_sequence INTEGER,
   source_size_bytes INTEGER NOT NULL,
-  source_mtime_ms INTEGER NOT NULL,
+  source_mtime_ms REAL NOT NULL,
   source_sha256 TEXT NOT NULL,
   confirmed_source_sha256 TEXT,
   first_detected_at_ms INTEGER NOT NULL,

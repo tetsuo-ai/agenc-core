@@ -1,37 +1,137 @@
 import type { EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 
-type ValueValidator = (value: unknown) => boolean;
-type ObjectFields = Readonly<Record<string, ValueValidator>>;
 type KnownRolloutItem = Exclude<RolloutItem, { readonly type: "unknown" }>;
 type KnownRolloutType = KnownRolloutItem["type"];
-type EventPayloadValidators = {
-  readonly [T in EventMsg["type"]]: ValueValidator;
+type EventPayload<T extends EventMsg["type"]> = Extract<
+  EventMsg,
+  { readonly type: T }
+>["payload"];
+type RolloutPayload<T extends KnownRolloutType> = Extract<
+  KnownRolloutItem,
+  { readonly type: T }
+>["payload"];
+declare const VALIDATED_FIELDS: unique symbol;
+type AllKeys<T> = T extends unknown ? keyof T : never;
+type Validator<T, Fields extends PropertyKey = never> = ((
+  value: unknown,
+) => value is T) & { readonly [VALIDATED_FIELDS]?: Fields };
+type AnyValidator = Validator<unknown, PropertyKey>;
+type ObjectFields = Readonly<Record<string, AnyValidator>>;
+type ValidatedValue<V> = V extends Validator<infer T, PropertyKey> ? T : never;
+type ValidatedFields<V> =
+  V extends Validator<unknown, infer Fields> ? Fields : never;
+type ValidatedObject<Fields extends ObjectFields> = {
+  readonly [Field in keyof Fields]: ValidatedValue<Fields[Field]>;
 };
-type RolloutPayloadValidators = {
-  readonly [T in KnownRolloutType]: ValueValidator;
+type ValidatedObjectShape<
+  Required extends ObjectFields,
+  Optional extends ObjectFields,
+> = ValidatedObject<Required> & Partial<ValidatedObject<Optional>>;
+type ExactFieldMatch<T, V> =
+  Exclude<AllKeys<T>, ValidatedFields<V>> extends never
+    ? Exclude<ValidatedFields<V>, AllKeys<T>> extends never
+      ? true
+      : false
+    : false;
+type EventValidatorChecks<
+  Validators extends Record<EventMsg["type"], AnyValidator>,
+> = {
+  readonly [T in EventMsg["type"]]: Validators[T] extends Validator<
+    EventPayload<T>,
+    PropertyKey
+  >
+    ? ExactFieldMatch<EventPayload<T>, Validators[T]> extends true
+      ? unknown
+      : never
+    : never;
 };
+type RolloutValidatorChecks<
+  Validators extends Record<KnownRolloutType, AnyValidator>,
+> = {
+  readonly [T in KnownRolloutType]: Validators[T] extends Validator<
+    RolloutPayload<T>,
+    PropertyKey
+  >
+    ? ExactFieldMatch<RolloutPayload<T>, Validators[T]> extends true
+      ? unknown
+      : never
+    : never;
+};
+
+function defineEventPayloadValidators<
+  const Validators extends Record<EventMsg["type"], AnyValidator>,
+>(validators: Validators & EventValidatorChecks<Validators>): Validators {
+  return validators;
+}
+
+function defineRolloutPayloadValidators<
+  const Validators extends Record<KnownRolloutType, AnyValidator>,
+>(validators: Validators & RolloutValidatorChecks<Validators>): Validators {
+  return validators;
+}
 
 const LEGACY_EVENT_TYPES = Object.freeze({
   task_started: "turn_started",
   task_complete: "turn_complete",
 } as const);
 
-const isString: ValueValidator = (value) => typeof value === "string";
-const isBoolean: ValueValidator = (value) => typeof value === "boolean";
-const isNumber: ValueValidator = (value) =>
+const isString: Validator<string> = (value): value is string =>
+  typeof value === "string";
+const isBoolean: Validator<boolean> = (value): value is boolean =>
+  typeof value === "boolean";
+const isNumber: Validator<number> = (value): value is number =>
   typeof value === "number" && Number.isFinite(value);
-const isInteger: ValueValidator = (value) => Number.isSafeInteger(value);
-const isNonNegativeInteger: ValueValidator = (value) =>
+const isInteger: Validator<number> = (value): value is number =>
+  Number.isSafeInteger(value);
+const isNonNegativeInteger: Validator<number> = (value): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0;
-const isPositiveInteger: ValueValidator = (value) =>
+const isPositiveInteger: Validator<number> = (value): value is number =>
   Number.isSafeInteger(value) && (value as number) > 0;
-const isRecord: ValueValidator = isPlainRecord;
+const isRecord: Validator<Record<string, unknown>> = isPlainRecord;
+const isUnknown: Validator<unknown> = (_value): _value is unknown => true;
 const isNullableString = nullable(isString);
 const isStringArray = arrayOf(isString);
-const isRecordArray = arrayOf(isRecord);
 
-const isMessageContent: ValueValidator = (value) =>
+type UserMessageContent = EventPayload<"user_message">["message"];
+const isLlmTextPart = objectShape({ type: literal("text"), text: isString });
+const isLlmImagePart = objectShape({
+  type: literal("image_url"),
+  image_url: objectShape({ url: isString }),
+});
+const isLlmDocumentPart = objectShape(
+  {
+    type: literal("document"),
+    source: objectShape({
+      type: literal("base64"),
+      media_type: literal("application/pdf"),
+      data: isString,
+    }),
+  },
+  {
+    title: isString,
+    filename: isString,
+    fallbackText: isString,
+    fallbackTextTruncated: isBoolean,
+    fallbackTextError: isString,
+  },
+);
+const isLlmContentPart = either(
+  isLlmTextPart,
+  isLlmImagePart,
+  isLlmDocumentPart,
+);
+const isUserMessageContent: Validator<UserMessageContent> = (
+  value,
+): value is UserMessageContent =>
+  isString(value) ||
+  (Array.isArray(value) && value.every((part) => isLlmContentPart(part)));
+
+type ResponseItemContent = RolloutPayload<"response_item">["content"];
+
+const isMessageContent: Validator<ResponseItemContent> = (
+  value,
+): value is ResponseItemContent =>
   typeof value === "string" ||
   (Array.isArray(value) &&
     value.every(
@@ -41,12 +141,12 @@ const isMessageContent: ValueValidator = (value) =>
         (part.text === undefined || typeof part.text === "string"),
     ));
 
-const isToolCall: ValueValidator = objectShape(
+const isToolCall = objectShape(
   { id: isString, name: isString },
   { arguments: isString },
 );
 
-const isResponseItem: ValueValidator = objectShape(
+const isResponseItem = objectShape(
   {
     role: oneOf("system", "developer", "user", "assistant", "tool"),
     content: isMessageContent,
@@ -61,20 +161,20 @@ const isResponseItem: ValueValidator = objectShape(
   },
 );
 
-const isSessionAgentTask: ValueValidator = objectShape({
+const isSessionAgentTask = objectShape({
   agentRuntimeId: isString,
   taskId: isString,
   registeredAt: isString,
 });
 
-const isFileSystemSandboxPolicy: ValueValidator = objectShape({
+const isFileSystemSandboxPolicy = objectShape({
   allowWrite: isStringArray,
   denyWrite: isStringArray,
   allowRead: isStringArray,
   denyRead: isStringArray,
 });
 
-const isCollaborationMode: ValueValidator = objectShape(
+const isCollaborationMode = objectShape(
   { model: isString },
   {
     reasoningEffort: oneOf("low", "medium", "high", "xhigh", "none"),
@@ -82,7 +182,7 @@ const isCollaborationMode: ValueValidator = objectShape(
   },
 );
 
-const isInstructionSourceEvidence: ValueValidator = objectShape({
+const isInstructionSourceEvidence = objectShape({
   tier: oneOf("managed", "user", "project", "local"),
   path: isString,
   scope: oneOf("machine", "user", "workspace"),
@@ -93,14 +193,31 @@ const isInstructionSourceEvidence: ValueValidator = objectShape({
   authority: literal("guidance_only"),
 });
 
-const isInstructionEvidence: ValueValidator = objectShape({
+type InstructionEvidencePayload = NonNullable<
+  EventPayload<"turn_context">["instructionEvidence"]
+>;
+const INSTRUCTION_PRECEDENCE = [
+  "managed",
+  "user",
+  "project",
+  "local",
+  "trusted_internal",
+] as const;
+const isInstructionPrecedence: Validator<
+  InstructionEvidencePayload["precedence"]
+> = (value): value is InstructionEvidencePayload["precedence"] =>
+  Array.isArray(value) &&
+  value.length === INSTRUCTION_PRECEDENCE.length &&
+  INSTRUCTION_PRECEDENCE.every((tier, index) => value[index] === tier);
+
+const isInstructionEvidence = objectShape({
   policy: oneOf("workspace_agent", "workspace_review", "isolated"),
-  precedence: arrayOf(isString),
+  precedence: isInstructionPrecedence,
   sources: arrayOf(isInstructionSourceEvidence),
   repositoryContentAuthority: literal("guidance_only"),
 });
 
-const isTurnContext: ValueValidator = objectShape(
+const isTurnContext = objectShape(
   {
     cwd: isString,
     approvalPolicy: isString,
@@ -125,24 +242,24 @@ const isTurnContext: ValueValidator = objectShape(
     summary: isString,
     userInstructions: isString,
     developerInstructions: isString,
-    finalOutputJsonSchema: () => true,
+    finalOutputJsonSchema: isUnknown,
     truncationPolicy: oneOf("head", "middle", "off"),
     instructionEvidence: isInstructionEvidence,
   },
 );
 
-const isWorktreeLocator: ValueValidator = objectShape({
+const isWorktreeLocator = objectShape({
   path: isString,
   branch: isString,
   gitRoot: isString,
 });
 
-const isQuestionOption: ValueValidator = objectShape({
+const isQuestionOption = objectShape({
   label: isString,
   description: isString,
 });
 
-const isRequestUserInputQuestion: ValueValidator = objectShape(
+const isRequestUserInputQuestion = objectShape(
   {
     id: isString,
     header: isString,
@@ -153,7 +270,7 @@ const isRequestUserInputQuestion: ValueValidator = objectShape(
   { options: arrayOf(isQuestionOption) },
 );
 
-const isClientAction: ValueValidator = objectShape(
+const isClientAction = objectShape(
   {
     type: literal("ledger_solana_transfer_v1"),
     source: literal("agenc-core"),
@@ -168,7 +285,9 @@ const isClientAction: ValueValidator = objectShape(
   { note: isString },
 );
 
-const isMcpElicitationRequest: ValueValidator = (value) => {
+const isMcpElicitationRequest: Validator<
+  EventPayload<"mcp_elicitation_request">["request"]
+> = (value): value is EventPayload<"mcp_elicitation_request">["request"] => {
   if (!isPlainRecord(value) || typeof value.mode !== "string") return false;
   if (value.mode === "form") {
     return objectShape(
@@ -197,7 +316,17 @@ const isMcpElicitationRequest: ValueValidator = (value) => {
   return false;
 };
 
-const isCheckpointSlice: ValueValidator = objectShape(
+type PendingBudgetDecision = NonNullable<
+  EventPayload<"turn_checkpoint">["resumableState"]["pendingBudgetDecision"]
+>;
+const isPendingBudgetDecision: Validator<PendingBudgetDecision> = (
+  value,
+): value is PendingBudgetDecision =>
+  isPlainRecord(value) &&
+  ((value.kind === "continue" && isNumber(value.remaining)) ||
+    (value.kind === "stop" && isString(value.reason)));
+
+const isCheckpointSlice = objectShape(
   {
     turnCount: isNonNegativeInteger,
     recoveryReentryCount: isNonNegativeInteger,
@@ -215,19 +344,16 @@ const isCheckpointSlice: ValueValidator = objectShape(
       consecutiveFailures: isNonNegativeInteger,
     }),
     transition: objectShape({ reason: isString }),
-    pendingBudgetDecision: (value) =>
-      isPlainRecord(value) &&
-      ((value.kind === "continue" && isNumber(value.remaining)) ||
-        (value.kind === "stop" && isString(value.reason))),
+    pendingBudgetDecision: isPendingBudgetDecision,
   },
 );
 
-const isProtocolFact: ValueValidator = objectShape({
+const isProtocolFact = objectShape({
   label: isString,
   value: either(isString, isNumber, isBoolean),
 });
 
-const isCollabAgentRef: ValueValidator = objectShape(
+const isCollabAgentRef = objectShape(
   { threadId: isString },
   {
     agentPath: isString,
@@ -237,9 +363,180 @@ const isCollabAgentRef: ValueValidator = objectShape(
   },
 );
 
-const isAgentStatus: ValueValidator = isString;
+type AgentStatusPayload = EventPayload<"collab_agent_spawn_end">["status"];
+type CollabTaskStatus = Extract<
+  EventPayload<"collab_agent_status">["status"],
+  string
+>;
 
-const EVENT_PAYLOAD_VALIDATORS = {
+const isAgentStatus: Validator<AgentStatusPayload> = (
+  value,
+): value is AgentStatusPayload => {
+  if (!isPlainRecord(value) || typeof value.status !== "string") return false;
+  switch (value.status) {
+    case "pending_init":
+    case "not_found":
+      return true;
+    case "running":
+      return isString(value.turnId) && isNumber(value.startedAtMs);
+    case "idle":
+      return isString(value.turnId) && isNumber(value.endedAtMs);
+    case "completed":
+      return (
+        isString(value.turnId) &&
+        isNumber(value.endedAtMs) &&
+        (value.lastMessage === undefined || isString(value.lastMessage))
+      );
+    case "errored":
+      return (
+        isString(value.turnId) &&
+        isNumber(value.endedAtMs) &&
+        isString(value.error)
+      );
+    case "shutdown":
+      return isNumber(value.endedAtMs);
+    case "interrupted":
+      return (
+        isString(value.turnId) &&
+        isNumber(value.endedAtMs) &&
+        isString(value.reason)
+      );
+    default:
+      return false;
+  }
+};
+
+const isCollabTaskStatus = oneOf<readonly CollabTaskStatus[]>(
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "killed",
+);
+const isCollabStatus = either(isAgentStatus, isCollabTaskStatus);
+const isCollabAgentStatusEntry = objectShape(
+  { threadId: isString, status: isAgentStatus },
+  {
+    agentNickname: isString,
+    agentRole: isString,
+    agentRoleDisplayName: isString,
+  },
+);
+
+const isWorktreeEvidence = either(
+  objectShape({
+    state: literal("unverifiable"),
+    locator: isWorktreeLocator,
+    error: isString,
+  }),
+  objectShape(
+    {
+      state: oneOf(
+        "committed_clean",
+        "unchanged_clean",
+        "dirty_uncommitted",
+        "diverged",
+      ),
+      locator: isWorktreeLocator,
+      baseCommit: isString,
+      headCommit: isString,
+      treeHash: isString,
+      clean: isBoolean,
+      baseIsAncestor: isBoolean,
+    },
+    { integrationRef: isString },
+  ),
+);
+
+const isToolRecoveryCategory = oneOf(
+  "idempotent",
+  "side-effecting",
+  "interactive",
+);
+const isEffectNoEffectProof = objectShape({
+  version: literal(1),
+  kind: literal("effect_no_effect_proof"),
+  evidenceKind: oneOf(
+    "provider_receipt",
+    "idempotency_lookup",
+    "boundary_not_crossed",
+  ),
+  evidenceRef: isString,
+  evidenceSha256: isString,
+  observedAt: isString,
+});
+const isEffectReviewResolution = objectShape(
+  {
+    version: literal(1),
+    kind: literal("effect_review_resolution"),
+    disposition: oneOf(
+      "confirmed_committed",
+      "confirmed_no_effect",
+      "remains_unknown",
+    ),
+    actorKind: oneOf("system_settlement", "operator"),
+    actorId: isString,
+    evidenceKind: oneOf(
+      "provider_receipt",
+      "idempotency_lookup",
+      "boundary_not_crossed",
+      "operator_evidence",
+    ),
+    evidenceRef: isString,
+    evidenceSha256: isString,
+    reviewedAt: isString,
+    workflowStatus: oneOf("pending", "resolved", "abandoned"),
+  },
+  {
+    domainAction: oneOf("mark_completed", "retry_new_attempt", "abandon_item"),
+  },
+);
+const isEffectReviewResolvedPayload = either(
+  objectShape({
+    runId: isString,
+    stepId: isString,
+    callId: isString,
+    resolution: isEffectReviewResolution,
+  }),
+  objectShape({
+    runId: isString,
+    stepId: isString,
+    callId: isString,
+    resolution: isString,
+    reviewedBy: isString,
+    reviewedAt: isString,
+  }),
+);
+
+const isRunUsageTotals = objectShape({
+  inputTokens: isNumber,
+  outputTokens: isNumber,
+  totalTokens: isNumber,
+  costUsd: isNumber,
+});
+
+const isReviewRequest = objectShape(
+  { target: isString },
+  { userFacingHint: isString },
+);
+const isReviewFinding = objectShape({
+  title: isString,
+  body: isString,
+  confidenceScore: isNumber,
+  priority: isNumber,
+  codeLocation: objectShape({
+    absolutePath: isString,
+    lineRange: objectShape({ start: isNumber, end: isNumber }),
+  }),
+});
+const isReviewOutput = objectShape({
+  findings: arrayOf(isReviewFinding),
+  overallCorrectness: isString,
+  overallExplanation: isString,
+  overallConfidenceScore: isNumber,
+});
+
+const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
   session_meta: objectShape(
     {
       sessionId: isString,
@@ -306,7 +603,7 @@ const EVENT_PAYLOAD_VALIDATORS = {
     { kind: oneOf("thinking", "reasoning_summary") },
   ),
   user_message: objectShape(
-    { message: isMessageContent },
+    { message: isUserMessageContent },
     {
       displayText: isString,
       images: isStringArray,
@@ -430,7 +727,18 @@ const EVENT_PAYLOAD_VALIDATORS = {
       ),
       recordedAt: isString,
     },
-    { source: isString, reason: isString },
+    {
+      source: oneOf(
+        "hook",
+        "resolver",
+        "default_deny",
+        "permission_hook",
+        "guardian",
+        "cache",
+        "aborted",
+      ),
+      reason: isString,
+    },
   ),
   request_user_input: objectShape(
     {
@@ -472,7 +780,7 @@ const EVENT_PAYLOAD_VALIDATORS = {
       taskId: isString,
       message: isString,
       reason: isString,
-      worktreeEvidence: isRecord,
+      worktreeEvidence: isWorktreeEvidence,
     },
   ),
   turn_complete: objectShape(
@@ -523,7 +831,7 @@ const EVENT_PAYLOAD_VALIDATORS = {
       stepId: isString,
       callId: isString,
       toolName: isString,
-      recoveryCategory: isString,
+      recoveryCategory: isToolRecoveryCategory,
       intentDigest: isString,
       attempt: isPositiveInteger,
       recordedAt: isString,
@@ -540,7 +848,7 @@ const EVENT_PAYLOAD_VALIDATORS = {
       stepId: isString,
       callId: isString,
       toolName: isString,
-      recoveryCategory: isString,
+      recoveryCategory: isToolRecoveryCategory,
       intentEventSeq: isPositiveInteger,
       outcome: oneOf("committed", "failed", "cancelled"),
       recordedAt: isString,
@@ -550,7 +858,7 @@ const EVENT_PAYLOAD_VALIDATORS = {
       minimumReaderRuntime: isString,
       idempotencyKey: isString,
       effectBoundary: oneOf("not_crossed", "crossed"),
-      noEffectEvidence: isRecord,
+      noEffectEvidence: isEffectNoEffectProof,
       resultDigest: isString,
       evidence: isRecord,
     },
@@ -561,7 +869,7 @@ const EVENT_PAYLOAD_VALIDATORS = {
       stepId: isString,
       callId: isString,
       toolName: isString,
-      recoveryCategory: isString,
+      recoveryCategory: isToolRecoveryCategory,
       intentEventSeq: isPositiveInteger,
       outcome: literal("unknown_outcome"),
       reason: isString,
@@ -577,12 +885,7 @@ const EVENT_PAYLOAD_VALIDATORS = {
       reservationId: isString,
     },
   ),
-  effect_review_resolved: objectShape({
-    runId: isString,
-    stepId: isString,
-    callId: isString,
-    resolution: either(isString, isRecord),
-  }),
+  effect_review_resolved: isEffectReviewResolvedPayload,
   artifact_intent: objectShape({
     runId: isString,
     artifactId: isString,
@@ -613,7 +916,7 @@ const EVENT_PAYLOAD_VALIDATORS = {
     exitCode: nullable(isInteger),
     stopReason: isNullableString,
     finalMessage: isNullableString,
-    usage: nullable(isRecord),
+    usage: nullable(isRunUsageTotals),
     lastSequenceBeforeTerminal: nullable(isNonNegativeInteger),
     finishedAt: isString,
   }),
@@ -654,7 +957,20 @@ const EVENT_PAYLOAD_VALIDATORS = {
       runId: isString,
       stepId: isString,
       kind: oneOf("model_turn", "tool_exec", "spawn"),
-      event: isString,
+      event: oneOf(
+        "queued",
+        "allowed",
+        "denied",
+        "approval_required",
+        "dispatched",
+        "reconciled",
+        "voided",
+        "held_unknown",
+        "provider_overrun",
+        "cancelled",
+        "recovered",
+        "fallback",
+      ),
     },
     {
       reason: isString,
@@ -669,11 +985,22 @@ const EVENT_PAYLOAD_VALIDATORS = {
     },
   ),
   guardian_assessment: objectShape(
-    { id: isString, turnId: isString, status: isString, action: isString },
+    {
+      id: isString,
+      turnId: isString,
+      status: oneOf(
+        "in_progress",
+        "approved",
+        "denied",
+        "timed_out",
+        "aborted",
+      ),
+      action: isString,
+    },
     {
       targetItemId: isString,
-      riskLevel: isString,
-      userAuthorization: isString,
+      riskLevel: oneOf("low", "medium", "high", "critical"),
+      userAuthorization: oneOf("unknown", "low", "medium", "high"),
       rationale: isString,
       decisionSource: literal("agent"),
     },
@@ -698,8 +1025,8 @@ const EVENT_PAYLOAD_VALIDATORS = {
       priorFindingCount: isNonNegativeInteger,
       newFindingCount: isNonNegativeInteger,
       durationMs: isNumber,
-      verdict: isString,
-      reason: isString,
+      verdict: oneOf("pass", "fail", "partial", "aborted", "timeout"),
+      reason: oneOf("completed", "timeout", "aborted", "error"),
       completedAt: isNumber,
     },
     { reuseKey: isString, error: isString },
@@ -720,7 +1047,7 @@ const EVENT_PAYLOAD_VALIDATORS = {
       turnId: isString,
       planLengthChars: isNonNegativeInteger,
       allowedPromptCount: isNonNegativeInteger,
-      outcome: isString,
+      outcome: oneOf("approved", "approved_for_session", "denied", "aborted"),
       durationMs: isNumber,
       completedAt: isNumber,
     },
@@ -807,7 +1134,7 @@ const EVENT_PAYLOAD_VALIDATORS = {
       callId: isString,
       senderThreadId: isString,
       threadId: isString,
-      status: isString,
+      status: isCollabStatus,
     },
     {
       agentPath: isString,
@@ -854,9 +1181,12 @@ const EVENT_PAYLOAD_VALIDATORS = {
     {
       senderThreadId: isString,
       callId: isString,
-      statuses: isRecord,
+      statuses: recordOf(isAgentStatus),
     },
-    { timedOut: isBoolean, agentStatuses: isRecordArray },
+    {
+      timedOut: isBoolean,
+      agentStatuses: arrayOf(isCollabAgentStatusEntry),
+    },
   ),
   collab_close_begin: objectShape({
     callId: isString,
@@ -931,13 +1261,13 @@ const EVENT_PAYLOAD_VALIDATORS = {
   exit_review_mode: objectShape({
     subId: isString,
     reason: oneOf("aborted", "completed", "timeout"),
-    reviewOutput: isRecord,
+    reviewOutput: isReviewOutput,
     modelUsed: isString,
-    request: isRecord,
+    request: isReviewRequest,
   }),
-} satisfies EventPayloadValidators;
+});
 
-const ROLLOUT_PAYLOAD_VALIDATORS = {
+const ROLLOUT_PAYLOAD_VALIDATORS = defineRolloutPayloadValidators({
   session_meta: EVENT_PAYLOAD_VALIDATORS.session_meta,
   session_state: objectShape({}, { agentTask: isSessionAgentTask }),
   response_item: isResponseItem,
@@ -953,11 +1283,11 @@ const ROLLOUT_PAYLOAD_VALIDATORS = {
   event_msg: objectShape(
     {
       id: isString,
-      msg: objectShape({ type: isString, payload: isRecord }),
+      msg: isStoredEventMessage,
     },
     { eventId: isString, seq: isPositiveInteger },
   ),
-} satisfies RolloutPayloadValidators;
+});
 
 export const CANONICAL_EVENT_SCHEMA_TYPES = Object.freeze(
   Object.keys(EVENT_PAYLOAD_VALIDATORS).sort(),
@@ -985,7 +1315,20 @@ export function isCanonicalEventPayload(
   return EVENT_PAYLOAD_VALIDATORS[canonicalType as EventMsg["type"]](payload);
 }
 
-function isEventMessage(value: unknown): boolean {
+function isEventMessage(value: unknown): value is EventMsg {
+  if (!isPlainRecord(value) || typeof value.type !== "string") return false;
+  if (!Object.hasOwn(EVENT_PAYLOAD_VALIDATORS, value.type)) return false;
+  return EVENT_PAYLOAD_VALIDATORS[value.type as EventMsg["type"]](
+    value.payload,
+  );
+}
+
+/**
+ * Accept the two historical top-level event aliases that parseRolloutLine()
+ * normalizes before returning a RolloutItem. Nested EventMsg values stay on
+ * the current schema through isEventMessage().
+ */
+function isStoredEventMessage(value: unknown): value is EventMsg {
   if (!isPlainRecord(value) || typeof value.type !== "string") return false;
   return isCanonicalEventPayload(value.type, value.payload);
 }
@@ -994,11 +1337,24 @@ function isKnownRolloutType(type: string): type is KnownRolloutType {
   return Object.hasOwn(ROLLOUT_PAYLOAD_VALIDATORS, type);
 }
 
+function objectShape<const Required extends ObjectFields>(
+  required: Required,
+): Validator<ValidatedObject<Required>, keyof Required>;
+function objectShape<
+  const Required extends ObjectFields,
+  const Optional extends ObjectFields,
+>(
+  required: Required,
+  optional: Optional,
+): Validator<
+  ValidatedObjectShape<Required, Optional>,
+  keyof Required | keyof Optional
+>;
 function objectShape(
   required: ObjectFields,
   optional: ObjectFields = {},
-): ValueValidator {
-  return (value) => {
+): Validator<Record<string, unknown>, PropertyKey> {
+  return (value): value is Record<string, unknown> => {
     if (!isPlainRecord(value)) return false;
     for (const [field, validator] of Object.entries(required)) {
       if (!Object.hasOwn(value, field) || !validator(value[field]))
@@ -1007,36 +1363,54 @@ function objectShape(
     for (const [field, validator] of Object.entries(optional)) {
       if (Object.hasOwn(value, field) && !validator(value[field])) return false;
     }
-    // Additive fields are intentionally preserved for same-version producer
-    // evolution; every field owned by the current schema is still validated.
+    // Journal schemas are additive: unknown fields written by a newer runtime
+    // remain replayable, while every field known to this runtime is validated.
     return true;
   };
 }
 
-function arrayOf(itemValidator: ValueValidator): ValueValidator {
-  return (value) =>
+function arrayOf<T, Fields extends PropertyKey>(
+  itemValidator: Validator<T, Fields>,
+): Validator<readonly T[]> {
+  return (value): value is readonly T[] =>
     Array.isArray(value) && value.every((item) => itemValidator(item));
 }
 
-function nullable(validator: ValueValidator): ValueValidator {
-  return (value) => value === null || validator(value);
+function recordOf<T, Fields extends PropertyKey>(
+  valueValidator: Validator<T, Fields>,
+): Validator<Record<string, T>> {
+  return (value): value is Record<string, T> =>
+    isPlainRecord(value) &&
+    Object.values(value).every((item) => valueValidator(item));
 }
 
-function either(...validators: readonly ValueValidator[]): ValueValidator {
-  return (value) => validators.some((validator) => validator(value));
+function nullable<T, Fields extends PropertyKey>(
+  validator: Validator<T, Fields>,
+): Validator<T | null> {
+  return (value): value is T | null => value === null || validator(value);
 }
 
-function literal<T extends string | number | boolean>(
+function either<const Validators extends readonly AnyValidator[]>(
+  ...validators: Validators
+): Validator<
+  ValidatedValue<Validators[number]>,
+  ValidatedFields<Validators[number]>
+> {
+  return (value): value is ValidatedValue<Validators[number]> =>
+    validators.some((validator) => validator(value));
+}
+
+function literal<const T extends string | number | boolean>(
   expected: T,
-): ValueValidator {
-  return (value) => value === expected;
+): Validator<T> {
+  return (value): value is T => value === expected;
 }
 
-function oneOf<Values extends readonly (string | number | boolean)[]>(
+function oneOf<const Values extends readonly (string | number | boolean)[]>(
   ...values: Values
-): ValueValidator {
+): Validator<Values[number]> {
   const accepted = new Set<unknown>(values);
-  return (value) => accepted.has(value);
+  return (value): value is Values[number] => accepted.has(value);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

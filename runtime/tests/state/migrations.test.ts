@@ -228,12 +228,12 @@ describe("state migration registry", () => {
           .get(),
       ).toEqual({ version: 18, name: "run_recovery_schema" });
 
-      const journalColumns = db
-        .prepare<[], { name: string }>(
+      const journalColumnRows = db
+        .prepare<[], { name: string; type: string }>(
           "PRAGMA table_info(run_journal_bindings)",
         )
-        .all()
-        .map((row) => row.name);
+        .all();
+      const journalColumns = journalColumnRows.map((row) => row.name);
       expect(journalColumns).toEqual(
         expect.arrayContaining([
           "authoritative_source_sha256",
@@ -243,12 +243,17 @@ describe("state migration registry", () => {
           "minimum_reader_runtime",
         ]),
       );
-      const quarantineColumns = db
-        .prepare<[], { name: string }>(
+      expect(
+        journalColumnRows.find(
+          (row) => row.name === "authoritative_source_mtime_ms",
+        )?.type,
+      ).toBe("REAL");
+      const quarantineColumnRows = db
+        .prepare<[], { name: string; type: string }>(
           "PRAGMA table_info(run_recovery_quarantine)",
         )
-        .all()
-        .map((row) => row.name);
+        .all();
+      const quarantineColumns = quarantineColumnRows.map((row) => row.name);
       expect(quarantineColumns).toEqual(
         expect.arrayContaining([
           "source_sha256",
@@ -257,6 +262,10 @@ describe("state migration registry", () => {
           "resolved_at_ms",
         ]),
       );
+      expect(
+        quarantineColumnRows.find((row) => row.name === "source_mtime_ms")
+          ?.type,
+      ).toBe("REAL");
 
       const effectIndexes = db
         .prepare<[], { name: string }>("PRAGMA index_list(run_effects)")

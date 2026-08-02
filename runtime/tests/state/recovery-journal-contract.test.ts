@@ -173,6 +173,258 @@ describe("strict canonical journal contract", () => {
     ).toThrow(expect.objectContaining({ reasonCode: "schema_invalid" }));
   });
 
+  it("accepts the runtime-authored collaboration spawn failure status", () => {
+    expect(() =>
+      validateCanonicalJournalText(
+        validEvent(1, "collab_agent_spawn_end", {
+          callId: "agent:spawn-1",
+          senderThreadId: "root-thread",
+          prompt: "inspect recovery",
+          taskName: "recovery-review",
+          agentType: "reviewer",
+          model: "grok-4.5",
+          reasoningEffort: "high",
+          status: {
+            status: "errored",
+            turnId: "agent:spawn-1",
+            endedAtMs: 42,
+            error: "spawn rejected",
+          },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it("validates every collaboration status union at its runtime event positions", () => {
+    const agentStatuses = [
+      { status: "pending_init" },
+      { status: "running", turnId: "turn-1", startedAtMs: 1 },
+      { status: "idle", turnId: "turn-1", endedAtMs: 2 },
+      {
+        status: "completed",
+        turnId: "turn-1",
+        endedAtMs: 3,
+        lastMessage: "done",
+      },
+      {
+        status: "errored",
+        turnId: "turn-1",
+        endedAtMs: 4,
+        error: "failed",
+      },
+      { status: "shutdown", endedAtMs: 5 },
+      { status: "not_found" },
+      {
+        status: "interrupted",
+        turnId: "turn-1",
+        endedAtMs: 6,
+        reason: "operator interrupt",
+      },
+    ] as const;
+    for (const status of agentStatuses) {
+      expect(
+        isCanonicalEventPayload("collab_agent_spawn_end", {
+          callId: "spawn-1",
+          senderThreadId: "root-thread",
+          prompt: "inspect",
+          model: "grok-4.5",
+          status,
+        }),
+        `collab_agent_spawn_end rejected ${status.status}`,
+      ).toBe(true);
+    }
+
+    for (const status of [
+      "pending",
+      "running",
+      "completed",
+      "failed",
+      "killed",
+    ] as const) {
+      expect(
+        isCanonicalEventPayload("collab_agent_status", {
+          callId: "spawn-1",
+          senderThreadId: "root-thread",
+          threadId: "child-thread",
+          status,
+        }),
+        `collab_agent_status rejected ${status}`,
+      ).toBe(true);
+    }
+
+    const completed = agentStatuses[3];
+    expect(
+      isCanonicalEventPayload("collab_agent_interaction_end", {
+        callId: "message-1",
+        senderThreadId: "root-thread",
+        receiverThreadId: "child-thread",
+        prompt: "status?",
+        status: completed,
+      }),
+    ).toBe(true);
+    expect(
+      isCanonicalEventPayload("collab_close_end", {
+        callId: "close-1",
+        senderThreadId: "root-thread",
+        receiverThreadId: "child-thread",
+        status: completed,
+      }),
+    ).toBe(true);
+    expect(
+      isCanonicalEventPayload("collab_resume_end", {
+        callId: "resume-1",
+        senderThreadId: "root-thread",
+        receiverThreadId: "child-thread",
+        status: completed,
+      }),
+    ).toBe(true);
+    expect(
+      isCanonicalEventPayload("collab_waiting_end", {
+        senderThreadId: "root-thread",
+        callId: "wait-1",
+        statuses: Object.fromEntries(
+          agentStatuses.map((status, index) => [`thread-${index}`, status]),
+        ),
+        agentStatuses: agentStatuses.map((status, index) => ({
+          threadId: `thread-${index}`,
+          agentNickname: `agent-${index}`,
+          status,
+        })),
+      }),
+    ).toBe(true);
+
+    expect(
+      isCanonicalEventPayload("collab_agent_spawn_end", {
+        callId: "spawn-1",
+        senderThreadId: "root-thread",
+        prompt: "inspect",
+        model: "grok-4.5",
+        status: "failed",
+      }),
+    ).toBe(false);
+    expect(
+      isCanonicalEventPayload("collab_agent_spawn_end", {
+        callId: "spawn-1",
+        senderThreadId: "root-thread",
+        prompt: "inspect",
+        model: "grok-4.5",
+        status: { status: "errored", error: "missing durable fields" },
+      }),
+    ).toBe(false);
+  });
+
+  it("normalizes supported legacy event aliases after strict validation", () => {
+    const result = validateCanonicalJournalText(
+      validEvent(1, "task_started", { turnId: "legacy-turn" }),
+    );
+
+    expect(result.records[0]?.item).toMatchObject({
+      type: "event_msg",
+      payload: {
+        msg: {
+          type: "turn_started",
+          payload: { turnId: "legacy-turn" },
+        },
+      },
+    });
+  });
+
+  it("keeps additive fields compatible but validates every known optional field", () => {
+    expect(
+      isCanonicalEventPayload("turn_started", {
+        turnId: "turn-1",
+        futureTelemetry: { writerVersion: 2 },
+      }),
+    ).toBe(true);
+    expect(
+      isCanonicalEventPayload("turn_started", {
+        turnId: "turn-1",
+        startedAt: "not-a-number",
+      }),
+    ).toBe(false);
+  });
+
+  it("preserves v1 response fragments while rejecting malformed user images", () => {
+    expect(
+      isCanonicalRolloutPayload("response_item", {
+        role: "user",
+        content: [
+          { type: "input_text", text: "legacy input" },
+          {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: "legacy result",
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(() =>
+      validateCanonicalJournalText(
+        validEvent(1, "user_message", {
+          message: [{ type: "image_url" }],
+        }),
+      ),
+    ).toThrow(expect.objectContaining({ reasonCode: "schema_invalid" }));
+  });
+
+  it("rejects invented admission events and empty terminal usage totals", () => {
+    expect(
+      isCanonicalEventPayload("execution_admission", {
+        sequence: 1,
+        eventId: "admission:1",
+        timestamp: "2026-08-02T00:00:00.000Z",
+        runId: "run-1",
+        stepId: "step-1",
+        kind: "tool_exec",
+        event: "invented",
+      }),
+    ).toBe(false);
+    expect(
+      isCanonicalEventPayload("run_terminal", {
+        runId: "run-1",
+        epoch: 1,
+        status: "completed",
+        exitCode: 0,
+        stopReason: null,
+        finalMessage: null,
+        usage: {},
+        lastSequenceBeforeTerminal: 1,
+        finishedAt: "2026-08-02T00:00:00.000Z",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects invalid recovery categories and incomplete no-effect evidence", () => {
+    const effectResult = {
+      runId: "run-1",
+      stepId: "step-1",
+      callId: "call-1",
+      toolName: "exec_command",
+      recoveryCategory: "idempotent",
+      intentEventSeq: 1,
+      outcome: "committed",
+      recordedAt: "2026-08-02T00:00:00.000Z",
+    };
+    expect(
+      isCanonicalEventPayload("effect_result", {
+        ...effectResult,
+        recoveryCategory: "retriable",
+      }),
+    ).toBe(false);
+    expect(
+      isCanonicalEventPayload("effect_result", {
+        ...effectResult,
+        noEffectEvidence: {
+          version: 1,
+          kind: "effect_no_effect_proof",
+          evidenceKind: "boundary_not_crossed",
+          evidenceRef: "journal:event:1",
+          observedAt: "2026-08-02T00:00:00.000Z",
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("keeps an exhaustive fail-closed schema for every rollout discriminant", () => {
     expect(CANONICAL_ROLLOUT_SCHEMA_TYPES).toEqual([
       "compacted",
