@@ -142,7 +142,10 @@ import {
   isWithheldMaxOutputTokens,
 } from "../recovery/api-errors.js";
 import { reconnectWithBackoff } from "../recovery/reconnection.js";
-import { reserveRecoveryReentry } from "../recovery/fallback-ladder.js";
+import {
+  MAX_RECOVERY_REENTRIES,
+  reserveRecoveryReentry,
+} from "../recovery/fallback-ladder.js";
 import * as planModeHelpers from "./plan-mode.js";
 import type { CompactedItem, ResponseItem } from "./rollout-item.js";
 import type { IdleInputOwnership, Session } from "./session.js";
@@ -3274,6 +3277,10 @@ async function runSamplingRequest(
   const outcome = await reconnectWithBackoff<SamplingRequestResult>({
     session,
     signal,
+    // One initial provider call plus the five recovery-ladder reservations.
+    // The reservation hook remains authoritative when another recovery path
+    // has already consumed part of the shared A1 ladder.
+    maxAttempts: MAX_RECOVERY_REENTRIES + 1,
     attempt: () =>
       tryRunSamplingRequest(
         state,

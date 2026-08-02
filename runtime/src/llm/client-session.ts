@@ -34,11 +34,17 @@ import {
 } from "./api/fallback-ladder.js";
 import { isFallbackTriggeredError } from "../recovery/api-errors.js";
 import { isProviderCapabilityMismatch } from "./capabilities.js";
+import { parseProviderRetryAfterDirective } from "./retry-after.js";
+import {
+  RECONNECT_RETRY_AFTER_CEILING_MS,
+  classifyRetryAfterMilliseconds,
+  validateRetryAfterDirective,
+  type RetryAfterDirective,
+} from "../recovery/reconnect-policy.js";
 
 const DEFAULT_REQUEST_MAX_RETRIES = 4;
 const DEFAULT_STREAM_MAX_RETRIES = 5;
 const DEFAULT_RETRY_BASE_DELAY_MS = 200;
-const MAX_RETRY_AFTER_MS = 300_000;
 /**
  * Hard cap on the un-delimited SSE remainder buffered while waiting for a frame
  * separator on the responses-continuation accumulation path. A single SSE event
@@ -177,6 +183,7 @@ export class ProviderHttpError extends Error {
   readonly url: string;
   readonly body?: unknown;
   readonly retryAfterMs?: number;
+  readonly retryAfterDirective: RetryAfterDirective;
 
   constructor(args: {
     providerName: string;
@@ -186,6 +193,7 @@ export class ProviderHttpError extends Error {
     message: string;
     body?: unknown;
     retryAfterMs?: number;
+    retryAfterDirective?: RetryAfterDirective;
   }) {
     super(args.message);
     this.name = "ProviderHttpError";
@@ -194,7 +202,16 @@ export class ProviderHttpError extends Error {
     this.headers = args.headers;
     this.url = args.url;
     this.body = args.body;
-    this.retryAfterMs = args.retryAfterMs;
+    this.retryAfterDirective =
+      args.retryAfterDirective === undefined
+        ? classifyRetryAfterMilliseconds(args.retryAfterMs)
+        : validateRetryAfterDirective(args.retryAfterDirective);
+    if (
+      this.retryAfterDirective.classification === "valid" ||
+      this.retryAfterDirective.classification === "over_policy"
+    ) {
+      this.retryAfterMs = this.retryAfterDirective.floorMs;
+    }
   }
 }
 
@@ -412,42 +429,6 @@ function errorMessageFromBody(status: number, body: unknown): string {
   return `HTTP ${status}`;
 }
 
-function parseRetryAfterMs(
-  headers: Headers,
-  emitWarning?: (warning: { cause: string; message: string }) => void,
-  nowMs = Date.now(),
-): { delayMs?: number; exceedsMaxWait: boolean } {
-  const retryAfter = headers.get("retry-after")?.trim();
-  if (!retryAfter) return { exceedsMaxWait: false };
-
-  const seconds = Number.parseInt(retryAfter, 10);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    const delayMs = seconds * 1000;
-    if (delayMs > MAX_RETRY_AFTER_MS) {
-      return { exceedsMaxWait: true };
-    }
-    return {
-      delayMs: Math.max(100, delayMs),
-      exceedsMaxWait: false,
-    };
-  }
-
-  const absoluteMs = Date.parse(retryAfter);
-  if (!Number.isFinite(absoluteMs)) {
-    emitWarning?.({
-      cause: "retry_after_ambiguous",
-      message: `provider returned an ambiguous Retry-After header (${retryAfter}); falling back to exponential backoff`,
-    });
-    return { exceedsMaxWait: false };
-  }
-
-  const delayMs = Math.max(100, absoluteMs - nowMs);
-  if (delayMs > MAX_RETRY_AFTER_MS) {
-    return { exceedsMaxWait: true };
-  }
-  return { delayMs, exceedsMaxWait: false };
-}
-
 function buildRequestUrl(baseURL: string, path: string): URL {
   const url = new URL(baseURL);
   const basePath = url.pathname.replace(/\/+$/, "");
@@ -529,35 +510,34 @@ function resolveRetryDelayMs(
   retryBudget: NormalizedRetryBudget,
   retryCount: number,
   emitWarning: ((warning: { cause: string; message: string }) => void) | undefined,
-  headers?: Headers,
+  retryAfter: RetryAfterDirective = { classification: "absent" },
 ): { delayMs: number; exceedsMaxWait: boolean } {
   const fallbackDelayMs = Math.max(
     100,
     backoffWithJitter(retryBudget.baseDelayMs, retryCount),
   );
-  if (!headers) {
-    return {
-      delayMs: fallbackDelayMs,
-      exceedsMaxWait: false,
-    };
-  }
-
-  const parsed = parseRetryAfterMs(headers, emitWarning);
-  if (parsed.exceedsMaxWait) {
+  if (retryAfter.classification === "over_policy") {
     emitWarning?.({
       cause: "rate_limit_exceeds_max_wait",
-      message: `${providerName} requested a Retry-After longer than ${MAX_RETRY_AFTER_MS}ms; aborting retry instead of sleeping unbounded`,
+      message: `${providerName} requested a Retry-After longer than ${RECONNECT_RETRY_AFTER_CEILING_MS}ms; aborting retry instead of sleeping unbounded`,
     });
     return {
       delayMs: fallbackDelayMs,
       exceedsMaxWait: true,
     };
   }
+  if (retryAfter.classification === "invalid") {
+    emitWarning?.({
+      cause: "retry_after_ambiguous",
+      message: `provider returned an invalid Retry-After header (${retryAfter.invalidReason}); falling back to exponential backoff`,
+    });
+  }
 
   return {
-    delayMs: parsed.delayMs !== undefined
-      ? Math.max(parsed.delayMs, fallbackDelayMs)
-      : fallbackDelayMs,
+    delayMs:
+      retryAfter.classification === "valid"
+        ? Math.max(retryAfter.floorMs, fallbackDelayMs)
+        : fallbackDelayMs,
     exceedsMaxWait: false,
   };
 }
@@ -724,6 +704,9 @@ async function createProviderHttpError(
   response: Response,
 ): Promise<ProviderHttpError> {
   const errorBody = await readErrorBody(response);
+  const retryAfterDirective = parseProviderRetryAfterDirective(
+    response.headers,
+  );
   return new ProviderHttpError({
     providerName,
     status: response.status,
@@ -731,7 +714,7 @@ async function createProviderHttpError(
     url: response.url,
     body: errorBody,
     message: errorMessageFromBody(response.status, errorBody),
-    retryAfterMs: parseRetryAfterMs(response.headers).delayMs,
+    retryAfterDirective,
   });
 }
 
@@ -1198,7 +1181,7 @@ export class ProviderHttpClientSession {
               retryBudget,
               attempt + 1,
               this.config.emitWarning,
-              error.headers,
+              error.retryAfterDirective,
             );
             if (retryDelay.exceedsMaxWait) {
               throw error;
@@ -1300,7 +1283,7 @@ export class ProviderHttpClientSession {
               retryBudget,
               attempt + 1,
               this.config.emitWarning,
-              error.headers,
+              error.retryAfterDirective,
             );
             if (retryDelay.exceedsMaxWait) {
               throw error;

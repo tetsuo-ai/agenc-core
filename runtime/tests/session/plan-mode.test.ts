@@ -29,6 +29,7 @@ vi.mock("axios", () => {
   };
 });
 import { createAgentRoleWorkspace } from "../agents/role.js";
+import { MAX_RECOVERY_REENTRIES } from "../recovery/fallback-ladder.js";
 import { EventLog, type Event } from "./event-log.js";
 import {
   type AssistantMessageStreamParsersLike,
@@ -676,9 +677,10 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
     expect(call).toBeDefined();
     expect(typeof call!.attempt).toBe("function");
     expect(typeof call!.isTransient).toBe("function");
-    // run-turn should rely on the reconnection helper's default
-    // 10-minute budget rather than pinning the old 5-attempt policy.
-    expect(call!.maxAttempts).toBeUndefined();
+    // The provider loop has one initial call plus the shared ladder's finite
+    // recovery reservations. The reservation callback still stops earlier if
+    // another A1 recovery path has already consumed capacity.
+    expect(call!.maxAttempts).toBe(MAX_RECOVERY_REENTRIES + 1);
     spy.mockRestore();
   });
 

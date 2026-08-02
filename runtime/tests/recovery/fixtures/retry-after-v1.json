@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "nowMs": 1776772800000,
+  "cases": [
+    {
+      "name": "absent",
+      "header": null,
+      "classification": "absent"
+    },
+    {
+      "name": "empty field value",
+      "header": "",
+      "classification": "invalid",
+      "invalidReason": "syntax"
+    },
+    {
+      "name": "zero delta",
+      "header": "0",
+      "classification": "valid",
+      "floorMs": 0
+    },
+    {
+      "name": "delta seconds",
+      "header": "2",
+      "classification": "valid",
+      "floorMs": 2000
+    },
+    {
+      "name": "ASCII optional whitespace around delta seconds",
+      "header": " \t2\t ",
+      "classification": "valid",
+      "floorMs": 2000
+    },
+    {
+      "name": "non-breaking spaces around delta seconds",
+      "header": " 2 ",
+      "classification": "invalid",
+      "invalidReason": "syntax"
+    },
+    {
+      "name": "exact policy ceiling",
+      "header": "300",
+      "classification": "valid",
+      "floorMs": 300000
+    },
+    {
+      "name": "delta over policy",
+      "header": "301",
+      "classification": "over_policy",
+      "floorMs": 301000
+    },
+    {
+      "name": "future IMF-fixdate",
+      "header": "Tue, 21 Apr 2026 12:00:05 GMT",
+      "classification": "valid",
+      "floorMs": 5000
+    },
+    {
+      "name": "future obsolete RFC 850 date",
+      "header": "Tuesday, 21-Apr-26 12:00:05 GMT",
+      "classification": "valid",
+      "floorMs": 5000
+    },
+    {
+      "name": "RFC 850 date exactly 50 years in the future",
+      "header": "Tuesday, 21-Apr-76 12:00:00 GMT",
+      "classification": "over_policy",
+      "floorMs": 1577923200000
+    },
+    {
+      "name": "RFC 850 date more than 50 years in the future resolves to the past",
+      "header": "Thursday, 22-Apr-76 12:00:00 GMT",
+      "classification": "valid",
+      "floorMs": 0
+    },
+    {
+      "name": "future ANSI C asctime date",
+      "header": "Tue Apr 21 12:00:05 2026",
+      "classification": "valid",
+      "floorMs": 5000
+    },
+    {
+      "name": "IMF-fixdate leap second",
+      "header": "Sat, 31 Dec 2016 23:59:60 GMT",
+      "nowMs": 1483228798000,
+      "classification": "valid",
+      "floorMs": 2000
+    },
+    {
+      "name": "obsolete RFC 850 leap second",
+      "header": "Saturday, 31-Dec-16 23:59:60 GMT",
+      "nowMs": 1483228798000,
+      "classification": "valid",
+      "floorMs": 2000
+    },
+    {
+      "name": "ANSI C asctime leap second",
+      "header": "Sat Dec 31 23:59:60 2016",
+      "nowMs": 1483228798000,
+      "classification": "valid",
+      "floorMs": 2000
+    },
+    {
+      "name": "leap second outside the final minute of the day",
+      "header": "Sat, 31 Dec 2016 12:34:60 GMT",
+      "nowMs": 1483228798000,
+      "classification": "invalid",
+      "invalidReason": "syntax"
+    },
+    {
+      "name": "past date",
+      "header": "Tue, 21 Apr 2026 11:59:00 GMT",
+      "classification": "valid",
+      "floorMs": 0
+    },
+    {
+      "name": "future date over policy",
+      "header": "Tue, 21 Apr 2026 13:00:00 GMT",
+      "classification": "over_policy",
+      "floorMs": 3600000
+    },
+    {
+      "name": "negative delta",
+      "header": "-1",
+      "classification": "invalid",
+      "invalidReason": "negative"
+    },
+    {
+      "name": "fractional delta",
+      "header": "1.5",
+      "classification": "invalid",
+      "invalidReason": "syntax"
+    },
+    {
+      "name": "trailing delta text",
+      "header": "2seconds",
+      "classification": "invalid",
+      "invalidReason": "syntax"
+    },
+    {
+      "name": "non-finite spelling",
+      "header": "Infinity",
+      "classification": "invalid",
+      "invalidReason": "non_finite"
+    },
+    {
+      "name": "integer overflow",
+      "header": "999999999999999999999999999999999999999",
+      "classification": "invalid",
+      "invalidReason": "overflow"
+    },
+    {
+      "name": "ambiguous text",
+      "header": "soon-ish",
+      "classification": "invalid",
+      "invalidReason": "syntax"
+    },
+    {
+      "name": "invalid calendar date",
+      "header": "Tue, 31 Feb 2026 12:00:00 GMT",
+      "classification": "invalid",
+      "invalidReason": "syntax"
+    },
+    {
+      "name": "mismatched weekday",
+      "header": "Mon, 21 Apr 2026 12:00:05 GMT",
+      "classification": "invalid",
+      "invalidReason": "syntax"
+    }
+  ]
+}

@@ -1,334 +1,579 @@
 import { describe, expect, test, vi } from "vitest";
-import { EventLog } from "../session/event-log.js";
-import type { Session } from "../session/session.js";
+
+import { LLMRateLimitError } from "../../src/llm/errors.js";
 import {
-  computeBackoffMs,
-  detectSuspend,
   RECONNECT_INITIAL_MS,
   RECONNECT_MAX_MS,
   RECONNECT_RETRY_AFTER_CEILING_MS,
-  RECONNECT_SLEEP_DETECTION_THRESHOLD_MS,
   reconnectWithBackoff,
-  serverDirectedRetryAfterMs,
-} from "./reconnection.js";
-import { LLMRateLimitError } from "../llm/errors.js";
+  serverDirectedRetryAfter,
+  type ReconnectOpts,
+  type ReconnectSleeper,
+} from "../../src/recovery/reconnection.js";
+import { EventLog } from "../../src/session/event-log.js";
+import type { Session } from "../../src/session/session.js";
 
-function mkSession(log: EventLog): Session {
-  let i = 0;
+function sessionWithLog(log = new EventLog()): Session {
+  let subId = 0;
   return {
     eventLog: log,
-    nextInternalSubId: () => `s-${++i}`,
+    nextInternalSubId: () => `reconnect-${++subId}`,
   } as unknown as Session;
 }
 
-describe("computeBackoffMs", () => {
-  test("grows exponentially, capped at RECONNECT_MAX_MS", () => {
-    expect(computeBackoffMs(0)).toBeGreaterThanOrEqual(RECONNECT_INITIAL_MS * 0.7);
-    expect(computeBackoffMs(0)).toBeLessThanOrEqual(RECONNECT_INITIAL_MS * 1.3);
-    const large = computeBackoffMs(20);
-    expect(large).toBeLessThanOrEqual(RECONNECT_MAX_MS * 1.3);
-  });
+class ManualClocks {
+  monotonicMs = 0;
+  wallMs = 1_000_000;
 
-  test("honors a server-directed Retry-After over the 2^attempt backoff", () => {
-    // attempt 0 backoff is ~1s, far below the 5s server directive — the
-    // server cooldown must win so we don't hammer during its window.
-    expect(computeBackoffMs(0, 5_000)).toBeGreaterThanOrEqual(5_000);
-  });
+  readonly monotonicNow = (): number => this.monotonicMs;
+  readonly wallNow = (): number => this.wallMs;
 
-  test("uses the larger of computed backoff and Retry-After", () => {
-    // A tiny Retry-After must not shrink the normal escalating backoff.
-    const computed = computeBackoffMs(20, 1);
-    expect(computed).toBeGreaterThanOrEqual(RECONNECT_MAX_MS * 0.7);
-  });
+  advanceBoth(milliseconds: number): void {
+    this.monotonicMs += milliseconds;
+    this.wallMs += milliseconds;
+  }
+}
 
-  test("no Retry-After leaves the normal path unchanged", () => {
-    expect(computeBackoffMs(0, undefined)).toBeLessThanOrEqual(
-      RECONNECT_INITIAL_MS * 1.3,
-    );
-  });
-});
+function reconnectOptions<T>(
+  overrides: Partial<ReconnectOpts<T>> & Pick<ReconnectOpts<T>, "attempt">,
+): ReconnectOpts<T> {
+  return {
+    session: sessionWithLog(),
+    maxAttempts: 3,
+    isTransient: () => true,
+    rng: () => 0,
+    sleeper: async () => {},
+    ...overrides,
+  };
+}
 
-describe("serverDirectedRetryAfterMs", () => {
-  test("reads retryAfterMs off an LLMRateLimitError (429)", () => {
-    const err = new LLMRateLimitError("grok", 5_000);
-    expect(serverDirectedRetryAfterMs(err)).toBe(5_000);
-  });
-
-  test("reads retryAfterMs off a wrapped (cause-chain) error", () => {
-    const wrapped = new Error("stream disconnected");
-    (wrapped as { cause?: unknown }).cause = new LLMRateLimitError(
-      "grok",
-      7_000,
-    );
-    expect(serverDirectedRetryAfterMs(wrapped)).toBe(7_000);
-  });
-
-  test("clamps a pathological Retry-After to the ceiling", () => {
-    const err = new LLMRateLimitError("grok", 60 * 60 * 1_000);
-    expect(serverDirectedRetryAfterMs(err)).toBe(
-      RECONNECT_RETRY_AFTER_CEILING_MS,
-    );
-  });
-
-  test("returns undefined when no server directive is present", () => {
-    expect(serverDirectedRetryAfterMs(new Error("ECONNRESET"))).toBeUndefined();
-    expect(serverDirectedRetryAfterMs(new LLMRateLimitError("grok"))).toBeUndefined();
-  });
-});
-
-describe("reconnectWithBackoff", () => {
-  test("success on first try", async () => {
-    const log = new EventLog();
-    const session = mkSession(log);
-    const out = await reconnectWithBackoff({
-      session,
-      attempt: async () => "ok",
-      isTransient: () => true,
+describe("serverDirectedRetryAfter", () => {
+  test("preserves typed valid, invalid, over-policy, wrapped, and absent directives", () => {
+    expect(serverDirectedRetryAfter(new LLMRateLimitError("grok", 5_000))).toEqual({
+      classification: "valid",
+      floorMs: 5_000,
     });
-    expect(out.kind).toBe("ok");
-    if (out.kind === "ok") expect(out.value).toBe("ok");
-  });
-
-  test("retries transient, eventually succeeds", async () => {
-    const log = new EventLog();
-    const session = mkSession(log);
-    let calls = 0;
-    const out = await reconnectWithBackoff({
-      session,
-      maxAttempts: 3,
-      attempt: async () => {
-        calls += 1;
-        if (calls < 2) throw new Error("ECONNRESET");
-        return "got-it";
-      },
-      isTransient: () => true,
+    expect(
+      serverDirectedRetryAfter({ retryAfterMs: Number.POSITIVE_INFINITY }),
+    ).toEqual({ classification: "invalid", invalidReason: "non_finite" });
+    expect(
+      serverDirectedRetryAfter({
+        retryAfterMs: RECONNECT_RETRY_AFTER_CEILING_MS + 1,
+      }),
+    ).toEqual({
+      classification: "over_policy",
+      floorMs: RECONNECT_RETRY_AFTER_CEILING_MS + 1,
     });
-    expect(out.kind).toBe("ok");
-    expect(calls).toBe(2);
-  });
-
-  test("exhausted after maxAttempts transient errors", async () => {
-    const log = new EventLog();
-    const session = mkSession(log);
-    const out = await reconnectWithBackoff({
-      session,
-      maxAttempts: 2,
-      attempt: async () => {
-        throw new Error("stream_idle");
-      },
-      isTransient: () => true,
-    });
-    expect(out.kind).toBe("exhausted");
-  });
-
-  test("stops retrying when the recovery-cap hook rejects another re-entry", async () => {
-    const log = new EventLog();
-    const session = mkSession(log);
-    const gate = vi.fn().mockResolvedValue(false);
-
-    const out = await reconnectWithBackoff({
-      session,
-      attempt: async () => {
-        throw new Error("stream_idle");
-      },
-      isTransient: () => true,
-      onTransientRetry: gate,
-    });
-
-    expect(out.kind).toBe("exhausted");
-    expect(gate).toHaveBeenCalledTimes(1);
-  });
-
-  test("exhausts once the reconnect give-up budget elapses", async () => {
-    const log = new EventLog();
-    const session = mkSession(log);
-    const out = await reconnectWithBackoff({
-      session,
-      now: () => 0,
-      giveUpMs: 0,
-      attempt: async () => {
-        throw new Error("stream_idle");
-      },
-      isTransient: () => true,
-    });
-
-    expect(out.kind).toBe("exhausted");
-    if (out.kind === "exhausted") {
-      expect(out.attempts).toBe(1);
-    }
-  });
-
-  test("has no implicit give-up deadline after six hours", async () => {
-    vi.useFakeTimers();
-    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
-    try {
-      const log = new EventLog();
-      const session = mkSession(log);
-      let now = 0;
-      let calls = 0;
-      const promise = reconnectWithBackoff({
-        session,
-        now: () => now,
-        sleepDetectionThresholdMs: Number.POSITIVE_INFINITY,
-        maxAttempts: 3,
-        attempt: async () => {
-          calls += 1;
-          if (calls < 3) throw new Error("stream_idle");
-          return "recovered";
+    expect(
+      serverDirectedRetryAfter({
+        cause: {
+          retryAfterDirective: {
+            classification: "invalid",
+            invalidReason: "overflow",
+          },
         },
-        isTransient: () => true,
-      });
-
-      await Promise.resolve();
-      now = 6 * 60 * 60_000;
-      await vi.advanceTimersByTimeAsync(1_000);
-      await vi.advanceTimersByTimeAsync(2_000);
-
-      await expect(promise).resolves.toMatchObject({
-        kind: "ok",
-        value: "recovered",
-      });
-      expect(calls).toBe(3);
-    } finally {
-      randomSpy.mockRestore();
-      vi.useRealTimers();
-    }
+      }),
+    ).toEqual({ classification: "invalid", invalidReason: "overflow" });
+    expect(serverDirectedRetryAfter(new Error("ECONNRESET"))).toEqual({
+      classification: "absent",
+    });
+    expect(Object.isFrozen(serverDirectedRetryAfter(new Error("ECONNRESET")))).toBe(
+      true,
+    );
   });
+});
 
-  test("non-transient error bubbles immediately", async () => {
-    const log = new EventLog();
-    const session = mkSession(log);
+describe("reconnectWithBackoff policy validation", () => {
+  test("requires at least one explicit finite ladder cap", async () => {
     await expect(
       reconnectWithBackoff({
-        session,
-        attempt: async () => {
-          throw new Error("401 unauthorized");
-        },
-        isTransient: () => false,
+        session: sessionWithLog(),
+        attempt: async () => "unused",
+        isTransient: () => true,
       }),
-    ).rejects.toThrow("401");
+    ).rejects.toThrowError(/maxAttempts.*giveUpMs/u);
   });
 
-  test("aborted signal short-circuits", async () => {
-    const log = new EventLog();
-    const session = mkSession(log);
-    const ctl = new AbortController();
-    ctl.abort("test");
-    const out = await reconnectWithBackoff({
-      session,
-      signal: ctl.signal,
-      attempt: async () => "x",
-      isTransient: () => true,
-    });
-    expect(out.kind).toBe("aborted");
-  });
+  test.each([0, -1, 1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid maxAttempts %s",
+    async (maxAttempts) => {
+      await expect(
+        reconnectWithBackoff({
+          session: sessionWithLog(),
+          maxAttempts,
+          attempt: async () => "unused",
+          isTransient: () => true,
+        }),
+      ).rejects.toThrowError(/maxAttempts.*positive integer/u);
+    },
+  );
 
-  test("resets the reconnect budget after a long suspend gap", async () => {
-    vi.useFakeTimers();
-    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
-    const log = new EventLog();
-    const session = mkSession(log);
-    let now = 0;
-    let calls = 0;
+  test.each([0, -1, 1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid giveUpMs %s",
+    async (giveUpMs) => {
+      await expect(
+        reconnectWithBackoff({
+          session: sessionWithLog(),
+          giveUpMs,
+          attempt: async () => "unused",
+          isTransient: () => true,
+        }),
+      ).rejects.toThrowError(/giveUpMs.*positive integer/u);
+    },
+  );
 
-    const promise = reconnectWithBackoff({
-      session,
-      now: () => now,
-      giveUpMs: 1_500,
-      sleepDetectionThresholdMs: 60_000,
-      attempt: async () => {
-        calls += 1;
-        if (calls < 3) {
-          throw new Error("stream_idle");
-        }
-        return "recovered";
-      },
-      isTransient: () => true,
-    });
-
-    await Promise.resolve();
-    now = 1_000;
-    await vi.advanceTimersByTimeAsync(1_000);
-    now = 120_000;
-    await vi.advanceTimersByTimeAsync(2_000);
-
-    const out = await promise;
-    expect(out.kind).toBe("ok");
-    expect(calls).toBe(3);
-    randomSpy.mockRestore();
-    vi.useRealTimers();
-  });
-
-  test("honors a 429 Retry-After: sleeps >= 5000ms before the next attempt", async () => {
-    vi.useFakeTimers();
-    // Pin jitter to 0 so the local attempt-0 backoff is exactly
-    // RECONNECT_INITIAL_MS (1000ms) — far below the 5000ms the provider
-    // directs. Without the fix the retry fires at ~1000ms; with the fix it
-    // must wait for the full 5000ms Retry-After window.
-    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
-    const log = new EventLog();
-    const session = mkSession(log);
-    let calls = 0;
-    let resolved = false;
-
-    const promise = reconnectWithBackoff({
-      session,
-      attempt: async () => {
-        calls += 1;
-        if (calls < 2) {
-          // grok's default 429 maps to LLMRateLimitError carrying the
-          // server-directed cooldown (5s here).
-          throw new LLMRateLimitError("grok", 5_000);
-        }
-        return "recovered";
-      },
-      isTransient: () => true,
-    }).then((out) => {
-      resolved = true;
-      return out;
-    });
-
-    // Let the first attempt run and enter the backoff sleep.
-    await Promise.resolve();
-    expect(calls).toBe(1);
-
-    // At 4999ms the server cooldown has NOT elapsed: the second attempt
-    // must not have fired yet. (Pre-fix this would already be the 2nd call
-    // because the sleep was only ~1000ms.)
-    await vi.advanceTimersByTimeAsync(4_999);
-    expect(calls).toBe(1);
-    expect(resolved).toBe(false);
-
-    // Crossing 5000ms total releases the sleep and the retry succeeds.
-    await vi.advanceTimersByTimeAsync(2);
-    const out = await promise;
-
-    expect(out.kind).toBe("ok");
-    if (out.kind === "ok") expect(out.value).toBe("recovered");
-    expect(calls).toBe(2);
-
-    randomSpy.mockRestore();
-    vi.useRealTimers();
+  test("keeps the named compatibility defaults", () => {
+    expect(RECONNECT_INITIAL_MS).toBe(1_000);
+    expect(RECONNECT_MAX_MS).toBe(30_000);
+    expect(RECONNECT_RETRY_AFTER_CEILING_MS).toBe(300_000);
   });
 });
 
-describe("detectSuspend", () => {
-  test("gap < 60s → not suspended", () => {
-    const now = performance.now();
-    const d = detectSuspend(now - 10_000);
-    expect(d.suspended).toBe(false);
-  });
-  test("gap > sleep threshold → suspended", () => {
-    const now = performance.now();
-    const d = detectSuspend(
-      now - (RECONNECT_SLEEP_DETECTION_THRESHOLD_MS + 1_000),
+describe("reconnectWithBackoff orchestration", () => {
+  test("returns first-attempt success without drawing or sleeping", async () => {
+    const rng = vi.fn(() => 0);
+    const sleeper = vi.fn<ReconnectSleeper>(async () => {});
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        maxAttempts: 1,
+        attempt: async () => "ok",
+        rng,
+        sleeper,
+      }),
     );
-    expect(d.suspended).toBe(true);
+    expect(outcome).toEqual({ kind: "ok", value: "ok", attempts: 1 });
+    expect(rng).not.toHaveBeenCalled();
+    expect(sleeper).not.toHaveBeenCalled();
   });
 
-  test("defaults match the transport reconnection contract", () => {
-    expect(RECONNECT_INITIAL_MS).toBe(1_000);
-    expect(RECONNECT_MAX_MS).toBe(30_000);
-    expect(RECONNECT_SLEEP_DETECTION_THRESHOLD_MS).toBe(60_000);
+  test("retries transient failures and preserves total-attempt numbering", async () => {
+    let calls = 0;
+    const callback = vi.fn(async () => true);
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        maxAttempts: 3,
+        attempt: async (attempt) => {
+          calls += 1;
+          if (calls < 3) throw new Error("temporary");
+          return attempt;
+        },
+        onTransientRetry: callback,
+      }),
+    );
+    expect(outcome).toEqual({ kind: "ok", value: 2, attempts: 3 });
+    expect(callback.mock.calls.map(([attempt]) => attempt)).toEqual([1, 2]);
+  });
+
+  test("runs the final safety callback before typed attempt exhaustion", async () => {
+    const callback = vi.fn(async () => true);
+    const sleeper = vi.fn<ReconnectSleeper>(async () => {});
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        maxAttempts: 2,
+        attempt: async () => {
+          throw new Error("temporary");
+        },
+        onTransientRetry: callback,
+        sleeper,
+      }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "exhausted",
+      attempts: 2,
+      reason: "attempts_exhausted",
+      telemetry: {
+        attempt: 2,
+        chosenDelayMs: null,
+        exhaustionReason: "attempts_exhausted",
+      },
+    });
+    expect(callback).toHaveBeenCalledTimes(2);
+    expect(sleeper).toHaveBeenCalledTimes(1);
+  });
+
+  test("keeps retry eligibility separate and bubbles non-transient failures", async () => {
+    const callback = vi.fn(async () => true);
+    await expect(
+      reconnectWithBackoff(
+        reconnectOptions({
+          attempt: async () => {
+            throw new Error("permanent authorization failure");
+          },
+          isTransient: () => false,
+          onTransientRetry: callback,
+        }),
+      ),
+    ).rejects.toThrow("permanent authorization failure");
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  test("treats callback refusal as a typed non-retryable exhaustion", async () => {
+    const sleeper = vi.fn<ReconnectSleeper>(async () => {});
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        attempt: async () => {
+          throw new Error("unknown physical effect");
+        },
+        onTransientRetry: async () => false,
+        sleeper,
+      }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "exhausted",
+      attempts: 1,
+      reason: "retry_callback_rejected",
+      telemetry: { exhaustionReason: "retry_callback_rejected" },
+    });
+    expect(sleeper).not.toHaveBeenCalled();
+  });
+
+  test("keeps A1 unknown-effect refusal authoritative over Retry-After policy", async () => {
+    const sleeper = vi.fn<ReconnectSleeper>(async () => {});
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        attempt: async () => {
+          throw {
+            retryAfterMs: RECONNECT_RETRY_AFTER_CEILING_MS + 1,
+          };
+        },
+        // Production run-turn performs its A1 physical-effect check here.
+        onTransientRetry: async () => false,
+        sleeper,
+      }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "exhausted",
+      attempts: 1,
+      reason: "retry_callback_rejected",
+    });
+    expect(sleeper).not.toHaveBeenCalled();
+  });
+
+  test("exhausts over-policy and over-budget valid floors without retrying early", async () => {
+    for (const scenario of [
+      {
+        error: { retryAfterMs: RECONNECT_RETRY_AFTER_CEILING_MS + 1 },
+        giveUpMs: undefined,
+        reason: "retry_after_exceeds_policy",
+      },
+      {
+        error: { retryAfterMs: 5_000 },
+        giveUpMs: 4_000,
+        reason: "retry_after_exceeds_budget",
+      },
+    ] as const) {
+      const sleeper = vi.fn<ReconnectSleeper>(async () => {});
+      const callback = vi.fn(async () => true);
+      let calls = 0;
+      const outcome = await reconnectWithBackoff(
+        reconnectOptions({
+          ...(scenario.giveUpMs === undefined
+            ? { maxAttempts: 3 }
+            : { maxAttempts: undefined, giveUpMs: scenario.giveUpMs }),
+          attempt: async () => {
+            calls += 1;
+            throw scenario.error;
+          },
+          onTransientRetry: callback,
+          sleeper,
+        }),
+      );
+      expect(outcome).toMatchObject({
+        kind: "exhausted",
+        attempts: 1,
+        reason: scenario.reason,
+      });
+      expect(calls).toBe(1);
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(sleeper).not.toHaveBeenCalled();
+    }
+  });
+
+  test("invalid directives diagnose and fall back to ordinary jitter", async () => {
+    const sleeps: number[] = [];
+    let calls = 0;
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        attempt: async () => {
+          calls += 1;
+          if (calls === 1) {
+            throw { retryAfterMs: Number.POSITIVE_INFINITY };
+          }
+          return "recovered";
+        },
+        rng: () => 0.5,
+        sleeper: async (delayMs) => {
+          sleeps.push(delayMs);
+        },
+      }),
+    );
+    expect(outcome).toMatchObject({ kind: "ok", value: "recovered" });
+    expect(sleeps).toEqual([500]);
+  });
+
+  test("callback execution consumes the immutable elapsed budget", async () => {
+    const clocks = new ManualClocks();
+    const sleeper = vi.fn<ReconnectSleeper>(async () => {});
+    let calls = 0;
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        maxAttempts: undefined,
+        giveUpMs: 1_000,
+        monotonicNow: clocks.monotonicNow,
+        wallNow: clocks.wallNow,
+        attempt: async () => {
+          calls += 1;
+          throw new Error("temporary");
+        },
+        onTransientRetry: async () => {
+          clocks.advanceBoth(1_000);
+          return true;
+        },
+        sleeper,
+      }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "exhausted",
+      reason: "elapsed_budget_exhausted",
+      attempts: 1,
+      telemetry: { remainingBudgetMs: 0 },
+    });
+    expect(calls).toBe(1);
+    expect(sleeper).not.toHaveBeenCalled();
+  });
+
+  test("checks elapsed budget before the first provider attempt", async () => {
+    let monotonicReads = 0;
+    const attempt = vi.fn(async () => "unused");
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        maxAttempts: undefined,
+        giveUpMs: 1_000,
+        monotonicNow: () => (monotonicReads++ === 0 ? 0 : 1_000),
+        wallNow: () => 0,
+        attempt,
+      }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "exhausted",
+      attempts: 0,
+      reason: "elapsed_budget_exhausted",
+    });
+    expect(attempt).not.toHaveBeenCalled();
+  });
+
+  test("provider attempt time consumes budget after the safety callback", async () => {
+    const clocks = new ManualClocks();
+    const callback = vi.fn(async () => true);
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        maxAttempts: undefined,
+        giveUpMs: 1_000,
+        monotonicNow: clocks.monotonicNow,
+        wallNow: clocks.wallNow,
+        attempt: async () => {
+          clocks.advanceBoth(1_000);
+          throw new Error("temporary");
+        },
+        onTransientRetry: callback,
+      }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "exhausted",
+      attempts: 1,
+      reason: "elapsed_budget_exhausted",
+    });
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  test("timer oversleep consumes budget before another provider call", async () => {
+    const clocks = new ManualClocks();
+    let calls = 0;
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        maxAttempts: undefined,
+        giveUpMs: 1_000,
+        monotonicNow: clocks.monotonicNow,
+        wallNow: clocks.wallNow,
+        attempt: async () => {
+          calls += 1;
+          throw new Error("temporary");
+        },
+        rng: () => 0.5,
+        sleeper: async () => {
+          clocks.advanceBoth(1_100);
+        },
+      }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "exhausted",
+      reason: "elapsed_budget_exhausted",
+      attempts: 1,
+    });
+    expect(calls).toBe(1);
+  });
+
+  test("a wall-clock suspend gap exhausts even when monotonic time pauses", async () => {
+    const clocks = new ManualClocks();
+    let calls = 0;
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        maxAttempts: undefined,
+        giveUpMs: 1_000,
+        monotonicNow: clocks.monotonicNow,
+        wallNow: clocks.wallNow,
+        attempt: async () => {
+          calls += 1;
+          throw new Error("temporary");
+        },
+        rng: () => 0.5,
+        sleeper: async () => {
+          clocks.wallMs += 120_000;
+        },
+      }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "exhausted",
+      reason: "elapsed_budget_exhausted",
+      attempts: 1,
+    });
+    expect(calls).toBe(1);
+  });
+
+  test("wall rollback never erases monotonic elapsed time", async () => {
+    const clocks = new ManualClocks();
+    let calls = 0;
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        maxAttempts: undefined,
+        giveUpMs: 1_000,
+        monotonicNow: clocks.monotonicNow,
+        wallNow: clocks.wallNow,
+        attempt: async () => {
+          calls += 1;
+          if (calls === 2) clocks.advanceBoth(500);
+          throw new Error("temporary");
+        },
+        rng: () => 0.5,
+        sleeper: async () => {
+          clocks.monotonicMs += 500;
+          clocks.wallMs -= 10_000;
+        },
+      }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "exhausted",
+      reason: "elapsed_budget_exhausted",
+      attempts: 2,
+    });
+    expect(calls).toBe(2);
+  });
+
+  test("wall rollback cannot restore a previously observed wall-clock gap", async () => {
+    const clocks = new ManualClocks();
+    let calls = 0;
+    let sleeps = 0;
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        maxAttempts: 3,
+        giveUpMs: 1_000,
+        monotonicNow: clocks.monotonicNow,
+        wallNow: clocks.wallNow,
+        attempt: async () => {
+          calls += 1;
+          if (calls === 2) {
+            clocks.wallMs -= 500;
+            throw { retryAfterMs: 500 };
+          }
+          if (calls === 3) return "rollback incorrectly restored budget";
+          throw new Error("temporary");
+        },
+        sleeper: async () => {
+          sleeps += 1;
+          clocks.wallMs += 600;
+        },
+      }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "exhausted",
+      attempts: 2,
+      reason: "retry_after_exceeds_budget",
+      telemetry: { remainingBudgetMs: 400 },
+    });
+    expect(calls).toBe(2);
+    expect(sleeps).toBe(1);
+  });
+
+  test("safe warning telemetry omits raw provider error text", async () => {
+    const log = new EventLog();
+    const events: unknown[] = [];
+    log.subscribe((event) => events.push(event));
+    let calls = 0;
+    await reconnectWithBackoff(
+      reconnectOptions({
+        session: sessionWithLog(log),
+        attempt: async () => {
+          calls += 1;
+          if (calls === 1) throw new Error("secret-provider-payload");
+          return "ok";
+        },
+      }),
+    );
+    const serialized = JSON.stringify(events);
+    expect(serialized).toContain("reconnecting");
+    expect(serialized).toContain("delayMs");
+    expect(serialized).not.toContain("secret-provider-payload");
+  });
+});
+
+describe("reconnectWithBackoff abort checkpoints", () => {
+  test("aborts before the first attempt", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("private abort reason"));
+    const attempt = vi.fn(async () => "unused");
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({ signal: controller.signal, attempt }),
+    );
+    expect(outcome).toEqual({ kind: "aborted", reason: "aborted", attempts: 0 });
+    expect(attempt).not.toHaveBeenCalled();
+  });
+
+  test("aborts immediately after the retry callback", async () => {
+    const controller = new AbortController();
+    const sleeper = vi.fn<ReconnectSleeper>(async () => {});
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        signal: controller.signal,
+        attempt: async () => {
+          throw new Error("temporary");
+        },
+        onTransientRetry: async () => {
+          controller.abort("callback abort");
+          return true;
+        },
+        sleeper,
+      }),
+    );
+    expect(outcome).toEqual({ kind: "aborted", reason: "aborted", attempts: 1 });
+    expect(sleeper).not.toHaveBeenCalled();
+  });
+
+  test("aborts during sleep and checks again immediately after wake", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const outcome = await reconnectWithBackoff(
+      reconnectOptions({
+        signal: controller.signal,
+        attempt: async () => {
+          calls += 1;
+          throw new Error("temporary");
+        },
+        sleeper: async () => {
+          controller.abort("sleep abort");
+        },
+      }),
+    );
+    expect(outcome).toEqual({ kind: "aborted", reason: "aborted", attempts: 1 });
+    expect(calls).toBe(1);
   });
 });
