@@ -101,7 +101,7 @@ describe("HMAC-signed trusted filesystem roots", () => {
       expect(resolved).toContain(BASE[0]);
     });
 
-    it.runIf(process.platform !== "win32")(
+    it.runIf(process.platform === "linux")(
       "preserves an NFD spelling in a signed POSIX workspace root",
       () => {
         const nfdRoot = "/work/cafe\u0301";
@@ -113,6 +113,31 @@ describe("HMAC-signed trusted filesystem roots", () => {
         expect(resolved).not.toContain(resolve(nfcRoot));
       },
     );
+
+    it("folds a signed macOS normalization alias to one root identity", () => {
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      );
+      if (platformDescriptor === undefined) {
+        throw new Error("process.platform descriptor is unavailable");
+      }
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "darwin",
+      });
+      try {
+        const nfdRoot = "/work/cafe\u0301";
+        const nfcRoot = "/work/caf\u00e9";
+        const injected = withSignedAllowedRoots({}, [nfdRoot]);
+        const resolved = resolveToolAllowedPaths(BASE, roundTrip(injected));
+
+        expect(resolved).toContain(resolve(nfcRoot));
+        expect(resolved).not.toContain(resolve(nfdRoot));
+      } finally {
+        Object.defineProperty(process, "platform", platformDescriptor);
+      }
+    });
   });
 
   // (c) LAUNDERING: a writer given args that already contain an UNSIGNED

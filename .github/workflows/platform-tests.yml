@@ -115,6 +115,11 @@ jobs:
                 pgrep -f -- \
                   'agenc-kernel-e2e-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' ||
                   true
+                for exe_link in /proc/[0-9]*/exe; do
+                  if test "$(readlink "$exe_link" 2>/dev/null || true)" = "$node_copy"; then
+                    basename "$(dirname "$exe_link")"
+                  fi
+                done
               } | sort -un
             )
             if test "${#leaked_pids[@]}" -gt 0; then
@@ -202,6 +207,8 @@ jobs:
             test "$(cat "$userns_clone_path")" = "1"
           fi
           test "$(cat /proc/sys/user/max_user_namespaces)" -gt 0
+          bwrap_help="$(bwrap --help)"
+          grep -Fq -- '--ro-bind-fd' <<<"$bwrap_help"
           test -e /proc/self/ns/user
           test -e /proc/self/ns/pid
           test -e /proc/self/ns/net
@@ -305,8 +312,8 @@ jobs:
             numPassedTestSuites: 1,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 1,
-            numPassedTests: 1,
+            numTotalTests: 2,
+            numPassedTests: 2,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -335,7 +342,7 @@ jobs:
             );
           }
           console.log(
-            "real-kernel bubblewrap lane passed 1 test in 1 file with zero skipped",
+            "real-kernel bubblewrap lane passed 2 tests in 1 file with zero skipped",
           );
           NODE
 
@@ -848,14 +855,16 @@ jobs:
             "platform-tests/neovim-process-tree.real.test.ts",
             "tests/tui/workbench/buffer-neovim-provider.contract.test.ts",
           ];
-          const requiredZeroCounts = {
+          const exactCounts = {
+            numTotalTests: 63,
+            numPassedTests: 63,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
           };
-          for (const [field, value] of Object.entries(requiredZeroCounts)) {
+          for (const [field, value] of Object.entries(exactCounts)) {
             if (results[field] !== value) {
               throw new Error(
                 `Neovim platform result ${field} was ${results[field]}, expected ${value}`,
@@ -876,7 +885,7 @@ jobs:
             );
           }
           console.log(
-            `Neovim provider/observed-descendant platform lane passed ${results.numPassedTests} tests in 3 files with zero skipped`,
+            "Neovim provider/observed-descendant platform lane passed 63 tests in 3 files with zero skipped",
           );
           NODE
 

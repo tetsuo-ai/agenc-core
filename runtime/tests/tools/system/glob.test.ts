@@ -50,7 +50,7 @@ function attachTrustedEditorContext(args: Record<string, unknown>): void {
   attachToolRuntimeContext(args, {
     callId: "trusted-editor-glob",
     toolName: GLOB_TOOL_NAME,
-    sandboxMode: "read_only",
+    sandboxMode: "danger_full_access",
     invocation: {
       turn: {
         editorInteraction: {
@@ -335,8 +335,8 @@ describe("Glob tool", () => {
     },
   );
 
-  test.runIf(process.platform !== "win32")(
-    "renders invalid UTF-8 paths only when descriptor validation is not required",
+  test.runIf(process.platform === "linux")(
+    "omits invalid UTF-8 paths from descriptor-bound listings",
     async () => {
       const invalidPath = Buffer.concat([
         Buffer.from(`${root}/invalid-`, "utf8"),
@@ -346,23 +346,11 @@ describe("Glob tool", () => {
       await writeFile(invalidPath, "invalid\n", "utf8");
       const tool = createGlobTool({ allowedPaths: [root] });
 
-      const unprotected = await tool.execute({ pattern: "*.ts", path: root });
-      expect(unprotected.isError).toBeUndefined();
-      expect(unprotected.content).toContain(
-        "invalid-\\xff.ts [path-encoding=bytes]",
-      );
+      const result = await tool.execute({ pattern: "*.ts", path: root });
 
-      workspaceMutationCoordinators.getOrCreate(root).acquire({
-        workspaceRoot: root,
-        editorInstanceId: "glob-invalid-utf8-editor",
-      });
-      const protectedResult = await tool.execute({
-        pattern: "*.ts",
-        path: root,
-      });
-      expect(protectedResult.isError).toBeUndefined();
-      expect(protectedResult.content).not.toContain("invalid-");
-      expect(protectedResult.content).not.toContain("path-encoding=bytes");
+      expect(result.isError).toBeUndefined();
+      expect(result.content).not.toContain("invalid-");
+      expect(result.content).not.toContain("path-encoding=bytes");
     },
   );
 
@@ -400,6 +388,71 @@ describe("Glob tool", () => {
     expect(result.content).toContain("inside-only.ts");
     expect(result.content).not.toContain("outside-secret.ts");
   });
+
+  test.runIf(process.platform !== "win32")(
+    "holds an Editor-acquisition fence across final read seams",
+    async () => {
+      for (const seam of ["final-path", "root-ignore"] as const) {
+        const workspace = join(root, `late-authority-${seam}`);
+        const displaced = join(root, `late-authority-${seam}-displaced`);
+        const outside = join(root, `late-authority-${seam}-outside`);
+        await mkdir(workspace);
+        await mkdir(outside);
+        await writeFile(join(workspace, "inside.ts"), "inside\n", "utf8");
+        await writeFile(
+          join(outside, "outside-secret.ts"),
+          "outside-glob-secret\n",
+          "utf8",
+        );
+        let lateAcquireError: unknown;
+        let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" =
+          "pending";
+        const attemptLateAuthority = async (): Promise<void> => {
+          exchangeOutcome = await exchangeDirectory(
+            workspace,
+            displaced,
+            outside,
+          );
+          try {
+            workspaceMutationCoordinators.acquireEditor(workspace, {
+              workspaceRoot: workspace,
+              editorInstanceId: `glob-late-${seam}`,
+            });
+          } catch (error) {
+            lateAcquireError = error;
+          }
+        };
+        const tool = createGlobTool({
+          allowedPaths: [workspace],
+          ...(seam === "final-path"
+            ? { __testAfterFinalPathCheck: attemptLateAuthority }
+            : { __testAfterRootIgnoreSnapshot: attemptLateAuthority }),
+        });
+
+        const result = await tool.execute({
+          pattern: "**/*.ts",
+          path: workspace,
+        });
+
+        expect((lateAcquireError as { code?: unknown })?.code).toBe(
+          "EDITOR_LEASE_CONFLICT",
+        );
+        expectCompletedExchangeAttempt(exchangeOutcome);
+        expect(result.isError).toBeUndefined();
+        expect(result.content).toContain("inside.ts");
+        expect(result.content).not.toContain("outside-secret.ts");
+        expect(result.content).not.toContain("outside-glob-secret");
+        const postToolLease = workspaceMutationCoordinators.acquireEditor(
+          workspace,
+          {
+            workspaceRoot: workspace,
+            editorInstanceId: `glob-post-${seam}`,
+          },
+        );
+        expect(postToolLease.editorInstanceId).toBe(`glob-post-${seam}`);
+      }
+    },
+  );
 
   test("keeps trusted Editor listings bound after the live lease disappears", async () => {
     const workspace = join(root, "workspace");
@@ -615,6 +668,54 @@ await rename(displaced, nested);
     expect(lines.length).toBe(4);
     expect(result.metadata?.truncated).toBe(true);
     expect(result.metadata?.numFiles).toBe(3);
+  });
+
+  test("truncates a protected one-chunk result without exhausting work", async () => {
+    const fakeRipgrepScript = join(root, "one-chunk-rg.mjs");
+    const fakeRipgrep =
+      process.platform === "win32"
+        ? join(root, "one-chunk-rg.cmd")
+        : fakeRipgrepScript;
+    const paths = Array.from({ length: 8 }, (_, index) => `f${index}.txt`);
+    for (const path of paths) {
+      await writeFile(join(root, path), `${path}\n`, "utf8");
+    }
+    await writeFile(
+      fakeRipgrepScript,
+      `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(
+        `${paths.join("\0")}\0`,
+      )});\n`,
+      "utf8",
+    );
+    if (process.platform === "win32") {
+      await writeFile(
+        fakeRipgrep,
+        `@echo off\r\n"${process.execPath}" "${fakeRipgrepScript}" %*\r\n`,
+        "utf8",
+      );
+    }
+    await chmod(fakeRipgrep, 0o755);
+    workspaceMutationCoordinators.getOrCreate(root).acquire({
+      workspaceRoot: root,
+      editorInstanceId: "glob-one-chunk-editor",
+    });
+    const tool = createGlobTool({
+      allowedPaths: [root],
+      maxResults: 3,
+      ripgrepCommand: fakeRipgrep,
+    });
+
+    const result = await tool.execute({ pattern: "*.txt", path: root });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.metadata).toMatchObject({
+      numFiles: 3,
+      truncated: true,
+    });
+    expect(result.content.split("\n")).toHaveLength(4);
+    expect(result.content).toContain(
+      "(Results are truncated. Consider using a more specific path or pattern.)",
+    );
   });
 
   test("missing ripgrep returns a dependency error instead of a divergent fallback", async () => {

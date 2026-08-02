@@ -11,6 +11,7 @@ import path from "node:path";
 import {
   DEFAULT_BWRAP_PROGRAM,
   FALLBACK_BWRAP_PROGRAM,
+  INHERITED_CWD_FD,
   SECCOMP_STDIN_FD,
 } from "./config.js";
 import {
@@ -18,14 +19,20 @@ import {
   type NetworkSeccompMode,
   type SeccompProgramFile,
 } from "./landlock.js";
+import { sanitizeSandboxLauncherEnvironment } from "../launcher-environment.js";
+
+const BUBBLEWRAP_HELP_PROBE_TIMEOUT_MS = 3_000;
+const BUBBLEWRAP_HELP_PROBE_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 export interface BubblewrapLauncher {
   readonly program: string;
   readonly supportsArgv0: boolean;
+  readonly supportsBindFd?: boolean;
 }
 
 export interface SpawnBubblewrapOptions extends SpawnOptions {
   readonly seccompMode?: NetworkSeccompMode | null;
+  readonly inheritedCwdFd?: number;
 }
 
 export function preferredBubblewrapLauncher(options: {
@@ -33,6 +40,7 @@ export function preferredBubblewrapLauncher(options: {
   readonly cwd?: string;
   readonly trustedDirectories?: readonly string[];
   readonly probeArgv0?: (program: string) => boolean;
+  readonly probeBindFd?: (program: string) => boolean;
 } = {}): BubblewrapLauncher | null {
   const program = findSystemBubblewrapInPath(
     options.searchPath ?? process.env["PATH"],
@@ -44,16 +52,35 @@ export function preferredBubblewrapLauncher(options: {
   return {
     program,
     supportsArgv0: probe(program),
+    supportsBindFd:
+      options.probeBindFd?.(program) ?? systemBubblewrapSupportsBindFd(program),
   };
 }
 
 function systemBubblewrapSupportsArgv0(program: string): boolean {
+  return systemBubblewrapHelp(program)?.includes("--argv0") ?? false;
+}
+
+export function systemBubblewrapSupportsBindFd(
+  program: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return systemBubblewrapHelp(program, env)?.includes("--ro-bind-fd") ?? false;
+}
+
+function systemBubblewrapHelp(
+  program: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
   const output = spawnSync(program, ["--help"], {
     encoding: "utf8",
-    maxBuffer: 1024 * 1024,
+    env: sanitizeSandboxLauncherEnvironment(env),
+    killSignal: "SIGKILL",
+    maxBuffer: BUBBLEWRAP_HELP_PROBE_MAX_OUTPUT_BYTES,
+    timeout: BUBBLEWRAP_HELP_PROBE_TIMEOUT_MS,
   });
-  if (output.error !== undefined) return false;
-  return `${output.stdout ?? ""}\n${output.stderr ?? ""}`.includes("--argv0");
+  if (output.error !== undefined || output.status !== 0) return null;
+  return `${output.stdout ?? ""}\n${output.stderr ?? ""}`;
 }
 
 export function spawnBubblewrap(
@@ -61,15 +88,22 @@ export function spawnBubblewrap(
   args: readonly string[],
   options: SpawnBubblewrapOptions = {},
 ): { readonly child: ChildProcess; readonly cleanup: () => void } {
+  const {
+    inheritedCwdFd,
+    seccompMode,
+    ...spawnOptions
+  } = options;
   const seccompFile =
-    options.seccompMode === undefined || options.seccompMode === null
+    seccompMode === undefined || seccompMode === null
       ? null
-      : openNetworkSeccompProgramFile(options.seccompMode);
-  const stdio = seccompFile === null
-    ? options.stdio
-    : stdioWithSeccompFd(options.stdio, seccompFile);
+      : openNetworkSeccompProgramFile(seccompMode);
+  const stdio = stdioWithBoundaryFds(
+    spawnOptions.stdio,
+    seccompFile,
+    inheritedCwdFd,
+  );
   const child = spawn(launcher.program, args, {
-    ...options,
+    ...spawnOptions,
     stdio,
   });
   return {
@@ -110,10 +144,12 @@ const TRUSTED_BWRAP_DIRECTORIES = [
   "/sbin",
 ];
 
-function stdioWithSeccompFd(
+function stdioWithBoundaryFds(
   stdio: SpawnOptions["stdio"],
-  seccompFile: SeccompProgramFile,
-): StdioOptions {
+  seccompFile: SeccompProgramFile | null,
+  inheritedCwdFd: number | undefined,
+): SpawnOptions["stdio"] {
+  if (seccompFile === null && inheritedCwdFd === undefined) return stdio;
   const base: unknown[] = Array.isArray(stdio)
     ? [...stdio]
     : stdio === undefined || stdio === "inherit"
@@ -121,10 +157,16 @@ function stdioWithSeccompFd(
       : stdio === "pipe"
         ? ["pipe", "pipe", "pipe"]
         : [stdio, stdio, stdio];
-  while (base.length <= SECCOMP_STDIN_FD) {
+  const highestFd = inheritedCwdFd === undefined
+    ? SECCOMP_STDIN_FD
+    : INHERITED_CWD_FD;
+  while (base.length <= highestFd) {
     base.push("ignore");
   }
-  base[SECCOMP_STDIN_FD] = seccompFile.fd;
+  if (seccompFile !== null) base[SECCOMP_STDIN_FD] = seccompFile.fd;
+  if (inheritedCwdFd !== undefined) {
+    base[INHERITED_CWD_FD] = inheritedCwdFd;
+  }
   return base as StdioOptions;
 }
 

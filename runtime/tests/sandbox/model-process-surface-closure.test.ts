@@ -20,8 +20,10 @@ import {
 import { createGlobTool } from "../../src/tools/system/glob.js";
 import {
   __resetRipgrepProbeForTests,
+  __setRipgrepAvailabilityForTests,
   createGrepTool,
 } from "../../src/tools/system/grep.js";
+import { MAX_GREP_ARGV_UTF8_BYTES } from "../../src/tools/system/ripgrep-protocol.js";
 import { createOrientTool } from "../../src/tools/system/orient.js";
 import { createFileReadTool } from "../../src/tools/system/file-read.js";
 import { normalizeUserPdfInput } from "../../src/prompts/attachments/user-pdf-input.js";
@@ -160,6 +162,25 @@ describe("model-controlled helper process sandbox closure", () => {
     await expectMarkerAbsent();
   });
 
+  test("Grep authenticates its bound sandbox before consulting a negative host probe cache", async () => {
+    __setRipgrepAvailabilityForTests(false);
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    await expect(
+      tool.execute(
+        unavailableArgs({
+          pattern: "needle",
+          path: root,
+          output_mode: "content",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "sandbox_probe_failed",
+      surface: "interactive",
+    });
+    await expectMarkerAbsent();
+  });
+
   test("Glob rejects before launching a PATH-resolved ripgrep", async () => {
     const tool = createGlobTool({ allowedPaths: [root] });
 
@@ -276,9 +297,7 @@ describe("model-controlled helper process sandbox closure", () => {
     await expectMarkerAbsent();
   });
 
-  test("Grep honors transformed probe and search commands", async () => {
-    const transformedCwd = join(root, "transformed-grep");
-    await mkdir(transformedCwd);
+  test("Grep honors transformed commands while retaining its bound cwd", async () => {
     const match = join(root, "match.ts");
     await writeFile(match, "needle\n", "utf8");
     const probeCapture = join(root, "grep-probe.json");
@@ -288,7 +307,7 @@ describe("model-controlled helper process sandbox closure", () => {
       return capturedNodeCommand({
         original: command,
         capturePath: isProbe ? probeCapture : searchCapture,
-        cwd: transformedCwd,
+        cwd: ".",
         label: isProbe ? "grep-probe" : "grep-search",
         stdout: isProbe ? "ripgrep 99.0.0\n" : `${match}\0`,
       });
@@ -301,20 +320,18 @@ describe("model-controlled helper process sandbox closure", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("match.ts");
     await expect(readCapture(probeCapture)).resolves.toEqual({
-      cwd: transformedCwd,
+      cwd: root,
       sentinel: "sentinel-grep-probe",
       argv0: "agenc-grep-probe",
     });
     await expect(readCapture(searchCapture)).resolves.toEqual({
-      cwd: transformedCwd,
+      cwd: root,
       sentinel: "sentinel-grep-search",
       argv0: "agenc-grep-search",
     });
   });
 
-  test("Glob honors its transformed enumerator command", async () => {
-    const transformedCwd = join(root, "transformed-glob");
-    await mkdir(transformedCwd);
+  test("Glob honors its transformed command while retaining its bound cwd", async () => {
     const match = join(root, "globbed.ts");
     await writeFile(match, "export {};\n", "utf8");
     const capture = join(root, "glob.json");
@@ -322,7 +339,7 @@ describe("model-controlled helper process sandbox closure", () => {
       capturedNodeCommand({
         original: command,
         capturePath: capture,
-        cwd: transformedCwd,
+        cwd: ".",
         label: "glob",
         stdout: "globbed.ts\0",
       }),
@@ -335,10 +352,114 @@ describe("model-controlled helper process sandbox closure", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("globbed.ts");
     await expect(readCapture(capture)).resolves.toEqual({
-      cwd: transformedCwd,
+      cwd: root,
       sentinel: "sentinel-glob",
       argv0: "agenc-glob",
     });
+  });
+
+  test("Orient honors its transformed command while retaining its bound cwd", async () => {
+    const source = join(root, "orientation.ts");
+    await writeFile(source, "export const orientationNeedle = true;\n", "utf8");
+    const capture = join(root, "orient.json");
+    const broker = transformingDangerBroker((command) =>
+      capturedNodeCommand({
+        original: command,
+        capturePath: capture,
+        cwd: ".",
+        label: "orient",
+        stdout: "orientation.ts\0",
+      }),
+    );
+    const args = { query: "orientationNeedle", path: root };
+    attachSandboxExecutionBroker(args, broker, "interactive");
+
+    const result = await createOrientTool({ allowedPaths: [root] }).execute(
+      args,
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("orientation.ts");
+    await expect(readCapture(capture)).resolves.toEqual({
+      cwd: root,
+      sentinel: "sentinel-orient",
+      argv0: "agenc-orient",
+    });
+  });
+
+  test("descriptor-bound ripgrep tools reject transformed cwd changes", async () => {
+    const changedCwd = join(root, "changed-cwd");
+    await mkdir(changedCwd);
+    const cases = [
+      {
+        label: "grep",
+        args: { pattern: "needle", path: root },
+        execute: (args: Record<string, unknown>) =>
+          createGrepTool({ allowedPaths: [root] }).execute(args),
+      },
+      {
+        label: "glob",
+        args: { pattern: "**/*.ts", path: root },
+        execute: (args: Record<string, unknown>) =>
+          createGlobTool({ allowedPaths: [root] }).execute(args),
+      },
+      {
+        label: "orient",
+        args: { query: "needle", path: root },
+        execute: (args: Record<string, unknown>) =>
+          createOrientTool({ allowedPaths: [root] }).execute(args),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const capture = join(root, `${testCase.label}-changed-cwd.json`);
+      const broker = transformingDangerBroker((command) =>
+        capturedNodeCommand({
+          original: command,
+          capturePath: capture,
+          cwd: changedCwd,
+          label: `${testCase.label}-changed-cwd`,
+          stdout: "",
+        }),
+      );
+      attachSandboxExecutionBroker(testCase.args, broker, "interactive");
+
+      await expect(testCase.execute(testCase.args)).rejects.toThrow(
+        /sandbox transform changed descriptor-bound ripgrep cwd/u,
+      );
+      await expect(access(capture)).rejects.toMatchObject({ code: "ENOENT" });
+      __resetRipgrepProbeForTests();
+    }
+    await expectMarkerAbsent();
+  });
+
+  test("descriptor-bound ripgrep tools include transformed argv0 in aggregate limits", async () => {
+    const cases = [
+      {
+        args: { pattern: "needle", path: root },
+        execute: (args: Record<string, unknown>) =>
+          createGrepTool({ allowedPaths: [root] }).execute(args),
+      },
+      {
+        args: { pattern: "**/*.ts", path: root },
+        execute: (args: Record<string, unknown>) =>
+          createGlobTool({ allowedPaths: [root] }).execute(args),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const broker = transformingDangerBroker((command) => ({
+        ...command,
+        argv0: "x".repeat(MAX_GREP_ARGV_UTF8_BYTES + 1),
+      }));
+      attachSandboxExecutionBroker(testCase.args, broker, "interactive");
+
+      await expect(testCase.execute(testCase.args)).rejects.toMatchObject({
+        reason: "ARGV_UTF8_LIMIT",
+      });
+      __resetRipgrepProbeForTests();
+    }
+    await expectMarkerAbsent();
   });
 
   test("FileRead honors transformed PDF helper commands", async () => {

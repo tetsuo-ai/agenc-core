@@ -31,10 +31,12 @@ import ignore from "ignore";
 
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import {
+  beginWorkspaceReadToolOperation,
+  captureWorkspaceAuthoritativeDirtySnapshots,
+  endWorkspaceToolOperation,
   workspaceAuthoritativeDirtySnapshots,
-  workspaceAuthoritativeDirtySnapshotsEqual,
-  workspaceHasProtectedEditorPaths,
   type WorkspaceAuthoritativeDirtySnapshot,
+  type WorkspaceToolOperationToken,
 } from "../../workspace/mutation-coordinator.js";
 import {
   runSupervisedProcess,
@@ -42,7 +44,6 @@ import {
 } from "../../utils/supervisedProcess.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
-import { readToolRuntimeContext } from "../runtimes/context.js";
 import {
   applyRuntimeSandboxToSpawn,
   type SandboxSpawnCommand,
@@ -492,6 +493,36 @@ function isExecutableUnavailable(error: unknown): boolean {
   return false;
 }
 
+const BOUND_RIPGREP_COMMAND_CWD = ".";
+
+function prepareBoundRipgrepCommand(params: {
+  readonly toolArgs: Record<string, unknown>;
+  readonly fallbackCwd: string;
+  readonly program: string;
+  readonly args: readonly string[];
+  readonly env: Record<string, string>;
+}): SandboxSpawnCommand {
+  const command = applyRuntimeSandboxToSpawn({
+    toolArgs: params.toolArgs,
+    fallbackCwd: params.fallbackCwd,
+    program: params.program,
+    args: params.args,
+    // The helper interprets "." through its already-open directory handle.
+    // An absolute transformed cwd would reintroduce a live-path race.
+    cwd: BOUND_RIPGREP_COMMAND_CWD,
+    cwdBinding: "inherited_readonly",
+    env: params.env,
+  });
+  if (command.cwd !== BOUND_RIPGREP_COMMAND_CWD) {
+    throw new Error(
+      "sandbox transform changed descriptor-bound ripgrep cwd; refusing to leave the authenticated capability root",
+    );
+  }
+  assertGrepArgumentEncoding(command.program, "ripgrep executable");
+  assertGrepArgvWithinLimits(command.argv0 ?? command.program, command.args);
+  return command;
+}
+
 /** Probe `rg` once per process and cache the result. */
 async function isRipgrepAvailable(
   cwd: string,
@@ -503,6 +534,15 @@ async function isRipgrepAvailable(
   const ripgrepPath = selectPinnedRipgrepPath();
   if (ripgrepPath === undefined) return false;
   if (readCapability !== undefined) {
+    const probeArgs = ["--no-config", "--no-follow", "--version"];
+    const command = prepareBoundRipgrepCommand({
+      toolArgs,
+      fallbackCwd: cwd,
+      program: ripgrepPath,
+      args: probeArgs,
+      env: scrubEnvForChildProcess(process.env),
+    });
+    if (ripgrepAvailability === false) return false;
     try {
       const remaining =
         deadline === undefined
@@ -513,9 +553,10 @@ async function isRipgrepAvailable(
             );
       if (remaining < 1) return false;
       const result = await readCapability.runRipgrep({
-        program: ripgrepPath,
-        args: ["--no-config", "--no-follow", "--version"],
-        env: scrubEnvForChildProcess(process.env),
+        program: command.program,
+        args: command.args,
+        env: command.env,
+        ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
         timeoutMs: remaining,
         maxOutputBytes: RIPGREP_PROBE_MAX_OUTPUT_BYTES,
         ...(signal !== undefined ? { signal } : {}),
@@ -529,6 +570,7 @@ async function isRipgrepAvailable(
       return false;
     }
   }
+  if (ripgrepAvailability === false) return false;
   // Authenticate and prepare the probe before consulting the process-wide
   // availability cache. A cached host result must never let a later restricted
   // session skip its own required sandbox boundary.
@@ -1930,14 +1972,21 @@ async function runRipgrepCollectRecords(params: {
   }
 
   if (params.readCapability !== undefined) {
+    const command = prepareBoundRipgrepCommand({
+      toolArgs: params.toolArgs,
+      fallbackCwd: params.cwd,
+      program: ripgrepPath,
+      args: processArgs,
+      env: scrubEnvForChildProcess(process.env),
+    });
     try {
       const skipLines = params.skipLines ?? 0;
-      const helperMaximumLines =
-        params.maximumLines ?? MAX_GREP_RESULTS + 1;
+      const helperMaximumLines = params.maximumLines ?? MAX_GREP_RESULTS + 1;
       const result = await params.readCapability.runRipgrep({
-        program: ripgrepPath,
-        args: processArgs,
-        env: scrubEnvForChildProcess(process.env),
+        program: command.program,
+        args: command.args,
+        env: command.env,
+        ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
         timeoutMs,
         maxOutputBytes: RIPGREP_WIRE_MAX_OUTPUT_BYTES,
         ...(helperMaximumLines !== undefined
@@ -2183,9 +2232,19 @@ function normalizedResultPath(path: string, searchRoot: string): string {
       )
       .toLowerCase();
   }
-  // POSIX pathnames are byte strings. NFC and NFD spellings can name two
-  // distinct files, so identity/deduplication must never Unicode-normalize.
-  return resolve(isAbsolute(path) ? path : join(searchRoot, path));
+  const resolved = resolve(isAbsolute(path) ? path : join(searchRoot, path));
+  // Linux can distinguish normalization forms. macOS cannot, so the result
+  // key must match the coordinator's canonical Editor identity on APFS.
+  return process.platform === "darwin" ? resolved.normalize("NFC") : resolved;
+}
+
+function normalizedRelativeResultPath(path: string): string {
+  const normalized = (
+    process.platform === "win32" ? path.replace(/\\/gu, "/") : path
+  ).replace(/^\.\/+/u, "");
+  return process.platform === "darwin"
+    ? normalized.normalize("NFC")
+    : normalized;
 }
 
 function normalizedResultPathBytes(path: Buffer, searchRoot: string): string {
@@ -2259,12 +2318,9 @@ async function pinnedSnapshotPathEligibility(params: {
       error: `Grep error: dirty path oracle exceeds ${MAX_GREP_PATH_ORACLE_ENTRIES} entries`,
     };
   }
-  const normalizeOraclePath = (path: string): string =>
-    (process.platform === "win32" ? path.replace(/\\/gu, "/") : path).replace(
-      /^\.\/+/,
-      "",
-    );
-  const normalizedPaths = params.relativePaths.map(normalizeOraclePath);
+  const normalizedPaths = params.relativePaths.map(
+    normalizedRelativeResultPath,
+  );
   const collisionKeys = new Set<string>();
   let totalPathBytes = 0;
   for (const path of normalizedPaths) {
@@ -2405,7 +2461,7 @@ async function pinnedSnapshotPathEligibility(params: {
       if (decoded === undefined) {
         return { error: "Grep error: path oracle emitted invalid UTF-8" };
       }
-      selected.add(normalizeOraclePath(decoded));
+      selected.add(normalizedRelativeResultPath(decoded));
     }
     return selected;
   } catch (error) {
@@ -2434,11 +2490,7 @@ async function eligibleAuthoritativeSnapshots(params: {
   );
   const selectedPaths =
     params.opts.globs.length === 0 && params.opts.type === undefined
-      ? new Set(
-          relativePaths.map((path) =>
-            process.platform === "win32" ? path.replace(/\\/gu, "/") : path,
-          ),
-        )
+      ? new Set(relativePaths.map(normalizedRelativeResultPath))
       : await pinnedSnapshotPathEligibility({
           relativePaths,
           globs: params.opts.globs,
@@ -2477,11 +2529,7 @@ async function eligibleAuthoritativeSnapshots(params: {
         relativePath,
         params.opts.includeIgnored,
       ) ||
-      !selectedPaths.has(
-        process.platform === "win32"
-          ? relativePath.replace(/\\/gu, "/")
-          : relativePath,
-      )
+      !selectedPaths.has(normalizedRelativeResultPath(relativePath))
     ) {
       continue;
     }
@@ -2734,6 +2782,7 @@ async function runRipgrepGrep(params: {
   readonly target: ResolvedTarget;
   readonly toolArgs: Record<string, unknown>;
   readonly authoritativeSnapshots: readonly WorkspaceAuthoritativeDirtySnapshot[];
+  readonly requiresStrictCandidateReads: boolean;
   readonly signal?: AbortSignal;
   readonly readCapability?: WorkspaceBoundReadCapability;
   readonly discoveryReadCapability?: WorkspaceBoundReadCapability;
@@ -2816,26 +2865,43 @@ async function runRipgrepGrep(params: {
               deadline: params.deadline,
             })
           : emptyLimitedRipgrepResult()
-        : await collectDescriptorBoundDiskRecords({
-            opts,
-            ...(diskMaximumLines !== undefined
-              ? { maximumLines: diskMaximumLines }
-              : {}),
-            ...(sourceSkipLines > 0 ? { skipLines: sourceSkipLines } : {}),
-            target,
-            toolArgs: params.toolArgs,
-            authoritativeSnapshots,
-            signal,
-            readCapability: params.readCapability,
-            ...(params.discoveryReadCapability !== undefined
-              ? { discoveryReadCapability: params.discoveryReadCapability }
-              : {}),
-            deadline: params.deadline,
-            ...(params.observer !== undefined
-              ? { observer: params.observer }
-              : {}),
-            operationBudget,
-          });
+        : !params.requiresStrictCandidateReads
+          ? target.existsOnDisk
+            ? await runRipgrepCollectRecords({
+                outputMode: opts.outputMode,
+                args: buildRipgrepArgs(opts),
+                cwd: ripgrepCwdForTarget(target),
+                toolArgs: params.toolArgs,
+                ...(diskMaximumLines !== undefined
+                  ? { maximumLines: diskMaximumLines }
+                  : {}),
+                ...(sourceSkipLines > 0 ? { skipLines: sourceSkipLines } : {}),
+                signal,
+                readCapability: params.readCapability,
+                deadline: params.deadline,
+                operationBudget,
+              })
+            : emptyLimitedRipgrepResult()
+          : await collectDescriptorBoundDiskRecords({
+              opts,
+              ...(diskMaximumLines !== undefined
+                ? { maximumLines: diskMaximumLines }
+                : {}),
+              ...(sourceSkipLines > 0 ? { skipLines: sourceSkipLines } : {}),
+              target,
+              toolArgs: params.toolArgs,
+              authoritativeSnapshots,
+              signal,
+              readCapability: params.readCapability,
+              ...(params.discoveryReadCapability !== undefined
+                ? { discoveryReadCapability: params.discoveryReadCapability }
+                : {}),
+              deadline: params.deadline,
+              ...(params.observer !== undefined
+                ? { observer: params.observer }
+                : {}),
+              operationBudget,
+            });
   if (signal?.aborted || result.aborted) {
     return errorResult("Search aborted");
   }
@@ -3951,44 +4017,31 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
       if ("error" in target) {
         return errorResult(target.error);
       }
-      const trustedEditorInteraction =
-        readToolRuntimeContext(rawArgs)?.invocation.turn.editorInteraction !==
-        undefined;
-      let requiresDescriptorBoundRead = trustedEditorInteraction;
-      try {
-        requiresDescriptorBoundRead ||= workspaceHasProtectedEditorPaths(
-          target.absolute,
-        );
-      } catch (error) {
-        return editorCoherenceError(error);
-      }
       let readCapability: WorkspaceBoundReadCapability | undefined;
-      if (requiresDescriptorBoundRead) {
-        try {
-          readCapability = await bindTargetReadCapability(target);
-        } catch (error) {
-          return editorCoherenceError(error);
+      let toolOperation: WorkspaceToolOperationToken | undefined;
+      let requiresStrictCandidateReads = false;
+      try {
+        const operation = beginWorkspaceReadToolOperation(
+          target.displayRoot,
+          GREP_TOOL_NAME,
+        );
+        toolOperation = operation.token;
+        requiresStrictCandidateReads = operation.requiresStrictCandidateReads;
+        readCapability = requiresStrictCandidateReads
+          ? await bindTargetReadCapability(target)
+          : await bindWorkspaceDirectoryReadCapability(target.displayRoot, {
+              expectedIdentity: target.displayRootIdentity,
+            });
+      } catch (error) {
+        if (toolOperation !== undefined) {
+          endWorkspaceToolOperation(toolOperation);
         }
+        return editorCoherenceError(error);
       }
       let ownedIgnoreReadCapability: WorkspaceBoundReadCapability | undefined;
       let materializedIgnoreFiles: MaterializedRipgrepIgnoreFiles | undefined;
 
       try {
-        await afterFinalPathCheck?.();
-        if (readCapability === undefined) {
-          try {
-            if (workspaceHasProtectedEditorPaths(target.absolute)) {
-              // Protection may appear after initial admission (for example an
-              // Editor lease syncing in the final-path test window). Bind only
-              // the inode admitted by resolveSearchPath; a late pathname or
-              // ancestor exchange therefore fails closed instead of redirecting
-              // ripgrep outside the authenticated workspace.
-              readCapability = await bindTargetReadCapability(target);
-            }
-          } catch (error) {
-            return editorCoherenceError(error);
-          }
-        }
         let ignoreReadCapability = readCapability;
         if (
           readCapability !== undefined &&
@@ -4004,26 +4057,25 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
             return editorCoherenceError(error);
           }
         }
-        let authoritativeSnapshots: readonly WorkspaceAuthoritativeDirtySnapshot[];
+        let authoritativeCapture: ReturnType<
+          typeof captureWorkspaceAuthoritativeDirtySnapshots
+        >;
         try {
-          authoritativeSnapshots = workspaceAuthoritativeDirtySnapshots(
+          authoritativeCapture = captureWorkspaceAuthoritativeDirtySnapshots(
             target.absolute,
+            { includeDescendants: target.isDirectory },
           );
         } catch (error) {
           return editorCoherenceError(error);
         }
+        const authoritativeSnapshots = authoritativeCapture.snapshots;
+        await afterFinalPathCheck?.();
         const finalizeAuthoritativeResult = async (
           result: ToolResult,
         ): Promise<ToolResult> => {
           await beforeAuthoritativeSnapshotValidation?.();
           try {
-            const current = workspaceAuthoritativeDirtySnapshots(
-              target.absolute,
-            );
-            return workspaceAuthoritativeDirtySnapshotsEqual(
-              authoritativeSnapshots,
-              current,
-            )
+            return authoritativeCapture.isCurrent()
               ? result
               : editorCoherenceError();
           } catch (error) {
@@ -4111,6 +4163,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
             target,
             toolArgs: rawArgs,
             authoritativeSnapshots,
+            requiresStrictCandidateReads,
             signal,
             deadline,
             ...(protectedTaskObserver !== undefined
@@ -4129,9 +4182,21 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
           }),
         );
       } finally {
-        await materializedIgnoreFiles?.dispose();
-        await ownedIgnoreReadCapability?.dispose();
-        await readCapability?.dispose();
+        try {
+          try {
+            await materializedIgnoreFiles?.dispose();
+          } finally {
+            try {
+              await ownedIgnoreReadCapability?.dispose();
+            } finally {
+              await readCapability?.dispose();
+            }
+          }
+        } finally {
+          if (toolOperation !== undefined) {
+            endWorkspaceToolOperation(toolOperation);
+          }
+        }
       }
     },
   };

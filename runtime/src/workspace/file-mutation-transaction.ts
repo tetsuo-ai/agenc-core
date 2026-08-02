@@ -260,6 +260,7 @@ export interface WorkspaceBoundReadCapability {
     readonly program: string;
     readonly args: readonly string[];
     readonly env: Readonly<Record<string, string>>;
+    readonly argv0?: string;
     readonly timeoutMs: number;
     readonly maxOutputBytes: number;
     readonly lineLimit?: number;
@@ -382,8 +383,27 @@ interface BoundHelperMessage {
   readonly workUnits?: number;
   readonly spooledBytes?: number;
   readonly stopReason?: WorkspaceBoundProcessStopReason;
-  readonly spawnError?: string;
+  readonly spawnError?: {
+    readonly message: string;
+    readonly code?: string;
+  };
   readonly missing?: boolean;
+}
+
+const BOUND_SPAWN_ERROR_CODES = new Set(["EACCES", "ENOENT", "EPERM"]);
+
+function deserializeBoundSpawnError(value: {
+  readonly message: string;
+  readonly code?: string;
+}): Error {
+  const error = new Error(value.message);
+  if (
+    typeof value.code === "string" &&
+    BOUND_SPAWN_ERROR_CODES.has(value.code)
+  ) {
+    Object.assign(error, { code: value.code });
+  }
+  return error;
 }
 
 const BOUND_SOURCE_PIPE_FD = 3;
@@ -568,10 +588,7 @@ function createBoundHelperLaunchPlan(input: {
   readonly directorySource: BoundSourceDescriptor;
   readonly workerSource: BoundSourceDescriptor;
 }): BoundHelperLaunchPlan {
-  if (
-    !isWellFormedUtf16(input.executable) ||
-    input.executable.includes("\0")
-  ) {
+  if (!isWellFormedUtf16(input.executable) || input.executable.includes("\0")) {
     throw new Error("bound helper executable is not serializable");
   }
   const environment = createBoundHelperEnvironment(
@@ -621,9 +638,7 @@ async function writeBoundSourcePipe(
   source: BoundSourceDescriptor,
 ): Promise<void> {
   const pipe = (child.stdio as readonly unknown[])[descriptor] as
-    | Writable
-    | null
-    | undefined;
+    Writable | null | undefined;
   if (pipe === null || pipe === undefined || typeof pipe.end !== "function") {
     throw new Error(`bound helper source pipe ${descriptor} is unavailable`);
   }
@@ -655,9 +670,7 @@ export function __workspaceBoundHelperLaunchPlanForTests(input: {
   });
 }
 
-export function __workspaceBoundSourceBootstrapForTests(
-  source: string,
-): {
+export function __workspaceBoundSourceBootstrapForTests(source: string): {
   readonly args: readonly string[];
   readonly bytes: Buffer;
   readonly sourcePipeDescriptor: number;
@@ -890,6 +903,15 @@ const createStructuredRipgrepLimiter = (value) => {
         .toLowerCase();
       return "win32:" + Buffer.from(normalized, "utf8").toString("hex");
     }
+    if (process.platform === "darwin") {
+      const normalized = decodeUtf8Strict(
+        path,
+        "ripgrep macOS path",
+      )
+        .replace(/^\.\/+/u, "")
+        .normalize("NFC");
+      return "darwin:" + Buffer.from(normalized, "utf8").toString("hex");
+    }
     let start = 0;
     if (path.length >= 2 && path[0] === 0x2e && path[1] === 0x2f) {
       start = 1;
@@ -1055,7 +1077,6 @@ const createStructuredRipgrepLimiter = (value) => {
         );
       }
       const path = decodeWirePath(data.path, "begin path");
-      decodeUtf8Strict(path, "begin path");
       openJsonPath = path;
       openJsonExcluded = excludedPathByteKeys.has(normalizedPathByteKey(path));
       return { json, data, type: json.type, path };
@@ -1472,6 +1493,11 @@ const runPinnedRipgrep = async (command, inputHandle) => {
     command.program.includes("\0") ||
     !Array.isArray(command.args) ||
     !command.args.every((value) => typeof value === "string") ||
+    command.args.some((value) => value.includes("\0")) ||
+    (command.argv0 !== undefined &&
+      (typeof command.argv0 !== "string" ||
+        command.argv0.length === 0 ||
+        command.argv0.includes("\0"))) ||
     command.args.some((value) => value === "--follow" || value === "-L")
   ) {
     throw Object.assign(new Error("invalid pinned ripgrep command"), {
@@ -1525,6 +1551,7 @@ const runPinnedRipgrep = async (command, inputHandle) => {
   const child = spawn(command.program, command.args, {
     cwd: ".",
     env: commandEnv,
+    ...(command.argv0 === undefined ? {} : { argv0: command.argv0 }),
     windowsHide: true,
     stdio: [inputHandle.fd, "pipe", "pipe"],
   });
@@ -1552,7 +1579,10 @@ const runPinnedRipgrep = async (command, inputHandle) => {
       };
     } catch (error) {
       structuredLimitFailed = true;
-      spawnError = error instanceof Error ? error.message : String(error);
+      spawnError = {
+        message: error instanceof Error ? error.message : String(error),
+        ...(typeof error?.code === "string" ? { code: error.code } : {}),
+      };
       child.kill();
       return;
     }
@@ -1588,7 +1618,10 @@ const runPinnedRipgrep = async (command, inputHandle) => {
     }
   });
   child.once("error", (error) => {
-    spawnError = error instanceof Error ? error.message : String(error);
+    spawnError = {
+      message: error instanceof Error ? error.message : String(error),
+      ...(typeof error?.code === "string" ? { code: error.code } : {}),
+    };
   });
   const closed = await new Promise((resolveClose) => {
     child.once("close", (exitCode, signal) =>
@@ -1607,7 +1640,10 @@ const runPinnedRipgrep = async (command, inputHandle) => {
       });
     } catch (error) {
       structuredLimitFailed = true;
-      spawnError = error instanceof Error ? error.message : String(error);
+      spawnError = {
+        message: error instanceof Error ? error.message : String(error),
+        ...(typeof error?.code === "string" ? { code: error.code } : {}),
+      };
     }
   }
   return {
@@ -2222,6 +2258,11 @@ try {
           command.program.includes("\0") ||
           !Array.isArray(command.args) ||
           !command.args.every((value) => typeof value === "string") ||
+          command.args.some((value) => value.includes("\0")) ||
+          (command.argv0 !== undefined &&
+            (typeof command.argv0 !== "string" ||
+              command.argv0.length === 0 ||
+              command.argv0.includes("\0"))) ||
           command.args.some(
             (value) => value === "--follow" || value === "-L",
           )
@@ -2304,6 +2345,9 @@ try {
           const child = spawn(command.program, command.args, {
             cwd: ".",
             env: commandEnv,
+            ...(command.argv0 === undefined
+              ? {}
+              : { argv0: command.argv0 }),
             windowsHide: true,
             stdio: ["pipe", "pipe", "pipe"],
           });
@@ -2343,8 +2387,13 @@ try {
                   if (stopReason === undefined) child.stdout.resume();
                 })
                 .catch((error) => {
-                  spawnError =
-                    error instanceof Error ? error.message : String(error);
+                  spawnError = {
+                    message:
+                      error instanceof Error ? error.message : String(error),
+                    ...(typeof error?.code === "string"
+                      ? { code: error.code }
+                      : {}),
+                  };
                   child.kill();
                 });
               return;
@@ -2366,8 +2415,13 @@ try {
               };
             } catch (error) {
               structuredLimitFailed = true;
-              spawnError =
-                error instanceof Error ? error.message : String(error);
+              spawnError = {
+                message:
+                  error instanceof Error ? error.message : String(error),
+                ...(typeof error?.code === "string"
+                  ? { code: error.code }
+                  : {}),
+              };
               child.kill();
               return;
             }
@@ -2409,8 +2463,10 @@ try {
             }
           });
           child.once("error", (error) => {
-            spawnError =
-              error instanceof Error ? error.message : String(error);
+            spawnError = {
+              message: error instanceof Error ? error.message : String(error),
+              ...(typeof error?.code === "string" ? { code: error.code } : {}),
+            };
           });
           const stdin =
             typeof command.stdinBase64 === "string"
@@ -2437,8 +2493,13 @@ try {
               });
             } catch (error) {
               structuredLimitFailed = true;
-              spawnError =
-                error instanceof Error ? error.message : String(error);
+              spawnError = {
+                message:
+                  error instanceof Error ? error.message : String(error),
+                ...(typeof error?.code === "string"
+                  ? { code: error.code }
+                  : {}),
+              };
             }
           }
           send({
@@ -2718,8 +2779,7 @@ const BOUND_DIRECTORY_HELPER_DESCRIPTOR = describeBoundSource(
   BOUND_DIRECTORY_HELPER_SOURCE,
 );
 let workspaceBoundReadWorkerSourceTransformForTests:
-  | ((source: Buffer) => Buffer)
-  | undefined;
+  ((source: Buffer) => Buffer) | undefined;
 
 /** Test-only seam for proving fd4 authentication fails before helper readiness. */
 export function __setWorkspaceBoundReadWorkerSourceTransformForTests(
@@ -3126,6 +3186,7 @@ class BoundDirectoryHelper {
     readonly program: string;
     readonly args: readonly string[];
     readonly env: Readonly<Record<string, string>>;
+    readonly argv0?: string;
     readonly timeoutMs: number;
     readonly maxOutputBytes: number;
     readonly lineLimit?: number;
@@ -3173,6 +3234,7 @@ class BoundDirectoryHelper {
           program: input.program,
           args: [...input.args],
           env: { ...input.env },
+          ...(input.argv0 !== undefined ? { argv0: input.argv0 } : {}),
           timeoutMs: input.timeoutMs,
           maxOutputBytes: input.maxOutputBytes,
           ...(input.lineLimit !== undefined
@@ -3213,7 +3275,7 @@ class BoundDirectoryHelper {
           ? { stopReason: message.stopReason }
           : {}),
         ...(message.spawnError !== undefined
-          ? { spawnError: new Error(message.spawnError) }
+          ? { spawnError: deserializeBoundSpawnError(message.spawnError) }
           : {}),
       };
     } catch (error) {
@@ -3526,6 +3588,7 @@ function workspaceBoundReadCapability(input: {
         program: runInput.program,
         args: runInput.args,
         env: runInput.env,
+        ...(runInput.argv0 !== undefined ? { argv0: runInput.argv0 } : {}),
         timeoutMs: runInput.timeoutMs,
         maxOutputBytes: runInput.maxOutputBytes,
         ...(runInput.lineLimit !== undefined
@@ -3565,9 +3628,9 @@ async function preciseStats(path: string): Promise<BigIntStats> {
 
 function resolvedReadIdentityPath(path: string): string {
   const resolvedPath = resolve(path);
-  // POSIX pathnames are byte strings: NFC and NFD spellings may be distinct
-  // directory entries. Windows retains the existing canonical spelling.
-  return process.platform === "win32"
+  // Linux pathnames may distinguish normalization forms. Windows and macOS
+  // identities do not, so bindings use the same key as workspace authority.
+  return process.platform === "win32" || process.platform === "darwin"
     ? resolvedPath.normalize("NFC")
     : resolvedPath;
 }

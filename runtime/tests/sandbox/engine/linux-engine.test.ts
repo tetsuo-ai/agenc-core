@@ -180,6 +180,92 @@ describe("Linux sandbox engine", () => {
     });
   });
 
+  it("serializes descriptor-bound cwd explicitly and narrows it to read-only filesystem authority", () => {
+    const manager = new SandboxManager();
+    const result = manager.transform({
+      command: {
+        program: "/bin/echo",
+        args: ["ok"],
+        cwd: ".",
+        cwdBinding: "inherited_readonly",
+        env: { PATH: "/usr/bin" },
+      },
+      permissions: {
+        fileSystem: restrictedFileSystemPolicy([
+          {
+            path: { kind: "special", value: { kind: "root" } },
+            access: "read",
+          },
+          {
+            path: { kind: "special", value: { kind: "project_roots" } },
+            access: "write",
+          },
+        ]),
+        network: "disabled",
+      },
+      sandbox: "linux_seccomp",
+      enforceManagedNetwork: false,
+      sandboxPolicyCwd: "/repo",
+      agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+      useLegacyLandlock: false,
+      windowsSandboxLevel: "disabled",
+      windowsSandboxPrivateDesktop: false,
+      platform: "linux",
+      isWsl1: false,
+    });
+
+    expect(result.command).toContain("--inherited-readonly-command-cwd");
+    expect(result.command).not.toContain("--command-cwd");
+    expect(result.command).not.toContain("/repo");
+    expect(result.command).not.toContain("--sandbox-policy-cwd");
+    const profileIndex = result.command.indexOf("--permission-profile");
+    const serialized = JSON.parse(result.command[profileIndex + 1] ?? "{}");
+    expect(serialized.fileSystem.entries).toEqual([
+      {
+        path: { kind: "special", value: { kind: "root" } },
+        access: "read",
+      },
+    ]);
+    expect(serialized.fileSystem.entries).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ access: "write" })]),
+    );
+    expect(result.permissionProfile).toEqual(serialized);
+    expect(result.fileSystemSandboxPolicy).toEqual(serialized.fileSystem);
+  });
+
+  it("rejects inherited cwd binding unless cwd is exactly dot", () => {
+    const manager = new SandboxManager();
+    expect(() =>
+      manager.transform({
+        command: {
+          program: "/bin/echo",
+          args: ["ok"],
+          cwd: "/repo",
+          cwdBinding: "inherited_readonly",
+          env: { PATH: "/usr/bin" },
+        },
+        permissions: {
+          fileSystem: restrictedFileSystemPolicy([
+            {
+              path: { kind: "special", value: { kind: "root" } },
+              access: "read",
+            },
+          ]),
+          network: "disabled",
+        },
+        sandbox: "linux_seccomp",
+        enforceManagedNetwork: false,
+        sandboxPolicyCwd: "/repo",
+        agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+        useLegacyLandlock: false,
+        windowsSandboxLevel: "disabled",
+        windowsSandboxPrivateDesktop: false,
+        platform: "linux",
+        isWsl1: false,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_inherited_cwd" }));
+  });
+
   it("rejects a Linux launcher writable by a nominally restricted profile", () => {
     const manager = new SandboxManager();
     const act = () => manager.transform({

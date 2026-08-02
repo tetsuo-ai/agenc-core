@@ -160,8 +160,8 @@ describe("descriptor-bound file reads", () => {
   });
 
   test("rejects an oversized helper source before spawn", () => {
-    const maximum = __workspaceBoundSourceBootstrapForTests("export {};")
-      .maximumSourceBytes;
+    const maximum =
+      __workspaceBoundSourceBootstrapForTests("export {};").maximumSourceBytes;
     expect(() =>
       __workspaceBoundSourceBootstrapForTests("x".repeat(maximum + 1)),
     ).toThrowError(/maximum/iu);
@@ -186,9 +186,9 @@ describe("descriptor-bound file reads", () => {
       root = await mkdtemp(join(tmpdir(), "agenc-bound-read-fd4-"));
       __setWorkspaceBoundReadWorkerSourceTransformForTests(transform);
 
-      await expect(
-        bindWorkspaceDirectoryReadCapability(root),
-      ).rejects.toThrow(/helper|capability|source/iu);
+      await expect(bindWorkspaceDirectoryReadCapability(root)).rejects.toThrow(
+        /helper|capability|source/iu,
+      );
     },
   );
 
@@ -307,6 +307,44 @@ describe("descriptor-bound file reads", () => {
       await expect(capability.dispose()).resolves.toBeUndefined();
     }
   });
+
+  test.each([
+    { label: "directory helper", relativeInputPath: undefined },
+    { label: "authenticated read worker", relativeInputPath: "target.txt" },
+  ])(
+    "forwards transformed argv0 and environment through the $label transport",
+    async ({ relativeInputPath }) => {
+      root = await mkdtemp(join(tmpdir(), "agenc-bound-read-argv0-"));
+      await writeFile(join(root, "target.txt"), "worker input\n", "utf8");
+      const capability = await bindWorkspaceDirectoryReadCapability(root);
+      const argv0 = "agenc-transformed-ripgrep";
+      const sentinel = "transformed-environment";
+
+      try {
+        const result = await capability.runRipgrep({
+          program: process.execPath,
+          args: [
+            "-e",
+            "process.stdout.write(JSON.stringify({ argv0: process.argv0, cwd: process.cwd(), sentinel: process.env.AGENC_BOUND_SENTINEL }));",
+          ],
+          argv0,
+          env: { AGENC_BOUND_SENTINEL: sentinel },
+          timeoutMs: 5_000,
+          maxOutputBytes: 4_096,
+          ...(relativeInputPath === undefined ? {} : { relativeInputPath }),
+        });
+
+        expect(result.spawnError).toBeUndefined();
+        expect(JSON.parse(result.stdout.toString("utf8"))).toEqual({
+          argv0,
+          cwd: root,
+          sentinel,
+        });
+      } finally {
+        await capability.dispose();
+      }
+    },
+  );
 
   test("structured line limiting preserves one fragmented JSON record", async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-bound-read-structured-"));
@@ -497,74 +535,86 @@ describe("descriptor-bound file reads", () => {
     },
   );
 
-  test(
-    "normalizes Windows dot prefixes, separators, and Unicode case before excluding dirty paths",
-    async () => {
-      const transactionSource = await readFile(
-        new URL(
-          "../../src/workspace/file-mutation-transaction.ts",
-          import.meta.url,
-        ),
-        "utf8",
-      );
-      const limiterSourcePrefix =
-        "const STRUCTURED_RIPGREP_LIMITER_SOURCE = String.raw`\n";
-      const limiterSourceSuffix =
-        "\n`;\n\nconst BOUND_READ_WORKER_SOURCE";
-      const limiterSourceStart = transactionSource.indexOf(limiterSourcePrefix);
-      const limiterSourceEnd = transactionSource.indexOf(
-        limiterSourceSuffix,
-        limiterSourceStart + limiterSourcePrefix.length,
-      );
-      if (limiterSourceStart < 0 || limiterSourceEnd < 0) {
-        throw new Error("structured ripgrep limiter source was not found");
-      }
-      const limiterSource = transactionSource.slice(
-        limiterSourceStart + limiterSourcePrefix.length,
-        limiterSourceEnd,
-      );
-      const createLimiter = Function(
-        `${limiterSource}\nreturn createStructuredRipgrepLimiter;`,
-      )() as (value: {
-        readonly outputMode: "files_with_matches";
-        readonly maximumLines: number;
-        readonly maximumRecordBytes: number;
-        readonly excludedPaths: readonly string[];
-      }) => {
-        readonly consume: (chunk: Buffer) => {
-          readonly captureParts: readonly Buffer[];
-          readonly reached: boolean;
-        };
+  test("normalizes platform path aliases before excluding dirty paths", async () => {
+    const transactionSource = await readFile(
+      new URL(
+        "../../src/workspace/file-mutation-transaction.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const limiterSourcePrefix =
+      "const STRUCTURED_RIPGREP_LIMITER_SOURCE = String.raw`\n";
+    const limiterSourceSuffix = "\n`;\n\nconst BOUND_READ_WORKER_SOURCE";
+    const limiterSourceStart = transactionSource.indexOf(limiterSourcePrefix);
+    const limiterSourceEnd = transactionSource.indexOf(
+      limiterSourceSuffix,
+      limiterSourceStart + limiterSourcePrefix.length,
+    );
+    if (limiterSourceStart < 0 || limiterSourceEnd < 0) {
+      throw new Error("structured ripgrep limiter source was not found");
+    }
+    const limiterSource = transactionSource.slice(
+      limiterSourceStart + limiterSourcePrefix.length,
+      limiterSourceEnd,
+    );
+    const createLimiter = Function(
+      `${limiterSource}\nreturn createStructuredRipgrepLimiter;`,
+    )() as (value: {
+      readonly outputMode: "files_with_matches";
+      readonly maximumLines: number;
+      readonly maximumRecordBytes: number;
+      readonly excludedPaths: readonly string[];
+    }) => {
+      readonly consume: (chunk: Buffer) => {
+        readonly captureParts: readonly Buffer[];
+        readonly reached: boolean;
       };
-      const wire = Buffer.from(".\\CAF\u00c9\\Dirty.ts\0clean.ts\0", "utf8");
-      const platformDescriptor = Object.getOwnPropertyDescriptor(
-        process,
-        "platform",
-      );
-      if (platformDescriptor?.configurable !== true) {
-        throw new Error("process.platform is not configurable for this test");
-      }
-      try {
-        Object.defineProperty(process, "platform", {
-          ...platformDescriptor,
-          value: "win32",
-        });
-        const result = createLimiter({
-          outputMode: "files_with_matches",
-          maximumLines: 1,
-          maximumRecordBytes: 1_024,
-          excludedPaths: ["caf\u00e9/dirty.ts"],
-        }).consume(wire);
+    };
+    const wire = Buffer.from(".\\CAF\u00c9\\Dirty.ts\0clean.ts\0", "utf8");
+    const platformDescriptor = Object.getOwnPropertyDescriptor(
+      process,
+      "platform",
+    );
+    if (platformDescriptor?.configurable !== true) {
+      throw new Error("process.platform is not configurable for this test");
+    }
+    try {
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "win32",
+      });
+      const result = createLimiter({
+        outputMode: "files_with_matches",
+        maximumLines: 1,
+        maximumRecordBytes: 1_024,
+        excludedPaths: ["caf\u00e9/dirty.ts"],
+      }).consume(wire);
 
-        expect(result.reached).toBe(true);
-        expect(Buffer.concat(result.captureParts)).toEqual(
-          Buffer.from("clean.ts\0", "utf8"),
-        );
-      } finally {
-        Object.defineProperty(process, "platform", platformDescriptor);
-      }
-    },
-  );
+      expect(result.reached).toBe(true);
+      expect(Buffer.concat(result.captureParts)).toEqual(
+        Buffer.from("clean.ts\0", "utf8"),
+      );
+
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "darwin",
+      });
+      const darwinResult = createLimiter({
+        outputMode: "files_with_matches",
+        maximumLines: 1,
+        maximumRecordBytes: 1_024,
+        excludedPaths: ["caf\u00e9/dirty.ts"],
+      }).consume(Buffer.from("./cafe\u0301/dirty.ts\0clean.ts\0", "utf8"));
+
+      expect(darwinResult.reached).toBe(true);
+      expect(Buffer.concat(darwinResult.captureParts)).toEqual(
+        Buffer.from("clean.ts\0", "utf8"),
+      );
+    } finally {
+      Object.defineProperty(process, "platform", platformDescriptor);
+    }
+  });
 
   test("excluded structured records still consume the helper work budget", async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-bound-read-work-budget-"));

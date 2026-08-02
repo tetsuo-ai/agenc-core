@@ -904,10 +904,12 @@ Linux local gate. Its `linux-kernel-sandbox` job installs the digest- and
 byte-pinned Ubuntu bubblewrap package from
 [`release-toolchain.json`](../release-toolchain.json), keeps Ubuntu's global
 AppArmor user-namespace restriction enabled, and loads the narrow profile
-rendered by AgenC for a root-owned generated wrapper. The one-test allowlist
+rendered by AgenC for a root-owned generated wrapper. The two-test allowlist
 then exercises the production broker, manager, packaged launcher, bubblewrap,
 user/PID/mount/network namespaces, network seccomp, filesystem mounts, and
 descendant cleanup as an unprivileged process with no effective capabilities.
+Linux readiness requires bubblewrap's descriptor-based `--ro-bind-fd` mount;
+older builds fail closed with an upgrade diagnostic before namespace setup.
 The job proves host loopback reachability before the sandbox, requires the
 sandboxed socket syscall to fail with `EPERM`, and unloads the profile with
 process- and checkout-cleanliness postconditions.
@@ -915,13 +917,15 @@ process- and checkout-cleanliness postconditions.
 The `powershell` job installs the digest- and byte-pinned
 PowerShell runtime from [`release-toolchain.json`](../release-toolchain.json),
 enters the same credential-stripped, private-home Vitest boundary as the
-default suite, and runs an exact four-file allowlist. The Node tripwire remains
+default suite, and runs an exact three-file allowlist. The Node tripwire remains
 active, while the native PowerShell subprocess is restricted to local
 fixtures, fixed telemetry/update opt-outs, and an asserted no-process-leak
 postcondition; this narrow lane is not an OS egress boundary.
 The `neovim` job similarly provisions the official digest- and byte-pinned
 Neovim 0.12.1 Linux binary and requires all four real-process lifecycle tests
-in its one-file allowlist. The `macos-native` job first runs the 62-test
+in its one-file allowlist. Its provider and observed-descendant phase runs an
+exact 63-test, three-file allowlist on every required hosted target. The
+`macos-native` job first runs the 67-test
 red-probe runner contract, including residual-process settlement on Darwin.
 The macOS and Windows native jobs then run a shared 80-test, eight-suite,
 five-file FND set. It combines the 44-test release-builder set with 36

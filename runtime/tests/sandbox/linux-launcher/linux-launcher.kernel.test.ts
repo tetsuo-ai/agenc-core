@@ -12,7 +12,9 @@ import {
   readdirSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer, connect, type Server } from "node:net";
@@ -22,7 +24,9 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
 import { SandboxExecutionBroker } from "../../../src/sandbox/execution-broker.js";
+import { INHERITED_CWD_SANDBOX_PATH } from "../../../src/sandbox/linux-launcher/config.js";
 import { findSystemBubblewrapInPath } from "../../../src/sandbox/linux-launcher/launcher.js";
+import { bindWorkspaceDirectoryReadCapability } from "../../../src/workspace/file-mutation-transaction.js";
 
 const runtimeRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const launcherEntry = join(runtimeRoot, "bin", "agenc-linux-sandbox");
@@ -269,6 +273,139 @@ test(
     }
   },
 );
+
+test(
+  "keeps descriptor-bound tool cwd read-only across a workspace exchange",
+  { timeout: 20_000 },
+  async () => {
+    expect(process.platform).toBe("linux");
+    expect(existsSync(launcherEntry), launcherEntry).toBe(true);
+    expect(existsSync(builtLauncher), builtLauncher).toBe(true);
+    const root = mkdtempSync(join("/var/tmp", "agenc-kernel-bound-cwd-"));
+    const boundWorkspace = join(root, "workspace");
+    const displacedWorkspace = join(root, "workspace-displaced");
+    const outsideWorkspace = join(root, "workspace-outside");
+    const outsideWrite = join(outsideWorkspace, "outside-write.txt");
+    mkdirSync(boundWorkspace, { mode: 0o700 });
+    mkdirSync(outsideWorkspace, { mode: 0o700 });
+    writeFileSync(join(boundWorkspace, "sentinel.txt"), "bound-inside", {
+      mode: 0o600,
+    });
+    writeFileSync(join(outsideWorkspace, "sentinel.txt"), "outside", {
+      mode: 0o600,
+    });
+    const childEnv = stringEnvironment(process.env);
+    delete childEnv.NODE_OPTIONS;
+    const boundCapability = await bindWorkspaceDirectoryReadCapability(
+      boundWorkspace,
+    );
+    try {
+      const boundBroker = new SandboxExecutionBroker({
+        mode: "workspace_write",
+        cwd: boundWorkspace,
+        env: childEnv,
+        agencLinuxSandboxExe: launcherEntry,
+      });
+      const status = boundBroker.status();
+      expect(status, JSON.stringify(status, null, 2)).toMatchObject({
+        kind: "ready",
+        mode: "workspace_write",
+        platform: "linux",
+      });
+      const boundPrepared = boundBroker.prepareSpawn("tool", {
+        program: process.execPath,
+        args: [
+          "--input-type=module",
+          "--eval",
+          descriptorBoundProbeScript(),
+          Buffer.from(
+            JSON.stringify({ originalWorkspace: boundWorkspace }),
+            "utf8",
+          ).toString("base64"),
+        ],
+        cwd: ".",
+        cwdBinding: "inherited_readonly",
+        env: childEnv,
+      });
+      expect(boundPrepared.args).toContain(
+        "--inherited-readonly-command-cwd",
+      );
+      expect(boundPrepared.args).not.toContain(boundWorkspace);
+
+      renameSync(boundWorkspace, displacedWorkspace);
+      symlinkSync(outsideWorkspace, boundWorkspace, "dir");
+      const boundResult = await boundCapability.runRipgrep({
+        program: boundPrepared.program,
+        args: boundPrepared.args,
+        env: boundPrepared.env,
+        ...(boundPrepared.argv0 === undefined
+          ? {}
+          : { argv0: boundPrepared.argv0 }),
+        timeoutMs: 10_000,
+        maxOutputBytes: 16 * 1024,
+      });
+      const boundDiagnostics = [
+        `exit=${String(boundResult.exitCode)}`,
+        `signal=${String(boundResult.signal)}`,
+        `stopReason=${String(boundResult.stopReason)}`,
+        `spawnError=${String(boundResult.spawnError)}`,
+        `stdout=${JSON.stringify(boundResult.stdout.toString("utf8"))}`,
+        `stderr=${JSON.stringify(boundResult.stderr.toString("utf8"))}`,
+      ].join("\n");
+      expect(boundResult.spawnError, boundDiagnostics).toBeUndefined();
+      expect(boundResult.stopReason, boundDiagnostics).toBeUndefined();
+      expect(boundResult.exitCode, boundDiagnostics).toBe(0);
+      const boundEvidence = JSON.parse(
+        boundResult.stdout.toString("utf8"),
+      ) as {
+        readonly cwd: string;
+        readonly relativeCreateError: string | null;
+        readonly retargetCreateError: string | null;
+        readonly sentinel: string;
+      };
+      expect(boundEvidence).toEqual({
+        cwd: INHERITED_CWD_SANDBOX_PATH,
+        relativeCreateError: "EROFS",
+        retargetCreateError: "EROFS",
+        sentinel: "bound-inside",
+      });
+      expect(existsSync(outsideWrite)).toBe(false);
+    } finally {
+      try {
+        await boundCapability.dispose();
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    }
+  },
+);
+
+function descriptorBoundProbeScript(): string {
+  return `
+    import { readFileSync, writeFileSync } from "node:fs";
+    import { join } from "node:path";
+
+    const payload = JSON.parse(
+      Buffer.from(process.argv[1], "base64").toString("utf8"),
+    );
+    const attemptCreate = (path) => {
+      try {
+        writeFileSync(path, "unexpected-write");
+        return null;
+      } catch (error) {
+        return typeof error?.code === "string" ? error.code : String(error);
+      }
+    };
+    process.stdout.write(JSON.stringify({
+      cwd: process.cwd(),
+      relativeCreateError: attemptCreate("relative-write.txt"),
+      retargetCreateError: attemptCreate(
+        join(payload.originalWorkspace, "outside-write.txt"),
+      ),
+      sentinel: readFileSync("sentinel.txt", "utf8"),
+    }));
+  `;
+}
 
 function kernelProbeScript(): string {
   return `

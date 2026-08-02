@@ -3,10 +3,12 @@ import {
   closeSync,
   existsSync,
   fstatSync,
+  fsyncSync,
   openSync,
   readSync,
   readdirSync,
   realpathSync,
+  renameSync,
 } from "node:fs";
 import {
   appendFile,
@@ -533,8 +535,14 @@ export interface WorkspaceMutationCoordinatorOptions {
 
 export interface WorkspaceToolOperationToken {
   readonly tokenId: string;
+  readonly workspacePath: string;
   readonly workspaceRoot: string;
   readonly toolName: string;
+}
+
+export interface WorkspaceReadToolOperation {
+  readonly token: WorkspaceToolOperationToken;
+  readonly requiresStrictCandidateReads: boolean;
 }
 
 export type WorkspaceMutationObservedState =
@@ -1096,8 +1104,22 @@ export class WorkspaceMutationCoordinator {
   authoritativeDirtySnapshotsUnder(
     path: string,
   ): readonly WorkspaceAuthoritativeDirtySnapshot[] {
-    this.#expireLeaseIfNeeded();
     const target = this.resolvePath(path);
+    return this.authoritativeDirtySnapshotsUnderIdentity(target);
+  }
+
+  authoritativeDirtySnapshotsUnderIdentity(
+    path: string,
+  ): readonly WorkspaceAuthoritativeDirtySnapshot[] {
+    this.#expireLeaseIfNeeded();
+    const target = normalizePathIdentity(path);
+    const rel = relative(this.workspaceRoot, target);
+    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      throw new WorkspaceMutationCoordinatorError(
+        "INVALID_WORKSPACE",
+        `path is outside workspace: ${path}`,
+      );
+    }
     if (this.#quarantineHydrationFailed) {
       throw new WorkspaceMutationCoordinatorError(
         "EDITOR_LEASE_EXPIRED",
@@ -3572,7 +3594,7 @@ function readPersistedWorkspaceRoot(quarantinePath: string): string {
         `workspace quarantine has an invalid root: ${quarantinePath}`,
       );
     }
-    return canonicalizePathSync(workspaceRoot);
+    return workspaceRoot;
   } finally {
     closeSync(descriptor);
   }
@@ -3605,15 +3627,41 @@ function discoverPersistedWorkspaceRoots(agencHome: string): readonly string[] {
     if (!entry.isDirectory()) {
       throw new Error(`unsafe workspace quarantine directory: ${entry.name}`);
     }
-    const workspaceRoot = readPersistedWorkspaceRoot(quarantinePath);
-    const expectedKey = createHash("sha256")
+    const persistedWorkspaceRoot = readPersistedWorkspaceRoot(quarantinePath);
+    const persistedKey = createHash("sha256")
+      .update(persistedWorkspaceRoot)
+      .digest("hex")
+      .slice(0, 32);
+    const workspaceRoot = normalizePathIdentity(persistedWorkspaceRoot);
+    if (canonicalizePathSync(persistedWorkspaceRoot) !== workspaceRoot) {
+      throw new Error(
+        `workspace quarantine path identity changed: ${entry.name}`,
+      );
+    }
+    const runtimeKey = createHash("sha256")
       .update(workspaceRoot)
       .digest("hex")
       .slice(0, 32);
-    if (expectedKey !== entry.name) {
+    if (entry.name !== persistedKey && entry.name !== runtimeKey) {
       throw new Error(
         `workspace quarantine root does not match its directory: ${entry.name}`,
       );
+    }
+    if (runtimeKey !== entry.name) {
+      const legacyDirectory = join(directory, entry.name);
+      const runtimeDirectory = join(directory, runtimeKey);
+      if (existsSync(runtimeDirectory)) {
+        throw new Error(
+          `workspace quarantine normalization collides with existing state: ${runtimeKey}`,
+        );
+      }
+      renameSync(legacyDirectory, runtimeDirectory);
+      const descriptor = openSync(directory, "r");
+      try {
+        fsyncSync(descriptor);
+      } finally {
+        closeSync(descriptor);
+      }
     }
     roots.add(workspaceRoot);
   }
@@ -3647,6 +3695,11 @@ export class WorkspaceMutationCoordinatorRegistry {
 
   getOrCreate(workspaceRoot: string): WorkspaceMutationCoordinator {
     const root = canonicalizePathSync(workspaceRoot);
+    this.#hydratePersistedCoordinatorsOverlapping(root);
+    return this.#getOrCreateCanonical(root);
+  }
+
+  #getOrCreateCanonical(root: string): WorkspaceMutationCoordinator {
     let coordinator = this.#coordinators.get(root);
     if (coordinator === undefined) {
       coordinator = new WorkspaceMutationCoordinator({
@@ -3711,14 +3764,53 @@ export class WorkspaceMutationCoordinatorRegistry {
     return bestAuthoritative ?? bestProtected ?? bestContaining;
   }
 
+  findOverlappingPathIdentities(
+    path: string,
+    options: { readonly includeDescendants?: boolean } = {},
+  ): readonly WorkspaceMutationCoordinator[] {
+    const target = normalizePathIdentity(path);
+    return [...this.#coordinators.values()]
+      .filter((coordinator) => {
+        const targetRelativeToCoordinator = relative(
+          coordinator.workspaceRoot,
+          target,
+        );
+        if (
+          targetRelativeToCoordinator !== ".." &&
+          !targetRelativeToCoordinator.startsWith(`..${sep}`) &&
+          !isAbsolute(targetRelativeToCoordinator)
+        ) {
+          return true;
+        }
+        if (options.includeDescendants !== true) return false;
+        const coordinatorRelativeToTarget = relative(
+          target,
+          coordinator.workspaceRoot,
+        );
+        return (
+          coordinatorRelativeToTarget !== ".." &&
+          !coordinatorRelativeToTarget.startsWith(`..${sep}`) &&
+          !isAbsolute(coordinatorRelativeToTarget)
+        );
+      })
+      .sort((left, right) =>
+        left.workspaceRoot.localeCompare(right.workspaceRoot),
+      );
+  }
+
   acquireEditor(
     workspaceRoot: string,
     input: WorkspaceEditorAcquireInput,
   ): WorkspaceEditorLease {
     const root = canonicalizePathSync(workspaceRoot);
-    const crossingOperation = [...this.#toolOperations.values()].find(
-      (operation) => workspaceRootsOverlap(root, operation.workspaceRoot),
-    );
+    // A pathname-only overlap check is insufficient while an admitted tool
+    // keeps a directory inode alive: the directory can be renamed and reached
+    // through a new pathname before the tool releases its descriptor. Fence
+    // all new Editor authority during that short operation window so no
+    // topology exchange can create an unobserved nested coordinator.
+    const crossingOperation = this.#toolOperations.values().next().value as
+      | WorkspaceToolOperationToken
+      | undefined;
     if (crossingOperation !== undefined) {
       throw new WorkspaceMutationCoordinatorError(
         "EDITOR_LEASE_CONFLICT",
@@ -3763,6 +3855,7 @@ export class WorkspaceMutationCoordinatorRegistry {
     }
     const token: WorkspaceToolOperationToken = {
       tokenId: randomUUID(),
+      workspacePath: normalizePathIdentity(workspaceRoot),
       workspaceRoot: root,
       toolName,
     };
@@ -3770,10 +3863,28 @@ export class WorkspaceMutationCoordinatorRegistry {
     return token;
   }
 
+  beginReadToolOperation(
+    workspaceRoot: string,
+    toolName: string,
+  ): WorkspaceReadToolOperation {
+    const root = canonicalizePathSync(workspaceRoot);
+    const requiresStrictCandidateReads =
+      this.hasProtectedEditorAuthority(root);
+    const token: WorkspaceToolOperationToken = {
+      tokenId: randomUUID(),
+      workspacePath: normalizePathIdentity(workspaceRoot),
+      workspaceRoot: root,
+      toolName,
+    };
+    this.#toolOperations.set(token.tokenId, token);
+    return { token, requiresStrictCandidateReads };
+  }
+
   endToolOperation(token: WorkspaceToolOperationToken): void {
     const current = this.#toolOperations.get(token.tokenId);
     if (
       current?.workspaceRoot === token.workspaceRoot &&
+      current.workspacePath === token.workspacePath &&
       current.toolName === token.toolName
     ) {
       this.#toolOperations.delete(token.tokenId);
@@ -3827,7 +3938,7 @@ export class WorkspaceMutationCoordinatorRegistry {
     }
     for (const workspaceRoot of persistedRoots) {
       if (workspaceRootsOverlap(target, workspaceRoot)) {
-        this.getOrCreate(workspaceRoot);
+        this.#getOrCreateCanonical(workspaceRoot);
       }
     }
   }
@@ -3850,7 +3961,7 @@ export class WorkspaceMutationCoordinatorRegistry {
           "quarantine-v1.json",
         );
         if (existsSync(quarantinePath)) {
-          this.getOrCreate(candidate);
+          this.#getOrCreateCanonical(candidate);
         }
       }
       const parent = dirname(candidate);
@@ -4065,10 +4176,11 @@ function canonicalizePathSync(path: string): string {
 
 function normalizePathIdentity(path: string): string {
   const resolved = resolve(path);
-  // POSIX pathnames are byte strings. NFC and NFD spellings can identify two
-  // different directory entries, so only Windows retains the prior Unicode
-  // normalization used by coordinator keys and token-root lookup.
-  return process.platform === "win32" ? resolved.normalize("NFC") : resolved;
+  // Linux can distinguish NFC/NFD directory entries. Windows and macOS path
+  // identity cannot: APFS preserves spelling but aliases normalization forms.
+  return process.platform === "win32" || process.platform === "darwin"
+    ? resolved.normalize("NFC")
+    : resolved;
 }
 
 function isSameOrDescendantPath(parent: string, candidate: string): boolean {
@@ -4340,6 +4452,54 @@ export function workspaceAuthoritativeDirtySnapshots(
   );
 }
 
+export interface WorkspaceAuthoritativeDirtySnapshotCapture {
+  readonly snapshots: readonly WorkspaceAuthoritativeDirtySnapshot[];
+  readonly isCurrent: () => boolean;
+}
+
+export function captureWorkspaceAuthoritativeDirtySnapshots(
+  path: string,
+  options: { readonly includeDescendants?: boolean } = {},
+): WorkspaceAuthoritativeDirtySnapshotCapture {
+  const target = normalizePathIdentity(path);
+  const captures = workspaceMutationCoordinators
+    .findOverlappingPathIdentities(target, options)
+    .map((coordinator) => {
+      const scope = isSameOrDescendantPath(coordinator.workspaceRoot, target)
+        ? target
+        : coordinator.workspaceRoot;
+      return {
+        coordinator,
+        scope,
+        snapshots:
+          coordinator.authoritativeDirtySnapshotsUnderIdentity(scope),
+      };
+    });
+  const snapshots = captures
+    .flatMap((capture) => capture.snapshots)
+    .sort((left, right) => left.path.localeCompare(right.path));
+  for (let index = 1; index < snapshots.length; index += 1) {
+    if (snapshots[index - 1]?.path === snapshots[index]?.path) {
+      throw new WorkspaceMutationCoordinatorError(
+        "EDITOR_LEASE_CONFLICT",
+        `multiple Editor workspaces claim authority for ${snapshots[index]?.path}`,
+      );
+    }
+  }
+  return {
+    snapshots,
+    isCurrent: () =>
+      captures.every((capture) =>
+        workspaceAuthoritativeDirtySnapshotsEqual(
+          capture.snapshots,
+          capture.coordinator.authoritativeDirtySnapshotsUnderIdentity(
+            capture.scope,
+          ),
+        ),
+      ),
+  };
+}
+
 export function workspaceAuthoritativeDirtySnapshotsEqual(
   left: readonly WorkspaceAuthoritativeDirtySnapshot[],
   right: readonly WorkspaceAuthoritativeDirtySnapshot[],
@@ -4408,6 +4568,16 @@ export function beginWorkspaceToolOperation(
   toolName: string,
 ): WorkspaceToolOperationToken {
   return workspaceMutationCoordinators.beginToolOperation(
+    workspaceRoot,
+    toolName,
+  );
+}
+
+export function beginWorkspaceReadToolOperation(
+  workspaceRoot: string,
+  toolName: string,
+): WorkspaceReadToolOperation {
+  return workspaceMutationCoordinators.beginReadToolOperation(
     workspaceRoot,
     toolName,
   );

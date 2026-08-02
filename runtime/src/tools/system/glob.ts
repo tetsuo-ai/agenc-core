@@ -36,7 +36,6 @@ import {
   type FilesystemToolConfig,
 } from "./filesystem.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
-import { readToolRuntimeContext } from "../runtimes/context.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import {
   runSupervisedProcess,
@@ -66,7 +65,11 @@ import {
   renderRipgrepPathBytes,
   type RipgrepWireParser,
 } from "./ripgrep-protocol.js";
-import { workspaceHasProtectedEditorPaths } from "../../workspace/mutation-coordinator.js";
+import {
+  beginWorkspaceReadToolOperation,
+  endWorkspaceToolOperation,
+  type WorkspaceToolOperationToken,
+} from "../../workspace/mutation-coordinator.js";
 import {
   bindWorkspaceDirectoryReadCapability,
   type WorkspaceBoundReadCapability,
@@ -378,6 +381,10 @@ function appendBoundedText(current: string, chunk: string): string {
 function isExecutableUnavailable(error: unknown): boolean {
   let current = error;
   for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+    const code = (current as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "EACCES" || code === "EPERM") {
+      return true;
+    }
     if (/executable not found or not executable:/u.test(current.message)) {
       return true;
     }
@@ -459,6 +466,39 @@ function assertRipgrepFilesArgvWithinLimits(
   assertGrepArgvWithinLimits(command, args, platform);
 }
 
+const BOUND_RIPGREP_COMMAND_CWD = ".";
+
+function prepareBoundRipgrepFilesCommand(params: {
+  readonly toolArgs: Record<string, unknown>;
+  readonly fallbackCwd: string;
+  readonly program: string;
+  readonly args: readonly string[];
+  readonly env: Record<string, string>;
+}): SandboxSpawnCommand {
+  const command = applyRuntimeSandboxToSpawn({
+    toolArgs: params.toolArgs,
+    fallbackCwd: params.fallbackCwd,
+    program: params.program,
+    args: params.args,
+    // The helper resolves "." through its held directory descriptor. Keep the
+    // transformed command off live absolute pathnames.
+    cwd: BOUND_RIPGREP_COMMAND_CWD,
+    cwdBinding: "inherited_readonly",
+    env: params.env,
+  });
+  if (command.cwd !== BOUND_RIPGREP_COMMAND_CWD) {
+    throw new Error(
+      "sandbox transform changed descriptor-bound ripgrep cwd; refusing to leave the authenticated capability root",
+    );
+  }
+  assertGrepArgumentEncoding(command.program, "ripgrep executable");
+  assertRipgrepFilesArgvWithinLimits(
+    command.argv0 ?? command.program,
+    command.args,
+  );
+  return command;
+}
+
 export async function runRipgrepFiles(
   params: RunRipgrepFilesParams,
 ): Promise<LimitedRipgrepResult> {
@@ -495,17 +535,42 @@ async function runRipgrepFilesWithIgnorePaths(
     };
   }
   if (params.readCapability !== undefined) {
+    let command: SandboxSpawnCommand;
+    try {
+      command = prepareBoundRipgrepFilesCommand({
+        toolArgs: params.toolArgs,
+        fallbackCwd: params.cwd,
+        program: params.command,
+        args,
+        env: scrubEnvForChildProcess(process.env),
+      });
+    } catch (error) {
+      if (!isExecutableUnavailable(error)) throw error;
+      return {
+        pathRecords: [],
+        stderr: "",
+        exitCode: null,
+        aborted: params.signal?.aborted === true,
+        killedAfterLimit: false,
+        spawnError: error instanceof Error ? error : new Error(String(error)),
+      };
+    }
     const result = await params.readCapability.runRipgrep({
-      program: params.command,
-      args,
-      env: scrubEnvForChildProcess(process.env),
+      program: command.program,
+      args: command.args,
+      env: command.env,
+      ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
       timeoutMs,
       maxOutputBytes,
       structuredLineLimit: {
         outputMode: "files_with_matches",
         maximumLines: params.limit,
         maximumRecordBytes: MAX_GREP_RECORD_BYTES,
-        maximumWorkUnits: params.limit,
+        // The helper validates every record already delivered in a pipe chunk,
+        // including records after the retained page witness. Keep that bounded
+        // independently from the caller's page size so normal chunking cannot
+        // turn clean truncation into a RESULT_LIMIT error.
+        maximumWorkUnits: MAX_GREP_RESULTS,
       },
       ...(params.signal !== undefined ? { signal: params.signal } : {}),
     });
@@ -867,30 +932,33 @@ export function createGlobTool(
       }
       let readCapability: WorkspaceBoundReadCapability | undefined;
       let enumerationCapability: WorkspaceBoundReadCapability | undefined;
+      let toolOperation: WorkspaceToolOperationToken | undefined;
+      const bindReadCapabilities = async (): Promise<void> => {
+        await beforeReadCapabilityBind?.();
+        readCapability = await bindWorkspaceDirectoryReadCapability(
+          target.searchRoot,
+          { expectedIdentity: target.searchRootIdentity },
+        );
+        enumerationCapability =
+          resolve(target.searchRoot) === resolve(target.displayRoot)
+            ? readCapability
+            : await bindWorkspaceDirectoryReadCapability(target.displayRoot, {
+                expectedIdentity: target.displayRootIdentity,
+              });
+      };
       try {
-        const trustedEditorInteraction =
-          readToolRuntimeContext(rawArgs)?.invocation.turn.editorInteraction !==
-          undefined;
-        if (
-          trustedEditorInteraction ||
-          workspaceHasProtectedEditorPaths(target.searchRoot)
-        ) {
-          await beforeReadCapabilityBind?.();
-          readCapability = await bindWorkspaceDirectoryReadCapability(
-            target.searchRoot,
-            { expectedIdentity: target.searchRootIdentity },
-          );
-          enumerationCapability =
-            resolve(target.searchRoot) === resolve(target.displayRoot)
-              ? readCapability
-              : await bindWorkspaceDirectoryReadCapability(target.displayRoot, {
-                  expectedIdentity: target.displayRootIdentity,
-                });
-        }
+        toolOperation = beginWorkspaceReadToolOperation(
+          target.displayRoot,
+          GLOB_TOOL_NAME,
+        ).token;
+        await bindReadCapabilities();
       } catch (error) {
         await enumerationCapability?.dispose().catch(() => {});
         if (enumerationCapability !== readCapability) {
           await readCapability?.dispose().catch(() => {});
+        }
+        if (toolOperation !== undefined) {
+          endWorkspaceToolOperation(toolOperation);
         }
         return errorResult(
           `Glob error: authoritative Editor workspace files cannot be read safely: ${
@@ -987,9 +1055,18 @@ export function createGlobTool(
         }
         return textResult(lines.join("\n"), metadata);
       } finally {
-        await enumerationCapability?.dispose();
-        if (enumerationCapability !== readCapability) {
-          await readCapability?.dispose();
+        try {
+          try {
+            await enumerationCapability?.dispose();
+          } finally {
+            if (enumerationCapability !== readCapability) {
+              await readCapability?.dispose();
+            }
+          }
+        } finally {
+          if (toolOperation !== undefined) {
+            endWorkspaceToolOperation(toolOperation);
+          }
         }
       }
     },

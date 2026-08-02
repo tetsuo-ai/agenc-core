@@ -21,6 +21,7 @@ export interface SandboxSpawnCommand {
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Record<string, string>;
+  readonly cwdBinding?: "inherited_readonly";
   readonly argv0?: string;
 }
 
@@ -36,6 +37,7 @@ export function applyRuntimeSandboxToSpawn(params: {
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Record<string, string>;
+  readonly cwdBinding?: "inherited_readonly";
   readonly sandboxManager?: SandboxManager;
   readonly surface?: SandboxExecutionSurface;
 }): SandboxSpawnCommand {
@@ -61,6 +63,9 @@ export function applyRuntimeSandboxToSpawn(params: {
           cwd: params.cwd,
           env: params.env,
           argv0: basename(params.program),
+          ...(params.cwdBinding !== undefined
+            ? { cwdBinding: params.cwdBinding }
+            : {}),
         });
       }
     }
@@ -70,6 +75,9 @@ export function applyRuntimeSandboxToSpawn(params: {
       cwd: params.cwd,
       env: params.env,
       argv0: basename(params.program),
+      ...(params.cwdBinding !== undefined
+        ? { cwdBinding: params.cwdBinding }
+        : {}),
     };
   }
   return transformWithRuntimeSandbox({
@@ -77,6 +85,9 @@ export function applyRuntimeSandboxToSpawn(params: {
     args: params.args,
     cwd: params.cwd,
     env: params.env,
+    ...(params.cwdBinding !== undefined
+      ? { cwdBinding: params.cwdBinding }
+      : {}),
     runtimeSandbox,
     ...(params.sandboxManager !== undefined
       ? { sandboxManager: params.sandboxManager }
@@ -89,6 +100,7 @@ export function transformWithRuntimeSandbox(params: {
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Record<string, string>;
+  readonly cwdBinding?: "inherited_readonly";
   readonly runtimeSandbox: UnifiedExecRuntimeSandbox;
   readonly sandboxManager?: SandboxManager;
 }): SandboxSpawnCommand {

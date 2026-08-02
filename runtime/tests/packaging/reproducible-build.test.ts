@@ -302,7 +302,13 @@ describe("reproducible install and release contract", () => {
       "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
     );
     expect(linuxKernelJob).toContain("numTotalTestSuites: 1");
-    expect(linuxKernelJob).toContain("numTotalTests: 1");
+    expect(linuxKernelJob).toContain("numTotalTests: 2");
+    expect(linuxKernelJob).toContain("numPassedTests: 2");
+    expect(linuxKernelJob).toContain(
+      'bwrap_help="$(bwrap --help)"',
+    );
+    expect(linuxKernelJob).toContain("grep -Fq -- '--ro-bind-fd'");
+    expect(linuxKernelJob).toContain("/proc/[0-9]*/exe");
     expect(linuxKernelJob).toContain("pgrep -x bwrap");
     expect(linuxKernelJob).toContain(
       "agenc-kernel-e2e-[0-9a-f]{8}-[0-9a-f]{4}",

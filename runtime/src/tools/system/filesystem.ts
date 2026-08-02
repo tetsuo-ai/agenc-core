@@ -860,14 +860,11 @@ export async function safePath(
       };
     }
 
-    // POSIX pathnames are byte strings: NFC/NFD spellings and backslashes can
-    // name distinct entries. Windows retains Unicode normalization and treats
-    // both slash spellings as separators.
+    // Linux pathnames can distinguish NFC/NFD spellings. Windows and macOS
+    // filesystem identities cannot: APFS preserves spelling but macOS treats
+    // normalization variants as aliases.
     const canonicalTarget = await canonicalize(normalizedTarget);
-    const canonical =
-      process.platform === "win32"
-        ? canonicalTarget.normalize("NFC")
-        : canonicalTarget;
+    const canonical = normalizeFilesystemUnicodeIdentity(canonicalTarget);
 
     // Verify canonical path is within an allowed prefix
     if (allowedPaths.length === 0) {
@@ -880,9 +877,7 @@ export async function safePath(
     const normalizedAllowed = await Promise.all(
       allowedPaths.map(async (p) => {
         const allowed = await canonicalize(expandHomeDirectory(p));
-        return process.platform === "win32"
-          ? allowed.normalize("NFC")
-          : allowed;
+        return normalizeFilesystemUnicodeIdentity(allowed);
       }),
     );
     const inside = normalizedAllowed.some(
@@ -957,16 +952,17 @@ export function resolveToolAllowedPaths(
     )
     .map((entry) => resolveSessionWorkspaceRoot(entry))
     .filter((entry): entry is string => typeof entry === "string")
-    .map((entry) => {
-      const resolved = resolve(entry);
-      return process.platform === "win32"
-        ? resolved.normalize("NFC")
-        : resolved;
-    });
+    .map((entry) => normalizeFilesystemUnicodeIdentity(resolve(entry)));
   if (normalizedExtraRoots.length === 0) {
     return allowedPaths;
   }
   return Array.from(new Set([...allowedPaths, ...normalizedExtraRoots]));
+}
+
+function normalizeFilesystemUnicodeIdentity(path: string): string {
+  return process.platform === "win32" || process.platform === "darwin"
+    ? path.normalize("NFC")
+    : path;
 }
 
 /** Validate and resolve a path argument from tool input. */

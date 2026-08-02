@@ -48,7 +48,7 @@ function attachTrustedEditorContext(args: Record<string, unknown>): void {
   attachToolRuntimeContext(args, {
     callId: "trusted-editor-grep",
     toolName: GREP_TOOL_NAME,
-    sandboxMode: "read_only",
+    sandboxMode: "danger_full_access",
     invocation: {
       turn: {
         editorInteraction: {
@@ -216,6 +216,239 @@ describe("Grep tool", () => {
     expect(result.content).not.toContain("outside-grep-secret");
     expect(result.content).not.toContain("outside.ts");
   });
+
+  test("rejects stale disk content when a dirty workspace path is exchanged", async () => {
+    const workspace = join(root, "dirty-workspace");
+    const displaced = join(root, "dirty-workspace-displaced");
+    const outside = join(root, "dirty-workspace-outside");
+    const path = join(workspace, "inside.ts");
+    await mkdir(workspace);
+    await mkdir(outside);
+    await writeFile(path, "const staleDiskNeedle = true;\n", "utf8");
+    await writeFile(
+      join(outside, "outside.ts"),
+      "const outsideNeedle = true;\n",
+      "utf8",
+    );
+    await establishDirtyEditorSnapshot({
+      workspaceRoot: workspace,
+      path,
+      content: "const authoritativeNeedle = true;\n",
+    });
+    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
+    const tool = createGrepTool({
+      allowedPaths: [workspace],
+      __testAfterFinalPathCheck: async () => {
+        exchangeOutcome = await exchangeDirectory(
+          workspace,
+          displaced,
+          outside,
+        );
+      },
+    });
+
+    const result = await tool.execute({
+      pattern: "authoritativeNeedle",
+      path: workspace,
+      output_mode: "content",
+    });
+
+    expectCompletedExchangeAttempt(exchangeOutcome);
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("authoritativeNeedle");
+    expect(result.content).not.toContain("staleDiskNeedle");
+    expect(result.content).not.toContain("outsideNeedle");
+  });
+
+  test("includes nested Editor authority and fences sibling acquisition during a parent scan", async () => {
+    const workspace = join(root, "parent-scan-workspace");
+    const nestedWorkspace = join(workspace, "nested");
+    const siblingWorkspace = join(workspace, "sibling");
+    const path = join(nestedWorkspace, "inside.ts");
+    await mkdir(nestedWorkspace, { recursive: true });
+    await mkdir(siblingWorkspace);
+    await writeFile(path, "const staleNestedDiskNeedle = true;\n", "utf8");
+    await establishDirtyEditorSnapshot({
+      workspaceRoot: nestedWorkspace,
+      path,
+      content: "const authoritativeNestedNeedle = true;\n",
+    });
+    let lateAcquireError: unknown;
+    const tool = createGrepTool({
+      allowedPaths: [workspace],
+      __testAfterFinalPathCheck: () => {
+        try {
+          workspaceMutationCoordinators.acquireEditor(siblingWorkspace, {
+            workspaceRoot: siblingWorkspace,
+            editorInstanceId: "grep-nested-sibling-editor",
+          });
+        } catch (error) {
+          lateAcquireError = error;
+        }
+      },
+    });
+
+    const result = await tool.execute({
+      pattern: "authoritativeNestedNeedle",
+      path: workspace,
+      output_mode: "content",
+    });
+
+    expect((lateAcquireError as { code?: unknown })?.code).toBe(
+      "EDITOR_LEASE_CONFLICT",
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("authoritativeNestedNeedle");
+    expect(result.content).not.toContain("staleNestedDiskNeedle");
+    const postToolLease = workspaceMutationCoordinators.acquireEditor(
+      siblingWorkspace,
+      {
+        workspaceRoot: siblingWorkspace,
+        editorInstanceId: "grep-post-nested-sibling-editor",
+      },
+    );
+    expect(postToolLease.editorInstanceId).toBe(
+      "grep-post-nested-sibling-editor",
+    );
+  });
+
+  test.runIf(process.platform !== "win32")(
+    "rejects a clean Editor lease that becomes dirty across a later path exchange",
+    async () => {
+      const workspace = join(root, "late-dirty-workspace");
+      const displaced = join(root, "late-dirty-workspace-displaced");
+      const outside = join(root, "late-dirty-workspace-outside");
+      const path = join(workspace, "inside.ts");
+      await mkdir(workspace);
+      await mkdir(outside);
+      await writeFile(path, "const staleLateDiskNeedle = true;\n", "utf8");
+      await writeFile(
+        join(outside, "outside.ts"),
+        "const outsideLateNeedle = true;\n",
+        "utf8",
+      );
+      const coordinator = workspaceMutationCoordinators.getOrCreate(workspace);
+      const lease = coordinator.acquire({
+        workspaceRoot: workspace,
+        editorInstanceId: "grep-late-dirty-editor",
+      });
+      let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" =
+        "pending";
+      const tool = createGrepTool({
+        allowedPaths: [workspace],
+        __testAfterRootIgnoreSnapshot: async () => {
+          const authoritativeContent =
+            "const authoritativeLateNeedle = true;\n";
+          coordinator.sync({
+            workspaceRoot: workspace,
+            editorInstanceId: lease.editorInstanceId,
+            leaseToken: lease.leaseToken,
+            epoch: lease.epoch,
+            sequence: 0,
+            buffers: [
+              {
+                path,
+                bufferHandle: 1,
+                changedtick: 1,
+                contentSha256: sha256(authoritativeContent),
+                dirty: true,
+                content: authoritativeContent,
+              },
+            ],
+          });
+          exchangeOutcome = await exchangeDirectory(
+            workspace,
+            displaced,
+            outside,
+          );
+        },
+      });
+
+      const result = await tool.execute({
+        pattern: "Needle",
+        path: workspace,
+        output_mode: "content",
+      });
+
+      expect(exchangeOutcome).toBe("exchanged");
+      expect(result.isError).toBe(true);
+      expect(result.content).toMatch(
+        /authoritative Editor workspace|changed/iu,
+      );
+      expect(result.content).not.toContain("staleLateDiskNeedle");
+      expect(result.content).not.toContain("outsideLateNeedle");
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "holds an Editor-acquisition fence across final read seams",
+    async () => {
+      for (const seam of ["final-path", "root-ignore"] as const) {
+        const workspace = join(root, `late-authority-${seam}`);
+        const displaced = join(root, `late-authority-${seam}-displaced`);
+        const outside = join(root, `late-authority-${seam}-outside`);
+        await mkdir(workspace);
+        await mkdir(outside);
+        await writeFile(
+          join(workspace, "inside.ts"),
+          "const insideLateAuthority = true;\n",
+          "utf8",
+        );
+        await writeFile(
+          join(outside, "outside-secret.ts"),
+          "const outsideLateAuthoritySecret = true;\n",
+          "utf8",
+        );
+        let lateAcquireError: unknown;
+        let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" =
+          "pending";
+        const attemptLateAuthority = async (): Promise<void> => {
+          exchangeOutcome = await exchangeDirectory(
+            workspace,
+            displaced,
+            outside,
+          );
+          try {
+            workspaceMutationCoordinators.acquireEditor(workspace, {
+              workspaceRoot: workspace,
+              editorInstanceId: `grep-late-${seam}`,
+            });
+          } catch (error) {
+            lateAcquireError = error;
+          }
+        };
+        const tool = createGrepTool({
+          allowedPaths: [workspace],
+          ...(seam === "final-path"
+            ? { __testAfterFinalPathCheck: attemptLateAuthority }
+            : { __testAfterRootIgnoreSnapshot: attemptLateAuthority }),
+        });
+
+        const result = await tool.execute({
+          pattern: "LateAuthority",
+          path: workspace,
+          output_mode: "content",
+        });
+
+        expect((lateAcquireError as { code?: unknown })?.code).toBe(
+          "EDITOR_LEASE_CONFLICT",
+        );
+        expectCompletedExchangeAttempt(exchangeOutcome);
+        expect(result.isError).toBeUndefined();
+        expect(result.content).toContain("insideLateAuthority");
+        expect(result.content).not.toContain("outside-secret.ts");
+        expect(result.content).not.toContain("outsideLateAuthoritySecret");
+        const postToolLease = workspaceMutationCoordinators.acquireEditor(
+          workspace,
+          {
+            workspaceRoot: workspace,
+            editorInstanceId: `grep-post-${seam}`,
+          },
+        );
+        expect(postToolLease.editorInstanceId).toBe(`grep-post-${seam}`);
+      }
+    },
+  );
 
   test("keeps trusted Editor searches bound after the live lease disappears", async () => {
     const workspace = join(root, "workspace");
@@ -778,6 +1011,46 @@ describe("Grep tool", () => {
     expect("error" in result ? result.error : "").toContain(
       "file/directory prefix collision",
     );
+  });
+
+  test("folds macOS normalization aliases returned by the path oracle", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(
+      process,
+      "platform",
+    );
+    if (platformDescriptor?.configurable !== true) {
+      throw new Error("process.platform is not configurable for this test");
+    }
+    const nfcPath = "caf\u00e9.ts";
+    const nfdPath = "cafe\u0301.ts";
+    let temporaryRoot = "";
+    Object.defineProperty(process, "platform", {
+      ...platformDescriptor,
+      value: "darwin",
+    });
+    try {
+      const result = await __INTERNAL.pinnedSnapshotPathEligibility({
+        relativePaths: [nfcPath],
+        globs: ["*.ts"],
+        onTemporaryRoot(path) {
+          temporaryRoot = path;
+        },
+        async afterPlaceholder() {
+          await rename(
+            join(temporaryRoot, nfcPath),
+            join(temporaryRoot, nfdPath),
+          );
+        },
+      });
+
+      expect("error" in result ? result.error : undefined).toBeUndefined();
+      if (!("error" in result)) {
+        expect(result.has(nfcPath)).toBe(true);
+        expect(result.has(nfdPath)).toBe(false);
+      }
+    } finally {
+      Object.defineProperty(process, "platform", platformDescriptor);
+    }
   });
 
   test("path-oracle construction obeys the aggregate deadline and cleans up", async () => {
@@ -2363,7 +2636,7 @@ describe("Grep tool", () => {
   });
 
   test("escapes raw filename bytes consistently in every output mode", async () => {
-    if (process.platform === "win32") return;
+    if (process.platform !== "linux") return;
     const rawPath = Buffer.concat([
       Buffer.from(`${root}/raw-`, "utf8"),
       Buffer.from([0xff]),

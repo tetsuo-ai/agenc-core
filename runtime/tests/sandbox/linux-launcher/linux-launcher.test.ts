@@ -13,7 +13,11 @@ import {
   parseLinuxSandboxLauncherArgs,
   LinuxSandboxCliError,
 } from "./cli.js";
-import { SECCOMP_STDIN_FD } from "./config.js";
+import {
+  INHERITED_CWD_FD,
+  INHERITED_CWD_SANDBOX_PATH,
+  SECCOMP_STDIN_FD,
+} from "./config.js";
 import {
   createNetworkSeccompProgram,
   networkSeccompMode,
@@ -21,6 +25,7 @@ import {
 import {
   findSystemBubblewrapInPath,
   preferredBubblewrapLauncher,
+  systemBubblewrapSupportsBindFd,
 } from "./launcher.js";
 import {
   activateProxyRoutesInNetns,
@@ -61,6 +66,32 @@ describe("Linux sandbox launcher", () => {
     expect(parsed.allowNetworkForProxy).toBe(true);
     expect(parsed.command).toEqual(["/bin/echo", "hello world"]);
     expect(parsed.permissionProfile).toMatchObject(profile);
+  });
+
+  it("parses inherited read-only cwd without resolving a live command pathname", () => {
+    const profile = workspaceWriteProfile("/workspace", "disabled");
+    const parsed = parseLinuxSandboxLauncherArgs([
+      "--inherited-readonly-command-cwd",
+      "--permission-profile",
+      JSON.stringify(profile),
+      "--",
+      "/bin/true",
+    ]);
+
+    expect(parsed.inheritedCwd).toBe(true);
+    expect(parsed.sandboxPolicyCwd).toBe(INHERITED_CWD_SANDBOX_PATH);
+    expect(parsed.commandCwd).toBe(INHERITED_CWD_SANDBOX_PATH);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs([
+        "--command-cwd",
+        "/workspace",
+        "--inherited-readonly-command-cwd",
+        "--permission-profile",
+        JSON.stringify(profile),
+        "--",
+        "/bin/true",
+      ]),
+    ).toThrow(/cannot be combined/u);
   });
 
   it("rejects malformed handoff input", () => {
@@ -418,8 +449,198 @@ describe("Linux sandbox launcher", () => {
         cwd,
         trustedDirectories: [trusted],
       }),
-    ).toEqual({ program: fs.realpathSync(trustedBwrap), supportsArgv0: true });
+    ).toEqual({
+      program: fs.realpathSync(trustedBwrap),
+      supportsArgv0: true,
+      supportsBindFd: false,
+    });
   });
+
+  it("probes descriptor-bind support with a scrubbed launcher environment", () => {
+    const root = withTempDir("agenc-linux-launcher-bind-fd-probe-");
+    const fakeBwrap = path.join(root, "bwrap");
+    const capture = path.join(root, "environment.json");
+    writeExecutable(
+      fakeBwrap,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "fs.writeFileSync(process.env.AGENC_BIND_FD_CAPTURE, JSON.stringify(process.env));",
+        "process.stdout.write('--ro-bind-fd FD DEST\\n');",
+      ].join("\n") + "\n",
+    );
+    const environment = {
+      ...process.env,
+      AGENC_BIND_FD_CAPTURE: capture,
+      GCONV_PATH: "/tmp/untrusted-gconv",
+      LD_PRELOAD: "/tmp/untrusted-preload.so",
+      NODE_OPTIONS: "--require=/tmp/untrusted-preload.cjs",
+    };
+
+    expect(systemBubblewrapSupportsBindFd(fakeBwrap, environment)).toBe(true);
+    const captured = JSON.parse(fs.readFileSync(capture, "utf8")) as Record<
+      string,
+      string
+    >;
+    expect(captured.AGENC_BIND_FD_CAPTURE).toBe(capture);
+    expect(captured).not.toHaveProperty("GCONV_PATH");
+    expect(captured).not.toHaveProperty("LD_PRELOAD");
+    expect(captured).not.toHaveProperty("NODE_OPTIONS");
+  });
+
+  it(
+    "bounds descriptor-bind help probes",
+    { timeout: 8_000 },
+    () => {
+      const root = withTempDir("agenc-linux-launcher-bind-fd-timeout-");
+      const fakeBwrap = path.join(root, "bwrap");
+      const hardBoundCeilingMs = 4_500;
+      writeExecutable(
+        fakeBwrap,
+        [
+          "#!/usr/bin/env node",
+          "process.on('SIGTERM', () => {});",
+          "setTimeout(() => {",
+          "  process.stdout.write('--ro-bind-fd FD DEST\\n');",
+          "}, 5_000);",
+        ].join("\n") + "\n",
+      );
+
+      const startedAt = performance.now();
+      expect(systemBubblewrapSupportsBindFd(fakeBwrap)).toBe(false);
+      expect(performance.now() - startedAt).toBeLessThan(hardBoundCeilingMs);
+    },
+  );
+
+  it("rejects descriptor-bind help from an unsuccessful probe", () => {
+    const root = withTempDir("agenc-linux-launcher-bind-fd-nonzero-");
+    const fakeBwrap = path.join(root, "bwrap");
+    writeExecutable(
+      fakeBwrap,
+      [
+        "#!/usr/bin/env node",
+        "process.stdout.write('--ro-bind-fd FD DEST\\n');",
+        "process.exit(7);",
+      ].join("\n") + "\n",
+    );
+
+    expect(systemBubblewrapSupportsBindFd(fakeBwrap)).toBe(false);
+  });
+
+  it.runIf(process.platform === "linux")(
+    "keeps inherited cwd bound across two pathname exchanges",
+    async () => {
+      const root = withTempDir("agenc-linux-inherited-cwd-");
+      const workspace = path.join(root, "workspace");
+      const displacedOnce = path.join(root, "displaced-once");
+      const displacedTwice = path.join(root, "displaced-twice");
+      const outsideOnce = path.join(root, "outside-once");
+      const outsideTwice = path.join(root, "outside-twice");
+      const bin = path.join(root, "bin");
+      const capture = path.join(root, "capture.json");
+      fs.mkdirSync(workspace);
+      fs.mkdirSync(outsideOnce);
+      fs.mkdirSync(outsideTwice);
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(workspace, "sentinel"), "inside", "utf8");
+      fs.writeFileSync(path.join(outsideOnce, "sentinel"), "outside-once", "utf8");
+      fs.writeFileSync(path.join(outsideTwice, "sentinel"), "outside-twice", "utf8");
+      const fakeBwrap = path.join(bin, "bwrap");
+      writeExecutable(
+        fakeBwrap,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const result = {",
+          "  argv: process.argv.slice(2),",
+          "  cwdSentinel: fs.readFileSync('sentinel', 'utf8'),",
+          `  fdSentinel: fs.readFileSync('/proc/self/fd/${INHERITED_CWD_FD}/sentinel', 'utf8'),`,
+          `  fdIsDirectory: fs.fstatSync(${INHERITED_CWD_FD}).isDirectory(),`,
+          "};",
+          "fs.writeFileSync(process.env.AGENC_INHERITED_CWD_CAPTURE, JSON.stringify(result));",
+          "process.exit(0);",
+        ].join("\n") + "\n",
+      );
+      const profile: PermissionProfile = {
+        fileSystem: restrictedFileSystemPolicy(
+          [
+            {
+              path: { kind: "special", value: { kind: "root" } },
+              access: "read",
+            },
+          ],
+          { includePlatformDefaults: true },
+        ),
+        network: "disabled",
+      };
+      const savedCwd = process.cwd();
+      process.chdir(workspace);
+      fs.renameSync(workspace, displacedOnce);
+      fs.symlinkSync(outsideOnce, workspace, "dir");
+      try {
+        const exitCode = await runLinuxSandboxMain(
+          [
+            "--inherited-readonly-command-cwd",
+            "--permission-profile",
+            JSON.stringify(profile),
+            "--no-proc",
+            "--",
+            "/bin/true",
+          ],
+          {
+            env: {
+              ...process.env,
+              AGENC_INHERITED_CWD_CAPTURE: capture,
+            },
+            selfCommand: [process.execPath],
+            preferredLauncher: () => {
+              fs.renameSync(displacedOnce, displacedTwice);
+              fs.symlinkSync(outsideTwice, displacedOnce, "dir");
+              return {
+                program: fakeBwrap,
+                supportsArgv0: true,
+                supportsBindFd: true,
+              };
+            },
+          },
+        );
+
+        expect(exitCode).toBe(0);
+        const recorded = JSON.parse(fs.readFileSync(capture, "utf8")) as {
+          readonly argv: string[];
+          readonly cwdSentinel: string;
+          readonly fdSentinel: string;
+          readonly fdIsDirectory: boolean;
+        };
+        expect(recorded.cwdSentinel).toBe("inside");
+        expect(recorded.fdSentinel).toBe("inside");
+        expect(recorded.fdIsDirectory).toBe(true);
+        expect(recorded.argv).toEqual(
+          expect.arrayContaining([
+            "--ro-bind-fd",
+            String(INHERITED_CWD_FD),
+            INHERITED_CWD_SANDBOX_PATH,
+            "--chdir",
+            INHERITED_CWD_SANDBOX_PATH,
+          ]),
+        );
+        expect(recorded.argv).not.toContain("--inherited-readonly-command-cwd");
+        const commandSeparator = recorded.argv.indexOf("--");
+        const setupArgs = recorded.argv.slice(0, commandSeparator);
+        for (const livePath of [
+          workspace,
+          displacedOnce,
+          displacedTwice,
+          outsideOnce,
+          outsideTwice,
+        ]) {
+          expect(setupArgs).not.toContain(livePath);
+        }
+      } finally {
+        process.chdir(savedCwd);
+      }
+    },
+  );
 
   it("runs bubblewrap through a real subprocess and passes the seccomp FD", async () => {
     const root = withTempDir("agenc-linux-launcher-run-");

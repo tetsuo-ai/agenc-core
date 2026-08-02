@@ -6,6 +6,7 @@ import {
   type PermissionProfile,
   permissionProfileToRuntimePermissions,
 } from "../engine/index.js";
+import { INHERITED_CWD_SANDBOX_PATH } from "./config.js";
 
 export class LinuxSandboxCliError extends Error {
   constructor(message: string) {
@@ -17,6 +18,7 @@ export class LinuxSandboxCliError extends Error {
 export interface LinuxSandboxLauncherOptions {
   readonly sandboxPolicyCwd: string;
   readonly commandCwd: string;
+  readonly inheritedCwd: boolean;
   readonly permissionProfile: PermissionProfile;
   readonly useLegacyLandlock: boolean;
   readonly applySeccompThenExec: boolean;
@@ -31,6 +33,7 @@ export function parseLinuxSandboxLauncherArgs(
 ): LinuxSandboxLauncherOptions {
   let sandboxPolicyCwd: string | null = null;
   let commandCwd: string | null = null;
+  let inheritedCwd = false;
   let permissionProfile: PermissionProfile | null = null;
   let useLegacyLandlock = false;
   let applySeccompThenExec = false;
@@ -53,6 +56,9 @@ export function parseLinuxSandboxLauncherArgs(
       case "--command-cwd":
         commandCwd = normalizeCwd(readValue(argv, index, arg));
         index += 1;
+        break;
+      case "--inherited-readonly-command-cwd":
+        inheritedCwd = true;
         break;
       case "--permission-profile":
         permissionProfile = parsePermissionProfile(readValue(argv, index, arg));
@@ -85,8 +91,22 @@ export function parseLinuxSandboxLauncherArgs(
   if (permissionProfile === null) {
     throw new LinuxSandboxCliError("Linux sandbox permission profile is missing");
   }
-  const resolvedSandboxCwd = sandboxPolicyCwd ?? process.cwd();
-  const resolvedCommandCwd = commandCwd ?? resolvedSandboxCwd;
+  if (inheritedCwd && (sandboxPolicyCwd !== null || commandCwd !== null)) {
+    throw new LinuxSandboxCliError(
+      "--inherited-readonly-command-cwd cannot be combined with explicit cwd arguments",
+    );
+  }
+  if (inheritedCwd && applySeccompThenExec) {
+    throw new LinuxSandboxCliError(
+      "--inherited-readonly-command-cwd is only valid for the outer launcher stage",
+    );
+  }
+  const resolvedSandboxCwd = inheritedCwd
+    ? INHERITED_CWD_SANDBOX_PATH
+    : sandboxPolicyCwd ?? process.cwd();
+  const resolvedCommandCwd = inheritedCwd
+    ? INHERITED_CWD_SANDBOX_PATH
+    : commandCwd ?? resolvedSandboxCwd;
   if (applySeccompThenExec && useLegacyLandlock) {
     throw new LinuxSandboxCliError(
       "--apply-seccomp-then-exec cannot be combined with --use-legacy-landlock",
@@ -96,6 +116,7 @@ export function parseLinuxSandboxLauncherArgs(
   return {
     sandboxPolicyCwd: resolvedSandboxCwd,
     commandCwd: resolvedCommandCwd,
+    inheritedCwd,
     permissionProfile,
     useLegacyLandlock,
     applySeccompThenExec,

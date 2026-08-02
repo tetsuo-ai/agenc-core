@@ -34,12 +34,17 @@ export function createLinuxSandboxCommandArgsForPermissionProfile(
   sandboxPolicyCwd: string,
   useLegacyLandlock: boolean,
   allowNetworkForProxyValue: boolean,
+  inheritedReadOnlyCwd = false,
 ): string[] {
   const args = [
-    "--sandbox-policy-cwd",
-    sandboxPolicyCwd,
-    "--command-cwd",
-    commandCwd,
+    ...(inheritedReadOnlyCwd
+      ? ["--inherited-readonly-command-cwd"]
+      : [
+          "--sandbox-policy-cwd",
+          sandboxPolicyCwd,
+          "--command-cwd",
+          commandCwd,
+        ]),
     "--permission-profile",
     JSON.stringify(permissionProfile),
   ];
@@ -60,6 +65,7 @@ export function spawnLinuxSandboxCommand(
     params.sandboxPolicyCwd,
     params.useLegacyLandlock,
     params.allowNetworkForProxy,
+    false,
   );
   return spawn(params.executablePath, args, {
     ...options,

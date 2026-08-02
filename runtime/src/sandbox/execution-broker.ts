@@ -21,7 +21,10 @@ import {
   type SandboxType,
 } from "./engine/index.js";
 import { effectivePermissionProfile } from "./engine/policy-transforms.js";
-import { findSystemBubblewrapInPath } from "./linux-launcher/launcher.js";
+import {
+  findSystemBubblewrapInPath,
+  systemBubblewrapSupportsBindFd,
+} from "./linux-launcher/launcher.js";
 import { resolveRuntimePackageRootFromUrl } from "../app-server/daemon-runtime-info.js";
 import type { UnifiedExecRuntimeSandbox } from "../unified-exec/types.js";
 import { UnifiedExecError } from "../unified-exec/types.js";
@@ -83,6 +86,8 @@ export interface SandboxSpawnCommand {
   readonly cwd: string;
   readonly env: Record<string, string>;
   readonly argv0?: string;
+  /** Keep cwd attached to the caller's open directory and expose it read-only. */
+  readonly cwdBinding?: "inherited_readonly";
   /** Narrow, surface-owned grants required by the child process. */
   readonly additionalPermissions?: AdditionalPermissionProfile;
   /** Require the executable itself to be outside every sandbox-writable root. */
@@ -525,6 +530,16 @@ function probeLinuxSandbox(options: {
       helper.path,
     );
   }
+  if (!systemBubblewrapSupportsBindFd(bwrap, options.env)) {
+    return unavailableStatus(
+      options,
+      "bubblewrap does not support descriptor-based read-only binds",
+      "Upgrade bubblewrap to a version that supports --ro-bind-fd, then run `agenc doctor` again.",
+      helper.path,
+      bwrap,
+    );
+  }
+  const probeEnvironment = sanitizeSandboxLauncherEnvironment(options.env);
   const result = spawnSync(
     bwrap,
     [
@@ -540,7 +555,7 @@ function probeLinuxSandbox(options: {
     ],
     {
       cwd: options.cwd,
-      env: sanitizeSandboxLauncherEnvironment(options.env),
+      env: probeEnvironment,
       encoding: "utf8",
       timeout: 3_000,
       stdio: ["ignore", "ignore", "pipe"],
@@ -742,6 +757,9 @@ export function transformSandboxedCommand(params: SandboxSpawnCommand & {
         args: params.args,
         cwd: params.cwd,
         env: params.env,
+        ...(params.cwdBinding !== undefined
+          ? { cwdBinding: params.cwdBinding }
+          : {}),
         ...(params.runtimeSandbox.additionalPermissions !== undefined
           ? { additionalPermissions: params.runtimeSandbox.additionalPermissions }
           : {}),

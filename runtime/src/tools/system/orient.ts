@@ -23,13 +23,12 @@ import { extname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
 
 import { buildOrientationMap } from "../../context/orientation-map.js";
 import {
-  workspaceAuthoritativeDirtySnapshots,
-  workspaceAuthoritativeDirtySnapshotsEqual,
-  workspaceHasProtectedEditorPaths,
-  type WorkspaceAuthoritativeDirtySnapshot,
+  beginWorkspaceReadToolOperation,
+  captureWorkspaceAuthoritativeDirtySnapshots,
+  endWorkspaceToolOperation,
+  type WorkspaceToolOperationToken,
 } from "../../workspace/mutation-coordinator.js";
 import type { Tool, ToolResult } from "../types.js";
-import { readToolRuntimeContext } from "../runtimes/context.js";
 import {
   resolveToolAllowedPaths,
   safePath,
@@ -308,28 +307,31 @@ export function createOrientTool(
       }
       let readCapability: WorkspaceBoundReadCapability | undefined;
       let ignoreReadCapability: WorkspaceBoundReadCapability | undefined;
+      let toolOperation: WorkspaceToolOperationToken | undefined;
+      const bindReadCapabilities = async (): Promise<void> => {
+        await beforeReadCapabilityBind?.();
+        readCapability = await bindWorkspaceDirectoryReadCapability(baseDir, {
+          expectedIdentity: baseIdentity,
+        });
+        ignoreReadCapability =
+          resolve(baseDir) === resolve(root)
+            ? readCapability
+            : await bindWorkspaceDirectoryReadCapability(root, {
+                expectedIdentity: rootIdentity,
+              });
+      };
       try {
-        const trustedEditorInteraction =
-          readToolRuntimeContext(rawArgs)?.invocation.turn.editorInteraction !==
-          undefined;
-        if (
-          trustedEditorInteraction ||
-          workspaceHasProtectedEditorPaths(baseDir)
-        ) {
-          await beforeReadCapabilityBind?.();
-          readCapability = await bindWorkspaceDirectoryReadCapability(baseDir, {
-            expectedIdentity: baseIdentity,
-          });
-          ignoreReadCapability =
-            resolve(baseDir) === resolve(root)
-              ? readCapability
-              : await bindWorkspaceDirectoryReadCapability(root, {
-                  expectedIdentity: rootIdentity,
-                });
-        }
+        toolOperation = beginWorkspaceReadToolOperation(
+          root,
+          ORIENT_TOOL_NAME,
+        ).token;
+        await bindReadCapabilities();
       } catch (error) {
         await ignoreReadCapability?.dispose().catch(() => {});
         await readCapability?.dispose().catch(() => {});
+        if (toolOperation !== undefined) {
+          endWorkspaceToolOperation(toolOperation);
+        }
         return errorResult(
           `Orient error: authoritative Editor workspace files cannot be read safely: ${
             error instanceof Error ? error.message : String(error)
@@ -338,24 +340,25 @@ export function createOrientTool(
       }
 
       try {
-        let authoritativeSnapshots: readonly WorkspaceAuthoritativeDirtySnapshot[];
+        let authoritativeCapture: ReturnType<
+          typeof captureWorkspaceAuthoritativeDirtySnapshots
+        >;
         try {
-          authoritativeSnapshots =
-            workspaceAuthoritativeDirtySnapshots(baseDir);
+          authoritativeCapture =
+            captureWorkspaceAuthoritativeDirtySnapshots(baseDir, {
+              includeDescendants: true,
+            });
         } catch (error) {
           return editorCoherenceError(error);
         }
+        const authoritativeSnapshots = authoritativeCapture.snapshots;
         await afterFinalPathCheck?.();
         const finalizeAuthoritativeResult = async (
           result: ToolResult,
         ): Promise<ToolResult> => {
           await beforeAuthoritativeSnapshotValidation?.();
           try {
-            const current = workspaceAuthoritativeDirtySnapshots(baseDir);
-            return workspaceAuthoritativeDirtySnapshotsEqual(
-              authoritativeSnapshots,
-              current,
-            )
+            return authoritativeCapture.isCurrent()
               ? result
               : editorCoherenceError();
           } catch (error) {
@@ -379,13 +382,14 @@ export function createOrientTool(
           return finalizeAuthoritativeResult(editorCoherenceError(error));
         }
         await afterRootIgnoreSnapshot?.();
+        const enumerationLimit = cap + 1;
         const listed = await runRipgrepFiles({
           command: ripgrepCommand,
           pattern: SOURCE_GLOB,
           cwd: root,
           searchPath: relative(root, baseDir) || ".",
           toolArgs: rawArgs,
-          limit: cap,
+          limit: enumerationLimit,
           includeIgnored: false,
           rootIgnoreFiles,
           signal,
@@ -453,7 +457,7 @@ export function createOrientTool(
         const dirtyRelPathSet = new Set(
           dirtyRelPaths.map(normalizedRelativePath),
         );
-        const relPaths = [
+        const candidatePaths = [
           ...dirtyRelPaths,
           ...listed.pathRecords
             .map((path) => decodeRipgrepPathBytes(path))
@@ -470,7 +474,10 @@ export function createOrientTool(
             .filter(
               (path) => !dirtyRelPathSet.has(normalizedRelativePath(path)),
             ),
-        ].slice(0, cap);
+        ];
+        const capExceeded =
+          listed.killedAfterLimit || candidatePaths.length > cap;
+        const relPaths = candidatePaths.slice(0, cap);
         if (relPaths.length === 0) {
           return finalizeAuthoritativeResult(
             textResult(
@@ -529,7 +536,7 @@ export function createOrientTool(
           baseDir === root
             ? ""
             : ` under ${relative(root, baseDir) || "."}${sep}`;
-        const cappedNote = listed.killedAfterLimit ? ` (capped at ${cap})` : "";
+        const cappedNote = capExceeded ? ` (capped at ${cap})` : "";
         const header =
           `Orientation map for: ${query}\n` +
           `Scanned ${files.size} source file(s)${scopeNote}${cappedNote}. ` +
@@ -546,10 +553,19 @@ export function createOrientTool(
           }),
         );
       } finally {
-        if (ignoreReadCapability !== readCapability) {
-          await ignoreReadCapability?.dispose();
+        try {
+          try {
+            if (ignoreReadCapability !== readCapability) {
+              await ignoreReadCapability?.dispose();
+            }
+          } finally {
+            await readCapability?.dispose();
+          }
+        } finally {
+          if (toolOperation !== undefined) {
+            endWorkspaceToolOperation(toolOperation);
+          }
         }
-        await readCapability?.dispose();
       }
     },
   };
@@ -559,11 +575,16 @@ function normalizedAbsolutePath(path: string): string {
   if (/^[A-Za-z]:[\\/]/u.test(path) || /^\\\\/u.test(path)) {
     return win32.normalize(path).toLowerCase().normalize("NFC");
   }
-  return resolve(path);
+  const resolved = resolve(path);
+  return process.platform === "darwin" ? resolved.normalize("NFC") : resolved;
 }
 
 function normalizedRelativePath(path: string): string {
-  return process.platform === "win32" ? path.replace(/\\/gu, "/") : path;
+  const normalized =
+    process.platform === "win32" ? path.replace(/\\/gu, "/") : path;
+  return process.platform === "darwin"
+    ? normalized.normalize("NFC")
+    : normalized;
 }
 
 function isSafeOrientDisplayPath(path: string): boolean {

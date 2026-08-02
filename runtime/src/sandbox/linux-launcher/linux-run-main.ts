@@ -12,7 +12,10 @@ import {
   parseLinuxSandboxLauncherArgs,
   type LinuxSandboxLauncherOptions,
 } from "./cli.js";
-import { LINUX_SANDBOX_ARG0, SECCOMP_STDIN_FD } from "./config.js";
+import {
+  LINUX_SANDBOX_ARG0,
+  SECCOMP_STDIN_FD,
+} from "./config.js";
 import {
   networkSeccompMode,
   type NetworkSeccompMode,
@@ -28,7 +31,9 @@ import {
 } from "./proxy-routing.js";
 import {
   type FileSystemSandboxPolicy,
+  hasFullDiskReadAccess,
   permissionProfileToRuntimePermissions,
+  restrictedFileSystemPolicy,
 } from "../engine/index.js";
 
 const ACTIVE_INNER_ENV = "AGENC_LINUX_SANDBOX_ACTIVE";
@@ -58,6 +63,7 @@ async function runLinuxSandboxOptions(
   options: LinuxSandboxLauncherOptions,
   deps: LinuxSandboxRunDeps = {},
 ): Promise<number> {
+  const hostCommandCwd = options.inheritedCwd ? "." : options.commandCwd;
   if (options.useLegacyLandlock) {
     throw new Error(
       "legacy Landlock mode is unavailable in the TypeScript launcher; use bubblewrap mode",
@@ -91,8 +97,29 @@ async function runLinuxSandboxOptions(
   }
 
   const env = deps.env ?? process.env;
-  const { fileSystem, network } =
-    permissionProfileToRuntimePermissions(options.permissionProfile);
+  const runtimePermissions = permissionProfileToRuntimePermissions(
+    options.permissionProfile,
+  );
+  if (
+    options.inheritedCwd &&
+    !hasFullDiskReadAccess(runtimePermissions.fileSystem)
+  ) {
+    throw new Error(
+      "inherited read-only cwd requires full disk read access in the source permission profile",
+    );
+  }
+  const fileSystem = options.inheritedCwd
+    ? restrictedFileSystemPolicy(
+        [
+          {
+            path: { kind: "special", value: { kind: "root" } },
+            access: "read",
+          },
+        ],
+        { includePlatformDefaults: true },
+      )
+    : runtimePermissions.fileSystem;
+  const network = runtimePermissions.network;
   const preparedProxy = options.allowNetworkForProxy
     ? await prepareHostProxyRoutes(env)
     : null;
@@ -113,6 +140,12 @@ async function runLinuxSandboxOptions(
   );
   const bwrapSeccompMode = options.allowNetworkForProxy ? null : seccompMode;
   const networkMode = bwrapNetworkMode(network, options.allowNetworkForProxy);
+  const inheritedCwdFd = options.inheritedCwd
+    ? fs.openSync(
+        ".",
+        fs.constants.O_RDONLY | fs.constants.O_DIRECTORY,
+      )
+    : undefined;
   try {
     let bwrapArgs = createBwrapCommandArgs(
       innerCommand,
@@ -125,11 +158,12 @@ async function runLinuxSandboxOptions(
         ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
         extraReadOnlyBindRoots,
         extraWritableBindRoots,
+        inheritedReadOnlyCwd: options.inheritedCwd,
       },
     );
     if (!bwrapArgs.usesBubblewrap) {
       return execCommand(options.command, {
-        cwd: options.commandCwd,
+        cwd: hostCommandCwd,
         env,
         argv0: options.command[0] ?? LINUX_SANDBOX_ARG0,
       });
@@ -140,6 +174,11 @@ async function runLinuxSandboxOptions(
         "AgenC could not find bubblewrap on PATH; install bubblewrap or configure agenc-linux-sandbox to a valid helper",
       );
     }
+    if (options.inheritedCwd && launcher.supportsBindFd !== true) {
+      throw new Error(
+        "bubblewrap does not support --ro-bind-fd; upgrade bubblewrap before using descriptor-bound tools",
+      );
+    }
     if (
       options.mountProc &&
       !preflightProcMountSupport({
@@ -147,6 +186,7 @@ async function runLinuxSandboxOptions(
         fileSystem,
         sandboxPolicyCwd: options.sandboxPolicyCwd,
         commandCwd: options.commandCwd,
+        inheritedCwdFd,
         networkMode,
       })
     ) {
@@ -161,6 +201,7 @@ async function runLinuxSandboxOptions(
           ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
           extraReadOnlyBindRoots,
           extraWritableBindRoots,
+          inheritedReadOnlyCwd: options.inheritedCwd,
         },
       );
     }
@@ -173,9 +214,10 @@ async function runLinuxSandboxOptions(
       bwrapArgs.protectedCreateTargets,
     );
     const spawned = spawnBubblewrap(launcher, finalArgs, {
-      cwd: options.commandCwd,
+      cwd: hostCommandCwd,
       env: { ...env, [ACTIVE_INNER_ENV]: "1" },
       stdio: "inherit",
+      ...(inheritedCwdFd === undefined ? {} : { inheritedCwdFd }),
       ...(bwrapSeccompMode !== null ? { seccompMode: bwrapSeccompMode } : {}),
     });
     let protectedCreateViolation = false;
@@ -189,6 +231,7 @@ async function runLinuxSandboxOptions(
     }
   } finally {
     preparedProxy?.cleanup();
+    if (inheritedCwdFd !== undefined) fs.closeSync(inheritedCwdFd);
   }
 }
 
@@ -445,6 +488,7 @@ function preflightProcMountSupport(options: {
   readonly fileSystem: FileSystemSandboxPolicy;
   readonly sandboxPolicyCwd: string;
   readonly commandCwd: string;
+  readonly inheritedCwdFd?: number;
   readonly networkMode: BwrapNetworkMode;
 }): boolean {
   const args = createBwrapCommandArgs(
@@ -455,13 +499,17 @@ function preflightProcMountSupport(options: {
     {
       mountProc: true,
       networkMode: options.networkMode,
+      inheritedReadOnlyCwd: options.inheritedCwdFd !== undefined,
     },
   );
   if (!args.usesBubblewrap) return true;
   const output = spawnSync(options.launcher.program, args.args, {
-    cwd: options.commandCwd,
+    cwd: options.inheritedCwdFd === undefined ? options.commandCwd : ".",
     encoding: "utf8",
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio:
+      options.inheritedCwdFd === undefined
+        ? ["ignore", "ignore", "pipe"]
+        : ["ignore", "ignore", "pipe", "ignore", options.inheritedCwdFd],
   });
   return output.status === 0 || !isProcMountFailure(output.stderr ?? "");
 }

@@ -98,7 +98,7 @@ function attachTrustedEditorContext(args: Record<string, unknown>): void {
   attachToolRuntimeContext(args, {
     callId: "trusted-editor-orient",
     toolName: ORIENT_TOOL_NAME,
-    sandboxMode: "read_only",
+    sandboxMode: "danger_full_access",
     invocation: {
       turn: {
         editorInteraction: {
@@ -175,6 +175,81 @@ describe("Orient tool", () => {
     expect(top?.[0]).toBe("src/payments/processor.ts");
   });
 
+  it("marks the file cap only when an N+1 witness exists", async () => {
+    const runCase = async (
+      name: string,
+      fileCount: number,
+      includeDirtyOnly = false,
+    ): Promise<ToolResult> => {
+      const workspace = join(dir, name);
+      await mkdir(workspace);
+      const paths = Array.from(
+        { length: fileCount },
+        (_, index) => `witness-${index}.ts`,
+      );
+      for (const path of paths) {
+        await writeFile(
+          join(workspace, path),
+          `export const capWitness${path.length} = true;\n`,
+          "utf8",
+        );
+      }
+      if (includeDirtyOnly) {
+        const dirtyContent =
+          "export function dirtyOnlyCapWitness() { return true; }\n";
+        const coordinator =
+          workspaceMutationCoordinators.getOrCreate(workspace);
+        const lease = coordinator.acquire({
+          workspaceRoot: workspace,
+          editorInstanceId: `${name}-editor`,
+        });
+        coordinator.sync({
+          workspaceRoot: workspace,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+          sequence: 0,
+          buffers: [
+            {
+              path: join(workspace, "dirty-only.ts"),
+              bufferHandle: 1,
+              changedtick: 1,
+              contentSha256: sha256(dirtyContent),
+              dirty: true,
+              content: dirtyContent,
+            },
+          ],
+        });
+      }
+      const fakeRipgrep = await createNodeExecutable(
+        `${name}-rg`,
+        `process.stdout.write(${JSON.stringify(`${paths.join("\0")}\0`)});`,
+      );
+      const tool = bindExplicitDangerBoundary(
+        createOrientTool({
+          allowedPaths: [workspace],
+          ripgrepCommand: fakeRipgrep,
+        }),
+      );
+      return tool.execute({ query: "capWitness", maxFiles: 2 });
+    };
+
+    const exact = await runCase("exact-cap", 2);
+    const truncated = await runCase("over-cap", 3);
+    const combined = await runCase("combined-cap", 2, true);
+
+    expect(exact.isError).toBeUndefined();
+    expect(exact.metadata?.fileCount).toBe(2);
+    expect(exact.content).not.toContain("(capped at 2)");
+    expect(truncated.isError).toBeUndefined();
+    expect(truncated.metadata?.fileCount).toBe(2);
+    expect(truncated.content).toContain("(capped at 2)");
+    expect(combined.isError).toBeUndefined();
+    expect(combined.metadata?.fileCount).toBe(2);
+    expect(combined.metadata?.topFiles).toContain("dirty-only.ts");
+    expect(combined.content).toContain("(capped at 2)");
+  });
+
   it("never returns outside names or bytes after a final ancestor exchange", async () => {
     const workspace = join(dir, "workspace");
     const displaced = join(dir, "workspace-displaced");
@@ -219,6 +294,278 @@ describe("Orient tool", () => {
     expect(result.content).not.toContain("outside-secret.ts");
     expect(result.content).not.toContain("outside-orient-secret");
   });
+
+  it("rejects stale disk bytes when a dirty workspace path is exchanged", async () => {
+    const workspace = join(dir, "dirty-workspace");
+    const displaced = join(dir, "dirty-workspace-displaced");
+    const outside = join(dir, "dirty-workspace-outside");
+    const path = join(workspace, "inside.ts");
+    await mkdir(workspace);
+    await mkdir(outside);
+    await writeFile(
+      path,
+      "export function staleDiskNeedle() { return false }\n",
+      "utf8",
+    );
+    await writeFile(
+      join(outside, "outside.ts"),
+      "export function outsideNeedle() { return false }\n",
+      "utf8",
+    );
+    const authoritativeContent =
+      "export function authoritativeNeedle() { return true }\n";
+    const coordinator = workspaceMutationCoordinators.getOrCreate(workspace);
+    const lease = coordinator.acquire({
+      workspaceRoot: workspace,
+      editorInstanceId: "orient-dirty-exchange-editor",
+    });
+    coordinator.sync({
+      workspaceRoot: workspace,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 1,
+          changedtick: 1,
+          contentSha256: sha256(authoritativeContent),
+          dirty: true,
+          content: authoritativeContent,
+        },
+      ],
+    });
+    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" =
+      "pending";
+    const tool = bindExplicitDangerBoundary(
+      createOrientTool({
+        allowedPaths: [workspace],
+        __testAfterFinalPathCheck: async () => {
+          exchangeOutcome = await exchangeDirectory(
+            workspace,
+            displaced,
+            outside,
+          );
+        },
+      }),
+    );
+
+    const result = await tool.execute({ query: "authoritativeNeedle" });
+
+    expectCompletedExchangeAttempt(exchangeOutcome);
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("authoritativeNeedle");
+    expect(result.content).not.toContain("staleDiskNeedle");
+    expect(result.content).not.toContain("outsideNeedle");
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "rejects a clean Editor lease that becomes dirty across a later path exchange",
+    async () => {
+      const workspace = join(dir, "late-dirty-workspace");
+      const displaced = join(dir, "late-dirty-workspace-displaced");
+      const outside = join(dir, "late-dirty-workspace-outside");
+      const path = join(workspace, "inside.ts");
+      await mkdir(workspace);
+      await mkdir(outside);
+      await writeFile(
+        path,
+        "export function staleLateDiskNeedle() { return false }\n",
+        "utf8",
+      );
+      await writeFile(
+        join(outside, "outside.ts"),
+        "export function outsideLateNeedle() { return false }\n",
+        "utf8",
+      );
+      const coordinator = workspaceMutationCoordinators.getOrCreate(workspace);
+      const lease = coordinator.acquire({
+        workspaceRoot: workspace,
+        editorInstanceId: "orient-late-dirty-editor",
+      });
+      let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" =
+        "pending";
+      const tool = bindExplicitDangerBoundary(
+        createOrientTool({
+          allowedPaths: [workspace],
+          __testAfterRootIgnoreSnapshot: async () => {
+            const authoritativeContent =
+              "export function authoritativeLateNeedle() { return true }\n";
+            coordinator.sync({
+              workspaceRoot: workspace,
+              editorInstanceId: lease.editorInstanceId,
+              leaseToken: lease.leaseToken,
+              epoch: lease.epoch,
+              sequence: 0,
+              buffers: [
+                {
+                  path,
+                  bufferHandle: 1,
+                  changedtick: 1,
+                  contentSha256: sha256(authoritativeContent),
+                  dirty: true,
+                  content: authoritativeContent,
+                },
+              ],
+            });
+            exchangeOutcome = await exchangeDirectory(
+              workspace,
+              displaced,
+              outside,
+            );
+          },
+        }),
+      );
+
+      const result = await tool.execute({ query: "Needle" });
+
+      expect(exchangeOutcome).toBe("exchanged");
+      expect(result.isError).toBe(true);
+      expect(result.content).toMatch(/changed while orientation|synchronization/iu);
+      expect(result.content).not.toContain("staleLateDiskNeedle");
+      expect(result.content).not.toContain("outsideLateNeedle");
+    },
+  );
+
+  it("includes nested Editor authority and fences sibling acquisition", async () => {
+    const workspace = join(dir, "parent-scan");
+    const nested = join(workspace, "nested");
+    const sibling = join(workspace, "sibling");
+    const path = join(nested, "inside.ts");
+    await mkdir(nested, { recursive: true });
+    await mkdir(sibling);
+    await writeFile(
+      path,
+      "export function staleNestedDiskNeedle() { return false }\n",
+      "utf8",
+    );
+    const authoritativeContent =
+      "export function authoritativeNestedNeedle() { return true }\n";
+    const coordinator = workspaceMutationCoordinators.getOrCreate(nested);
+    const lease = coordinator.acquire({
+      workspaceRoot: nested,
+      editorInstanceId: "orient-nested-editor",
+    });
+    coordinator.sync({
+      workspaceRoot: nested,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 1,
+          changedtick: 1,
+          contentSha256: sha256(authoritativeContent),
+          dirty: true,
+          content: authoritativeContent,
+        },
+      ],
+    });
+    let lateAcquireError: unknown;
+    const tool = bindExplicitDangerBoundary(
+      createOrientTool({
+        allowedPaths: [workspace],
+        __testAfterRootIgnoreSnapshot: () => {
+          try {
+            workspaceMutationCoordinators.acquireEditor(sibling, {
+              workspaceRoot: sibling,
+              editorInstanceId: "orient-sibling-late-editor",
+            });
+          } catch (error) {
+            lateAcquireError = error;
+          }
+        },
+      }),
+    );
+
+    const result = await tool.execute({ query: "authoritativeNestedNeedle" });
+
+    expect((lateAcquireError as { code?: unknown })?.code).toBe(
+      "EDITOR_LEASE_CONFLICT",
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("nested/inside.ts");
+    expect(result.content).toContain("authoritativeNestedNeedle");
+    expect(result.content).not.toContain("staleNestedDiskNeedle");
+    const postToolLease = workspaceMutationCoordinators.acquireEditor(sibling, {
+      workspaceRoot: sibling,
+      editorInstanceId: "orient-sibling-post-editor",
+    });
+    expect(postToolLease.editorInstanceId).toBe(
+      "orient-sibling-post-editor",
+    );
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "holds an Editor-acquisition fence across final read seams",
+    async () => {
+      for (const seam of ["final-path", "root-ignore"] as const) {
+        const workspace = join(dir, `late-authority-${seam}`);
+        const displaced = join(dir, `late-authority-${seam}-displaced`);
+        const outside = join(dir, `late-authority-${seam}-outside`);
+        await mkdir(workspace);
+        await mkdir(outside);
+        await writeFile(
+          join(workspace, "inside.ts"),
+          "export function insideLateAuthority() { return 'inside' }\n",
+          "utf8",
+        );
+        await writeFile(
+          join(outside, "outside-secret.ts"),
+          "export function outsideLateAuthoritySecret() { return 'outside-orient-secret' }\n",
+          "utf8",
+        );
+        let lateAcquireError: unknown;
+        let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" =
+          "pending";
+        const attemptLateAuthority = async (): Promise<void> => {
+          exchangeOutcome = await exchangeDirectory(
+            workspace,
+            displaced,
+            outside,
+          );
+          try {
+            workspaceMutationCoordinators.acquireEditor(workspace, {
+              workspaceRoot: workspace,
+              editorInstanceId: `orient-late-${seam}`,
+            });
+          } catch (error) {
+            lateAcquireError = error;
+          }
+        };
+        const tool = bindExplicitDangerBoundary(
+          createOrientTool({
+            allowedPaths: [workspace],
+            ...(seam === "final-path"
+              ? { __testAfterFinalPathCheck: attemptLateAuthority }
+              : { __testAfterRootIgnoreSnapshot: attemptLateAuthority }),
+          }),
+        );
+
+        const result = await tool.execute({ query: "insideLateAuthority" });
+
+        expect((lateAcquireError as { code?: unknown })?.code).toBe(
+          "EDITOR_LEASE_CONFLICT",
+        );
+        expectCompletedExchangeAttempt(exchangeOutcome);
+        expect(result.isError).toBeUndefined();
+        expect(result.content).toContain("inside.ts");
+        expect(result.content).not.toContain("outside-secret.ts");
+        expect(result.content).not.toContain("outsideLateAuthoritySecret");
+        const postToolLease = workspaceMutationCoordinators.acquireEditor(
+          workspace,
+          {
+            workspaceRoot: workspace,
+            editorInstanceId: `orient-post-${seam}`,
+          },
+        );
+        expect(postToolLease.editorInstanceId).toBe(`orient-post-${seam}`);
+      }
+    },
+  );
 
   it("keeps trusted Editor orientation bound after the live lease disappears", async () => {
     const workspace = join(dir, "workspace");
@@ -575,19 +922,23 @@ await rename(displaced, source);
   });
 
   it.runIf(process.platform !== "win32")(
-    "keeps POSIX NFC, NFD, and backslash dirty source identities distinct",
+    "keeps platform-distinct POSIX dirty source identities separate",
     async () => {
       const fixtures = [
-        {
-          path: join(dir, "src", "caf\u00e9.ts"),
-          relativePath: "src/caf\u00e9.ts",
-          symbol: "nfcOrientationIdentity",
-        },
-        {
-          path: join(dir, "src", "cafe\u0301.ts"),
-          relativePath: "src/cafe\u0301.ts",
-          symbol: "nfdOrientationIdentity",
-        },
+        ...(process.platform === "linux"
+          ? [
+              {
+                path: join(dir, "src", "caf\u00e9.ts"),
+                relativePath: "src/caf\u00e9.ts",
+                symbol: "nfcOrientationIdentity",
+              },
+              {
+                path: join(dir, "src", "cafe\u0301.ts"),
+                relativePath: "src/cafe\u0301.ts",
+                symbol: "nfdOrientationIdentity",
+              },
+            ]
+          : []),
         {
           path: join(dir, "src", "literal\\name.ts"),
           relativePath: "src/literal\\name.ts",
@@ -636,23 +987,109 @@ await rename(displaced, source);
     },
   );
 
+  it("deduplicates macOS normalization aliases against Editor authority", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(
+      process,
+      "platform",
+    );
+    if (platformDescriptor?.configurable !== true) {
+      throw new Error("process.platform is not configurable for this test");
+    }
+    const workspace = join(dir, "darwin-alias-workspace");
+    const nfcName = "caf\u00e9.ts";
+    const nfdName = "cafe\u0301.ts";
+    await mkdir(workspace);
+    await writeFile(
+      join(workspace, nfdName),
+      "export function staleDarwinAlias() { return false; }\n",
+      "utf8",
+    );
+    await writeFile(
+      join(workspace, "other.ts"),
+      "export function otherDarwinCandidate() { return true; }\n",
+      "utf8",
+    );
+    const fakeRipgrep = await createNodeExecutable(
+      "orient-darwin-alias-rg",
+      `process.stdout.write(${JSON.stringify(`${nfdName}\0other.ts\0`)});`,
+    );
+    const tool = bindExplicitDangerBoundary(
+      createOrientTool({
+        allowedPaths: [workspace],
+        ripgrepCommand: fakeRipgrep,
+      }),
+    );
+    Object.defineProperty(process, "platform", {
+      ...platformDescriptor,
+      value: "darwin",
+    });
+    const result = await (async (): Promise<ToolResult> => {
+      try {
+        const dirtyContent =
+          "export function authoritativeDarwinAlias() { return true; }\n";
+        const coordinator =
+          workspaceMutationCoordinators.getOrCreate(workspace);
+        const lease = coordinator.acquire({
+          workspaceRoot: workspace,
+          editorInstanceId: "orient-darwin-alias-editor",
+        });
+        coordinator.sync({
+          workspaceRoot: workspace,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+          sequence: 0,
+          buffers: [
+            {
+              path: join(workspace, nfdName),
+              bufferHandle: 1,
+              changedtick: 1,
+              contentSha256: sha256(dirtyContent),
+              dirty: true,
+              content: dirtyContent,
+            },
+          ],
+        });
+        return await tool.execute({
+          query: "authoritativeDarwinAlias otherDarwinCandidate",
+          maxFiles: 2,
+        });
+      } finally {
+        Object.defineProperty(process, "platform", platformDescriptor);
+      }
+    })();
+
+    expect(result.isError).toBeUndefined();
+    expect(result.metadata?.fileCount).toBe(2);
+    expect(result.metadata?.topFiles).toContain(nfcName);
+    expect(result.metadata?.topFiles).toContain("other.ts");
+    expect(result.metadata?.topFiles).not.toContain(nfdName);
+    expect(result.content).toContain("authoritativeDarwinAlias");
+    expect(result.content).not.toContain("staleDarwinAlias");
+  });
+
   it.runIf(process.platform !== "win32")(
     "skips newline and invalid UTF-8 paths without inventing orientation rows",
     async () => {
       const newlinePath = Buffer.from(join(dir, "src", "line\nname.ts"));
-      const invalidPath = Buffer.concat([
-        Buffer.from(`${join(dir, "src", "invalid-")}`, "utf8"),
-        Buffer.from([0xff]),
-        Buffer.from(".ts", "utf8"),
-      ]);
+      const invalidPath =
+        process.platform === "linux"
+          ? Buffer.concat([
+              Buffer.from(`${join(dir, "src", "invalid-")}`, "utf8"),
+              Buffer.from([0xff]),
+              Buffer.from(".ts", "utf8"),
+            ])
+          : undefined;
       await writeFile(
         newlinePath,
         "export function newlinePathSecret() { return 1 }\n",
       );
-      await writeFile(
-        invalidPath,
-        "export function invalidPathSecret() { return 2 }\n",
-      );
+      if (invalidPath !== undefined) {
+        await writeFile(
+          invalidPath,
+          "export function invalidPathSecret() { return 2 }\n",
+        );
+      }
       workspaceMutationCoordinators.getOrCreate(dir).acquire({
         workspaceRoot: dir,
         editorInstanceId: "orient-byte-path-editor",

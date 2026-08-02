@@ -13,9 +13,11 @@ import {
   canWritePathWithCwd,
   getPlatformSandbox,
   getWritableRootsWithCwd,
+  hasFullDiskReadAccess,
   hasFullDiskWriteAccess,
   networkPolicyEnabled,
   permissionProfileToRuntimePermissions,
+  restrictedFileSystemPolicy,
   resolvePermissionPath,
   type FileSystemSandboxPolicy,
   type FileSystemSandboxEntry,
@@ -91,6 +93,8 @@ export class SandboxManager {
 
     let command: readonly string[];
     let arg0: string | undefined;
+    let appliedPermissionProfile = effectiveProfile;
+    let appliedFileSystemPolicy = fileSystem;
     switch (request.sandbox) {
       case "none":
         command = argv;
@@ -126,6 +130,36 @@ export class SandboxManager {
         const allowProxyNetwork = allowNetworkForProxy(
           request.enforceManagedNetwork,
         );
+        const inheritedReadOnlyCwd =
+          request.command.cwdBinding === "inherited_readonly";
+        if (inheritedReadOnlyCwd && request.command.cwd !== ".") {
+          throw new SandboxTransformError(
+            "invalid_inherited_cwd",
+            "inherited read-only cwd requires command cwd to be exactly '.'",
+          );
+        }
+        if (inheritedReadOnlyCwd && !hasFullDiskReadAccess(fileSystem)) {
+          throw new SandboxTransformError(
+            "invalid_inherited_cwd",
+            "inherited read-only cwd requires a permission profile with full disk read access",
+          );
+        }
+        const linuxPermissionProfile: PermissionProfile = inheritedReadOnlyCwd
+          ? {
+              ...effectiveProfile,
+              fileSystem: restrictedFileSystemPolicy(
+                [
+                  {
+                    path: { kind: "special", value: { kind: "root" } },
+                    access: "read",
+                  },
+                ],
+                { includePlatformDefaults: true },
+              ),
+            }
+          : effectiveProfile;
+        appliedPermissionProfile = linuxPermissionProfile;
+        appliedFileSystemPolicy = linuxPermissionProfile.fileSystem;
         ensureLinuxBubblewrapIsSupported({
           fileSystemPolicy: fileSystem,
           useLegacyLandlock: request.useLegacyLandlock,
@@ -164,10 +198,11 @@ export class SandboxManager {
           ...createLinuxSandboxCommandArgsForPermissionProfile(
             argv,
             request.command.cwd,
-            effectiveProfile,
+            linuxPermissionProfile,
             request.sandboxPolicyCwd,
             request.useLegacyLandlock,
             allowProxyNetwork,
+            inheritedReadOnlyCwd,
           ),
         ];
         // A normal argv0 avoids commandExec's PTY argv0 compatibility wrapper,
@@ -192,8 +227,8 @@ export class SandboxManager {
       sandbox: request.sandbox,
       windowsSandboxLevel: request.windowsSandboxLevel,
       windowsSandboxPrivateDesktop: request.windowsSandboxPrivateDesktop,
-      permissionProfile: effectiveProfile,
-      fileSystemSandboxPolicy: fileSystem,
+      permissionProfile: appliedPermissionProfile,
+      fileSystemSandboxPolicy: appliedFileSystemPolicy,
       networkSandboxPolicy: network,
       ...(arg0 !== undefined ? { arg0 } : {}),
     };

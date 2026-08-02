@@ -95,6 +95,7 @@ export interface SandboxCommand {
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
+  readonly cwdBinding?: "inherited_readonly";
   readonly additionalPermissions?: AdditionalPermissionProfile;
 }
 
@@ -146,6 +147,7 @@ export class SandboxTransformError extends Error {
       | "missing_linux_sandbox_executable"
       | "writable_linux_sandbox_launcher"
       | "writable_linux_sandbox_helper"
+      | "invalid_inherited_cwd"
       | "wsl1_unsupported_for_bubblewrap"
       | "windows_restricted_token_unimplemented"
       | "seatbelt_unavailable",

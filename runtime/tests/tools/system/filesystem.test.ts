@@ -245,6 +245,32 @@ describe("safePath", () => {
       });
     },
   );
+
+  it("folds macOS normalization aliases to one allowlist identity", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(
+      process,
+      "platform",
+    );
+    if (platformDescriptor === undefined) {
+      throw new Error("process.platform descriptor is unavailable");
+    }
+    Object.defineProperty(process, "platform", {
+      ...platformDescriptor,
+      value: "darwin",
+    });
+    try {
+      const nfc = "/workspace/caf\u00e9";
+      const nfd = "/workspace/cafe\u0301";
+      const result = await safePath(`${nfd}/file.ts`, [nfc]);
+
+      expect(result).toMatchObject({
+        safe: true,
+        resolved: `${nfc}/file.ts`,
+      });
+    } finally {
+      Object.defineProperty(process, "platform", platformDescriptor);
+    }
+  });
 });
 
 describe("isPathAllowed", () => {

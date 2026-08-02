@@ -14,6 +14,10 @@ import {
   type FileSystemSandboxPolicy,
   type WritableRoot,
 } from "../engine/index.js";
+import {
+  INHERITED_CWD_FD,
+  INHERITED_CWD_SANDBOX_PATH,
+} from "./config.js";
 
 export type BwrapNetworkMode = "full-access" | "isolated" | "proxy-only";
 
@@ -23,6 +27,7 @@ export interface BwrapOptions {
   readonly seccompFd?: number;
   readonly extraReadOnlyBindRoots?: readonly string[];
   readonly extraWritableBindRoots?: readonly string[];
+  readonly inheritedReadOnlyCwd?: boolean;
 }
 
 export interface BwrapCommandArgs {
@@ -48,6 +53,20 @@ export function createBwrapCommandArgs(
   const fullWrite =
     hasFullDiskWriteAccess(fileSystemSandboxPolicy) &&
     unreadableGlobs.length === 0;
+  if (options.inheritedReadOnlyCwd === true && fullWrite) {
+    throw new Error(
+      "inherited read-only cwd requires a restricted filesystem policy",
+    );
+  }
+  if (
+    options.inheritedReadOnlyCwd === true &&
+    (!hasFullDiskReadAccess(fileSystemSandboxPolicy) ||
+      unreadableGlobs.length > 0)
+  ) {
+    throw new Error(
+      "inherited read-only cwd requires full disk-read policy without deny globs",
+    );
+  }
   if (fullWrite && options.networkMode === "full-access" && options.seccompFd === undefined) {
     return { args: [...command], usesBubblewrap: false, protectedCreateTargets: [] };
   }
@@ -124,8 +143,14 @@ function createBwrapFlags(
     "--unshare-pid",
   ];
   appendNamespaceArgs(args, options);
-  const normalizedCommandCwd = normalizeExistingPath(commandCwd);
-  if (normalizedCommandCwd !== normalizePathForPolicy(commandCwd)) {
+  const normalizedCommandCwd =
+    options.inheritedReadOnlyCwd === true
+      ? INHERITED_CWD_SANDBOX_PATH
+      : normalizeExistingPath(commandCwd);
+  if (
+    options.inheritedReadOnlyCwd === true ||
+    normalizedCommandCwd !== normalizePathForPolicy(commandCwd)
+  ) {
     args.push("--chdir", normalizedCommandCwd);
   }
   args.push("--");
@@ -164,6 +189,14 @@ function createFilesystemArgs(
 ): string[] {
   const args: string[] = [];
   const writableRoots = getWritableRootsWithCwd(policy, sandboxPolicyCwd);
+  if (
+    options.inheritedReadOnlyCwd === true &&
+    writableRoots.length > 0
+  ) {
+    throw new Error(
+      "inherited read-only cwd cannot retain writable filesystem roots",
+    );
+  }
   if (hasFullDiskReadAccess(policy)) {
     args.push("--ro-bind", "/", "/");
   } else {
@@ -186,6 +219,10 @@ function createFilesystemArgs(
   appendProcMask(args, options);
 
   args.push("--dev", "/dev");
+
+  if (options.inheritedReadOnlyCwd === true) {
+    appendInheritedReadOnlyCwd(args);
+  }
 
   const unreadableTargets = [
     ...getUnreadableRootsWithCwd(policy, sandboxPolicyCwd),
@@ -213,6 +250,15 @@ function createFilesystemArgs(
     appendMask(args, root, writableRoots);
   }
   return args;
+}
+
+function appendInheritedReadOnlyCwd(args: string[]): void {
+  args.push("--dir", INHERITED_CWD_SANDBOX_PATH);
+  args.push(
+    "--ro-bind-fd",
+    String(INHERITED_CWD_FD),
+    INHERITED_CWD_SANDBOX_PATH,
+  );
 }
 
 function appendWritableRoot(
