@@ -36,7 +36,12 @@ const UPGRADE_PROJECTION_ID_DOMAIN = "agenc.checkpoint-upgrade-projection.v1";
 const V2_CHECKPOINT_PREFIX_PASSES = 3;
 // Legacy promotion additionally computes the new and legacy prefix digests.
 const LEGACY_CHECKPOINT_PREFIX_PASSES = 5;
-export const MAX_CHECKPOINT_UPGRADE_PREFIX_WORK =
+// Canonical rollback reduction can scan the history, scan backward across
+// contextual pre-turn rows, and copy the retained prefix. Reserve all three
+// possible passes before invoking it so adversarial rollback streams cannot
+// escape the aggregate history-derivation work ceiling.
+const ROLLBACK_HISTORY_PASSES = 3;
+export const MAX_CHECKPOINT_UPGRADE_HISTORY_WORK =
   MAX_CHECKPOINT_PREFIX_MESSAGES * LEGACY_CHECKPOINT_PREFIX_PASSES;
 
 export interface DurableCheckpointUpgradePlan {
@@ -55,6 +60,7 @@ export interface DurableCheckpointUpgradeFailure {
   readonly code:
     | "rollout_schema_unsupported"
     | "rollout_schema_mixed"
+    | "rollback_invalid"
     | "tool_result_call_id_missing"
     | "tool_result_integrity_invalid"
     | "checkpoint_invalid";
@@ -71,7 +77,7 @@ export interface DurableCheckpointUpgradeDeferral {
   readonly code:
     | "tool_result_integrity_deferred"
     | "checkpoint_validation_deferred"
-    | "checkpoint_prefix_work_limit";
+    | "history_derivation_work_limit";
   readonly itemIndex: number | null;
   readonly reason: string;
   readonly cause?:
@@ -102,10 +108,10 @@ export function planLegacyDurableCheckpointUpgrade(params: {
   readonly projection: ToolPairProjection;
   readonly projectionId: string;
   readonly sourceKey: string;
-  readonly maxCheckpointPrefixWork?: number;
+  readonly maxHistoryDerivationWork?: number;
 }): DurableCheckpointUpgradeOutcome {
-  const maxCheckpointPrefixWork = positiveWorkLimit(
-    params.maxCheckpointPrefixWork ?? MAX_CHECKPOINT_UPGRADE_PREFIX_WORK,
+  const maxHistoryDerivationWork = positiveWorkLimit(
+    params.maxHistoryDerivationWork ?? MAX_CHECKPOINT_UPGRADE_HISTORY_WORK,
   );
   const sourceSchemaInfo = findSourceSchemaVersion(params.items);
   if (sourceSchemaInfo.mixed) {
@@ -126,7 +132,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
 
   const transformed: RolloutItem[] = [];
   let history: ToolResultIntegrityResponseItem[] = [];
-  let checkpointPrefixWork = 0;
+  let historyDerivationWork = 0;
   let toolResultsSealed = 0;
   let checkpointsUpgraded = 0;
   let checkpointsValidated = 0;
@@ -232,24 +238,24 @@ export function planLegacyDurableCheckpointUpgrade(params: {
         readable.version === 1
           ? LEGACY_CHECKPOINT_PREFIX_PASSES
           : V2_CHECKPOINT_PREFIX_PASSES;
-      const reservedWork = reserveCheckpointPrefixWork(
-        checkpointPrefixWork,
+      const reservedWork = reserveHistoryDerivationWork(
+        historyDerivationWork,
         persistedMessageCount,
         prefixPasses,
-        maxCheckpointPrefixWork,
+        maxHistoryDerivationWork,
       );
       if (reservedWork === undefined) {
         return {
           status: "deferred",
           failure: {
             kind: "operational_deferral",
-            code: "checkpoint_prefix_work_limit",
+            code: "history_derivation_work_limit",
             itemIndex,
-            reason: `checkpoint validation would exceed the aggregate prefix-work limit of ${maxCheckpointPrefixWork} message visits`,
+            reason: `checkpoint validation would exceed the aggregate history-derivation work limit of ${maxHistoryDerivationWork} message visits`,
           },
         };
       }
-      checkpointPrefixWork = reservedWork;
+      historyDerivationWork = reservedWork;
 
       let checkpoint: TurnCheckpointV2Event;
       if (readable.version === 1) {
@@ -336,7 +342,16 @@ export function planLegacyDurableCheckpointUpgrade(params: {
     }
 
     transformed.push(item);
-    history = updateUpgradeHistory(history, item);
+    const historyUpdate = updateUpgradeHistory({
+      history,
+      item,
+      itemIndex,
+      historyDerivationWork,
+      maxHistoryDerivationWork,
+    });
+    if (historyUpdate.status !== "updated") return historyUpdate;
+    history = historyUpdate.history;
+    historyDerivationWork = historyUpdate.historyDerivationWork;
   }
 
   return {
@@ -354,48 +369,113 @@ export function planLegacyDurableCheckpointUpgrade(params: {
   };
 }
 
-function updateUpgradeHistory(
-  history: ToolResultIntegrityResponseItem[],
-  item: RolloutItem,
-): ToolResultIntegrityResponseItem[] {
+type UpgradeHistoryOutcome =
+  | {
+      readonly status: "updated";
+      readonly history: ToolResultIntegrityResponseItem[];
+      readonly historyDerivationWork: number;
+    }
+  | {
+      readonly status: "invalid";
+      readonly failure: DurableCheckpointUpgradeFailure;
+    }
+  | {
+      readonly status: "deferred";
+      readonly failure: DurableCheckpointUpgradeDeferral;
+    };
+
+function updateUpgradeHistory(params: {
+  readonly history: ToolResultIntegrityResponseItem[];
+  readonly item: RolloutItem;
+  readonly itemIndex: number;
+  readonly historyDerivationWork: number;
+  readonly maxHistoryDerivationWork: number;
+}): UpgradeHistoryOutcome {
+  const { history, item } = params;
   if (item.type === "response_item") {
     history.push(item.payload);
-    return history;
+    return updatedHistory(history, params.historyDerivationWork);
   }
   if (
     item.type === "compacted" &&
     item.payload.replacementHistory !== undefined
   ) {
-    return Array.from(item.payload.replacementHistory);
+    return updatedHistory(
+      Array.from(item.payload.replacementHistory),
+      params.historyDerivationWork,
+    );
   }
   if (
     item.type === "event_msg" &&
     item.payload.msg.type === "thread_rolled_back"
   ) {
+    const numTurns = validRollbackTurnCount(item.payload.msg.payload);
+    if (numTurns === undefined) {
+      return invalid(
+        "rollback_invalid",
+        params.itemIndex,
+        "thread_rolled_back numTurns must be a non-negative safe integer",
+      );
+    }
+    if (numTurns === 0 || history.length === 0) {
+      return updatedHistory(history, params.historyDerivationWork);
+    }
+    const reservedWork = reserveHistoryDerivationWork(
+      params.historyDerivationWork,
+      history.length,
+      ROLLBACK_HISTORY_PASSES,
+      params.maxHistoryDerivationWork,
+    );
+    if (reservedWork === undefined) {
+      return {
+        status: "deferred",
+        failure: {
+          kind: "operational_deferral",
+          code: "history_derivation_work_limit",
+          itemIndex: params.itemIndex,
+          reason: `rollback history derivation would exceed the aggregate history-derivation work limit of ${params.maxHistoryDerivationWork} message visits`,
+        },
+      };
+    }
     // Rollback is the only event variant that mutates replay history. Keep its
     // canonical trimming semantics without running the immutable reducer for
-    // every response item (the former quadratic path).
+    // every response item. The complete worst-case visit/copy cost was
+    // reserved above before the reducer can allocate or traverse the history.
     const state = emptyReducedState();
     state.history = history;
-    return reduce(state, item).state.history;
+    return updatedHistory(reduce(state, item).state.history, reservedWork);
   }
-  return history;
+  return updatedHistory(history, params.historyDerivationWork);
+}
+
+function validRollbackTurnCount(payload: unknown): number | undefined {
+  if (payload === null || typeof payload !== "object") return undefined;
+  const numTurns = (payload as { readonly numTurns?: unknown }).numTurns;
+  if (typeof numTurns !== "number") return undefined;
+  return Number.isSafeInteger(numTurns) && numTurns >= 0 ? numTurns : undefined;
+}
+
+function updatedHistory(
+  history: ToolResultIntegrityResponseItem[],
+  historyDerivationWork: number,
+): UpgradeHistoryOutcome {
+  return { status: "updated", history, historyDerivationWork };
 }
 
 function positiveWorkLimit(value: number): number {
   if (
     !Number.isSafeInteger(value) ||
     value <= 0 ||
-    value > MAX_CHECKPOINT_UPGRADE_PREFIX_WORK
+    value > MAX_CHECKPOINT_UPGRADE_HISTORY_WORK
   ) {
     throw new Error(
-      `maxCheckpointPrefixWork must be a positive safe integer no greater than ${MAX_CHECKPOINT_UPGRADE_PREFIX_WORK}`,
+      `maxHistoryDerivationWork must be a positive safe integer no greater than ${MAX_CHECKPOINT_UPGRADE_HISTORY_WORK}`,
     );
   }
   return value;
 }
 
-function reserveCheckpointPrefixWork(
+function reserveHistoryDerivationWork(
   used: number,
   messageCount: number,
   passCount: number,

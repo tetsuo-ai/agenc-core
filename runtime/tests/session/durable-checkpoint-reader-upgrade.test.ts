@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -10,7 +11,7 @@ import {
   validateCheckpointPrefixV2,
 } from "../../src/session/durable-checkpoint-reader.js";
 import {
-  MAX_CHECKPOINT_UPGRADE_PREFIX_WORK,
+  MAX_CHECKPOINT_UPGRADE_HISTORY_WORK,
   planLegacyDurableCheckpointUpgrade,
 } from "../../src/session/durable-checkpoint-upgrade.js";
 import { computePrefixHash } from "../../src/session/durable-turns.js";
@@ -758,7 +759,128 @@ describe("legacy durable checkpoint upgrade planner", () => {
     });
   });
 
-  it("defers repeated checkpoints at the aggregate prefix-work bound", () => {
+  it.each([
+    { numTurns: -1 },
+    { numTurns: 0.5 },
+    { numTurns: Number.NaN },
+    { numTurns: Number.POSITIVE_INFINITY },
+    { numTurns: Number.MAX_SAFE_INTEGER + 1 },
+    {},
+    null,
+  ])("rejects an invalid rollback payload %#", (payload) => {
+    expect(
+      planLegacyDurableCheckpointUpgrade({
+        items: [rollbackItem(payload)],
+        runId: "invalid-rollback-run",
+        projection,
+        projectionId: "plan-invalid-rollback",
+        sourceKey: "invalid-rollback",
+      }),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "rollback_invalid", itemIndex: 0 },
+    });
+  });
+
+  it(
+    "keeps repeated zero-turn rollbacks constant-time in history size",
+    { timeout: 2_000 },
+    () => {
+      const historyLength = 50_000;
+      const rollbackCount = 50_000;
+      const items: RolloutItem[] = [
+        ...Array.from({ length: historyLength }, () => ({
+          type: "response_item" as const,
+          payload: { role: "assistant" as const, content: "history" },
+        })),
+        ...Array.from({ length: rollbackCount }, (_, index) =>
+          rollbackItem({ numTurns: 0 }, index + 1),
+        ),
+      ];
+
+      const startedAt = performance.now();
+      const outcome = planLegacyDurableCheckpointUpgrade({
+        items,
+        runId: "zero-rollback-run",
+        projection,
+        projectionId: "plan-zero-rollback-scaling",
+        sourceKey: "zero-rollback-scaling",
+        maxHistoryDerivationWork: 1,
+      });
+      const elapsedMs = performance.now() - startedAt;
+
+      expect(outcome).toMatchObject({
+        status: "planned",
+        plan: {
+          upgradedItems: expect.objectContaining({
+            length: historyLength + rollbackCount,
+          }),
+        },
+      });
+      expect(elapsedMs).toBeLessThan(1_000);
+    },
+  );
+
+  it("charges repeated one-turn rollback scans to one aggregate bound", () => {
+    const items: RolloutItem[] = [
+      ...["first", "second", "third"].map((content) => ({
+        type: "response_item" as const,
+        payload: { role: "user" as const, content },
+      })),
+      rollbackItem({ numTurns: 1 }, 1),
+      rollbackItem({ numTurns: 1 }, 2),
+    ];
+
+    expect(
+      planLegacyDurableCheckpointUpgrade({
+        items,
+        runId: "bounded-rollback-run",
+        projection,
+        projectionId: "plan-bounded-rollbacks",
+        sourceKey: "bounded-rollbacks",
+        // The first 3-row rollback reserves 9 visits. The second would
+        // reserve another 6 after trimming and must be rejected before work.
+        maxHistoryDerivationWork: 14,
+      }),
+    ).toMatchObject({
+      status: "deferred",
+      failure: {
+        code: "history_derivation_work_limit",
+        itemIndex: 4,
+        reason: expect.stringContaining("rollback history derivation"),
+      },
+    });
+  });
+
+  it("bounds repeated rollbacks when history has no user boundary", () => {
+    const items: RolloutItem[] = [
+      {
+        type: "response_item",
+        payload: { role: "assistant", content: "unchanged" },
+      },
+      rollbackItem({ numTurns: 1 }, 1),
+      rollbackItem({ numTurns: 1 }, 2),
+    ];
+
+    expect(
+      planLegacyDurableCheckpointUpgrade({
+        items,
+        runId: "no-boundary-rollback-run",
+        projection,
+        projectionId: "plan-no-boundary-rollbacks",
+        sourceKey: "no-boundary-rollbacks",
+        maxHistoryDerivationWork: 5,
+      }),
+    ).toMatchObject({
+      status: "deferred",
+      failure: {
+        code: "history_derivation_work_limit",
+        itemIndex: 2,
+      },
+    });
+  });
+
+  it("defers repeated checkpoints at the aggregate history-work bound", () => {
     const firstMessage: ToolResultIntegrityResponseItem = {
       role: "user",
       content: "first",
@@ -794,18 +916,18 @@ describe("legacy durable checkpoint upgrade planner", () => {
         projection,
         projectionId: "plan-aggregate-bound",
         sourceKey: "aggregate-bound",
-        maxCheckpointPrefixWork: 3,
+        maxHistoryDerivationWork: 3,
       }),
     ).toMatchObject({
       status: "deferred",
       failure: {
-        code: "checkpoint_prefix_work_limit",
+        code: "history_derivation_work_limit",
         itemIndex: 4,
       },
     });
   });
 
-  it("does not allow callers to disable or widen the prefix-work bound", () => {
+  it("does not allow callers to disable or widen the history-work bound", () => {
     const base = {
       items: [] as RolloutItem[],
       runId: "bounded-run",
@@ -817,13 +939,13 @@ describe("legacy durable checkpoint upgrade planner", () => {
     expect(() =>
       planLegacyDurableCheckpointUpgrade({
         ...base,
-        maxCheckpointPrefixWork: 0,
+        maxHistoryDerivationWork: 0,
       }),
     ).toThrowError(/positive safe integer/);
     expect(() =>
       planLegacyDurableCheckpointUpgrade({
         ...base,
-        maxCheckpointPrefixWork: MAX_CHECKPOINT_UPGRADE_PREFIX_WORK + 1,
+        maxHistoryDerivationWork: MAX_CHECKPOINT_UPGRADE_HISTORY_WORK + 1,
       }),
     ).toThrowError(/no greater than/);
   });
@@ -930,6 +1052,17 @@ function checkpointItem(checkpoint: TurnCheckpointEvent): RolloutItem {
       msg: { type: "turn_checkpoint", payload: checkpoint },
     },
   };
+}
+
+function rollbackItem(payload: unknown, seq = 1): RolloutItem {
+  return {
+    type: "event_msg",
+    payload: {
+      id: `rollback-event:${seq}`,
+      seq,
+      msg: { type: "thread_rolled_back", payload },
+    },
+  } as RolloutItem;
 }
 
 function toolPairHistory(
