@@ -3,7 +3,7 @@ import type {
   TurnCheckpointV1Event,
   TurnCheckpointV2Event,
 } from "./event-log.js";
-import type { ResponseItem } from "./rollout-item.js";
+import type { ToolResultIntegrityResponseItem } from "./rollout-item.js";
 import {
   CanonicalSha256Writer,
   TOOL_RESULT_DIGEST_PREFIX,
@@ -74,8 +74,7 @@ export type ReadableTurnCheckpoint =
     };
 
 export type DurableCheckpointReadFailureCode =
-  | "checkpoint_shape_invalid"
-  | "checkpoint_version_unsupported";
+  "checkpoint_shape_invalid" | "checkpoint_version_unsupported";
 
 export class DurableCheckpointReadError extends Error {
   readonly kind = "integrity_failure" as const;
@@ -105,8 +104,7 @@ export interface DurableCheckpointPrefixFailure {
 export interface DurableCheckpointPrefixDeferral {
   readonly kind: "operational_deferral";
   readonly code:
-    | "checkpoint_prefix_message_limit"
-    | "checkpoint_prefix_body_deferred";
+    "checkpoint_prefix_message_limit" | "checkpoint_prefix_body_deferred";
   readonly index: number | null;
   readonly reason: string;
   readonly cause?: ToolResultIntegrityDeferral;
@@ -121,14 +119,12 @@ export type DurableCheckpointPrefixValidation =
   | {
       readonly status: "invalid";
       readonly failure:
-        | DurableCheckpointPrefixFailure
-        | ToolPairIntegrityFailure;
+        DurableCheckpointPrefixFailure | ToolPairIntegrityFailure;
     }
   | {
       readonly status: "deferred";
       readonly failure:
-        | DurableCheckpointPrefixDeferral
-        | ToolPairOperationalDeferral;
+        DurableCheckpointPrefixDeferral | ToolPairOperationalDeferral;
     };
 
 /** Strictly dispatch a durable checkpoint. Unknown versions fail closed. */
@@ -138,9 +134,7 @@ export function readTurnCheckpoint(payload: unknown): ReadableTurnCheckpoint {
   }
   const rawVersion = payload.checkpointVersion;
   const version =
-    rawVersion === undefined
-      ? LEGACY_DURABLE_CHECKPOINT_VERSION
-      : rawVersion;
+    rawVersion === undefined ? LEGACY_DURABLE_CHECKPOINT_VERSION : rawVersion;
   if (
     version !== LEGACY_DURABLE_CHECKPOINT_VERSION &&
     version !== DURABLE_CHECKPOINT_READ_VERSION
@@ -199,7 +193,7 @@ export function readTurnCheckpoint(payload: unknown): ReadableTurnCheckpoint {
  * representation. A3b must invoke this before replay truncation.
  */
 export function computeCheckpointPrefixHashV2(
-  messages: ReadonlyArray<ResponseItem>,
+  messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
   count: number,
 ): string {
   if (!Number.isSafeInteger(count) || count < 0 || count > messages.length) {
@@ -237,19 +231,28 @@ export function computeCheckpointPrefixHashV2(
     writeOptionalString(writer, "tool-result-name", message.toolName);
     writeOptionalString(writer, "response-id", message.id);
     writeOptionalString(writer, "phase", message.phase);
-    writer.writeString("end-turn-present", String(message.endTurn !== undefined));
+    writer.writeString(
+      "end-turn-present",
+      String(message.endTurn !== undefined),
+    );
     if (message.endTurn !== undefined) {
       writer.writeString("end-turn", String(message.endTurn));
     }
 
-    writer.writeString("tool-result-integrity-present", String(integrity !== undefined));
+    writer.writeString(
+      "tool-result-integrity-present",
+      String(integrity !== undefined),
+    );
     if (integrity !== undefined) {
       writer.writeCount("tool-result-integrity-version", integrity.version);
       writer.writeString("tool-result-algorithm", integrity.algorithm);
       writer.writeString("tool-result-run-id", integrity.runId);
       writer.writeString("tool-result-call-id", integrity.toolCallId);
       writer.writeString("tool-result-id", integrity.resultId);
-      writer.writeString("tool-result-original-digest", integrity.original.digest);
+      writer.writeString(
+        "tool-result-original-digest",
+        integrity.original.digest,
+      );
       writer.writeCount(
         "tool-result-original-byte-length",
         integrity.original.byteLength,
@@ -278,7 +281,7 @@ export function computeCheckpointPrefixHashV2(
  */
 export function validateCheckpointPrefixV2(params: {
   readonly checkpoint: TurnCheckpointV2Event;
-  readonly messages: ReadonlyArray<ResponseItem>;
+  readonly messages: ReadonlyArray<ToolResultIntegrityResponseItem>;
   readonly projection: ToolPairProjection;
   readonly projectionId: string;
   readonly sourceKey: string;
@@ -343,7 +346,8 @@ export function validateCheckpointPrefixV2(params: {
           kind: "integrity_failure",
           code: "misplaced_tool_result_integrity",
           index,
-          reason: "tool-result integrity metadata is attached to a non-tool message",
+          reason:
+            "tool-result integrity metadata is attached to a non-tool message",
         },
       };
     }
@@ -438,11 +442,16 @@ function parseCheckpointBase(
   }
   const prefixHash = requiredText(payload.prefixHash, "prefixHash");
   if (!SHA256_HEX_PATTERN.test(prefixHash)) {
-    throw malformed("checkpoint prefixHash must be a lowercase SHA-256 hex digest");
+    throw malformed(
+      "checkpoint prefixHash must be a lowercase SHA-256 hex digest",
+    );
   }
   return {
     turnId,
-    iterationIndex: nonNegativeInteger(payload.iterationIndex, "iterationIndex"),
+    iterationIndex: nonNegativeInteger(
+      payload.iterationIndex,
+      "iterationIndex",
+    ),
     boundary,
     checkpointSeq: nonNegativeInteger(payload.checkpointSeq, "checkpointSeq"),
     persistedMessageCount: nonNegativeInteger(
@@ -454,7 +463,10 @@ function parseCheckpointBase(
   };
 }
 
-function assertResponseItemShape(item: ResponseItem, index: number): void {
+function assertResponseItemShape(
+  item: ToolResultIntegrityResponseItem,
+  index: number,
+): void {
   if (!isRecord(item) || !hasOnlyKnownKeys(item, RESPONSE_ITEM_KEYS)) {
     throw malformed(
       `checkpoint response item ${index} contains unversioned fields`,
@@ -483,7 +495,9 @@ function assertResponseItemShape(item: ResponseItem, index: number): void {
   }
   if (item.toolCalls !== undefined) {
     if (!Array.isArray(item.toolCalls) || item.role !== "assistant") {
-      throw malformed(`checkpoint response item ${index} has invalid toolCalls`);
+      throw malformed(
+        `checkpoint response item ${index} has invalid toolCalls`,
+      );
     }
     for (const call of item.toolCalls) {
       if (
@@ -506,9 +520,7 @@ function assertResponseItemShape(item: ResponseItem, index: number): void {
     ["phase", item.phase],
   ] as const) {
     if (value !== undefined && typeof value !== "string") {
-      throw malformed(
-        `checkpoint response item ${index} has invalid ${field}`,
-      );
+      throw malformed(`checkpoint response item ${index} has invalid ${field}`);
     }
   }
   if (item.endTurn !== undefined && typeof item.endTurn !== "boolean") {
@@ -589,7 +601,9 @@ function parseCheckpointSlice(value: unknown): TurnCheckpointSliceLine {
       );
     }
     if (typeof tracking.compacted !== "boolean") {
-      throw malformed("resumableState.autoCompactTracking.compacted is invalid");
+      throw malformed(
+        "resumableState.autoCompactTracking.compacted is invalid",
+      );
     }
     result.autoCompactTracking = {
       compacted: tracking.compacted,
@@ -660,9 +674,9 @@ function parseCheckpointSlice(value: unknown): TurnCheckpointSliceLine {
 }
 
 function* prefixMessages(
-  messages: ReadonlyArray<ResponseItem>,
+  messages: ReadonlyArray<ToolResultIntegrityResponseItem>,
   count: number,
-): Iterable<ResponseItem> {
+): Iterable<ToolResultIntegrityResponseItem> {
   for (let index = 0; index < count; index += 1) {
     const message = messages[index];
     if (message !== undefined) yield message;

@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { computePrefixHash } from "./durable-turns.js";
 import { emptyReducedState, reduce } from "./event-log-reducer.js";
 import type { TurnCheckpointV2Event } from "./event-log.js";
-import type { ResponseItem, RolloutItem } from "./rollout-item.js";
+import type {
+  RolloutItem,
+  ToolResultIntegrityResponseItem,
+} from "./rollout-item.js";
 import {
   DURABLE_CHECKPOINT_READ_VERSION,
   DURABLE_ROLLOUT_SCHEMA_V2,
@@ -59,8 +62,7 @@ export interface DurableCheckpointUpgradeFailure {
 export interface DurableCheckpointUpgradeDeferral {
   readonly kind: "operational_deferral";
   readonly code:
-    | "tool_result_integrity_deferred"
-    | "checkpoint_validation_deferred";
+    "tool_result_integrity_deferred" | "checkpoint_validation_deferred";
   readonly itemIndex: number | null;
   readonly reason: string;
   readonly cause?:
@@ -71,8 +73,14 @@ export interface DurableCheckpointUpgradeDeferral {
 
 export type DurableCheckpointUpgradeOutcome =
   | { readonly status: "planned"; readonly plan: DurableCheckpointUpgradePlan }
-  | { readonly status: "invalid"; readonly failure: DurableCheckpointUpgradeFailure }
-  | { readonly status: "deferred"; readonly failure: DurableCheckpointUpgradeDeferral };
+  | {
+      readonly status: "invalid";
+      readonly failure: DurableCheckpointUpgradeFailure;
+    }
+  | {
+      readonly status: "deferred";
+      readonly failure: DurableCheckpointUpgradeDeferral;
+    };
 
 /**
  * Build (but never apply) an atomic legacy-to-v2 rollout transformation.
@@ -150,7 +158,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
       item.type === "compacted" &&
       item.payload.replacementHistory !== undefined
     ) {
-      const replacementHistory: ResponseItem[] = [];
+      const replacementHistory: ToolResultIntegrityResponseItem[] = [];
       let replacementChanged = false;
       for (const response of item.payload.replacementHistory) {
         const sealed = sealResponseItem(response, params.runId, sourceSchema);
@@ -217,11 +225,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
           const mapped = canonicalizationOutcome(error, itemIndex);
           if (mapped !== undefined) return mapped;
           if (error instanceof DurableCheckpointReadError) {
-            return invalid(
-              "checkpoint_invalid",
-              itemIndex,
-              error.message,
-            );
+            return invalid("checkpoint_invalid", itemIndex, error.message);
           }
           throw error;
         }
@@ -314,7 +318,7 @@ export function planLegacyDurableCheckpointUpgrade(params: {
 type SealResponseOutcome =
   | {
       readonly status: "sealed";
-      readonly item: ResponseItem;
+      readonly item: ToolResultIntegrityResponseItem;
       readonly changed: boolean;
     }
   | {
@@ -327,7 +331,7 @@ type SealResponseOutcome =
     };
 
 function sealResponseItem(
-  item: ResponseItem,
+  item: ToolResultIntegrityResponseItem,
   runId: string,
   sourceSchemaVersion: number,
 ): SealResponseOutcome {
@@ -338,13 +342,17 @@ function sealResponseItem(
         failure: {
           kind: "integrity_failure",
           code: "tool_result_integrity_invalid",
-          reason: "tool-result integrity metadata is attached to a non-tool message",
+          reason:
+            "tool-result integrity metadata is attached to a non-tool message",
         },
       };
     }
     return { status: "sealed", item, changed: false };
   }
-  if (typeof item.toolCallId !== "string" || item.toolCallId.trim().length === 0) {
+  if (
+    typeof item.toolCallId !== "string" ||
+    item.toolCallId.trim().length === 0
+  ) {
     return {
       status: "invalid",
       failure: {
@@ -474,9 +482,7 @@ function findSourceSchemaVersion(items: ReadonlyArray<RolloutItem>): {
   };
 }
 
-function checkpointProjectionId(
-  base: string,
-): string {
+function checkpointProjectionId(base: string): string {
   const hash = createHash("sha256");
   hash.update(UPGRADE_PROJECTION_ID_DOMAIN);
   hash.update("\0");
@@ -505,16 +511,11 @@ function canonicalizationOutcome(
       },
     };
   }
-  return invalid(
-    "tool_result_integrity_invalid",
-    itemIndex,
-    error.message,
-    {
-      kind: "integrity_failure",
-      code: error.code as ToolResultIntegrityFailure["code"],
-      reason: error.message,
-    },
-  );
+  return invalid("tool_result_integrity_invalid", itemIndex, error.message, {
+    kind: "integrity_failure",
+    code: error.code as ToolResultIntegrityFailure["code"],
+    reason: error.message,
+  });
 }
 
 function withItemIndex(
@@ -538,7 +539,10 @@ function invalid(
   itemIndex: number | null,
   reason: string,
   cause?: DurableCheckpointUpgradeFailure["cause"],
-): { readonly status: "invalid"; readonly failure: DurableCheckpointUpgradeFailure } {
+): {
+  readonly status: "invalid";
+  readonly failure: DurableCheckpointUpgradeFailure;
+} {
   return {
     status: "invalid",
     failure: {

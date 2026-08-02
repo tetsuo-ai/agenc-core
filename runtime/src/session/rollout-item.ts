@@ -32,7 +32,13 @@ export interface SessionStateUpdate {
  *  message the model sent/received lives here. */
 export interface ResponseItem {
   readonly role: "system" | "developer" | "user" | "assistant" | "tool";
-  readonly content: string | ReadonlyArray<{ readonly type: string; readonly text?: string; readonly [k: string]: unknown }>;
+  readonly content:
+    | string
+    | ReadonlyArray<{
+        readonly type: string;
+        readonly text?: string;
+        readonly [k: string]: unknown;
+      }>;
   readonly toolCalls?: ReadonlyArray<{
     readonly id: string;
     readonly name: string;
@@ -40,11 +46,18 @@ export interface ResponseItem {
   }>;
   readonly toolCallId?: string;
   readonly toolName?: string;
-  /** A3 checkpoint-v2 metadata; dormant until the A3b writer cutover. */
-  readonly toolResultIntegrity?: ToolResultIntegrity;
   readonly id?: string;
   readonly endTurn?: boolean;
   readonly phase?: string;
+}
+
+/**
+ * Checkpoint-v2 view of a response item. Keeping the dormant integrity field
+ * out of the v1 `RolloutItem` contract lets the strict recovery reader retain
+ * its exact legacy key witness until the writer cutover changes that schema.
+ */
+export interface ToolResultIntegrityResponseItem extends ResponseItem {
+  readonly toolResultIntegrity?: ToolResultIntegrity;
 }
 
 /** agenc runtime `CompactedItem` — when the conversation was compacted, this
@@ -186,7 +199,10 @@ export function parseRolloutLine(line: string): RolloutItem | null {
   if (parsed.type === "event_msg" && parsed.payload?.msg) {
     const inner = parsed.payload.msg as { type?: string };
     if (inner?.type && ROLLOUT_LEGACY_TYPE_ALIASES[inner.type]) {
-      const newInner = { ...inner, type: ROLLOUT_LEGACY_TYPE_ALIASES[inner.type] };
+      const newInner = {
+        ...inner,
+        type: ROLLOUT_LEGACY_TYPE_ALIASES[inner.type],
+      };
       return {
         type: "event_msg",
         payload: {

@@ -1,9 +1,4 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,15 +17,18 @@ import {
   parseRolloutLine,
   type ResponseItem,
   type RolloutItem,
+  type ToolResultIntegrityResponseItem,
 } from "../../src/session/rollout-item.js";
-import {
-  createToolResultIntegrity,
-} from "../../src/session/tool-result-integrity.js";
+import { createToolResultIntegrity } from "../../src/session/tool-result-integrity.js";
 import {
   openStateDatabases,
   type StateSqliteDriver,
 } from "../../src/state/sqlite-driver.js";
 import { StateToolPairProjection } from "../../src/state/tool-pair-projection.js";
+import {
+  isCanonicalEventPayload,
+  isCanonicalRolloutPayload,
+} from "../../src/state/recovery-journal-schema.js";
 
 const FIXTURE_ROOT = fileURLToPath(
   new URL("../fnd/fixtures/checkpoints/", import.meta.url),
@@ -56,10 +54,43 @@ afterEach(() => {
 });
 
 describe("durable checkpoint v2 reader", () => {
+  it("layers strict checkpoint validation over the additive recovery envelope", () => {
+    const checkpoint = {
+      ...legacyCheckpoint("a".repeat(64)),
+      checkpointVersion: 2,
+      toolResultIntegrityVersion: 1,
+    };
+    const integrity = createToolResultIntegrity({
+      runId: "recovery-envelope-run",
+      toolCallId: "recovery-envelope-call",
+      content: "sealed result",
+    });
+    const response = {
+      role: "tool" as const,
+      content: "sealed result",
+      toolCallId: "recovery-envelope-call",
+      toolResultIntegrity: integrity,
+    };
+
+    expect(isCanonicalEventPayload("turn_checkpoint", checkpoint)).toBe(true);
+    expect(isCanonicalRolloutPayload("response_item", response)).toBe(true);
+    expect(readTurnCheckpoint(checkpoint)).toMatchObject({ version: 2 });
+
+    const malformed = { ...checkpoint, toolResultIntegrityVersion: "1" };
+    expect(isCanonicalEventPayload("turn_checkpoint", malformed)).toBe(true);
+    expect(() => readTurnCheckpoint(malformed)).toThrowError(
+      expect.objectContaining<DurableCheckpointReadError>({
+        code: "checkpoint_shape_invalid",
+      }),
+    );
+  });
+
   it("strictly dispatches legacy and v2 checkpoints and rejects unknown versions", () => {
     const legacy = legacyCheckpoint("a".repeat(64));
     expect(readTurnCheckpoint(legacy)).toMatchObject({ version: 1 });
-    expect(readTurnCheckpoint({ ...legacy, checkpointVersion: 1 })).toMatchObject({
+    expect(
+      readTurnCheckpoint({ ...legacy, checkpointVersion: 1 }),
+    ).toMatchObject({
       version: 1,
     });
     expect(
@@ -246,9 +277,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
       loadFixture("legacy-v1-tool-result-a.jsonl"),
     );
     const omegaSource = deepFreeze(
-      loadFixture(
-        "legacy-v1-tool-result-body-substitution.jsonl",
-      ),
+      loadFixture("legacy-v1-tool-result-body-substitution.jsonl"),
     );
     const alphaBefore = JSON.stringify(alphaSource);
     const omegaBefore = JSON.stringify(omegaSource);
@@ -436,7 +465,8 @@ describe("legacy durable checkpoint upgrade planner", () => {
   it("refuses a legacy checkpoint whose tool result precedes its call", () => {
     const source = loadFixture("legacy-v1-tool-result-a.jsonl");
     const assistantIndex = source.findIndex(
-      (item) => item.type === "response_item" && item.payload.role === "assistant",
+      (item) =>
+        item.type === "response_item" && item.payload.role === "assistant",
     );
     const toolIndex = source.findIndex(
       (item) => item.type === "response_item" && item.payload.role === "tool",
@@ -495,9 +525,7 @@ describe("legacy durable checkpoint upgrade planner", () => {
 
   it("leaves the legacy prefix hash behavior untouched for the A3b cutover", () => {
     const alpha = loadFixture("legacy-v1-tool-result-a.jsonl");
-    const omega = loadFixture(
-      "legacy-v1-tool-result-body-substitution.jsonl",
-    );
+    const omega = loadFixture("legacy-v1-tool-result-body-substitution.jsonl");
     const alphaCheckpoint = alpha.find(
       (item) =>
         item.type === "event_msg" &&
@@ -509,21 +537,26 @@ describe("legacy durable checkpoint upgrade planner", () => {
         item.payload.msg.type === "turn_checkpoint",
     );
 
-    expect(alphaCheckpoint).toEqual(expect.objectContaining({
-      payload: expect.objectContaining({
-        msg: expect.objectContaining({
-          payload: expect.objectContaining({
-            prefixHash:
-              "68cb16728e869cd1b8392c333db38adf714d4eaaf1969e4e25617ecf634326ae",
+    expect(alphaCheckpoint).toEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          msg: expect.objectContaining({
+            payload: expect.objectContaining({
+              prefixHash:
+                "68cb16728e869cd1b8392c333db38adf714d4eaaf1969e4e25617ecf634326ae",
+            }),
           }),
         }),
       }),
-    }));
+    );
     expect(omegaCheckpoint).toEqual(alphaCheckpoint);
   });
 });
 
-function upgradedFixture(filename: string, projectionId: string): RolloutItem[] {
+function upgradedFixture(
+  filename: string,
+  projectionId: string,
+): RolloutItem[] {
   const outcome = planLegacyDurableCheckpointUpgrade({
     items: loadFixture(filename),
     runId: "checkpoint-pair-v1",
@@ -545,13 +578,17 @@ function loadFixture(filename: string): RolloutItem[] {
     .filter((item): item is RolloutItem => item !== null);
 }
 
-function responseHistory(items: ReadonlyArray<RolloutItem>): ResponseItem[] {
+function responseHistory(
+  items: ReadonlyArray<RolloutItem>,
+): ToolResultIntegrityResponseItem[] {
   return items.flatMap((item) =>
     item.type === "response_item" ? [item.payload] : [],
   );
 }
 
-function v2Checkpoint(items: ReadonlyArray<RolloutItem>): TurnCheckpointV2Event {
+function v2Checkpoint(
+  items: ReadonlyArray<RolloutItem>,
+): TurnCheckpointV2Event {
   for (const item of items) {
     if (
       item.type === "event_msg" &&
