@@ -1,17 +1,8 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 13,
+  "probeCount": 12,
   "probes": [
-    {
-      "id": "a1-timeout-returns-before-physical-settlement",
-      "task": "A1",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/a1-timeout-returns-before-physical-settlement.red-probe.ts",
-      "fingerprint": "A1:TOOL-EXECUTION:DEADLINE-BEFORE-PHYSICAL-SETTLEMENT",
-      "sourceSha256": "3306c01d14f1bb9d312f431ae06aaff6edc8f4ad78cacd1aafef4b35295c87c3",
-      "timeoutMs": 10000
-    },
     {
       "id": "a2a-malformed-canonical-journal",
       "task": "A2a",

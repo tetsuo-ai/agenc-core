@@ -132,27 +132,35 @@ describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
     expect(resolveTimeoutMs(tool, { timeoutMs: 5_000 })).toBeNull();
   });
 
-  test("timer stops the caller promptly and exposes physical settlement", async () => {
+  test("A1 timeout returns before physical settlement and preserves the late result", async () => {
     vi.useFakeTimers();
     try {
       const physical = Promise.withResolvers<string>();
-      let settled = false;
-      const running = withTimeoutAndAbort(() => physical.promise, {
+      let physicalOutcome: "pending" | "settled" = "pending";
+      const ownedPhysicalSettlement = physical.promise.then((value) => {
+        physicalOutcome = "settled";
+        return value;
+      });
+      let callerOutcome: "pending" | "completed" | "timed_out" = "pending";
+      const running = withTimeoutAndAbort(() => ownedPhysicalSettlement, {
         timeoutMs: 50,
         toolName: "stub",
       });
       void running.then(
         () => {
-          settled = true;
+          callerOutcome = "completed";
         },
-        () => {
-          settled = true;
+        (error: unknown) => {
+          if (error instanceof ToolTimeoutError) callerOutcome = "timed_out";
         },
       );
 
       await vi.advanceTimersByTimeAsync(50);
       await Promise.resolve();
-      expect(settled).toBe(true);
+      expect({ callerOutcome, physicalOutcome }).toEqual({
+        callerOutcome: "timed_out",
+        physicalOutcome: "pending",
+      });
 
       const error = await running.catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(ToolTimeoutError);
@@ -160,6 +168,7 @@ describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
       expect(pending?.callerStop).toBe("timeout");
       physical.resolve("late result");
       await expect(pending?.settlement).resolves.toBe("late result");
+      expect(physicalOutcome).toBe("settled");
     } finally {
       vi.useRealTimers();
     }
