@@ -112,6 +112,9 @@ describe("embedded Neovim lifecycle", () => {
     };
     const rpc = {
       request: vi.fn(async (method: string, args: readonly any[]) => {
+        if (method === "nvim_input") {
+          return Buffer.byteLength(String(args[0]), "utf8");
+        }
         if (method === "nvim_buf_get_option") return true;
         if (method === "nvim_exec_lua") return bufferManifest(true);
         return args[0] ?? true;
@@ -428,6 +431,9 @@ describe("embedded Neovim lifecycle", () => {
           },
         ) => {
           liveSignals.push(options?.signal?.aborted === false);
+          if (method === "nvim_input") {
+            return Buffer.byteLength(String(args[0]), "utf8");
+          }
           if (
             method === "nvim_exec_lua" &&
             String(args[0]).includes("nvim_list_bufs")
@@ -664,6 +670,41 @@ describe("embedded Neovim lifecycle", () => {
         signal: expect.any(AbortSignal),
       },
     );
+    await session.cleanup();
+  });
+
+  it("retries zero and partial nvim_input acceptance without dropping the suffix", async () => {
+    const child = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(778),
+    });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(778),
+      kill: vi.fn(),
+    };
+    const acceptedByteCounts = [0, 2, 1];
+    const rpc = {
+      request: vi.fn(async (method: string) =>
+        method === "nvim_input" ? (acceptedByteCounts.shift() ?? 0) : true
+      ),
+      close: vi.fn(),
+    };
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      { resize: vi.fn(async () => {}), dispose: vi.fn() } as any,
+      5,
+    );
+
+    await expect(session.input("éK")).resolves.toBe(true);
+
+    expect(
+      rpc.request.mock.calls
+        .filter((call) => call[0] === "nvim_input")
+        .map((call) => call[1]),
+    ).toEqual([["éK"], ["éK"], ["K"]]);
+    expect(acceptedByteCounts).toEqual([]);
     await session.cleanup();
   });
 

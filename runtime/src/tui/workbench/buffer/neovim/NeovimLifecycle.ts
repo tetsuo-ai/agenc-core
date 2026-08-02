@@ -160,6 +160,7 @@ export type NeovimCloseResult =
 const DEFAULT_CLEANUP_TIMEOUT_MS = 1000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 10_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
+const INPUT_BUFFER_RETRY_DELAY_MS = 1;
 const DIRTY_CLOSE_REASON =
   "Unsaved Neovim edits. Save or use force quit before closing BUFFER.";
 const DIRTY_STATE_UNAVAILABLE_CLOSE_REASON =
@@ -535,6 +536,13 @@ class NeovimOperationTimeoutError extends Error {
   }
 }
 
+class NeovimInputAcceptanceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NeovimInputAcceptanceError";
+  }
+}
+
 export class NeovimStartupCleanupError extends AggregateError {
   readonly #retryCleanupOperation: () => Promise<void>;
   #cleanupComplete = false;
@@ -634,7 +642,22 @@ export class EmbeddedNeovimSession {
       "Embedded Neovim input",
       true,
       async (signal, timeoutMs) => {
-        await this.#request("nvim_input", [keys], signal, timeoutMs);
+        let remainingKeys = keys;
+        while (remainingKeys.length > 0) {
+          const acceptedBytes = await this.#request(
+            "nvim_input",
+            [remainingKeys],
+            signal,
+            timeoutMs,
+          );
+          const nextKeys = unacceptedInputSuffix(
+            remainingKeys,
+            acceptedBytes,
+          );
+          if (nextKeys.length === 0) break;
+          remainingKeys = nextKeys;
+          await waitForNeovimInputBuffer(signal);
+        }
         return true;
       },
     );
@@ -1477,8 +1500,12 @@ export class EmbeddedNeovimSession {
       captureNeovimProcessDescendants(this.#handle.child);
       return result;
     } catch (error) {
-      if (mutating && isOperationTimeout(error)) {
-        this.#poisonAfterMutatingTimeout(error);
+      if (
+        mutating &&
+        (isOperationTimeout(error) ||
+          error instanceof NeovimInputAcceptanceError)
+      ) {
+        this.#poisonAfterAmbiguousMutation(error);
       }
       throw error;
     } finally {
@@ -1498,14 +1525,14 @@ export class EmbeddedNeovimSession {
     return this.#rpc.request(method, params, { signal, timeoutMs });
   }
 
-  #poisonAfterMutatingTimeout(error: unknown): void {
+  #poisonAfterAmbiguousMutation(error: unknown): void {
     if (this.#closed) return;
     const reason = error instanceof Error ? error : new Error(String(error));
-    // Neovim may have applied a timed-out mutation without delivering its
-    // reply. Continuing would make host and editor state diverge (and a late
-    // mouse press could otherwise advance into its release request), so close
-    // the interactive session but retain the RPC/process boundary until a
-    // queued :preserve proves exact recovery.
+    // Neovim may have applied a mutation without proving exactly how much was
+    // accepted. Continuing would make host and editor state diverge (and a
+    // late mouse press could otherwise advance into its release request), so
+    // close the interactive session but retain the RPC/process boundary until
+    // a queued :preserve proves exact recovery.
     this.#poisoned = true;
     this.#closed = true;
     this.#sessionOperations.abort(reason);
@@ -1839,6 +1866,61 @@ function normalizeTimeout(timeoutMs: number, fallbackMs: number): number {
       ? fallbackMs
       : DEFAULT_OPERATION_TIMEOUT_MS;
   return Math.max(1, Math.floor(candidate));
+}
+
+function unacceptedInputSuffix(
+  keys: string,
+  acceptedBytes: RpcValue,
+): string {
+  const totalBytes = Buffer.byteLength(keys, "utf8");
+  if (
+    typeof acceptedBytes !== "number" ||
+    !Number.isSafeInteger(acceptedBytes) ||
+    acceptedBytes < 0 ||
+    acceptedBytes > totalBytes
+  ) {
+    throw new NeovimInputAcceptanceError(
+      "Neovim returned an invalid nvim_input accepted-byte count.",
+    );
+  }
+  if (acceptedBytes === 0) return keys;
+  if (acceptedBytes === totalBytes) return "";
+
+  const remainingBytes = Buffer.from(keys, "utf8").subarray(acceptedBytes);
+  const remainingKeys = remainingBytes.toString("utf8");
+  if (!Buffer.from(remainingKeys, "utf8").equals(remainingBytes)) {
+    throw new NeovimInputAcceptanceError(
+      "Neovim accepted an nvim_input prefix ending inside a UTF-8 character.",
+    );
+  }
+  return remainingKeys;
+}
+
+function waitForNeovimInputBuffer(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(
+      signal.reason instanceof Error
+        ? signal.reason
+        : new Error("Embedded Neovim input was aborted."),
+    );
+  }
+  return new Promise<void>((resolve, reject) => {
+    const finish = (): void => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    const abort = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error("Embedded Neovim input was aborted."),
+      );
+    };
+    const timer = setTimeout(finish, INPUT_BUFFER_RETRY_DELAY_MS);
+    signal.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function isOperationTimeout(error: unknown): boolean {
