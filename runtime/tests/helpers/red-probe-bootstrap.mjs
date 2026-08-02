@@ -413,7 +413,9 @@ function recordLoadedMarkdownAsset(asset) {
 function markdownAssetEvidence() {
   return freeze(
     [...loadedMarkdownAssets]
-      .sort(([left], [right]) => left.localeCompare(right))
+      // The supervisor validates paths with JavaScript's code-unit ordering.
+      // Do not use locale-sensitive collation for authenticated evidence.
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([path, digest]) => freeze({ path, sha256: digest })),
   );
 }

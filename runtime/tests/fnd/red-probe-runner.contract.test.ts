@@ -376,6 +376,31 @@ describe("FND red-probe supervisor", () => {
     );
   });
 
+  it("orders authenticated markdown assets by canonical code units", async () => {
+    const fixtureRoot = createFixture({
+      source: probeSource({
+        imports: [
+          'import lower from "../../../src/a.md";',
+          'import upper from "../../../src/A.md";',
+        ],
+        actual: "[lower, upper]",
+        expected: JSON.stringify(["different lower\n", "different upper\n"]),
+      }),
+    });
+    writeFileSync(join(fixtureRoot, "src/a.md"), "lower\n", { mode: 0o600 });
+    writeFileSync(join(fixtureRoot, "src/A.md"), "upper\n", { mode: 0o600 });
+
+    await expect(auditRedProbes({ runtimeRoot: fixtureRoot })).resolves.toEqual(
+      {
+        files: 1,
+        expectedRed: 1,
+        assertions: 1,
+        skipped: 0,
+        todos: 0,
+      },
+    );
+  });
+
   it("starts heartbeat silence only after bounded cold module loading", async () => {
     const source = probeSource({
       imports: [
