@@ -40,19 +40,49 @@ async function readRequestBody(request) {
   return raw.length > 0 ? JSON.parse(raw) : {};
 }
 
-function userPromptFromMessages(messages) {
+const COMPACTED_MESSAGE_PATTERN =
+  /<message role="([^"]+)">\r?\n([\s\S]*?)\r?\n<\/message>/gu;
+const TRANSCRIPT_CLOSE_PATTERN = /^<\/transcript>\s*$/u;
+
+/**
+ * Return the newest user request represented by the provider transcript.
+ *
+ * Auto-compaction can replace the ordinary message list with the compact
+ * service's framed transcript. The gate model must interpret that transcript
+ * like a model would: act on the newest user message, not on stale triggers or
+ * the closing frame itself.
+ */
+export function userPromptFromMessages(messages) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role !== "user") continue;
     const content = message.content;
-    if (typeof content === "string") return content;
+    if (typeof content === "string") return newestCompactedUserMessage(content);
     if (Array.isArray(content)) {
-      return content
+      return newestCompactedUserMessage(content
         .map((part) => (typeof part?.text === "string" ? part.text : ""))
-        .join(" ");
+        .join(" "));
     }
   }
   return "";
+}
+
+function newestCompactedUserMessage(content) {
+  let newest;
+  let finalFrameEnd = -1;
+  for (const match of content.matchAll(COMPACTED_MESSAGE_PATTERN)) {
+    finalFrameEnd = (match.index ?? 0) + match[0].length;
+    if (match[1] === "user") newest = match[2];
+  }
+
+  if (finalFrameEnd >= 0) {
+    const trailing = content.slice(finalFrameEnd).trim();
+    if (trailing.length > 0 && !TRANSCRIPT_CLOSE_PATTERN.test(trailing)) {
+      return trailing;
+    }
+  }
+
+  return newest ?? content;
 }
 
 function toolResultCount(messages) {
