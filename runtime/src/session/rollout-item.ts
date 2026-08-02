@@ -16,6 +16,7 @@
 
 import type { Event, EventMsg, SessionMetaLine } from "./event-log.js";
 import type { SessionAgentTask } from "./agent-task-lifecycle.js";
+import type { ToolResultIntegrity } from "./tool-result-integrity.js";
 import { redactSecretsInValue } from "../secrets/index.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -39,6 +40,8 @@ export interface ResponseItem {
   }>;
   readonly toolCallId?: string;
   readonly toolName?: string;
+  /** A3 checkpoint-v2 metadata; dormant until the A3b writer cutover. */
+  readonly toolResultIntegrity?: ToolResultIntegrity;
   readonly id?: string;
   readonly endTurn?: boolean;
   readonly phase?: string;

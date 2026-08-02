@@ -17,6 +17,7 @@ import { runDurabilitySchemaMigration } from "./015_run_durability_schema.js";
 import { runEffectsSessionCallStepIndexMigration } from "./016_run_effects_session_call_step_index.js";
 import { effectEvidenceV2Migration } from "./017_effect_evidence_v2.js";
 import { runRecoverySchemaMigration } from "./018_run_recovery_schema.js";
+import { toolPairProjectionSchemaMigration } from "./020_tool_pair_projection_schema.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -41,6 +42,7 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   runEffectsSessionCallStepIndexMigration,
   effectEvidenceV2Migration,
   runRecoverySchemaMigration,
+  toolPairProjectionSchemaMigration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [

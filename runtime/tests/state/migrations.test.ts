@@ -8,6 +8,9 @@ import {
   STATE_DB_MIGRATIONS,
   type SqlMigration,
 } from "./migrations/index.js";
+import {
+  TOOL_PAIR_PROJECTION_SCHEMA_VERSION,
+} from "./migrations/020_tool_pair_projection_schema.js";
 import { applyMigrations } from "./sqlite-driver.js";
 import { StateSchemaMismatchError } from "./errors.js";
 
@@ -55,7 +58,7 @@ describe("state migration registry", () => {
 
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -76,6 +79,7 @@ describe("state migration registry", () => {
       "run_effects_session_call_step_index",
       "effect_evidence_v2",
       "run_recovery_schema",
+      "tool_pair_projection_schema",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -112,6 +116,7 @@ describe("state migration registry", () => {
       "016_run_effects_session_call_step_index.ts",
       "017_effect_evidence_v2.ts",
       "018_run_recovery_schema.ts",
+      "020_tool_pair_projection_schema.ts",
     ]);
   });
 
@@ -168,6 +173,63 @@ describe("state migration registry", () => {
           )
           .get(),
       ).toEqual({ name: "run_recovery_quarantine" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("upgrades persisted v18 state to the reserved tool-pair schema v20 additively", () => {
+    const db = new Database(":memory:");
+    try {
+      applyMigrations(
+        db,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version <= 18),
+      );
+      db.prepare(
+        `INSERT INTO run_lifecycle_epochs (run_id, epoch, opened_at)
+         VALUES ('pre-tool-pair-run', 1, '2026-08-01T00:00:00.000Z')`,
+      ).run();
+      expect(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tool_pair_projection_runs'",
+          )
+          .get(),
+      ).toBeUndefined();
+
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+
+      expect(
+        db
+          .prepare(
+            "SELECT run_id, epoch FROM run_lifecycle_epochs WHERE run_id = 'pre-tool-pair-run'",
+          )
+          .get(),
+      ).toEqual({ run_id: "pre-tool-pair-run", epoch: 1 });
+      expect(
+        db
+          .prepare(
+            "SELECT version, name FROM schema_migrations WHERE version = ?",
+          )
+          .get(TOOL_PAIR_PROJECTION_SCHEMA_VERSION),
+      ).toEqual({
+        version: TOOL_PAIR_PROJECTION_SCHEMA_VERSION,
+        name: "tool_pair_projection_schema",
+      });
+      expect(
+        db
+          .prepare<{ type: string }, { name: string }>(
+            `SELECT name FROM sqlite_master
+             WHERE type = :type AND name LIKE 'tool_pair_projection_%'
+             ORDER BY name`,
+          )
+          .all({ type: "table" })
+          .map((row) => row.name),
+      ).toEqual([
+        "tool_pair_projection_entries",
+        "tool_pair_projection_runs",
+      ]);
     } finally {
       db.close();
     }

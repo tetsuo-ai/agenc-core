@@ -11,6 +11,9 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateSchemaMismatchError } from "./errors.js";
 import {
+  TOOL_PAIR_PROJECTION_SCHEMA_VERSION,
+} from "./migrations/020_tool_pair_projection_schema.js";
+import {
   applyMigrations,
   openStateDatabases,
   resolveStateDatabasePaths,
@@ -200,7 +203,7 @@ describe("openStateDatabases", () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
           .get()?.version,
-      ).toBe(18);
+      ).toBe(TOOL_PAIR_PROJECTION_SCHEMA_VERSION);
     } finally {
       driver.close();
     }
