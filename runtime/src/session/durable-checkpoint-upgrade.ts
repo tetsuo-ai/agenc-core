@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { computePrefixHash } from "./durable-turns.js";
+import { emptyReducedState, reduce } from "./event-log-reducer.js";
 import type { TurnCheckpointV2Event } from "./event-log.js";
 import type {
   RolloutItem,
@@ -366,6 +367,17 @@ function updateUpgradeHistory(
     item.payload.replacementHistory !== undefined
   ) {
     return Array.from(item.payload.replacementHistory);
+  }
+  if (
+    item.type === "event_msg" &&
+    item.payload.msg.type === "thread_rolled_back"
+  ) {
+    // Rollback is the only event variant that mutates replay history. Keep its
+    // canonical trimming semantics without running the immutable reducer for
+    // every response item (the former quadratic path).
+    const state = emptyReducedState();
+    state.history = history;
+    return reduce(state, item).state.history;
   }
   return history;
 }

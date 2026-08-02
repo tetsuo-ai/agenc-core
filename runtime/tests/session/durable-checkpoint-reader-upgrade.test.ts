@@ -13,8 +13,10 @@ import {
   MAX_CHECKPOINT_UPGRADE_PREFIX_WORK,
   planLegacyDurableCheckpointUpgrade,
 } from "../../src/session/durable-checkpoint-upgrade.js";
+import { computePrefixHash } from "../../src/session/durable-turns.js";
 import {
   ROLLOUT_SCHEMA_VERSION,
+  type TurnCheckpointEvent,
   type TurnCheckpointV2Event,
 } from "../../src/session/event-log.js";
 import {
@@ -706,6 +708,56 @@ describe("legacy durable checkpoint upgrade planner", () => {
     },
   );
 
+  it("preserves rollback history semantics without reducing every response", () => {
+    const survivingHistory: ToolResultIntegrityResponseItem[] = [
+      { role: "user", content: "first request" },
+      { role: "assistant", content: "first answer" },
+      { role: "user", content: "replacement request" },
+    ];
+    const checkpoint = readTurnCheckpoint({
+      ...legacyCheckpoint(
+        computePrefixHash(survivingHistory, survivingHistory.length),
+      ),
+      persistedMessageCount: survivingHistory.length,
+    });
+    if (checkpoint.version !== 1) throw new Error("checkpoint is not legacy");
+    const items: RolloutItem[] = [
+      { type: "response_item", payload: survivingHistory[0]! },
+      { type: "response_item", payload: survivingHistory[1]! },
+      {
+        type: "response_item",
+        payload: { role: "user", content: "rolled-back request" },
+      },
+      {
+        type: "response_item",
+        payload: { role: "assistant", content: "rolled-back answer" },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          id: "rollback-event",
+          seq: 1,
+          msg: { type: "thread_rolled_back", payload: { numTurns: 1 } },
+        },
+      },
+      { type: "response_item", payload: survivingHistory[2]! },
+      checkpointItem(checkpoint.checkpoint),
+    ];
+
+    expect(
+      planLegacyDurableCheckpointUpgrade({
+        items,
+        runId: "rollback-run",
+        projection,
+        projectionId: "plan-rollback-history",
+        sourceKey: "rollback-history",
+      }),
+    ).toMatchObject({
+      status: "planned",
+      plan: { checkpointsUpgraded: 1, checkpointsValidated: 1 },
+    });
+  });
+
   it("defers repeated checkpoints at the aggregate prefix-work bound", () => {
     const firstMessage: ToolResultIntegrityResponseItem = {
       role: "user",
@@ -868,7 +920,7 @@ function checkpointForHistory(
   return readable.checkpoint;
 }
 
-function checkpointItem(checkpoint: TurnCheckpointV2Event): RolloutItem {
+function checkpointItem(checkpoint: TurnCheckpointEvent): RolloutItem {
   return {
     type: "event_msg",
     payload: {
