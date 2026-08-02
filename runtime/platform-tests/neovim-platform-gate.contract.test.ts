@@ -290,9 +290,9 @@ describe("hosted Neovim platform gate contract", () => {
     );
     expect(killScenario).not.toContain("\\x1b[200~");
     expect(killScenario).not.toContain("\\x1b[201~");
-    expect(dirtyProcessingFenceIndex).toBeGreaterThan(dirtyInputIndex);
+    expect(dirtyProofWaitIndex).toBeGreaterThan(dirtyInputIndex);
+    expect(dirtyProcessingFenceIndex).toBeGreaterThan(dirtyProofWaitIndex);
     expect(dirtyNormalProofIndex).toBeGreaterThan(dirtyProcessingFenceIndex);
-    expect(dirtyProofWaitIndex).toBeGreaterThan(dirtyNormalProofIndex);
     expect(
       killScenario.slice(dirtyInputIndex),
     ).not.toContain("runEmbeddedNeovimCommand");

@@ -88,21 +88,9 @@ export default async function (session) {
     session.send("o");
     await sleep(80);
     // One unbracketed write preserves the ordinary nvim_input path while
-    // avoiding independent outer-ConPTY writes. The mode fence and editor-
-    // owned proof below still acknowledge processing before teardown.
+    // avoiding independent outer-ConPTY writes. Prove the editor processed
+    // the complete marker before sending Escape as a separate transaction.
     sendEmbeddedNeovimInput(session, "UNSAVED_PLATFORM_KILL_MARK");
-    // RPC acceptance does not prove editor processing. Send Escape after the
-    // marker and require Neovim's mode notification before trusting the
-    // TextChangedI proof. The marker precedes Escape in the same serialized
-    // provider queue, so NORMAL is a processing fence without saving the dirty
-    // buffer or replacing the end-to-end PTY input path.
-    session.send("\x1b");
-    await waitForFrameText(
-      session,
-      /\[embedded Neovim [^,\n]+,\s*normal,\s*ready(?:,|\])/iu,
-      "embedded Neovim marker processing before hosted-platform termination",
-      5_000,
-    );
     const expectedDirtyProof =
       `${originalTarget}UNSAVED_PLATFORM_KILL_MARK\n`;
     const dirtyProof = await waitForExactFileText(
@@ -116,6 +104,16 @@ export default async function (session) {
         `Neovim dirty-buffer proof was not exact: ${JSON.stringify(dirtyProof)}`,
       );
     }
+    // The exact TextChangedI proof acknowledges the complete ordinary-input
+    // transaction. Only then leave insert mode, and require Neovim's rendered
+    // NORMAL notification as the final processing fence before teardown.
+    session.send("\x1b");
+    await waitForFrameText(
+      session,
+      /\[embedded Neovim [^,\n]+,\s*normal,\s*ready(?:,|\])/iu,
+      "embedded Neovim marker processing before hosted-platform termination",
+      5_000,
+    );
     const targetBeforeKill = await readFile(target, "utf8");
     if (targetBeforeKill !== originalTarget) {
       throw new Error(
