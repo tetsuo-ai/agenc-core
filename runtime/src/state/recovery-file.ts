@@ -5,6 +5,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
 
+import { SessionLockedError } from "../session/session-store.js";
 import {
   OfflineRolloutUnsafePathError,
   withPinnedOfflineRolloutReadLease,
@@ -407,10 +408,45 @@ function mapRecoveryFileErrors<T>(sourcePath: string, operation: () => T): T {
         code,
       );
     }
+    if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") {
+      throw new RecoveryOperationalError(
+        "database_busy",
+        `database contention prevented canonical recovery for ${sourcePath}`,
+        code,
+      );
+    }
+    if (
+      code?.startsWith("SQLITE_IOERR") === true ||
+      code === "SQLITE_FULL" ||
+      code?.startsWith("SQLITE_READONLY") === true
+    ) {
+      throw new RecoveryOperationalError(
+        "database_io",
+        `database I/O prevented canonical recovery for ${sourcePath}`,
+        code,
+      );
+    }
+    if (code === "SQLITE_CANTOPEN" || code === "SQLITE_NOTADB") {
+      throw new RecoveryOperationalError(
+        "database_unavailable",
+        `database storage is unavailable for canonical recovery of ${sourcePath}`,
+        code,
+      );
+    }
+    if (
+      code?.startsWith("SQLITE_CONSTRAINT") === true ||
+      code === "SQLITE_MISMATCH"
+    ) {
+      throw new RecoveryOperationalError(
+        "projection_failure",
+        `database projection rejected canonical recovery for ${sourcePath}`,
+        code,
+      );
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (
-      message.includes("canonical journal is live") ||
-      message.includes("lock")
+      error instanceof SessionLockedError ||
+      message.includes("canonical journal is live")
     ) {
       throw new RecoveryOperationalError(
         "source_not_quiescent",

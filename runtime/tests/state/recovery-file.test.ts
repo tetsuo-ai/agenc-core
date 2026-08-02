@@ -168,6 +168,29 @@ describe("descriptor-pinned canonical recovery", () => {
     }
   });
 
+  it("defers a source whose session lease is live", () => {
+    const fixture = createFixture(event(1));
+    writeFileSync(
+      `${fixture.rolloutPath}.lock`,
+      `${JSON.stringify({
+        pid: process.pid,
+        startNs: "independent-live-owner",
+        acquiredAtIso: "2026-08-01T00:00:00.000Z",
+      })}\n`,
+      { mode: 0o600 },
+    );
+    try {
+      expect(() => project(fixture)).toThrow(
+        expect.objectContaining<Partial<RecoveryOperationalError>>({
+          reasonCode: "source_not_quiescent",
+        }),
+      );
+      expect(projectedRows(fixture.driver)).toBe(0);
+    } finally {
+      fixture.driver.close();
+    }
+  });
+
   it("uses disk-backed identity claims for non-reserved event ids", () => {
     const fixture = createFixture(
       event(1, "custom-event") + event(2, "custom-event"),
@@ -176,6 +199,27 @@ describe("descriptor-pinned canonical recovery", () => {
       expect(() => project(fixture)).toThrow(
         expect.objectContaining<Partial<CanonicalJournalIntegrityError>>({
           reasonCode: "identity_conflict",
+        }),
+      );
+      expect(projectedRows(fixture.driver)).toBe(0);
+    } finally {
+      fixture.driver.close();
+    }
+  });
+
+  it("classifies a rolled-back SQLite projection rejection as operational", () => {
+    const fixture = createFixture(event(1));
+    try {
+      fixture.driver.state.exec(
+        `CREATE TEMP TRIGGER reject_recovery_projection
+         BEFORE INSERT ON main.thread_rollout_items
+         BEGIN
+           SELECT RAISE(ABORT, 'injected projection failure');
+         END`,
+      );
+      expect(() => project(fixture)).toThrow(
+        expect.objectContaining<Partial<RecoveryOperationalError>>({
+          reasonCode: "projection_failure",
         }),
       );
       expect(projectedRows(fixture.driver)).toBe(0);
