@@ -290,7 +290,9 @@ they cannot invoke MCP resources, memory lookup, or PDF helper processes, and
 `FileRead` refuses PDFs for the same reason. Grep and file discovery use the
 lockfile-pinned ripgrep binary by absolute path and pass `--no-config`; an
 Editor query therefore cannot select a PATH executable or activate an
-operator-configured `rg --pre` command.
+operator-configured `rg --pre` command. Missing packaged ripgrep is an explicit
+Grep error with `agenc doctor` and same-version reinstall guidance, never a
+JavaScript content-search fallback.
 
 An Editor request does **not** initiate configured lifecycle or prompt hooks,
 MCP startup or discovery, cron/job recovery, skill-watcher configuration

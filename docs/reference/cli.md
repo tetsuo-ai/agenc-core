@@ -118,8 +118,11 @@ agenc doctor --json
 agenc doctor --apparmor-profile
 ```
 
-Diagnoses installation and environment: version, install type, ripgrep, update
-permissions, transaction-guard, PATH/glob warnings, with suggested fixes.
+Diagnoses installation and environment: version, install type, packaged
+ripgrep, update permissions, transaction-guard, PATH/glob warnings, with
+suggested fixes. `Grep` requires AgenC's pinned packaged ripgrep and never uses
+a PATH binary or JavaScript search fallback; its remediation is to identify and
+reinstall the same AgenC version, not to install an unrelated `rg`.
 `--json` emits the raw diagnostic. `--apparmor-profile` prints, but does not
 install, a narrow Ubuntu AppArmor user-namespace profile bound to the verified
 standalone `agenc` wrapper.

@@ -159,13 +159,6 @@ describe("FND benchmark baseline contract", () => {
     expect(
       patchClosure.modules.map((binding: Record<string, any>) => binding.path),
     ).toContain("runtime/src/tools/apply-patch/types.ts");
-    const regexClosure = report.productionModuleClosures.find(
-      (closure: Record<string, any>) =>
-        closure.caseId === "regex_fallback_catastrophic_backtracking",
-    );
-    expect(
-      regexClosure.modules.map((binding: Record<string, any>) => binding.path),
-    ).toContain("runtime/src/sandbox/execution-broker.ts");
     expect(report.productionTreeBinding).toMatchObject({
       objectType: "tree",
       path: BENCHMARK_PRODUCTION_TREE_PATH,

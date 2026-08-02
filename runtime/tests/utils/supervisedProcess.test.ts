@@ -388,6 +388,41 @@ describe("runSupervisedProcess", () => {
   });
 
   it.runIf(process.platform !== "win32")(
+    "preserves the first consumer error and stops delivering buffered output",
+    async () => {
+      let callbackCount = 0;
+      const result = await runSupervisedProcess(
+        nodeCommand(
+          "let emittedAfterStop = false;" +
+            "process.on('SIGTERM', () => {" +
+            "if (emittedAfterStop) return;" +
+            "emittedAfterStop = true;" +
+            "process.stdout.write('second');" +
+            "});" +
+            "process.stdout.write('first');" +
+            "setInterval(() => {}, 1000);",
+        ),
+        {
+          maxOutputBytes: 1_024,
+          terminateGraceMs: 50,
+          settleBackstopMs: 500,
+          onStdout() {
+            callbackCount += 1;
+            throw new Error(
+              callbackCount === 1 ? "first boundary" : "later boundary",
+            );
+          },
+        },
+      );
+
+      expect(callbackCount).toBe(1);
+      expect(result.stopReason).toBe("consumer_limit");
+      expect(result.error?.message).toBe("first boundary");
+      expect(result.stdout.toString()).toBe("first");
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
     "kills a TERM-resistant process group after the grace period",
     async () => {
       accessSync(process.execPath, constants.X_OK);

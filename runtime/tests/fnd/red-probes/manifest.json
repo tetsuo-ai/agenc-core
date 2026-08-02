@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 10,
+  "probeCount": 9,
   "probes": [
     {
       "id": "a2b-corrupt-journal-never-recoverable",
@@ -55,15 +55,6 @@
       "file": "tests/fnd/red-probes/c3a-memory-recall-lexical-fallback.red-probe.ts",
       "fingerprint": "C3A:MEMORY:LEXICAL-FALLBACK-ON-ADMISSION-DENIAL",
       "sourceSha256": "c2cecc398507cbf70640a142d5350e357830928e700f653b078218b5716c2700",
-      "timeoutMs": 10000
-    },
-    {
-      "id": "d1-grep-pinned-binary-required",
-      "task": "D1",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/d1-grep-pinned-binary-required.red-probe.ts",
-      "fingerprint": "D1:GREP:PINNED-BINARY-REQUIRED",
-      "sourceSha256": "0900cdabdf84f840b8808c2ea8e02a8cb57829c37d5881c7c46dd3b4ad927d76",
       "timeoutMs": 10000
     },
     {

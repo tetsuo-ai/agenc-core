@@ -290,7 +290,7 @@ describe("model-controlled helper process sandbox closure", () => {
         capturePath: isProbe ? probeCapture : searchCapture,
         cwd: transformedCwd,
         label: isProbe ? "grep-probe" : "grep-search",
-        stdout: isProbe ? "ripgrep 99.0.0\n" : `${match}\n`,
+        stdout: isProbe ? "ripgrep 99.0.0\n" : `${match}\0`,
       });
     });
     const args = { pattern: "needle", path: root };

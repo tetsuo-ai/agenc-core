@@ -288,6 +288,35 @@ describe("Grep tool", () => {
     expect(result.content).toContain("results truncated");
   });
 
+  test("protected head_limit bounds structured output before the decoded cap", async () => {
+    // Revert-sensitive: the descriptor-bound path previously ignored the
+    // rendered-line limit and buffered every JSON record before parsing.
+    const line = `needle ${"x".repeat(490)}`;
+    const body = Array.from(
+      { length: 70_000 },
+      (_, index) => `${line}${index}`,
+    ).join("\n");
+    await writeFile(join(root, "protected-large.txt"), `${body}\n`, "utf8");
+    workspaceMutationCoordinators.getOrCreate(root).acquire({
+      workspaceRoot: root,
+      editorInstanceId: "grep-large-head-limit-editor",
+    });
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "needle",
+      path: root,
+      output_mode: "content",
+      head_limit: 1,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("protected-large.txt:1:needle");
+    expect(result.content).toContain("(results truncated at 1; refine query)");
+    expect(result.content).not.toContain("DECODED_OUTPUT_LIMIT");
+    expect(result.content.split("\n").filter(Boolean)).toHaveLength(2);
+  });
+
   test("ignores RIPGREP_CONFIG_PATH preprocessors", async () => {
     const marker = join(root, "preprocessor-ran");
     const preprocessor = join(root, "hostile-preprocessor");
@@ -706,7 +735,7 @@ describe("Grep tool", () => {
 
   test("head_limit truncates broad ripgrep output before buffer exhaustion", async () => {
     const line = `needle ${"x".repeat(360)}`;
-    const body = Array.from({ length: 35_000 }, (_, i) => `${line} ${i}`).join(
+    const body = Array.from({ length: 90_000 }, (_, i) => `${line} ${i}`).join(
       "\n",
     );
     await writeFile(join(root, "large.txt"), `${body}\n`, "utf8");
@@ -783,11 +812,10 @@ describe("Grep tool", () => {
     expect(matches).not.toContain("skip.md");
   });
 
-  test("fallback glob filter supports brace alternatives", async () => {
+  test("pinned ripgrep owns brace-alternative glob semantics", async () => {
     await writeFile(join(root, "keep.ts"), "needle\n", "utf8");
     await writeFile(join(root, "also.tsx"), "needle\n", "utf8");
     await writeFile(join(root, "skip.js"), "needle\n", "utf8");
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -804,18 +832,27 @@ describe("Grep tool", () => {
     expect(matches).not.toContain("skip.js");
   });
 
-  test("fallback glob matcher normalizes Windows-style separators", () => {
-    const matchesGlob = __INTERNAL.compileGlobMatcher(["src/*.ts"]);
+  test("passes positive, negated, and negative-only globs unchanged", () => {
+    const args = __INTERNAL.buildRipgrepArgs({
+      pattern: "needle",
+      absolutePath: "/workspace",
+      outputMode: "files_with_matches",
+      caseInsensitive: false,
+      showLineNumbers: true,
+      multiline: false,
+      includeIgnored: false,
+      globs: ["src/?.ts", "!generated/**", "!*.map"],
+    });
 
-    expect(matchesGlob("src\\keep.ts")).toBe(true);
-    expect(matchesGlob("src\\skip.js")).toBe(false);
+    expect(args).toEqual(
+      expect.arrayContaining(["src/?.ts", "!generated/**", "!*.map"]),
+    );
   });
 
-  test("fallback files_with_matches honors root ignore files", async () => {
+  test("pinned ripgrep honors root ignore files", async () => {
     await writeFile(join(root, ".gitignore"), "ignored.txt\n", "utf8");
     await writeFile(join(root, "ignored.txt"), "needle\n", "utf8");
     await writeFile(join(root, "visible.txt"), "needle\n", "utf8");
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -830,12 +867,11 @@ describe("Grep tool", () => {
     expect(matches).not.toContain("ignored.txt");
   });
 
-  test("fallback files_with_matches honors nested ignore files", async () => {
+  test("pinned ripgrep honors nested ignore files", async () => {
     await mkdir(join(root, "src"), { recursive: true });
     await writeFile(join(root, "src/.ignore"), "ignored.txt\n", "utf8");
     await writeFile(join(root, "src/ignored.txt"), "needle\n", "utf8");
     await writeFile(join(root, "src/visible.txt"), "needle\n", "utf8");
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -850,11 +886,10 @@ describe("Grep tool", () => {
     expect(matches).not.toContain("src/ignored.txt");
   });
 
-  test("fallback files_with_matches honors rgignore files", async () => {
+  test("pinned ripgrep honors rgignore files", async () => {
     await writeFile(join(root, ".rgignore"), "rg-hidden.txt\n", "utf8");
     await writeFile(join(root, "rg-hidden.txt"), "needle\n", "utf8");
     await writeFile(join(root, "visible.txt"), "needle\n", "utf8");
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -869,13 +904,12 @@ describe("Grep tool", () => {
     expect(matches).not.toContain("rg-hidden.txt");
   });
 
-  test("fallback nested ignore negation can reinclude parent ignores", async () => {
+  test("pinned ripgrep applies nested ignore negation", async () => {
     await mkdir(join(root, "src"), { recursive: true });
     await writeFile(join(root, ".gitignore"), "src/*.txt\n", "utf8");
     await writeFile(join(root, "src/.ignore"), "!keep.txt\n", "utf8");
     await writeFile(join(root, "src/drop.txt"), "needle\n", "utf8");
     await writeFile(join(root, "src/keep.txt"), "needle\n", "utf8");
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -1010,9 +1044,8 @@ describe("Grep tool", () => {
     }
   });
 
-  test("fallback content mode honors the -n line-number flag", async () => {
+  test("structured content mode honors the -n line-number flag", async () => {
     await writeFile(join(root, "a.txt"), "needle\n", "utf8");
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const withLineNumbers = await tool.execute({
@@ -1034,7 +1067,7 @@ describe("Grep tool", () => {
     expect(withoutLineNumbers.content).toBe("a.txt:needle");
   });
 
-  test("fallback rejects count mode with an explicit unsupported error", async () => {
+  test("missing pinned ripgrep fails closed in every output mode", async () => {
     await writeFile(join(root, "a.txt"), "needle\n", "utf8");
     __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
@@ -1046,15 +1079,17 @@ describe("Grep tool", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("output_mode=count");
-    expect(result.content).toContain("not supported by the fallback search");
+    expect(result.content).toContain("PINNED_RIPGREP_UNAVAILABLE");
+    expect(result.content).toContain("pinned ripgrep");
+    expect(result.content).toContain("agenc doctor");
+    expect(result.content).toContain("reinstall");
+    expect(result.content).not.toContain("slower");
   });
 
-  test("fallback content mode preserves file context for single-file targets", async () => {
+  test("structured content mode preserves file context for single-file targets", async () => {
     await mkdir(join(root, "nested"), { recursive: true });
     const target = join(root, "nested", "single.txt");
     await writeFile(target, "alpha\nneedle\nomega\n", "utf8");
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const withLineNumbers = await tool.execute({
@@ -1076,13 +1111,12 @@ describe("Grep tool", () => {
     expect(withoutLineNumbers.content).toBe("nested/single.txt:needle");
   });
 
-  test("fallback search skips oversized files with an explicit safety note", async () => {
+  test("pinned ripgrep searches files beyond the removed fallback ceiling", async () => {
     await writeFile(
       join(root, "huge.txt"),
       `${"x".repeat(2 * 1024 * 1024 + 1)}needle\n`,
       "utf8",
     );
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -1092,17 +1126,15 @@ describe("Grep tool", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toBe(
-      "No matches found.\n(fallback scan stopped at safety limit; refine query)",
-    );
+    expect(result.content).toContain("huge.txt");
+    expect(result.content).toContain("line truncated at 500 chars");
   });
 
-  test("fallback search follows in-tree symlinks after allowlist checks", async () => {
+  test("pinned ripgrep never follows in-tree symlinks", async () => {
     await mkdir(join(root, "store"), { recursive: true });
     const realTarget = join(root, "store", "target.txt");
     await writeFile(realTarget, "inside-secret\n", "utf8");
     await symlink(realTarget, join(root, "link.txt"));
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -1113,16 +1145,15 @@ describe("Grep tool", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(lines(result.content)).toEqual(["Found 1 file", "link.txt"]);
+    expect(result.content).toBe("No files found.");
   });
 
-  test("fallback search preserves distinct symlink display paths", async () => {
+  test("pinned ripgrep does not duplicate content through symlink aliases", async () => {
     await mkdir(join(root, "store"), { recursive: true });
     const realTarget = join(root, "store", "target.txt");
     await writeFile(realTarget, "shared-secret\n", "utf8");
     await symlink(realTarget, join(root, "link-a.txt"));
     await symlink(realTarget, join(root, "link-b.txt"));
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -1133,13 +1164,10 @@ describe("Grep tool", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(fileResultPaths(result.content).sort()).toEqual([
-      "link-a.txt",
-      "link-b.txt",
-    ]);
+    expect(result.content).toBe("No files found.");
   });
 
-  test("fallback files_with_matches keeps newest matches when truncating", async () => {
+  test("files_with_matches keeps newest matches when truncating", async () => {
     const oldFile = join(root, "old.txt");
     const midFile = join(root, "mid.txt");
     const staleFile = join(root, "stale.txt");
@@ -1153,7 +1181,6 @@ describe("Grep tool", () => {
     await utimes(midFile, now - 100, now - 100);
     await utimes(staleFile, now - 200, now - 200);
     await utimes(newFile, now, now);
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -1171,11 +1198,10 @@ describe("Grep tool", () => {
     ]);
   });
 
-  test("fallback files_with_matches reports the safety cap without matches", async () => {
+  test("files_with_matches has no JavaScript fallback file cap", async () => {
     for (let i = 0; i < 5001; i += 1) {
       await writeFile(join(root, `miss-${i}.txt`), "haystack\n", "utf8");
     }
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -1185,18 +1211,15 @@ describe("Grep tool", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toBe(
-      "No files found.\n(fallback scan stopped at safety limit; refine query)",
-    );
+    expect(result.content).toBe("No files found.");
   });
 
-  test("fallback files_with_matches treats anchored patterns as line matches", async () => {
+  test("pinned ripgrep treats anchored patterns as line matches", async () => {
     await writeFile(
       join(root, "anchored.txt"),
       "alpha\nneedle\nomega\n",
       "utf8",
     );
-    __setRipgrepAvailabilityForTests(false);
     const tool = createGrepTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -1215,37 +1238,40 @@ describe("Grep tool", () => {
     ).toBe("src\\file.txt");
   });
 
-  test("relativizes Unix ripgrep content lines with colon filenames", async () => {
+  test("structured content keeps colon filenames unambiguous", async () => {
     await mkdir(join(root, "src"), { recursive: true });
     const target = join(root, "src", "a:b.txt");
     await writeFile(target, "needle\n", "utf8");
 
-    expect(
-      __INTERNAL.rewriteRipgrepContentLine(
-        `${target}\u001f12\u001fneedle`,
-        root,
-      ),
-    ).toBe("src/a:b.txt:12:needle");
+    const result = await createGrepTool({ allowedPaths: [root] }).execute({
+      pattern: "needle",
+      path: root,
+      output_mode: "content",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe("src/a:b.txt:1:needle");
   });
 
-  test("relativizes Unix ripgrep content lines for missing files", () => {
-    const missing = join(root, "gone.txt");
+  test("all-whitespace patterns are passed to ripgrep without trimming", async () => {
+    await writeFile(join(root, "space.txt"), "left   right\n", "utf8");
 
-    expect(
-      __INTERNAL.rewriteRipgrepContentLine(
-        `${missing}\u001f12\u001fneedle`,
-        root,
-      ),
-    ).toBe("gone.txt:12:needle");
+    const result = await createGrepTool({ allowedPaths: [root] }).execute({
+      pattern: "   ",
+      path: root,
+      output_mode: "content",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("space.txt:1:left   right");
   });
 
-  test("fallback search rejects symlinks that point outside allowed paths", async () => {
+  test("pinned ripgrep rejects symlinks that point outside allowed paths", async () => {
     const otherRoot = await mkdtemp(join(tmpdir(), "agenc-grep-other-"));
     try {
       const secret = join(otherRoot, "secret.txt");
       await writeFile(secret, "outside-secret\n", "utf8");
       await symlink(secret, join(root, "leak.txt"));
-      __setRipgrepAvailabilityForTests(false);
       const tool = createGrepTool({ allowedPaths: [root] });
 
       const result = await tool.execute({
@@ -1259,6 +1285,234 @@ describe("Grep tool", () => {
       expect(result.content).toBe("No matches found.");
     } finally {
       await rm(otherRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("invalid regex is reported by pinned ripgrep without blocking the event loop", async () => {
+    await writeFile(join(root, "hostile.txt"), `${"a".repeat(64)}!\n`, "utf8");
+    const tool = createGrepTool({ allowedPaths: [root] });
+    let heartbeats = 0;
+    const timer = setInterval(() => {
+      heartbeats += 1;
+    }, 5);
+    const startedAt = Date.now();
+    try {
+      const adversarial = await tool.execute({
+        pattern: "(a+)+$",
+        path: root,
+        output_mode: "content",
+      });
+      expect(adversarial.isError).toBeUndefined();
+      expect(adversarial.content).toBe("No matches found.");
+
+      const invalid = await tool.execute({
+        pattern: "(",
+        path: root,
+        output_mode: "content",
+      });
+      expect(invalid.isError).toBe(true);
+      expect(invalid.content).toContain("regex parse error");
+    } finally {
+      clearInterval(timer);
+    }
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(heartbeats).toBeGreaterThan(0);
+  });
+
+  test("preserves leading/trailing whitespace, Unicode, and zero-width patterns", async () => {
+    await writeFile(
+      join(root, "patterns.txt"),
+      "left needle right\nλ-value\nfinal\n",
+      "utf8",
+    );
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const padded = await tool.execute({
+      pattern: " needle ",
+      path: root,
+      output_mode: "content",
+    });
+    expect(padded.content).toContain("left needle right");
+
+    const unicode = await tool.execute({
+      pattern: "λ-value",
+      path: root,
+      output_mode: "content",
+    });
+    expect(unicode.content).toContain("λ-value");
+
+    const zeroWidth = await tool.execute({
+      pattern: "^",
+      path: join(root, "patterns.txt"),
+      output_mode: "content",
+      head_limit: 1,
+    });
+    expect(zeroWidth.isError).toBeUndefined();
+    expect(zeroWidth.content).toContain("patterns.txt:1:left needle right");
+  });
+
+  test("delegates positive, negated, negative-only, and separator glob semantics", async () => {
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(join(root, "keep.ts"), "needle\n", "utf8");
+    await writeFile(join(root, "skip.ts"), "needle\n", "utf8");
+    await writeFile(join(root, "skip.js"), "needle\n", "utf8");
+    await writeFile(join(root, "src", "a.ts"), "needle\n", "utf8");
+    await writeFile(join(root, "!important.txt"), "needle\n", "utf8");
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const combined = await tool.execute({
+      pattern: "needle",
+      path: root,
+      glob: "*.ts,!skip.ts",
+      output_mode: "files_with_matches",
+    });
+    expect(fileResultPaths(combined.content).sort()).toEqual([
+      "keep.ts",
+      "src/a.ts",
+    ]);
+
+    const negativeOnly = await tool.execute({
+      pattern: "needle",
+      path: root,
+      glob: "!*.js",
+      output_mode: "files_with_matches",
+    });
+    expect(fileResultPaths(negativeOnly.content)).not.toContain("skip.js");
+
+    const separator = await tool.execute({
+      pattern: "needle",
+      path: root,
+      glob: "src?.ts",
+      output_mode: "files_with_matches",
+    });
+    expect(separator.content).toBe("No files found.");
+
+    const literalBang = await tool.execute({
+      pattern: "needle",
+      path: root,
+      glob: "\\!important.txt",
+      output_mode: "files_with_matches",
+    });
+    expect(fileResultPaths(literalBang.content)).toEqual(["!important.txt"]);
+  });
+
+  test("escapes raw filename bytes consistently in every output mode", async () => {
+    if (process.platform === "win32") return;
+    const rawPath = Buffer.concat([
+      Buffer.from(`${root}/raw-`, "utf8"),
+      Buffer.from([0xff]),
+      Buffer.from(".txt", "utf8"),
+    ]);
+    await writeFile(rawPath, "needle\nneedle\n", { mode: 0o600 });
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    for (const outputMode of [
+      "content",
+      "files_with_matches",
+      "count",
+    ] as const) {
+      const result = await tool.execute({
+        pattern: "needle",
+        path: root,
+        output_mode: outputMode,
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("raw-\\xff.txt [path-encoding=bytes]");
+    }
+  });
+
+  test("keeps control-byte and long filenames unambiguous in every mode", async () => {
+    if (process.platform === "win32") return;
+    const names = [
+      "colon:name.txt",
+      "line\nname.txt",
+      "tab\tname.txt",
+      `control-${String.fromCharCode(1)}.txt`,
+      `${"long-".repeat(40)}name.txt`,
+    ];
+    for (const name of names) {
+      await writeFile(join(root, name), "needle\nneedle\n", "utf8");
+    }
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    for (const outputMode of [
+      "content",
+      "files_with_matches",
+      "count",
+    ] as const) {
+      const result = await tool.execute({
+        pattern: "needle",
+        path: root,
+        output_mode: outputMode,
+        head_limit: 0,
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("colon:name.txt");
+      expect(result.content).toContain("line\\nname.txt");
+      expect(result.content).toContain("tab\\tname.txt");
+      expect(result.content).toContain("control-\\x01.txt");
+      expect(result.content).toContain(`${"long-".repeat(40)}name.txt`);
+    }
+  });
+
+  test("preserves leading UTF-8 BOM data in filenames", async () => {
+    const name = "\ufeffbom-name.txt";
+    await writeFile(join(root, name), "\ufeffneedle\n", "utf8");
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    for (const outputMode of [
+      "content",
+      "files_with_matches",
+      "count",
+    ] as const) {
+      const result = await tool.execute({
+        pattern: "needle",
+        path: root,
+        output_mode: outputMode,
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain(name);
+    }
+  });
+
+  test("rejects portable input limits and invalid encoding before path lookup", async () => {
+    const missingPath = join(root, "does-not-exist");
+    const tool = createGrepTool({ allowedPaths: [root] });
+    const cases: Array<readonly [Record<string, unknown>, string]> = [
+      [
+        { pattern: "a".repeat(65_537), path: missingPath },
+        "pattern is 65537 UTF-8 bytes",
+      ],
+      [{ pattern: "a\0b", path: missingPath }, "ARGUMENT_NUL"],
+      [{ pattern: "\ud800", path: missingPath }, "ARGUMENT_LONE_SURROGATE"],
+      [{ pattern: "x", path: "a".repeat(16_385) }, "path is 16385 UTF-8 bytes"],
+      [
+        { pattern: "x", path: missingPath, glob: "a".repeat(65_537) },
+        "glob is 65537 UTF-8 bytes",
+      ],
+      [
+        { pattern: "x", path: missingPath, type: "a".repeat(257) },
+        "type is 257 UTF-8 bytes",
+      ],
+      [
+        { pattern: "x", path: missingPath, "-C": 10_001 },
+        "-C exceeds the maximum 10000",
+      ],
+      [
+        { pattern: "x", path: missingPath, head_limit: 100_001 },
+        "head_limit exceeds the maximum 100000",
+      ],
+      [
+        { pattern: "x", path: missingPath, offset: 1_000_001 },
+        "offset exceeds the maximum 1000000",
+      ],
+    ];
+
+    for (const [input, expected] of cases) {
+      const result = await tool.execute(input);
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(expected);
+      expect(result.content).not.toContain("Path does not exist");
     }
   });
 

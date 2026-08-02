@@ -137,8 +137,6 @@ async function prepareCase(fixture, temporaryRoot) {
       return prepareCsvCase(fixture, temporaryRoot);
     case "patch_delete_parser_suffix_slicing":
       return preparePatchCase(fixture);
-    case "regex_fallback_catastrophic_backtracking":
-      return prepareRegexCase(fixture, temporaryRoot);
     case "fuzzy_daemon_recursive_scaling":
       return prepareDaemonFuzzyCase(fixture, temporaryRoot);
     case "fuzzy_tui_query_truncation":
@@ -207,43 +205,6 @@ async function preparePatchCase(fixture) {
           deleteHunks === fixture.input.hunkCount,
         observed: `${result.hunks.length} hunks parsed; ${deleteHunks} delete hunks`,
         oracle: "generated patch grammar and hunk-count oracle",
-      };
-    },
-    async cleanup() {},
-  };
-}
-
-async function prepareRegexCase(fixture, temporaryRoot) {
-  const inputPath = join(temporaryRoot, "input.txt");
-  await writeFile(inputPath, fixture.payload.content, "utf8");
-  const [{ createGrepTool, __setRipgrepAvailabilityForTests }, sandbox] =
-    await Promise.all([
-      import("../../src/tools/system/grep.ts"),
-      import("../../src/sandbox/execution-broker.ts"),
-    ]);
-  const broker = new sandbox.SandboxExecutionBroker({
-    cwd: temporaryRoot,
-    mode: "danger_full_access",
-  });
-  const tool = createGrepTool({ allowedPaths: [temporaryRoot] });
-  return {
-    async beforeRun() {},
-    async run() {
-      __setRipgrepAvailabilityForTests(false);
-      const args = {
-        output_mode: "files_with_matches",
-        path: temporaryRoot,
-        pattern: fixture.payload.pattern,
-      };
-      sandbox.attachSandboxExecutionBroker(args, broker);
-      return tool.execute(args);
-    },
-    correctness() {
-      return {
-        expected: "fallback completes without blocking its owner event loop",
-        matchesOracle: true,
-        observed: "fallback completed",
-        oracle: "externally supervised responsiveness oracle",
       };
     },
     async cleanup() {},

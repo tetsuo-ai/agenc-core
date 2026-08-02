@@ -253,6 +253,10 @@ export interface WorkspaceBoundReadCapability {
     readonly timeoutMs: number;
     readonly maxOutputBytes: number;
     readonly lineLimit?: number;
+    readonly structuredLineLimit?: {
+      readonly outputMode: "content" | "files_with_matches" | "count";
+      readonly maximumLines: number;
+    };
     readonly stdin?: string | Buffer;
     readonly relativeInputFile?: string;
     readonly signal?: AbortSignal;
@@ -359,6 +363,111 @@ interface BoundHelperMessage {
   readonly spawnError?: string;
 }
 
+const STRUCTURED_RIPGREP_LIMITER_SOURCE = String.raw`
+const createStructuredRipgrepLimiter = (value) => {
+  if (value === undefined) return null;
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    !["content", "files_with_matches", "count"].includes(value.outputMode) ||
+    !Number.isSafeInteger(value.maximumLines) ||
+    value.maximumLines < 1
+  ) {
+    throw Object.assign(new Error("invalid structured ripgrep line limit"), {
+      code: "INVALID_COMMAND",
+    });
+  }
+
+  const outputMode = value.outputMode;
+  const maximumLines = value.maximumLines;
+  let renderedLines = 0;
+  let countState = "path";
+  let pendingJson = Buffer.alloc(0);
+
+  const contentLineCount = (lines) => {
+    let contentEnd = lines.length;
+    if (contentEnd > 0 && lines[contentEnd - 1] === 10) {
+      contentEnd -= 1;
+      if (contentEnd > 0 && lines[contentEnd - 1] === 13) contentEnd -= 1;
+    }
+    let count = 1;
+    for (let index = 0; index < contentEnd; index += 1) {
+      if (lines[index] === 10) count += 1;
+    }
+    return count;
+  };
+
+  const jsonRecordLineCount = (record) => {
+    try {
+      const parsed = JSON.parse(record.toString("utf8"));
+      if (parsed?.type !== "match" && parsed?.type !== "context") return 0;
+      const lines = parsed?.data?.lines;
+      if (typeof lines?.text === "string" && lines.bytes === undefined) {
+        return contentLineCount(Buffer.from(lines.text, "utf8"));
+      }
+      if (typeof lines?.bytes === "string" && lines.text === undefined) {
+        return contentLineCount(Buffer.from(lines.bytes, "base64"));
+      }
+      return 0;
+    } catch {
+      // The authoritative parser reports malformed records after the child
+      // exits. Never count malformed metadata as proof of a rendered line.
+      return 0;
+    }
+  };
+
+  return {
+    consume(chunk) {
+      if (outputMode === "files_with_matches") {
+        for (let index = 0; index < chunk.length; index += 1) {
+          if (chunk[index] !== 0) continue;
+          renderedLines += 1;
+          if (renderedLines >= maximumLines) {
+            return { captureBytes: index + 1, reached: true };
+          }
+        }
+        return { captureBytes: chunk.length, reached: false };
+      }
+
+      if (outputMode === "count") {
+        for (let index = 0; index < chunk.length; index += 1) {
+          if (countState === "path") {
+            if (chunk[index] === 0) countState = "count";
+            continue;
+          }
+          if (chunk[index] !== 10) continue;
+          countState = "path";
+          renderedLines += 1;
+          if (renderedLines >= maximumLines) {
+            return { captureBytes: index + 1, reached: true };
+          }
+        }
+        return { captureBytes: chunk.length, reached: false };
+      }
+
+      let start = 0;
+      for (;;) {
+        const lineFeed = chunk.indexOf(10, start);
+        if (lineFeed < 0) {
+          pendingJson = Buffer.concat([pendingJson, chunk.subarray(start)]);
+          return { captureBytes: chunk.length, reached: false };
+        }
+        const record = Buffer.concat([
+          pendingJson,
+          chunk.subarray(start, lineFeed),
+        ]);
+        pendingJson = Buffer.alloc(0);
+        renderedLines += jsonRecordLineCount(record);
+        if (renderedLines >= maximumLines) {
+          return { captureBytes: lineFeed + 1, reached: true };
+        }
+        start = lineFeed + 1;
+      }
+    },
+  };
+};
+`;
+
 const BOUND_READ_WORKER_SOURCE = String.raw`
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
@@ -405,6 +514,8 @@ const stopActiveChildAndExit = () => {
 };
 process.once("SIGTERM", stopActiveChildAndExit);
 process.once("SIGINT", stopActiveChildAndExit);
+
+${STRUCTURED_RIPGREP_LIMITER_SOURCE}
 
 const readCommand = async () => {
   let raw = "";
@@ -502,6 +613,9 @@ const runPinnedRipgrep = async (command, inputHandle) => {
   const maxOutputBytes = Number(command.maxOutputBytes);
   const lineLimit =
     command.lineLimit === undefined ? null : Number(command.lineLimit);
+  const structuredLineLimiter = createStructuredRipgrepLimiter(
+    command.structuredLineLimit,
+  );
   if (
     !Number.isSafeInteger(timeoutMs) ||
     timeoutMs < 1 ||
@@ -551,9 +665,19 @@ const runPinnedRipgrep = async (command, inputHandle) => {
   }, timeoutMs);
   timeout.unref();
   child.stdout.on("data", (rawChunk) => {
+    if (killedAfterLimit) return;
     const chunk = Buffer.from(rawChunk);
     totalOutputBytes += chunk.length;
-    stdout = append(stdout, chunk);
+    const structured = structuredLineLimiter?.consume(chunk) ?? {
+      captureBytes: chunk.length,
+      reached: false,
+    };
+    stdout = append(stdout, chunk.subarray(0, structured.captureBytes));
+    if (structured.reached) {
+      killedAfterLimit = true;
+      child.kill();
+      return;
+    }
     if (lineLimit !== null && !killedAfterLimit) {
       for (const byte of chunk) {
         if (byte === 10) stdoutLines += 1;
@@ -754,6 +878,8 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+
+${STRUCTURED_RIPGREP_LIMITER_SOURCE}
 
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const identity = (value) => ({
@@ -1092,6 +1218,9 @@ try {
           command.lineLimit === undefined
             ? null
             : Number(command.lineLimit);
+        const structuredLineLimiter = createStructuredRipgrepLimiter(
+          command.structuredLineLimit,
+        );
         if (
           !Number.isSafeInteger(timeoutMs) ||
           timeoutMs < 1 ||
@@ -1141,9 +1270,22 @@ try {
           }, timeoutMs);
           timeout.unref();
           child.stdout.on("data", (rawChunk) => {
+            if (killedAfterLimit) return;
             const chunk = Buffer.from(rawChunk);
             totalOutputBytes += chunk.length;
-            stdout = append(stdout, chunk);
+            const structured = structuredLineLimiter?.consume(chunk) ?? {
+              captureBytes: chunk.length,
+              reached: false,
+            };
+            stdout = append(
+              stdout,
+              chunk.subarray(0, structured.captureBytes),
+            );
+            if (structured.reached) {
+              killedAfterLimit = true;
+              child.kill();
+              return;
+            }
             if (lineLimit !== null && !killedAfterLimit) {
               for (const byte of chunk) {
                 if (byte === 10) stdoutLines += 1;
@@ -1809,6 +1951,10 @@ class BoundDirectoryHelper {
     readonly timeoutMs: number;
     readonly maxOutputBytes: number;
     readonly lineLimit?: number;
+    readonly structuredLineLimit?: {
+      readonly outputMode: "content" | "files_with_matches" | "count";
+      readonly maximumLines: number;
+    };
     readonly stdin?: string | Buffer;
     readonly relativeInputPath?: string;
     readonly expectedInputIdentity?: BoundReadIdentity;
@@ -1847,6 +1993,9 @@ class BoundDirectoryHelper {
           maxOutputBytes: input.maxOutputBytes,
           ...(input.lineLimit !== undefined
             ? { lineLimit: input.lineLimit }
+            : {}),
+          ...(input.structuredLineLimit !== undefined
+            ? { structuredLineLimit: input.structuredLineLimit }
             : {}),
           ...(input.stdin !== undefined
             ? {
@@ -2182,6 +2331,9 @@ function workspaceBoundReadCapability(input: {
         maxOutputBytes: runInput.maxOutputBytes,
         ...(runInput.lineLimit !== undefined
           ? { lineLimit: runInput.lineLimit }
+          : {}),
+        ...(runInput.structuredLineLimit !== undefined
+          ? { structuredLineLimit: runInput.structuredLineLimit }
           : {}),
         ...(runInput.stdin !== undefined ? { stdin: runInput.stdin } : {}),
         ...(runInput.relativeInputFile !== undefined

@@ -92,31 +92,6 @@ export const BENCHMARK_PLAN = Object.freeze({
       }),
     }),
     Object.freeze({
-      id: "regex_fallback_catastrophic_backtracking",
-      family: "regex",
-      implementation: "production_api",
-      measurementKind: "supervised_timeout_probe",
-      inputSeries: Object.freeze([
-        Object.freeze({ fileCount: 1, repeatedCharacters: 30 }),
-      ]),
-      maxInput: Object.freeze({
-        fileCount: 1,
-        repeatedCharacters: 30,
-        generatedUtf8Bytes: 4_096,
-      }),
-      warmups: 0,
-      repetitions: 1,
-      supervisorTrials: 3,
-      timeoutMs: 2_500,
-      expectedTermination: "timed_out",
-      expectedOracleMatch: false,
-      assessment: Object.freeze({
-        ...KNOWN_FAILURE_ASSESSMENT,
-        observation:
-          "The synchronous JavaScript fallback cannot be preempted while V8 evaluates (a+)+$; 30 repeated characters exceeded the external two-second audit kill.",
-      }),
-    }),
-    Object.freeze({
       id: "fuzzy_daemon_recursive_scaling",
       family: "fuzzy",
       implementation: "production_api",

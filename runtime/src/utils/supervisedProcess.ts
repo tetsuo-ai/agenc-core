@@ -83,8 +83,11 @@ const MAX_PROCESS_TABLE_BYTES = 4 * 1024 * 1024;
 const MAX_PROCESS_TABLE_RECORDS = 32_768;
 const MAX_OWNED_PROCESS_IDENTITIES = 4_096;
 const LINUX_SUBREAPER_BROKER_NAME = "agenc-process-broker";
-
 const WINDOWS_JOB_BROKER_NAME = "agenc-process-job-broker.exe";
+const WINDOWS_COMMAND_LINE_QUOTE_CODE_UNIT = 0x22;
+const WINDOWS_COMMAND_LINE_SPACE_CODE_UNIT = 0x20;
+const WINDOWS_COMMAND_LINE_TAB_CODE_UNIT = 0x09;
+const WINDOWS_COMMAND_LINE_BACKSLASH_CODE_UNIT = 0x5c;
 
 const LINUX_CGROUP_OWNER_WATCHDOG_SCRIPT = String.raw`
 set -u
@@ -1393,16 +1396,26 @@ function spawnWindowsJobContainedProcess(
   return child;
 }
 
-function quoteWindowsCommandLineArgument(value: string): string {
-  if (value.length > 0 && !/[\s"]/u.test(value)) return value;
+/** Quote one argument exactly as libuv does before `CreateProcessW`. */
+export function quoteWindowsCommandLineArgument(value: string): string {
+  let needsQuotes = value.length === 0;
+  for (let index = 0; index < value.length && !needsQuotes; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    needsQuotes =
+      codeUnit === WINDOWS_COMMAND_LINE_SPACE_CODE_UNIT ||
+      codeUnit === WINDOWS_COMMAND_LINE_TAB_CODE_UNIT ||
+      codeUnit === WINDOWS_COMMAND_LINE_QUOTE_CODE_UNIT;
+  }
+  if (!needsQuotes) return value;
+
   let quoted = '"';
   let backslashes = 0;
   for (const character of value) {
-    if (character === "\\") {
+    if (character.charCodeAt(0) === WINDOWS_COMMAND_LINE_BACKSLASH_CODE_UNIT) {
       backslashes += 1;
       continue;
     }
-    if (character === '"') {
+    if (character.charCodeAt(0) === WINDOWS_COMMAND_LINE_QUOTE_CODE_UNIT) {
       quoted += "\\".repeat(backslashes * 2 + 1);
       quoted += '"';
       backslashes = 0;
@@ -1414,6 +1427,17 @@ function quoteWindowsCommandLineArgument(value: string): string {
   }
   quoted += "\\".repeat(backslashes * 2);
   return `${quoted}"`;
+}
+
+/** Count the exact UTF-16 command line, including separators and final NUL. */
+export function windowsCommandLineUtf16CodeUnits(
+  executable: string,
+  args: readonly string[],
+): number {
+  return (
+    [executable, ...args].map(quoteWindowsCommandLineArgument).join(" ")
+      .length + 1
+  );
 }
 
 /** Run a native helper with bounded output and process-tree cleanup. */
@@ -1480,7 +1504,9 @@ export function runSupervisedProcess(
       chunk: Buffer,
       callback: SupervisedProcessOptions["onStdout"],
     ): void => {
-      if (settled) return;
+      if (settled || stopReason !== undefined || processError !== undefined) {
+        return;
+      }
       const remaining = options.maxOutputBytes - outputBytes;
       const accepted =
         remaining > 0
@@ -1492,7 +1518,7 @@ export function runSupervisedProcess(
         try {
           callback?.(accepted, control);
         } catch (error) {
-          processError = toError(error);
+          processError ??= toError(error);
           requestStop("consumer_limit");
         }
       }
@@ -1594,12 +1620,12 @@ export function runSupervisedProcess(
       if (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED") {
         return;
       }
-      processError = error;
+      processError ??= error;
       requestStop("spawn_error");
     });
     child.stdin.end(options.stdin);
     child.once("error", (error) => {
-      processError = error;
+      processError ??= error;
       requestStop("spawn_error");
       closed = true;
       maybeFinish();

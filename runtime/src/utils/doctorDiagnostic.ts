@@ -16,6 +16,10 @@ import {
   resolveTransactionGuardPolicy,
   type TransactionGuardValueSource,
 } from '../transaction-guard/config.js'
+import {
+  PINNED_RIPGREP_AVAILABLE,
+  PINNED_RIPGREP_PATH,
+} from '../tools/system/pinned-ripgrep.js'
 import { getCwd } from './cwd.js'
 import { isEnvTruthy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
@@ -95,6 +99,7 @@ export type DiagnosticInfo = {
   packageManager?: string
   ripgrepStatus: {
     working: boolean
+    grepPinnedWorking: boolean
     mode: 'system' | 'builtin' | 'embedded'
     systemPath: string | null
   }
@@ -738,13 +743,7 @@ export function detectLinuxGlobPatternWarnings(): Array<{
   return warnings
 }
 
-/**
- * Build an actionable warning when ripgrep can't be started. No rg binary is
- * bundled, so on a clean machine without system rg the `Glob` tool hard-fails
- * and `Grep` drops to a slower pure-JS fallback. Surface the install command
- * here (`agenc doctor` gates its exit code on warnings) instead of leaving the
- * status line as the only signal. Pure so it can be unit-tested directly.
- */
+/** Build the configured-ripgrep warning used by Glob and TUI file search. */
 export function buildRipgrepWarning(
   status: { working: boolean; mode: 'system' | 'builtin' | 'embedded' },
   platform: NodeJS.Platform = process.platform,
@@ -754,9 +753,80 @@ export function buildRipgrepWarning(
   }
   return {
     issue:
-      'ripgrep (rg) could not be started — Glob will fail and Grep falls back to a slower pure-JS search',
+      'configured ripgrep (rg) could not be started — Glob and TUI file search require this search runtime',
     fix: getRipgrepInstallHint(platform),
   }
+}
+
+/**
+ * Build the independent warning for Grep's lockfile-pinned search runtime.
+ * A PATH executable is deliberately not a substitute for this trust boundary.
+ */
+export function buildPinnedGrepWarning(status: {
+  grepPinnedWorking: boolean
+}): { issue: string; fix: string } | null {
+  if (status.grepPinnedWorking) {
+    return null
+  }
+  return {
+    issue:
+      "Grep could not start AgenC's packaged pinned binary and has no JavaScript fallback",
+    fix:
+      'Run `agenc doctor` and `agenc --version`, then reinstall that same AgenC version to restore its packaged ripgrep binary. A PATH-installed `rg` does not repair Grep.',
+  }
+}
+
+/** Pure diagnostic seam keeping configured and Grep-pinned probes separate. */
+export function buildRipgrepWarnings(
+  status: {
+    working: boolean
+    grepPinnedWorking: boolean
+    mode: 'system' | 'builtin' | 'embedded'
+  },
+  platform: NodeJS.Platform = process.platform,
+): Array<{ issue: string; fix: string }> {
+  const warnings = [
+    buildRipgrepWarning(status, platform),
+    buildPinnedGrepWarning(status),
+  ]
+  return warnings.filter(
+    (warning): warning is { issue: string; fix: string } => warning !== null,
+  )
+}
+
+/** Build the public status and warnings from the two independent probes. */
+export function buildRipgrepDiagnostic(
+  configured: {
+    working: boolean
+    mode: 'system' | 'builtin' | 'embedded'
+    systemPath: string | null
+  },
+  grepPinnedWorking: boolean,
+  platform: NodeJS.Platform = process.platform,
+): {
+  ripgrepStatus: DiagnosticInfo['ripgrepStatus']
+  warnings: Array<{ issue: string; fix: string }>
+} {
+  const ripgrepStatus = { ...configured, grepPinnedWorking }
+  return {
+    ripgrepStatus,
+    warnings: buildRipgrepWarnings(ripgrepStatus, platform),
+  }
+}
+
+export async function probePinnedGrepAvailable(): Promise<boolean> {
+  if (!PINNED_RIPGREP_AVAILABLE) return false
+  const result = await execFileNoThrow(
+    PINNED_RIPGREP_PATH,
+    ['--no-config', '--version'],
+    {
+      timeout: 5_000,
+      preserveOutputOnError: false,
+      useCwd: false,
+      stdin: 'ignore',
+    },
+  )
+  return result.code === 0
 }
 
 /**
@@ -986,21 +1056,21 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   // in the doctor path, so actively probe here to report a truthful status (and
   // an actionable warning) on a clean machine with no system rg.
   const ripgrepStatusRaw = getRipgrepStatus()
-  const ripgrepWorking =
+  const configuredRipgrepWorking =
     ripgrepStatusRaw.working ?? (await probeRipgrepAvailable())
+  const grepPinnedWorking = await probePinnedGrepAvailable()
 
-  // Provide simple ripgrep status info
-  const ripgrepStatus = {
-    working: ripgrepWorking,
-    mode: ripgrepStatusRaw.mode,
-    systemPath:
-      ripgrepStatusRaw.mode === 'system' ? ripgrepStatusRaw.path : null,
-  }
-
-  const ripgrepWarning = buildRipgrepWarning(ripgrepStatus)
-  if (ripgrepWarning) {
-    warnings.push(ripgrepWarning)
-  }
+  const ripgrepDiagnostic = buildRipgrepDiagnostic(
+    {
+      working: configuredRipgrepWorking,
+      mode: ripgrepStatusRaw.mode,
+      systemPath:
+        ripgrepStatusRaw.mode === 'system' ? ripgrepStatusRaw.path : null,
+    },
+    grepPinnedWorking,
+  )
+  const { ripgrepStatus } = ripgrepDiagnostic
+  warnings.push(...ripgrepDiagnostic.warnings)
 
   // Transaction-guard status (config + env merged) with a short-timeout
   // endpoint probe when enabled. Unreachable-but-enabled gets a warning.

@@ -74,7 +74,12 @@ function diagnosticFixture(
     hasUpdatePermissions: null,
     multipleInstallations: [],
     warnings: [],
-    ripgrepStatus: { working: true, mode: "system", systemPath: "/usr/bin/rg" },
+    ripgrepStatus: {
+      working: true,
+      grepPinnedWorking: true,
+      mode: "system",
+      systemPath: "/usr/bin/rg",
+    },
     transactionGuard,
     sandbox: {
       kind: "not_required",

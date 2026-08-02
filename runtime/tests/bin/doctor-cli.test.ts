@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { buildRipgrepWarning } from "../../src/utils/doctorDiagnostic.js";
+import {
+  buildRipgrepDiagnostic,
+  buildRipgrepWarning,
+} from "../../src/utils/doctorDiagnostic.js";
 import {
   formatAgenCDoctorCliHelpText,
   parseAgenCDoctorCliArgs,
@@ -142,26 +145,121 @@ describe("buildRipgrepWarning", () => {
     ).toBeNull();
   });
 
-  it("returns an actionable install warning when rg is unavailable", () => {
-    // No rg binary is bundled: when the resolved rg can't start, `agenc doctor`
-    // must surface a concrete fix command, not just a status line.
+  it("returns an actionable install warning when configured rg is unavailable", () => {
+    // Revert-sensitive: configured ripgrep is the Glob/TUI dependency. Its
+    // remediation must install rg, independently of Grep's packaged binary.
     // (Revert-sensitive: drop the wiring and no warning is produced.)
     const warning = buildRipgrepWarning(
       { working: false, mode: "system" },
       "darwin",
     );
     expect(warning).not.toBeNull();
-    expect(warning?.issue).toContain("ripgrep");
+    expect(warning?.issue).toContain("configured ripgrep");
+    expect(warning?.issue).toContain("Glob and TUI file search");
     expect(warning?.fix).toContain("brew install ripgrep");
   });
 
-  it("tailors the fix command to the platform", () => {
+  it("tailors configured-rg remediation to the platform", () => {
     expect(
       buildRipgrepWarning({ working: false, mode: "builtin" }, "win32")?.fix,
     ).toContain("winget install BurntSushi.ripgrep.MSVC");
     expect(
       buildRipgrepWarning({ working: false, mode: "system" }, "linux")?.fix,
     ).toContain("apt install ripgrep");
+  });
+
+  it.each([
+    {
+      name: "both available",
+      working: true,
+      grepPinnedWorking: true,
+      configuredWarnings: 0,
+      pinnedWarnings: 0,
+    },
+    {
+      name: "only configured ripgrep missing",
+      working: false,
+      grepPinnedWorking: true,
+      configuredWarnings: 1,
+      pinnedWarnings: 0,
+    },
+    {
+      name: "only packaged Grep ripgrep missing",
+      working: true,
+      grepPinnedWorking: false,
+      configuredWarnings: 0,
+      pinnedWarnings: 1,
+    },
+    {
+      name: "both missing",
+      working: false,
+      grepPinnedWorking: false,
+      configuredWarnings: 1,
+      pinnedWarnings: 1,
+    },
+  ])(
+    "keeps configured and pinned probes independent: $name",
+    ({ working, grepPinnedWorking, configuredWarnings, pinnedWarnings }) => {
+      // Revert-sensitive: combining the booleans makes either divergent case
+      // emit the wrong diagnosis and remediation.
+      const diagnostic = buildRipgrepDiagnostic(
+        { working, mode: "system", systemPath: "/usr/bin/rg" },
+        grepPinnedWorking,
+        "linux",
+      );
+      expect(diagnostic.ripgrepStatus).toEqual({
+        working,
+        grepPinnedWorking,
+        mode: "system",
+        systemPath: "/usr/bin/rg",
+      });
+      const { warnings } = diagnostic;
+      expect(
+        warnings.filter((warning) =>
+          warning.issue.includes("configured ripgrep"),
+        ),
+      ).toHaveLength(configuredWarnings);
+      expect(
+        warnings.filter((warning) =>
+          warning.issue.includes("packaged pinned binary"),
+        ),
+      ).toHaveLength(pinnedWarnings);
+
+      const configured = warnings.find((warning) =>
+        warning.issue.includes("configured ripgrep"),
+      );
+      const pinned = warnings.find((warning) =>
+        warning.issue.includes("packaged pinned binary"),
+      );
+      if (configured !== undefined) {
+        expect(configured.fix).toContain("apt install ripgrep");
+        expect(configured.fix).not.toContain(
+          "reinstall that same AgenC version",
+        );
+      }
+      if (pinned !== undefined) {
+        expect(pinned.fix).toContain("reinstall that same AgenC version");
+        expect(pinned.fix).toContain(
+          "PATH-installed `rg` does not repair Grep",
+        );
+        expect(pinned.fix).not.toContain("apt install ripgrep");
+      }
+    },
+  );
+
+  it("keeps pinned remediation platform-independent", () => {
+    const status = {
+      working: true,
+      mode: "system" as const,
+      systemPath: "/usr/bin/rg",
+    };
+    const windows = buildRipgrepDiagnostic(status, false, "win32").warnings[0]
+      ?.fix;
+    const linux = buildRipgrepDiagnostic(status, false, "linux").warnings[0]
+      ?.fix;
+    expect(windows).toBe(linux);
+    expect(windows).not.toContain("winget");
+    expect(linux).not.toContain("apt install");
   });
 });
 

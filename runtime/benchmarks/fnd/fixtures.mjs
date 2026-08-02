@@ -4,7 +4,6 @@ const GENERATOR_VERSION = 1;
 const CSV_HEADER = "source_id,task\n";
 const PATCH_BEGIN = "*** Begin Patch";
 const PATCH_END = "*** End Patch";
-const REGEX_PATTERN = "(a+)+$";
 
 export function buildFixture(caseId, pointIndex) {
   const definition = caseDefinition(caseId);
@@ -20,9 +19,6 @@ export function buildFixture(caseId, pointIndex) {
       break;
     case "patch_delete_parser_suffix_slicing":
       generated = buildPatchFixture(point);
-      break;
-    case "regex_fallback_catastrophic_backtracking":
-      generated = buildRegexFixture(point);
       break;
     case "fuzzy_daemon_recursive_scaling":
       generated = buildDaemonFuzzyFixture(point);
@@ -114,26 +110,6 @@ function buildPatchFixture(point) {
       source_lines: lines.length,
     },
     payload: { patch },
-  };
-}
-
-function buildRegexFixture(point) {
-  const hostileLine = `${"a".repeat(point.repeatedCharacters)}!\n`;
-  const generatedUtf8Bytes =
-    Buffer.byteLength(hostileLine) + Buffer.byteLength(REGEX_PATTERN);
-  return {
-    generatedUtf8Bytes,
-    descriptor: {
-      contentSha256: sha256Hex(hostileLine),
-      patternSha256: sha256Hex(REGEX_PATTERN),
-      terminalMismatch: true,
-    },
-    operations: {
-      backtracking_input_code_units: hostileLine.trimEnd().length,
-      files_scanned: point.fileCount,
-      pattern_code_units: REGEX_PATTERN.length,
-    },
-    payload: { content: hostileLine, pattern: REGEX_PATTERN },
   };
 }
 
