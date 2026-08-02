@@ -5,7 +5,7 @@ import { parse } from "yaml";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  sendEmbeddedNeovimPaste,
+  sendEmbeddedNeovimInput,
   waitForExactFileText,
 } from "../scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs";
 
@@ -63,15 +63,13 @@ const EXPECTED_TARGETS = {
 } as const;
 
 describe("hosted Neovim platform gate contract", () => {
-  it("delivers an editor marker as one bracketed-paste transaction", () => {
+  it("delivers an editor marker as one ordinary input transaction", () => {
     const send = vi.fn();
 
-    sendEmbeddedNeovimPaste({ send }, "UNSAVED_PLATFORM_KILL_MARK");
+    sendEmbeddedNeovimInput({ send }, "UNSAVED_PLATFORM_KILL_MARK");
 
     expect(send).toHaveBeenCalledOnce();
-    expect(send).toHaveBeenCalledWith(
-      "\x1b[200~UNSAVED_PLATFORM_KILL_MARK\x1b[201~",
-    );
+    expect(send).toHaveBeenCalledWith("UNSAVED_PLATFORM_KILL_MARK");
   });
 
   it("waits through marker-bearing partial proof reads until the bytes are exact", async () => {
@@ -214,7 +212,7 @@ describe("hosted Neovim platform gate contract", () => {
     expect(saveScenario).toContain("editProof !== expectedEditProof");
     expect(saveScenario).toContain("saved !== expectedEditProof");
     const editInputIndex = saveScenario.indexOf(
-      'sendEmbeddedNeovimPaste(session, "PLATFORM_NVIM_MARK")',
+      'sendEmbeddedNeovimInput(session, "PLATFORM_NVIM_MARK")',
     );
     const editProofWaitIndex = saveScenario.indexOf(
       "const editProof = await waitForExactFileText(",
@@ -225,6 +223,8 @@ describe("hosted Neovim platform gate contract", () => {
     );
     expect(editInputIndex).toBeGreaterThan(-1);
     expect(saveScenario).not.toContain('session.type("PLATFORM_NVIM_MARK"');
+    expect(saveScenario).not.toContain("\\x1b[200~");
+    expect(saveScenario).not.toContain("\\x1b[201~");
     expect(editProofWaitIndex).toBeGreaterThan(editInputIndex);
     expect(editEscapeIndex).toBeGreaterThan(editProofWaitIndex);
     expect(saveScenario).toContain("nvim-platform-exit.intent");
@@ -240,7 +240,7 @@ describe("hosted Neovim platform gate contract", () => {
       "utf8",
     );
     expect(helperSource).toContain("/CMDLINE_NORMAL/u");
-    expect(helperSource).toContain("export function sendEmbeddedNeovimPaste");
+    expect(helperSource).toContain("export function sendEmbeddedNeovimInput");
     expect(helperSource).toContain("\\x1b[200~");
     expect(helperSource).toContain("\\x1b[201~");
     expect(helperSource).not.toContain("session.type(`:${command}`");
@@ -270,7 +270,7 @@ describe("hosted Neovim platform gate contract", () => {
       "autocmd TextChangedI,TextChangedP target.txt",
     );
     const dirtyInputIndex = killScenario.indexOf(
-      'sendEmbeddedNeovimPaste(session, "UNSAVED_PLATFORM_KILL_MARK")',
+      'sendEmbeddedNeovimInput(session, "UNSAVED_PLATFORM_KILL_MARK")',
     );
     const dirtyProofWaitIndex = killScenario.indexOf(
       "const dirtyProof = await waitForExactFileText(",
@@ -288,6 +288,8 @@ describe("hosted Neovim platform gate contract", () => {
     expect(killScenario).not.toContain(
       'session.type("UNSAVED_PLATFORM_KILL_MARK"',
     );
+    expect(killScenario).not.toContain("\\x1b[200~");
+    expect(killScenario).not.toContain("\\x1b[201~");
     expect(dirtyProcessingFenceIndex).toBeGreaterThan(dirtyInputIndex);
     expect(dirtyNormalProofIndex).toBeGreaterThan(dirtyProcessingFenceIndex);
     expect(dirtyProofWaitIndex).toBeGreaterThan(dirtyNormalProofIndex);
