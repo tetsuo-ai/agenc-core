@@ -708,6 +708,53 @@ describe("embedded Neovim lifecycle", () => {
     await session.cleanup();
   });
 
+  it("poisons the session when a suffix acknowledgement fails after partial input", async () => {
+    const child = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(779),
+    });
+    const handle = {
+      child,
+      pid: syntheticNeovimPid(779),
+      kill: vi.fn(),
+    };
+    let inputRequestCount = 0;
+    const rpc = {
+      request: vi.fn(async (method: string) => {
+        if (method !== "nvim_input") return true;
+        inputRequestCount += 1;
+        if (inputRequestCount === 1) return 1;
+        throw new Error("transport closed before the suffix acknowledgement");
+      }),
+      close: vi.fn(),
+    };
+    const ui = { resize: vi.fn(async () => {}), dispose: vi.fn() };
+    const onFatalError = vi.fn();
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      rpc as any,
+      ui as any,
+      5,
+      10_000,
+      null,
+      onFatalError,
+    );
+
+    await expect(session.input("ab")).rejects.toMatchObject({
+      message: "Neovim did not confirm the nvim_input accepted-byte count.",
+      cause: expect.objectContaining({
+        message: "transport closed before the suffix acknowledgement",
+      }),
+    });
+    await expect(session.input("ab")).resolves.toBe(false);
+
+    expect(inputRequestCount).toBe(2);
+    expect(ui.dispose).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(onFatalError).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("retires timed-out read probes so pending RPCs stay bounded and late replies are ignored", async () => {
     const child = fakeChild({ pid: syntheticNeovimPid(792) });
     const handle = {

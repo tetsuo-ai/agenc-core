@@ -537,8 +537,8 @@ class NeovimOperationTimeoutError extends Error {
 }
 
 class NeovimInputAcceptanceError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "NeovimInputAcceptanceError";
   }
 }
@@ -644,9 +644,8 @@ export class EmbeddedNeovimSession {
       async (signal, timeoutMs) => {
         let remainingKeys = keys;
         while (remainingKeys.length > 0) {
-          const acceptedBytes = await this.#request(
-            "nvim_input",
-            [remainingKeys],
+          const acceptedBytes = await this.#requestInput(
+            remainingKeys,
             signal,
             timeoutMs,
           );
@@ -1523,6 +1522,24 @@ export class EmbeddedNeovimSession {
     timeoutMs: number,
   ): Promise<RpcValue> {
     return this.#rpc.request(method, params, { signal, timeoutMs });
+  }
+
+  async #requestInput(
+    keys: string,
+    signal: AbortSignal,
+    timeoutMs: number,
+  ): Promise<RpcValue> {
+    try {
+      return await this.#request("nvim_input", [keys], signal, timeoutMs);
+    } catch (error) {
+      // nvim_input does not report execution errors. Any rejected request can
+      // therefore mean that Neovim queued bytes but the acknowledgement was
+      // lost. Fail closed so a caller cannot retry and duplicate that prefix.
+      throw new NeovimInputAcceptanceError(
+        "Neovim did not confirm the nvim_input accepted-byte count.",
+        { cause: error },
+      );
+    }
   }
 
   #poisonAfterAmbiguousMutation(error: unknown): void {
