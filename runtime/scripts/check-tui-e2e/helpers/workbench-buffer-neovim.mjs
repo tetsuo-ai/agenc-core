@@ -75,6 +75,10 @@ export async function waitForExactFileText(
   );
 }
 
+export function sendEmbeddedNeovimPaste(session, text) {
+  session.send(`\x1b[200~${text}\x1b[201~`);
+}
+
 export async function runEmbeddedNeovimCommand(
   session,
   command,
@@ -115,7 +119,7 @@ export async function runEmbeddedNeovimCommand(
   // every character. Escape, colon, the command-mode acknowledgement, and
   // Enter remain real editor interactions, so this still exercises the
   // complete PTY input path.
-  session.send(`\x1b[200~${command}\x1b[201~`);
+  sendEmbeddedNeovimPaste(session, command);
   await sleep(80);
   session.send("\r");
   await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   anchorWorkbenchProjectRoot,
   runEmbeddedNeovimCommand,
+  sendEmbeddedNeovimPaste,
   waitForExactFileText,
   waitForFrameText,
   waitForScreen,
@@ -56,7 +57,11 @@ export default async function (session) {
     await sleep(80);
     session.send("o");
     await sleep(80);
-    await session.type("PLATFORM_NVIM_MARK", { perCharMs: 15 });
+    // A per-character outer-ConPTY write only acknowledges the harness timer,
+    // not the TUI's serialized Neovim input queue. Deliver the marker as one
+    // real terminal paste; the editor-owned proof below remains the processing
+    // acknowledgement for the complete end-to-end input path.
+    sendEmbeddedNeovimPaste(session, "PLATFORM_NVIM_MARK");
     const expectedEditProof = `${originalTarget}PLATFORM_NVIM_MARK\n`;
     const editProof = await waitForExactFileText(
       editProofFile,

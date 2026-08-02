@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   anchorWorkbenchProjectRoot,
   runEmbeddedNeovimCommand,
+  sendEmbeddedNeovimPaste,
   waitForExactFileText,
   waitForFrameText,
   waitForScreen,
@@ -86,12 +87,15 @@ export default async function (session) {
     await sleep(80);
     session.send("o");
     await sleep(80);
-    await session.type("UNSAVED_PLATFORM_KILL_MARK", { perCharMs: 15 });
-    // nvim_input acknowledges buffer acceptance, not editor processing. Send
-    // Escape after the marker and require Neovim's mode notification before
-    // trusting the TextChangedI proof. The marker precedes Escape in the same
-    // serialized provider queue, so NORMAL is a processing fence without
-    // saving the dirty buffer or replacing the end-to-end PTY input path.
+    // One bracketed-paste transaction avoids independent outer-ConPTY writes
+    // outrunning the TUI's serialized Neovim input queue. The mode fence and
+    // editor-owned proof below still acknowledge processing before teardown.
+    sendEmbeddedNeovimPaste(session, "UNSAVED_PLATFORM_KILL_MARK");
+    // RPC acceptance does not prove editor processing. Send Escape after the
+    // marker and require Neovim's mode notification before trusting the
+    // TextChangedI proof. The paste precedes Escape in the same serialized
+    // provider queue, so NORMAL is a processing fence without saving the dirty
+    // buffer or replacing the end-to-end PTY input path.
     session.send("\x1b");
     await waitForFrameText(
       session,
