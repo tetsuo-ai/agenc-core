@@ -1532,6 +1532,7 @@ export class EmbeddedNeovimSession {
     try {
       return await this.#request("nvim_input", [keys], signal, timeoutMs);
     } catch (error) {
+      if (isOperationTimeout(error)) throw error;
       // nvim_input does not report execution errors. Any rejected request can
       // therefore mean that Neovim queued bytes but the acknowledgement was
       // lost. Fail closed so a caller cannot retry and duplicate that prefix.
