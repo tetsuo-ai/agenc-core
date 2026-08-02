@@ -261,6 +261,9 @@ export class RolloutStore {
     }
     if (message.type === "effect_result") {
       const payload = message.payload;
+      if (payload.formatVersion === 2 && payload.effectBoundary === undefined) {
+        throw new Error("effect_result format v2 requires effectBoundary");
+      }
       if (
         payload.formatVersion === undefined &&
         payload.recoveryCategory !== "idempotent" &&
@@ -316,7 +319,18 @@ export class RolloutStore {
         eventId,
         eventSequence: sequence!,
         reason: payload.reason,
-        evidence: { requiresReview: payload.requiresReview },
+        evidence: {
+          requiresReview: payload.requiresReview,
+          ...(payload.callerStop !== undefined
+            ? { callerStop: payload.callerStop }
+            : {}),
+          ...(payload.callerStoppedAt !== undefined
+            ? { callerStoppedAt: payload.callerStoppedAt }
+            : {}),
+          ...(payload.reservationId !== undefined
+            ? { reservationId: payload.reservationId }
+            : {}),
+        },
         observedAt: payload.recordedAt,
       });
       recordInFlightToolCallUnknownOutcome(this.stateDriver, {

@@ -100,6 +100,10 @@ interface EffectEventCommit {
   readonly projectionError?: unknown;
 }
 
+const EFFECT_PERSISTENCE_RETRY_INITIAL_MS = 10;
+const EFFECT_PERSISTENCE_RETRY_MAX_MS = 250;
+const EFFECT_PERSISTENCE_RETRY_MULTIPLIER = 2;
+
 class EffectProjectionAfterCommitError extends Error {
   constructor(
     readonly event: Event,
@@ -400,7 +404,12 @@ function appendEffectResult(
 function appendEffectUnknownOutcome(
   session: Session,
   context: EffectJournalContext,
-  reason: string,
+  options: {
+    readonly reason: string;
+    readonly callerStop?: "timeout" | "abort";
+    readonly callerStoppedAt?: string;
+    readonly reservationId?: string;
+  },
 ): EffectEventCommit {
   const payload: EffectUnknownOutcomeEvent = {
     formatVersion: EFFECT_EVIDENCE_FORMAT_VERSION,
@@ -415,8 +424,17 @@ function appendEffectUnknownOutcome(
       : {}),
     intentEventSeq: context.intentEventSeq,
     outcome: "unknown_outcome",
-    reason,
+    reason: options.reason,
     requiresReview: true,
+    ...(options.callerStop !== undefined
+      ? { callerStop: options.callerStop }
+      : {}),
+    ...(options.callerStoppedAt !== undefined
+      ? { callerStoppedAt: options.callerStoppedAt }
+      : {}),
+    ...(options.reservationId !== undefined
+      ? { reservationId: options.reservationId }
+      : {}),
     recordedAt: new Date().toISOString(),
   };
   hitM4DurabilityFailpoint("before_tool_ack_commit");
@@ -426,6 +444,45 @@ function appendEffectUnknownOutcome(
   });
   hitM4DurabilityFailpoint("after_tool_ack_commit");
   return commit;
+}
+
+async function persistCallerStopEvidence(
+  session: Session,
+  signal: AbortSignal,
+  persist: () => void,
+): Promise<void> {
+  let retryDelayMs = EFFECT_PERSISTENCE_RETRY_INITIAL_MS;
+  while (!signal.aborted) {
+    try {
+      persist();
+      return;
+    } catch (error) {
+      if (error instanceof M4DurabilityFailpointError) throw error;
+      incrementEffectSettlementMetric(session, "durabilityPersistenceFailures");
+      await waitForPersistenceRetry(retryDelayMs, signal);
+      retryDelayMs = Math.min(
+        EFFECT_PERSISTENCE_RETRY_MAX_MS,
+        retryDelayMs * EFFECT_PERSISTENCE_RETRY_MULTIPLIER,
+      );
+    }
+  }
+}
+
+function waitForPersistenceRetry(
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    timer = setTimeout(finish, delayMs);
+    signal.addEventListener("abort", finish, { once: true });
+  });
 }
 
 function appendEffectReview(
@@ -745,11 +802,12 @@ export async function runAdmittedToolCall(
     );
     if (active !== undefined) {
       const outcome = await active;
-      if (outcome.kind === "observer_failed") throw outcome.reason;
+      if (outcome.kind === "fulfilled") return outcome.value;
+      if (outcome.kind === "rejected" || outcome.kind === "observer_failed") {
+        throw outcome.reason;
+      }
       throw new AdmissionDeniedError(
-        outcome.kind === "forced_shutdown"
-          ? "idempotent_effect_settlement_forced_during_shutdown"
-          : "idempotent_effect_settled_after_caller_stop",
+        "idempotent_effect_settlement_forced_during_shutdown",
       );
     }
   }
@@ -888,13 +946,13 @@ export async function runAdmittedToolCall(
           disposition?.disposition !== "confirmed_no_effect"))
     ) {
       poisonLiveEffect(params.session, liveIdentity(journal));
-      commit = appendEffectUnknownOutcome(
-        params.session,
-        journal,
-        disposition?.disposition === "remains_unknown"
-          ? "adapter_reported_unknown_effect_disposition"
-          : "tool_error_result_without_authoritative_effect_disposition",
-      );
+      commit = appendEffectUnknownOutcome(params.session, journal, {
+        reason:
+          disposition?.disposition === "remains_unknown"
+            ? "adapter_reported_unknown_effect_disposition"
+            : "tool_error_result_without_authoritative_effect_disposition",
+        ...(reservationId !== undefined ? { reservationId } : {}),
+      });
     } else {
       commit = appendEffectResult(params.session, journal, {
         outcome:
@@ -956,6 +1014,8 @@ export async function runAdmittedToolCall(
       }
       let unknownEvent: Event | undefined;
       let unknownProjected = false;
+      let preBoundaryEvent: Event | undefined;
+      let preBoundaryProjected = false;
       const ensureUnknownRecorded = (): void => {
         if (unknownProjected || category === "idempotent" || !boundaryCrossed) {
           return;
@@ -965,60 +1025,82 @@ export async function runAdmittedToolCall(
           unknownProjected = true;
           return;
         }
-        const commit = appendEffectUnknownOutcome(
-          params.session,
-          journal,
-          pending.callerStop === "timeout"
-            ? "caller_timeout_after_effect_boundary"
-            : "caller_abort_after_effect_boundary",
-        );
+        const commit = appendEffectUnknownOutcome(params.session, journal, {
+          reason:
+            pending.callerStop === "timeout"
+              ? "caller_timeout_after_effect_boundary"
+              : "caller_abort_after_effect_boundary",
+          callerStop: pending.callerStop,
+          callerStoppedAt: pending.callerStoppedAt,
+          ...(reservationId !== undefined ? { reservationId } : {}),
+        });
         unknownEvent = commit.event;
         requireEffectProjection(commit);
         unknownProjected = true;
       };
-
-      let callerProjectionError: unknown;
-      if (!boundaryCrossed) {
-        const observedAt = new Date().toISOString();
-        const commit = appendEffectResult(params.session, journal, {
-          outcome: "cancelled",
-          effectBoundary: "not_crossed",
-          noEffectEvidence: noEffectProof(journal, observedAt, error),
-          evidence: {
-            reason: `${pending.callerStop}_before_effect_boundary`,
-          },
-        });
-        effectClosed = true;
-        if (reservationId !== undefined) {
+      const ensurePreBoundaryRecorded = (): void => {
+        if (preBoundaryProjected || boundaryCrossed) return;
+        if (preBoundaryEvent !== undefined) {
+          projectCommittedEffectEvent(params.session, preBoundaryEvent);
+          preBoundaryProjected = true;
+          effectClosed = true;
+        } else {
+          const observedAt = new Date().toISOString();
+          const commit = appendEffectResult(params.session, journal, {
+            outcome: "cancelled",
+            effectBoundary: "not_crossed",
+            noEffectEvidence: noEffectProof(journal, observedAt, error),
+            evidence: {
+              reason: `${pending.callerStop}_before_effect_boundary`,
+              callerStop: pending.callerStop,
+              callerStoppedAt: pending.callerStoppedAt,
+              ...(reservationId !== undefined ? { reservationId } : {}),
+            },
+          });
+          preBoundaryEvent = commit.event;
+          requireEffectProjection(commit);
+          preBoundaryProjected = true;
+          effectClosed = true;
+        }
+        if (reservationId !== undefined && !admissionSettled) {
           client?.void(
             reservationId,
             `tool_${pending.callerStop}_before_dispatch`,
           );
           admissionSettled = true;
         }
-        try {
-          requireEffectProjection(commit);
-        } catch (projectionError) {
-          callerProjectionError = projectionError;
-        }
-      } else if (category !== "idempotent") {
-        poisonLiveEffect(params.session, liveIdentity(journal));
-        try {
+      };
+      const ensureCallerStopEvidence = (): void => {
+        if (boundaryCrossed) {
           ensureUnknownRecorded();
-        } catch (unknownError) {
-          if (unknownError instanceof M4DurabilityFailpointError) {
-            crashInjected = true;
-            throw unknownError;
-          }
-          callerProjectionError = unknownError;
-          // The supervisor retries before appending any late disposition.
+        } else {
+          ensurePreBoundaryRecorded();
         }
+      };
+      const callerStopEvidenceRequired =
+        !boundaryCrossed || category !== "idempotent";
+
+      if (boundaryCrossed && category !== "idempotent") {
+        // This synchronous poison is the immediate retry/mutation gate. Durable
+        // evidence is deliberately deferred so storage latency cannot replace
+        // or delay the typed caller timeout/abort.
+        poisonLiveEffect(params.session, liveIdentity(journal));
       }
 
       const identity = liveIdentity(journal);
       const observation = registerEffectSettlementObserver(params.session, {
         identity,
         settlement: pending.settlement,
+        ...(callerStopEvidenceRequired
+          ? {
+              beforeSettlement: (signal: AbortSignal) =>
+                persistCallerStopEvidence(
+                  params.session,
+                  signal,
+                  ensureCallerStopEvidence,
+                ),
+            }
+          : {}),
         onSettled: async (settlement) => {
           const settleAdmission = (): void => {
             if (reservationId === undefined || admissionSettled) return;
@@ -1126,8 +1208,8 @@ export async function runAdmittedToolCall(
         },
         onForcedShutdown: async () => {
           try {
-            if (category !== "idempotent" && boundaryCrossed) {
-              ensureUnknownRecorded();
+            if (callerStopEvidenceRequired) {
+              ensureCallerStopEvidence();
             }
             if (reservationId !== undefined && !admissionSettled) {
               client?.holdUnknown(
@@ -1157,9 +1239,6 @@ export async function runAdmittedToolCall(
       });
       observerOwnsPhysical = true;
       void observation;
-      if (callerProjectionError !== undefined) {
-        throw callerProjectionError;
-      }
       throw error;
     }
 
@@ -1195,13 +1274,12 @@ export async function runAdmittedToolCall(
       requireEffectProjection(commit);
     } else if (category !== "idempotent") {
       poisonLiveEffect(params.session, liveIdentity(journal));
-      const commit = appendEffectUnknownOutcome(
-        params.session,
-        journal,
-        dispatch.context.signal.aborted
+      const commit = appendEffectUnknownOutcome(params.session, journal, {
+        reason: dispatch.context.signal.aborted
           ? "tool_cancelled_after_effect_boundary"
           : "tool_failed_after_effect_boundary_without_disposition",
-      );
+        ...(reservationId !== undefined ? { reservationId } : {}),
+      });
       if (reservationId !== undefined) {
         reconcileToolUsage(
           client,

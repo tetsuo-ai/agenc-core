@@ -469,6 +469,10 @@ export interface EffectUnknownOutcomeEvent {
   readonly outcome: "unknown_outcome";
   readonly reason: string;
   readonly requiresReview: true;
+  /** Safe caller-observation diagnostics; absent on legacy/recovery events. */
+  readonly callerStop?: "timeout" | "abort";
+  readonly callerStoppedAt?: string;
+  readonly reservationId?: string;
   readonly recordedAt: string;
 }
 
@@ -491,8 +495,7 @@ export interface LegacyEffectReviewResolvedEvent {
 }
 
 export type EffectReviewResolvedEvent =
-  | EffectReviewResolutionEvent
-  | LegacyEffectReviewResolvedEvent;
+  EffectReviewResolutionEvent | LegacyEffectReviewResolvedEvent;
 
 /**
  * Fsync-durable declaration that an immutable content artifact is about to be

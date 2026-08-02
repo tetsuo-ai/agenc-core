@@ -143,10 +143,7 @@ export function recoverPendingEffectReviewsOnStartup(
     "maxRolloutFilesPerRun",
   );
   const rows = driver
-    .prepareState<
-      [number],
-      PendingEffectReviewRunRow
-    >(
+    .prepareState<[number], PendingEffectReviewRunRow>(
       `SELECT DISTINCT effect.run_id
        FROM run_effects AS effect
        WHERE effect.review_status = 'pending'
@@ -261,8 +258,9 @@ export function recoverCanonicalRunJournalsOnStartup(
       `SELECT id, status, started_at, current_session_id
        FROM agent_runs AS runs
        WHERE status IN (${sqlPlaceholders(options.recoverableStatuses.length)})
-       ${options.onlyMissingTerminalResults === true
-         ? `AND NOT EXISTS (
+       ${
+         options.onlyMissingTerminalResults === true
+           ? `AND NOT EXISTS (
               SELECT 1 FROM run_terminal_results AS terminal
               WHERE terminal.run_id = runs.id
                 AND terminal.epoch = (
@@ -270,13 +268,16 @@ export function recoverCanonicalRunJournalsOnStartup(
                   WHERE run_id = runs.id
                 )
             )`
-         : ""}
-       ${options.requireJournalBinding === true
-         ? `AND EXISTS (
+           : ""
+       }
+       ${
+         options.requireJournalBinding === true
+           ? `AND EXISTS (
               SELECT 1 FROM run_journal_bindings AS binding
               WHERE binding.run_id = runs.id
             )`
-         : ""}
+           : ""
+       }
        ORDER BY last_active_at ASC, id ASC
        LIMIT ?`,
     )
@@ -422,8 +423,7 @@ function projectRunEvents(
   let projectionEpoch = 1;
   let projectionOpenedAt = run.started_at;
   let pendingCancellation:
-    | { readonly reason: string; readonly requestedAt: string }
-    | undefined;
+    { readonly reason: string; readonly requestedAt: string } | undefined;
   for (const row of relevant) {
     const message = journalMessage(row, run.id);
     if (message === undefined) {
@@ -479,7 +479,10 @@ function projectRunEvents(
       continue;
     }
     if (type === "run_reopened") {
-      const previousEpoch = requirePositiveInteger(payload.previousEpoch, "previousEpoch");
+      const previousEpoch = requirePositiveInteger(
+        payload.previousEpoch,
+        "previousEpoch",
+      );
       const epoch = requirePositiveInteger(payload.epoch, "epoch");
       if (epoch !== previousEpoch + 1 || previousEpoch !== projectionEpoch) {
         throw invalidEvent(row, run.id, "run_reopened epoch is not contiguous");
@@ -565,7 +568,8 @@ function validateCanonicalIdentities(
       const owner = bySequence.get(row.event_seq);
       if (
         owner !== undefined &&
-        (owner.eventId !== row.event_id || owner.payloadJson !== row.payload_json)
+        (owner.eventId !== row.event_id ||
+          owner.payloadJson !== row.payload_json)
       ) {
         throw invalidIdentityEvent(
           row,
@@ -582,7 +586,8 @@ function validateCanonicalIdentities(
     const prior = byEventId.get(row.event_id);
     if (
       prior !== undefined &&
-      (prior.sequence !== row.event_seq || prior.payloadJson !== row.payload_json)
+      (prior.sequence !== row.event_seq ||
+        prior.payloadJson !== row.payload_json)
     ) {
       // Legacy rollouts predate durable event identities — synthetic ids like
       // "system" recur across DISTINCT events. A payload conflict on an event
@@ -647,9 +652,7 @@ function projectEffectIntent(
     effectFormatVersion: effectFormatVersion(payload),
     ...(optionalString(payload.minimumReaderRuntime) !== undefined
       ? {
-          minimumReaderRuntime: optionalString(
-            payload.minimumReaderRuntime,
-          ),
+          minimumReaderRuntime: optionalString(payload.minimumReaderRuntime),
         }
       : {}),
     projection: "canonical_replay",
@@ -669,6 +672,8 @@ function projectEffectResult(
   const category = requireRecoveryCategory(payload.recoveryCategory);
   const recordedAt = requireString(payload.recordedAt, "recordedAt");
   const outcome = requireEffectResultOutcome(payload.outcome);
+  const formatVersion = effectFormatVersion(payload);
+  const boundary = effectBoundary(payload);
   const existing = repository.getEffect(runId, stepId);
   if (
     existing === undefined ||
@@ -681,8 +686,15 @@ function projectEffectResult(
   ) {
     throw invalidEvent(row, runId, "effect_result has no matching intent");
   }
+  if (formatVersion === 2 && boundary === undefined) {
+    throw invalidEvent(
+      row,
+      runId,
+      "effect_result format v2 requires effectBoundary",
+    );
+  }
   if (
-    effectFormatVersion(payload) === 1 &&
+    formatVersion === 1 &&
     category !== "idempotent" &&
     (outcome === "failed" || outcome === "cancelled")
   ) {
@@ -709,7 +721,7 @@ function projectEffectResult(
     runId,
     stepId,
     outcome,
-    effectBoundary: effectBoundary(payload) ?? "crossed",
+    effectBoundary: boundary ?? "crossed",
     ...(payload.noEffectEvidence !== undefined
       ? {
           noEffectEvidence:
@@ -776,7 +788,18 @@ function projectUnknownEffect(
     eventId: row.event_id,
     eventSequence: row.event_seq,
     reason: requireString(payload.reason, "reason"),
-    evidence: { requiresReview: payload.requiresReview === true },
+    evidence: {
+      requiresReview: payload.requiresReview === true,
+      ...(payload.callerStop === "timeout" || payload.callerStop === "abort"
+        ? { callerStop: payload.callerStop }
+        : {}),
+      ...(optionalString(payload.callerStoppedAt) !== undefined
+        ? { callerStoppedAt: optionalString(payload.callerStoppedAt) }
+        : {}),
+      ...(optionalString(payload.reservationId) !== undefined
+        ? { reservationId: optionalString(payload.reservationId) }
+        : {}),
+    },
     observedAt: recordedAt,
   });
   recordInFlightToolCallUnknownOutcome(driver, {
@@ -839,7 +862,9 @@ function projectEffectReview(
 function effectFormatVersion(payload: JsonObject): 1 | 2 {
   if (payload.formatVersion === undefined) return 1;
   if (payload.formatVersion === 2) return 2;
-  throw new TypeError(`unsupported effect evidence format ${String(payload.formatVersion)}`);
+  throw new TypeError(
+    `unsupported effect evidence format ${String(payload.formatVersion)}`,
+  );
 }
 
 function effectBoundary(payload: JsonObject): EffectBoundary | undefined {
@@ -989,7 +1014,9 @@ function journalMessage(
   row: ProjectionRow,
   runId: string,
   required = true,
-): { readonly type: JournalEventType; readonly payload: JsonObject } | undefined {
+):
+  | { readonly type: JournalEventType; readonly payload: JsonObject }
+  | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(row.payload_json);
@@ -1015,8 +1042,9 @@ function journalMessage(
 function runThreadIds(run: RecoverableRunRow): readonly string[] {
   return [
     ...new Set(
-      [run.id, run.current_session_id]
-        .filter((value): value is string => value !== null && value.length > 0),
+      [run.id, run.current_session_id].filter(
+        (value): value is string => value !== null && value.length > 0,
+      ),
     ),
   ];
 }
@@ -1034,7 +1062,11 @@ function tooManyRollouts(runId: string, count: number, max: number): Error {
   );
 }
 
-function invalidEvent(row: ProjectionRow, runId: string, detail: string): Error {
+function invalidEvent(
+  row: ProjectionRow,
+  runId: string,
+  detail: string,
+): Error {
   return new Error(
     `invalid canonical event ${row.event_id} at sequence ${row.event_seq} for run ${runId}: ${detail}`,
   );

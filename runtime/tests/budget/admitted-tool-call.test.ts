@@ -834,7 +834,16 @@ describe("runAdmittedToolCall", () => {
     ).rejects.toBe(callerTimeout);
 
     expect(state.acknowledgeCompletion).not.toHaveBeenCalled();
-    expect(state.effectEvents.at(-1)?.msg.type).toBe("effect_unknown_outcome");
+    await vi.waitFor(() => {
+      expect(state.effectEvents.at(-1)?.msg).toMatchObject({
+        type: "effect_unknown_outcome",
+        payload: {
+          callerStop: "timeout",
+          callerStoppedAt: "2026-07-18T00:00:00.000Z",
+          reservationId: "tool-reservation",
+        },
+      });
+    });
     physical.resolve({ content: "physically committed" });
     await vi.waitFor(() => {
       expect(state.effectEvents.at(-1)?.msg.type).toBe(
@@ -858,12 +867,15 @@ describe("runAdmittedToolCall", () => {
   it("reprojects the same unknown event after fsync instead of appending a duplicate", async () => {
     const state = toolHarness();
     let failUnknownProjection = true;
+    let callerObserved = false;
+    let projectionObservedStoppedCaller = false;
     Object.assign(state.session.rolloutStore as object, {
       recordEffectEvent: (event: Event) => {
         if (
           event.msg.type === "effect_unknown_outcome" &&
           failUnknownProjection
         ) {
+          projectionObservedStoppedCaller = callerObserved;
           failUnknownProjection = false;
           throw new Error("simulated effect projection failure");
         }
@@ -893,7 +905,8 @@ describe("runAdmittedToolCall", () => {
           throw callerTimeout;
         },
       }),
-    ).rejects.toMatchObject({ name: "EffectProjectionAfterCommitError" });
+    ).rejects.toBe(callerTimeout);
+    callerObserved = true;
 
     physical.resolve({ content: "committed once" });
     await vi.waitFor(() => {
@@ -904,11 +917,77 @@ describe("runAdmittedToolCall", () => {
         (event) => event.msg.type === "effect_unknown_outcome",
       ),
     ).toHaveLength(1);
+    expect(projectionObservedStoppedCaller).toBe(true);
+    expect(
+      effectSettlementMetrics(state.session).durabilityPersistenceFailures,
+    ).toBe(1);
     expect(
       state.effectEvents.filter(
         (event) => event.msg.type === "effect_review_resolved",
       ),
     ).toHaveLength(1);
+  });
+
+  it("returns the typed caller stop before retrying pre-boundary evidence", async () => {
+    const state = toolHarness();
+    let failResultProjection = true;
+    let callerObserved = false;
+    let projectionObservedStoppedCaller = false;
+    Object.assign(state.session.rolloutStore as object, {
+      recordEffectEvent: (event: Event) => {
+        if (event.msg.type === "effect_result" && failResultProjection) {
+          projectionObservedStoppedCaller = callerObserved;
+          failResultProjection = false;
+          throw new Error("simulated pre-boundary projection failure");
+        }
+      },
+    });
+    const physical = Promise.withResolvers<{ content: string }>();
+    const callerAbort = new Error("caller aborted before dispatch");
+    attachPendingPhysicalSettlement(callerAbort, {
+      callerStop: "abort",
+      callerStoppedAt: "2026-07-18T00:00:00.000Z",
+      settlement: physical.promise,
+    });
+    const tool = {
+      name: "write.pre-boundary-projection-retry",
+      recoveryCategory: "side-effecting",
+    } as unknown as Tool;
+
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-pre-boundary-projection-retry",
+        tool,
+        args: {},
+        invoke: async () => {
+          throw callerAbort;
+        },
+      }),
+    ).rejects.toBe(callerAbort);
+    callerObserved = true;
+    physical.resolve({ content: "never dispatched" });
+
+    await vi.waitFor(() => {
+      expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+    });
+    expect(projectionObservedStoppedCaller).toBe(true);
+    expect(
+      state.effectEvents.filter((event) => event.msg.type === "effect_result"),
+    ).toHaveLength(1);
+    expect(state.effectEvents.at(-1)?.msg).toMatchObject({
+      type: "effect_result",
+      payload: {
+        outcome: "cancelled",
+        effectBoundary: "not_crossed",
+        evidence: {
+          callerStop: "abort",
+          callerStoppedAt: "2026-07-18T00:00:00.000Z",
+          reservationId: "tool-reservation",
+        },
+      },
+    });
   });
 
   it("closes an idempotent rendezvous only after durable settlement work", async () => {
@@ -971,9 +1050,7 @@ describe("runAdmittedToolCall", () => {
     expect(duplicateSettled).toBe(false);
 
     physical.resolve({ content: "canonical result" });
-    await expect(duplicate).rejects.toMatchObject({
-      reason: "idempotent_effect_settled_after_caller_stop",
-    });
+    await expect(duplicate).resolves.toEqual({ content: "canonical result" });
     expect(duplicateInvoke).not.toHaveBeenCalled();
     expect(firstInvoke).toHaveBeenCalledOnce();
     expect(state.acquire).toHaveBeenCalledOnce();
@@ -1009,6 +1086,55 @@ describe("runAdmittedToolCall", () => {
       type: "effect_intent",
       payload: { attempt: 2 },
     });
+  });
+
+  it("propagates a live idempotent rendezvous rejection without redispatch", async () => {
+    const state = toolHarness();
+    const physical = Promise.withResolvers<{ content: string }>();
+    const callerTimeout = new Error("caller deadline elapsed");
+    attachPendingPhysicalSettlement(callerTimeout, {
+      callerStop: "timeout",
+      callerStoppedAt: "2026-07-18T00:00:00.000Z",
+      settlement: physical.promise,
+    });
+    const tool = {
+      name: "read.rendezvous-rejection",
+      recoveryCategory: "idempotent",
+    } as unknown as Tool;
+    const firstInvoke = vi.fn(
+      async ({ crossEffectBoundary }: { crossEffectBoundary: () => void }) => {
+        crossEffectBoundary();
+        throw callerTimeout;
+      },
+    );
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-rendezvous-rejection",
+        tool,
+        args: { path: "same" },
+        invoke: firstInvoke,
+      }),
+    ).rejects.toBe(callerTimeout);
+
+    const duplicateInvoke = vi.fn(async () => ({ content: "duplicate" }));
+    const duplicate = runAdmittedToolCall({
+      session: state.session,
+      turnId: "turn-1",
+      callId: "call-rendezvous-rejection",
+      tool,
+      args: { path: "same" },
+      invoke: duplicateInvoke,
+    });
+    const physicalFailure = new Error("canonical physical failure");
+    physical.reject(physicalFailure);
+
+    await expect(duplicate).rejects.toBe(physicalFailure);
+    expect(duplicateInvoke).not.toHaveBeenCalled();
+    expect(firstInvoke).toHaveBeenCalledOnce();
+    expect(state.acquire).toHaveBeenCalledOnce();
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
   });
 
   it("suppresses late system review after a live operator resolution", async () => {

@@ -16,6 +16,7 @@ export interface EffectSettlementMetrics {
   readonly callerAborts: number;
   readonly heldAccounting: number;
   readonly unknownEffects: number;
+  readonly durabilityPersistenceFailures: number;
   readonly occupiedPostTimeoutLeases: number;
   readonly lateReviewResolutions: number;
 }
@@ -25,6 +26,7 @@ interface MutableEffectSettlementMetrics {
   callerAborts: number;
   heldAccounting: number;
   unknownEffects: number;
+  durabilityPersistenceFailures: number;
   occupiedPostTimeoutLeases: number;
   lateReviewResolutions: number;
 }
@@ -109,8 +111,7 @@ export function readIdempotentRendezvous<T>(
   idempotencyKey: string,
 ): Promise<IdempotentRendezvousOutcome<T>> | undefined {
   return stateFor(session).rendezvous.get(idempotencyKey) as
-    | Promise<IdempotentRendezvousOutcome<T>>
-    | undefined;
+    Promise<IdempotentRendezvousOutcome<T>> | undefined;
 }
 
 export function resolveLiveEffectPoison(
@@ -157,7 +158,10 @@ export function liveEffectWasExternallyResolved(
 
 export function incrementEffectSettlementMetric(
   session: object,
-  metric: Exclude<keyof MutableEffectSettlementMetrics, "occupiedPostTimeoutLeases">,
+  metric: Exclude<
+    keyof MutableEffectSettlementMetrics,
+    "occupiedPostTimeoutLeases"
+  >,
 ): void {
   stateFor(session).metrics[metric] += 1;
 }
@@ -173,13 +177,19 @@ export function registerEffectSettlementObserver<T>(
   options: {
     readonly identity: LiveEffectIdentity;
     readonly settlement: Promise<T>;
+    /**
+     * Runs on the next event-loop turn, after the stopped caller can observe its
+     * typed timeout/abort. Physical settlement is not processed until this
+     * preparation succeeds or supervised shutdown forces the observer.
+     */
+    readonly beforeSettlement?: (signal: AbortSignal) => void | Promise<void>;
     readonly onSettled: (outcome: SettlementOutcome<T>) => void | Promise<void>;
     readonly onForcedShutdown: () => void | Promise<void>;
   },
 ): Promise<void> {
   const state = stateFor(session);
   if (!state.accepting) {
-    const forced = Promise.resolve().then(options.onForcedShutdown);
+    const forced = deferToNextEventLoopTurn().then(options.onForcedShutdown);
     session.trackDurableOperation?.(forced);
     return forced;
   }
@@ -189,8 +199,16 @@ export function registerEffectSettlementObserver<T>(
   }
 
   let force!: () => void;
+  const preparationController = new AbortController();
   const forced = new Promise<"forced">((resolve) => {
-    force = () => resolve("forced");
+    force = () => {
+      if (!preparationController.signal.aborted) {
+        preparationController.abort(
+          "effect settlement supervisor forced shutdown",
+        );
+      }
+      resolve("forced");
+    };
   });
   const physical = options.settlement.then<
     SettlementOutcome<T>,
@@ -199,15 +217,22 @@ export function registerEffectSettlementObserver<T>(
     (value) => ({ kind: "fulfilled", value }),
     (reason) => ({ kind: "rejected", reason }),
   );
+  const prepared =
+    options.beforeSettlement === undefined
+      ? Promise.resolve()
+      : deferToNextEventLoopTurn().then(() =>
+          options.beforeSettlement!(preparationController.signal),
+        );
+  const preparedPhysical = Promise.all([prepared, physical]).then(
+    ([, outcome]) => outcome,
+  );
   state.metrics.occupiedPostTimeoutLeases += 1;
   let processedOutcome:
-    | SettlementOutcome<T>
-    | { readonly kind: "forced_shutdown" }
-    | undefined;
+    SettlementOutcome<T> | { readonly kind: "forced_shutdown" } | undefined;
   let rendezvous!: Promise<IdempotentRendezvousOutcome<T>>;
   const done = (async (): Promise<void> => {
     try {
-      const outcome = await Promise.race([physical, forced]);
+      const outcome = await Promise.race([preparedPhysical, forced]);
       if (outcome === "forced") {
         await options.onForcedShutdown();
         processedOutcome = { kind: "forced_shutdown" };
@@ -267,11 +292,15 @@ export async function shutdownEffectSettlementSupervisor(
   state.accepting = false;
   if (state.active.size === 0) return;
   if (!Number.isSafeInteger(drainMs) || drainMs < 0) {
-    throw new TypeError("effect settlement drainMs must be a non-negative integer");
+    throw new TypeError(
+      "effect settlement drainMs must be a non-negative integer",
+    );
   }
   const observers = [...state.active.values()];
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const drained = Promise.allSettled(observers.map((observer) => observer.done));
+  const drained = Promise.allSettled(
+    observers.map((observer) => observer.done),
+  );
   const timeout = new Promise<"timeout">((resolve) => {
     timer = setTimeout(() => resolve("timeout"), drainMs);
   });
@@ -283,7 +312,9 @@ export async function shutdownEffectSettlementSupervisor(
   if (outcome === "timeout") {
     for (const observer of observers) observer.force();
   }
-  const final = await Promise.allSettled(observers.map((observer) => observer.done));
+  const final = await Promise.allSettled(
+    observers.map((observer) => observer.done),
+  );
   const failures = final.flatMap((result) =>
     result.status === "rejected" ? [result.reason] : [],
   );
@@ -306,6 +337,7 @@ function stateFor(session: object): SupervisorState {
       callerAborts: 0,
       heldAccounting: 0,
       unknownEffects: 0,
+      durabilityPersistenceFailures: 0,
       occupiedPostTimeoutLeases: 0,
       lateReviewResolutions: 0,
     },
@@ -316,4 +348,8 @@ function stateFor(session: object): SupervisorState {
 
 function effectKey(identity: LiveEffectIdentity): string {
   return `${identity.runId}\0${identity.stepId}\0${identity.callId}`;
+}
+
+function deferToNextEventLoopTurn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }

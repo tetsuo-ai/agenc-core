@@ -156,6 +156,65 @@ function recoverAdmissionBeforeRollout(cwd: string): void {
 }
 
 describe("M4 effect restart recovery", () => {
+  it("fails closed when a v2 result omits its required effect boundary", () => {
+    const cwd = workspace();
+    const runId = "run-malformed-v2-boundary";
+    const original = store(cwd, runId);
+    expect(
+      original.append(
+        {
+          id: "v2-intent",
+          seq: 1,
+          msg: {
+            type: "effect_intent",
+            payload: {
+              formatVersion: 2,
+              minimumReaderRuntime: "0.14.0",
+              runId,
+              stepId: "tool:turn-1:call-1",
+              callId: "call-1",
+              toolName: "test-effect",
+              recoveryCategory: "side-effecting",
+              intentDigest: "intent-digest",
+              attempt: 1,
+              recordedAt: OPENED_AT,
+            },
+          },
+        },
+        { durable: true },
+      ),
+    ).toBe(true);
+    expect(
+      original.append(
+        {
+          id: "v2-result-without-boundary",
+          seq: 2,
+          msg: {
+            type: "effect_result",
+            payload: {
+              formatVersion: 2,
+              minimumReaderRuntime: "0.14.0",
+              runId,
+              stepId: "tool:turn-1:call-1",
+              callId: "call-1",
+              toolName: "test-effect",
+              recoveryCategory: "side-effecting",
+              intentEventSeq: 1,
+              outcome: "committed",
+              recordedAt: "2026-07-18T00:00:01.000Z",
+            },
+          },
+        },
+        { durable: true },
+      ),
+    ).toBe(true);
+    original.close();
+
+    expect(() => store(cwd, runId, true)).toThrow(
+      /effect_result format v2 requires effectBoundary/u,
+    );
+  });
+
   it("turns a dangling side effect into a journaled review lock without replay", () => {
     const cwd = workspace();
     const runId = "run-side-effect";
