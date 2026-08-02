@@ -430,6 +430,8 @@ export class StateRecoveryIncidentRepository {
     readonly actor: string;
     readonly reason: string;
     readonly abandonedAtMs: number;
+    /** Present only when E1a proved the current descriptor-pinned digest. */
+    readonly verifiedCurrentSourceSha256?: string;
   }): RecoveryAbandonment {
     return this.driver.transactionImmediate(() => {
       const incident = this.requireActiveQuarantine(params.quarantineId);
@@ -439,13 +441,18 @@ export class StateRecoveryIncidentRepository {
       ) {
         throw new Error("confirmed run id does not match quarantined evidence");
       }
-      if (
-        incident.sourceSha256 !==
-        assertRecoverySha256(
-          params.expectedSourceSha256,
-          "expectedSourceSha256",
-        )
-      ) {
+      const expectedSourceSha256 = assertRecoverySha256(
+        params.expectedSourceSha256,
+        "expectedSourceSha256",
+      );
+      const verifiedSourceSha256 =
+        params.verifiedCurrentSourceSha256 === undefined
+          ? incident.sourceSha256
+          : assertRecoverySha256(
+              params.verifiedCurrentSourceSha256,
+              "verifiedCurrentSourceSha256",
+            );
+      if (verifiedSourceSha256 !== expectedSourceSha256) {
         throw new Error(
           "confirmed source digest does not match quarantined evidence",
         );
@@ -454,7 +461,7 @@ export class StateRecoveryIncidentRepository {
         runId: incident.runId,
         sourceKind: incident.sourceKind,
         sourcePath: incident.sourcePath,
-        sourceSha256: incident.sourceSha256,
+        sourceSha256: verifiedSourceSha256,
         quarantineId: incident.quarantineId,
         actor: params.actor,
         reason: params.reason,

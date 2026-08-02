@@ -39,13 +39,14 @@ afterEach(() => {
 
 describe("E1a recovery mutation adapter", () => {
   it("repairs quarantine only after descriptor-pinned strict replay commits", async () => {
+    const quarantinedRaw = "{not-json}\n";
     const raw = event(1) + event(2);
-    writeFileSync(rolloutPath, raw, { mode: 0o600 });
+    writeFileSync(rolloutPath, quarantinedRaw, { mode: 0o600 });
     const repository = new StateRecoveryIncidentRepository(driver);
     const incident = repository.recordQuarantine({
-      ...quarantineInput(raw),
-      reasonCode: "unsupported_format_version",
+      ...quarantineInput(quarantinedRaw),
     });
+    writeFileSync(rolloutPath, raw, { mode: 0o600 });
     const io = createIo();
 
     await expect(
@@ -55,7 +56,7 @@ describe("E1a recovery mutation adapter", () => {
           collection: "quarantine",
           action: "rescan",
           id: incident.quarantineId,
-          confirmedSourceSha256: incident.sourceSha256,
+          confirmedSourceSha256: sha256(raw),
         },
         io,
       ),
@@ -152,6 +153,9 @@ describe("E1a recovery mutation adapter", () => {
       "active",
     );
 
+    const currentRaw = raw + event(2);
+    writeFileSync(rolloutPath, currentRaw, { mode: 0o600 });
+    const currentSha256 = sha256(currentRaw);
     const io = createIo();
     await expect(
       runMutation(
@@ -161,7 +165,7 @@ describe("E1a recovery mutation adapter", () => {
           action: "abandon",
           id: incident.quarantineId,
           confirmedRunId: incident.runId,
-          confirmedSourceSha256: incident.sourceSha256,
+          confirmedSourceSha256: currentSha256,
           reason: "operator determined source is unrecoverable",
         },
         io,
@@ -172,7 +176,7 @@ describe("E1a recovery mutation adapter", () => {
     );
     expect(repository.getAbandonment(incident.runId)).toMatchObject({
       quarantineId: incident.quarantineId,
-      sourceSha256: incident.sourceSha256,
+      sourceSha256: currentSha256,
     });
   });
 });

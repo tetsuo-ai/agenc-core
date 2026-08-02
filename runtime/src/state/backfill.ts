@@ -242,6 +242,7 @@ export function backfillPinnedRolloutFile(options: {
       const threadId = threadIdFromRolloutPath(options.rolloutPath);
       const now = new Date(journal.proof.snapshot.mtimeMs).toISOString();
       const itemsIndexed = journal.proof.recordCount;
+      let replayProof: PinnedCanonicalJournalProof | undefined;
       options.threads.commitRolloutProjection(() => {
         mergeThreadFromMeta({
           threads: options.threads,
@@ -263,7 +264,7 @@ export function backfillPinnedRolloutFile(options: {
           sha256: journal.proof.sourceSha256,
           lineCount: journal.proof.physicalLineCount + 1,
           produce: (insert) => {
-            journal.replay((record) => {
+            replayProof = journal.replay((record) => {
               insert(
                 rolloutItemRow(
                   record.item,
@@ -280,7 +281,12 @@ export function backfillPinnedRolloutFile(options: {
           },
         });
       }, journal.assertPinned);
-      return Object.freeze({ itemsIndexed, proof: journal.proof });
+      if (replayProof === undefined) {
+        throw new Error(
+          "canonical journal projection completed without replay proof",
+        );
+      }
+      return Object.freeze({ itemsIndexed, proof: replayProof });
     },
   );
 }

@@ -38,7 +38,7 @@ describe("descriptor-pinned canonical recovery", () => {
         recordCount: 2,
         eventCount: 2,
         format: "sequenced_v1",
-        digestAnchored: false,
+        digestAnchored: true,
       });
       expect(Object.hasOwn(result.proof, "records")).toBe(false);
       expect(projectedRows(fixture.driver)).toBe(2);
@@ -143,6 +143,7 @@ describe("descriptor-pinned canonical recovery", () => {
     } finally {
       descriptorFixture.driver.close();
     }
+    expect(() => new RecoveryDescriptorBudget(17)).toThrow(/\[1, 16\]/);
   });
 
   it("rejects a pathname replacement between passes with zero projection", () => {

@@ -100,9 +100,13 @@ export class RecoveryDescriptorBudget {
   #inUse = 0;
 
   constructor(readonly limit = MAX_RECOVERY_PINNED_DESCRIPTORS) {
-    if (!Number.isSafeInteger(limit) || limit <= 0) {
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit <= 0 ||
+      limit > MAX_RECOVERY_PINNED_DESCRIPTORS
+    ) {
       throw new TypeError(
-        "recovery descriptor limit must be a positive integer",
+        `recovery descriptor limit must be an integer in [1, ${MAX_RECOVERY_PINNED_DESCRIPTORS}]`,
       );
     }
   }

@@ -158,6 +158,7 @@ function abandonRecovery(
       quarantineId: evidence.quarantineId,
       expectedRunId,
       expectedSourceSha256,
+      verifiedCurrentSourceSha256: expectedSourceSha256,
       actor: context.actor,
       reason: command.reason ?? "operator abandonment",
       abandonedAtMs,
