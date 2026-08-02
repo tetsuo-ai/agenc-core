@@ -14,15 +14,15 @@ nonzero exit status and the exact registered defect fingerprint. Do not use
 `skip`, `todo`, `test.fails`, or an assertion whose success means the unsafe
 behavior remains present.
 
-After C1 promotion, the P0 inventory contains ten task-owned defect probes
-plus the FND-001 harness self-test, so the exact green audit summary is
-`files=11 expected-red=11 assertions=11 skipped=0 todo=0`. Each remaining task-owned
+After A1, A2a, and C1 promotion, the P0 inventory contains nine task-owned
+defect probes plus the FND-001 harness self-test, so the exact green audit
+summary is `files=10 expected-red=10 assertions=10 skipped=0 todo=0`. Each
+remaining task-owned
 probe calls a production seam without a provider, public network, or
 uncontained subprocess:
 
 | Task | Current defect frozen red                                                                        | Desired assertion                                                                                                              |
 | ---- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| A2a  | A malformed interior canonical journal line is skipped and two later/earlier rows are projected. | Typed `malformed_json` with zero projected rows.                                                                               |
 | A2b  | Startup returns a running agent whose bound canonical journal is corrupt.                        | The corrupt run is non-executable and absent from recovery results.                                                            |
 | A3   | Substituting a tool-result body leaves the durable prefix digest unchanged.                      | The complete tool-result body changes the digest.                                                                              |
 | B1   | A CSV `__proto__` header is consumed by the inherited setter instead of round-tripping as data.  | An own inert `__proto__` field preserves the exact source value.                                                               |
@@ -43,11 +43,12 @@ root, and the canonical path and SHA-256 of every loaded Markdown asset.
 The FND-001 self-probe intentionally omits a required transition and proves the
 harness itself goes red; it does not claim a product defect remains and does not
 satisfy any task-owned P0 defect-probe gate.
-The A1 timeout/physical-settlement assertion and C1 message-frame floor are now
-ordinary regression coverage. The ten unresolved task-owned P0 probes
-remain registered alongside FND-001. When another product defect is fixed,
-promote its assertion into an ordinary test and verify that reversing the
-functional change in a disposable worktree makes that test fail.
+The A1 timeout/physical-settlement assertion, A2a canonical-journal integrity,
+and C1 message-frame floor are now ordinary regression coverage. The nine
+unresolved task-owned P0 probes remain registered alongside FND-001. When
+another product defect is fixed, promote its assertion into an ordinary test
+and verify that reversing the functional change in a disposable worktree makes
+that test fail.
 
 The hard per-probe deadline bounds authenticated bootstrap and cold static
 imports. Trusted heartbeat sequence 1 seals the bootstrap capability boundary

@@ -46,14 +46,46 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const FIXTURE_ID_PATTERN = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/u;
 const WINDOWS_DRIVE_PATTERN = /^[a-z]:/iu;
 const EXPECTED_CRITICAL_PATH_ADRS = Object.freeze([
-  { id: "CP-0001", file: "0001-effect-outcome-separation.md" },
-  { id: "CP-0002", file: "0002-strict-recovery-quarantine.md" },
-  { id: "CP-0003", file: "0003-versioned-durable-checkpoints.md" },
-  { id: "CP-0004", file: "0004-csv-identity-and-replay.md" },
-  { id: "CP-0005", file: "0005-derived-index-freshness.md" },
-  { id: "CP-0006", file: "0006-compaction-transaction.md" },
-  { id: "CP-0007", file: "0007-workflow-handoff-artifact.md" },
-  { id: "CP-0008", file: "0008-agent-invocation-envelope.md" },
+  {
+    id: "CP-0001",
+    file: "0001-effect-outcome-separation.md",
+    status: "Accepted target; implementation pending",
+  },
+  {
+    id: "CP-0002",
+    file: "0002-strict-recovery-quarantine.md",
+    status: "Accepted; A2a contract implemented, E1a/A2b cutover pending",
+  },
+  {
+    id: "CP-0003",
+    file: "0003-versioned-durable-checkpoints.md",
+    status: "Accepted target; implementation pending",
+  },
+  {
+    id: "CP-0004",
+    file: "0004-csv-identity-and-replay.md",
+    status: "Accepted target; implementation pending",
+  },
+  {
+    id: "CP-0005",
+    file: "0005-derived-index-freshness.md",
+    status: "Accepted target; implementation pending",
+  },
+  {
+    id: "CP-0006",
+    file: "0006-compaction-transaction.md",
+    status: "Accepted target; implementation pending",
+  },
+  {
+    id: "CP-0007",
+    file: "0007-workflow-handoff-artifact.md",
+    status: "Accepted target; implementation pending",
+  },
+  {
+    id: "CP-0008",
+    file: "0008-agent-invocation-envelope.md",
+    status: "Accepted target; implementation pending",
+  },
 ]);
 const EXPECTED_CRITICAL_PATH_DOC_FILES = Object.freeze([
   ...EXPECTED_CRITICAL_PATH_ADRS.map((entry) => entry.file),
@@ -605,7 +637,7 @@ describe("foundation fixture contract", () => {
         true,
       );
       expect(decisionText, decision.file).toContain(
-        "| Status | Accepted target; implementation pending |",
+        `| Status | ${decision.status} |`,
       );
       expect(decisionText, decision.file).toContain(
         `| Audit snapshot | \`${AUDITED_SHA}\` |`,

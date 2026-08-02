@@ -1,17 +1,8 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 11,
+  "probeCount": 10,
   "probes": [
-    {
-      "id": "a2a-malformed-canonical-journal",
-      "task": "A2a",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/a2a-malformed-canonical-journal.red-probe.ts",
-      "fingerprint": "A2A:RECOVERY:MALFORMED-CANONICAL-JOURNAL",
-      "sourceSha256": "122e91acad45d94524f3a0a16e6f56942f9d7fdb255b55d72c448e6265a93909",
-      "timeoutMs": 30000
-    },
     {
       "id": "a2b-corrupt-journal-never-recoverable",
       "task": "A2b",
