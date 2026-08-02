@@ -8,7 +8,19 @@ import type {
   LLMProviderExecutionProfile,
   LLMResponse,
 } from "../llm/types.js";
-import { roughTokenCountEstimationForProvider } from "../llm/token-estimation.js";
+import {
+  readProviderFactoryOptions,
+  type ProviderFactoryOptions,
+  type ProviderRuntimeExtra,
+} from "../llm/provider.js";
+import { getProviderNativeToolDefinitions } from "../llm/provider-native-search.js";
+import {
+  createTokenAccountingConfigurationRevision,
+  createTokenAccountingRequest,
+  tokenAccountingService,
+  type TokenAccountingResult,
+} from "../llm/token-accounting.js";
+import { getContextWindowForModel } from "../utils/context.js";
 import {
   computeUsdCostWithResolution,
   DEFAULT_MODEL_COSTS,
@@ -48,30 +60,76 @@ function positiveInteger(value: unknown): number | undefined {
   return Math.floor(value);
 }
 
-function estimateInputTokens(
-  messages: readonly LLMMessage[],
+function nonBlankString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function accountingOptionsForProvider(
+  provider: LLMProvider,
+  factoryOptions: ProviderFactoryOptions,
   options: LLMChatOptions,
-  provider: string,
+  contextWindowTokens: number,
+): LLMChatOptions {
+  const extra = factoryOptions.extra ?? {};
+  const configuredSystemPrompt =
+    typeof extra.systemPrompt === "string" ? extra.systemPrompt : undefined;
+  const configuredTemperature =
+    typeof extra.temperature === "number" ? extra.temperature : undefined;
+  const configuredCachedContent =
+    provider.name === "gemini" && typeof extra.cachedContent === "string"
+      ? extra.cachedContent
+      : undefined;
+  return {
+    ...options,
+    contextWindowTokens,
+    ...(options.systemPrompt === undefined &&
+    configuredSystemPrompt !== undefined
+      ? { systemPrompt: configuredSystemPrompt }
+      : {}),
+    ...(options.tools === undefined && factoryOptions.tools !== undefined
+      ? { tools: factoryOptions.tools }
+      : {}),
+    ...(options.temperature === undefined && configuredTemperature !== undefined
+      ? { temperature: configuredTemperature }
+      : {}),
+    ...(options.promptCacheKey === undefined &&
+    configuredCachedContent !== undefined
+      ? { promptCacheKey: configuredCachedContent }
+      : {}),
+  };
+}
+
+function providerNativeToolsForAccounting(
+  provider: LLMProvider,
+  providerName: string,
   model: string,
-): number {
-  const serialized = JSON.stringify({
-    messages,
-    systemPrompt: options.systemPrompt ?? "",
-    tools: options.tools ?? [],
-    structuredOutput: options.structuredOutput ?? null,
-  });
-  const providerEstimate = Math.ceil(
-    roughTokenCountEstimationForProvider(serialized, { provider, model }),
-  );
-  // UTF-8 bytes are a deliberately conservative tokenizer-independent upper
-  // bound for caller-controlled JSON. Provider framing is added explicitly so
-  // an optimistic heuristic can never make the reservation smaller.
-  const byteUpperBound =
-    Buffer.byteLength(serialized, "utf8") +
-    256 +
-    messages.length * 32 +
-    (options.tools?.length ?? 0) * 64;
-  return Math.max(1, providerEstimate, byteUpperBound);
+  extra: ProviderRuntimeExtra,
+): readonly Readonly<Record<string, unknown>>[] {
+  if (provider.name !== "grok" && providerName !== "grok") return [];
+  return getProviderNativeToolDefinitions({
+    provider: "grok",
+    model,
+    ...(extra.webSearch !== undefined ? { webSearch: extra.webSearch } : {}),
+    ...(extra.searchMode !== undefined ? { searchMode: extra.searchMode } : {}),
+    ...(extra.webSearchOptions !== undefined
+      ? { webSearchOptions: extra.webSearchOptions }
+      : {}),
+    ...(extra.xSearch !== undefined ? { xSearch: extra.xSearch } : {}),
+    ...(extra.xSearchOptions !== undefined
+      ? { xSearchOptions: extra.xSearchOptions }
+      : {}),
+    ...(extra.codeExecution !== undefined
+      ? { codeExecution: extra.codeExecution }
+      : {}),
+    ...(extra.collectionsSearch !== undefined
+      ? { collectionsSearch: extra.collectionsSearch as never }
+      : {}),
+    ...(extra.remoteMcp !== undefined
+      ? { remoteMcp: extra.remoteMcp as never }
+      : {}),
+  }).map(({ name, toolType, payload }) => ({ name, toolType, payload }));
 }
 
 function pricedEntry(model: string, provider: string): ModelCostEntry | null {
@@ -117,9 +175,7 @@ function maximumTokenCostUsd(
     (outputTokens / 1_000) * worstOutputRate;
   const serverTools = paidServerToolNames(options);
   if (
-    serverTools.some(
-      (name) => name !== "web_search" && name !== "x_search",
-    )
+    serverTools.some((name) => name !== "web_search" && name !== "x_search")
   ) {
     return null;
   }
@@ -225,20 +281,22 @@ export async function runAdmittedModelCall(
   params: AdmittedModelCallOptions,
 ): Promise<LLMResponse> {
   const client = params.session.services.executionAdmission;
-  if (client === undefined) {
-    if (params.session.services.admissionRequired !== false) {
-      throw new AdmissionDeniedError("admission_kernel_unavailable");
-    }
-    return params.invoke(params.options);
-  }
-
-  const configuredMaxOutputTokens = positiveInteger(
-    params.options.maxOutputTokens,
-  );
-  // A denied preflight still enters the durable admission API. Zero is only
-  // a persisted placeholder for the rejected request; it never reaches a
-  // provider because denialReason is resolved before queue/claim.
-  const maxOutputTokens = configuredMaxOutputTokens ?? 0;
+  const providerFactoryOptions = readProviderFactoryOptions(params.provider);
+  // A few structurally typed embedding/test providers predate the explicit
+  // identity fields on this boundary. Keep the admission path fail-safe at
+  // runtime by resolving the same concrete identity from request, factory,
+  // session, and provider data instead of dereferencing an unchecked cast.
+  const requestedProvider =
+    nonBlankString(params.providerName) ??
+    nonBlankString(params.provider.name) ??
+    "unknown";
+  const sessionModel = nonBlankString(params.session.modelInfo?.slug);
+  const requestedModel =
+    nonBlankString(params.model) ??
+    nonBlankString(params.options.model) ??
+    nonBlankString(providerFactoryOptions.model) ??
+    sessionModel ??
+    "unknown";
 
   const stagedFallbackEvent =
     params.fallback === undefined
@@ -246,11 +304,11 @@ export async function runAdmittedModelCall(
       : {
           stepId: params.stepId,
           fromModel: params.fallback.fromModel,
-          toModel: params.model,
+          toModel: requestedModel,
           ...(params.fallback.fromProvider !== undefined
             ? { fromProvider: params.fallback.fromProvider }
             : {}),
-          toProvider: params.providerName,
+          toProvider: requestedProvider,
           reason: params.fallback.reason,
         };
 
@@ -266,7 +324,7 @@ export async function runAdmittedModelCall(
     // example after restart), preserve the staged fallback in its journal.
     // recordFallback is otherwise a no-op; the caller intentionally receives
     // no handoff callback and retains the decision for a later retry.
-    if (stagedFallbackEvent !== undefined) {
+    if (stagedFallbackEvent !== undefined && client !== undefined) {
       try {
         client.recordFallback(stagedFallbackEvent);
       } catch {
@@ -280,20 +338,27 @@ export async function runAdmittedModelCall(
   const usesConcreteExecutionIdentity =
     routedProvider !== undefined &&
     routedProvider.length > 0 &&
-    routedProvider !== params.providerName;
+    routedProvider !== requestedProvider;
   const effectiveProvider = usesConcreteExecutionIdentity
     ? routedProvider
-    : params.providerName;
+    : requestedProvider;
   const effectiveModel =
     usesConcreteExecutionIdentity && profile?.model?.trim()
       ? profile.model.trim()
-      : params.model;
+      : requestedModel;
+  const configuredMaxOutputTokens =
+    positiveInteger(params.options.maxOutputTokens) ??
+    positiveInteger(profile?.maxOutputTokens);
+  // A denied preflight still enters the durable admission API. Zero is only
+  // a persisted placeholder for the rejected request; it never reaches a
+  // provider because denialReason is resolved before queue/claim.
+  const maxOutputTokens = configuredMaxOutputTokens ?? 0;
   const hasHardCostCap =
-    client.scope.hasHardCostCap === true ||
-    client.scope.maxCostUsd !== undefined;
+    client?.scope.hasHardCostCap === true ||
+    client?.scope.maxCostUsd !== undefined;
   const hasHardTokenCap =
-    client.scope.hasHardTokenCap === true ||
-    client.scope.maxTokens !== undefined;
+    client?.scope.hasHardTokenCap === true ||
+    client?.scope.maxTokens !== undefined;
   // Every admitted model call needs a provider-enforced output ceiling. The
   // reservation is only a real upper bound when the request-scoped maximum
   // reaches the provider wire, regardless of whether this run currently has a
@@ -305,23 +370,85 @@ export async function runAdmittedModelCall(
     ((hasHardCostCap || hasHardTokenCap) &&
       profile.usageReporting !== "authoritative");
 
-  const maxInputTokens = estimateInputTokens(
-    params.messages,
-    params.options,
+  const contextWindowTokens =
+    positiveInteger(params.options.contextWindowTokens) ??
+    positiveInteger(profile?.contextWindowTokens) ??
+    (sessionModel === effectiveModel
+      ? positiveInteger(params.session.modelInfo?.contextWindow)
+      : undefined) ??
+    getContextWindowForModel(effectiveModel);
+  const accountingOptions = accountingOptionsForProvider(
+    params.provider,
+    providerFactoryOptions,
+    {
+      ...params.options,
+      model: effectiveModel,
+      ...(configuredMaxOutputTokens !== undefined
+        ? { maxOutputTokens: configuredMaxOutputTokens }
+        : {}),
+      ...(profile?.providerExecutionHandle !== undefined
+        ? { providerExecutionHandle: profile.providerExecutionHandle }
+        : {}),
+    },
+    contextWindowTokens,
+  );
+  const providerNativeTools = providerNativeToolsForAccounting(
+    params.provider,
     effectiveProvider,
     effectiveModel,
+    providerFactoryOptions.extra ?? {},
   );
+  const accountingRequest = createTokenAccountingRequest({
+    provider: effectiveProvider,
+    model: effectiveModel,
+    messages: params.messages,
+    options: accountingOptions,
+    ...(providerNativeTools.length > 0 ? { providerNativeTools } : {}),
+    endpointIdentity: providerFactoryOptions.baseURL,
+    configurationRevision: createTokenAccountingConfigurationRevision({
+      systemPrompt: accountingOptions.systemPrompt ?? "",
+      tools: accountingOptions.tools ?? [],
+      temperature: accountingOptions.temperature ?? null,
+      providerNativeTools,
+      contextWindowTokens,
+      maxOutputTokens,
+    }),
+    contextWindowTokens,
+    reservedOutputTokens: maxOutputTokens,
+  });
+  let accountingResult: TokenAccountingResult | undefined;
+  let accountingFailureReason: string | undefined;
+  try {
+    accountingResult = await tokenAccountingService.count(accountingRequest, {
+      ...(params.provider.tokenCountCapability !== undefined
+        ? { capability: params.provider.tokenCountCapability }
+        : {}),
+      ...(params.signal !== undefined ? { signal: params.signal } : {}),
+    });
+    if (!accountingResult.admissible) {
+      accountingFailureReason = "token_accounting_uncertain";
+    } else if (accountingResult.totalTokens > contextWindowTokens) {
+      accountingFailureReason = "context_window_exceeded";
+    }
+  } catch (error) {
+    if (params.signal?.aborted === true) {
+      throw params.signal.reason ?? error;
+    }
+    accountingFailureReason = "token_accounting_unavailable";
+  }
+  const maxInputTokens = accountingResult?.inputTokens ?? 0;
   const unboundedPaidServerTool =
-    hasHardCostCap && hasUnboundedPaidServerTool(params.options);
+    hasHardCostCap && hasUnboundedPaidServerTool(accountingOptions);
   const maximumCost = maximumTokenCostUsd(
     effectiveModel,
     effectiveProvider,
     maxInputTokens,
     maxOutputTokens,
-    params.options,
+    accountingOptions,
   );
   const denialReason =
-    configuredMaxOutputTokens === undefined
+    accountingFailureReason ??
+    (configuredMaxOutputTokens === undefined
       ? "unbounded_model_output"
       : providerContractUnavailable
         ? "provider_budget_contract_unavailable"
@@ -329,20 +456,35 @@ export async function runAdmittedModelCall(
           ? "unbounded_provider_tool_under_hard_cap"
           : hasHardCostCap && maximumCost === null
             ? "unpriced_model_under_hard_cap"
-            : undefined;
-  const fallbackEvent = stagedFallbackEvent === undefined
-    ? undefined
-    : {
-        ...stagedFallbackEvent,
-        toModel: effectiveModel,
-        toProvider: effectiveProvider,
-      };
+            : undefined);
+  if (client === undefined) {
+    if (params.session.services.admissionRequired !== false) {
+      throw new AdmissionDeniedError("admission_kernel_unavailable");
+    }
+    if (accountingFailureReason !== undefined) {
+      throw new AdmissionDeniedError(accountingFailureReason);
+    }
+    return params.invoke({
+      ...accountingOptions,
+      ...(accountingResult !== undefined
+        ? { accountedInputTokens: accountingResult.inputTokens }
+        : {}),
+    });
+  }
+  const fallbackEvent =
+    stagedFallbackEvent === undefined
+      ? undefined
+      : {
+          ...stagedFallbackEvent,
+          toModel: effectiveModel,
+          toProvider: effectiveProvider,
+        };
   const routingEvent = usesConcreteExecutionIdentity
     ? {
         stepId: params.stepId,
-        fromModel: params.model,
+        fromModel: requestedModel,
         toModel: effectiveModel,
-        fromProvider: params.providerName,
+        fromProvider: requestedProvider,
         toProvider: effectiveProvider,
         reason: "provider_execution_profile_resolution",
       }
@@ -410,11 +552,14 @@ export async function runAdmittedModelCall(
             }
           : {}),
         maxOutputTokens,
+        tokenAccountingSource: accountingResult?.source,
+        tokenAccountingConfidence: accountingResult?.confidence,
+        tokenAccountingCoverageComplete: accountingResult?.coverage.complete,
       },
     });
     dispatched = true;
     const response = await params.invoke({
-      ...params.options,
+      ...accountingOptions,
       ...(profile?.providerExecutionHandle !== undefined
         ? { providerExecutionHandle: profile.providerExecutionHandle }
         : {}),
@@ -422,6 +567,9 @@ export async function runAdmittedModelCall(
       // requires a new durable reservation. Adapters must surface the error
       // to the caller instead of retrying beneath this lease.
       singleWireAttempt: true,
+      ...(accountingResult !== undefined
+        ? { accountedInputTokens: accountingResult.inputTokens }
+        : {}),
       // The admitted maximum is the provider-facing maximum. A caller cannot
       // raise it after reservation by mutating/rebuilding options.
       maxOutputTokens: Math.min(
@@ -491,6 +639,12 @@ export async function runAdmittedModelCall(
       return response;
     }
     const reconciled = reconciledTokenUsage(usage);
+    if (accountingResult !== undefined) {
+      tokenAccountingService.recordProviderUsage(
+        accountingResult,
+        reconciled.inputTokens,
+      );
+    }
     const outcome = client.reconcile(reservationId, {
       inputTokens: reconciled.inputTokens,
       outputTokens: reconciled.outputTokens,

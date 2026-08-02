@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
+import { createTokenAccountingRequest } from "../../token-accounting.js";
 import { BedrockProvider } from "./index.js";
 
 function jsonResponse(body: Record<string, unknown>, status = 200): Response {
@@ -49,6 +50,70 @@ function payloadHash(value: string): string {
 }
 
 describe("providers/bedrock", () => {
+  it("counts the complete Converse input through CountTokens", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ inputTokens: 29 }),
+    );
+    const provider = new BedrockProvider({
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret",
+      region: "us-west-2",
+      model: "amazon.nova-pro-v1:0",
+      fetchImpl,
+      now: () => new Date("2024-01-02T03:04:05Z"),
+    });
+    const controller = new AbortController();
+    const request = createTokenAccountingRequest({
+      provider: provider.name,
+      model: "amazon.nova-pro-v1:0",
+      messages: [{ role: "user", content: "hello" }],
+      options: {
+        systemPrompt: "system instruction",
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "lookup",
+              description: "Look up a value",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+        toolChoice: { type: "function", name: "lookup" },
+        maxOutputTokens: 123,
+      },
+      reservedOutputTokens: 123,
+    });
+
+    await expect(
+      provider.tokenCountCapability.countTokens(request, controller.signal),
+    ).resolves.toMatchObject({
+      inputTokens: 29,
+      complete: true,
+      confidence: "exact",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe(
+      "https://bedrock-runtime.us-west-2.amazonaws.com/model/amazon.nova-pro-v1%3A0/count-tokens",
+    );
+    expect(init?.signal).toBe(controller.signal);
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      input: {
+        converse: {
+          system: [{ text: "system instruction" }],
+          messages: [{ role: "user", content: [{ text: "hello" }] }],
+          toolConfig: expect.objectContaining({
+            toolChoice: { tool: { name: "lookup" } },
+          }),
+        },
+      },
+    });
+    expect((body.input as { converse: Record<string, unknown> }).converse).not
+      .toHaveProperty("inferenceConfig");
+  });
+
   it("serializes Converse requests and signs them with AWS SigV4", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 12,
+  "probeCount": 11,
   "probes": [
     {
       "id": "a2a-malformed-canonical-journal",
@@ -47,15 +47,6 @@
       "fingerprint": "B3A:WORKFLOW:NAME-PATH-TRAVERSAL",
       "sourceSha256": "6a36ecb9ecf69b41c4832aada4a8ee79b1355a45d05ea2b80eaab2c2b8503eed",
       "timeoutMs": 15000
-    },
-    {
-      "id": "c1-one-character-message-frame-floor",
-      "task": "C1",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/c1-one-character-message-frame-floor.red-probe.ts",
-      "fingerprint": "C1:TOKEN-ACCOUNTING:ONE-CHARACTER-FRAME-FLOOR",
-      "sourceSha256": "0697b4dd602fe8f7ec7761dd99b8870eb854e2e1972c22963397e7529a05d8e2",
-      "timeoutMs": 10000
     },
     {
       "id": "c2-compaction-transcript-instruction-trust",

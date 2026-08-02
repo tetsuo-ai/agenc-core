@@ -78,6 +78,7 @@ history; the linked pages below are current product truth.
 | [design/secure-project-instructions.md](design/secure-project-instructions.md) | Live instruction delivery, precedence, descriptor-bound reads, approvals, and threat model |
 | [design/fail-closed-sandbox-execution.md](design/fail-closed-sandbox-execution.md) | Required process isolation boundary, platform probes, failure semantics, and research |
 | [design/execution-admission-kernel.md](design/execution-admission-kernel.md) | M3 daemon admission, durable budgets/queue/cancellation, evidence, rollout, and rollback |
+| [design/provider-aware-token-accounting.md](design/provider-aware-token-accounting.md) | Complete-request native/fallback accounting, bounded cache/single-flight, context enforcement, and calibration |
 | [design/durable-runs-effects-events.md](design/durable-runs-effects-events.md) | M4 canonical run journal, honest effects, terminal results, replay-safe cursors, crash matrix, and rollback |
 | [design/shared-run-contracts-v1.md](design/shared-run-contracts-v1.md) | Frozen v1 run, admission, budget, effect, event, and cursor contracts |
 | [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md) | Verified-change workflow contract, durable step semantics, recovery, and evidence |

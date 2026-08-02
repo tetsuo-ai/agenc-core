@@ -83,7 +83,7 @@ describe('Compression Ratio', () => {
 
   describe('estimateWithBounds', () => {
     it('returns estimate with bounds', () => {
-      const result = estimateWithBounds('Hello world')
+      const result = estimateWithBounds('Hello world '.repeat(10))
       
       expect(result.min).toBeLessThanOrEqual(result.estimate)
       expect(result.max).toBeGreaterThanOrEqual(result.estimate)

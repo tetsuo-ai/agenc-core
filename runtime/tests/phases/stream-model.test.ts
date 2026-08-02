@@ -96,6 +96,8 @@ import {
   type StreamModelRequestContract,
 } from "./stream-model.js";
 
+const TEST_CONTEXT_WINDOW_TOKENS = 131_072;
+
 function mkCtx(mode = "chat"): TurnContext {
   return {
     subId: "turn-stream",
@@ -105,7 +107,7 @@ function mkCtx(mode = "chat"): TurnContext {
     modelInfo: {
       slug: "test-model",
       effectiveContextWindowPercent: 100,
-      contextWindow: 1024,
+      contextWindow: TEST_CONTEXT_WINDOW_TOKENS,
       supportedReasoningLevels: [],
       defaultReasoningSummary: "auto",
       truncationPolicy: "off",
@@ -313,7 +315,7 @@ describe("streamModel — live assistant text sanitization", () => {
       {
         ...mkRequest([{ role: "user", content: "hello" }]),
         baseInstructions: "base system",
-        contextWindowTokens: 1024,
+        contextWindowTokens: TEST_CONTEXT_WINDOW_TOKENS,
         maxOutputTokens: 256,
       },
     );
@@ -321,7 +323,7 @@ describe("streamModel — live assistant text sanitization", () => {
     expect(seenMessages[0]).toEqual([{ role: "user", content: "hello" }]);
     expect(seenOptions[0]).toMatchObject({
       systemPrompt: "base system",
-      contextWindowTokens: 1024,
+      contextWindowTokens: TEST_CONTEXT_WINDOW_TOKENS,
       maxOutputTokens: 256,
     });
   });

@@ -21,6 +21,18 @@ import {
   stripToolSearchFieldsFromMessages,
   VERTEX_COUNT_TOKENS_ALLOWED_BETAS,
 } from "./tokenEstimation.js";
+import {
+  TOKEN_FALLBACK_MARGIN_RATIO,
+  TOKEN_FALLBACK_MARGIN_TOKENS,
+} from "../../src/llm/token-accounting.js";
+
+function highConfidenceNativeCount(inputTokens: number): number {
+  return (
+    inputTokens +
+    Math.ceil(inputTokens * TOKEN_FALLBACK_MARGIN_RATIO) +
+    TOKEN_FALLBACK_MARGIN_TOKENS
+  );
+}
 
 function createTerminal(): TerminalNotification & { readonly calls: string[] } {
   const calls: string[] = [];
@@ -210,11 +222,11 @@ describe("notifier service", () => {
 });
 
 describe("tokenEstimation service", () => {
-  test("returns zero for empty content and delegates API counts for text", async () => {
+  test("keeps empty content nonzero and pads high-confidence API counts", async () => {
     const countTokens = vi.fn(async () => ({ input_tokens: 11 }));
     const cacheWrapper = vi.fn(async (_messages, _tools, run) => run());
 
-    await expect(countTokensWithAPI("", {})).resolves.toBe(0);
+    await expect(countTokensWithAPI("", {})).resolves.toBeGreaterThan(0);
     await expect(
       countTokensWithAPI("hello", {
         anthropicClient: {
@@ -222,7 +234,7 @@ describe("tokenEstimation service", () => {
         },
         withTokenCountCache: cacheWrapper,
       }),
-    ).resolves.toBe(11);
+    ).resolves.toBe(highConfidenceNativeCount(11));
 
     expect(cacheWrapper).toHaveBeenCalledTimes(1);
     expect(countTokens).toHaveBeenCalledWith({
@@ -231,8 +243,8 @@ describe("tokenEstimation service", () => {
     });
   });
 
-  test("returns null for unavailable provider clients", async () => {
-    await expect(countTokensWithAPI("hello")).resolves.toBe(null);
+  test("uses the conservative service fallback for unavailable clients", async () => {
+    await expect(countTokensWithAPI("hello")).resolves.toBeGreaterThan(0);
     const logError = vi.fn();
     await expect(
       countMessagesTokensWithAPI([{ role: "user", content: "hi" }], [], {
@@ -243,7 +255,7 @@ describe("tokenEstimation service", () => {
         },
         logError,
       }),
-    ).resolves.toBe(null);
+    ).resolves.toBeGreaterThan(0);
     expect(logError).toHaveBeenCalled();
   });
 
@@ -266,7 +278,7 @@ describe("tokenEstimation service", () => {
           beta: { messages: { countTokens } },
         },
       }),
-    ).resolves.toBe(23);
+    ).resolves.toBe(highConfidenceNativeCount(23));
 
     expect(countTokens).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -420,7 +432,7 @@ describe("tokenEstimation service", () => {
         bedrockClient: { send: vi.fn(async () => ({})) },
         loadBedrockRuntimeModule: async () => ({ CountTokensCommand }),
       }),
-    ).resolves.toBe(null);
+    ).resolves.toBeGreaterThan(0);
 
     const loaderSend = vi.fn(async () => ({ inputTokens: 19 }));
     const loadBedrockRuntimeModule = vi.fn(async () => ({
@@ -520,6 +532,10 @@ describe("tokenEstimation service", () => {
       expect.objectContaining({ content: [{ type: "document" }] }),
       expect.objectContaining({ content: "abcdabcd" }),
     ]);
-    expect(roughTokenCountEstimationForServiceMessages(normalized)).toBe(6002);
+    expect(roughTokenCountEstimationForServiceMessages(normalized)).toBeGreaterThan(
+      roughTokenCountEstimationForServiceMessages([
+        { content: "abcdabcd" },
+      ]),
+    );
   });
 });

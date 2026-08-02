@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, test, vi } from "vitest";
 import { ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME } from "../../structured-output.js";
+import { createTokenAccountingRequest } from "../../token-accounting.js";
 import { loadProjectInstructions } from "../../../prompts/project-instructions.js";
 import { assembleSystemPrompt } from "../../../prompts/system-prompt.js";
 import { AnthropicProvider } from "./adapter.js";
@@ -34,6 +35,69 @@ function useDeterministicFallbackTimers(): () => void {
 }
 
 describe("AnthropicProvider", () => {
+  test("counts the complete Messages request through the native endpoint", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ input_tokens: 37 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-sonnet-4.5",
+      fetchImpl,
+    });
+    const controller = new AbortController();
+    const tools = [
+      {
+        type: "function" as const,
+        function: {
+          name: "lookup",
+          description: "Look up a value",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ];
+    const request = createTokenAccountingRequest({
+      provider: provider.name,
+      model: "claude-request-model",
+      messages: [{ role: "user", content: "hello" }],
+      options: {
+        systemPrompt: "system instruction",
+        tools,
+        toolChoice: { type: "function", name: "lookup" },
+        maxOutputTokens: 123,
+      },
+      reservedOutputTokens: 123,
+    });
+
+    await expect(
+      provider.tokenCountCapability.countTokens(request, controller.signal),
+    ).resolves.toMatchObject({
+      inputTokens: 37,
+      complete: true,
+      confidence: "high",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toMatch(/\/messages\/count_tokens$/u);
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(init?.signal?.aborted).toBe(false);
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      model: "claude-request-model",
+      system: [expect.objectContaining({ text: "system instruction" })],
+      tools: [expect.objectContaining({ name: "lookup" })],
+      tool_choice: { type: "tool", name: "lookup" },
+      messages: [
+        {
+          role: "user",
+          content: [expect.objectContaining({ type: "text", text: "hello" })],
+        },
+      ],
+    });
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("max_tokens");
+  });
+
   test("advertises an authoritative bounded budget contract", async () => {
     const provider = new AnthropicProvider({
       apiKey: "anthropic-test",

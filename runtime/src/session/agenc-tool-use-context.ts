@@ -33,6 +33,7 @@ export interface AgenCToolUseContext {
     readonly mcpClients: readonly unknown[];
     readonly contextWindowTokens: number;
     readonly maxOutputTokens?: number;
+    readonly systemPrompt?: string;
     readonly providerOverride?: {
       readonly model: string;
       readonly baseURL: string;
@@ -180,6 +181,16 @@ export function buildAgenCToolUseContext(
   );
   const cwd = ctx.cwd;
   const llmTools = opts.llmTools ?? session.services.registry.toLLMTools();
+  const systemPrompt = [
+    ctx.baseInstructions,
+    ctx.developerInstructions,
+    ctx.userInstructions,
+  ]
+    .filter(
+      (value): value is string =>
+        typeof value === "string" && value.length > 0,
+    )
+    .join("\n\n");
   const setAppState = surface.setAppState;
   const setAppStateForTasks = surface.setAppStateForTasks ?? setAppState;
   const appendSystemMessage =
@@ -198,6 +209,7 @@ export function buildAgenCToolUseContext(
       ...(model.maxOutputTokens !== undefined
         ? { maxOutputTokens: model.maxOutputTokens }
         : {}),
+      ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
       ...(providerOverride !== undefined ? { providerOverride } : {}),
       ...(opts.querySource !== undefined
         ? { querySource: opts.querySource }

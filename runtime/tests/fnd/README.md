@@ -14,9 +14,9 @@ nonzero exit status and the exact registered defect fingerprint. Do not use
 `skip`, `todo`, `test.fails`, or an assertion whose success means the unsafe
 behavior remains present.
 
-After A1 promotion, the P0 inventory contains eleven task-owned defect probes
+After C1 promotion, the P0 inventory contains ten task-owned defect probes
 plus the FND-001 harness self-test, so the exact green audit summary is
-`files=12 expected-red=12 assertions=12 skipped=0 todo=0`. Each remaining task-owned
+`files=11 expected-red=11 assertions=11 skipped=0 todo=0`. Each remaining task-owned
 probe calls a production seam without a provider, public network, or
 uncontained subprocess:
 
@@ -27,7 +27,6 @@ uncontained subprocess:
 | A3   | Substituting a tool-result body leaves the durable prefix digest unchanged.                      | The complete tool-result body changes the digest.                                                                              |
 | B1   | A CSV `__proto__` header is consumed by the inherited setter instead of round-tripping as data.  | An own inert `__proto__` field preserves the exact source value.                                                               |
 | B3a  | `../` in a workflow name escapes `.agenc/workflows` and dispatches the escaped command.          | Reject before dispatch.                                                                                                        |
-| C1   | One hundred one-character messages estimate to zero tokens.                                      | Every nonempty message frame contributes a nonzero floor.                                                                      |
 | C2   | The compaction policy tells the summarizer to obey instructions embedded in transcript context.  | Transcript instructions remain untrusted and cannot alter compaction policy.                                                   |
 | C3a  | Admission denial makes relevant memory recall return no candidates.                              | A deterministic lexical fallback returns the matching admitted file.                                                           |
 | D1   | Missing pinned ripgrep silently falls back to an unpinned JavaScript scan.                       | Fail with pinned-runtime remediation and perform no fallback search.                                                           |
@@ -44,8 +43,8 @@ root, and the canonical path and SHA-256 of every loaded Markdown asset.
 The FND-001 self-probe intentionally omits a required transition and proves the
 harness itself goes red; it does not claim a product defect remains and does not
 satisfy any task-owned P0 defect-probe gate.
-The A1 timeout/physical-settlement assertion is now ordinary regression coverage
-in `tests/tools/execution.test.ts`. The eleven unresolved task-owned P0 probes
+The A1 timeout/physical-settlement assertion and C1 message-frame floor are now
+ordinary regression coverage. The ten unresolved task-owned P0 probes
 remain registered alongside FND-001. When another product defect is fixed,
 promote its assertion into an ordinary test and verify that reversing the
 functional change in a disposable worktree makes that test fail.

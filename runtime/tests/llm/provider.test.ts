@@ -72,6 +72,38 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
   });
 
+  test("preserves configured tools in factory accounting options", () => {
+    const tools = [
+      {
+        type: "function" as const,
+        function: {
+          name: "lookup",
+          description: "Look up a value",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ];
+    const provider = createProvider("grok", {
+      apiKey: "test-key",
+      model: "grok-4.3",
+      tools,
+    });
+
+    expect(readProviderFactoryOptions(provider).tools).toEqual(tools);
+  });
+
+  test("preserves configured Gemini cached-content identity for accounting", () => {
+    const provider = new GeminiProvider({
+      apiKey: "gemini-key",
+      model: "gemini-2.5-pro",
+      cachedContent: "cachedContents/project-context",
+    });
+
+    expect(readProviderFactoryOptions(provider).extra).toMatchObject({
+      cachedContent: "cachedContents/project-context",
+    });
+  });
+
   test("routes 'agenc' to AgenCProvider with explicit auth context", () => {
     const provider = createProvider("agenc", {
       baseURL: "http://127.0.0.1:8000/v1",

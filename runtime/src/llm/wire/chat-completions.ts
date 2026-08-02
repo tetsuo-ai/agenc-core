@@ -11,6 +11,7 @@ import type {
   LLMTool,
   LLMToolCall,
 } from "../types.js";
+import { estimateUtf8TokenUnits } from "../token-accounting.js";
 import {
   buildStructuredOutputTextFormat,
   parseStructuredOutputText,
@@ -231,7 +232,10 @@ export function collectChatCompletionsRequestMetadata(
     model: typeof request.model === "string" ? request.model : "",
     messageCount: messages.length,
     roleSequence,
-    estimatedPromptTokens: Math.ceil(serializedPrompt.length / 4),
+    // Admission-grade calls replace this diagnostic wire estimate with the
+    // complete TokenAccountingService result. Direct adapter callers still
+    // get a UTF-8-aware conservative byte ceiling rather than UTF-16 chars/4.
+    estimatedPromptTokens: estimateUtf8TokenUnits(serializedPrompt, 1),
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     ...(maxTokenField !== undefined ? { maxTokenField } : {}),
     toolsAttached: tools.length > 0,

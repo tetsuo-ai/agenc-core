@@ -1976,7 +1976,7 @@ function createParentSession(
     modelInfo: {
       slug: "test-model",
       effectiveContextWindowPercent: 100,
-      contextWindow: 4096,
+      contextWindow: 131_072,
       supportedReasoningLevels: [],
       defaultReasoningSummary: "auto",
       truncationPolicy: "off",

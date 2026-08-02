@@ -31,6 +31,12 @@ import {
   resolveGeminiCredential,
   type GeminiResolvedCredential,
 } from "../../../utils/geminiAuth.js";
+import {
+  createTokenAccountingConfigurationRevision,
+  type ProviderNativeTokenCountResult,
+  type ProviderTokenCountCapability,
+  type TokenAccountingRequest,
+} from "../../token-accounting.js";
 
 export interface GeminiProviderConfig extends OpenAIProviderConfig {
   readonly cachedContent?: string;
@@ -106,13 +112,17 @@ function geminiModelName(model: string): string {
 function modelPath(
   baseURL: string | undefined,
   model: string,
-  operation: "generateContent" | "streamGenerateContent",
+  operation: "generateContent" | "streamGenerateContent" | "countTokens",
 ): string {
   const encodedModel = encodeURIComponent(geminiModelName(model));
   if (isVertexGeminiBaseURL(baseURL) && !hasVertexGooglePublisherBasePath(baseURL)) {
     return `/publishers/google/models/${encodedModel}:${operation}`;
   }
   return `/models/${encodedModel}:${operation}`;
+}
+
+function geminiCountModelResource(model: string): string {
+  return `models/${geminiModelName(model)}`;
 }
 
 function modelsListPath(baseURL: string | undefined): string {
@@ -836,6 +846,7 @@ class GeminiStreamState {
 
 export class GeminiProvider implements LLMProvider {
   readonly name = "gemini";
+  readonly tokenCountCapability: ProviderTokenCountCapability;
 
   private readonly config: GeminiProviderConfig;
   private readonly client: ProviderHttpClient;
@@ -861,6 +872,92 @@ export class GeminiProvider implements LLMProvider {
       onCapabilityDrift: this.config.onCapabilityDrift,
       supportsStreaming: true,
     });
+    this.tokenCountCapability = Object.freeze({
+      capabilityVersion: "gemini-generate-content-count-tokens-v1",
+      adapterRevision: "gemini-generate-content-wire-v1",
+      configurationRevision: createTokenAccountingConfigurationRevision({
+        cachedContent: this.config.cachedContent ?? null,
+        defaultHeaders: this.config.defaultHeaders ?? {},
+        project: this.config.project ?? null,
+        systemPrompt: this.config.systemPrompt ?? "",
+        tools: this.config.tools ?? [],
+      }),
+      countTokens: (request: TokenAccountingRequest, signal: AbortSignal) =>
+        this.countRequestTokens(request, signal),
+    });
+  }
+
+  private async countRequestTokens(
+    accountingRequest: TokenAccountingRequest,
+    signal: AbortSignal,
+  ): Promise<ProviderNativeTokenCountResult> {
+    const model =
+      accountingRequest.options.model?.trim() ||
+      accountingRequest.model ||
+      this.config.model;
+    const tools = accountingRequest.options.tools
+      ? [...accountingRequest.options.tools]
+      : this.config.tools ?? [];
+    const generateContentRequest = buildGeminiRequest({
+      config: this.config,
+      model,
+      messages: accountingRequest.messages,
+      tools,
+      options: accountingRequest.options,
+    });
+    const vertexCount = isVertexGeminiBaseURL(this.config.baseURL);
+    if (
+      vertexCount &&
+      (generateContentRequest.toolConfig !== undefined ||
+        generateContentRequest.cachedContent !== undefined)
+    ) {
+      // Vertex's documented CountTokens request mirrors the prompt, tools,
+      // system instruction, and generation config, but has no toolConfig or
+      // cachedContent fields. Falling back preserves the fail-closed coverage
+      // contract instead of claiming that an incomplete request was counted.
+      throw new Error(
+        "Vertex Gemini token counting cannot represent tool choice or cached content",
+      );
+    }
+    const session = this.client.createTurnSession({ wireApi: "custom" });
+    const response = await session.requestJson<Record<string, unknown>>({
+      path: modelPath(this.config.baseURL, model, "countTokens"),
+      method: "POST",
+      body: vertexCount
+        ? generateContentRequest
+        : {
+            generateContentRequest: {
+              model: geminiCountModelResource(model),
+              ...generateContentRequest,
+            },
+          },
+      signal,
+      retryBudget: { maxRetries: 0 },
+      singleWireAttempt: true,
+    });
+    const inputTokens = response.data.totalTokens;
+    if (
+      typeof inputTokens !== "number" ||
+      !Number.isSafeInteger(inputTokens) ||
+      inputTokens < 0
+    ) {
+      throw new Error("Gemini token counter returned invalid totalTokens");
+    }
+    return {
+      inputTokens,
+      complete: true,
+      confidence: "high",
+      countedComponents: [
+        "system",
+        "messages",
+        "tools",
+        "tool_choice",
+        "structured_output",
+        "images",
+        "documents",
+        "provider_framing",
+      ],
+    };
   }
 
   async chat(

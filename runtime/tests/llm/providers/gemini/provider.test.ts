@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
+import { createTokenAccountingRequest } from "../../token-accounting.js";
 import type { LLMTool } from "../../types.js";
 import { GeminiProvider } from "./index.js";
 
@@ -43,6 +44,99 @@ const echoTool: LLMTool = {
 };
 
 describe("GeminiProvider", () => {
+  test("counts the complete generateContent request through countTokens", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ totalTokens: 41 }));
+    const provider = new GeminiProvider({
+      apiKey: "gemini-test",
+      model: "gemini-2.5-pro",
+      fetchImpl,
+    });
+    const controller = new AbortController();
+    const request = createTokenAccountingRequest({
+      provider: provider.name,
+      model: "gemini-2.5-pro",
+      messages: [{ role: "user", content: "hello" }],
+      options: {
+        systemPrompt: "system instruction",
+        tools: [echoTool],
+        toolChoice: { type: "function", name: "system.echo" },
+        maxOutputTokens: 321,
+      },
+      reservedOutputTokens: 321,
+    });
+
+    await expect(
+      provider.tokenCountCapability.countTokens(request, controller.signal),
+    ).resolves.toMatchObject({
+      inputTokens: 41,
+      complete: true,
+      confidence: "high",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:countTokens",
+    );
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(init?.signal?.aborted).toBe(false);
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      generateContentRequest: {
+        model: "models/gemini-2.5-pro",
+        systemInstruction: { parts: [{ text: "system instruction" }] },
+        contents: [{ role: "user", parts: [{ text: "hello" }] }],
+        tools: [
+          {
+            functionDeclarations: [
+              expect.objectContaining({ name: "system.echo" }),
+            ],
+          },
+        ],
+        toolConfig: expect.any(Object),
+        generationConfig: expect.objectContaining({ maxOutputTokens: 321 }),
+      },
+    });
+  });
+
+  test("uses the Vertex publisher resource for complete token counts", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ totalTokens: 19 }));
+    const provider = new GeminiProvider({
+      accessToken: "vertex-token",
+      project: "project-1",
+      model: "gemini-2.5-pro",
+      baseURL:
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1",
+      fetchImpl,
+    });
+    const request = createTokenAccountingRequest({
+      provider: provider.name,
+      model: "gemini-2.5-pro",
+      messages: [{ role: "user", content: "hello" }],
+      options: {},
+      reservedOutputTokens: 0,
+    });
+
+    await provider.tokenCountCapability.countTokens(
+      request,
+      new AbortController().signal,
+    );
+    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe(
+      "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1/publishers/google/models/gemini-2.5-pro:countTokens",
+    );
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      contents: [{ role: "user", parts: [{ text: "hello" }] }],
+      generationConfig: expect.any(Object),
+    });
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty(
+      "generateContentRequest",
+    );
+  });
+
+
   test("single-wire chat performs exactly one transport attempt", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ error: { message: "temporarily down" } }), {

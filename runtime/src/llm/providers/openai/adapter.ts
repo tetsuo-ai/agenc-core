@@ -878,6 +878,12 @@ export class OpenAIProvider implements LLMProvider {
       providerCapabilityHints,
     });
     let metadata = collectChatCompletionsRequestMetadata(request);
+    const accountedInputTokens = normalizePositiveInteger(
+      args.options?.accountedInputTokens,
+    );
+    if (accountedInputTokens !== undefined) {
+      metadata = { ...metadata, estimatedPromptTokens: accountedInputTokens };
+    }
     metadata = this.fitRequestWithinContextWindow(
       request,
       metadata,

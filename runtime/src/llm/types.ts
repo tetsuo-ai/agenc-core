@@ -10,6 +10,7 @@
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import { isRecord } from "../utils/record.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
+import type { ProviderTokenCountCapability } from "./token-accounting.js";
 
 /**
  * Message role in a conversation
@@ -575,6 +576,11 @@ export type LLMToolChoice =
  */
 export interface LLMChatOptions {
   /**
+   * @internal Admission-grade complete input count. Adapters may use this for
+   * final wire fitting, but must never synthesize or increase it themselves.
+   */
+  readonly accountedInputTokens?: number;
+  /**
    * Runtime admission boundary: one provider wire attempt is permitted for
    * this logical call. Provider adapters must not perform continuation,
    * transport, authentication, or configured-fallback retries while set;
@@ -898,6 +904,12 @@ export interface LLMCodePredictionResponse {
  */
 export interface LLMProvider {
   readonly name: string;
+  /**
+   * Optional complete-request preflight counter. Providers expose this only
+   * when the native endpoint accepts the same normalized input surface as the
+   * inference request. Text-only tokenizers are not complete capabilities.
+   */
+  readonly tokenCountCapability?: ProviderTokenCountCapability;
   /**
    * Longest wire silence this provider's healthy streams are known to
    * produce, used only as a floor when an operator explicitly enables the

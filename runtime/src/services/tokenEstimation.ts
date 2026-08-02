@@ -20,12 +20,19 @@ import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
 } from "../llm/registry/provider-info.js";
 import {
-  roughTokenCountEstimation,
+  createTokenAccountingConfigurationRevision,
+  createTokenAccountingRequest,
+  estimateTokenAccountingRequest,
+  tokenAccountingService,
+  type ProviderTokenCountCapability,
+} from "../llm/token-accounting.js";
+import {
   roughTokenCountEstimationForMessages,
   type TokenEstimationContent,
   type TokenEstimationMessage,
   type TokenizerProviderHint,
 } from "../llm/token-estimation.js";
+import type { LLMMessage, LLMTool } from "../llm/types.js";
 import { isRecord } from "../utils/record.js";
 
 export {
@@ -139,14 +146,169 @@ const defaultCacheWrapper: TokenCountCacheWrapper = async (
   run,
 ) => run();
 
+const compatibilityObjectIds = new WeakMap<object, number>();
+let nextCompatibilityObjectId = 1;
+
+function compatibilityProviderName(provider: TokenCountProvider): string {
+  return provider === "bedrock" ? "amazon-bedrock" : provider;
+}
+
+function compatibilityObjectIdentity(value: object | undefined): string {
+  if (value === undefined) return "default";
+  const existing = compatibilityObjectIds.get(value);
+  if (existing !== undefined) return `object-${existing}`;
+  const created = nextCompatibilityObjectId++;
+  compatibilityObjectIds.set(value, created);
+  return `object-${created}`;
+}
+
+function compatibilityCountCapability({
+  provider,
+  model,
+  messages,
+  tools,
+  options,
+}: {
+  readonly provider: TokenCountProvider;
+  readonly model: string;
+  readonly messages: readonly BetaMessageParam[];
+  readonly tools: readonly BetaToolUnion[];
+  readonly options: CountMessagesTokensOptions;
+}): ProviderTokenCountCapability {
+  const clientIdentity = compatibilityObjectIdentity(
+    options.anthropicClient ??
+      options.bedrockClient ??
+      options.createAnthropicClient ??
+      options.loadBedrockRuntimeModule,
+  );
+  return {
+    capabilityVersion: `legacy-${provider}-complete-count-v1`,
+    adapterRevision: "legacy-token-estimation-adapter-v1",
+    configurationRevision: createTokenAccountingConfigurationRevision({
+      provider,
+      model,
+      betas: options.betas ?? [],
+      baseURL: options.baseURL ?? null,
+      bedrockEndpoint: options.bedrockEndpoint ?? null,
+      bedrockRegion: options.bedrockRegion ?? null,
+      clientIdentity,
+      credentialRevision: createTokenAccountingConfigurationRevision(
+        options.apiKey ?? "",
+      ),
+    }),
+    countTokens: async () => {
+      const containsThinking = hasThinkingBlocks(messages);
+      const inputTokens =
+        provider === "bedrock"
+          ? await countTokensWithBedrock({
+              model,
+              messages,
+              tools,
+              betas: options.betas ?? [],
+              containsThinking,
+              options,
+            })
+          : await countTokensWithAnthropicCompatibility({
+              provider,
+              model,
+              messages,
+              tools,
+              containsThinking,
+              options,
+            });
+      if (inputTokens === null) {
+        throw new Error(`${provider} token-count capability unavailable`);
+      }
+      return {
+        inputTokens,
+        complete: true,
+        confidence: provider === "bedrock" ? "exact" : "high",
+        countedComponents: ["messages", "tools", "provider_framing"],
+      };
+    },
+  };
+}
+
+async function countTokensWithAnthropicCompatibility({
+  provider,
+  model,
+  messages,
+  tools,
+  containsThinking,
+  options,
+}: {
+  readonly provider: "anthropic" | "vertex";
+  readonly model: string;
+  readonly messages: readonly BetaMessageParam[];
+  readonly tools: readonly BetaToolUnion[];
+  readonly containsThinking: boolean;
+  readonly options: CountMessagesTokensOptions;
+}): Promise<number | null> {
+  try {
+    const client = await resolveAnthropicClient(options);
+    if (!client) return null;
+    const betas = options.betas ?? [];
+    const filteredBetas =
+      provider === "vertex"
+        ? betas.filter((beta) => VERTEX_COUNT_TOKENS_ALLOWED_BETAS.has(beta))
+        : betas;
+    const response = await client.beta.messages.countTokens({
+      model,
+      messages:
+        messages.length > 0 ? messages : [{ role: "user", content: "foo" }],
+      ...(tools.length > 0 ? { tools } : {}),
+      ...(filteredBetas.length > 0 ? { betas: filteredBetas } : {}),
+      ...(containsThinking
+        ? {
+            thinking: {
+              type: "enabled",
+              budget_tokens: TOKEN_COUNT_THINKING_BUDGET,
+            },
+          }
+        : {}),
+    });
+    return typeof response.input_tokens === "number"
+      ? response.input_tokens
+      : null;
+  } catch (error) {
+    options.logError?.(error);
+    return null;
+  }
+}
+
+function toAccountingMessages(
+  messages: readonly BetaMessageParam[],
+): readonly LLMMessage[] {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content as LLMMessage["content"],
+  }));
+}
+
+function toAccountingTools(tools: readonly BetaToolUnion[]): readonly LLMTool[] {
+  return tools.map((tool, index) => {
+    const record = tool as unknown as Record<string, unknown>;
+    const name =
+      typeof record.name === "string" && record.name.length > 0
+        ? record.name
+        : `provider_tool_${index}`;
+    const description =
+      typeof record.description === "string" ? record.description : "";
+    const parameters = isRecord(record.input_schema)
+      ? record.input_schema
+      : { providerTool: record };
+    return {
+      type: "function",
+      function: { name, description, parameters },
+    };
+  });
+}
+
+/** @deprecated Use `TokenAccountingService.count` and its structured result. */
 export async function countTokensWithAPI(
   content: string,
   options: CountMessagesTokensOptions = {},
 ): Promise<number | null> {
-  if (!content) {
-    return 0;
-  }
-
   return countMessagesTokensWithAPI(
     [{ role: "user", content }],
     [],
@@ -154,6 +316,7 @@ export async function countTokensWithAPI(
   );
 }
 
+/** @deprecated Use `TokenAccountingService.count` and provider capabilities. */
 export async function countMessagesTokensWithAPI(
   messages: readonly BetaMessageParam[],
   tools: readonly BetaToolUnion[],
@@ -162,58 +325,30 @@ export async function countMessagesTokensWithAPI(
   const withTokenCountCache =
     options.withTokenCountCache ?? defaultCacheWrapper;
   return withTokenCountCache(messages, tools, async () => {
-    try {
-      const provider = options.provider ?? "anthropic";
-      const model = options.model ?? BUILT_IN_PROVIDER_DEFAULT_MODELS.anthropic;
-      const betas = options.betas ?? [];
-      const containsThinking = hasThinkingBlocks(messages);
-
-      if (provider === "bedrock") {
-        return countTokensWithBedrock({
-          model,
-          messages,
-          tools,
-          betas,
-          containsThinking,
-          options,
-        });
-      }
-
-      const client = await resolveAnthropicClient(options);
-      if (!client) {
-        return null;
-      }
-      const filteredBetas =
-        provider === "vertex"
-          ? betas.filter((beta) => VERTEX_COUNT_TOKENS_ALLOWED_BETAS.has(beta))
-          : betas;
-
-      const response = await client.beta.messages.countTokens({
-        model,
-        messages:
-          messages.length > 0 ? messages : [{ role: "user", content: "foo" }],
-        ...(tools.length > 0 ? { tools } : {}),
-        ...(filteredBetas.length > 0 ? { betas: filteredBetas } : {}),
-        ...(containsThinking
-          ? {
-            thinking: {
-              type: "enabled",
-              budget_tokens: TOKEN_COUNT_THINKING_BUDGET,
-            },
-          }
-          : {}),
-      });
-
-      return typeof response.input_tokens === "number"
-        ? response.input_tokens
-        : null;
-    } catch (error) {
-      options.logError?.(error);
-      return null;
-    }
+    const provider = options.provider ?? "anthropic";
+    const model = options.model ?? BUILT_IN_PROVIDER_DEFAULT_MODELS.anthropic;
+    const request = createTokenAccountingRequest({
+      provider: compatibilityProviderName(provider),
+      model,
+      messages: toAccountingMessages(messages),
+      options: { tools: toAccountingTools(tools) },
+      endpointIdentity:
+        provider === "bedrock" ? options.bedrockEndpoint : options.baseURL,
+      reservedOutputTokens: 0,
+    });
+    const capability = compatibilityCountCapability({
+      provider,
+      model,
+      messages,
+      tools,
+      options,
+    });
+    const result = await tokenAccountingService.count(request, { capability });
+    return result.admissible ? result.inputTokens : null;
   });
 }
 
+/** @deprecated Use `estimateTokenAccountingRequest` for local fallback. */
 export async function countTokensViaHaikuFallback(
   messages: readonly BetaMessageParam[],
   tools: readonly BetaToolUnion[],
@@ -224,15 +359,23 @@ export async function countTokensViaHaikuFallback(
   // identity, so M3 replaces it with a deterministic local estimate. The
   // provider count-tokens endpoint remains the authoritative first choice.
   const normalizedMessages = stripToolSearchFieldsFromMessages(messages);
-  return roughTokenCountEstimation(
-    JSON.stringify({
-      messages:
-        normalizedMessages.length > 0
-          ? normalizedMessages
-          : [{ role: "user", content: "count" }],
-      tools,
+  return estimateTokenAccountingRequest(
+    createTokenAccountingRequest({
+      provider: "compatibility-local",
+      model: "complete-request-fallback",
+      messages: [
+        {
+          role: "user",
+          content: JSON.stringify({
+            messages: normalizedMessages,
+            tools,
+          }),
+        },
+      ],
+      options: {},
+      reservedOutputTokens: 0,
     }),
-  );
+  ).inputTokens;
 }
 
 export function roughTokenCountEstimationForServiceMessages(

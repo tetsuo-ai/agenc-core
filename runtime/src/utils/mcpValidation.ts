@@ -2,17 +2,18 @@ import type {
   ContentBlockParam,
   ImageBlockParam,
   TextBlockParam,
-} from '@anthropic-ai/sdk/resources/index.mjs'
+} from "@anthropic-ai/sdk/resources/index.mjs";
 import {
-  countMessagesTokensWithAPI,
-  roughTokenCountEstimation,
-} from '../services/tokenEstimation.js'
-import { compressImageBlock } from './imageResizer.js'
-import { logError } from './log.js'
+  createTokenAccountingRequest,
+  estimateTokenAccountingRequest,
+  type TokenAccountingResult,
+} from "../llm/token-accounting.js";
+import type { LLMMessage } from "../llm/types.js";
+import { compressImageBlock } from "./imageResizer.js";
 
-export const MCP_TOKEN_COUNT_THRESHOLD_FACTOR = 0.5
-export const IMAGE_TOKEN_ESTIMATE = 1600
-const DEFAULT_MAX_MCP_OUTPUT_TOKENS = 25000
+export const MCP_TOKEN_COUNT_THRESHOLD_FACTOR = 0.5;
+const DEFAULT_MAX_MCP_OUTPUT_TOKENS = 25000;
+const BASE64_ENCODED_BYTES_PER_SOURCE_BYTE = 4 / 3;
 
 /**
  * Resolve the MCP output token cap. Precedence:
@@ -23,173 +24,197 @@ const DEFAULT_MAX_MCP_OUTPUT_TOKENS = 25000
  *   3. Hardcoded default
  */
 export function getMaxMcpOutputTokens(): number {
-  const envValue = process.env.MAX_MCP_OUTPUT_TOKENS
+  const envValue = process.env.MAX_MCP_OUTPUT_TOKENS;
   if (envValue) {
-    const parsed = parseInt(envValue, 10)
+    const parsed = parseInt(envValue, 10);
     if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed
+      return parsed;
     }
   }
-  const overrides: Record<string, number> | null = {}
-  const override = overrides?.['mcp_tool']
+  const overrides: Record<string, number> | null = {};
+  const override = overrides?.["mcp_tool"];
   if (
-    typeof override === 'number' &&
+    typeof override === "number" &&
     Number.isFinite(override) &&
     override > 0
   ) {
-    return override
+    return override;
   }
-  return DEFAULT_MAX_MCP_OUTPUT_TOKENS
+  return DEFAULT_MAX_MCP_OUTPUT_TOKENS;
 }
 
-export type MCPToolResult = string | ContentBlockParam[] | undefined
+export type MCPToolResult = string | ContentBlockParam[] | undefined;
 
 function isTextBlock(block: ContentBlockParam): block is TextBlockParam {
-  return block.type === 'text'
+  return block.type === "text";
 }
 
 function isImageBlock(block: ContentBlockParam): block is ImageBlockParam {
-  return block.type === 'image'
+  return block.type === "image";
 }
 
 export function getContentSizeEstimate(content: MCPToolResult): number {
-  if (!content) return 0
-
-  if (typeof content === 'string') {
-    return roughTokenCountEstimation(content)
-  }
-
-  return content.reduce((total, block) => {
-    if (isTextBlock(block)) {
-      return total + roughTokenCountEstimation(block.text)
-    } else if (isImageBlock(block)) {
-      // Estimate for image tokens
-      return total + IMAGE_TOKEN_ESTIMATE
-    }
-    return total
-  }, 0)
+  if (!content) return 0;
+  return accountMcpContent(content)?.inputTokens ?? Number.MAX_SAFE_INTEGER;
 }
 
-function getMaxMcpOutputChars(): number {
-  return getMaxMcpOutputTokens() * 4
+function getMaxMcpOutputBytes(suffix: string): number | undefined {
+  const tokenLimit = getMaxMcpOutputTokens();
+  const suffixAccounting = accountMcpContent(suffix);
+  if (
+    suffixAccounting === undefined ||
+    !suffixAccounting.admissible ||
+    suffixAccounting.inputTokens > tokenLimit
+  ) {
+    return undefined;
+  }
+  let lower = 0;
+  let upper = tokenLimit;
+  while (lower < upper) {
+    const candidate = Math.ceil((lower + upper) / 2);
+    const result = accountMcpContent(`${"x".repeat(candidate)}${suffix}`);
+    if (
+      result !== undefined &&
+      result.admissible &&
+      result.inputTokens <= tokenLimit
+    ) {
+      lower = candidate;
+    } else {
+      upper = candidate - 1;
+    }
+  }
+  return lower;
 }
 
 function getTruncationMessage(): string {
   return `\n\n[OUTPUT TRUNCATED - exceeded ${getMaxMcpOutputTokens()} token limit]
 
-The tool output was truncated. If this MCP server provides pagination or filtering tools, use them to retrieve specific portions of the data. If pagination is not available, inform the user that you are working with truncated output and results may be incomplete.`
+The tool output was truncated. If this MCP server provides pagination or filtering tools, use them to retrieve specific portions of the data. If pagination is not available, inform the user that you are working with truncated output and results may be incomplete.`;
 }
 
-function truncateString(content: string, maxChars: number): string {
-  if (content.length <= maxChars) {
-    return content
+function truncateString(content: string, maxBytes: number): string {
+  if (new TextEncoder().encode(content).byteLength <= maxBytes) {
+    return content;
   }
-  return content.slice(0, maxChars)
+  let bytes = 0;
+  let endIndex = 0;
+  const encoder = new TextEncoder();
+  const encodedCharacter = new Uint8Array(4);
+  for (const character of content) {
+    const characterBytes = encoder.encodeInto(
+      character,
+      encodedCharacter,
+    ).written;
+    if (bytes + characterBytes > maxBytes) break;
+    bytes += characterBytes;
+    endIndex += character.length;
+  }
+  return content.slice(0, endIndex);
 }
 
 async function truncateContentBlocks(
   blocks: ContentBlockParam[],
-  maxChars: number,
+  maxBytes: number,
 ): Promise<ContentBlockParam[]> {
-  const result: ContentBlockParam[] = []
-  let currentChars = 0
+  const result: ContentBlockParam[] = [];
+  let currentBytes = 0;
+  const encoder = new TextEncoder();
 
   for (const block of blocks) {
     if (isTextBlock(block)) {
-      const remainingChars = maxChars - currentChars
-      if (remainingChars <= 0) break
+      const remainingBytes = maxBytes - currentBytes;
+      if (remainingBytes <= 0) break;
 
-      if (block.text.length <= remainingChars) {
-        result.push(block)
-        currentChars += block.text.length
+      const blockBytes = encoder.encode(block.text).byteLength;
+      if (blockBytes <= remainingBytes) {
+        result.push(block);
+        currentBytes += blockBytes;
       } else {
-        result.push({ type: 'text', text: block.text.slice(0, remainingChars) })
-        break
+        result.push({
+          type: "text",
+          text: truncateString(block.text, remainingBytes),
+        });
+        break;
       }
     } else if (isImageBlock(block)) {
-      // Include images but count their estimated size
-      const imageChars = IMAGE_TOKEN_ESTIMATE * 4
-      if (currentChars + imageChars <= maxChars) {
-        result.push(block)
-        currentChars += imageChars
+      if (block.source.type !== "base64") {
+        // Remote/provider-owned image expansion has no local byte bound.
+        continue;
+      }
+      const imageBytes = encoder.encode(block.source.data).byteLength;
+      if (currentBytes + imageBytes <= maxBytes) {
+        result.push(block);
+        currentBytes += imageBytes;
       } else {
-        // Image exceeds budget - try to compress it to fit remaining space
-        const remainingChars = maxChars - currentChars
-        if (remainingChars > 0) {
-          // Convert remaining chars to bytes for compression
-          // base64 uses ~4/3 the original size, so we calculate max bytes
-          const remainingBytes = Math.floor(remainingChars * 0.75)
+        const remainingBytes = maxBytes - currentBytes;
+        if (remainingBytes > 0) {
+          const remainingSourceBytes = Math.floor(
+            remainingBytes / BASE64_ENCODED_BYTES_PER_SOURCE_BYTE,
+          );
           try {
             const compressedBlock = await compressImageBlock(
               block,
-              remainingBytes,
-            )
-            result.push(compressedBlock)
-            // Update currentChars based on compressed image size
-            if (compressedBlock.source.type === 'base64') {
-              currentChars += compressedBlock.source.data.length
-            } else {
-              currentChars += imageChars
+              remainingSourceBytes,
+            );
+            if (compressedBlock.source.type === "base64") {
+              const compressedBytes = encoder.encode(
+                compressedBlock.source.data,
+              ).byteLength;
+              if (currentBytes + compressedBytes <= maxBytes) {
+                result.push(compressedBlock);
+                currentBytes += compressedBytes;
+              }
             }
           } catch {
-            // If compression fails, skip the image
+            // A failed/uncertain image accounting path is rejected by omission.
           }
         }
       }
     } else {
-      result.push(block)
+      // Provider-specific blocks have no proven local upper bound. Reject them
+      // by omission instead of preserving uncertain content after truncation.
+      continue;
     }
   }
 
-  return result
+  return result;
 }
 
 export async function mcpContentNeedsTruncation(
   content: MCPToolResult,
 ): Promise<boolean> {
-  if (!content) return false
+  if (!content) return false;
 
-  // Use size check as a heuristic to avoid unnecessary token counting API calls
-  const contentSizeEstimate = getContentSizeEstimate(content)
+  const accounting = accountMcpContent(content);
+  if (accounting === undefined || !accounting.admissible) return true;
+  const contentSizeEstimate = accounting.inputTokens;
   if (
     contentSizeEstimate <=
     getMaxMcpOutputTokens() * MCP_TOKEN_COUNT_THRESHOLD_FACTOR
   ) {
-    return false
+    return false;
   }
-
-  try {
-    const messages =
-      typeof content === 'string'
-        ? [{ role: 'user' as const, content }]
-        : [{ role: 'user' as const, content }]
-
-    const tokenCount = await countMessagesTokensWithAPI(messages, [])
-    return !!(tokenCount && tokenCount > getMaxMcpOutputTokens())
-  } catch (error) {
-    logError(error)
-    // Assume no truncation needed on error
-    return false
-  }
+  return contentSizeEstimate > getMaxMcpOutputTokens();
 }
 
 export async function truncateMcpContent(
   content: MCPToolResult,
 ): Promise<MCPToolResult> {
-  if (!content) return content
+  if (!content) return content;
 
-  const maxChars = getMaxMcpOutputChars()
-  const truncationMsg = getTruncationMessage()
+  const truncationMsg = getTruncationMessage();
+  const maxBytes = getMaxMcpOutputBytes(truncationMsg);
+  if (maxBytes === undefined) return undefined;
 
-  if (typeof content === 'string') {
-    return truncateString(content, maxChars) + truncationMsg
+  if (typeof content === "string") {
+    return truncateString(content, maxBytes) + truncationMsg;
   } else {
     const truncatedBlocks = await truncateContentBlocks(
       content as ContentBlockParam[],
-      maxChars,
-    )
-    truncatedBlocks.push({ type: 'text', text: truncationMsg })
-    return truncatedBlocks
+      maxBytes,
+    );
+    truncatedBlocks.push({ type: "text", text: truncationMsg });
+    return truncatedBlocks;
   }
 }
 
@@ -197,8 +222,40 @@ export async function truncateMcpContentIfNeeded(
   content: MCPToolResult,
 ): Promise<MCPToolResult> {
   if (!(await mcpContentNeedsTruncation(content))) {
-    return content
+    return content;
   }
 
-  return await truncateMcpContent(content)
+  const truncated = await truncateMcpContent(content);
+  if (truncated === undefined) return undefined;
+  const accounting = accountMcpContent(truncated);
+  return accounting !== undefined &&
+    accounting.admissible &&
+    accounting.inputTokens <= getMaxMcpOutputTokens()
+    ? truncated
+    : undefined;
+}
+
+function accountMcpContent(
+  content: Exclude<MCPToolResult, undefined>,
+): TokenAccountingResult | undefined {
+  const message: LLMMessage = {
+    // Standalone MCP output has no preceding assistant tool-call in this
+    // validation layer. Use a preserved envelope role so ordinary wire
+    // normalization cannot discard the content as an orphan tool result.
+    role: "user",
+    content: content as LLMMessage["content"],
+  };
+  try {
+    return estimateTokenAccountingRequest(
+      createTokenAccountingRequest({
+        provider: "mcp",
+        model: "mcp-tool-output",
+        messages: [message],
+        options: {},
+        reservedOutputTokens: 0,
+      }),
+    );
+  } catch {
+    return undefined;
+  }
 }

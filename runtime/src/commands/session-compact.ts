@@ -34,7 +34,7 @@ import {
   withCompactContextGuards,
   type CompactGuardEnv,
 } from "../session/compact-env-guard.js";
-import { roughTokenCountEstimationForMessages } from "../llm/token-estimation.js";
+import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {
   assembleSystemPrompt,
   buildAssembleSystemPromptOpts,
@@ -395,6 +395,7 @@ interface AgenCToolUseContext {
     readonly mcpClients: readonly unknown[];
     readonly contextWindowTokens: number;
     readonly maxOutputTokens?: number;
+    readonly systemPrompt?: string;
     readonly providerOverride?: {
       readonly model: string;
       readonly baseURL: string;
@@ -466,6 +467,16 @@ function buildAgenCToolUseContext(
       : [],
   };
   const cwd = ctx.cwd;
+  const systemPrompt = [
+    ctx.baseInstructions,
+    ctx.developerInstructions,
+    ctx.userInstructions,
+  ]
+    .filter(
+      (value): value is string =>
+        typeof value === "string" && value.length > 0,
+    )
+    .join("\n\n");
   return {
     abortController: session.abortController ?? new AbortController(),
     sessionId: session.conversationId,
@@ -477,6 +488,7 @@ function buildAgenCToolUseContext(
       ...(model.maxOutputTokens !== undefined
         ? { maxOutputTokens: model.maxOutputTokens }
         : {}),
+      ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
       ...(providerOverride !== undefined ? { providerOverride } : {}),
       ...(opts.querySource !== undefined ? { querySource: opts.querySource } : {}),
       agentDefinitions,
@@ -1083,6 +1095,10 @@ interface ContextUsageInputs {
    * value flowing through CompactContext.options.contextWindowTokens.
    */
   readonly contextWindowTokens?: number;
+  /** Output reserve included in the same complete-request accounting pass. */
+  readonly maxOutputTokens?: number;
+  /** Stable system instructions when the caller has already assembled them. */
+  readonly systemPrompt?: string;
   /**
    * Session-wide cumulative token usage from `session.state.totalTokenUsage`.
    * Optional: when missing the cache-hit summary is omitted from the
@@ -1129,10 +1145,9 @@ interface ContextUsageBreakdown {
  *     from services/compact/autoCompact (same helpers the live
  *     auto-compactor uses to decide whether to fire). We MUST display
  *     the same numbers it will act on.
- *   - roughTokenCountEstimationForMessages comes from
- *     llm/token-estimation (family-aware: different model families
- *     pick different bytes/token ratios). Replaces the old chars/4
- *     heuristic that under-counted dense code blobs by ~30%.
+ *   - estimateMessagesTokens comes from the compact service's unified token
+ *     accounting boundary, so message, tool, framing, and output components
+ *     match the live auto-compactor.
  */
 export function computeContextUsageBreakdown(
   inputs: ContextUsageInputs,
@@ -1149,12 +1164,32 @@ export function computeContextUsageBreakdown(
   const compactionThreshold = autoCompactEnabled
     ? getAutoCompactThreshold(typeof lookup === "string" ? lookup : (lookup as never))
     : hardLimit;
-  const messagesTokens = roughTokenCountEstimationForMessages(
-    inputs.messages,
-    inputs.providerHint,
-  );
-  const toolsTokens = estimateToolCatalogTokens(inputs.tools);
-  const totalUsed = messagesTokens + toolsTokens;
+  const accountingContext = {
+    provider: {
+      name: inputs.providerHint?.provider ?? "unknown",
+    } as LLMProvider,
+    options: {
+      ...(inputs.model !== undefined ? { mainLoopModel: inputs.model } : {}),
+      ...(inputs.contextWindowTokens !== undefined
+        ? { contextWindowTokens: inputs.contextWindowTokens }
+        : {}),
+      ...(inputs.maxOutputTokens !== undefined
+        ? { maxOutputTokens: inputs.maxOutputTokens }
+        : {}),
+      ...(inputs.systemPrompt !== undefined
+        ? { systemPrompt: inputs.systemPrompt }
+        : {}),
+    },
+  };
+  const messagesTokens = estimateMessagesTokens(inputs.messages, {
+    ...accountingContext,
+    options: { ...accountingContext.options, tools: [] },
+  });
+  const totalUsed = estimateMessagesTokens(inputs.messages, {
+    ...accountingContext,
+    options: { ...accountingContext.options, tools: inputs.tools },
+  });
+  const toolsTokens = Math.max(0, totalUsed - messagesTokens);
   // Cache-hit ratio is cumulative session-wide. Messages-API providers
   // surface `cachedInputTokens` and `cacheCreationInputTokens` separately
   // from the prompt total; Responses-API providers cache under the hood
@@ -1193,32 +1228,6 @@ export function computeContextUsageBreakdown(
       ? { sessionCacheCreationTokens }
       : {}),
   };
-}
-
-/**
- * Token estimate for the model-facing tool catalog. Tools are
- * serialized to JSON on the wire (one object per tool with name,
- * description, input schema), so a JSON-length / 4 estimate is the
- * cheapest faithful proxy. This is intentionally an over-estimate vs
- * the family-aware tokenizer for messages — the catalog is shorter
- * than the conversation, and over-counting tool overhead is the
- * conservative direction (the model sees this overhead too).
- */
-function estimateToolCatalogTokens(tools: readonly LLMTool[]): number {
-  if (tools.length === 0) return 0;
-  // Stringify is best-effort: schemas can contain unserializable
-  // values in tests, in which case we fall back to summing the
-  // declared name+description lengths so we don't return zero.
-  try {
-    return Math.ceil(JSON.stringify(tools).length / 4);
-  } catch {
-    let chars = 0;
-    for (const tool of tools) {
-      chars += (tool.function?.name ?? "").length;
-      chars += (tool.function?.description ?? "").length;
-    }
-    return Math.ceil(chars / 4);
-  }
 }
 
 function formatContextUsageReport(breakdown: ContextUsageBreakdown): string {
@@ -1268,6 +1277,8 @@ async function contextUsageCall(
     readonly options?: {
       readonly contextWindowTokens?: number;
       readonly mainLoopModel?: string;
+      readonly maxOutputTokens?: number;
+      readonly systemPrompt?: string;
       readonly tools?: readonly LLMTool[];
     };
     readonly provider?: { readonly name?: string };
@@ -1287,6 +1298,12 @@ async function contextUsageCall(
       : {}),
     ...(context.options?.contextWindowTokens !== undefined
       ? { contextWindowTokens: context.options.contextWindowTokens }
+      : {}),
+    ...(context.options?.maxOutputTokens !== undefined
+      ? { maxOutputTokens: context.options.maxOutputTokens }
+      : {}),
+    ...(context.options?.systemPrompt !== undefined
+      ? { systemPrompt: context.options.systemPrompt }
       : {}),
     providerHint: {
       ...(context.provider?.name !== undefined
@@ -1538,6 +1555,5 @@ function envForToolUseContext(
 // roughRuntimeTokenCount removed — its naive chars/4 estimator
 // excluded the system prompt and tool catalog, producing displays
 // that didn't match what auto-compact decided. /context now flows
-// through computeContextUsageBreakdown which reuses the family-aware
-// roughTokenCountEstimationForMessages and the same threshold
-// helpers as autoCompact.
+// through computeContextUsageBreakdown which reuses complete-request token
+// accounting and the same threshold helpers as autoCompact.

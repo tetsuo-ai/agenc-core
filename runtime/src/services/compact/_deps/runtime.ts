@@ -10,9 +10,12 @@
  */
 
 import {
-  roughTokenCountEstimationForMessages,
-  type TokenizerProviderHint,
-} from "../../../llm/token-estimation.js";
+  createTokenAccountingRequest,
+  estimateTokenAccountingRequest,
+  type TokenAccountingResult,
+} from "../../../llm/token-accounting.js";
+import { readProviderFactoryOptions } from "../../../llm/provider.js";
+import type { LLMMessage } from "../../../llm/types.js";
 import {
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW,
   getOpenAICompatibleContextWindow,
@@ -55,7 +58,59 @@ export function estimateMessagesTokens(
   messages: readonly RuntimeMessage[],
   context?: CompactContext,
 ): number {
-  return roughTokenCountEstimationForMessages(messages, providerHint(context));
+  const provider = context?.provider?.name ?? "unknown";
+  const model = context?.options?.mainLoopModel ?? "unknown";
+  const factoryOptions = context?.provider
+    ? readProviderFactoryOptions(context.provider)
+    : undefined;
+  const providerExtra = factoryOptions?.extra ?? {};
+  const configuredSystemPrompt =
+    typeof providerExtra.systemPrompt === "string"
+      ? providerExtra.systemPrompt
+      : undefined;
+  const configuredCachedContent =
+    provider === "gemini" && typeof providerExtra.cachedContent === "string"
+      ? providerExtra.cachedContent
+      : undefined;
+  const systemPrompt =
+    context?.options?.systemPrompt ?? configuredSystemPrompt;
+  const promptCacheKey =
+    context?.options?.promptCacheKey ?? configuredCachedContent;
+  const request = createTokenAccountingRequest({
+    provider,
+    model,
+    messages: messages.map(toAccountingMessage),
+    options: {
+      ...(systemPrompt !== undefined ? { systemPrompt } : {}),
+      ...(context?.options?.tools !== undefined
+        ? { tools: context.options.tools }
+        : factoryOptions?.tools !== undefined
+          ? { tools: factoryOptions.tools }
+          : {}),
+      ...(context?.options?.toolChoice !== undefined
+        ? { toolChoice: context.options.toolChoice }
+        : {}),
+      ...(context?.options?.contextWindowTokens !== undefined
+        ? { contextWindowTokens: context.options.contextWindowTokens }
+        : {}),
+      ...(context?.options?.maxOutputTokens !== undefined
+        ? { maxOutputTokens: context.options.maxOutputTokens }
+        : {}),
+      ...(promptCacheKey !== undefined ? { promptCacheKey } : {}),
+    },
+    contextWindowTokens: context?.options?.contextWindowTokens,
+    reservedOutputTokens: context?.options?.maxOutputTokens,
+  });
+  let result: TokenAccountingResult;
+  try {
+    result = estimateTokenAccountingRequest(request);
+  } catch {
+    return context?.options?.contextWindowTokens ?? Number.MAX_SAFE_INTEGER;
+  }
+  if (!result.admissible) {
+    return context?.options?.contextWindowTokens ?? Number.MAX_SAFE_INTEGER;
+  }
+  return result.totalTokens;
 }
 
 export function messageText(message: RuntimeMessage): string {
@@ -65,17 +120,19 @@ export function messageText(message: RuntimeMessage): string {
 export function stringifyContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
-    return content.map((part) => {
-      if (
-        part &&
-        typeof part === "object" &&
-        "text" in part &&
-        typeof part.text === "string"
-      ) {
-        return part.text;
-      }
-      return JSON.stringify(part);
-    }).join("\n");
+    return content
+      .map((part) => {
+        if (
+          part &&
+          typeof part === "object" &&
+          "text" in part &&
+          typeof part.text === "string"
+        ) {
+          return part.text;
+        }
+        return JSON.stringify(part);
+      })
+      .join("\n");
   }
   return JSON.stringify(content ?? "");
 }
@@ -96,9 +153,33 @@ export function isTruthyEnv(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
-function providerHint(context: CompactContext | undefined): TokenizerProviderHint {
+function toAccountingMessage(message: RuntimeMessage): LLMMessage {
+  const role =
+    message.originalRole ??
+    message.role ??
+    (message.message?.role === "system" ||
+    message.message?.role === "developer" ||
+    message.message?.role === "user" ||
+    message.message?.role === "assistant" ||
+    message.message?.role === "tool"
+      ? message.message.role
+      : "user");
+  const content = message.message?.content ?? message.content ?? "";
   return {
-    provider: context?.provider?.name,
-    model: context?.options?.mainLoopModel,
+    role,
+    content: content as LLMMessage["content"],
+    ...(message.toolCallId !== undefined
+      ? { toolCallId: message.toolCallId }
+      : {}),
+    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.toolCalls !== undefined
+      ? {
+          toolCalls: message.toolCalls.map((call) => ({
+            id: call.id,
+            name: call.name,
+            arguments: call.arguments ?? "{}",
+          })),
+        }
+      : {}),
   };
 }

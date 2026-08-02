@@ -31,10 +31,10 @@ function createDistinctMessage(
   }
 }
 
-// roughTokenCountEstimation = Math.round(content.length / 4); mirror it so tests
-// assert against the same token contract the strategy uses internally.
+// The compatibility estimator now shares the UTF-8/whole-content ceiling used
+// by admission-grade accounting instead of rounding UTF-16 code units.
 function estTokens(content: string): number {
-  return Math.round(content.length / 4)
+  return Math.ceil(new TextEncoder().encode(content).byteLength / 4)
 }
 
 describe('hybridContextStrategy', () => {
@@ -55,10 +55,10 @@ describe('hybridContextStrategy', () => {
         maxTotalTokens: 10000,
       })
 
-      // Token accounting is exact: 13/4->3, 5/4->1, 8/4->2 = 6 total, all fresh.
+      // Whole-message ceilings: 13/4->4, 5/4->2, 8/4->2 = 8 total, all fresh.
       const expectedFresh =
         estTokens('System prompt') + estTokens('Hello') + estTokens('Hi there')
-      expect(expectedFresh).toBe(6)
+      expect(expectedFresh).toBe(8)
       expect(split.cachedTokens).toBe(0)
       expect(split.freshTokens).toBe(expectedFresh)
       expect(split.totalTokens).toBe(split.cachedTokens + split.freshTokens)
@@ -269,7 +269,7 @@ describe('hybridContextStrategy', () => {
 
       const expectedTotal = estTokens('System') + estTokens('Hello')
       expect(stats.totalTokens).toBe(expectedTotal)
-      expect(stats.totalTokens).toBe(3)
+      expect(stats.totalTokens).toBe(4)
       // Ratios are percentages of the split and sum to 100 when there are tokens.
       expect(stats.cacheRatio + stats.freshRatio).toBe(100)
       // Nothing is cache-eligible here, so the split is entirely fresh.

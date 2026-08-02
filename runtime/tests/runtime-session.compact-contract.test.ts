@@ -21,6 +21,7 @@ const COMPACT_ENV_KEYS = [
   "OPENAI_API_KEY",
   "AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW",
 ] as const;
+const TEST_CONTEXT_WINDOW_TOKENS = 131_072;
 
 const originalEnv: Partial<Record<(typeof COMPACT_ENV_KEYS)[number], string>> = {};
 for (const key of COMPACT_ENV_KEYS) {
@@ -77,6 +78,7 @@ describe("runtime session compact contract", () => {
     );
     const { session, state } = mkSession({
       provider,
+      modelInfo: { contextWindow: TEST_CONTEXT_WINDOW_TOKENS },
       history: [
         { role: "user", content: "first request" },
         { role: "assistant", content: "first answer" },
@@ -128,6 +130,7 @@ describe("runtime session compact contract", () => {
     );
     const { session } = mkSession({
       provider,
+      modelInfo: { contextWindow: TEST_CONTEXT_WINDOW_TOKENS },
       history: [
         { role: "user", content: "first request" },
         { role: "assistant", content: "first answer" },
@@ -157,9 +160,16 @@ describe("runtime session compact contract", () => {
       { content: "ok" },
       { onChatStream: (messages) => seen.push(messages) },
     );
-    const { session } = mkSession({ provider, history });
+    const { session } = mkSession({
+      provider,
+      history,
+      modelInfo: { contextWindow: TEST_CONTEXT_WINDOW_TOKENS },
+    });
+    const ctx = mkCtx();
+    (ctx.modelInfo as { contextWindow: number }).contextWindow =
+      TEST_CONTEXT_WINDOW_TOKENS;
 
-    await drain(runTurn(session, mkCtx(), "continue"));
+    await drain(runTurn(session, ctx, "continue"));
 
     const toolMessages = (seen[0] ?? []).filter(
       (message) => message.role === "tool",
@@ -184,7 +194,9 @@ describe("runtime session compact contract", () => {
     const usage = await contextCommand.execute(commandContext(session));
     expect(usage).toMatchObject({ kind: "text" });
     if (usage.kind === "text") {
-      expect(usage.text).toContain("/ 1,024 tokens");
+      expect(usage.text).toContain(
+        `/ ${TEST_CONTEXT_WINDOW_TOKENS.toLocaleString("en-US")} tokens`,
+      );
     }
 
     const state = buildInitialTurnState(

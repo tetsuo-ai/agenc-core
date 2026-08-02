@@ -14,9 +14,22 @@ import {
 } from "./token-estimation.js";
 
 describe("token estimation", () => {
-  test("keeps rough byte-ratio behavior from the upstream helper", () => {
+  test("uses UTF-8 bytes and a whole-value ceiling", () => {
     expect(roughTokenCountEstimation("abcd".repeat(10))).toBe(10);
     expect(roughTokenCountEstimation("abcde", 2)).toBe(3);
+    expect(roughTokenCountEstimation("x", 4)).toBe(1);
+    expect(roughTokenCountEstimation("👩‍💻", 4)).toBeGreaterThan(1);
+  });
+
+  test("assigns a nonzero estimate to every nonempty short message", () => {
+    const messages = Array.from({ length: 100 }, () => ({
+      role: "user",
+      content: "x",
+    }));
+
+    expect(roughTokenCountEstimationForMessages(messages)).toBeGreaterThanOrEqual(
+      messages.length,
+    );
   });
 
   test("uses denser estimates for JSON-like file extensions", () => {
@@ -64,14 +77,20 @@ describe("token estimation", () => {
     expect(bounds.estimate).toBeLessThan(bounds.max);
   });
 
-  test("estimates multimodal and tool blocks without serializing binary payloads", () => {
-    expect(
-      roughTokenCountEstimationForContent([
-        { type: "text", text: "a".repeat(8) },
-        { type: "image", source: { data: "base64" } },
-        { type: "document", source: { data: "base64" } },
-      ]),
-    ).toBe(4002);
+  test("estimates multimodal blocks from their actual serialized payload", () => {
+    const shortPayload = roughTokenCountEstimationForContent([
+      { type: "text", text: "a".repeat(8) },
+      { type: "image", source: { data: "a" } },
+      { type: "document", source: { data: "b" } },
+    ]);
+    const longPayload = roughTokenCountEstimationForContent([
+      { type: "text", text: "a".repeat(8) },
+      { type: "image", source: { data: "a".repeat(400) } },
+      { type: "document", source: { data: "b".repeat(400) } },
+    ]);
+
+    expect(shortPayload).toBeGreaterThan(0);
+    expect(longPayload).toBeGreaterThan(shortPayload);
 
     expect(
       roughTokenCountEstimationForContent({

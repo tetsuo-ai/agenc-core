@@ -8,12 +8,13 @@
  * short-lived upstream mirror and from excluded UI/session modules.
  */
 
-import type { LLMProvider } from "../../llm/types.js";
+import type { LLMProvider, LLMTool, LLMToolChoice } from "../../llm/types.js";
 import type { Session } from "../../session/session.js";
 
 export type RuntimeMessage = {
   readonly role?: "system" | "user" | "assistant" | "tool";
-  readonly originalRole?: "system" | "developer" | "user" | "assistant" | "tool";
+  readonly originalRole?:
+    "system" | "developer" | "user" | "assistant" | "tool";
   readonly type?: string;
   readonly content?: unknown;
   readonly toolCallId?: string;
@@ -46,6 +47,10 @@ export type CompactContext = {
     readonly mainLoopModel?: string;
     readonly contextWindowTokens?: number;
     readonly maxOutputTokens?: number;
+    readonly systemPrompt?: string;
+    readonly promptCacheKey?: string;
+    readonly tools?: readonly LLMTool[];
+    readonly toolChoice?: LLMToolChoice;
     readonly querySource?: string;
     readonly apiMicrocompact?: {
       readonly clearThinking?: boolean;

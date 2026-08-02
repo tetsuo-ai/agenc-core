@@ -86,6 +86,7 @@ import type { PhaseEvent } from "../phases/events.js";
 // ── env isolation ───────────────────────────────────────────────────
 
 const ENV_KEYS = ["AGENC_MAX_TURNS", "AGENC_BEHAVIORAL_BACKSTOP"] as const;
+const TEST_CONTEXT_WINDOW_TOKENS = 131_072;
 const savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
@@ -131,7 +132,7 @@ function mkModelInfo(): ModelInfo {
   return {
     slug: "test-model",
     effectiveContextWindowPercent: 100,
-    contextWindow: 1024,
+    contextWindow: TEST_CONTEXT_WINDOW_TOKENS,
     supportedReasoningLevels: [],
     defaultReasoningSummary: "auto",
     truncationPolicy: "off",

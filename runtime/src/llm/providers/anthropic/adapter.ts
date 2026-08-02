@@ -43,6 +43,12 @@ import type { AnthropicProviderConfig } from "./types.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
 import { CONTEXT_MANAGEMENT_BETA_HEADER } from "../../_deps/betas.js";
 import {
+  createTokenAccountingConfigurationRevision,
+  type ProviderNativeTokenCountResult,
+  type ProviderTokenCountCapability,
+  type TokenAccountingRequest,
+} from "../../token-accounting.js";
+import {
   evaluateProviderFallback,
   normalizeFallbackRetryBudget,
   type ProviderFallbackDecision,
@@ -185,6 +191,7 @@ type ProviderFallbackWaitDecision = Extract<
 
 export class AnthropicProvider implements LLMProvider {
   readonly name = "anthropic";
+  readonly tokenCountCapability: ProviderTokenCountCapability;
 
   private readonly config: AnthropicProviderConfig;
   private readonly client: ProviderHttpClient;
@@ -224,6 +231,78 @@ export class AnthropicProvider implements LLMProvider {
       emitWarning: config.emitWarning,
       onCapabilityDrift: config.onCapabilityDrift,
     });
+    this.tokenCountCapability = Object.freeze({
+      capabilityVersion: "anthropic-messages-count-tokens-v1",
+      adapterRevision: "anthropic-messages-wire-v1",
+      configurationRevision: createTokenAccountingConfigurationRevision({
+        anthropicVersion: config.anthropicVersion ?? DEFAULT_ANTHROPIC_VERSION,
+        betaHeaders: [...betaHeaders].sort(),
+        contextManagement: config.contextManagement ?? null,
+        defaultHeaders: config.defaultHeaders ?? {},
+        systemPrompt: config.systemPrompt ?? "",
+        tools: config.tools ?? [],
+      }),
+      countTokens: (request: TokenAccountingRequest, signal: AbortSignal) =>
+        this.countRequestTokens(request, signal),
+    });
+  }
+
+  private async countRequestTokens(
+    request: TokenAccountingRequest,
+    signal: AbortSignal,
+  ): Promise<ProviderNativeTokenCountResult> {
+    const model =
+      request.options.model?.trim() || request.model || this.config.model;
+    const tools = request.options.tools
+      ? [...request.options.tools]
+      : this.config.tools ?? [];
+    const inferenceBody = buildAnthropicMessagesRequest({
+      model,
+      messages: request.messages,
+      tools,
+      options: request.options,
+      maxTokens: resolveMaxTokens(request.options, this.config.maxTokens),
+      contextManagement: this.config.contextManagement,
+    });
+    const {
+      max_tokens: _maxTokens,
+      stream: _stream,
+      ...countBody
+    } = inferenceBody;
+    const session = this.client.createTurnSession({ wireApi: "custom" });
+    const response = await session.requestJson<Record<string, unknown>>({
+      path: "/messages/count_tokens",
+      method: "POST",
+      body: countBody,
+      signal,
+      retryBudget: { maxRetries: 0 },
+      singleWireAttempt: true,
+    });
+    const inputTokens = response.data.input_tokens;
+    if (
+      typeof inputTokens !== "number" ||
+      !Number.isSafeInteger(inputTokens) ||
+      inputTokens < 0
+    ) {
+      throw new Error("Anthropic token counter returned invalid input_tokens");
+    }
+    return {
+      inputTokens,
+      complete: true,
+      // The endpoint covers the complete input surface, but the provider
+      // documents that billed usage can differ by a small amount.
+      confidence: "high",
+      countedComponents: [
+        "system",
+        "messages",
+        "tools",
+        "tool_choice",
+        "structured_output",
+        "images",
+        "documents",
+        "provider_framing",
+      ],
+    };
   }
 
   private evaluateConfiguredFallback(

@@ -84,6 +84,7 @@ const LOCAL_PRAGMATIC_TEMPLATE =
   "You are a deeply pragmatic, effective software engineer.";
 const BASE_INSTRUCTIONS = "base instructions";
 const OPENAI_PERSONALITY_MODEL = "gpt-5.3-codex"; // branding-scan: allow OpenAI model identifier
+const TEST_CONTEXT_WINDOW_TOKENS = 131_072;
 
 const tempRoots: string[] = [];
 
@@ -151,7 +152,7 @@ function mkModelInfo(modelMessages?: ModelMessages): ModelInfo {
   return {
     slug: "test-model",
     effectiveContextWindowPercent: 100,
-    contextWindow: 1024,
+    contextWindow: TEST_CONTEXT_WINDOW_TOKENS,
     supportedReasoningLevels: [],
     defaultReasoningSummary: "auto",
     truncationPolicy: "off",

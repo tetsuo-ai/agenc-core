@@ -84,6 +84,7 @@ import type {
   RuntimeMessage,
 } from "../services/compact/types.js";
 import { getAutoCompactThreshold } from "../services/compact/autoCompact.js";
+import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {
   applyToolResultBudget,
   resolveToolResultBudgetChars,
@@ -2390,18 +2391,41 @@ function getActiveContextTokenUsage(
   ctx: TurnContext,
   state?: TurnState,
 ): number {
-  const messages =
-    state === undefined
-      ? undefined
-      : state.messagesForQuery.length > 0
-        ? state.messagesForQuery
-        : state.messages;
-  if (messages === undefined || messages.length === 0) {
+  if (state === undefined) {
     return getTotalTokenUsage(session);
   }
-  return roughTokenCountEstimationForMessages(messages, {
-    model: ctx.modelInfo.slug,
-    provider: ctx.modelProviderId,
+  const messages = state.messagesForQuery.length > 0
+    ? state.messagesForQuery
+    : state.messages;
+  if (messages.length === 0) return getTotalTokenUsage(session);
+  // Pre-sampling compaction runs before query preparation, so
+  // `messagesForQuery` may still be empty. Build a read-only projection with
+  // the seed history in that slot, then use the same request constructor as
+  // provider dispatch. This keeps durable system history, current
+  // instructions, deferred-tool filtering, tool choice, context limits, and
+  // output reservations aligned with the request admission will authorize.
+  const accountingState = state.messagesForQuery.length > 0
+    ? state
+    : { ...state, messagesForQuery: [...messages] };
+  const request = buildSamplingRequestContract(accountingState, session, ctx);
+  return estimateMessagesTokens(toAgenCRuntimeMessages(request.input), {
+    provider: ctx.provider ?? session.services.provider,
+    options: {
+      mainLoopModel: ctx.modelInfo.slug,
+      ...(request.contextWindowTokens !== undefined
+        ? { contextWindowTokens: request.contextWindowTokens }
+        : {}),
+      ...(request.maxOutputTokens !== undefined
+        ? { maxOutputTokens: request.maxOutputTokens }
+        : {}),
+      ...(request.baseInstructions.length > 0
+        ? { systemPrompt: request.baseInstructions }
+        : {}),
+      tools: request.tools,
+      ...(request.toolChoice !== undefined
+        ? { toolChoice: request.toolChoice }
+        : {}),
+    },
   });
 }
 
@@ -2677,6 +2701,9 @@ function buildSamplingRequestContract(
   );
   return {
     ...request,
+    ...(planModeHelpers.isPlanMode(ctx) && request.tools.length > 0
+      ? { toolChoice: "required" as const }
+      : {}),
     ...(state.maxOutputTokensOverride !== undefined
       ? { maxOutputTokens: state.maxOutputTokensOverride }
       : {}),

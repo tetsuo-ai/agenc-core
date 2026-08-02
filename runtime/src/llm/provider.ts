@@ -111,6 +111,7 @@ export type ProviderRuntimeExtra = Partial<
   readonly anthropicVersion?: string;
   readonly betaHeaders?: readonly string[];
   readonly contextManagement?: Record<string, unknown>;
+  readonly cachedContent?: string;
   readonly contextWindowTokens?: number;
   readonly parallelToolCalls?: boolean;
   readonly visionModel?: string;
@@ -158,6 +159,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "anthropicVersion",
   "betaHeaders",
   "contextManagement",
+  "cachedContent",
   "contextWindowTokens",
   "parallelToolCalls",
   "visionModel",
@@ -202,15 +204,24 @@ export function readProviderFactoryOptions(
   provider: LLMProvider,
 ): ProviderFactoryOptions {
   const storedState = (provider as FactoryMarkedProvider)[FACTORY_PROVIDER_STATE];
-  if (storedState) {
-    return cloneProviderFactoryOptions(storedState.options);
-  }
   const config = (
     provider as unknown as {
       config?: Record<string, unknown>;
     }
   ).config;
   const extra = readProviderRuntimeExtra(config);
+  const configuredTools = Array.isArray(config?.tools)
+    ? (config.tools as ReadonlyArray<LLMTool>)
+    : undefined;
+  if (storedState) {
+    const storedOptions = cloneProviderFactoryOptions(storedState.options);
+    return {
+      ...storedOptions,
+      ...(storedOptions.tools === undefined && configuredTools !== undefined
+        ? { tools: [...configuredTools] }
+        : {}),
+    };
+  }
   return {
     ...(firstNonEmpty(readString(config, "apiKey"))
       ? { apiKey: firstNonEmpty(readString(config, "apiKey")) }
@@ -229,6 +240,7 @@ export function readProviderFactoryOptions(
     ...(readNumber(config, "timeoutMs") !== undefined
       ? { timeoutMs: readNumber(config, "timeoutMs") }
       : {}),
+    ...(configuredTools !== undefined ? { tools: [...configuredTools] } : {}),
     ...(extra ? { extra } : {}),
   };
 }

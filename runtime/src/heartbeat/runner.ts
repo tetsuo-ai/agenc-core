@@ -22,6 +22,7 @@ import {
   type HeartbeatTickOutcome,
   type HeartbeatTurnRunner,
 } from "./types.js";
+import { estimateUtf8TokenUnits } from "../llm/token-accounting.js";
 
 export interface HeartbeatRunnerOptions {
   readonly policy: HeartbeatPolicy;
@@ -50,9 +51,9 @@ export function heartbeatPrompt(heartbeatFile: string): string {
   );
 }
 
-/** Rough token estimate (chars/4) — deterministic, not a model guess. */
+/** Conservative compatibility estimate; final admission owns full accounting. */
 function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return Math.max(1, estimateUtf8TokenUnits(text, 1));
 }
 
 function withinActiveHours(policy: HeartbeatPolicy, now: Date): boolean {

@@ -1,0 +1,66 @@
+{
+  "version": "token-accounting-fallback-v1",
+  "description": "Offline, non-secret calibration cases. Official observations are copied from the linked provider documentation; tokenizer ceiling cases exercise pathological UTF-8 inputs without claiming a live provider measurement.",
+  "sources": {
+    "gemini-official-text": "https://ai.google.dev/api/tokens",
+    "utf8-token-ceiling": "A tokenizer cannot emit more ordinary text tokens than the non-empty UTF-8 byte units consumed by the serialized input after taking the maximum across standard Unicode normalization forms; request framing is budgeted separately."
+  },
+  "cases": [
+    {
+      "id": "gemini-official-text",
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "content": "The quick brown fox jumps over the lazy dog.",
+      "referenceInputTokens": 11,
+      "provenance": "official_documentation_reported_prompt_usage"
+    },
+    {
+      "id": "openai-compatible-ascii-ceiling",
+      "provider": "openai-compatible",
+      "model": "unknown-local-model",
+      "content": "alpha beta gamma 12345 {}[]()",
+      "referenceInputTokens": 30,
+      "provenance": "utf8_byte_token_ceiling"
+    },
+    {
+      "id": "grok-combining-ceiling",
+      "provider": "grok",
+      "model": "grok-4.5",
+      "content": "é é é é",
+      "referenceInputTokens": 15,
+      "provenance": "utf8_byte_token_ceiling"
+    },
+    {
+      "id": "unicode-compatibility-expansion-ceiling",
+      "provider": "openai-compatible",
+      "model": "unknown-local-model",
+      "content": "ﷺ",
+      "referenceInputTokens": 33,
+      "provenance": "nfkd_utf8_representation_ceiling"
+    },
+    {
+      "id": "anthropic-cjk-ceiling",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "content": "漢字かな交じり文",
+      "referenceInputTokens": 24,
+      "provenance": "utf8_byte_token_ceiling"
+    },
+    {
+      "id": "amazon-bedrock-emoji-ceiling",
+      "provider": "amazon-bedrock",
+      "model": "amazon.nova-pro-v1:0",
+      "content": "👩‍💻🧑🏽‍🚀",
+      "referenceInputTokens": 30,
+      "provenance": "utf8_byte_token_ceiling"
+    },
+    {
+      "id": "ollama-malformed-surrogate-ceiling",
+      "provider": "ollama",
+      "model": "local-model",
+      "content": "before � after",
+      "referenceInputTokens": 16,
+      "provenance": "utf8_replacement_byte_token_ceiling"
+    }
+  ]
+}

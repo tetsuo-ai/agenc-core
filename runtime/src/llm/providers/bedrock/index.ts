@@ -28,6 +28,12 @@ import {
   encodeMcpToolNameForWire,
 } from "../../wire/mcp-tool-naming.js";
 import { coerceUsage } from "../../wire/shared.js";
+import {
+  createTokenAccountingConfigurationRevision,
+  type ProviderNativeTokenCountResult,
+  type ProviderTokenCountCapability,
+  type TokenAccountingRequest,
+} from "../../token-accounting.js";
 
 const DEFAULT_REGION = "us-east-1";
 const BEDROCK_SERVICE = "bedrock";
@@ -211,7 +217,7 @@ function signRequest(params: {
   readonly body: string;
   readonly credentials: BedrockCredentials;
   readonly now: Date;
-  readonly operation?: "converse" | "converse-stream";
+  readonly operation?: "converse" | "converse-stream" | "count-tokens";
 }): SignedRequest {
   const operation = params.operation ?? "converse";
   const path = `/model/${encodeURIComponent(params.model)}/${operation}`;
@@ -942,6 +948,7 @@ function requestSignal(
 export class BedrockProvider implements LLMProvider {
   readonly name = "amazon-bedrock";
   readonly config: BedrockProviderConfig;
+  readonly tokenCountCapability: ProviderTokenCountCapability;
   private readonly region: string;
   private readonly baseURL: string;
 
@@ -952,6 +959,95 @@ export class BedrockProvider implements LLMProvider {
       ...config,
       region: this.region,
       baseURL: this.baseURL,
+    };
+    this.tokenCountCapability = Object.freeze({
+      capabilityVersion: "amazon-bedrock-count-tokens-converse-v1",
+      adapterRevision: "amazon-bedrock-converse-wire-v1",
+      configurationRevision: createTokenAccountingConfigurationRevision({
+        region: this.region,
+        systemPrompt: config.systemPrompt ?? "",
+        tools: config.tools ?? [],
+      }),
+      countTokens: (request: TokenAccountingRequest, signal: AbortSignal) =>
+        this.countRequestTokens(request, signal),
+    });
+  }
+
+  private async countRequestTokens(
+    accountingRequest: TokenAccountingRequest,
+    signal: AbortSignal,
+  ): Promise<ProviderNativeTokenCountResult> {
+    const model = firstNonEmpty(
+      accountingRequest.options.model,
+      accountingRequest.model,
+      this.config.model,
+    );
+    if (!model) {
+      throw new Error(
+        "amazon-bedrock token counter requires a model identifier",
+      );
+    }
+    const inferenceRequest = buildRequest(
+      this.config,
+      accountingRequest.messages,
+      accountingRequest.options,
+    );
+    const countInput = {
+      messages: inferenceRequest.messages,
+      ...(inferenceRequest.system !== undefined
+        ? { system: inferenceRequest.system }
+        : {}),
+      ...(inferenceRequest.toolConfig !== undefined
+        ? { toolConfig: inferenceRequest.toolConfig }
+        : {}),
+    };
+    const body = JSON.stringify({ input: { converse: countInput } });
+    const signed = signRequest({
+      baseURL: this.baseURL,
+      region: this.region,
+      model,
+      body,
+      credentials: resolveCredentials(this.config),
+      now: this.config.now?.() ?? new Date(),
+      operation: "count-tokens",
+    });
+    const response = await (this.config.fetchImpl ?? fetch)(signed.url, {
+      method: "POST",
+      headers: signed.headers,
+      body: signed.body,
+      signal,
+    });
+    const parsed = await readJsonResponse(response);
+    if (!response.ok) {
+      throw new Error(
+        `Amazon Bedrock token count failed (HTTP ${response.status}): ${errorMessageFromBody(parsed)}`,
+      );
+    }
+    const inputTokens = isRecord(parsed)
+      ? numericField(parsed, "inputTokens")
+      : undefined;
+    if (
+      inputTokens === undefined ||
+      !Number.isSafeInteger(inputTokens) ||
+      inputTokens < 0
+    ) {
+      throw new Error(
+        "Amazon Bedrock token counter returned invalid inputTokens",
+      );
+    }
+    return {
+      inputTokens,
+      complete: true,
+      confidence: "exact",
+      countedComponents: [
+        "system",
+        "messages",
+        "tools",
+        "tool_choice",
+        "images",
+        "documents",
+        "provider_framing",
+      ],
     };
   }
 

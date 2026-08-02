@@ -147,11 +147,13 @@ function mkConfig(): Config {
   };
 }
 
+const TEST_CONTEXT_WINDOW_TOKENS = 131_072;
+
 function mkModelInfo(): ModelInfo {
   return {
     slug: "fake-model",
     effectiveContextWindowPercent: 100,
-    contextWindow: 1024,
+    contextWindow: TEST_CONTEXT_WINDOW_TOKENS,
     supportedReasoningLevels: [],
     defaultReasoningSummary: "auto",
     truncationPolicy: "off",

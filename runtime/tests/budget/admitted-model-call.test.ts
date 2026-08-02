@@ -9,6 +9,7 @@ import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
+import type { ProviderTokenCountCapability } from "../../src/llm/token-accounting.js";
 import type {
   LLMChatOptions,
   LLMProvider,
@@ -162,6 +163,220 @@ function callOptions(
 }
 
 describe("runAdmittedModelCall", () => {
+  test("uses a complete native count for reservation and final wire fitting", async () => {
+    const state = harness({ maxCostUsd: 1 });
+    const countTokens = vi.fn(async (request) => {
+      expect(request.options).toMatchObject({
+        systemPrompt: "system instruction",
+        tools: [expect.objectContaining({ type: "function" })],
+        maxOutputTokens: 200,
+      });
+      expect(request.reservedOutputTokens).toBe(200);
+      return {
+        inputTokens: 17,
+        complete: true as const,
+        confidence: "exact" as const,
+        countedComponents: [
+          "system" as const,
+          "messages" as const,
+          "tools" as const,
+          "provider_framing" as const,
+        ],
+      };
+    });
+    (state.provider as unknown as {
+      tokenCountCapability?: ProviderTokenCountCapability;
+    }).tokenCountCapability = {
+      capabilityVersion: "admission-count-v1",
+      adapterRevision: "admission-adapter-v1",
+      configurationRevision: "admission-config-v1",
+      countTokens,
+    };
+    const tool = {
+      type: "function" as const,
+      function: {
+        name: "lookup",
+        description: "Look up a value",
+        parameters: { type: "object", properties: {} },
+      },
+    };
+
+    await callOptions(
+      state,
+      {
+        systemPrompt: "system instruction",
+        tools: [tool],
+        maxOutputTokens: 200,
+      },
+      async (options) => {
+        expect(options.accountedInputTokens).toBe(17);
+        expect(options.systemPrompt).toBe("system instruction");
+        expect(options.tools).toEqual([tool]);
+        return response();
+      },
+    );
+
+    expect(countTokens).toHaveBeenCalledTimes(1);
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxInputTokens: 17,
+        maxOutputTokens: 200,
+      }),
+      undefined,
+    );
+  });
+
+  test("includes configured provider-native tool payloads in complete accounting", async () => {
+    const state = harness({});
+    Object.assign(state.provider, {
+      config: {
+        model: "grok-4.5",
+        webSearch: true,
+        webSearchOptions: { allowedDomains: ["example.com"] },
+      },
+    });
+    const countTokens = vi.fn(async (request) => {
+      expect(request.providerNativeTools).toEqual([
+        expect.objectContaining({
+          name: "web_search",
+          toolType: "web_search",
+          payload: expect.objectContaining({ type: "web_search" }),
+        }),
+      ]);
+      return {
+        inputTokens: 23,
+        complete: true as const,
+        confidence: "exact" as const,
+        countedComponents: [
+          "messages" as const,
+          "tools" as const,
+          "provider_framing" as const,
+        ],
+      };
+    });
+    Object.assign(state.provider, {
+      tokenCountCapability: {
+        capabilityVersion: "native-tools-count-v1",
+        adapterRevision: "native-tools-adapter-v1",
+        configurationRevision: "native-tools-config-v1",
+        countTokens,
+      } satisfies ProviderTokenCountCapability,
+    });
+
+    await callOptions(
+      state,
+      { maxOutputTokens: 200 },
+      async () => response(),
+    );
+
+    expect(countTokens).toHaveBeenCalledOnce();
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ maxInputTokens: 23 }),
+      undefined,
+    );
+  });
+
+  test("denies an expanded remote MCP catalog without a complete native count", async () => {
+    const state = harness({});
+    Object.assign(state.provider, {
+      config: {
+        model: "grok-4.5",
+        remoteMcp: {
+          enabled: true,
+          servers: [
+            {
+              serverLabel: "remote",
+              serverUrl: "https://mcp.example",
+            },
+          ],
+        },
+      },
+    });
+    const invoke = vi.fn(async () => response());
+
+    await expect(
+      callOptions(state, { maxOutputTokens: 200 }, invoke),
+    ).rejects.toMatchObject({
+      code: "ADMISSION_DENIED",
+      reason: "token_accounting_uncertain",
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  test("denies remote media when no complete count can bound it", async () => {
+    const state = harness({});
+    const invoke = vi.fn(async () => response());
+
+    await expect(
+      runAdmittedModelCall({
+        session: state.session,
+        provider: state.provider,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image_url",
+                image_url: { url: "https://media.example/image.png" },
+              },
+            ],
+          },
+        ],
+        options: { maxOutputTokens: 200 },
+        stepId: "model:remote-media",
+        model: "grok-4.5",
+        providerName: "grok",
+        invoke,
+      }),
+    ).rejects.toMatchObject({
+      code: "ADMISSION_DENIED",
+      reason: "token_accounting_uncertain",
+    });
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ denialReason: "token_accounting_uncertain" }),
+      undefined,
+    );
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  test("denies input plus output that exceeds the final context window", async () => {
+    const state = harness({});
+    (state.provider as unknown as {
+      tokenCountCapability?: ProviderTokenCountCapability;
+    }).tokenCountCapability = {
+      capabilityVersion: "context-count-v1",
+      adapterRevision: "context-adapter-v1",
+      configurationRevision: "context-config-v1",
+      countTokens: async () => ({
+        inputTokens: 101,
+        complete: true,
+        confidence: "exact",
+        countedComponents: ["messages", "provider_framing"],
+      }),
+    };
+    const invoke = vi.fn(async () => response());
+
+    await expect(
+      callOptions(
+        state,
+        { maxOutputTokens: 200, contextWindowTokens: 300 },
+        invoke,
+      ),
+    ).rejects.toMatchObject({
+      code: "ADMISSION_DENIED",
+      reason: "context_window_exceeded",
+    });
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxInputTokens: 101,
+        maxOutputTokens: 200,
+        denialReason: "context_window_exceeded",
+      }),
+      undefined,
+    );
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   test("reserves a conservative input bound and reconciles all billed usage", async () => {
     const state = harness({ maxCostUsd: 1 });
 

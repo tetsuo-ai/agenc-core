@@ -35,6 +35,7 @@ afterEach(() => {
 
 const REVIEWER_CONTRACT_TIMEOUT_MS = 30_000;
 const SIX_HOURS_MS = 6 * 60 * 60 * 1_000;
+const TEST_CONTEXT_WINDOW_TOKENS = 131_072;
 const ALLOW_ASSESSMENT = JSON.stringify({
   risk_level: "low",
   user_authorization: "medium",
@@ -77,7 +78,7 @@ function mkModelInfo(slug = "test-model"): ModelInfo {
   return {
     slug,
     effectiveContextWindowPercent: 100,
-    contextWindow: 1024,
+    contextWindow: TEST_CONTEXT_WINDOW_TOKENS,
     supportedReasoningLevels: [],
     defaultReasoningSummary: "auto",
     truncationPolicy: "off",

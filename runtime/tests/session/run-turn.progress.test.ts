@@ -136,7 +136,7 @@ function mkModelInfo(): ModelInfo {
   return {
     slug: "test-model",
     effectiveContextWindowPercent: 100,
-    contextWindow: 1024,
+    contextWindow: 131_072,
     supportedReasoningLevels: [],
     defaultReasoningSummary: "auto",
     truncationPolicy: "off",

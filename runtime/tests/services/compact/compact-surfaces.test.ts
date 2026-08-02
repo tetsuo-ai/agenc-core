@@ -3,6 +3,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test, vi } from "vitest";
 import { sourceUrl } from "../../helpers/source-path.ts";
 import {
+  createTokenAccountingRequest,
+  estimateTokenAccountingRequest,
+} from "../../llm/token-accounting.js";
+import {
   getAPIContextManagement,
 } from "./apiMicrocompact.js";
 import {
@@ -18,6 +22,7 @@ import {
   suppressCompactWarning,
 } from "./compactWarningState.js";
 import { runPostCompactCleanup } from "./postCompactCleanup.js";
+import { estimateMessagesTokens } from "./_deps/runtime.js";
 import {
   formatCompactSummary,
   getCompactPrompt,
@@ -36,9 +41,85 @@ import {
   DEFAULT_MICROCOMPACT_CLEAR_AFTER_MS,
   getTimeBasedMicrocompactClearAfterMs,
 } from "./timeBasedMCConfig.js";
-import type { RuntimeMessage } from "./types.js";
+import type { CompactContext, RuntimeMessage } from "./types.js";
 
 describe("compact supporting surfaces", () => {
+  test("uses the complete inference component set for compaction estimates", () => {
+    const messages: RuntimeMessage[] = [
+      {
+        role: "user",
+        content: "hello",
+        message: { role: "user", content: "hello" },
+      },
+    ];
+    const tool = {
+      type: "function" as const,
+      function: {
+        name: "lookup",
+        description: "Look up a value",
+        parameters: { type: "object", properties: {} },
+      },
+    };
+    const context = {
+      provider: { name: "test-provider" } as CompactContext["provider"],
+      options: {
+        mainLoopModel: "test-model",
+        contextWindowTokens: 8_192,
+        maxOutputTokens: 256,
+        systemPrompt: "system instruction",
+        tools: [tool],
+        toolChoice: { type: "function" as const, name: "lookup" },
+      },
+    };
+    const direct = estimateTokenAccountingRequest(
+      createTokenAccountingRequest({
+        provider: "test-provider",
+        model: "test-model",
+        messages: [{ role: "user", content: "hello" }],
+        options: context.options,
+        contextWindowTokens: 8_192,
+        reservedOutputTokens: 256,
+      }),
+    );
+
+    expect(estimateMessagesTokens(messages, context)).toBe(direct.totalTokens);
+    expect(direct.coverage.countedComponents).toEqual(
+      expect.arrayContaining([
+        "system",
+        "messages",
+        "tools",
+        "tool_choice",
+        "provider_framing",
+        "reserved_output",
+      ]),
+    );
+    expect(estimateMessagesTokens(messages)).toBeLessThan(direct.totalTokens);
+  });
+
+  test("forces compaction when provider-expanded cached content is unknown", () => {
+    const contextWindowTokens = 8_192;
+    const provider = {
+      name: "gemini",
+      config: {
+        model: "gemini-2.5-pro",
+        cachedContent: "cachedContents/project-context",
+      },
+    } as unknown as CompactContext["provider"];
+
+    expect(
+      estimateMessagesTokens(
+        [{ role: "user", content: "summarize the cache" }],
+        {
+          provider,
+          options: {
+            mainLoopModel: "gemini-2.5-pro",
+            contextWindowTokens,
+          },
+        },
+      ),
+    ).toBe(contextWindowTokens);
+  });
+
   test("builds API context-management config only for active strategies", () => {
     expect(getAPIContextManagement()).toBeNull();
     expect(getAPIContextManagement({ clearThinking: true })).toEqual({

@@ -151,6 +151,8 @@ afterEach(() => {
   setCommandLifecycleListener(null);
 });
 
+const TEST_CONTEXT_WINDOW_TOKENS = 131_072;
+
 function mkCtx(): TurnContext {
   return {
     subId: "turn-abc",
@@ -160,7 +162,7 @@ function mkCtx(): TurnContext {
     modelInfo: {
       slug: "test-model",
       effectiveContextWindowPercent: 100,
-      contextWindow: 1024,
+      contextWindow: TEST_CONTEXT_WINDOW_TOKENS,
       supportedReasoningLevels: [],
       defaultReasoningSummary: "auto",
       truncationPolicy: "off",
@@ -246,7 +248,7 @@ function mkModelInfo(): ModelInfo {
   return {
     slug: "test-model",
     effectiveContextWindowPercent: 100,
-    contextWindow: 1024,
+    contextWindow: TEST_CONTEXT_WINDOW_TOKENS,
     supportedReasoningLevels: [],
     defaultReasoningSummary: "auto",
     truncationPolicy: "off",
@@ -961,7 +963,9 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(turnStarted).toBeDefined();
     if (turnStarted?.msg.type === "turn_started") {
       expect(turnStarted.msg.payload.turnId).toBe("turn-abc");
-      expect(turnStarted.msg.payload.modelContextWindow).toBe(1024);
+      expect(turnStarted.msg.payload.modelContextWindow).toBe(
+        TEST_CONTEXT_WINDOW_TOKENS,
+      );
     }
 
     const userMsg = events.find((e) => e.msg.type === "user_message");
@@ -971,10 +975,10 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
   });
 
   test("a burst of medium tool results is bounded by the aggregate budget (wiring)", async () => {
-    // Each result stays BELOW the single-result execution cap
-    // (MIN_TOOL_RESULT_BYTES = 16K on this 1024-token window), so only
-    // the aggregate per-group budget can bound the sum: 10 × 12K = 120K
-    // chars in one group vs the 50K floor budget.
+    // Each result stays below the single-result cap, so only the explicit
+    // aggregate per-group budget can bound the sum: 10 × 12K = 120K chars in
+    // one group versus the 50K group budget. The realistic test context then
+    // lets final conservative admission validate the bounded follow-up.
     const mediumResult = "M".repeat(12_000);
     const seenMessages: LLMMessage[][] = [];
     let calls = 0;
@@ -1028,7 +1032,15 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     } as unknown as ToolRegistry;
     const { session } = mkSession({ provider, registry });
 
-    await drain(session.runTurn("run the big tools", { ctx: mkCtx() }));
+    const restoreToolBudget = withEnvVar(
+      "AGENC_TOOL_RESULT_BUDGET_CHARS",
+      "50000",
+    );
+    try {
+      await drain(session.runTurn("run the big tools", { ctx: mkCtx() }));
+    } finally {
+      restoreToolBudget();
+    }
 
     expect(calls).toBe(2);
     const second = seenMessages[1] ?? [];
@@ -7044,7 +7056,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     const ctx = mkCtx();
     (
       ctx.modelInfo as unknown as { autoCompactTokenLimit: number }
-    ).autoCompactTokenLimit = 100;
+    ).autoCompactTokenLimit = TEST_CONTEXT_WINDOW_TOKENS;
 
     const { session } = mkSession({
       provider: mkProvider({ content: "ok" }),

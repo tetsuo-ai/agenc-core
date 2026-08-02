@@ -15,6 +15,7 @@
  */
 
 import { isRecord } from "../utils/record.js";
+import { estimateUtf8TokenUnits } from "./token-accounting.js";
 
 export interface ModelTokenizerConfig {
   readonly modelFamily: string;
@@ -38,13 +39,7 @@ export interface TokenEstimateBounds {
 }
 
 export type ContentType =
-  | "json"
-  | "code"
-  | "prose"
-  | "technical"
-  | "list"
-  | "table"
-  | "mixed";
+  "json" | "code" | "prose" | "technical" | "list" | "table" | "mixed";
 
 export type TokenEstimationContent =
   | string
@@ -164,11 +159,7 @@ export function roughTokenCountEstimation(
   content: string,
   bytesPerToken = DEFAULT_BYTES_PER_TOKEN,
 ): number {
-  const ratio =
-    Number.isFinite(bytesPerToken) && bytesPerToken > 0
-      ? bytesPerToken
-      : DEFAULT_BYTES_PER_TOKEN;
-  return Math.round(content.length / ratio);
+  return estimateUtf8TokenUnits(content, bytesPerToken);
 }
 
 export function bytesPerTokenForFileType(fileExtension: string): number {
@@ -212,7 +203,11 @@ export function getBytesPerTokenForProvider(
   hint: TokenizerProviderHint,
 ): number {
   const explicit = hint.bytesPerToken;
-  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+  if (
+    typeof explicit === "number" &&
+    Number.isFinite(explicit) &&
+    explicit > 0
+  ) {
     return explicit;
   }
   return getTokenizerConfigForProvider(hint).bytesPerToken;
@@ -222,10 +217,7 @@ export function roughTokenCountEstimationForProvider(
   content: string,
   hint: TokenizerProviderHint,
 ): number {
-  return roughTokenCountEstimation(
-    content,
-    getBytesPerTokenForProvider(hint),
-  );
+  return roughTokenCountEstimation(content, getBytesPerTokenForProvider(hint));
 }
 
 export function roughTokenCountEstimationForFileType(
@@ -259,14 +251,17 @@ export function detectContentType(content: string): ContentType {
     const hasTabs = firstLine.includes("\t");
     const hasCommas = firstLine.includes(",");
     if (hasTabs || hasCommas) {
-      const consistent = lines.slice(1).every((line) =>
-        line.includes("\t") || line.includes(","),
-      );
+      const consistent = lines
+        .slice(1)
+        .every((line) => line.includes("\t") || line.includes(","));
       if (consistent) return "table";
     }
   }
 
-  if (/^[\d\-*\u2022]/u.test(trimmed) || /^[\d\-*\u2022]/u.test(lines[0] ?? "")) {
+  if (
+    /^[\d\-*\u2022]/u.test(trimmed) ||
+    /^[\d\-*\u2022]/u.test(lines[0] ?? "")
+  ) {
     return "list";
   }
 
@@ -300,10 +295,11 @@ export function estimateWithBounds(
   content: string,
   type?: ContentType,
 ): TokenEstimateBounds {
-  const { ratio, min: minRatio, max: maxRatio } = getCompressionRatio(
-    content,
-    type,
-  );
+  const {
+    ratio,
+    min: minRatio,
+    max: maxRatio,
+  } = getCompressionRatio(content, type);
   return {
     estimate: roughTokenCountEstimation(content, ratio),
     min: roughTokenCountEstimation(content, maxRatio),
@@ -379,7 +375,10 @@ function roughTokenCountEstimationForBlock(
     case "image_url":
     case "input_image":
     case "document":
-      return 2000;
+      return roughTokenCountEstimationForProvider(
+        safeJsonStringify(block),
+        hint,
+      );
     case "tool_result":
       return roughTokenCountEstimationForContent(
         block.content as TokenEstimationContent,
