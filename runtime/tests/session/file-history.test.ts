@@ -21,6 +21,25 @@ import {
   workspaceMutationCoordinators,
 } from "../../src/workspace/mutation-coordinator.js";
 
+let previousAgencHome: string | undefined;
+
+beforeEach(() => {
+  previousAgencHome = process.env.AGENC_HOME;
+  // Coordinator persistence can finish after a test's assertion. Give every
+  // case its own hermetic home so one case cannot discover another's state;
+  // the test boundary owns removal after all worker activity has settled.
+  process.env.AGENC_HOME = mkdtempSync(join(tmpdir(), "agenc-filehist-home-"));
+});
+
+afterEach(() => {
+  workspaceMutationCoordinators.clearForTests();
+  if (previousAgencHome === undefined) {
+    delete process.env.AGENC_HOME;
+  } else {
+    process.env.AGENC_HOME = previousAgencHome;
+  }
+});
+
 describe("FileHistory (I-28)", () => {
   let project = "";
 
@@ -28,7 +47,6 @@ describe("FileHistory (I-28)", () => {
     project = mkdtempSync(join(tmpdir(), "agenc-filehist-"));
   });
   afterEach(() => {
-    workspaceMutationCoordinators.clearForTests();
     if (project) rmSync(project, { recursive: true, force: true });
   });
 
