@@ -313,6 +313,77 @@ describe("embedded Neovim input translation", () => {
     expect(session.focus).toHaveBeenCalledWith(true);
     expect(session.click).toHaveBeenCalledWith(3, 7);
   });
+
+  it("serializes input RPCs until each preceding mutation settles", async () => {
+    let releaseFirstInput: () => void = () => {};
+    const firstInput = new Promise<void>((resolve) => {
+      releaseFirstInput = resolve;
+    });
+    const received: string[] = [];
+    const session = {
+      pid: 123,
+      input: vi.fn(async (keys: string) => {
+        received.push(keys);
+        if (keys === "<Esc>") await firstInput;
+      }),
+      paste: vi.fn(async () => {}),
+      resize: vi.fn(async () => {}),
+      focus: vi.fn(async () => {}),
+      click: vi.fn(async () => {}),
+      save: vi.fn(async () => true),
+      isDirty: vi.fn(async () => false),
+      quit: vi.fn(async () => ({ closed: true as const })),
+      cleanup: vi.fn(async () => {}),
+    };
+    const provider = new NeovimBufferProvider({
+      discovery: {
+        usable: true,
+        executable: "/usr/bin/nvim",
+        version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
+        args: ["--embed", "--clean"],
+        useUserInit: false,
+      },
+      readFileSnapshot: vi.fn(async (filePath: string) => ({
+        filePath,
+        absolutePath: `/workspace/${filePath}`,
+        content: "alpha\n",
+        mtimeMs: 1,
+        size: 6,
+        encoding: "utf8",
+        lineEndings: "LF",
+      })),
+      startSession: vi.fn(async (options: StartEmbeddedNeovimOptions) => {
+        options.onSnapshot(
+          createNeovimRenderSnapshot(options.size.rows, options.size.columns),
+        );
+        return session as never;
+      }),
+    });
+
+    await provider.open({ filePath: "target.txt" });
+    expect(
+      provider.handleInput({
+        input: "",
+        key: key({ escape: true }),
+        context: { rows: 8, columns: 40 },
+      }),
+    ).toBe(true);
+    expect(
+      provider.handleInput({
+        input: ":",
+        key: key({}),
+        context: { rows: 8, columns: 40 },
+      }),
+    ).toBe(true);
+
+    await flush();
+    expect(received).toEqual(["<Esc>"]);
+
+    releaseFirstInput();
+    await vi.waitFor(() => {
+      expect(received).toEqual(["<Esc>", ":"]);
+    });
+  });
 });
 
 function createInputEvent(eventKey: Key = baseKey, raw = "") {

@@ -353,6 +353,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
   #safeStartupFailure: string | null = null;
   #navigationPromise: Promise<void> | null = null;
   #sessionActionGate: NeovimSessionActionGate | null = null;
+  #sessionActionTail: Promise<void> = Promise.resolve();
   #projectPathMutationLocked = false;
   #workspaceAuthorityRequired = false;
   #workspaceWriteAuthorityHandler: BufferWorkspaceWriteAuthorityHandler | null =
@@ -2404,7 +2405,13 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     const ownership = this.#captureOperationOwnership(session);
     const pendingTransitionGeneration = this.#pendingTransitionGeneration;
     const sessionActionGate = this.#sessionActionGate;
+    const previousAction = this.#sessionActionTail;
+    let releaseAction: () => void = () => {};
+    this.#sessionActionTail = new Promise<void>((resolve) => {
+      releaseAction = resolve;
+    });
     try {
+      await previousAction;
       if (pendingTransitionGeneration !== null) {
         if (
           sessionActionGate === null ||
@@ -2419,6 +2426,8 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       await action();
     } catch (error) {
       if (this.#ownsOperation(ownership)) this.#setInputError(error);
+    } finally {
+      releaseAction();
     }
   }
 
