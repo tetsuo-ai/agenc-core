@@ -145,6 +145,58 @@ describe("Glob tool", () => {
     );
   });
 
+  test.each([
+    {
+      label: "embedded NUL",
+      pattern: "bad\0pattern",
+      expected: "[ARGUMENT_NUL]",
+    },
+    {
+      label: "lone surrogate",
+      pattern: "bad\ud800pattern",
+      expected: "[ARGUMENT_LONE_SURROGATE]",
+    },
+    {
+      label: "oversized glob",
+      pattern: "x".repeat(16_385),
+      expected: "maximum is 16384",
+    },
+  ])("rejects $label before spawning ripgrep", async ({ pattern, expected }) => {
+    const result = await createGlobTool({ allowedPaths: [root] }).execute({
+      pattern,
+      path: root,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain(expected);
+  });
+
+  test("rejects an oversized raw search path before filesystem resolution", async () => {
+    const result = await createGlobTool({ allowedPaths: [root] }).execute({
+      pattern: "*.ts",
+      path: "x".repeat(16_385),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("path is 16385 UTF-8 bytes");
+    expect(result.content).toContain("maximum is 16384");
+  });
+
+  test("shared enumeration accounts for Windows quoting expansion", () => {
+    const args = __INTERNAL.buildRipgrepFilesArgs({
+      pattern: `${"\\".repeat(15_500)}"`,
+      includeIgnored: false,
+      rootIgnoreFilePaths: [],
+      searchPath: ".",
+    });
+
+    expect(() =>
+      __INTERNAL.assertRipgrepFilesArgvWithinLimits("rg.exe", args, "win32"),
+    ).toThrowError(
+      expect.objectContaining({ reason: "WINDOWS_COMMAND_LINE_LIMIT" }),
+    );
+  });
+
   test("matches a simple `*.txt` pattern in the workspace root", async () => {
     await writeFile(join(root, "a.txt"), "alpha\n", "utf8");
     await writeFile(join(root, "b.txt"), "beta\n", "utf8");
@@ -161,6 +213,158 @@ describe("Glob tool", () => {
     expect(result.content).toContain("b.txt");
     expect(result.content).not.toContain("skip.md");
   });
+
+  test("scoped searches honor root ignore rules in clean and protected workspaces", async () => {
+    const scoped = join(root, "sub");
+    await mkdir(scoped);
+    await writeFile(join(root, ".gitignore"), "sub/ignored.ts\n", "utf8");
+    await writeFile(join(scoped, "visible.ts"), "visible\n", "utf8");
+    await writeFile(join(scoped, "ignored.ts"), "ignored\n", "utf8");
+    const tool = createGlobTool({ allowedPaths: [root] });
+
+    const clean = await tool.execute({ pattern: "*.ts", path: scoped });
+    expect(clean.isError).toBeUndefined();
+    expect(clean.content).toContain("sub/visible.ts");
+    expect(clean.content).not.toContain("ignored.ts");
+
+    workspaceMutationCoordinators.getOrCreate(root).acquire({
+      workspaceRoot: root,
+      editorInstanceId: "glob-ignore-editor",
+    });
+    const protectedResult = await tool.execute({
+      pattern: "*.ts",
+      path: scoped,
+    });
+    expect(protectedResult.isError).toBeUndefined();
+    expect(protectedResult.content).toContain("sub/visible.ts");
+    expect(protectedResult.content).not.toContain("ignored.ts");
+  });
+
+  test.runIf(process.platform !== "win32")(
+    "uses snapshotted root ignore bytes after the admitted pathname becomes a symlink",
+    async () => {
+      const scoped = join(root, "sub");
+      const ignorePath = join(root, ".gitignore");
+      const admittedPath = join(root, ".gitignore-admitted");
+      const replacementPath = join(root, "replacement.ignore");
+      await mkdir(scoped);
+      await writeFile(ignorePath, "sub/ignored.ts\n", "utf8");
+      await writeFile(replacementPath, "!sub/ignored.ts\n", "utf8");
+      await writeFile(join(scoped, "ignored.ts"), "ignored\n", "utf8");
+      await writeFile(join(scoped, "visible.ts"), "visible\n", "utf8");
+
+      const run = async (editorProtected: boolean) => {
+        if (editorProtected) {
+          workspaceMutationCoordinators.getOrCreate(root).acquire({
+            workspaceRoot: root,
+            editorInstanceId: "glob-ignore-snapshot-editor",
+          });
+        }
+        let exchanged = false;
+        const tool = createGlobTool({
+          allowedPaths: [root],
+          __testAfterRootIgnoreSnapshot: async () => {
+            await rename(ignorePath, admittedPath);
+            await symlink(replacementPath, ignorePath, "file");
+            exchanged = true;
+          },
+        });
+
+        const result = await tool.execute({ pattern: "*.ts", path: scoped });
+
+        expect(exchanged).toBe(true);
+        expect(result.isError).toBeUndefined();
+        expect(result.content).toContain("sub/visible.ts");
+        expect(result.content).not.toContain("ignored.ts");
+        await rm(ignorePath, { force: true });
+        await rename(admittedPath, ignorePath);
+      };
+
+      await run(false);
+      await run(true);
+    },
+  );
+
+  test("rejects a scoped directory exchanged between admission and binding", async () => {
+    const workspace = join(root, "workspace");
+    const scoped = join(workspace, "src");
+    const displaced = join(workspace, "src-displaced");
+    const outside = join(root, "outside-prebind");
+    await mkdir(scoped, { recursive: true });
+    await mkdir(outside);
+    await writeFile(join(scoped, "inside.ts"), "inside\n", "utf8");
+    await writeFile(join(outside, "outside-secret.ts"), "outside\n", "utf8");
+    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
+      workspaceRoot: workspace,
+      editorInstanceId: "glob-prebind-editor",
+    });
+    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
+    const tool = createGlobTool({
+      allowedPaths: [workspace],
+      __testBeforeReadCapabilityBind: async () => {
+        exchangeOutcome = await exchangeDirectory(scoped, displaced, outside);
+      },
+    });
+
+    const result = await tool.execute({ pattern: "*.ts", path: scoped });
+
+    expectCompletedExchangeAttempt(exchangeOutcome);
+    if (exchangeOutcome === "exchanged") {
+      expect(result.isError).toBe(true);
+      expect(result.content).toMatch(/cannot be read safely|identity/iu);
+    }
+    expect(result.content).not.toContain("outside-secret.ts");
+  });
+
+  test.runIf(process.platform !== "win32")(
+    "renders POSIX backslash and newline filenames without inventing records",
+    async () => {
+      await writeFile(join(root, "literal\\name.ts"), "literal\n", "utf8");
+      await writeFile(join(root, "line\nname.ts"), "newline\n", "utf8");
+
+      const result = await createGlobTool({ allowedPaths: [root] }).execute({
+        pattern: "*.ts",
+        path: root,
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content.split("\n")).toEqual(
+        expect.arrayContaining(["literal\\\\name.ts", "line\\nname.ts"]),
+      );
+      expect(result.content).not.toContain("line\nname.ts");
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "renders invalid UTF-8 paths only when descriptor validation is not required",
+    async () => {
+      const invalidPath = Buffer.concat([
+        Buffer.from(`${root}/invalid-`, "utf8"),
+        Buffer.from([0xff]),
+        Buffer.from(".ts", "utf8"),
+      ]);
+      await writeFile(invalidPath, "invalid\n", "utf8");
+      const tool = createGlobTool({ allowedPaths: [root] });
+
+      const unprotected = await tool.execute({ pattern: "*.ts", path: root });
+      expect(unprotected.isError).toBeUndefined();
+      expect(unprotected.content).toContain(
+        "invalid-\\xff.ts [path-encoding=bytes]",
+      );
+
+      workspaceMutationCoordinators.getOrCreate(root).acquire({
+        workspaceRoot: root,
+        editorInstanceId: "glob-invalid-utf8-editor",
+      });
+      const protectedResult = await tool.execute({
+        pattern: "*.ts",
+        path: root,
+      });
+      expect(protectedResult.isError).toBeUndefined();
+      expect(protectedResult.content).not.toContain("invalid-");
+      expect(protectedResult.content).not.toContain("path-encoding=bytes");
+    },
+  );
 
   test("never returns outside names after a final ancestor exchange", async () => {
     const workspace = join(root, "workspace");
@@ -272,7 +476,7 @@ try {
   if (process.platform === "win32" && ["EPERM", "EACCES", "EBUSY"].includes(error?.code)) process.exit(0);
   throw error;
 }
-process.stdout.write("nested/outside-secret.ts\\n");
+process.stdout.write("nested/outside-secret.ts\\0");
 await unlink(nested);
 await rename(displaced, nested);
 `,
@@ -426,27 +630,10 @@ await rename(displaced, nested);
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("Glob requires ripgrep");
-    expect(result.content).toContain("hidden and ignored-file parity");
-    // No rg binary is bundled, so the only fix is a system install — the error
-    // must name a concrete install command per platform, not just say it's
-    // required. (Revert-sensitive: drops the appended hint without the fix.)
-    expect(result.content).toContain(__INTERNAL.ripgrepInstallHint());
-    expect(result.content).toMatch(
-      /winget install BurntSushi\.ripgrep\.MSVC|brew install ripgrep|apt install ripgrep/,
-    );
-  });
-
-  test("ripgrepInstallHint names the install command for each platform", () => {
-    expect(__INTERNAL.ripgrepInstallHint("darwin")).toContain(
-      "brew install ripgrep",
-    );
-    expect(__INTERNAL.ripgrepInstallHint("win32")).toContain(
-      "winget install BurntSushi.ripgrep.MSVC",
-    );
-    expect(__INTERNAL.ripgrepInstallHint("linux")).toContain(
-      "apt install ripgrep",
-    );
+    expect(result.content).toContain("[PINNED_RIPGREP_UNAVAILABLE]");
+    expect(result.content).toContain("agenc doctor");
+    expect(result.content).toContain("reinstall the same AgenC version");
+    expect(result.content).not.toMatch(/apt install|brew install|winget/iu);
   });
 
   test("empty results return polite plain text and not isError", async () => {

@@ -1,6 +1,5 @@
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute } from "node:path";
 
 const requireFromRuntime = createRequire(import.meta.url);
 
@@ -39,9 +38,13 @@ export function resolvePinnedRipgrepPath(
 
   const binaryName = platform === "win32" ? "rg.exe" : "rg";
   try {
-    const resolved = (options.resolveModule ?? requireFromRuntime.resolve)(
-      `${platformPackage}/bin/${binaryName}`,
-    );
+    const specifier = `${platformPackage}/bin/${binaryName}`;
+    const resolved =
+      options.resolveModule !== undefined
+        ? options.resolveModule(specifier)
+        : createRequire(requireFromRuntime.resolve("@vscode/ripgrep")).resolve(
+            specifier,
+          );
     return isAbsolute(resolved) ? resolved : undefined;
   } catch {
     return undefined;
@@ -54,13 +57,27 @@ const resolvedPinnedRipgrepPath = resolvePinnedRipgrepPath();
 export const PINNED_RIPGREP_AVAILABLE = resolvedPinnedRipgrepPath !== undefined;
 
 /**
- * Absolute fail-closed sentinel used when the optional package is absent.
- * Callers may safely attempt to spawn it and receive ENOENT; it can never
- * select an operator-controlled `rg` from PATH.
+ * The exact lockfile-pinned executable, or `undefined` when its optional
+ * platform package is absent. Absence is not represented by a pathname: a
+ * predictable missing-file sentinel could be planted by another local actor.
  */
-export const PINNED_RIPGREP_PATH =
-  resolvedPinnedRipgrepPath ??
-  resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    `.agenc-missing-pinned-ripgrep-${process.platform}-${process.arch}`,
-  );
+export const PINNED_RIPGREP_PATH = resolvedPinnedRipgrepPath;
+
+export interface PinnedRipgrepState {
+  readonly available: boolean;
+  readonly path: string | undefined;
+}
+
+/**
+ * Select a production pinned executable only when resolution proved it
+ * available. The explicit state parameter is a deterministic security-test
+ * seam; normal callers use the module's immutable resolution result.
+ */
+export function selectPinnedRipgrepPath(
+  state: PinnedRipgrepState = {
+    available: PINNED_RIPGREP_AVAILABLE,
+    path: PINNED_RIPGREP_PATH,
+  },
+): string | undefined {
+  return state.available && state.path !== undefined ? state.path : undefined;
+}

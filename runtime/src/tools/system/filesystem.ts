@@ -860,8 +860,14 @@ export async function safePath(
       };
     }
 
-    // Canonicalize target (follows symlinks, normalize Unicode for macOS HFS+/APFS)
-    const canonical = (await canonicalize(normalizedTarget)).normalize("NFC");
+    // POSIX pathnames are byte strings: NFC/NFD spellings and backslashes can
+    // name distinct entries. Windows retains Unicode normalization and treats
+    // both slash spellings as separators.
+    const canonicalTarget = await canonicalize(normalizedTarget);
+    const canonical =
+      process.platform === "win32"
+        ? canonicalTarget.normalize("NFC")
+        : canonicalTarget;
 
     // Verify canonical path is within an allowed prefix
     if (allowedPaths.length === 0) {
@@ -872,15 +878,18 @@ export async function safePath(
       };
     }
     const normalizedAllowed = await Promise.all(
-      allowedPaths.map(async (p) =>
-        (await canonicalize(expandHomeDirectory(p))).normalize("NFC"),
-      ),
+      allowedPaths.map(async (p) => {
+        const allowed = await canonicalize(expandHomeDirectory(p));
+        return process.platform === "win32"
+          ? allowed.normalize("NFC")
+          : allowed;
+      }),
     );
     const inside = normalizedAllowed.some(
       (prefix) =>
         canonical === prefix ||
-        canonical.startsWith(prefix + "/") ||
-        canonical.startsWith(prefix + "\\"),
+        canonical.startsWith(`${prefix}/`) ||
+        (process.platform === "win32" && canonical.startsWith(`${prefix}\\`)),
     );
     if (!inside) {
       return {
@@ -948,7 +957,12 @@ export function resolveToolAllowedPaths(
     )
     .map((entry) => resolveSessionWorkspaceRoot(entry))
     .filter((entry): entry is string => typeof entry === "string")
-    .map((entry) => resolve(entry).normalize("NFC"));
+    .map((entry) => {
+      const resolved = resolve(entry);
+      return process.platform === "win32"
+        ? resolved.normalize("NFC")
+        : resolved;
+    });
   if (normalizedExtraRoots.length === 0) {
     return allowedPaths;
   }

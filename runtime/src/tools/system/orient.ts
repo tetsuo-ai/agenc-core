@@ -18,6 +18,7 @@
  * `context/orientation-map.ts` and the orientation-map reproduction harness.
  */
 
+import { stat } from "node:fs/promises";
 import { extname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
 
 import { buildOrientationMap } from "../../context/orientation-map.js";
@@ -38,12 +39,21 @@ import {
   createSearchIgnoreMatcher,
   searchPathUsesDefaultExcludedDirectory,
 } from "./grep.js";
-import { runRipgrepFiles } from "./glob.js";
-import { PINNED_RIPGREP_PATH } from "./pinned-ripgrep.js";
+import {
+  discoverRipgrepRootIgnoreFiles,
+  formatRipgrepFilesError,
+  runRipgrepFiles,
+} from "./glob.js";
+import { selectPinnedRipgrepPath } from "./pinned-ripgrep.js";
+import {
+  decodeRipgrepPathBytes,
+  GrepBoundaryError,
+} from "./ripgrep-protocol.js";
 import { readFileInRange } from "../../utils/readFileInRange.js";
 import {
   bindWorkspaceDirectoryReadCapability,
   type WorkspaceBoundReadCapability,
+  type WorkspaceBoundReadIdentity,
 } from "../../workspace/file-mutation-transaction.js";
 
 export const ORIENT_TOOL_NAME = "Orient";
@@ -64,6 +74,8 @@ const HARD_MAX_FILES = 4000;
 const MAX_BYTES_PER_FILE = 64 * 1024;
 const MAX_RANKED = 20;
 const MAP_TOKEN_BUDGET = 1000;
+const PINNED_RIPGREP_UNAVAILABLE_MESSAGE =
+  "Orient error [PINNED_RIPGREP_UNAVAILABLE]: AgenC's packaged ripgrep executable is unavailable. Run `agenc doctor`, then reinstall the same AgenC version.";
 const SOURCE_EXTENSIONS = new Set([
   ".ts",
   ".tsx",
@@ -141,6 +153,26 @@ export interface OrientToolConfig {
   readonly beforeAuthoritativeSnapshotValidation?: () => void | Promise<void>;
   /** Deterministic test seam immediately after the final path check. */
   readonly __testAfterFinalPathCheck?: () => void | Promise<void>;
+  /** Deterministic test seam after admission but before capability binding. */
+  readonly __testBeforeReadCapabilityBind?: () => void | Promise<void>;
+  /** Test-only subprocess timeout override. */
+  readonly __testRipgrepTimeoutMs?: number;
+  /** Test-only subprocess output ceiling override. */
+  readonly __testRipgrepMaxOutputBytes?: number;
+  /** Deterministic test seam after root ignore bytes have been snapshotted. */
+  readonly __testAfterRootIgnoreSnapshot?: () => void | Promise<void>;
+}
+
+function bigintStatIdentity(value: {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly mode: bigint;
+}): WorkspaceBoundReadIdentity {
+  return {
+    dev: value.dev.toString(10),
+    ino: value.ino.toString(10),
+    mode: value.mode.toString(10),
+  };
 }
 
 export function createOrientTool(
@@ -150,7 +182,7 @@ export function createOrientTool(
   const ripgrepCommand =
     "ripgrepCommand" in config && typeof config.ripgrepCommand === "string"
       ? config.ripgrepCommand
-      : PINNED_RIPGREP_PATH;
+      : selectPinnedRipgrepPath();
   const beforeAuthoritativeSnapshotValidation =
     "beforeAuthoritativeSnapshotValidation" in config
       ? config.beforeAuthoritativeSnapshotValidation
@@ -158,6 +190,22 @@ export function createOrientTool(
   const afterFinalPathCheck =
     "__testAfterFinalPathCheck" in config
       ? config.__testAfterFinalPathCheck
+      : undefined;
+  const beforeReadCapabilityBind =
+    "__testBeforeReadCapabilityBind" in config
+      ? config.__testBeforeReadCapabilityBind
+      : undefined;
+  const ripgrepTimeoutMs =
+    "__testRipgrepTimeoutMs" in config
+      ? config.__testRipgrepTimeoutMs
+      : undefined;
+  const ripgrepMaxOutputBytes =
+    "__testRipgrepMaxOutputBytes" in config
+      ? config.__testRipgrepMaxOutputBytes
+      : undefined;
+  const afterRootIgnoreSnapshot =
+    "__testAfterRootIgnoreSnapshot" in config
+      ? config.__testAfterRootIgnoreSnapshot
       : undefined;
 
   return {
@@ -211,15 +259,33 @@ export function createOrientTool(
       if (query === undefined) {
         return errorResult("query must be a non-empty string");
       }
+      if (ripgrepCommand === undefined) {
+        return errorResult(PINNED_RIPGREP_UNAVAILABLE_MESSAGE);
+      }
       const signal = args.__abortSignal;
       const effectiveAllowed = resolveToolAllowedPaths(allowedPaths, rawArgs);
-      const root = effectiveAllowed[0];
-      if (root === undefined) {
+      const requestedRoot = effectiveAllowed[0];
+      if (requestedRoot === undefined) {
         return errorResult("Orient has no allowed workspace root configured");
       }
+      const checkedRoot = await safePath(requestedRoot, effectiveAllowed);
+      if (!checkedRoot.safe) {
+        return errorResult(
+          `Orient workspace root is unavailable: ${checkedRoot.reason ?? "denied"}`,
+        );
+      }
+      const root = checkedRoot.resolved;
+      const rootStat = await stat(root, { bigint: true }).catch(
+        () => undefined,
+      );
+      if (rootStat === undefined || !rootStat.isDirectory()) {
+        return errorResult("Orient workspace root is not a directory");
+      }
+      const rootIdentity = bigintStatIdentity(rootStat);
 
       // Resolve the (optional) scoped directory and enforce containment.
       let baseDir = root;
+      let baseIdentity = rootIdentity;
       const rawPath = asNonEmptyString(args.path);
       if (rawPath !== undefined) {
         const candidate = isAbsolute(rawPath)
@@ -232,8 +298,16 @@ export function createOrientTool(
           );
         }
         baseDir = checked.resolved;
+        const baseStat = await stat(baseDir, { bigint: true }).catch(
+          () => undefined,
+        );
+        if (baseStat === undefined || !baseStat.isDirectory()) {
+          return errorResult("Orient path is not a directory");
+        }
+        baseIdentity = bigintStatIdentity(baseStat);
       }
       let readCapability: WorkspaceBoundReadCapability | undefined;
+      let ignoreReadCapability: WorkspaceBoundReadCapability | undefined;
       try {
         const trustedEditorInteraction =
           readToolRuntimeContext(rawArgs)?.invocation.turn.editorInteraction !==
@@ -242,9 +316,20 @@ export function createOrientTool(
           trustedEditorInteraction ||
           workspaceHasProtectedEditorPaths(baseDir)
         ) {
-          readCapability = await bindWorkspaceDirectoryReadCapability(baseDir);
+          await beforeReadCapabilityBind?.();
+          readCapability = await bindWorkspaceDirectoryReadCapability(baseDir, {
+            expectedIdentity: baseIdentity,
+          });
+          ignoreReadCapability =
+            resolve(baseDir) === resolve(root)
+              ? readCapability
+              : await bindWorkspaceDirectoryReadCapability(root, {
+                  expectedIdentity: rootIdentity,
+                });
         }
       } catch (error) {
+        await ignoreReadCapability?.dispose().catch(() => {});
+        await readCapability?.dispose().catch(() => {});
         return errorResult(
           `Orient error: authoritative Editor workspace files cannot be read safely: ${
             error instanceof Error ? error.message : String(error)
@@ -279,15 +364,40 @@ export function createOrientTool(
         };
 
         const cap = clampMaxFiles(args.maxFiles);
+        let rootIgnoreFiles: Awaited<
+          ReturnType<typeof discoverRipgrepRootIgnoreFiles>
+        >;
+        try {
+          rootIgnoreFiles = await discoverRipgrepRootIgnoreFiles({
+            searchRoot: baseDir,
+            displayRoot: root,
+            ...(ignoreReadCapability !== undefined
+              ? { readCapability: ignoreReadCapability }
+              : {}),
+          });
+        } catch (error) {
+          return finalizeAuthoritativeResult(editorCoherenceError(error));
+        }
+        await afterRootIgnoreSnapshot?.();
         const listed = await runRipgrepFiles({
           command: ripgrepCommand,
           pattern: SOURCE_GLOB,
-          cwd: baseDir,
+          cwd: root,
+          searchPath: relative(root, baseDir) || ".",
           toolArgs: rawArgs,
           limit: cap,
           includeIgnored: false,
+          rootIgnoreFiles,
           signal,
-          ...(readCapability !== undefined ? { readCapability } : {}),
+          ...(ignoreReadCapability !== undefined
+            ? { readCapability: ignoreReadCapability }
+            : {}),
+          ...(ripgrepTimeoutMs !== undefined
+            ? { timeoutMs: ripgrepTimeoutMs }
+            : {}),
+          ...(ripgrepMaxOutputBytes !== undefined
+            ? { maxOutputBytes: ripgrepMaxOutputBytes }
+            : {}),
         });
         if (signal?.aborted || listed.aborted) {
           return finalizeAuthoritativeResult(errorResult("Orient aborted"));
@@ -295,8 +405,24 @@ export function createOrientTool(
         if (listed.spawnError) {
           return finalizeAuthoritativeResult(
             errorResult(
-              `Orient could not enumerate files (is ripgrep installed?): ${listed.spawnError.message}`,
+              listed.spawnError instanceof GrepBoundaryError
+                ? `Orient error: ${formatRipgrepFilesError(listed.spawnError)}`
+                : PINNED_RIPGREP_UNAVAILABLE_MESSAGE,
             ),
+          );
+        }
+        if (
+          listed.stopReason !== undefined &&
+          listed.stopReason !== "consumer_limit"
+        ) {
+          const detail =
+            listed.stopReason === "timeout"
+              ? "ripgrep timed out"
+              : listed.stopReason === "output_limit"
+                ? "ripgrep exceeded the output safety limit"
+                : `ripgrep stopped before enumeration completed (${listed.stopReason})`;
+          return finalizeAuthoritativeResult(
+            errorResult(`Orient error: ${detail}.`),
           );
         }
         const snapshotsByPath = new Map(
@@ -305,12 +431,17 @@ export function createOrientTool(
             snapshot,
           ]),
         );
-        const isIgnored = await createSearchIgnoreMatcher(root);
+        const isIgnored = await createSearchIgnoreMatcher(root, {
+          ...(ignoreReadCapability !== undefined
+            ? { readCapability: ignoreReadCapability }
+            : {}),
+        });
         const dirtyRelPaths: string[] = [];
         for (const snapshot of authoritativeSnapshots) {
           const rel = normalizedRelativePath(relative(baseDir, snapshot.path));
           if (
             !isOrientSourcePath(rel) ||
+            !isSafeOrientDisplayPath(rel) ||
             searchPathUsesDefaultExcludedDirectory(rel, false) ||
             (await isIgnored(snapshot.path))
           ) {
@@ -324,9 +455,21 @@ export function createOrientTool(
         );
         const relPaths = [
           ...dirtyRelPaths,
-          ...listed.lines.filter(
-            (path) => !dirtyRelPathSet.has(normalizedRelativePath(path)),
-          ),
+          ...listed.pathRecords
+            .map((path) => decodeRipgrepPathBytes(path))
+            .filter((path): path is string => path !== undefined)
+            .filter(isSafeOrientDisplayPath)
+            .map((path) => relative(baseDir, resolve(root, path)))
+            .filter(
+              (path) =>
+                path.length > 0 &&
+                path !== ".." &&
+                !path.startsWith(`..${sep}`) &&
+                !isAbsolute(path),
+            )
+            .filter(
+              (path) => !dirtyRelPathSet.has(normalizedRelativePath(path)),
+            ),
         ].slice(0, cap);
         if (relPaths.length === 0) {
           return finalizeAuthoritativeResult(
@@ -403,6 +546,9 @@ export function createOrientTool(
           }),
         );
       } finally {
+        if (ignoreReadCapability !== readCapability) {
+          await ignoreReadCapability?.dispose();
+        }
         await readCapability?.dispose();
       }
     },
@@ -413,11 +559,17 @@ function normalizedAbsolutePath(path: string): string {
   if (/^[A-Za-z]:[\\/]/u.test(path) || /^\\\\/u.test(path)) {
     return win32.normalize(path).toLowerCase().normalize("NFC");
   }
-  return resolve(path).normalize("NFC");
+  return resolve(path);
 }
 
 function normalizedRelativePath(path: string): string {
-  return path.replace(/\\/gu, "/").normalize("NFC");
+  return process.platform === "win32" ? path.replace(/\\/gu, "/") : path;
+}
+
+function isSafeOrientDisplayPath(path: string): boolean {
+  // The orientation map is line-oriented user output. Reject control-bearing
+  // filenames instead of letting one filesystem record invent output lines.
+  return !/[\u0000-\u001f\u007f]/u.test(path);
 }
 
 function isOrientSourcePath(path: string): boolean {

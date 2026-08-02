@@ -86,7 +86,8 @@ describe("runAgenCDoctorCli", () => {
       const code = await runAgenCDoctorCli({ kind: "doctor", json: false });
       const printed = out.mock.calls.map((c) => String(c[0])).join("");
       expect(printed).toContain("AgenC Doctor");
-      expect(printed).toContain("ripgrep:");
+      expect(printed).toContain("Configured rg (TUI/legacy):");
+      expect(printed).toContain("Packaged rg (Grep/Glob/Orient):");
       // Exit code is 0 (clean) or 1 (warnings present) — always a number.
       expect([0, 1]).toContain(code);
     } finally {
@@ -100,7 +101,12 @@ describe("runAgenCDoctorCli", () => {
       await runAgenCDoctorCli({ kind: "doctor", json: true });
       const printed = out.mock.calls.map((c) => String(c[0])).join("");
       const parsed = JSON.parse(printed);
-      expect(parsed).toHaveProperty("ripgrepStatus");
+      expect(parsed.ripgrepStatus).toEqual(
+        expect.objectContaining({
+          working: expect.any(Boolean),
+          grepPinnedWorking: expect.any(Boolean),
+        }),
+      );
       expect(parsed).toHaveProperty("installationType");
     } finally {
       out.mockRestore();
@@ -155,7 +161,7 @@ describe("buildRipgrepWarning", () => {
     );
     expect(warning).not.toBeNull();
     expect(warning?.issue).toContain("configured ripgrep");
-    expect(warning?.issue).toContain("Glob and TUI file search");
+    expect(warning?.issue).toContain("TUI and legacy runtime search");
     expect(warning?.fix).toContain("brew install ripgrep");
   });
 
@@ -240,7 +246,7 @@ describe("buildRipgrepWarning", () => {
       if (pinned !== undefined) {
         expect(pinned.fix).toContain("reinstall that same AgenC version");
         expect(pinned.fix).toContain(
-          "PATH-installed `rg` does not repair Grep",
+          "PATH-installed `rg` does not repair Grep, Glob, or Orient",
         );
         expect(pinned.fix).not.toContain("apt install ripgrep");
       }

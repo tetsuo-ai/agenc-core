@@ -57,30 +57,38 @@ Do **not** treat the TUI pool (`tools.ts`) as authoritative for this list.
 | `Orient` | Workspace orientation helper |
 | `apply_patch` | Multi-file transactional patch; **deferred** by default (not in `visibleByDefault`) |
 
-#### Grep execution and limits
+#### Search execution and limits
 
-`Grep` executes only the absolute ripgrep binary supplied by AgenC's
+`Grep`, `Glob`, and `Orient` execute only the absolute ripgrep binary supplied by AgenC's
 lockfile-pinned `@vscode/ripgrep` package, always with `--no-config` and without
-following symlinks. It does not resolve `rg` through `PATH` and has no
+following symlinks. They do not resolve `rg` through `PATH` and have no
 JavaScript regex or glob-search fallback. If the packaged executable is missing
 or not executable, run `agenc doctor`, confirm the AgenC version, and reinstall
 that same version.
 
 Content/context results use ripgrep's incremental JSON protocol. File summaries
 use NUL-terminated paths, and count summaries use NUL-delimited paths followed
-by strict decimal counts. Control-byte paths are escaped for display; invalid
-UTF-8 paths carry an explicit `path-encoding=bytes` marker.
+by strict decimal counts. `Glob` and `Orient` file enumeration is likewise
+NUL-delimited, so a newline in one pathname cannot invent multiple results.
+Scoped searches snapshot verified parent-root ignore bytes and pass private
+copies to ripgrep; they do not hand a previously admitted workspace ignore
+pathname back to the subprocess to reopen after a race window.
+Control-byte paths are escaped for display; invalid UTF-8 paths carry an
+explicit `path-encoding=bytes` marker where byte-safe display is permitted and
+are rejected when descriptor validation or line-oriented orientation output
+cannot represent them safely.
 
 Portable input maxima are 65,536 UTF-8 bytes for the pattern and raw glob,
 16,384 bytes per glob and raw path, 256 globs, 256 bytes for `type`, 10,000
 context lines, 100,000 returned results, a 100,000 `head_limit`, and a 1,000,000
-offset. The complete POSIX argv is capped at 262,144 UTF-8 bytes. Windows also
+offset. A `Glob` pattern is one glob entry and therefore uses the 16,384-byte
+per-glob ceiling. The complete POSIX argv is capped at 262,144 UTF-8 bytes. Windows also
 applies the stricter serialized non-verbatim command-line ceiling of 30,000
 UTF-16 code units, including executable, separators, quoting expansion, and the
 terminal NUL; an input can therefore pass the portable byte limit and still be
 rejected on Windows. `head_limit: 0` removes user pagination only, not the hard
-record, decoded-output, result, context, diagnostic, or 120-second process
-ceilings.
+record, decoded-output, 32 MiB rendered-output, 100,000 rendered-line/result,
+context, diagnostic, or 120-second process ceilings.
 
 ### Filesystem compatibility (`tools/system/filesystem.ts`)
 

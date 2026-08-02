@@ -16,10 +16,7 @@ import {
   resolveTransactionGuardPolicy,
   type TransactionGuardValueSource,
 } from '../transaction-guard/config.js'
-import {
-  PINNED_RIPGREP_AVAILABLE,
-  PINNED_RIPGREP_PATH,
-} from '../tools/system/pinned-ripgrep.js'
+import { selectPinnedRipgrepPath } from '../tools/system/pinned-ripgrep.js'
 import { getCwd } from './cwd.js'
 import { isEnvTruthy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
@@ -743,7 +740,7 @@ export function detectLinuxGlobPatternWarnings(): Array<{
   return warnings
 }
 
-/** Build the configured-ripgrep warning used by Glob and TUI file search. */
+/** Build the configured-ripgrep warning used by TUI and legacy runtime search. */
 export function buildRipgrepWarning(
   status: { working: boolean; mode: 'system' | 'builtin' | 'embedded' },
   platform: NodeJS.Platform = process.platform,
@@ -753,13 +750,13 @@ export function buildRipgrepWarning(
   }
   return {
     issue:
-      'configured ripgrep (rg) could not be started — Glob and TUI file search require this search runtime',
+      'configured ripgrep (rg) could not be started — TUI and legacy runtime search require this configured search runtime',
     fix: getRipgrepInstallHint(platform),
   }
 }
 
 /**
- * Build the independent warning for Grep's lockfile-pinned search runtime.
+ * Build the independent warning for the lockfile-pinned tool search runtime.
  * A PATH executable is deliberately not a substitute for this trust boundary.
  */
 export function buildPinnedGrepWarning(status: {
@@ -770,13 +767,13 @@ export function buildPinnedGrepWarning(status: {
   }
   return {
     issue:
-      "Grep could not start AgenC's packaged pinned binary and has no JavaScript fallback",
+      "Grep, Glob, and Orient could not start AgenC's packaged pinned binary and have no JavaScript fallback",
     fix:
-      'Run `agenc doctor` and `agenc --version`, then reinstall that same AgenC version to restore its packaged ripgrep binary. A PATH-installed `rg` does not repair Grep.',
+      'Run `agenc doctor` and `agenc --version`, then reinstall that same AgenC version to restore its packaged ripgrep binary. A PATH-installed `rg` does not repair Grep, Glob, or Orient.',
   }
 }
 
-/** Pure diagnostic seam keeping configured and Grep-pinned probes separate. */
+/** Pure diagnostic seam keeping configured and packaged probes separate. */
 export function buildRipgrepWarnings(
   status: {
     working: boolean
@@ -815,9 +812,10 @@ export function buildRipgrepDiagnostic(
 }
 
 export async function probePinnedGrepAvailable(): Promise<boolean> {
-  if (!PINNED_RIPGREP_AVAILABLE) return false
+  const ripgrepPath = selectPinnedRipgrepPath()
+  if (ripgrepPath === undefined) return false
   const result = await execFileNoThrow(
-    PINNED_RIPGREP_PATH,
+    ripgrepPath,
     ['--no-config', '--version'],
     {
       timeout: 5_000,

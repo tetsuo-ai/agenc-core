@@ -4,6 +4,7 @@ import {
   assertGrepArgumentEncoding,
   assertGrepArgvWithinLimits,
   createRipgrepWireParser,
+  createRipgrepWireValidator,
   decodeRipgrepPathBytes,
   grepArgvUtf8Bytes,
   grepWindowsCommandLineUtf16CodeUnits,
@@ -263,6 +264,16 @@ describe("ripgrep count protocol", () => {
         Buffer.concat([Buffer.from("b"), Buffer.from([0]), Buffer.from("5\n")]),
       ),
     ).toThrowError(expect.objectContaining({ reason: "COUNT_OVERFLOW" }));
+  });
+
+  test("validates without retaining skipped records", () => {
+    const validator = createRipgrepWireValidator("count");
+    validator.push(Buffer.from("valid.txt\x001\n", "utf8"));
+    expect(validator.records).toEqual([]);
+    expect(() =>
+      validator.push(Buffer.from("skipped.txt\0not-decimal\n", "utf8")),
+    ).toThrowError(expect.objectContaining({ reason: "INVALID_COUNT" }));
+    expect(validator.records).toEqual([]);
   });
 });
 

@@ -1,5 +1,6 @@
 import {
   link,
+  mkdir,
   mkdtemp,
   rename,
   rm,
@@ -61,6 +62,37 @@ describe("descriptor-bound file reads", () => {
     }
   });
 
+  test.runIf(process.platform === "linux")(
+    "keeps NFC and NFD sibling paths byte-distinct",
+    async () => {
+      root = await mkdtemp(join(tmpdir(), "agenc-bound-read-unicode-"));
+      const nfcDirectory = join(root, "caf\u00e9");
+      const nfdDirectory = join(root, "cafe\u0301");
+      const nfcFile = join(nfcDirectory, "value.txt");
+      const nfdFile = join(nfdDirectory, "value.txt");
+      await mkdir(nfcDirectory);
+      await mkdir(nfdDirectory);
+      await writeFile(nfcFile, "nfc-sibling\n", "utf8");
+      await writeFile(nfdFile, "nfd-target\n", "utf8");
+
+      const directoryCapability =
+        await bindWorkspaceDirectoryReadCapability(nfdDirectory);
+      const fileCapability = await bindWorkspaceFileReadCapability(nfdFile);
+      try {
+        const directoryRead = await directoryCapability.readRelativeFile(
+          "value.txt",
+          4096,
+        );
+        const fileRead = await fileCapability.readFile(4096);
+        expect(directoryRead.content.toString("utf8")).toBe("nfd-target\n");
+        expect(fileRead.content.toString("utf8")).toBe("nfd-target\n");
+      } finally {
+        await fileCapability.dispose();
+        await directoryCapability.dispose();
+      }
+    },
+  );
+
   test("bound subprocess timeout is reported and leaves the helper reusable", async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-bound-read-timeout-"));
     const target = join(root, "target.txt");
@@ -110,6 +142,299 @@ describe("descriptor-bound file reads", () => {
     } finally {
       clearTimeout(abortTimer);
       await expect(capability.dispose()).resolves.toBeUndefined();
+    }
+  });
+
+  test("structured line limiting preserves one fragmented JSON record", async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-bound-read-structured-"));
+    const producer = join(root, "fragmented-json.mjs");
+    const path = { text: "target.txt" };
+    const begin = JSON.stringify({ type: "begin", data: { path } });
+    const first = JSON.stringify({
+      type: "match",
+      data: {
+        path,
+        lines: { text: "first\n" },
+        line_number: 1,
+        absolute_offset: 0,
+        submatches: [{ match: { text: "first" }, start: 0, end: 5 }],
+      },
+    });
+    const second = JSON.stringify({
+      type: "match",
+      data: {
+        path,
+        lines: { text: "second\n" },
+        line_number: 2,
+        absolute_offset: 6,
+        submatches: [{ match: { text: "second" }, start: 0, end: 6 }],
+      },
+    });
+    const end = JSON.stringify({ type: "end", data: { path } });
+    const summary = JSON.stringify({ type: "summary", data: {} });
+    await writeFile(
+      producer,
+      [
+        `process.stdout.write(${JSON.stringify(`${begin}\n`)});`,
+        `const first = ${JSON.stringify(`${first}\n`)};`,
+        "for (let index = 0; index < first.length; index += 7) {",
+        "  process.stdout.write(first.slice(index, index + 7));",
+        "  await new Promise((resolve) => setImmediate(resolve));",
+        "}",
+        `process.stdout.write(${JSON.stringify(`${second}\n${end}\n${summary}\n`)});`,
+      ].join("\n"),
+      "utf8",
+    );
+    const capability = await bindWorkspaceDirectoryReadCapability(root);
+
+    try {
+      const result = await capability.runRipgrep({
+        program: process.execPath,
+        args: [producer],
+        env: {},
+        timeoutMs: 5_000,
+        maxOutputBytes: 4096,
+        structuredLineLimit: {
+          outputMode: "content",
+          maximumLines: 1,
+          maximumRecordBytes: 1024,
+        },
+      });
+
+      expect(result.spawnError).toBeUndefined();
+      expect(result.killedAfterLimit).toBe(true);
+      expect(result.stdout.toString("utf8")).toBe(`${begin}\n${first}\n`);
+    } finally {
+      await capability.dispose();
+    }
+  });
+
+  test("structured limiting rejects a fragmented oversized record early", async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-bound-read-record-cap-"));
+    const target = join(root, "target.txt");
+    const producer = join(root, "oversized-record.mjs");
+    await writeFile(target, "still-readable\n", "utf8");
+    await writeFile(
+      producer,
+      [
+        "for (let index = 0; index < 20; index += 1) {",
+        '  process.stdout.write("x".repeat(128));',
+        "  await new Promise((resolve) => setImmediate(resolve));",
+        "}",
+      ].join("\n"),
+      "utf8",
+    );
+    const capability = await bindWorkspaceDirectoryReadCapability(root);
+
+    try {
+      const result = await capability.runRipgrep({
+        program: process.execPath,
+        args: [producer],
+        env: {},
+        timeoutMs: 5_000,
+        maxOutputBytes: 4096,
+        structuredLineLimit: {
+          outputMode: "content",
+          maximumLines: 1,
+          maximumRecordBytes: 1024,
+        },
+      });
+
+      expect(result.killedAfterLimit).toBe(false);
+      expect(result.spawnError?.message).toContain(
+        "structured ripgrep record exceeds 1024 bytes",
+      );
+      expect(result.stdout.byteLength).toBeLessThanOrEqual(1024);
+      const read = await capability.readRelativeFile("target.txt", 4096);
+      expect(read.content.toString("utf8")).toBe("still-readable\n");
+    } finally {
+      await capability.dispose();
+    }
+  });
+
+  test.each([
+    {
+      label: "invalid UTF-8 paths remain byte-distinct from U+FFFD exclusions",
+      outputMode: "files_with_matches" as const,
+      wire: Buffer.concat([
+        Buffer.from([0xff, 0]),
+        Buffer.from("clean.txt\0", "utf8"),
+      ]),
+      excludedPaths: ["\ufffd"],
+      reason: undefined,
+      expectedStdout: Buffer.from([0xff, 0]),
+    },
+    {
+      label: "invalid counts on excluded paths",
+      outputMode: "count" as const,
+      wire: Buffer.from("dirty.txt\x00not-decimal\nclean.txt\x001\n", "utf8"),
+      excludedPaths: ["dirty.txt"],
+      reason: "INVALID_COUNT",
+      expectedStdout: undefined,
+    },
+    {
+      label: "invalid JSON ordering before an offset",
+      outputMode: "content" as const,
+      wire: Buffer.from(
+        `${JSON.stringify({
+          type: "match",
+          data: {
+            path: { text: "skipped.txt" },
+            lines: { text: "needle\n" },
+            line_number: 1,
+            absolute_offset: 0,
+            submatches: [{ match: { text: "needle" }, start: 0, end: 6 }],
+          },
+        })}\n${JSON.stringify({ type: "summary", data: {} })}\n`,
+        "utf8",
+      ),
+      excludedPaths: [],
+      reason: "INVALID_JSON_RECORD_ORDER",
+      expectedStdout: undefined,
+    },
+  ])(
+    "validates $label",
+    async ({ outputMode, wire, excludedPaths, reason, expectedStdout }) => {
+      root = await mkdtemp(join(tmpdir(), "agenc-bound-read-wire-validation-"));
+      const producer = join(root, "wire-producer.mjs");
+      await writeFile(
+        producer,
+        `process.stdout.write(Buffer.from(${JSON.stringify(wire.toString("base64"))}, "base64"));\n`,
+        "utf8",
+      );
+      const capability = await bindWorkspaceDirectoryReadCapability(root);
+
+      try {
+        const result = await capability.runRipgrep({
+          program: process.execPath,
+          args: [producer],
+          env: {},
+          timeoutMs: 5_000,
+          maxOutputBytes: 4096,
+          structuredLineLimit: {
+            outputMode,
+            maximumLines: 1,
+            maximumRecordBytes: 1024,
+            skipLines: outputMode === "content" ? 1 : 0,
+            excludedPaths,
+          },
+        });
+
+        if (reason === undefined) {
+          expect(result.spawnError).toBeUndefined();
+          expect(result.killedAfterLimit).toBe(true);
+          expect(result.stdout).toEqual(expectedStdout);
+        } else {
+          expect(result.killedAfterLimit).toBe(false);
+          expect(result.spawnError?.message).toContain(`[${reason}]`);
+        }
+      } finally {
+        await capability.dispose();
+      }
+    },
+  );
+
+  test.runIf(process.platform === "win32")(
+    "normalizes Windows dot prefixes, separators, and Unicode case before excluding dirty paths",
+    async () => {
+      root = await mkdtemp(join(tmpdir(), "agenc-bound-read-win-paths-"));
+      const producer = join(root, "wire-producer.mjs");
+      const wire = Buffer.from(".\\CAF\u00c9\\Dirty.ts\0clean.ts\0", "utf8");
+      await writeFile(
+        producer,
+        `process.stdout.write(Buffer.from(${JSON.stringify(wire.toString("base64"))}, "base64"));\n`,
+        "utf8",
+      );
+      const capability = await bindWorkspaceDirectoryReadCapability(root);
+
+      try {
+        const result = await capability.runRipgrep({
+          program: process.execPath,
+          args: [producer],
+          env: {},
+          timeoutMs: 5_000,
+          maxOutputBytes: 4_096,
+          structuredLineLimit: {
+            outputMode: "files_with_matches",
+            maximumLines: 1,
+            maximumRecordBytes: 1_024,
+            excludedPaths: ["caf\u00e9/dirty.ts"],
+          },
+        });
+
+        expect(result.spawnError).toBeUndefined();
+        expect(result.killedAfterLimit).toBe(true);
+        expect(result.stdout).toEqual(Buffer.from("clean.ts\0", "utf8"));
+      } finally {
+        await capability.dispose();
+      }
+    },
+  );
+
+  test("excluded structured records still consume the helper work budget", async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-bound-read-work-budget-"));
+    const producer = join(root, "wire-producer.mjs");
+    await writeFile(
+      producer,
+      'process.stdout.write("dirty-one.txt\\0dirty-two.txt\\0clean.txt\\0");\n',
+      "utf8",
+    );
+    const capability = await bindWorkspaceDirectoryReadCapability(root);
+
+    try {
+      const result = await capability.runRipgrep({
+        program: process.execPath,
+        args: [producer],
+        env: {},
+        timeoutMs: 5_000,
+        maxOutputBytes: 4_096,
+        structuredLineLimit: {
+          outputMode: "files_with_matches",
+          maximumLines: 1,
+          maximumRecordBytes: 1_024,
+          maximumWorkUnits: 2,
+          excludedPaths: ["dirty-one.txt", "dirty-two.txt"],
+        },
+      });
+
+      expect(result.killedAfterLimit).toBe(false);
+      expect(result.spawnError?.message).toContain("[RESULT_LIMIT]");
+      expect(result.stdout).toEqual(Buffer.alloc(0));
+    } finally {
+      await capability.dispose();
+    }
+  });
+
+  test("excluded structured bytes still consume the raw wire-output budget", async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-bound-read-wire-budget-"));
+    const producer = join(root, "wire-producer.mjs");
+    await writeFile(
+      producer,
+      'process.stdout.write("dirty.txt\\0".repeat(10));\n',
+      "utf8",
+    );
+    const capability = await bindWorkspaceDirectoryReadCapability(root);
+
+    try {
+      const result = await capability.runRipgrep({
+        program: process.execPath,
+        args: [producer],
+        env: {},
+        timeoutMs: 5_000,
+        maxOutputBytes: 10,
+        structuredLineLimit: {
+          outputMode: "files_with_matches",
+          maximumLines: 1,
+          maximumRecordBytes: 1_024,
+          maximumWorkUnits: 100,
+          excludedPaths: ["dirty.txt"],
+        },
+      });
+
+      expect(result.stopReason).toBe("output_limit");
+      expect(result.stdout).toEqual(Buffer.alloc(0));
+    } finally {
+      await capability.dispose();
     }
   });
 });

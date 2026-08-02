@@ -49,6 +49,14 @@ export interface SupervisedProcessOptions {
   /** Optional caller-supplied deadline. Omitted means unbounded. */
   readonly timeoutMs?: number;
   readonly maxOutputBytes: number;
+  /**
+   * Retain stdout in the result and charge it to `maxOutputBytes`.
+   *
+   * Set to false only for a streaming consumer which supplies `onStdout` and
+   * enforces its own record, decoded-byte, and aggregate-work ceilings. Stderr
+   * remains retained and charged to `maxOutputBytes`.
+   */
+  readonly captureStdout?: boolean;
   /** Optional bounded source bytes for native helpers that read stdin. */
   readonly stdin?: string | Buffer;
   readonly signal?: AbortSignal;
@@ -1503,8 +1511,18 @@ export function runSupervisedProcess(
       target: Buffer[],
       chunk: Buffer,
       callback: SupervisedProcessOptions["onStdout"],
+      capture: boolean,
     ): void => {
       if (settled || stopReason !== undefined || processError !== undefined) {
+        return;
+      }
+      if (!capture) {
+        try {
+          callback?.(chunk, control);
+        } catch (error) {
+          processError ??= toError(error);
+          requestStop("consumer_limit");
+        }
         return;
       }
       const remaining = options.maxOutputBytes - outputBytes;
@@ -1608,10 +1626,10 @@ export function runSupervisedProcess(
     if (options.signal?.aborted === true) onAbort();
 
     child.stdout.on("data", (chunk: Buffer) =>
-      append(stdout, chunk, options.onStdout),
+      append(stdout, chunk, options.onStdout, options.captureStdout !== false),
     );
     child.stderr.on("data", (chunk: Buffer) =>
-      append(stderr, chunk, options.onStderr),
+      append(stderr, chunk, options.onStderr, true),
     );
     child.stdin.on("error", (error: NodeJS.ErrnoException) => {
       // Search helpers such as `rg -l -` may deliberately stop reading once
@@ -1656,6 +1674,11 @@ function validateLimits(options: SupervisedProcessOptions): void {
   if (!Number.isFinite(options.maxOutputBytes) || options.maxOutputBytes <= 0) {
     throw new Error(
       "supervised process maxOutputBytes must be finite and positive",
+    );
+  }
+  if (options.captureStdout === false && options.onStdout === undefined) {
+    throw new Error(
+      "supervised process captureStdout=false requires an onStdout consumer",
     );
   }
 }

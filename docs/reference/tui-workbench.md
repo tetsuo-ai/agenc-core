@@ -131,9 +131,9 @@ to the buffer. Editor requests cannot start configured hooks, MCP, background
 job recovery, skill watchers, memory/docs learning, or secondary model calls.
 Framed buffer text is never reparsed as `@file`/`@agent` syntax, and Editor
 searches use AgenC's pinned ripgrep binary rather than an executable or config
-selected through the operator environment. Grep fails closed if that packaged
-binary is unavailable; it never evaluates model patterns in a synchronous
-JavaScript regular expression.
+selected through the operator environment. Grep, Glob, and Orient fail closed
+if that packaged binary is unavailable; they never evaluate model patterns in
+a synchronous JavaScript regular expression.
 On a cold workspace, the first eligible prediction may provision the shared
 daemon session without creating a conversation turn; the first real Editor or
 Agent submission reuses it, and closing first tears it down. Agent-only startup

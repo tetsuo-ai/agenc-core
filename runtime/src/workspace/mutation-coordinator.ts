@@ -2840,7 +2840,7 @@ export class WorkspaceMutationCoordinator {
         `path is outside workspace: ${path}`,
       );
     }
-    return candidate.normalize("NFC");
+    return candidate;
   }
 
   async #serializeProposalResolution<Result>(
@@ -3668,9 +3668,7 @@ export class WorkspaceMutationCoordinatorRegistry {
   findForWorkspaceRootIdentity(
     workspaceRoot: string,
   ): WorkspaceMutationCoordinator | null {
-    return (
-      this.#coordinators.get(resolve(workspaceRoot).normalize("NFC")) ?? null
-    );
+    return this.#coordinators.get(normalizePathIdentity(workspaceRoot)) ?? null;
   }
 
   findForPath(path: string): WorkspaceMutationCoordinator | null {
@@ -4050,19 +4048,27 @@ function canonicalizePathSync(path: string): string {
   for (;;) {
     try {
       const canonicalParent = realpathSync.native(cursor);
-      return resolve(canonicalParent, ...missingSegments.reverse()).normalize(
-        "NFC",
+      return normalizePathIdentity(
+        resolve(canonicalParent, ...missingSegments.reverse()),
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
       const parent = dirname(cursor);
-      if (parent === cursor) return resolved.normalize("NFC");
+      if (parent === cursor) return normalizePathIdentity(resolved);
       missingSegments.push(basename(cursor));
       cursor = parent;
     }
   }
+}
+
+function normalizePathIdentity(path: string): string {
+  const resolved = resolve(path);
+  // POSIX pathnames are byte strings. NFC and NFD spellings can identify two
+  // different directory entries, so only Windows retains the prior Unicode
+  // normalization used by coordinator keys and token-root lookup.
+  return process.platform === "win32" ? resolved.normalize("NFC") : resolved;
 }
 
 function isSameOrDescendantPath(parent: string, candidate: string): boolean {

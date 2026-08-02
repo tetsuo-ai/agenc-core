@@ -25,6 +25,7 @@ export const MAX_GREP_WINDOWS_COMMAND_LINE_UTF16_CODE_UNITS = 30_000;
 export const MAX_GREP_WALL_MS = 120_000;
 export const MAX_GREP_RECORD_BYTES = 4_194_304;
 export const MAX_GREP_DECODED_BYTES = 33_554_432;
+export const MAX_GREP_RENDERED_BYTES = MAX_GREP_DECODED_BYTES;
 export const MAX_GREP_RESULTS = 100_000;
 export const MAX_GREP_CONTEXT_RECORDS = 100_000;
 export const MAX_GREP_AGGREGATE_MATCH_COUNT = Number.MAX_SAFE_INTEGER;
@@ -42,6 +43,7 @@ export type GrepBoundaryReason =
   | "INVALID_WIRE_BASE64"
   | "RECORD_LIMIT"
   | "DECODED_OUTPUT_LIMIT"
+  | "RENDERED_OUTPUT_LIMIT"
   | "DIAGNOSTIC_LIMIT"
   | "RESULT_LIMIT"
   | "CONTEXT_LIMIT"
@@ -271,6 +273,7 @@ abstract class DelimitedRipgrepParser implements RipgrepWireParser {
   constructor(
     private readonly delimiter: number,
     limits?: Partial<RipgrepParserLimits>,
+    protected readonly retainRecords = true,
   ) {
     this.limits = parserLimits(limits);
     this.accumulator = new RecordAccumulator(this.limits.maxRecordBytes);
@@ -341,8 +344,8 @@ abstract class DelimitedRipgrepParser implements RipgrepWireParser {
 }
 
 class RipgrepFilesParser extends DelimitedRipgrepParser {
-  constructor(limits?: Partial<RipgrepParserLimits>) {
-    super(BYTE_NUL, limits);
+  constructor(limits?: Partial<RipgrepParserLimits>, retainRecords = true) {
+    super(BYTE_NUL, limits, retainRecords);
   }
 
   protected consumeRecord(path: Buffer): void {
@@ -354,7 +357,7 @@ class RipgrepFilesParser extends DelimitedRipgrepParser {
     }
     this.addDecodedBytes(path.byteLength);
     this.addResult();
-    this.output.push({ kind: "file", path });
+    if (this.retainRecords) this.output.push({ kind: "file", path });
   }
 
   protected unterminatedRecord(): never {
@@ -373,8 +376,12 @@ class RipgrepCountParser implements RipgrepWireParser {
   private state: "path" | "count" = "path";
   private totalDecodedBytes = 0;
   private aggregateCount = 0;
+  private resultCount = 0;
 
-  constructor(limits?: Partial<RipgrepParserLimits>) {
+  constructor(
+    limits?: Partial<RipgrepParserLimits>,
+    private readonly retainRecords = true,
+  ) {
     this.limits = parserLimits(limits);
     this.path = new RecordAccumulator(this.limits.maxRecordBytes);
     this.count = new RecordAccumulator(this.limits.maxRecordBytes);
@@ -457,7 +464,8 @@ class RipgrepCountParser implements RipgrepWireParser {
         `ripgrep aggregate match count exceeds ${this.limits.maxAggregateMatchCount}`,
       );
     }
-    if (this.output.length >= this.limits.maxResults) {
+    this.resultCount += 1;
+    if (this.resultCount > this.limits.maxResults) {
       throw new GrepBoundaryError(
         "RESULT_LIMIT",
         `ripgrep results exceed ${this.limits.maxResults} records`,
@@ -475,7 +483,7 @@ class RipgrepCountParser implements RipgrepWireParser {
     }
     this.aggregateCount = aggregate;
     this.totalDecodedBytes = decoded;
-    this.output.push({ kind: "count", path, count });
+    if (this.retainRecords) this.output.push({ kind: "count", path, count });
   }
 }
 
@@ -483,8 +491,8 @@ class RipgrepJsonParser extends DelimitedRipgrepParser {
   private openPath: Buffer | undefined;
   private sawSummary = false;
 
-  constructor(limits?: Partial<RipgrepParserLimits>) {
-    super(BYTE_LF, limits);
+  constructor(limits?: Partial<RipgrepParserLimits>, retainRecords = true) {
+    super(BYTE_LF, limits, retainRecords);
   }
 
   protected consumeRecord(record: Buffer): void {
@@ -574,15 +582,17 @@ class RipgrepJsonParser extends DelimitedRipgrepParser {
       this.addDecodedBytes(path.byteLength + lines.byteLength);
       if (type === "match") this.addResult();
       else this.addContext();
-      this.output.push({
-        kind: "content",
-        recordType: type,
-        path,
-        lines,
-        lineNumber,
-        absoluteOffset,
-        submatches,
-      });
+      if (this.retainRecords) {
+        this.output.push({
+          kind: "content",
+          recordType: type,
+          path,
+          lines,
+          lineNumber,
+          absoluteOffset,
+          submatches,
+        });
+      }
       return;
     }
     if (type === "end") {
@@ -615,6 +625,29 @@ export function createRipgrepWireParser(
   if (mode === "content") return new RipgrepJsonParser(limits);
   if (mode === "files_with_matches") return new RipgrepFilesParser(limits);
   return new RipgrepCountParser(limits);
+}
+
+/**
+ * Validate every wire record without retaining it. Streaming pagination uses
+ * this in parallel with its bounded output window so skipped records cannot
+ * hide malformed paths, counts, JSON, or begin/match/end ordering.
+ */
+export function createRipgrepWireValidator(
+  mode: "content" | "files_with_matches" | "count",
+  limits?: Pick<RipgrepParserLimits, "maxRecordBytes">,
+): RipgrepWireParser {
+  const validatorLimits: Partial<RipgrepParserLimits> = {
+    maxRecordBytes: limits?.maxRecordBytes ?? MAX_GREP_RECORD_BYTES,
+    maxDecodedBytes: Number.MAX_SAFE_INTEGER,
+    maxResults: Number.MAX_SAFE_INTEGER,
+    maxContextRecords: Number.MAX_SAFE_INTEGER,
+    maxAggregateMatchCount: Number.MAX_SAFE_INTEGER,
+  };
+  if (mode === "content") return new RipgrepJsonParser(validatorLimits, false);
+  if (mode === "files_with_matches") {
+    return new RipgrepFilesParser(validatorLimits, false);
+  }
+  return new RipgrepCountParser(validatorLimits, false);
 }
 
 export function renderRipgrepPathBytes(path: Buffer): string {

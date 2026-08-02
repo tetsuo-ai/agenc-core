@@ -207,6 +207,44 @@ describe("safePath", () => {
     const result = await safePath("/workspace/link/passwd", ALLOWED_PATHS);
     expect(result.safe).toBe(false);
   });
+
+  it.runIf(process.platform === "linux")(
+    "treats a POSIX backslash as a literal byte at the allowlist boundary",
+    async () => {
+      const escapedSibling = await safePath(
+        "/workspace\\outside/secret.txt",
+        ["/workspace"],
+      );
+      const literalInside = await safePath(
+        "/workspace/literal\\name.txt",
+        ["/workspace"],
+      );
+
+      expect(escapedSibling.safe).toBe(false);
+      expect(literalInside.safe).toBe(true);
+      expect(literalInside.resolved).toBe("/workspace/literal\\name.txt");
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "preserves NFD targets and NFD allowed roots without selecting NFC siblings",
+    async () => {
+      const nfc = "/workspace/caf\u00e9";
+      const nfd = "/workspace/cafe\u0301";
+      const explicitNfd = await safePath(`${nfd}/file.ts`, ["/workspace"]);
+      const nfdAllowedRoot = await safePath(`${nfd}/file.ts`, [nfd]);
+
+      expect(explicitNfd).toMatchObject({
+        safe: true,
+        resolved: `${nfd}/file.ts`,
+      });
+      expect(explicitNfd.resolved).not.toBe(`${nfc}/file.ts`);
+      expect(nfdAllowedRoot).toMatchObject({
+        safe: true,
+        resolved: `${nfd}/file.ts`,
+      });
+    },
+  );
 });
 
 describe("isPathAllowed", () => {

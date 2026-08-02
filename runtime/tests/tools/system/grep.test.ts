@@ -1,6 +1,7 @@
 import {
   access,
   chmod,
+  link,
   mkdir,
   mkdtemp,
   rename,
@@ -316,6 +317,509 @@ describe("Grep tool", () => {
     expect(result.content).not.toContain("DECODED_OUTPUT_LIMIT");
     expect(result.content.split("\n").filter(Boolean)).toHaveLength(2);
   });
+
+  test("protected directory discovery stops before broad candidate metadata reaches the decoded cap", async () => {
+    // Revert-sensitive: descriptor-bound discovery used to omit maximumLines,
+    // so long paths for every matching file were decoded before verification.
+    if (process.platform !== "linux") return;
+    let deepRoot = root;
+    for (let index = 0; index < 18; index += 1) {
+      deepRoot = join(
+        deepRoot,
+        `${String(index).padStart(2, "0")}-${"d".repeat(188)}`,
+      );
+    }
+    await mkdir(deepRoot, { recursive: true });
+    const seed = join(deepRoot, "candidate-seed.txt");
+    await writeFile(seed, "needle\n", "utf8");
+    const candidateCount = 10_000;
+    const batchSize = 200;
+    for (let start = 0; start < candidateCount; start += batchSize) {
+      await Promise.all(
+        Array.from(
+          { length: Math.min(batchSize, candidateCount - start) },
+          (_, offset) =>
+            link(
+              seed,
+              join(
+                deepRoot,
+                `candidate-${String(start + offset).padStart(5, "0")}.txt`,
+              ),
+            ),
+        ),
+      );
+    }
+    workspaceMutationCoordinators.getOrCreate(root).acquire({
+      workspaceRoot: root,
+      editorInstanceId: "grep-broad-discovery-editor",
+    });
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "needle",
+      path: root,
+      output_mode: "files_with_matches",
+      head_limit: 1,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("Found 1 file");
+    expect(result.content).toContain("results truncated at 1");
+    expect(result.content).not.toContain("DECODED_OUTPUT_LIMIT");
+  }, 60_000);
+
+  test.runIf(process.platform === "linux")(
+    "bounds protected verification concurrency and stops dequeuing on abort",
+    async () => {
+      const seed = join(root, "candidate-seed.txt");
+      await writeFile(seed, "needle\n", "utf8");
+      const candidateCount = 251;
+      await Promise.all(
+        Array.from({ length: candidateCount }, (_, index) =>
+          link(
+            seed,
+            join(root, `candidate-${String(index).padStart(3, "0")}.txt`),
+          ),
+        ),
+      );
+      workspaceMutationCoordinators.getOrCreate(root).acquire({
+        workspaceRoot: root,
+        editorInstanceId: "grep-concurrency-editor",
+      });
+      let active = 0;
+      let maximumActive = 0;
+      let starts = 0;
+      const concurrentTool = bindExplicitDangerBoundary(
+        createUnboundGrepTool({
+          allowedPaths: [root],
+          __testProtectedTaskObserver(event) {
+            if (event.source !== "disk") return;
+            if (event.phase === "start") {
+              starts += 1;
+              active += 1;
+              maximumActive = Math.max(maximumActive, active);
+            } else {
+              active -= 1;
+            }
+          },
+        }),
+      );
+
+      const complete = await concurrentTool.execute({
+        pattern: "needle",
+        output_mode: "files_with_matches",
+        head_limit: 0,
+      });
+      expect(complete.isError).toBeUndefined();
+      expect(starts).toBe(candidateCount + 1);
+      expect(maximumActive).toBeGreaterThan(1);
+      expect(maximumActive).toBeLessThanOrEqual(8);
+      expect(active).toBe(0);
+
+      const controller = new AbortController();
+      let abortedStarts = 0;
+      const abortingTool = bindExplicitDangerBoundary(
+        createUnboundGrepTool({
+          allowedPaths: [root],
+          __testProtectedTaskObserver(event) {
+            if (event.source !== "disk" || event.phase !== "start") return;
+            abortedStarts += 1;
+            controller.abort();
+          },
+        }),
+      );
+      const aborted = await abortingTool.execute({
+        pattern: "needle",
+        output_mode: "files_with_matches",
+        head_limit: 0,
+        __abortSignal: controller.signal,
+      });
+      expect(aborted.isError).toBe(true);
+      expect(aborted.content).toBe("Search aborted");
+      expect(abortedStarts).toBeGreaterThan(0);
+      expect(abortedStarts).toBeLessThanOrEqual(8);
+    },
+    60_000,
+  );
+
+  test("dirty snapshots do not disable the protected disk line bound", async () => {
+    // Revert-sensitive: any dirty snapshot previously made the descriptor
+    // worker buffer every match in an unrelated disk candidate.
+    const dirtyPath = join(root, "dirty.ts");
+    await writeFile(dirtyPath, "disk value\n", "utf8");
+    await establishDirtyEditorSnapshot({
+      workspaceRoot: root,
+      path: dirtyPath,
+      content: "const unsavedValue = true;\n",
+    });
+    const line = `needle ${"x".repeat(490)}`;
+    await writeFile(
+      join(root, "large-disk.txt"),
+      `${Array.from({ length: 70_000 }, (_, index) => `${line}${index}`).join("\n")}\n`,
+      "utf8",
+    );
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "needle",
+      path: root,
+      output_mode: "content",
+      head_limit: 1,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("large-disk.txt:1:needle");
+    expect(result.content).toContain("results truncated at 1");
+    expect(result.content).not.toContain("DECODED_OUTPUT_LIMIT");
+    expect(result.content.split("\n").filter(Boolean)).toHaveLength(2);
+  });
+
+  test("enforces one aggregate record budget across protected dirty snapshots", async () => {
+    const firstPath = join(root, "first-budget.txt");
+    const secondPath = join(root, "second-budget.txt");
+    const firstContent =
+      "budgetNeedle one\nbudgetNeedle two\nbudgetNeedle three\n";
+    const secondContent =
+      "budgetNeedle four\nbudgetNeedle five\nbudgetNeedle six\n";
+    await writeFile(firstPath, "stale first\n", "utf8");
+    await writeFile(secondPath, "stale second\n", "utf8");
+    const coordinator = workspaceMutationCoordinators.getOrCreate(root);
+    const lease = coordinator.acquire({
+      workspaceRoot: root,
+      editorInstanceId: "aggregate-budget-editor",
+    });
+    coordinator.sync({
+      workspaceRoot: root,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path: firstPath,
+          bufferHandle: 1,
+          changedtick: 1,
+          contentSha256: sha256(firstContent),
+          dirty: true,
+          content: firstContent,
+        },
+        {
+          path: secondPath,
+          bufferHandle: 2,
+          changedtick: 1,
+          contentSha256: sha256(secondContent),
+          dirty: true,
+          content: secondContent,
+        },
+      ],
+    });
+    const tool = createGrepTool({
+      allowedPaths: [root],
+      __testOperationBudgetLimits: { maxRecords: 5 },
+    });
+
+    const result = await tool.execute({
+      pattern: "budgetNeedle",
+      path: root,
+      output_mode: "content",
+      head_limit: 0,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/\[RESULT_LIMIT\].*exceed 2 records/iu);
+    expect(result.content).not.toContain("budgetNeedle six");
+  });
+
+  test.each([
+    {
+      label: "decoded-byte",
+      limits: { maxDecodedBytes: 100 },
+      reason: "DECODED_OUTPUT_LIMIT",
+    },
+    {
+      label: "work-unit",
+      limits: { maxWorkUnits: 1 },
+      reason: "RESULT_LIMIT",
+    },
+  ])(
+    "enforces one aggregate $label budget across protected dirty snapshots",
+    async ({ limits, reason }) => {
+      const firstPath = join(root, "first-aggregate-budget.txt");
+      const secondPath = join(root, "second-aggregate-budget.txt");
+      const firstContent = `aggregateNeedle ${"a".repeat(32)}\n`;
+      const secondContent = `aggregateNeedle ${"b".repeat(32)}\n`;
+      await writeFile(firstPath, "stale first\n", "utf8");
+      await writeFile(secondPath, "stale second\n", "utf8");
+      const coordinator = workspaceMutationCoordinators.getOrCreate(root);
+      const lease = coordinator.acquire({
+        workspaceRoot: root,
+        editorInstanceId: `aggregate-${reason}-editor`,
+      });
+      coordinator.sync({
+        workspaceRoot: root,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+        sequence: 0,
+        buffers: [
+          {
+            path: firstPath,
+            bufferHandle: 1,
+            changedtick: 1,
+            contentSha256: sha256(firstContent),
+            dirty: true,
+            content: firstContent,
+          },
+          {
+            path: secondPath,
+            bufferHandle: 2,
+            changedtick: 1,
+            contentSha256: sha256(secondContent),
+            dirty: true,
+            content: secondContent,
+          },
+        ],
+      });
+      const tool = createGrepTool({
+        allowedPaths: [root],
+        __testOperationBudgetLimits: limits,
+      });
+
+      const result = await tool.execute({
+        pattern: "aggregateNeedle",
+        path: root,
+        output_mode: "content",
+        head_limit: 0,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(`[${reason}]`);
+      expect(result.content).not.toContain("second-aggregate-budget.txt");
+    },
+  );
+
+  test("accepts one internal truncation witness at the exact public result cap", async () => {
+    // Revert-sensitive: record 100001 used to trip RESULT_LIMIT before it
+    // could serve as the non-returned truncation witness.
+    const target = join(root, "exact-result-cap.txt");
+    await writeFile(
+      target,
+      `${Array.from({ length: 100_001 }, () => "needle").join("\n")}\n`,
+      "utf8",
+    );
+    const tool = createGrepTool({ allowedPaths: [root] });
+    const execute = () =>
+      tool.execute({
+        pattern: "needle",
+        path: target,
+        output_mode: "content",
+        head_limit: 100_000,
+      });
+
+    const unprotected = await execute();
+    expect(unprotected.isError).toBeUndefined();
+    expect(unprotected.content).not.toContain("RESULT_LIMIT");
+    expect(unprotected.content).toContain("results truncated at 100000");
+    expect(unprotected.content.split("\n")).toHaveLength(100_001);
+
+    workspaceMutationCoordinators.getOrCreate(root).acquire({
+      workspaceRoot: root,
+      editorInstanceId: "grep-exact-cap-editor",
+    });
+    const protectedResult = await execute();
+    expect(protectedResult.isError).toBeUndefined();
+    expect(protectedResult.content).not.toContain("RESULT_LIMIT");
+    expect(protectedResult.content).toContain("results truncated at 100000");
+    expect(protectedResult.content.split("\n")).toHaveLength(100_001);
+  }, 60_000);
+
+  test("stops a multi-record stdout chunk at the complete witness boundary", () => {
+    const parser = __INTERNAL.createCollectionWireParser(
+      "files_with_matches",
+      2,
+    );
+    const state = { inspectedRecords: 0, renderedLines: 0 };
+
+    const reached = __INTERNAL.pushRipgrepChunkWithinLineLimit(
+      parser,
+      "files_with_matches",
+      Buffer.from("first.txt\0second.txt\0must-not-parse.txt\0", "utf8"),
+      2,
+      state,
+    );
+
+    expect(reached).toBe(true);
+    expect(parser.records).toHaveLength(2);
+    expect(
+      parser.records.map((record) => record.path.toString("utf8")),
+    ).toEqual(["first.txt", "second.txt"]);
+  });
+
+  test.each([
+    {
+      outputMode: "files_with_matches" as const,
+      wire: Buffer.from("\0kept.txt\0", "utf8"),
+      reason: "INVALID_WIRE_TEXT",
+    },
+    {
+      outputMode: "count" as const,
+      wire: Buffer.from("skipped.txt\x00not-decimal\nkept.txt\x001\n", "utf8"),
+      reason: "INVALID_COUNT",
+    },
+  ])(
+    "validates malformed $outputMode records before the requested offset",
+    ({ outputMode, wire, reason }) => {
+      const window = new __INTERNAL.StreamingRipgrepWireWindow(
+        outputMode,
+        1,
+        1,
+      );
+
+      expect(() => window.push(wire)).toThrowError(
+        expect.objectContaining({ reason }),
+      );
+    },
+  );
+
+  test("validates JSON ordering before applying the requested offset", () => {
+    const path = { text: "skipped.txt" };
+    const nestedBegins = Buffer.from(
+      `${JSON.stringify({ type: "begin", data: { path } })}\n${JSON.stringify({ type: "begin", data: { path } })}\n`,
+      "utf8",
+    );
+    const window = new __INTERNAL.StreamingRipgrepWireWindow("content", 1, 1);
+
+    expect(() => window.push(nestedBegins)).toThrowError(
+      expect.objectContaining({ reason: "INVALID_JSON_RECORD_ORDER" }),
+    );
+  });
+
+  test("bounds rendered path-prefix amplification before retaining output", () => {
+    const records = [
+      {
+        kind: "content" as const,
+        recordType: "match" as const,
+        path: Buffer.from("a-very-long-result-path.ts", "utf8"),
+        lines: Buffer.from("first\nsecond\n", "utf8"),
+        lineNumber: 1,
+        absoluteOffset: 0,
+        submatches: [],
+      },
+    ];
+
+    expect(() =>
+      __INTERNAL.renderContentRecordsWithinBudget({
+        records,
+        displayRoot: root,
+        showLineNumbers: true,
+        headLimit: 0,
+        maximumBytes: 32,
+      }),
+    ).toThrowError(
+      expect.objectContaining({ reason: "RENDERED_OUTPUT_LIMIT" }),
+    );
+  });
+
+  test.each(["files_with_matches", "count"] as const)(
+    "permits the exact internal witness for %s wire records",
+    (outputMode) => {
+      const maximumLines = 100_001;
+      const parser = __INTERNAL.createCollectionWireParser(
+        outputMode,
+        maximumLines,
+      );
+      const state = { inspectedRecords: 0, renderedLines: 0 };
+      const record =
+        outputMode === "files_with_matches"
+          ? "x\0"
+          : ["x", "\0", "1", "\n"].join("");
+      const chunk = Buffer.from(record.repeat(maximumLines), "utf8");
+
+      const reached = __INTERNAL.pushRipgrepChunkWithinLineLimit(
+        parser,
+        outputMode,
+        chunk,
+        maximumLines,
+        state,
+      );
+
+      expect(reached).toBe(true);
+      expect(parser.records).toHaveLength(maximumLines);
+      expect(state.renderedLines).toBe(maximumLines);
+    },
+  );
+
+  test.each(["files_with_matches", "count"] as const)(
+    "enforces the unpaginated hard result cap for %s wire records",
+    (outputMode) => {
+      const overHardLimit = 100_001;
+      const record =
+        outputMode === "files_with_matches"
+          ? "x\0"
+          : ["x", "\0", "1", "\n"].join("");
+      const window = new __INTERNAL.StreamingRipgrepWireWindow(
+        outputMode,
+        0,
+        undefined,
+      );
+
+      expect(() =>
+        window.push(Buffer.from(record.repeat(overHardLimit), "utf8")),
+      ).toThrowError(expect.objectContaining({ reason: "RESULT_LIMIT" }));
+    },
+  );
+
+  test("rejects non-adjacent dirty path prefix collisions before oracle I/O", async () => {
+    const result = await __INTERNAL.pinnedSnapshotPathEligibility({
+      relativePaths: ["a", "a-foo", "a/b"],
+      globs: ["*"],
+    });
+
+    expect("error" in result ? result.error : "").toContain(
+      "file/directory prefix collision",
+    );
+  });
+
+  test("path-oracle construction obeys the aggregate deadline and cleans up", async () => {
+    const deadline = { expiresAt: Number.POSITIVE_INFINITY };
+    let temporaryRoot = "";
+    const result = await __INTERNAL.pinnedSnapshotPathEligibility({
+      relativePaths: ["one.ts", "two.ts"],
+      globs: ["*.ts"],
+      deadline,
+      onTemporaryRoot(path) {
+        temporaryRoot = path;
+      },
+      afterPlaceholder() {
+        deadline.expiresAt = 0;
+      },
+    });
+
+    expect("error" in result ? result.error : "").toContain("timed out");
+    expect(temporaryRoot).not.toBe("");
+    await expect(access(temporaryRoot)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  test("streams one million candidate records with one-record memory", async () => {
+    const spool = join(root, "million-candidates.bin");
+    const recordCount = 1_000_000;
+    await writeFile(spool, Buffer.from("x\0".repeat(recordCount), "utf8"));
+    let retained = 0;
+
+    const result = await __INTERNAL.readNulDelimitedCandidateSpool({
+      path: spool,
+      visit(_path, index) {
+        if (index === recordCount - 1) retained += 1;
+        return true;
+      },
+    });
+
+    expect(result.processedRecords).toBe(recordCount);
+    expect(result.maximumBufferedRecordBytes).toBe(1);
+    expect(retained).toBe(1);
+  }, 20_000);
 
   test("ignores RIPGREP_CONFIG_PATH preprocessors", async () => {
     const marker = join(root, "preprocessor-ran");
@@ -733,6 +1237,108 @@ describe("Grep tool", () => {
     );
   });
 
+  test("protected content offset skips rendered lines inside one candidate", async () => {
+    await writeFile(
+      join(root, "protected-page.txt"),
+      `${Array.from({ length: 100 }, (_, index) => `needle-${index}`).join("\n")}\n`,
+      "utf8",
+    );
+    workspaceMutationCoordinators.getOrCreate(root).acquire({
+      workspaceRoot: root,
+      editorInstanceId: "grep-protected-offset-editor",
+    });
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "needle-",
+      path: root,
+      output_mode: "content",
+      head_limit: 1,
+      offset: 1,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("protected-page.txt:2:needle-1");
+    expect(result.content).not.toContain("needle-0");
+    expect(result.content).toContain("results truncated at 1 after offset 1");
+  });
+
+  test("protected content offset crosses context and file boundaries", async () => {
+    const first = join(root, "first-context.txt");
+    const second = join(root, "second-context.txt");
+    await writeFile(first, "needle-first\ncontext-first\n", "utf8");
+    await writeFile(second, "needle-second\ncontext-second\n", "utf8");
+    await utimes(
+      first,
+      new Date("2030-01-01T00:00:00Z"),
+      new Date("2030-01-01T00:00:00Z"),
+    );
+    await utimes(
+      second,
+      new Date("2020-01-01T00:00:00Z"),
+      new Date("2020-01-01T00:00:00Z"),
+    );
+    workspaceMutationCoordinators.getOrCreate(root).acquire({
+      workspaceRoot: root,
+      editorInstanceId: "grep-protected-context-offset-editor",
+    });
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "needle-",
+      path: root,
+      output_mode: "content",
+      "-A": 1,
+      head_limit: 2,
+      offset: 1,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("first-context.txt-2-context-first");
+    expect(result.content).toContain("second-context.txt:1:needle-second");
+    expect(result.content).not.toContain("needle-first");
+  });
+
+  test("streams offsets beyond the public result-count safety cap", async () => {
+    const target = join(root, "large-offset.txt");
+    await writeFile(
+      target,
+      `${Array.from({ length: 100_003 }, (_, index) => `needle-${index}`).join("\n")}\n`,
+      "utf8",
+    );
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "needle-",
+      path: target,
+      output_mode: "content",
+      head_limit: 0,
+      offset: 100_000,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(lines(result.content)).toEqual([
+      "large-offset.txt:100001:needle-100000",
+      "large-offset.txt:100002:needle-100001",
+      "large-offset.txt:100003:needle-100002",
+      "(offset 100000)",
+    ]);
+
+    workspaceMutationCoordinators.getOrCreate(root).acquire({
+      workspaceRoot: root,
+      editorInstanceId: "grep-large-protected-offset-editor",
+    });
+    const protectedResult = await tool.execute({
+      pattern: "needle-",
+      path: target,
+      output_mode: "content",
+      head_limit: 0,
+      offset: 100_000,
+    });
+    expect(protectedResult.isError).toBeUndefined();
+    expect(lines(protectedResult.content)).toEqual(lines(result.content));
+  }, 60_000);
+
   test("head_limit truncates broad ripgrep output before buffer exhaustion", async () => {
     const line = `needle ${"x".repeat(360)}`;
     const body = Array.from({ length: 90_000 }, (_, i) => `${line} ${i}`).join(
@@ -755,7 +1361,7 @@ describe("Grep tool", () => {
     expect(lines.length).toBe(4);
   });
 
-  test("head_limit=0 returns unlimited content without truncation note", async () => {
+  test("head_limit=0 returns unpaginated content without truncation note", async () => {
     await writeFile(
       join(root, "unlimited.txt"),
       Array.from({ length: 8 }, (_, i) => `needle-${i}`).join("\n"),
@@ -793,6 +1399,37 @@ describe("Grep tool", () => {
     expect(result.content).not.toContain("results truncated");
     expect(result.content.split("\n").filter(Boolean)).toHaveLength(20_005);
   });
+
+  test("head_limit=0 rejects one multiline record beyond the hard rendered-line cap", async () => {
+    const excessiveRenderedLines = 100_001;
+    await writeFile(
+      join(root, "newline-amplification.txt"),
+      `START\n${"x\n".repeat(excessiveRenderedLines)}END\n`,
+      "utf8",
+    );
+    const execute = () =>
+      createGrepTool({ allowedPaths: [root] }).execute({
+        pattern: "START(?s:.*)END",
+        path: root,
+        output_mode: "content",
+        multiline: true,
+        head_limit: 0,
+      });
+
+    const unprotected = await execute();
+    expect(unprotected.isError).toBe(true);
+    expect(unprotected.content).toMatch(/\[RESULT_LIMIT\].*100000/iu);
+    expect(unprotected.content.length).toBeLessThan(1_000);
+
+    workspaceMutationCoordinators.getOrCreate(root).acquire({
+      workspaceRoot: root,
+      editorInstanceId: "grep-newline-amplification-editor",
+    });
+    const protectedResult = await execute();
+    expect(protectedResult.isError).toBe(true);
+    expect(protectedResult.content).toMatch(/\[RESULT_LIMIT\].*100000/iu);
+    expect(protectedResult.content.length).toBeLessThan(1_000);
+  }, 60_000);
 
   test("glob filter restricts the searched files", async () => {
     await writeFile(join(root, "keep.ts"), "needle\n", "utf8");
@@ -904,6 +1541,117 @@ describe("Grep tool", () => {
     expect(matches).not.toContain("rg-hidden.txt");
   });
 
+  test("ignores parent and git-info exclude metadata outside the search policy", async () => {
+    const workspace = join(root, "workspace");
+    await mkdir(join(workspace, ".git", "info"), { recursive: true });
+    await writeFile(
+      join(root, ".gitignore"),
+      "workspace/parent-hidden.txt\n",
+      "utf8",
+    );
+    await writeFile(
+      join(workspace, ".git", "info", "exclude"),
+      "info-hidden.txt\n",
+      "utf8",
+    );
+    await writeFile(join(workspace, "parent-hidden.txt"), "needle\n", "utf8");
+    await writeFile(join(workspace, "info-hidden.txt"), "needle\n", "utf8");
+
+    const result = await createGrepTool({
+      allowedPaths: [workspace],
+    }).execute({
+      pattern: "needle",
+      output_mode: "files_with_matches",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(fileResultPaths(result.content).sort()).toEqual([
+      "info-hidden.txt",
+      "parent-hidden.txt",
+    ]);
+  });
+
+  test("honors in-root VCS ignores for normal and linked worktrees", async () => {
+    const normal = join(root, "normal");
+    const linked = join(root, "linked");
+    await mkdir(join(normal, ".git"), { recursive: true });
+    await mkdir(linked);
+    await writeFile(join(normal, ".gitignore"), "hidden.ts\n", "utf8");
+    await writeFile(join(normal, "hidden.ts"), "normalNeedle\n", "utf8");
+    await writeFile(
+      join(linked, ".git"),
+      "gitdir: ../common-worktree-metadata\n",
+      "utf8",
+    );
+    await writeFile(join(linked, ".gitignore"), "hidden.ts\n", "utf8");
+    await writeFile(join(linked, "hidden.ts"), "linkedDiskNeedle\n", "utf8");
+    await mkdir(join(linked, "nested"));
+    await writeFile(
+      join(linked, "nested", ".gitignore"),
+      "nested-hidden.ts\n",
+      "utf8",
+    );
+    await writeFile(
+      join(linked, "nested", "nested-hidden.ts"),
+      "linkedDiskNeedle\n",
+      "utf8",
+    );
+
+    const normalResult = await createGrepTool({
+      allowedPaths: [normal],
+    }).execute({
+      pattern: "normalNeedle",
+      output_mode: "files_with_matches",
+    });
+    expect(normalResult.content).toBe("No files found.");
+
+    const linkedTool = createGrepTool({ allowedPaths: [linked] });
+    const linkedDisk = await linkedTool.execute({
+      pattern: "linkedDiskNeedle",
+      output_mode: "files_with_matches",
+    });
+    expect(linkedDisk.isError).toBeUndefined();
+    expect(linkedDisk.content).toBe("No files found.");
+
+    const { coordinator, lease } = await establishDirtyEditorSnapshot({
+      workspaceRoot: linked,
+      path: join(linked, "hidden.ts"),
+      content: "linkedDirtyNeedle\n",
+    });
+    coordinator.sync({
+      workspaceRoot: linked,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+      sequence: 1,
+      buffers: [
+        {
+          path: join(linked, "hidden.ts"),
+          bufferHandle: 7,
+          changedtick: 42,
+          contentSha256: sha256("linkedDirtyNeedle\n"),
+          dirty: true,
+          content: "linkedDirtyNeedle\n",
+        },
+        {
+          path: join(linked, "nested", "nested-hidden.ts"),
+          bufferHandle: 8,
+          changedtick: 42,
+          contentSha256: sha256("linkedDirtyNeedle\n"),
+          dirty: true,
+          content: "linkedDirtyNeedle\n",
+        },
+      ],
+    });
+    await coordinator.flushQuarantinePersistence();
+    const linkedDirty = await linkedTool.execute({
+      pattern: "linkedDirtyNeedle",
+      output_mode: "files_with_matches",
+    });
+    expect(linkedDirty.isError).toBeUndefined();
+    expect(linkedDirty.content).toBe("No files found.");
+  });
+
   test("pinned ripgrep applies nested ignore negation", async () => {
     await mkdir(join(root, "src"), { recursive: true });
     await writeFile(join(root, ".gitignore"), "src/*.txt\n", "utf8");
@@ -923,6 +1671,163 @@ describe("Grep tool", () => {
     expect(matches).toContain("src/keep.txt");
     expect(matches).not.toContain("src/drop.txt");
   });
+
+  test("explicit subdirectory searches honor in-bound root ignore rules for clean and dirty files", async () => {
+    await mkdir(join(root, "sub"));
+    await writeFile(join(root, ".gitignore"), "sub/ignored.txt\n", "utf8");
+    await writeFile(join(root, "sub", "ignored.txt"), "needle disk\n", "utf8");
+    await writeFile(
+      join(root, "sub", "visible.txt"),
+      "needle visible\n",
+      "utf8",
+    );
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const clean = await tool.execute({
+      pattern: "needle",
+      path: join(root, "sub"),
+      output_mode: "files_with_matches",
+    });
+    expect(fileResultPaths(clean.content)).toEqual(["sub/visible.txt"]);
+
+    await establishDirtyEditorSnapshot({
+      workspaceRoot: root,
+      path: join(root, "sub", "ignored.txt"),
+      content: "needle unsaved\n",
+    });
+    const dirty = await tool.execute({
+      pattern: "needle",
+      path: join(root, "sub"),
+      output_mode: "files_with_matches",
+    });
+    expect(fileResultPaths(dirty.content)).toEqual(["sub/visible.txt"]);
+  });
+
+  test.runIf(process.platform !== "win32")(
+    "uses snapshotted root ignore bytes after the admitted pathname becomes a symlink",
+    async () => {
+      const scoped = join(root, "sub");
+      const ignorePath = join(root, ".gitignore");
+      const admittedPath = join(root, ".gitignore-admitted");
+      const replacementPath = join(root, "replacement.ignore");
+      await mkdir(scoped);
+      await writeFile(ignorePath, "sub/ignored.txt\n", "utf8");
+      await writeFile(replacementPath, "!sub/ignored.txt\n", "utf8");
+      await writeFile(join(scoped, "ignored.txt"), "needle ignored\n", "utf8");
+      await writeFile(join(scoped, "visible.txt"), "needle visible\n", "utf8");
+
+      const run = async (editorProtected: boolean) => {
+        if (editorProtected) {
+          workspaceMutationCoordinators.getOrCreate(root).acquire({
+            workspaceRoot: root,
+            editorInstanceId: "grep-ignore-snapshot-editor",
+          });
+        }
+        let exchanged = false;
+        const tool = createGrepTool({
+          allowedPaths: [root],
+          __testAfterRootIgnoreSnapshot: async () => {
+            await rename(ignorePath, admittedPath);
+            await symlink(replacementPath, ignorePath, "file");
+            exchanged = true;
+          },
+        });
+
+        const result = await tool.execute({
+          pattern: "needle",
+          path: scoped,
+          output_mode: "files_with_matches",
+        });
+
+        expect(exchanged).toBe(true);
+        expect(result.isError).toBeUndefined();
+        expect(fileResultPaths(result.content)).toEqual(["sub/visible.txt"]);
+        await rm(ignorePath, { force: true });
+        await rename(admittedPath, ignorePath);
+      };
+
+      await run(false);
+      await run(true);
+    },
+  );
+
+  test("nested negation cannot resurrect a dirty file below a pruned directory", async () => {
+    await mkdir(join(root, "blocked"));
+    await writeFile(join(root, ".gitignore"), "blocked/\n", "utf8");
+    await writeFile(join(root, "blocked", ".gitignore"), "!keep.ts\n", "utf8");
+    await establishDirtyEditorSnapshot({
+      workspaceRoot: root,
+      path: join(root, "blocked", "keep.ts"),
+      content: "export const prunedDirtyNeedle = true;\n",
+    });
+
+    const result = await createGrepTool({ allowedPaths: [root] }).execute({
+      pattern: "prunedDirtyNeedle",
+      output_mode: "files_with_matches",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe("No files found.");
+  });
+
+  test("invalid UTF-8 ignore bytes fail protected dirty matching closed", async () => {
+    await writeFile(
+      join(root, ".gitignore"),
+      Buffer.from([0xff, 0x2e, 0x74, 0x73, 0x0a]),
+    );
+    await establishDirtyEditorSnapshot({
+      workspaceRoot: root,
+      path: join(root, "\ufffd.ts"),
+      content: "export const invalidIgnoreNeedle = true;\n",
+    });
+
+    const result = await createGrepTool({ allowedPaths: [root] }).execute({
+      pattern: "invalidIgnoreNeedle",
+      output_mode: "files_with_matches",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("search ignore file is not valid UTF-8");
+    expect(result.content).not.toBe("No files found.");
+  });
+
+  test.runIf(process.platform === "linux")(
+    "preserves a literal POSIX backslash through dirty glob and ignore matching",
+    async () => {
+      const directory = join(root, "literal");
+      const target = join(directory, "a\\b.ts");
+      await mkdir(directory);
+      await writeFile(
+        target,
+        "export const staleBackslashValue = 1;\n",
+        "utf8",
+      );
+      await establishDirtyEditorSnapshot({
+        workspaceRoot: root,
+        path: target,
+        content: "export const dirtyBackslashNeedle = 2;\n",
+      });
+      const tool = createGrepTool({ allowedPaths: [root] });
+
+      const included = await tool.execute({
+        pattern: "dirtyBackslashNeedle",
+        glob: "*.ts",
+        output_mode: "content",
+      });
+      expect(included.isError).toBeUndefined();
+      expect(included.content).toContain("literal/a\\\\b.ts");
+      expect(included.content).not.toContain("staleBackslashValue");
+
+      await writeFile(join(root, ".ignore"), "literal/a\\\\b.ts\n", "utf8");
+      const ignored = await tool.execute({
+        pattern: "dirtyBackslashNeedle",
+        glob: "*.ts",
+        output_mode: "files_with_matches",
+      });
+      expect(ignored.isError).toBeUndefined();
+      expect(ignored.content).toBe("No files found.");
+    },
+  );
 
   test("-B and -A return surrounding context lines", async () => {
     await writeFile(
@@ -1043,6 +1948,67 @@ describe("Grep tool", () => {
       await rm(otherRoot, { recursive: true, force: true });
     }
   });
+
+  test.runIf(process.platform === "linux")(
+    "rejects a POSIX backslash sibling outside the allowed root",
+    async () => {
+      const allowed = join(root, "scope");
+      const sibling = `${allowed}\\outside`;
+      await mkdir(allowed);
+      await mkdir(sibling);
+      await writeFile(join(sibling, "secret.ts"), "escapeNeedle\n", "utf8");
+
+      const result = await createGrepTool({ allowedPaths: [allowed] }).execute({
+        pattern: "escapeNeedle",
+        path: sibling,
+        output_mode: "content",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content.toLowerCase()).toContain("access denied");
+      expect(result.content).not.toContain("escapeNeedle");
+    },
+  );
+
+  test.runIf(process.platform === "linux")(
+    "searches explicit NFD targets and NFD allowed roots without selecting NFC siblings",
+    async () => {
+      const nfcDirectory = join(root, "caf\u00e9");
+      const nfdDirectory = join(root, "cafe\u0301");
+      const nfcFile = join(nfcDirectory, "value.ts");
+      const nfdFile = join(nfdDirectory, "value.ts");
+      await mkdir(nfcDirectory);
+      await mkdir(nfdDirectory);
+      await writeFile(nfcFile, "nfcExplicitNeedle\n", "utf8");
+      await writeFile(nfdFile, "nfdExplicitNeedle\n", "utf8");
+
+      const rootTool = createGrepTool({ allowedPaths: [root] });
+      for (const path of [nfdDirectory, nfdFile]) {
+        const result = await rootTool.execute({
+          pattern: "nfdExplicitNeedle",
+          path,
+          output_mode: "content",
+        });
+        expect(result.isError).toBeUndefined();
+        expect(result.content).toContain("nfdExplicitNeedle");
+        expect(result.content).not.toContain("nfcExplicitNeedle");
+      }
+
+      workspaceMutationCoordinators.getOrCreate(nfdDirectory).acquire({
+        workspaceRoot: nfdDirectory,
+        editorInstanceId: "grep-nfd-root-editor",
+      });
+      const nfdRootResult = await createGrepTool({
+        allowedPaths: [nfdDirectory],
+      }).execute({
+        pattern: "nfdExplicitNeedle",
+        output_mode: "content",
+      });
+      expect(nfdRootResult.isError).toBeUndefined();
+      expect(nfdRootResult.content).toContain("nfdExplicitNeedle");
+      expect(nfdRootResult.content).not.toContain("nfcExplicitNeedle");
+    },
+  );
 
   test("structured content mode honors the -n line-number flag", async () => {
     await writeFile(join(root, "a.txt"), "needle\n", "utf8");
@@ -1475,6 +2441,46 @@ describe("Grep tool", () => {
     }
   });
 
+  test.runIf(process.platform === "linux")(
+    "keeps POSIX NFC and NFD dirty siblings distinct in every output mode",
+    async () => {
+      const nfcName = "caf\u00e9.ts";
+      const nfdName = "cafe\u0301.ts";
+      const nfcPath = join(root, nfcName);
+      const nfdPath = join(root, nfdName);
+      await writeFile(nfcPath, "export const nfcNeedle = 1;\n", "utf8");
+      await writeFile(nfdPath, "export const staleNfdValue = 1;\n", "utf8");
+      await establishDirtyEditorSnapshot({
+        workspaceRoot: root,
+        path: nfdPath,
+        content: "export const nfdNeedle = 2;\n",
+      });
+      const tool = createGrepTool({ allowedPaths: [root] });
+
+      for (const outputMode of [
+        "content",
+        "files_with_matches",
+        "count",
+      ] as const) {
+        const nfc = await tool.execute({
+          pattern: "nfcNeedle",
+          output_mode: outputMode,
+        });
+        const nfd = await tool.execute({
+          pattern: "nfdNeedle",
+          output_mode: outputMode,
+        });
+        expect(nfc.isError).toBeUndefined();
+        expect(nfd.isError).toBeUndefined();
+        expect(nfc.content).toContain(nfcName);
+        expect(nfc.content).not.toContain(nfdName);
+        expect(nfd.content).toContain(nfdName);
+        expect(nfd.content).not.toContain(nfcName);
+        expect(nfd.content).not.toContain("staleNfdValue");
+      }
+    },
+  );
+
   test("rejects portable input limits and invalid encoding before path lookup", async () => {
     const missingPath = join(root, "does-not-exist");
     const tool = createGrepTool({ allowedPaths: [root] });
@@ -1731,6 +2737,28 @@ describe("Grep tool", () => {
     expect(exact.content).toContain(
       "new/nested/unsaved-only.ts:1:export const dirtyOnlyNeedle = 1;",
     );
+  });
+
+  test("count mode globally orders interleaved disk and dirty paths before paging", async () => {
+    await writeFile(join(root, "a.ts"), "countNeedle\n", "utf8");
+    await writeFile(join(root, "c.ts"), "countNeedle\n", "utf8");
+    await establishDirtyEditorSnapshot({
+      workspaceRoot: root,
+      path: join(root, "b.ts"),
+      content: "countNeedle\ncountNeedle\n",
+    });
+
+    const result = await createGrepTool({ allowedPaths: [root] }).execute({
+      pattern: "countNeedle",
+      output_mode: "count",
+      offset: 1,
+      head_limit: 1,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(lines(result.content)[0]).toBe("b.ts:2");
+    expect(result.content).not.toContain("a.ts:1");
+    expect(result.content).toContain("results truncated at 1 after offset 1");
   });
 
   test("preserves multiline, context, and count semantics over unsaved bytes", async () => {

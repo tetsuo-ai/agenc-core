@@ -223,6 +223,9 @@ export interface WorkspaceBoundRipgrepResult {
   readonly exitCode: number | null;
   readonly signal: string | null;
   readonly killedAfterLimit: boolean;
+  readonly processedLines: number;
+  readonly workUnits: number;
+  readonly spooledBytes: number;
   readonly aborted: boolean;
   readonly stopReason?: WorkspaceBoundProcessStopReason;
   readonly spawnError?: Error;
@@ -240,6 +243,11 @@ export interface WorkspaceBoundReadCapability {
     maxBytes: number,
     options?: { readonly truncate?: boolean },
   ) => Promise<WorkspaceBoundReadFile>;
+  /** Read an optional regular file without turning ENOENT into an identity failure. */
+  readonly readRelativeFileIfExists: (
+    relativePath: string,
+    maxBytes: number,
+  ) => Promise<WorkspaceBoundReadFile | undefined>;
   /** Validate that a relative path currently names a confined regular file. */
   readonly validateRelativeFile: (relativePath: string) => Promise<void>;
   /**
@@ -256,9 +264,16 @@ export interface WorkspaceBoundReadCapability {
     readonly structuredLineLimit?: {
       readonly outputMode: "content" | "files_with_matches" | "count";
       readonly maximumLines: number;
+      readonly maximumRecordBytes: number;
+      readonly maximumWorkUnits?: number;
+      readonly skipLines?: number;
+      readonly excludedPaths?: readonly string[];
     };
     readonly stdin?: string | Buffer;
     readonly relativeInputFile?: string;
+    /** Trusted private path for bounded raw stdout spooling. */
+    readonly stdoutSpoolPath?: string;
+    readonly maxSpoolBytes?: number;
     readonly signal?: AbortSignal;
   }) => Promise<WorkspaceBoundRipgrepResult>;
   readonly dispose: () => Promise<void>;
@@ -334,11 +349,13 @@ interface BoundFileIdentity {
   readonly mode: number;
 }
 
-interface BoundReadIdentity {
+export interface WorkspaceBoundReadIdentity {
   readonly dev: string;
   readonly ino: string;
   readonly mode: string;
 }
+
+type BoundReadIdentity = WorkspaceBoundReadIdentity;
 
 interface BoundHelperMessage {
   readonly type: "ready" | "effect_start" | "result";
@@ -359,8 +376,12 @@ interface BoundHelperMessage {
   readonly exitCode?: number | null;
   readonly signal?: string | null;
   readonly killedAfterLimit?: boolean;
+  readonly processedLines?: number;
+  readonly workUnits?: number;
+  readonly spooledBytes?: number;
   readonly stopReason?: WorkspaceBoundProcessStopReason;
   readonly spawnError?: string;
+  readonly missing?: boolean;
 }
 
 const STRUCTURED_RIPGREP_LIMITER_SOURCE = String.raw`
@@ -371,7 +392,17 @@ const createStructuredRipgrepLimiter = (value) => {
     typeof value !== "object" ||
     !["content", "files_with_matches", "count"].includes(value.outputMode) ||
     !Number.isSafeInteger(value.maximumLines) ||
-    value.maximumLines < 1
+    value.maximumLines < 1 ||
+    !Number.isSafeInteger(value.maximumRecordBytes) ||
+    value.maximumRecordBytes < 1 ||
+    (value.maximumWorkUnits !== undefined &&
+      (!Number.isSafeInteger(value.maximumWorkUnits) ||
+        value.maximumWorkUnits < 0)) ||
+    (value.skipLines !== undefined &&
+      (!Number.isSafeInteger(value.skipLines) || value.skipLines < 0)) ||
+    (value.excludedPaths !== undefined &&
+      (!Array.isArray(value.excludedPaths) ||
+        !value.excludedPaths.every((path) => typeof path === "string")))
   ) {
     throw Object.assign(new Error("invalid structured ripgrep line limit"), {
       code: "INVALID_COMMAND",
@@ -380,9 +411,272 @@ const createStructuredRipgrepLimiter = (value) => {
 
   const outputMode = value.outputMode;
   const maximumLines = value.maximumLines;
-  let renderedLines = 0;
+  const skipLines = value.skipLines ?? 0;
+  const maximumRecordBytes = value.maximumRecordBytes;
+  const maximumWorkUnits = value.maximumWorkUnits ?? Number.MAX_SAFE_INTEGER;
+  const BYTE_NUL = 0;
+  const BYTE_LINE_FEED = 10;
+  const BYTE_CARRIAGE_RETURN = 13;
+  const boundary = (reason, message) => {
+    throw new Error("[" + reason + "] " + message);
+  };
+  const requireObject = (candidate, label) => {
+    if (
+      candidate === null ||
+      typeof candidate !== "object" ||
+      Array.isArray(candidate)
+    ) {
+      boundary("INVALID_JSON_RECORD", label + " must be an object");
+    }
+    return candidate;
+  };
+  const assertWireText = (text, label) => {
+    for (let index = 0; index < text.length; index += 1) {
+      const codeUnit = text.charCodeAt(index);
+      if (codeUnit === BYTE_NUL) {
+        boundary("INVALID_WIRE_TEXT", label + " contains an embedded NUL");
+      }
+      if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+        const following = text.charCodeAt(index + 1);
+        if (following < 0xdc00 || following > 0xdfff) {
+          boundary(
+            "INVALID_WIRE_TEXT",
+            label + " contains a lone UTF-16 high surrogate",
+          );
+        }
+        index += 1;
+      } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+        boundary(
+          "INVALID_WIRE_TEXT",
+          label + " contains a lone UTF-16 low surrogate",
+        );
+      }
+    }
+  };
+  const decodeUtf8Strict = (bytes, label) => {
+    try {
+      return new TextDecoder("utf-8", {
+        fatal: true,
+        ignoreBOM: true,
+      }).decode(bytes);
+    } catch {
+      boundary("INVALID_WIRE_TEXT", label + " is not valid UTF-8");
+    }
+  };
+  const decodeCanonicalBase64 = (text, label) => {
+    if (
+      typeof text !== "string" ||
+      text.length % 4 !== 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+        text,
+      )
+    ) {
+      boundary(
+        "INVALID_WIRE_BASE64",
+        label + ".bytes is not canonical base64",
+      );
+    }
+    const decoded = Buffer.from(text, "base64");
+    if (decoded.toString("base64") !== text) {
+      boundary(
+        "INVALID_WIRE_BASE64",
+        label + ".bytes is not canonical base64",
+      );
+    }
+    return decoded;
+  };
+  const decodeWireData = (candidate, label) => {
+    const data = requireObject(candidate, label);
+    const hasText = Object.prototype.hasOwnProperty.call(data, "text");
+    const hasBytes = Object.prototype.hasOwnProperty.call(data, "bytes");
+    if (hasText === hasBytes) {
+      boundary(
+        "INVALID_JSON_RECORD",
+        label + " must contain exactly one of text or bytes",
+      );
+    }
+    if (hasText) {
+      if (typeof data.text !== "string") {
+        boundary("INVALID_JSON_RECORD", label + ".text must be a string");
+      }
+      assertWireText(data.text, label + ".text");
+      return Buffer.from(data.text, "utf8");
+    }
+    return decodeCanonicalBase64(data.bytes, label);
+  };
+  const decodeWirePath = (candidate, label) => {
+    const path = decodeWireData(candidate, label);
+    if (path.length === 0) {
+      boundary("INVALID_JSON_RECORD", label + " must not be empty");
+    }
+    return path;
+  };
+  const parseNonNegativeSafeInteger = (candidate, label) => {
+    if (!Number.isSafeInteger(candidate) || candidate < 0) {
+      boundary(
+        "INVALID_JSON_RECORD",
+        label + " must be a non-negative safe integer",
+      );
+    }
+    return candidate;
+  };
+  const parseNullablePositiveInteger = (candidate, label) => {
+    if (candidate === null) return null;
+    const parsed = parseNonNegativeSafeInteger(candidate, label);
+    if (parsed === 0) {
+      boundary(
+        "INVALID_JSON_RECORD",
+        label + " must be positive or null",
+      );
+    }
+    return parsed;
+  };
+  const validateSubmatches = (candidate, lines) => {
+    if (!Array.isArray(candidate)) {
+      boundary("INVALID_JSON_RECORD", "ripgrep submatches must be an array");
+    }
+    let previousEnd = 0;
+    for (let index = 0; index < candidate.length; index += 1) {
+      const entry = requireObject(candidate[index], "submatch " + index);
+      const start = parseNonNegativeSafeInteger(
+        entry.start,
+        "submatch " + index + " start",
+      );
+      const end = parseNonNegativeSafeInteger(
+        entry.end,
+        "submatch " + index + " end",
+      );
+      if (start > end || end > lines.length || start < previousEnd) {
+        boundary(
+          "INVALID_JSON_RECORD",
+          "ripgrep submatch " + index + " has impossible offsets",
+        );
+      }
+      const match = decodeWireData(
+        entry.match,
+        "submatch " + index + " match",
+      );
+      if (
+        match.length !== end - start ||
+        !match.equals(lines.subarray(start, end))
+      ) {
+        boundary(
+          "INVALID_JSON_RECORD",
+          "ripgrep submatch " + index + " disagrees with its line slice",
+        );
+      }
+      previousEnd = end;
+    }
+  };
+  const parseStrictDecimalCount = (bytes) => {
+    if (bytes.length === 0) {
+      boundary("INVALID_COUNT", "ripgrep emitted an empty match count");
+    }
+    let count = 0;
+    for (const byte of bytes) {
+      if (byte < 0x30 || byte > 0x39) {
+        boundary(
+          "INVALID_COUNT",
+          "ripgrep emitted a non-decimal match count",
+        );
+      }
+      const digit = byte - 0x30;
+      if (count > Math.floor((Number.MAX_SAFE_INTEGER - digit) / 10)) {
+        boundary(
+          "COUNT_OVERFLOW",
+          "ripgrep match count exceeds Number.MAX_SAFE_INTEGER",
+        );
+      }
+      count = count * 10 + digit;
+    }
+    return count;
+  };
+  const normalizedPathByteKey = (path) => {
+    if (process.platform === "win32") {
+      const normalized = decodeUtf8Strict(
+        path,
+        "ripgrep Windows path",
+      )
+        .replace(/\\/gu, "/")
+        .replace(/^\.\/+/u, "")
+        .toLowerCase();
+      return "win32:" + Buffer.from(normalized, "utf8").toString("hex");
+    }
+    let start = 0;
+    if (path.length >= 2 && path[0] === 0x2e && path[1] === 0x2f) {
+      start = 1;
+      while (start < path.length && path[start] === 0x2f) start += 1;
+    }
+    return "posix:" + path.subarray(start).toString("hex");
+  };
+  const excludedPathByteKeys = new Set(
+    (value.excludedPaths ?? []).map((path) => {
+      assertWireText(path, "excluded ripgrep path");
+      return normalizedPathByteKey(Buffer.from(path, "utf8"));
+    }),
+  );
+  let processedLines = 0;
+  let workUnits = 0;
+  let retainedLines = 0;
+  let reached = false;
+  let delimitedRecordBytes = 0;
+  let delimitedRecordParts = [];
   let countState = "path";
-  let pendingJson = Buffer.alloc(0);
+  let countPath = null;
+  let countRecordExcluded = false;
+  let aggregateCount = 0;
+  let pendingJsonParts = [];
+  let pendingJsonBytes = 0;
+  let pendingBegin = null;
+  let capturingJsonFile = false;
+  let openJsonPath = null;
+  let openJsonExcluded = false;
+  let sawJsonSummary = false;
+
+  const addWorkUnits = (count) => {
+    if (count > maximumWorkUnits - workUnits) {
+      boundary(
+        "RESULT_LIMIT",
+        "structured ripgrep work exceeds " + maximumWorkUnits + " units",
+      );
+    }
+    workUnits += count;
+  };
+
+  const addDelimitedRecordBytes = (byteLength) => {
+    delimitedRecordBytes += byteLength;
+    if (delimitedRecordBytes > maximumRecordBytes) {
+      boundary(
+        "RECORD_LIMIT",
+        "structured ripgrep record exceeds " + maximumRecordBytes + " bytes",
+      );
+    }
+  };
+
+  const addDelimitedPart = (part) => {
+    if (part.length === 0) return;
+    addDelimitedRecordBytes(part.length);
+    delimitedRecordParts.push(part);
+  };
+
+  const takeDelimitedRecord = () => {
+    const record = Buffer.concat(delimitedRecordParts, delimitedRecordBytes);
+    delimitedRecordBytes = 0;
+    delimitedRecordParts = [];
+    return record;
+  };
+
+  const addPendingJson = (part) => {
+    if (part.length === 0) return;
+    pendingJsonBytes += part.length;
+    if (pendingJsonBytes > maximumRecordBytes) {
+      boundary(
+        "RECORD_LIMIT",
+        "structured ripgrep record exceeds " + maximumRecordBytes + " bytes",
+      );
+    }
+    pendingJsonParts.push(part);
+  };
 
   const contentLineCount = (lines) => {
     let contentEnd = lines.length;
@@ -397,71 +691,358 @@ const createStructuredRipgrepLimiter = (value) => {
     return count;
   };
 
-  const jsonRecordLineCount = (record) => {
-    try {
-      const parsed = JSON.parse(record.toString("utf8"));
-      if (parsed?.type !== "match" && parsed?.type !== "context") return 0;
-      const lines = parsed?.data?.lines;
-      if (typeof lines?.text === "string" && lines.bytes === undefined) {
-        return contentLineCount(Buffer.from(lines.text, "utf8"));
-      }
-      if (typeof lines?.bytes === "string" && lines.text === undefined) {
-        return contentLineCount(Buffer.from(lines.bytes, "base64"));
-      }
-      return 0;
-    } catch {
-      // The authoritative parser reports malformed records after the child
-      // exits. Never count malformed metadata as proof of a rendered line.
-      return 0;
+  const takeLineWindow = (lineCount) => {
+    const skip = Math.min(
+      lineCount,
+      Math.max(0, skipLines - processedLines),
+    );
+    const take = reached
+      ? 0
+      : Math.min(
+          lineCount - skip,
+          Math.max(0, maximumLines - retainedLines),
+        );
+    processedLines += lineCount;
+    retainedLines += take;
+    if (retainedLines >= maximumLines) reached = true;
+    return { skip, take };
+  };
+
+  const lineSliceOffset = (content, lineCount) => {
+    if (lineCount <= 0) return 0;
+    let remaining = lineCount;
+    for (let index = 0; index < content.length; index += 1) {
+      if (content[index] !== 10) continue;
+      remaining -= 1;
+      if (remaining === 0) return index + 1;
     }
+    return content.length;
+  };
+
+  const decodeJsonLines = (lines) => {
+    const data = requireObject(lines, "ripgrep JSON lines");
+    const encoding = Object.prototype.hasOwnProperty.call(data, "text")
+      ? "text"
+      : "bytes";
+    return { bytes: decodeWireData(data, "ripgrep JSON lines"), encoding };
+  };
+
+  const validateJsonRecord = (record) => {
+    if (record.length === 0) {
+      boundary("MALFORMED_JSON", "ripgrep JSON output contains an empty record");
+    }
+    if (record[record.length - 1] === BYTE_CARRIAGE_RETURN) {
+      boundary(
+        "MALFORMED_JSON",
+        "ripgrep JSON output contains a non-canonical CRLF record",
+      );
+    }
+    const decoded = decodeUtf8Strict(record, "ripgrep JSON record");
+    let parsed;
+    try {
+      parsed = JSON.parse(decoded);
+    } catch (error) {
+      boundary(
+        "MALFORMED_JSON",
+        "ripgrep emitted malformed JSON: " +
+          (error instanceof Error ? error.message : String(error)),
+      );
+    }
+    const json = requireObject(parsed, "JSON record");
+    const data = requireObject(json.data, "JSON record data");
+    if (typeof json.type !== "string") {
+      boundary("INVALID_JSON_RECORD", "ripgrep JSON record has no string type");
+    }
+    if (sawJsonSummary) {
+      boundary(
+        "INVALID_JSON_RECORD_ORDER",
+        "ripgrep emitted a record after its summary",
+      );
+    }
+    if (json.type === "begin") {
+      if (openJsonPath !== null) {
+        boundary(
+          "INVALID_JSON_RECORD_ORDER",
+          "ripgrep emitted nested begin records",
+        );
+      }
+      const path = decodeWirePath(data.path, "begin path");
+      decodeUtf8Strict(path, "begin path");
+      openJsonPath = path;
+      openJsonExcluded = excludedPathByteKeys.has(normalizedPathByteKey(path));
+      return { json, data, type: json.type, path };
+    }
+    if (json.type === "match" || json.type === "context") {
+      if (openJsonPath === null) {
+        boundary(
+          "INVALID_JSON_RECORD_ORDER",
+          "ripgrep emitted " + json.type + " before begin",
+        );
+      }
+      const path = decodeWirePath(data.path, json.type + " path");
+      if (!path.equals(openJsonPath)) {
+        boundary(
+          "INVALID_JSON_RECORD_ORDER",
+          "ripgrep " + json.type + " path differs from its open file",
+        );
+      }
+      const lines = decodeJsonLines(data.lines);
+      parseNullablePositiveInteger(
+        data.line_number,
+        json.type + " line_number",
+      );
+      parseNonNegativeSafeInteger(
+        data.absolute_offset,
+        json.type + " absolute_offset",
+      );
+      validateSubmatches(data.submatches, lines.bytes);
+      return { json, data, type: json.type, path, lines };
+    }
+    if (json.type === "end") {
+      if (openJsonPath === null) {
+        boundary(
+          "INVALID_JSON_RECORD_ORDER",
+          "ripgrep emitted end before begin",
+        );
+      }
+      const path = decodeWirePath(data.path, "end path");
+      if (!path.equals(openJsonPath)) {
+        boundary(
+          "INVALID_JSON_RECORD_ORDER",
+          "ripgrep end path differs from its open file",
+        );
+      }
+      openJsonPath = null;
+      return { json, data, type: json.type, path };
+    }
+    if (json.type === "summary") {
+      if (openJsonPath !== null) {
+        boundary(
+          "INVALID_JSON_RECORD_ORDER",
+          "ripgrep emitted summary before closing its file",
+        );
+      }
+      sawJsonSummary = true;
+      return { json, data, type: json.type };
+    }
+    boundary(
+      "INVALID_JSON_RECORD",
+      "ripgrep emitted unsupported JSON record type '" + json.type + "'",
+    );
   };
 
   return {
+    get processedLines() {
+      return processedLines;
+    },
+    get workUnits() {
+      return workUnits;
+    },
     consume(chunk) {
       if (outputMode === "files_with_matches") {
-        for (let index = 0; index < chunk.length; index += 1) {
-          if (chunk[index] !== 0) continue;
-          renderedLines += 1;
-          if (renderedLines >= maximumLines) {
-            return { captureBytes: index + 1, reached: true };
+        const captureParts = [];
+        let start = 0;
+        for (;;) {
+          const index = chunk.indexOf(BYTE_NUL, start);
+          if (index < 0) {
+            addDelimitedPart(chunk.subarray(start));
+            return { captureParts, reached };
           }
+          addDelimitedPart(chunk.subarray(start, index));
+          const path = takeDelimitedRecord();
+          if (path.length === 0) {
+            boundary("INVALID_WIRE_TEXT", "ripgrep emitted an empty path");
+          }
+          addWorkUnits(1);
+          const excluded = excludedPathByteKeys.has(normalizedPathByteKey(path));
+          if (!excluded) {
+            const window = takeLineWindow(1);
+            if (window.take === 1) {
+              captureParts.push(path, Buffer.from([BYTE_NUL]));
+            }
+          }
+          start = index + 1;
         }
-        return { captureBytes: chunk.length, reached: false };
       }
 
       if (outputMode === "count") {
-        for (let index = 0; index < chunk.length; index += 1) {
+        const captureParts = [];
+        let start = 0;
+        for (;;) {
+          const delimiter = countState === "path" ? BYTE_NUL : BYTE_LINE_FEED;
+          const index = chunk.indexOf(delimiter, start);
+          if (index < 0) {
+            addDelimitedPart(chunk.subarray(start));
+            return { captureParts, reached };
+          }
+          addDelimitedPart(chunk.subarray(start, index));
           if (countState === "path") {
-            if (chunk[index] === 0) countState = "count";
+            countPath = takeDelimitedRecord();
+            if (countPath.length === 0) {
+              boundary(
+                "INVALID_WIRE_TEXT",
+                "ripgrep emitted an empty count path",
+              );
+            }
+            countRecordExcluded = excludedPathByteKeys.has(
+              normalizedPathByteKey(countPath),
+            );
+            countState = "count";
+            start = index + 1;
             continue;
           }
-          if (chunk[index] !== 10) continue;
-          countState = "path";
-          renderedLines += 1;
-          if (renderedLines >= maximumLines) {
-            return { captureBytes: index + 1, reached: true };
+          const countBytes = takeDelimitedRecord();
+          if (countPath.length + countBytes.length > maximumRecordBytes) {
+            boundary(
+              "RECORD_LIMIT",
+              "structured ripgrep record exceeds " +
+                maximumRecordBytes +
+                " bytes",
+            );
           }
+          const count = parseStrictDecimalCount(countBytes);
+          addWorkUnits(1);
+          if (aggregateCount > Number.MAX_SAFE_INTEGER - count) {
+            boundary(
+              "COUNT_OVERFLOW",
+              "ripgrep aggregate match count exceeds Number.MAX_SAFE_INTEGER",
+            );
+          }
+          aggregateCount += count;
+          countState = "path";
+          if (!countRecordExcluded) {
+            const window = takeLineWindow(1);
+            if (window.take === 1) {
+              captureParts.push(
+                countPath,
+                Buffer.from([BYTE_NUL]),
+                countBytes,
+                Buffer.from([BYTE_LINE_FEED]),
+              );
+            }
+          }
+          countPath = null;
+          countRecordExcluded = false;
+          start = index + 1;
         }
-        return { captureBytes: chunk.length, reached: false };
       }
 
+      const captureParts = [];
       let start = 0;
       for (;;) {
-        const lineFeed = chunk.indexOf(10, start);
+        const lineFeed = chunk.indexOf(BYTE_LINE_FEED, start);
         if (lineFeed < 0) {
-          pendingJson = Buffer.concat([pendingJson, chunk.subarray(start)]);
-          return { captureBytes: chunk.length, reached: false };
+          addPendingJson(chunk.subarray(start));
+          return { captureParts, reached };
         }
-        const record = Buffer.concat([
-          pendingJson,
-          chunk.subarray(start, lineFeed),
-        ]);
-        pendingJson = Buffer.alloc(0);
-        renderedLines += jsonRecordLineCount(record);
-        if (renderedLines >= maximumLines) {
-          return { captureBytes: lineFeed + 1, reached: true };
+        addPendingJson(chunk.subarray(start, lineFeed));
+        const record = Buffer.concat(pendingJsonParts, pendingJsonBytes);
+        pendingJsonParts = [];
+        pendingJsonBytes = 0;
+        const validated = validateJsonRecord(record);
+        addWorkUnits(1);
+        const parsed = validated.json;
+        if (validated.type === "begin") {
+          pendingBegin = record;
+          capturingJsonFile = false;
+        } else if (
+          validated.type === "match" ||
+          validated.type === "context"
+        ) {
+          const lines = validated.lines;
+          const lineCount = contentLineCount(lines.bytes);
+          addWorkUnits(Math.max(0, lineCount - 1));
+          if (openJsonExcluded) {
+            start = lineFeed + 1;
+            continue;
+          }
+          const window = takeLineWindow(lineCount);
+          if (window.take > 0) {
+            if (!capturingJsonFile && pendingBegin !== null) {
+              captureParts.push(pendingBegin, Buffer.from([10]));
+            }
+            capturingJsonFile = true;
+            if (window.skip === 0 && window.take === lineCount) {
+              captureParts.push(record, Buffer.from([10]));
+            } else {
+              const sliceStart = lineSliceOffset(lines.bytes, window.skip);
+              const sliceEnd =
+                sliceStart +
+                lineSliceOffset(lines.bytes.subarray(sliceStart), window.take);
+              const sliced = lines.bytes.subarray(sliceStart, sliceEnd);
+              validated.data.lines =
+                lines.encoding === "text"
+                  ? { text: sliced.toString("utf8") }
+                  : { bytes: sliced.toString("base64") };
+              if (typeof validated.data.line_number === "number") {
+                validated.data.line_number += window.skip;
+              }
+              if (typeof validated.data.absolute_offset === "number") {
+                validated.data.absolute_offset += sliceStart;
+              }
+              validated.data.submatches = [];
+              captureParts.push(
+                Buffer.from(JSON.stringify(parsed), "utf8"),
+                Buffer.from([BYTE_LINE_FEED]),
+              );
+            }
+          }
+        } else if (validated.type === "end") {
+          if (capturingJsonFile && !reached) {
+            captureParts.push(record, Buffer.from([BYTE_LINE_FEED]));
+          }
+          pendingBegin = null;
+          capturingJsonFile = false;
+          openJsonExcluded = false;
+        } else if (validated.type === "summary" && !reached) {
+          captureParts.push(record, Buffer.from([BYTE_LINE_FEED]));
         }
         start = lineFeed + 1;
+      }
+    },
+    finish(options = {}) {
+      if (options.allowPartial === true) return;
+      if (outputMode === "files_with_matches") {
+        if (delimitedRecordBytes > 0) {
+          boundary(
+            "MISSING_NUL",
+            "ripgrep files-with-matches output is missing a terminating NUL",
+          );
+        }
+        return;
+      }
+      if (outputMode === "count") {
+        if (countState === "count") {
+          boundary(
+            "UNTERMINATED_RECORD",
+            "ripgrep count output is missing a terminating newline",
+          );
+        }
+        if (delimitedRecordBytes > 0) {
+          boundary(
+            "MISSING_NUL",
+            "ripgrep count output is missing a path NUL delimiter",
+          );
+        }
+        return;
+      }
+      if (pendingJsonBytes > 0) {
+        boundary(
+          "UNTERMINATED_RECORD",
+          "ripgrep JSON output is missing a terminating newline",
+        );
+      }
+      if (openJsonPath !== null) {
+        boundary(
+          "INVALID_JSON_RECORD_ORDER",
+          "ripgrep JSON output ended before its file end record",
+        );
+      }
+      if (!sawJsonSummary) {
+        boundary(
+          "INVALID_JSON_RECORD_ORDER",
+          "ripgrep JSON output ended without a summary record",
+        );
       }
     },
   };
@@ -494,7 +1075,7 @@ const validSegment = (value) =>
   value !== "." &&
   value !== ".." &&
   !value.includes("/") &&
-  !value.includes("\\");
+  (process.platform !== "win32" || !value.includes("\\"));
 const noFollow =
   commandLineNoFollowEnabled() && typeof constants.O_NOFOLLOW === "number"
     ? constants.O_NOFOLLOW
@@ -635,21 +1216,23 @@ const runPinnedRipgrep = async (command, inputHandle) => {
     Object.values(command.env).every((value) => typeof value === "string")
       ? command.env
       : {};
-  let stdout = Buffer.alloc(0);
-  let stderr = Buffer.alloc(0);
+  const stdoutParts = [];
+  const stderrParts = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
   let capturedBytes = 0;
   let totalOutputBytes = 0;
   let stdoutLines = 0;
   let killedAfterLimit = false;
+  let structuredLimitFailed = false;
   let stopReason;
   let spawnError;
-  const append = (current, chunk) => {
+  const append = (parts, chunk) => {
     const remaining = Math.max(0, maxOutputBytes - capturedBytes);
     const captured = chunk.subarray(0, remaining);
     capturedBytes += captured.length;
-    return captured.length === 0
-      ? current
-      : Buffer.concat([current, captured]);
+    if (captured.length > 0) parts.push(captured);
+    return captured.length;
   };
   const child = spawn(command.program, command.args, {
     cwd: ".",
@@ -665,14 +1248,29 @@ const runPinnedRipgrep = async (command, inputHandle) => {
   }, timeoutMs);
   timeout.unref();
   child.stdout.on("data", (rawChunk) => {
-    if (killedAfterLimit) return;
+    if (killedAfterLimit || structuredLimitFailed) return;
     const chunk = Buffer.from(rawChunk);
     totalOutputBytes += chunk.length;
-    const structured = structuredLineLimiter?.consume(chunk) ?? {
-      captureBytes: chunk.length,
-      reached: false,
-    };
-    stdout = append(stdout, chunk.subarray(0, structured.captureBytes));
+    if (totalOutputBytes > maxOutputBytes && stopReason === undefined) {
+      stopReason = "output_limit";
+      child.kill();
+      return;
+    }
+    let structured;
+    try {
+      structured = structuredLineLimiter?.consume(chunk) ?? {
+        captureParts: [chunk],
+        reached: false,
+      };
+    } catch (error) {
+      structuredLimitFailed = true;
+      spawnError = error instanceof Error ? error.message : String(error);
+      child.kill();
+      return;
+    }
+    for (const part of structured.captureParts) {
+      stdoutBytes += append(stdoutParts, part);
+    }
     if (structured.reached) {
       killedAfterLimit = true;
       child.kill();
@@ -695,7 +1293,7 @@ const runPinnedRipgrep = async (command, inputHandle) => {
   child.stderr.on("data", (rawChunk) => {
     const chunk = Buffer.from(rawChunk);
     totalOutputBytes += chunk.length;
-    stderr = append(stderr, chunk);
+    stderrBytes += append(stderrParts, chunk);
     if (totalOutputBytes > maxOutputBytes && stopReason === undefined) {
       stopReason = "output_limit";
       child.kill();
@@ -711,21 +1309,37 @@ const runPinnedRipgrep = async (command, inputHandle) => {
   });
   clearTimeout(timeout);
   activeChild = null;
+  if (!structuredLimitFailed && spawnError === undefined) {
+    try {
+      structuredLineLimiter?.finish({
+        allowPartial:
+          killedAfterLimit ||
+          stopReason !== undefined ||
+          (closed.exitCode !== 0 && closed.exitCode !== 1),
+      });
+    } catch (error) {
+      structuredLimitFailed = true;
+      spawnError = error instanceof Error ? error.message : String(error);
+    }
+  }
   return {
     type: "result",
     ok: true,
-    stdoutBase64: stdout.toString("base64"),
-    stderrBase64: stderr.toString("base64"),
+    stdoutBase64: Buffer.concat(stdoutParts, stdoutBytes).toString("base64"),
+    stderrBase64: Buffer.concat(stderrParts, stderrBytes).toString("base64"),
     exitCode: closed.exitCode,
     signal: closed.signal,
     killedAfterLimit,
+    processedLines: structuredLineLimiter?.processedLines ?? 0,
+    workUnits: structuredLineLimiter?.workUnits ?? 0,
     ...(stopReason === undefined ? {} : { stopReason }),
     ...(spawnError === undefined ? {} : { spawnError }),
   };
 };
 
+let command;
 try {
-  const command = await readCommand();
+  command = await readCommand();
   const opened = await openVerifiedBasename(command);
   try {
     const stats = fileStats(opened.stats);
@@ -852,12 +1466,16 @@ try {
     await opened.handle.close();
   }
 } catch (error) {
-  send({
-    type: "result",
-    ok: false,
-    code: error?.code ?? "HELPER_FAILED",
-    message: error instanceof Error ? error.message : String(error),
-  });
+  if (command?.allowMissing === true && error?.code === "ENOENT") {
+    send({ type: "result", ok: true, missing: true });
+  } else {
+    send({
+      type: "result",
+      ok: false,
+      code: error?.code ?? "HELPER_FAILED",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 `;
 
@@ -876,7 +1494,7 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 
 ${STRUCTURED_RIPGREP_LIMITER_SOURCE}
@@ -908,7 +1526,7 @@ const validSegment = (value) =>
   value !== "." &&
   value !== ".." &&
   !value.includes("/") &&
-  !value.includes("\\");
+  (process.platform !== "win32" || !value.includes("\\"));
 const noFollow = constants.O_NOFOLLOW ?? 0;
 const boundReadWorkerSource = Buffer.from(
   process.env.AGENC_BOUND_READ_WORKER_SOURCE_BASE64 ?? "",
@@ -1221,11 +1839,27 @@ try {
         const structuredLineLimiter = createStructuredRipgrepLimiter(
           command.structuredLineLimit,
         );
+        const stdoutSpoolPath =
+          command.stdoutSpoolPath === undefined
+            ? null
+            : command.stdoutSpoolPath;
+        const maxSpoolBytes =
+          command.maxSpoolBytes === undefined
+            ? null
+            : Number(command.maxSpoolBytes);
         if (
           !Number.isSafeInteger(timeoutMs) ||
           timeoutMs < 1 ||
           !Number.isSafeInteger(maxOutputBytes) ||
           maxOutputBytes < 1 ||
+          (stdoutSpoolPath !== null &&
+            (typeof stdoutSpoolPath !== "string" ||
+              !isAbsolute(stdoutSpoolPath) ||
+              stdoutSpoolPath.includes("\0") ||
+              !Number.isSafeInteger(maxSpoolBytes) ||
+              maxSpoolBytes < 1 ||
+              structuredLineLimiter !== null ||
+              lineLimit !== null)) ||
           (lineLimit !== null &&
             (!Number.isSafeInteger(lineLimit) || lineLimit < 1))
         ) {
@@ -1242,20 +1876,31 @@ try {
           )
             ? command.env
             : {};
-        let stdout = Buffer.alloc(0);
-        let stderr = Buffer.alloc(0);
+        const stdoutParts = [];
+        const stderrParts = [];
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
+        let capturedBytes = 0;
         let totalOutputBytes = 0;
         let stdoutLines = 0;
         let killedAfterLimit = false;
+        let structuredLimitFailed = false;
+        let spoolHandle;
+        let spooledBytes = 0;
+        let spoolWrite = Promise.resolve();
         let stopReason;
         let spawnError;
-        const append = (current, chunk) => {
-          const remaining = Math.max(0, maxOutputBytes - current.length);
-          return remaining === 0
-            ? current
-            : Buffer.concat([current, chunk.subarray(0, remaining)]);
+        const append = (parts, chunk) => {
+          const remaining = Math.max(0, maxOutputBytes - capturedBytes);
+          const captured = chunk.subarray(0, remaining);
+          capturedBytes += captured.length;
+          if (captured.length > 0) parts.push(captured);
+          return captured.length;
         };
         try {
+          if (stdoutSpoolPath !== null) {
+            spoolHandle = await open(stdoutSpoolPath, "wx", 0o600);
+          }
           const child = spawn(command.program, command.args, {
             cwd: ".",
             env: commandEnv,
@@ -1270,17 +1915,65 @@ try {
           }, timeoutMs);
           timeout.unref();
           child.stdout.on("data", (rawChunk) => {
-            if (killedAfterLimit) return;
+            if (killedAfterLimit || structuredLimitFailed) return;
             const chunk = Buffer.from(rawChunk);
+            if (spoolHandle !== undefined) {
+              child.stdout.pause();
+              spoolWrite = spoolWrite
+                .then(async () => {
+                  if (spooledBytes + chunk.length > maxSpoolBytes) {
+                    if (stopReason === undefined) stopReason = "output_limit";
+                    child.kill();
+                    return;
+                  }
+                  let offset = 0;
+                  while (offset < chunk.length) {
+                    const written = await spoolHandle.write(
+                      chunk,
+                      offset,
+                      chunk.length - offset,
+                      spooledBytes + offset,
+                    );
+                    if (written.bytesWritten < 1) {
+                      throw new Error("ripgrep stdout spool made no progress");
+                    }
+                    offset += written.bytesWritten;
+                  }
+                  spooledBytes += chunk.length;
+                  if (stopReason === undefined) child.stdout.resume();
+                })
+                .catch((error) => {
+                  spawnError =
+                    error instanceof Error ? error.message : String(error);
+                  child.kill();
+                });
+              return;
+            }
             totalOutputBytes += chunk.length;
-            const structured = structuredLineLimiter?.consume(chunk) ?? {
-              captureBytes: chunk.length,
-              reached: false,
-            };
-            stdout = append(
-              stdout,
-              chunk.subarray(0, structured.captureBytes),
-            );
+            if (
+              totalOutputBytes > maxOutputBytes &&
+              stopReason === undefined
+            ) {
+              stopReason = "output_limit";
+              child.kill();
+              return;
+            }
+            let structured;
+            try {
+              structured = structuredLineLimiter?.consume(chunk) ?? {
+                captureParts: [chunk],
+                reached: false,
+              };
+            } catch (error) {
+              structuredLimitFailed = true;
+              spawnError =
+                error instanceof Error ? error.message : String(error);
+              child.kill();
+              return;
+            }
+            for (const part of structured.captureParts) {
+              stdoutBytes += append(stdoutParts, part);
+            }
             if (structured.reached) {
               killedAfterLimit = true;
               child.kill();
@@ -1306,7 +1999,7 @@ try {
           child.stderr.on("data", (rawChunk) => {
             const chunk = Buffer.from(rawChunk);
             totalOutputBytes += chunk.length;
-            stderr = append(stderr, chunk);
+            stderrBytes += append(stderrParts, chunk);
             if (
               totalOutputBytes > maxOutputBytes &&
               stopReason === undefined
@@ -1329,20 +2022,45 @@ try {
               resolveClose({ exitCode, signal }),
             );
           });
+          await spoolWrite;
+          await spoolHandle?.close();
+          spoolHandle = undefined;
           clearTimeout(timeout);
           activeChild = null;
+          if (!structuredLimitFailed && spawnError === undefined) {
+            try {
+              structuredLineLimiter?.finish({
+                allowPartial:
+                  killedAfterLimit ||
+                  stopReason !== undefined ||
+                  (closed.exitCode !== 0 && closed.exitCode !== 1),
+              });
+            } catch (error) {
+              structuredLimitFailed = true;
+              spawnError =
+                error instanceof Error ? error.message : String(error);
+            }
+          }
           send({
             type: "result",
             ok: true,
-            stdoutBase64: stdout.toString("base64"),
-            stderrBase64: stderr.toString("base64"),
+            stdoutBase64: Buffer.concat(stdoutParts, stdoutBytes).toString(
+              "base64",
+            ),
+            stderrBase64: Buffer.concat(stderrParts, stderrBytes).toString(
+              "base64",
+            ),
             exitCode: closed.exitCode,
             signal: closed.signal,
             killedAfterLimit,
+            processedLines: structuredLineLimiter?.processedLines ?? 0,
+            workUnits: structuredLineLimiter?.workUnits ?? 0,
+            spooledBytes,
             ...(stopReason === undefined ? {} : { stopReason }),
             ...(spawnError === undefined ? {} : { spawnError }),
           });
         } finally {
+          await spoolHandle?.close().catch(() => {});
           activeChild = null;
         }
         continue;
@@ -1875,6 +2593,32 @@ class BoundDirectoryHelper {
     return this.#readFileResult(message, expectedPath);
   }
 
+  async readRelativeFileIfExists(input: {
+    readonly relativePath: string;
+    readonly maxBytes: number;
+  }): Promise<WorkspaceBoundReadFile | undefined> {
+    const relativeSegments = this.#relativeSegments(input.relativePath);
+    const expectedPath = resolve(this.#readRootPath, ...relativeSegments);
+    const message = await this.#runMutation(
+      {
+        type: "mutate",
+        operation: "read_regular_file",
+        name: relativeSegments.at(-1),
+        parentSegments: [],
+        expectedKind: "file",
+        expectedIdentity: null,
+        relativeSegments,
+        maxBytes: input.maxBytes,
+        allowMissing: true,
+      },
+      expectedPath,
+    );
+    this.#parentBound = true;
+    return message.missing === true
+      ? undefined
+      : this.#readFileResult(message, expectedPath);
+  }
+
   async validateRelativeFile(input: {
     readonly relativePath: string;
     readonly expectedIdentity?: BoundReadIdentity;
@@ -1954,10 +2698,16 @@ class BoundDirectoryHelper {
     readonly structuredLineLimit?: {
       readonly outputMode: "content" | "files_with_matches" | "count";
       readonly maximumLines: number;
+      readonly maximumRecordBytes: number;
+      readonly maximumWorkUnits?: number;
+      readonly skipLines?: number;
+      readonly excludedPaths?: readonly string[];
     };
     readonly stdin?: string | Buffer;
     readonly relativeInputPath?: string;
     readonly expectedInputIdentity?: BoundReadIdentity;
+    readonly stdoutSpoolPath?: string;
+    readonly maxSpoolBytes?: number;
     readonly signal?: AbortSignal;
   }): Promise<WorkspaceBoundRipgrepResult> {
     const isAborted = (): boolean => input.signal?.aborted === true;
@@ -2005,6 +2755,12 @@ class BoundDirectoryHelper {
           ...(relativeInputSegments !== undefined
             ? { relativeInputSegments }
             : {}),
+          ...(input.stdoutSpoolPath !== undefined
+            ? {
+                stdoutSpoolPath: input.stdoutSpoolPath,
+                maxSpoolBytes: input.maxSpoolBytes,
+              }
+            : {}),
         },
         expectedPath,
       );
@@ -2015,6 +2771,9 @@ class BoundDirectoryHelper {
         exitCode: message.exitCode ?? null,
         signal: message.signal ?? null,
         killedAfterLimit: message.killedAfterLimit === true,
+        processedLines: message.processedLines ?? 0,
+        workUnits: message.workUnits ?? 0,
+        spooledBytes: message.spooledBytes ?? 0,
         aborted: false,
         ...(message.stopReason !== undefined
           ? { stopReason: message.stopReason }
@@ -2053,6 +2812,9 @@ class BoundDirectoryHelper {
       exitCode: null,
       signal: null,
       killedAfterLimit: false,
+      processedLines: 0,
+      workUnits: 0,
+      spooledBytes: 0,
       aborted: true,
       stopReason: "aborted",
     };
@@ -2063,14 +2825,15 @@ class BoundDirectoryHelper {
       typeof relativePath !== "string" ||
       relativePath.length === 0 ||
       relativePath.startsWith("/") ||
-      relativePath.startsWith("\\") ||
-      /^[A-Za-z]:[\\/]/u.test(relativePath)
+      (process.platform === "win32" &&
+        (relativePath.startsWith("\\") ||
+          /^[A-Za-z]:[\\/]/u.test(relativePath)))
     ) {
       throw new WorkspacePathIdentityChangedError(
         resolve(this.#anchorPath, relativePath),
       );
     }
-    const segments = relativePath.replace(/\\/gu, "/").split("/");
+    const segments = relativePath.split(pathSeparator);
     if (
       segments.some(
         (segment) =>
@@ -2315,6 +3078,8 @@ function workspaceBoundReadCapability(input: {
           ? { expectedIdentity: expectedIdentityFor(relativePath)! }
           : {}),
       }),
+    readRelativeFileIfExists: (relativePath, maxBytes) =>
+      input.helper.readRelativeFileIfExists({ relativePath, maxBytes }),
     validateRelativeFile: (relativePath) =>
       input.helper.validateRelativeFile({
         relativePath,
@@ -2348,6 +3113,12 @@ function workspaceBoundReadCapability(input: {
                 : {}),
             }
           : {}),
+        ...(runInput.stdoutSpoolPath !== undefined
+          ? {
+              stdoutSpoolPath: runInput.stdoutSpoolPath,
+              maxSpoolBytes: runInput.maxSpoolBytes,
+            }
+          : {}),
         ...(runInput.signal !== undefined ? { signal: runInput.signal } : {}),
       }),
     dispose: () => input.helper.dispose(),
@@ -2358,15 +3129,31 @@ async function preciseStats(path: string): Promise<BigIntStats> {
   return stat(path, { bigint: true });
 }
 
+function resolvedReadIdentityPath(path: string): string {
+  const resolvedPath = resolve(path);
+  // POSIX pathnames are byte strings: NFC and NFD spellings may be distinct
+  // directory entries. Windows retains the existing canonical spelling.
+  return process.platform === "win32"
+    ? resolvedPath.normalize("NFC")
+    : resolvedPath;
+}
+
 async function bindReadDirectoryHelper(
   directoryPath: string,
+  expectedIdentity?: WorkspaceBoundReadIdentity,
 ): Promise<BoundDirectoryHelper> {
-  const expectedPath = resolve(directoryPath).normalize("NFC");
+  const expectedPath = resolvedReadIdentityPath(directoryPath);
   const admittedBefore = await preciseStats(expectedPath);
   if (!admittedBefore.isDirectory()) {
     throw new WorkspacePathIdentityChangedError(expectedPath);
   }
   const admittedIdentity = preciseFileIdentity(admittedBefore);
+  if (
+    expectedIdentity !== undefined &&
+    !samePreciseFileIdentity(admittedIdentity, expectedIdentity)
+  ) {
+    throw new WorkspacePathIdentityChangedError(expectedPath);
+  }
   const filesystemRoot = parsePath(expectedPath).root;
   if (filesystemRoot.length === 0) {
     throw new WorkspaceReadCapabilityUnavailableError(
@@ -2424,11 +3211,15 @@ async function bindReadDirectoryHelper(
  */
 export async function bindWorkspaceDirectoryReadCapability(
   directoryPath: string,
+  options?: { readonly expectedIdentity?: WorkspaceBoundReadIdentity },
 ): Promise<WorkspaceBoundReadCapability> {
-  const expectedPath = resolve(directoryPath).normalize("NFC");
+  const expectedPath = resolvedReadIdentityPath(directoryPath);
   let helper: BoundDirectoryHelper | undefined;
   try {
-    helper = await bindReadDirectoryHelper(expectedPath);
+    helper = await bindReadDirectoryHelper(
+      expectedPath,
+      options?.expectedIdentity,
+    );
     return workspaceBoundReadCapability({
       helper,
       rootPath: expectedPath,
@@ -2453,8 +3244,9 @@ export async function bindWorkspaceDirectoryReadCapability(
  */
 export async function bindWorkspaceFileReadCapability(
   filePath: string,
+  options?: { readonly expectedIdentity?: WorkspaceBoundReadIdentity },
 ): Promise<WorkspaceBoundFileReadCapability> {
-  const expectedPath = resolve(filePath).normalize("NFC");
+  const expectedPath = resolvedReadIdentityPath(filePath);
   let helper: BoundDirectoryHelper | undefined;
   try {
     const observedBefore = await preciseStats(expectedPath);
@@ -2462,6 +3254,12 @@ export async function bindWorkspaceFileReadCapability(
       throw new WorkspacePathIdentityChangedError(expectedPath);
     }
     const admittedFileIdentity = preciseFileIdentity(observedBefore);
+    if (
+      options?.expectedIdentity !== undefined &&
+      !samePreciseFileIdentity(admittedFileIdentity, options.expectedIdentity)
+    ) {
+      throw new WorkspacePathIdentityChangedError(expectedPath);
+    }
     helper = await bindReadDirectoryHelper(dirname(expectedPath));
     const observedAfter = await preciseStats(expectedPath);
     if (

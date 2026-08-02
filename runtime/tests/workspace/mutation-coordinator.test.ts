@@ -64,6 +64,63 @@ afterEach(async () => {
 });
 
 describe("WorkspaceMutationCoordinator", () => {
+  it.runIf(process.platform !== "win32")(
+    "keeps POSIX NFC and NFD Editor buffer identities distinct",
+    async () => {
+      const workspaceRoot = await tempDirectory("agenc-coherence-unicode-");
+      const agencHome = await tempDirectory("agenc-coherence-home-");
+      const nfcPath = join(workspaceRoot, "caf\u00e9.ts");
+      const nfdPath = join(workspaceRoot, "cafe\u0301.ts");
+      const nfcContent = "export const nfcIdentity = true;\n";
+      const nfdContent = "export const nfdIdentity = true;\n";
+      const coordinator = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const lease = coordinator.acquire({
+        workspaceRoot,
+        editorInstanceId: "unicode-editor",
+      });
+
+      coordinator.sync({
+        workspaceRoot,
+        editorInstanceId: "unicode-editor",
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+        sequence: 0,
+        buffers: [
+          {
+            path: nfcPath,
+            bufferHandle: 1,
+            changedtick: 1,
+            contentSha256: sha256(nfcContent),
+            dirty: true,
+            content: nfcContent,
+          },
+          {
+            path: nfdPath,
+            bufferHandle: 2,
+            changedtick: 1,
+            contentSha256: sha256(nfdContent),
+            dirty: true,
+            content: nfdContent,
+          },
+        ],
+      });
+
+      expect(coordinator.resolvePath(nfcPath)).toBe(nfcPath);
+      expect(coordinator.resolvePath(nfdPath)).toBe(nfdPath);
+      expect(coordinator.authoritativeRead(nfcPath)).toMatchObject({
+        authority: "editor_dirty",
+        content: nfcContent,
+      });
+      expect(coordinator.authoritativeRead(nfdPath)).toMatchObject({
+        authority: "editor_dirty",
+        content: nfdContent,
+      });
+    },
+  );
+
   it("emits a content-free live proposal reference bound to the replacement hash", () => {
     const beforeText = "const value = 1;\n";
     const afterText = "const value = 2;\n";

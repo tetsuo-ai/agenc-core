@@ -387,6 +387,103 @@ describe("runSupervisedProcess", () => {
     expect(result.stderr.toString()).toMatch(/^b*$/);
   });
 
+  it("streams stdout without retaining or charging it to the capture ceiling", async () => {
+    const chunks: Buffer[] = [];
+    const result = await runSupervisedProcess(
+      nodeCommand("process.stdout.write('streamed-payload'.repeat(32))"),
+      {
+        maxOutputBytes: 8,
+        captureStdout: false,
+        onStdout(chunk) {
+          chunks.push(Buffer.from(chunk));
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ exitCode: 0, signal: null });
+    expect(result.stopReason).toBeUndefined();
+    expect(result.stdout.byteLength).toBe(0);
+    expect(Buffer.concat(chunks).toString()).toBe(
+      "streamed-payload".repeat(32),
+    );
+  });
+
+  it("continues to bound stderr while stdout is streamed", async () => {
+    let streamedBytes = 0;
+    const result = await runSupervisedProcess(
+      nodeCommand(
+        "process.stdout.write('x'.repeat(256), () => {" +
+          "setTimeout(() => process.stderr.write('e'.repeat(64)), 25);" +
+          "});" +
+          "setInterval(() => {}, 1000);",
+      ),
+      {
+        timeoutMs: 2_000,
+        maxOutputBytes: 16,
+        captureStdout: false,
+        onStdout(chunk) {
+          streamedBytes += chunk.byteLength;
+        },
+        terminateGraceMs: 50,
+        settleBackstopMs: 500,
+      },
+    );
+
+    expect(streamedBytes).toBe(256);
+    expect(result.stopReason).toBe("output_limit");
+    expect(result.stdout.byteLength).toBe(0);
+    expect(result.stderr.toString()).toBe("e".repeat(16));
+  });
+
+  it("rejects uncaptured stdout without a streaming consumer", () => {
+    expect(() =>
+      runSupervisedProcess(nodeCommand("process.stdout.write('x')"), {
+        maxOutputBytes: 16,
+        captureStdout: false,
+      }),
+    ).toThrow(/requires an onStdout consumer/u);
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "preserves streaming callback errors and cleans up the process tree",
+    async () => {
+      let descendantPid = 0;
+      let pending = "";
+      const result = await runSupervisedProcess(
+        nodeCommand(
+          "process.on('SIGTERM', () => {});" +
+            "const child = require('node:child_process').spawn(" +
+            "process.execPath," +
+            "['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"]," +
+            "{ stdio: 'ignore' });" +
+            "process.stdout.write('ready:' + child.pid + '\\n');" +
+            "setInterval(() => {}, 1000);",
+        ),
+        {
+          maxOutputBytes: 8,
+          captureStdout: false,
+          terminateGraceMs: 50,
+          settleBackstopMs: 750,
+          onStdout(chunk) {
+            pending += chunk.toString();
+            const lineFeed = pending.indexOf("\n");
+            if (lineFeed < 0) return;
+            const match = /^ready:(\d+)$/u.exec(pending.slice(0, lineFeed));
+            if (match === null) throw new Error("invalid readiness record");
+            descendantPid = Number(match[1]);
+            throw new Error("stream boundary failed");
+          },
+        },
+      );
+
+      expect(descendantPid).toBeGreaterThan(1);
+      expect(result.stopReason).toBe("consumer_limit");
+      expect(result.error?.message).toBe("stream boundary failed");
+      expect(result.stdout.byteLength).toBe(0);
+      expect(await waitForProcessExit(descendantPid, 1_000)).toBe(true);
+    },
+  );
+
   it.runIf(process.platform !== "win32")(
     "preserves the first consumer error and stops delivering buffered output",
     async () => {

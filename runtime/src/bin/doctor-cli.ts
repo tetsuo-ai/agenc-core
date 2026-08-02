@@ -99,12 +99,19 @@ export function formatDiagnosticText(
     );
   }
   lines.push(
-    `  ripgrep:            ${info.ripgrepStatus.working ? "ok" : "NOT WORKING"} ` +
+    `  Configured rg (TUI/legacy): ${
+      info.ripgrepStatus.working ? "ok" : "NOT WORKING"
+    } ` +
       `(${info.ripgrepStatus.mode}${
         info.ripgrepStatus.systemPath
           ? `: ${info.ripgrepStatus.systemPath}`
           : ""
       })`,
+  );
+  lines.push(
+    `  Packaged rg (Grep/Glob/Orient): ${
+      info.ripgrepStatus.grepPinnedWorking ? "ok" : "NOT WORKING"
+    }`,
   );
   const guard = info.transactionGuard;
   lines.push(
