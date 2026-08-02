@@ -1164,7 +1164,7 @@ jobs:
                 "tests/workspace/bound-helper-transport.win32.test.ts"
               )
               expected_native_tests=49
-              expected_native_suites=11
+              expected_native_suites=12
               ;;
             *)
               echo "unsupported native release slug: $AGENC_RELEASE_SLUG" >&2

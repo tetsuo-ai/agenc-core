@@ -520,6 +520,36 @@ describe("runSupervisedProcess", () => {
   );
 
   it.runIf(process.platform !== "win32")(
+    "retains bounded output while a successful consumer stop settles",
+    async () => {
+      let callbackCount = 0;
+      const result = await runSupervisedProcess(
+        nodeCommand(
+          "process.on('SIGTERM', () => {" +
+            "process.stdout.write('authenticated-result');" +
+            "});" +
+            "process.stderr.write('complete\\n');" +
+            "setInterval(() => {}, 1000);",
+        ),
+        {
+          maxOutputBytes: 1_024,
+          terminateGraceMs: 50,
+          settleBackstopMs: 500,
+          onStderr(_chunk, control) {
+            callbackCount += 1;
+            control.stop();
+          },
+        },
+      );
+
+      expect(callbackCount).toBe(1);
+      expect(result.stopReason).toBe("consumer_limit");
+      expect(result.error).toBeUndefined();
+      expect(result.stdout.toString()).toBe("authenticated-result");
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
     "kills a TERM-resistant process group after the grace period",
     async () => {
       accessSync(process.execPath, constants.X_OK);

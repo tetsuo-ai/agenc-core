@@ -355,6 +355,7 @@ test(
       expect(boundResult.spawnError, boundDiagnostics).toBeUndefined();
       expect(boundResult.stopReason, boundDiagnostics).toBeUndefined();
       expect(boundResult.exitCode, boundDiagnostics).toBe(0);
+      expect(boundResult.stdout.byteLength, boundDiagnostics).toBeGreaterThan(0);
       const boundEvidence = JSON.parse(
         boundResult.stdout.toString("utf8"),
       ) as {
@@ -396,7 +397,7 @@ function descriptorBoundProbeScript(): string {
         return typeof error?.code === "string" ? error.code : String(error);
       }
     };
-    process.stdout.write(JSON.stringify({
+    writeFileSync(process.stdout.fd, JSON.stringify({
       cwd: process.cwd(),
       relativeCreateError: attemptCreate("relative-write.txt"),
       retargetCreateError: attemptCreate(

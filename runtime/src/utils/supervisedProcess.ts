@@ -1513,10 +1513,11 @@ export function runSupervisedProcess(
       callback: SupervisedProcessOptions["onStdout"],
       capture: boolean,
     ): void => {
-      if (settled || stopReason !== undefined || processError !== undefined) {
+      if (settled || processError !== undefined) {
         return;
       }
       if (!capture) {
+        if (stopReason !== undefined) return;
         try {
           callback?.(chunk, control);
         } catch (error) {
@@ -1533,11 +1534,13 @@ export function runSupervisedProcess(
       if (accepted.byteLength > 0) {
         target.push(accepted);
         outputBytes += accepted.byteLength;
-        try {
-          callback?.(accepted, control);
-        } catch (error) {
-          processError ??= toError(error);
-          requestStop("consumer_limit");
+        if (stopReason === undefined) {
+          try {
+            callback?.(accepted, control);
+          } catch (error) {
+            processError ??= toError(error);
+            requestStop("consumer_limit");
+          }
         }
       }
       if (accepted.byteLength < chunk.byteLength) requestStop("output_limit");
