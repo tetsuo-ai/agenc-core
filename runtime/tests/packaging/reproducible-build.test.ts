@@ -253,11 +253,11 @@ describe("reproducible install and release contract", () => {
     );
     const normalizedCiRequiredGates = ciRequiredGates.replace(/\s+/gu, " ");
     for (const inventory of [
-      "45 passing macOS tests in eight suites across five files",
+      "46 passing macOS tests in eight suites across five files",
       "49 passing Windows tests in eleven suites across seven files",
       "same 44-test, seven-suite, four-file FND set",
       "shared 80-test, eight-suite, five-file FND set",
-      "81 tests, ten suites, and six files",
+      "82 tests, ten suites, and six files",
       "88 tests, fourteen suites, and nine files",
     ]) {
       expect(normalizedCiRequiredGates).toContain(inventory);
@@ -433,9 +433,9 @@ describe("reproducible install and release contract", () => {
     expect(macosJob).toContain("tests/tools/runtimes/runtime.darwin.test.ts");
     expect(macosJob).toContain("--config vitest.native.config.ts");
     expect(macosJob).toContain("numTotalTestSuites: 10");
-    expect(macosJob).toContain("numTotalTests: 81");
+    expect(macosJob).toContain("numTotalTests: 82");
     expect(macosJob).toContain(
-      "macOS FND/native capability lane passed 81 tests in 6 files with zero skipped",
+      "macOS FND/native capability lane passed 82 tests in 6 files with zero skipped",
     );
 
     const windowsJob = workflow.slice(workflow.indexOf("\n  windows-native:"));
@@ -1485,7 +1485,7 @@ describe("reproducible install and release contract", () => {
     expect(nativeBuild).toContain(
       '"tests/workspace/bound-helper-transport.win32.test.ts"',
     );
-    expect(nativeBuild).toContain("expected_native_tests=45");
+    expect(nativeBuild).toContain("expected_native_tests=46");
     expect(nativeBuild).toContain("expected_native_tests=49");
     expect(nativeBuild).toContain("expected_native_suites=8");
     expect(nativeBuild).toContain("expected_native_suites=11");

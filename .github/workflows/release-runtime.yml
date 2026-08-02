@@ -1150,7 +1150,7 @@ jobs:
                 "tests/fnd/process-repository-helpers.native.test.ts"
                 "tests/tools/runtimes/runtime.darwin.test.ts"
               )
-              expected_native_tests=45
+              expected_native_tests=46
               expected_native_suites=8
               ;;
             win-x64)

@@ -2232,19 +2232,23 @@ function normalizedResultPath(path: string, searchRoot: string): string {
       )
       .toLowerCase();
   }
-  const resolved = resolve(isAbsolute(path) ? path : join(searchRoot, path));
-  // Linux can distinguish normalization forms. macOS cannot, so the result
-  // key must match the coordinator's canonical Editor identity on APFS.
-  return process.platform === "darwin" ? resolved.normalize("NFC") : resolved;
+  // POSIX path spelling is identity. Existing APFS aliases are already
+  // coalesced by the coordinator/filesystem canonicalization boundary.
+  return resolve(isAbsolute(path) ? path : join(searchRoot, path));
 }
 
 function normalizedRelativeResultPath(path: string): string {
   const normalized = (
     process.platform === "win32" ? path.replace(/\\/gu, "/") : path
   ).replace(/^\.\/+/u, "");
-  return process.platform === "darwin"
-    ? normalized.normalize("NFC")
-    : normalized;
+  return normalized;
+}
+
+function filesystemObjectKey(value: {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}): string {
+  return `${value.dev.toString(10)}:${value.ino.toString(10)}`;
 }
 
 function normalizedResultPathBytes(path: Buffer, searchRoot: string): string {
@@ -2396,6 +2400,7 @@ async function pinnedSnapshotPathEligibility(params: {
   );
   params.onTemporaryRoot?.(temporaryRoot);
   try {
+    const originalPathByObject = new Map<string, string | null>();
     for (const [index, relativePath] of normalizedPaths.entries()) {
       if (params.signal?.aborted) return { error: "Search aborted" };
       if (
@@ -2410,6 +2415,13 @@ async function pinnedSnapshotPathEligibility(params: {
         flag: "wx",
         mode: 0o600,
       });
+      const identity = filesystemObjectKey(
+        await stat(placeholder, { bigint: true }),
+      );
+      originalPathByObject.set(
+        identity,
+        originalPathByObject.has(identity) ? null : relativePath,
+      );
       await params.afterPlaceholder?.(index);
     }
     const timeoutMs =
@@ -2461,7 +2473,16 @@ async function pinnedSnapshotPathEligibility(params: {
       if (decoded === undefined) {
         return { error: "Grep error: path oracle emitted invalid UTF-8" };
       }
-      selected.add(normalizedRelativeResultPath(decoded));
+      const emittedPath = normalizedRelativeResultPath(decoded);
+      const emittedIdentity = await stat(
+        join(temporaryRoot, ...emittedPath.split("/")),
+        { bigint: true },
+      ).catch(() => undefined);
+      const originalPath =
+        emittedIdentity === undefined
+          ? undefined
+          : originalPathByObject.get(filesystemObjectKey(emittedIdentity));
+      selected.add(originalPath ?? emittedPath);
     }
     return selected;
   } catch (error) {

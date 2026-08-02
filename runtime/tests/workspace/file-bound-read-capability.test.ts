@@ -23,6 +23,7 @@ import {
   __workspaceBoundSourceBootstrapForTests,
   bindWorkspaceDirectoryReadCapability,
   bindWorkspaceFileReadCapability,
+  captureWorkspaceFilePathTransactionGuard,
   MAX_BOUND_HELPER_WINDOWS_LAUNCH_UTF16_CODE_UNITS,
 } from "../../src/workspace/file-mutation-transaction.js";
 
@@ -226,7 +227,7 @@ describe("descriptor-bound file reads", () => {
   });
 
   test.runIf(process.platform === "linux")(
-    "keeps NFC and NFD sibling paths byte-distinct",
+    "keeps NFC and NFD siblings distinct on a normalization-sensitive Darwin mount",
     async () => {
       root = await mkdtemp(join(tmpdir(), "agenc-bound-read-unicode-"));
       const nfcDirectory = join(root, "caf\u00e9");
@@ -237,11 +238,27 @@ describe("descriptor-bound file reads", () => {
       await mkdir(nfdDirectory);
       await writeFile(nfcFile, "nfc-sibling\n", "utf8");
       await writeFile(nfdFile, "nfd-target\n", "utf8");
-
-      const directoryCapability =
-        await bindWorkspaceDirectoryReadCapability(nfdDirectory);
-      const fileCapability = await bindWorkspaceFileReadCapability(nfdFile);
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      );
+      if (platformDescriptor?.configurable !== true) {
+        throw new Error("process.platform is not configurable for this test");
+      }
+      let directoryCapability:
+        | Awaited<ReturnType<typeof bindWorkspaceDirectoryReadCapability>>
+        | undefined;
+      let fileCapability:
+        | Awaited<ReturnType<typeof bindWorkspaceFileReadCapability>>
+        | undefined;
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "darwin",
+      });
       try {
+        directoryCapability =
+          await bindWorkspaceDirectoryReadCapability(nfdDirectory);
+        fileCapability = await bindWorkspaceFileReadCapability(nfdFile);
         const directoryRead = await directoryCapability.readRelativeFile(
           "value.txt",
           4096,
@@ -250,8 +267,59 @@ describe("descriptor-bound file reads", () => {
         expect(directoryRead.content.toString("utf8")).toBe("nfd-target\n");
         expect(fileRead.content.toString("utf8")).toBe("nfd-target\n");
       } finally {
-        await fileCapability.dispose();
-        await directoryCapability.dispose();
+        try {
+          try {
+            await fileCapability?.dispose();
+          } finally {
+            await directoryCapability?.dispose();
+          }
+        } finally {
+          Object.defineProperty(process, "platform", platformDescriptor);
+        }
+      }
+    },
+  );
+
+  test.runIf(process.platform === "linux")(
+    "captures an NFD mutation target exactly on a normalization-sensitive Darwin mount",
+    async () => {
+      root = await mkdtemp(join(tmpdir(), "agenc-bound-mutation-unicode-"));
+      const nfcFile = join(root, "caf\u00e9.txt");
+      const nfdFile = join(root, "cafe\u0301.txt");
+      await writeFile(nfcFile, "nfc-sibling\n", "utf8");
+      await writeFile(nfdFile, "nfd-target\n", "utf8");
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      );
+      if (platformDescriptor?.configurable !== true) {
+        throw new Error("process.platform is not configurable for this test");
+      }
+      let guard:
+        | Awaited<
+            ReturnType<typeof captureWorkspaceFilePathTransactionGuard>
+          >
+        | undefined;
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "darwin",
+      });
+      try {
+        guard = await captureWorkspaceFilePathTransactionGuard(nfdFile);
+        expect(guard.path).toBe(nfdFile);
+        expect(guard.backupContent?.toString("utf8")).toBe("nfd-target\n");
+        await expect(guard.assertOriginalState()).resolves.toBeUndefined();
+        const observed = await guard.observeState();
+        expect(observed.kind).toBe("content");
+        if (observed.kind === "content") {
+          expect(observed.content.toString("utf8")).toBe("nfd-target\n");
+        }
+      } finally {
+        try {
+          await guard?.dispose();
+        } finally {
+          Object.defineProperty(process, "platform", platformDescriptor);
+        }
       }
     },
   );
@@ -535,7 +603,7 @@ describe("descriptor-bound file reads", () => {
     },
   );
 
-  test("normalizes platform path aliases before excluding dirty paths", async () => {
+  test("normalizes Windows aliases and preserves POSIX path bytes when excluding dirty paths", async () => {
     const transactionSource = await readFile(
       new URL(
         "../../src/workspace/file-mutation-transaction.ts",
@@ -609,7 +677,7 @@ describe("descriptor-bound file reads", () => {
 
       expect(darwinResult.reached).toBe(true);
       expect(Buffer.concat(darwinResult.captureParts)).toEqual(
-        Buffer.from("clean.ts\0", "utf8"),
+        Buffer.from("./cafe\u0301/dirty.ts\0", "utf8"),
       );
     } finally {
       Object.defineProperty(process, "platform", platformDescriptor);

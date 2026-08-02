@@ -17,8 +17,9 @@ on that complete matrix, so it is a barrier: no Linux, Darwin, or Windows
 artifact construction starts unless all three runner images and native
 toolchains match reviewed profiles. The candidate then builds all five native
 artifacts. Its macOS and Windows jobs first run the shared 44-test FND contract
-set, then add one Seatbelt test on macOS or three Windows
-atomic-publication/`.cmd` tests. The tagged workflow later promotes and
+set, then add one Seatbelt and one volume-sensitive pathname-identity test on
+macOS or three Windows atomic-publication/`.cmd` tests. The tagged workflow
+later promotes and
 re-attests those exact candidate bytes without rebuilding them. These probes
 gate their artifacts but do not authorize merge or replace the local evidence.
 Release workflows must not be invoked merely to verify a change.
@@ -857,12 +858,13 @@ GitHub-hosted jobs to publish or promote exact reviewed bytes. They do not
 repeat the local verification plan. The candidate phase of
 `release-runtime.yml` runs the exact native-only allowlist after its first clean
 install and
-requires the recorded result to contain 45 passing macOS tests in eight suites
+requires the recorded result to contain 46 passing macOS tests in eight suites
 across five files or 49 passing Windows tests in eleven suites across seven files,
 with zero failed, pending, skipped, or todo tests. Both candidate lanes begin
 with the same 44-test, seven-suite, four-file FND set for bounded file I/O,
 fixture loading, portable paths, and process containment. macOS adds one
-Seatbelt test; Windows adds three atomic-publication and `.cmd` tests. Its
+Seatbelt test and one volume-sensitive pathname-identity test; Windows adds
+three atomic-publication and `.cmd` tests. Its
 tagged phase only promotes and re-attests the five sealed runtime artifacts.
 Before artifact or promotion work starts, each workflow:
 
@@ -932,8 +934,9 @@ five-file FND set. It combines the 44-test release-builder set with 36
 benchmark-harness fault contracts for process-tree containment, owned-root
 retention, exclusive artifact publication, minimal subprocess environments,
 bounded metadata commands, and provenance binding. macOS adds one Seatbelt test
-for an exact total of 81 tests, ten suites, and six files. Before its native
-allowlist, Windows requires the exact one-file FND red-probe audit summary and
+and one volume-sensitive pathname-identity test for an exact total of 82 tests,
+ten suites, and six files. Before its native allowlist, Windows requires the
+exact one-file FND red-probe audit summary and
 runs three forced-containment tests in one file. Its named-pipe and
 atomic-publication/`.cmd` and bound-helper transport contracts bring the native
 total to 88 tests, fourteen suites, and nine files. Release builders deliberately retain their

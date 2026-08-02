@@ -903,15 +903,6 @@ const createStructuredRipgrepLimiter = (value) => {
         .toLowerCase();
       return "win32:" + Buffer.from(normalized, "utf8").toString("hex");
     }
-    if (process.platform === "darwin") {
-      const normalized = decodeUtf8Strict(
-        path,
-        "ripgrep macOS path",
-      )
-        .replace(/^\.\/+/u, "")
-        .normalize("NFC");
-      return "darwin:" + Buffer.from(normalized, "utf8").toString("hex");
-    }
     let start = 0;
     if (path.length >= 2 && path[0] === 0x2e && path[1] === 0x2f) {
       start = 1;
@@ -3488,8 +3479,8 @@ export async function bindWorkspaceDirectoryMutation(input: {
   readonly parent: WorkspaceBoundDirectoryIdentity;
   readonly targetPath: string;
 }): Promise<WorkspaceBoundDirectoryMutation> {
-  const targetPath = resolve(input.targetPath).normalize("NFC");
-  if (dirname(targetPath) !== resolve(input.parent.path).normalize("NFC")) {
+  const targetPath = resolveFilesystemPathIdentity(input.targetPath);
+  if (dirname(targetPath) !== resolveFilesystemPathIdentity(input.parent.path)) {
     throw new WorkspaceFileMutationPathBindingUnavailableError(targetPath);
   }
   const pathIdentity: WorkspacePathIdentity = {
@@ -3626,13 +3617,19 @@ async function preciseStats(path: string): Promise<BigIntStats> {
   return stat(path, { bigint: true });
 }
 
+function normalizeFilesystemPathIdentity(path: string): string {
+  // POSIX pathnames remain byte-exact even when the process runs on Darwin:
+  // mounted filesystems can distinguish Unicode normalization forms. Existing
+  // aliases are established by realpath/stat evidence, not an OS-wide guess.
+  return process.platform === "win32" ? path.normalize("NFC") : path;
+}
+
+function resolveFilesystemPathIdentity(path: string): string {
+  return normalizeFilesystemPathIdentity(resolve(path));
+}
+
 function resolvedReadIdentityPath(path: string): string {
-  const resolvedPath = resolve(path);
-  // Linux pathnames may distinguish normalization forms. Windows and macOS
-  // identities do not, so bindings use the same key as workspace authority.
-  return process.platform === "win32" || process.platform === "darwin"
-    ? resolvedPath.normalize("NFC")
-    : resolvedPath;
+  return resolveFilesystemPathIdentity(path);
 }
 
 async function bindReadDirectoryHelper(
@@ -3858,20 +3855,22 @@ async function observeCanonicalPath(path: string): Promise<{
   readonly anchorRealPath: string;
   readonly anchorStats: Stats;
 }> {
-  const expectedPath = resolve(path).normalize("NFC");
+  const expectedPath = resolveFilesystemPathIdentity(path);
   const missingSegments: string[] = [];
   let cursor = expectedPath;
   for (;;) {
     try {
       const before = await stat(cursor);
-      const anchorRealPath = (await realpath(cursor)).normalize("NFC");
+      const anchorRealPath = normalizeFilesystemPathIdentity(
+        await realpath(cursor),
+      );
       const after = await stat(cursor);
       if (!sameFileIdentity(before, after)) {
         throw new WorkspacePathIdentityChangedError(expectedPath);
       }
       return {
-        canonicalPath: resolve(anchorRealPath, ...missingSegments).normalize(
-          "NFC",
+        canonicalPath: normalizeFilesystemPathIdentity(
+          resolve(anchorRealPath, ...missingSegments),
         ),
         anchorPath: cursor,
         anchorRealPath,
@@ -3891,7 +3890,7 @@ async function observeCanonicalPath(path: string): Promise<{
 async function capturePathIdentity(
   path: string,
 ): Promise<WorkspacePathIdentity> {
-  const expectedPath = resolve(path).normalize("NFC");
+  const expectedPath = resolveFilesystemPathIdentity(path);
   const observed = await observeCanonicalPath(expectedPath);
   if (observed.canonicalPath !== expectedPath) {
     throw new WorkspacePathIdentityChangedError(expectedPath);
@@ -3916,7 +3915,9 @@ async function assertPathIdentity(
   let anchorAfter: Stats;
   try {
     anchorBefore = await stat(identity.anchorPath);
-    anchorRealPath = (await realpath(identity.anchorPath)).normalize("NFC");
+    anchorRealPath = normalizeFilesystemPathIdentity(
+      await realpath(identity.anchorPath),
+    );
     anchorAfter = await stat(identity.anchorPath);
   } catch {
     throw new WorkspacePathIdentityChangedError(identity.expectedPath);
@@ -3953,7 +3954,9 @@ async function assertIdentityAnchor(
   let anchorAfter: Stats;
   try {
     anchorBefore = await stat(identity.anchorPath);
-    anchorRealPath = (await realpath(identity.anchorPath)).normalize("NFC");
+    anchorRealPath = normalizeFilesystemPathIdentity(
+      await realpath(identity.anchorPath),
+    );
     anchorAfter = await stat(identity.anchorPath);
   } catch {
     throw new WorkspacePathIdentityChangedError(identity.expectedPath);

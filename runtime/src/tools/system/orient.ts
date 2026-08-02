@@ -575,16 +575,15 @@ function normalizedAbsolutePath(path: string): string {
   if (/^[A-Za-z]:[\\/]/u.test(path) || /^\\\\/u.test(path)) {
     return win32.normalize(path).toLowerCase().normalize("NFC");
   }
-  const resolved = resolve(path);
-  return process.platform === "darwin" ? resolved.normalize("NFC") : resolved;
+  // POSIX path spelling is identity. Canonical filesystem boundaries already
+  // coalesce aliases when realpath proves they name the same existing entry.
+  return resolve(path);
 }
 
 function normalizedRelativePath(path: string): string {
   const normalized =
     process.platform === "win32" ? path.replace(/\\/gu, "/") : path;
-  return process.platform === "darwin"
-    ? normalized.normalize("NFC")
-    : normalized;
+  return normalized;
 }
 
 function isSafeOrientDisplayPath(path: string): boolean {

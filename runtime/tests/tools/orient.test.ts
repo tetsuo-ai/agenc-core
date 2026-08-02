@@ -987,86 +987,96 @@ await rename(displaced, source);
     },
   );
 
-  it("deduplicates macOS normalization aliases against Editor authority", async () => {
-    const platformDescriptor = Object.getOwnPropertyDescriptor(
-      process,
-      "platform",
-    );
-    if (platformDescriptor?.configurable !== true) {
-      throw new Error("process.platform is not configurable for this test");
-    }
-    const workspace = join(dir, "darwin-alias-workspace");
-    const nfcName = "caf\u00e9.ts";
-    const nfdName = "cafe\u0301.ts";
-    await mkdir(workspace);
-    await writeFile(
-      join(workspace, nfdName),
-      "export function staleDarwinAlias() { return false; }\n",
-      "utf8",
-    );
-    await writeFile(
-      join(workspace, "other.ts"),
-      "export function otherDarwinCandidate() { return true; }\n",
-      "utf8",
-    );
-    const fakeRipgrep = await createNodeExecutable(
-      "orient-darwin-alias-rg",
-      `process.stdout.write(${JSON.stringify(`${nfdName}\0other.ts\0`)});`,
-    );
-    const tool = bindExplicitDangerBoundary(
-      createOrientTool({
-        allowedPaths: [workspace],
-        ripgrepCommand: fakeRipgrep,
-      }),
-    );
-    Object.defineProperty(process, "platform", {
-      ...platformDescriptor,
-      value: "darwin",
-    });
-    const result = await (async (): Promise<ToolResult> => {
-      try {
-        const dirtyContent =
-          "export function authoritativeDarwinAlias() { return true; }\n";
-        const coordinator =
-          workspaceMutationCoordinators.getOrCreate(workspace);
-        const lease = coordinator.acquire({
-          workspaceRoot: workspace,
-          editorInstanceId: "orient-darwin-alias-editor",
-        });
-        coordinator.sync({
-          workspaceRoot: workspace,
-          editorInstanceId: lease.editorInstanceId,
-          leaseToken: lease.leaseToken,
-          epoch: lease.epoch,
-          sequence: 0,
-          buffers: [
-            {
-              path: join(workspace, nfdName),
-              bufferHandle: 1,
-              changedtick: 1,
-              contentSha256: sha256(dirtyContent),
-              dirty: true,
-              content: dirtyContent,
-            },
-          ],
-        });
-        return await tool.execute({
-          query: "authoritativeDarwinAlias otherDarwinCandidate",
-          maxFiles: 2,
-        });
-      } finally {
-        Object.defineProperty(process, "platform", platformDescriptor);
+  it.runIf(process.platform === "linux")(
+    "does not suppress a normalization-sensitive Darwin dirty sibling",
+    async () => {
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      );
+      if (platformDescriptor?.configurable !== true) {
+        throw new Error("process.platform is not configurable for this test");
       }
-    })();
+      const workspace = join(dir, "darwin-sensitive-workspace");
+      const nfcName = "caf\u00e9.ts";
+      const nfdName = "cafe\u0301.ts";
+      await mkdir(workspace);
+      await writeFile(
+        join(workspace, nfcName),
+        "export function staleNfcDarwinValue() { return false; }\n",
+        "utf8",
+      );
+      await writeFile(
+        join(workspace, nfdName),
+        "export function nfdDarwinSibling() { return true; }\n",
+        "utf8",
+      );
+      await writeFile(
+        join(workspace, "other.ts"),
+        "export function otherDarwinCandidate() { return true; }\n",
+        "utf8",
+      );
+      const fakeRipgrep = await createNodeExecutable(
+        "orient-darwin-sensitive-rg",
+        `process.stdout.write(${JSON.stringify(`${nfdName}\0other.ts\0`)});`,
+      );
+      const tool = bindExplicitDangerBoundary(
+        createOrientTool({
+          allowedPaths: [workspace],
+          ripgrepCommand: fakeRipgrep,
+        }),
+      );
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "darwin",
+      });
+      const result = await (async (): Promise<ToolResult> => {
+        try {
+          const dirtyContent =
+            "export function authoritativeNfcDarwinValue() { return true; }\n";
+          const coordinator =
+            workspaceMutationCoordinators.getOrCreate(workspace);
+          const lease = coordinator.acquire({
+            workspaceRoot: workspace,
+            editorInstanceId: "orient-darwin-sensitive-editor",
+          });
+          coordinator.sync({
+            workspaceRoot: workspace,
+            editorInstanceId: lease.editorInstanceId,
+            leaseToken: lease.leaseToken,
+            epoch: lease.epoch,
+            sequence: 0,
+            buffers: [
+              {
+                path: join(workspace, nfcName),
+                bufferHandle: 1,
+                changedtick: 1,
+                contentSha256: sha256(dirtyContent),
+                dirty: true,
+                content: dirtyContent,
+              },
+            ],
+          });
+          return await tool.execute({
+            query:
+              "authoritativeNfcDarwinValue nfdDarwinSibling otherDarwinCandidate",
+            maxFiles: 3,
+          });
+        } finally {
+          Object.defineProperty(process, "platform", platformDescriptor);
+        }
+      })();
 
-    expect(result.isError).toBeUndefined();
-    expect(result.metadata?.fileCount).toBe(2);
-    expect(result.metadata?.topFiles).toContain(nfcName);
-    expect(result.metadata?.topFiles).toContain("other.ts");
-    expect(result.metadata?.topFiles).not.toContain(nfdName);
-    expect(result.content).toContain("authoritativeDarwinAlias");
-    expect(result.content).not.toContain("staleDarwinAlias");
-  });
+      expect(result.isError).toBeUndefined();
+      expect(result.metadata?.fileCount).toBe(3);
+      expect(result.metadata?.topFiles).toContain(nfcName);
+      expect(result.metadata?.topFiles).toContain(nfdName);
+      expect(result.metadata?.topFiles).toContain("other.ts");
+      expect(result.content).toContain("authoritativeNfcDarwinValue");
+      expect(result.content).toContain("nfdDarwinSibling");
+      expect(result.content).not.toContain("staleNfcDarwinValue");
+    },
+  );
 
   it.runIf(process.platform !== "win32")(
     "skips newline and invalid UTF-8 paths without inventing orientation rows",

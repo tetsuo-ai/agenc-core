@@ -1013,7 +1013,7 @@ describe("Grep tool", () => {
     );
   });
 
-  test("folds macOS normalization aliases returned by the path oracle", async () => {
+  test("maps a renamed path-oracle placeholder only by object identity", async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(
       process,
       "platform",
@@ -1052,6 +1052,40 @@ describe("Grep tool", () => {
       Object.defineProperty(process, "platform", platformDescriptor);
     }
   });
+
+  test.runIf(process.platform === "linux")(
+    "keeps normalization-sensitive Darwin path-oracle siblings distinct",
+    async () => {
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      );
+      if (platformDescriptor?.configurable !== true) {
+        throw new Error("process.platform is not configurable for this test");
+      }
+      const nfcPath = "caf\u00e9.ts";
+      const nfdPath = "cafe\u0301.ts";
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "darwin",
+      });
+      try {
+        const result = await __INTERNAL.pinnedSnapshotPathEligibility({
+          relativePaths: [nfcPath, nfdPath],
+          globs: ["*.ts"],
+        });
+
+        expect("error" in result ? result.error : undefined).toBeUndefined();
+        if (!("error" in result)) {
+          expect(result.has(nfcPath)).toBe(true);
+          expect(result.has(nfdPath)).toBe(true);
+          expect(result.size).toBe(2);
+        }
+      } finally {
+        Object.defineProperty(process, "platform", platformDescriptor);
+      }
+    },
+  );
 
   test("path-oracle construction obeys the aggregate deadline and cleans up", async () => {
     const deadline = { expiresAt: Number.POSITIVE_INFINITY };
@@ -2715,41 +2749,60 @@ describe("Grep tool", () => {
   });
 
   test.runIf(process.platform === "linux")(
-    "keeps POSIX NFC and NFD dirty siblings distinct in every output mode",
+    "does not cross-attribute normalization-sensitive Darwin dirty siblings",
     async () => {
-      const nfcName = "caf\u00e9.ts";
-      const nfdName = "cafe\u0301.ts";
-      const nfcPath = join(root, nfcName);
-      const nfdPath = join(root, nfdName);
-      await writeFile(nfcPath, "export const nfcNeedle = 1;\n", "utf8");
-      await writeFile(nfdPath, "export const staleNfdValue = 1;\n", "utf8");
-      await establishDirtyEditorSnapshot({
-        workspaceRoot: root,
-        path: nfdPath,
-        content: "export const nfdNeedle = 2;\n",
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      );
+      if (platformDescriptor?.configurable !== true) {
+        throw new Error("process.platform is not configurable for this test");
+      }
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "darwin",
       });
-      const tool = createGrepTool({ allowedPaths: [root] });
+      try {
+        const nfcName = "caf\u00e9.ts";
+        const nfdName = "cafe\u0301.ts";
+        const nfcPath = join(root, nfcName);
+        const nfdPath = join(root, nfdName);
+        await writeFile(nfcPath, "export const nfcNeedle = 1;\n", "utf8");
+        await writeFile(
+          nfdPath,
+          "export const staleNfdValue = 1;\n",
+          "utf8",
+        );
+        await establishDirtyEditorSnapshot({
+          workspaceRoot: root,
+          path: nfdPath,
+          content: "export const nfdNeedle = 2;\n",
+        });
+        const tool = createGrepTool({ allowedPaths: [root] });
 
-      for (const outputMode of [
-        "content",
-        "files_with_matches",
-        "count",
-      ] as const) {
-        const nfc = await tool.execute({
-          pattern: "nfcNeedle",
-          output_mode: outputMode,
-        });
-        const nfd = await tool.execute({
-          pattern: "nfdNeedle",
-          output_mode: outputMode,
-        });
-        expect(nfc.isError).toBeUndefined();
-        expect(nfd.isError).toBeUndefined();
-        expect(nfc.content).toContain(nfcName);
-        expect(nfc.content).not.toContain(nfdName);
-        expect(nfd.content).toContain(nfdName);
-        expect(nfd.content).not.toContain(nfcName);
-        expect(nfd.content).not.toContain("staleNfdValue");
+        for (const outputMode of [
+          "content",
+          "files_with_matches",
+          "count",
+        ] as const) {
+          const nfc = await tool.execute({
+            pattern: "nfcNeedle",
+            output_mode: outputMode,
+          });
+          const nfd = await tool.execute({
+            pattern: "nfdNeedle",
+            output_mode: outputMode,
+          });
+          expect(nfc.isError).toBeUndefined();
+          expect(nfd.isError).toBeUndefined();
+          expect(nfc.content).toContain(nfcName);
+          expect(nfc.content).not.toContain(nfdName);
+          expect(nfd.content).toContain(nfdName);
+          expect(nfd.content).not.toContain(nfcName);
+          expect(nfd.content).not.toContain("staleNfdValue");
+        }
+      } finally {
+        Object.defineProperty(process, "platform", platformDescriptor);
       }
     },
   );

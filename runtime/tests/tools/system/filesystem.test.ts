@@ -7,6 +7,7 @@ import {
   clearSessionReadState,
   clearSessionReadCache,
   hasSessionRead,
+  recordSessionRead,
   seedSessionReadState,
   safePath,
   isPathAllowed,
@@ -246,31 +247,68 @@ describe("safePath", () => {
     },
   );
 
-  it("folds macOS normalization aliases to one allowlist identity", async () => {
-    const platformDescriptor = Object.getOwnPropertyDescriptor(
-      process,
-      "platform",
-    );
-    if (platformDescriptor === undefined) {
-      throw new Error("process.platform descriptor is unavailable");
-    }
-    Object.defineProperty(process, "platform", {
-      ...platformDescriptor,
-      value: "darwin",
-    });
-    try {
-      const nfc = "/workspace/caf\u00e9";
-      const nfd = "/workspace/cafe\u0301";
-      const result = await safePath(`${nfd}/file.ts`, [nfc]);
-
-      expect(result).toMatchObject({
-        safe: true,
-        resolved: `${nfc}/file.ts`,
+  it(
+    "keeps Darwin normalization spellings distinct without realpath evidence",
+    async () => {
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      );
+      if (platformDescriptor === undefined) {
+        throw new Error("process.platform descriptor is unavailable");
+      }
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "darwin",
       });
-    } finally {
-      Object.defineProperty(process, "platform", platformDescriptor);
-    }
-  });
+      try {
+        const nfc = "/workspace/caf\u00e9";
+        const nfd = "/workspace/cafe\u0301";
+        const result = await safePath(`${nfd}/file.ts`, [nfc]);
+
+        expect(result).toMatchObject({
+          safe: false,
+          reason: "Path is outside allowed directories",
+        });
+      } finally {
+        Object.defineProperty(process, "platform", platformDescriptor);
+      }
+    },
+  );
+
+  it(
+    "accepts a Darwin normalization alias when realpath proves one entry",
+    async () => {
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      );
+      if (platformDescriptor === undefined) {
+        throw new Error("process.platform descriptor is unavailable");
+      }
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "darwin",
+      });
+      try {
+        const nfc = "/workspace/caf\u00e9";
+        const nfd = "/workspace/cafe\u0301";
+        mockRealpath.mockImplementation(async (path: string) => {
+          if (path === `${nfd}/file.ts`) return `${nfc}/file.ts` as never;
+          return path as never;
+        });
+
+        const result = await safePath(`${nfd}/file.ts`, [nfc]);
+
+        expect(result).toMatchObject({
+          safe: true,
+          resolved: `${nfc}/file.ts`,
+        });
+      } finally {
+        Object.defineProperty(process, "platform", platformDescriptor);
+      }
+    },
+  );
 });
 
 describe("isPathAllowed", () => {
@@ -306,6 +344,41 @@ describe("createFilesystemTools", () => {
       "system.stat",
     ]);
   });
+
+  it.runIf(process.platform === "linux")(
+    "does not pre-fold a normalization-sensitive Darwin allowlist root",
+    async () => {
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      );
+      if (platformDescriptor === undefined) {
+        throw new Error("process.platform descriptor is unavailable");
+      }
+      mockRealpath.mockImplementation(async (path: string) => path as never);
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "darwin",
+      });
+      try {
+        const nfcRoot = "/workspace/caf\u00e9";
+        const nfdRoot = "/workspace/cafe\u0301";
+        const statTool = findTool(
+          createFilesystemTools({ allowedPaths: [nfdRoot] }),
+          "system.stat",
+        );
+
+        const result = await statTool.execute({
+          path: `${nfcRoot}/file.ts`,
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("outside allowed directories");
+      } finally {
+        Object.defineProperty(process, "platform", platformDescriptor);
+      }
+    },
+  );
 
   // ── Config validation (Finding 1) ──────────────────────────────────────
 
@@ -864,6 +937,37 @@ import {
   snapshotTopRecentReads,
   seedSessionReadState as seedRead,
 } from "./filesystem.js";
+
+describe("workspace read path identity", () => {
+  it("retains the historical Windows NFC workspace key", () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(
+      process,
+      "platform",
+    );
+    if (platformDescriptor === undefined) {
+      throw new Error("process.platform descriptor is unavailable");
+    }
+    const previousWorkspace = process.env.AGENC_WORKSPACE;
+    const sessionId = "windows-workspace-read-source";
+    const canonicalPath = "/workspace/source.ts";
+    Object.defineProperty(process, "platform", {
+      ...platformDescriptor,
+      value: "win32",
+    });
+    try {
+      process.env.AGENC_WORKSPACE = "/workspace/cafe\u0301";
+      recordSessionRead(sessionId, canonicalPath, { viewKind: "full" });
+      process.env.AGENC_WORKSPACE = "/workspace/caf\u00e9";
+
+      expect(hasSessionRead(undefined, canonicalPath)).toBe(true);
+    } finally {
+      clearSessionReadState(sessionId);
+      if (previousWorkspace === undefined) delete process.env.AGENC_WORKSPACE;
+      else process.env.AGENC_WORKSPACE = previousWorkspace;
+      Object.defineProperty(process, "platform", platformDescriptor);
+    }
+  });
+});
 
 describe("snapshotTopRecentReads", () => {
   const sessionId = "session-snapshot-top";

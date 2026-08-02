@@ -4,11 +4,13 @@ import {
   existsSync,
   fstatSync,
   fsyncSync,
+  lstatSync,
   openSync,
   readSync,
   readdirSync,
   realpathSync,
   renameSync,
+  statSync,
 } from "node:fs";
 import {
   appendFile,
@@ -24,6 +26,7 @@ import {
   dirname,
   isAbsolute,
   join,
+  parse,
   relative,
   resolve,
   sep,
@@ -46,6 +49,8 @@ const MAX_PROPOSAL_RECEIPTS = 512;
 const MAX_QUARANTINE_BYTES = 512 * 1024;
 const MAX_PERSISTED_QUARANTINE_DIRECTORIES = 4_096;
 const MAX_QUARANTINE_ROOT_PREFIX_BYTES = 64 * 1024;
+const MAX_PERSISTED_WORKSPACE_ROOT_BYTES = 4_096;
+const MAX_PERSISTED_WORKSPACE_ROOT_SEGMENTS = 1_024;
 // The persistent daemon client rejects an unterminated JSON frame once its
 // receive buffer exceeds 16 MiB. Count the trailing newline as part of that
 // budget because the client observes it before splitting the complete frame.
@@ -3632,8 +3637,10 @@ function discoverPersistedWorkspaceRoots(agencHome: string): readonly string[] {
       .update(persistedWorkspaceRoot)
       .digest("hex")
       .slice(0, 32);
-    const workspaceRoot = normalizePathIdentity(persistedWorkspaceRoot);
-    if (canonicalizePathSync(persistedWorkspaceRoot) !== workspaceRoot) {
+    const workspaceRoot = canonicalPersistedWorkspaceRoot(
+      persistedWorkspaceRoot,
+    );
+    if (workspaceRoot === null) {
       throw new Error(
         `workspace quarantine path identity changed: ${entry.name}`,
       );
@@ -3768,6 +3775,8 @@ export class WorkspaceMutationCoordinatorRegistry {
     path: string,
     options: { readonly includeDescendants?: boolean } = {},
   ): readonly WorkspaceMutationCoordinator[] {
+    // The caller supplies the identity captured at admission. Re-running
+    // realpath here would move the snapshot fence after a pathname exchange.
     const target = normalizePathIdentity(path);
     return [...this.#coordinators.values()]
       .filter((coordinator) => {
@@ -4176,11 +4185,123 @@ function canonicalizePathSync(path: string): string {
 
 function normalizePathIdentity(path: string): string {
   const resolved = resolve(path);
-  // Linux can distinguish NFC/NFD directory entries. Windows and macOS path
-  // identity cannot: APFS preserves spelling but aliases normalization forms.
-  return process.platform === "win32" || process.platform === "darwin"
-    ? resolved.normalize("NFC")
-    : resolved;
+  // POSIX pathname spelling is identity unless realpath above proved an alias.
+  // This includes normalization-sensitive filesystems mounted on macOS.
+  return process.platform === "win32" ? resolved.normalize("NFC") : resolved;
+}
+
+function canonicalPersistedWorkspaceRoot(path: string): string | null {
+  const resolved = resolve(path);
+  try {
+    if (!persistedWorkspaceRootWithinBounds(resolved)) return null;
+    // A persisted spelling may be an APFS normalization alias, but a symlink
+    // replacement is not continuity of the workspace that owned the state.
+    const beforePrefixes = snapshotPathPrefixesSync(resolved);
+    if (beforePrefixes === null) return null;
+    const beforeLeaf = beforePrefixes[beforePrefixes.length - 1];
+    if (beforeLeaf === undefined || !beforeLeaf.isDirectory) return null;
+    const canonical = normalizePathIdentity(realpathSync.native(resolved));
+    const requestedIdentity = statSync(resolved, { bigint: true });
+    const canonicalIdentity = statSync(canonical, { bigint: true });
+    if (
+      !statMatchesPathPrefixIdentity(requestedIdentity, beforeLeaf) ||
+      !statMatchesPathPrefixIdentity(canonicalIdentity, beforeLeaf) ||
+      !requestedIdentity.isDirectory() ||
+      !canonicalIdentity.isDirectory() ||
+      requestedIdentity.dev !== canonicalIdentity.dev ||
+      requestedIdentity.ino !== canonicalIdentity.ino
+    ) {
+      return null;
+    }
+    const afterPrefixes = snapshotPathPrefixesSync(resolved);
+    if (
+      afterPrefixes === null ||
+      !pathPrefixSnapshotsEqual(beforePrefixes, afterPrefixes)
+    ) {
+      return null;
+    }
+    return canonical;
+  } catch {
+    return null;
+  }
+}
+
+interface PathPrefixIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly mode: bigint;
+  readonly isDirectory: boolean;
+}
+
+function snapshotPathPrefixesSync(
+  path: string,
+): readonly PathPrefixIdentity[] | null {
+  const resolved = resolve(path);
+  const root = parse(resolved).root;
+  if (root.length === 0) return null;
+  const displacement = relative(root, resolved);
+  const segments = displacement.length === 0 ? [] : displacement.split(sep);
+  const identities: PathPrefixIdentity[] = [];
+  let prefix = root;
+  for (let index = 0; index <= segments.length; index += 1) {
+    if (index > 0) {
+      const segment = segments[index - 1];
+      if (segment === undefined) return null;
+      prefix = join(prefix, segment);
+    }
+    const identity = lstatSync(prefix, { bigint: true });
+    if (identity.isSymbolicLink()) return null;
+    identities.push({
+      dev: identity.dev,
+      ino: identity.ino,
+      mode: identity.mode,
+      isDirectory: identity.isDirectory(),
+    });
+  }
+  return identities;
+}
+
+function pathPrefixSnapshotsEqual(
+  left: readonly PathPrefixIdentity[],
+  right: readonly PathPrefixIdentity[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((identity, index) => {
+      const candidate = right[index];
+      return (
+        candidate !== undefined &&
+        identity.dev === candidate.dev &&
+        identity.ino === candidate.ino &&
+        identity.mode === candidate.mode &&
+        identity.isDirectory === candidate.isDirectory
+      );
+    })
+  );
+}
+
+function persistedWorkspaceRootWithinBounds(path: string): boolean {
+  if (Buffer.byteLength(path, "utf8") > MAX_PERSISTED_WORKSPACE_ROOT_BYTES) {
+    return false;
+  }
+  const root = parse(path).root;
+  if (root.length === 0) return false;
+  const displacement = relative(root, path);
+  if (displacement.length === 0) return true;
+  return (
+    displacement.split(sep).length <= MAX_PERSISTED_WORKSPACE_ROOT_SEGMENTS
+  );
+}
+
+function statMatchesPathPrefixIdentity(
+  stat: { readonly dev: bigint; readonly ino: bigint; readonly mode: bigint },
+  prefix: PathPrefixIdentity,
+): boolean {
+  return (
+    stat.dev === prefix.dev &&
+    stat.ino === prefix.ino &&
+    stat.mode === prefix.mode
+  );
 }
 
 function isSameOrDescendantPath(parent: string, candidate: string): boolean {
@@ -4461,6 +4582,7 @@ export function captureWorkspaceAuthoritativeDirtySnapshots(
   path: string,
   options: { readonly includeDescendants?: boolean } = {},
 ): WorkspaceAuthoritativeDirtySnapshotCapture {
+  // Preserve the once-admitted identity across later rename/symlink exchange.
   const target = normalizePathIdentity(path);
   const captures = workspaceMutationCoordinators
     .findOverlappingPathIdentities(target, options)

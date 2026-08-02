@@ -1075,8 +1075,8 @@ jobs:
             numPassedTestSuites: 10,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 81,
-            numPassedTests: 81,
+            numTotalTests: 82,
+            numPassedTests: 82,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1103,7 +1103,7 @@ jobs:
               `macOS-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("macOS FND/native capability lane passed 81 tests in 6 files with zero skipped");
+          console.log("macOS FND/native capability lane passed 82 tests in 6 files with zero skipped");
           NODE
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 

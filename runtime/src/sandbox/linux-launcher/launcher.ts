@@ -40,7 +40,6 @@ export function preferredBubblewrapLauncher(options: {
   readonly cwd?: string;
   readonly trustedDirectories?: readonly string[];
   readonly probeArgv0?: (program: string) => boolean;
-  readonly probeBindFd?: (program: string) => boolean;
 } = {}): BubblewrapLauncher | null {
   const program = findSystemBubblewrapInPath(
     options.searchPath ?? process.env["PATH"],
@@ -52,8 +51,7 @@ export function preferredBubblewrapLauncher(options: {
   return {
     program,
     supportsArgv0: probe(program),
-    supportsBindFd:
-      options.probeBindFd?.(program) ?? systemBubblewrapSupportsBindFd(program),
+    supportsBindFd: systemBubblewrapSupportsBindFd(program),
   };
 }
 
