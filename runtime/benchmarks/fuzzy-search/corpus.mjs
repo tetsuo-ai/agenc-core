@@ -47,13 +47,7 @@ export function generateFuzzyCorpus(size, options = {}) {
   let pathBytes = 0;
 
   for (let index = 0; index < size; index += 1) {
-    const tag = TAGS[index % TAGS.length];
-    const id = index.toString(36).padStart(width, "0");
-    const shard = id.slice(0, 2);
-    const path =
-      index < TAGS.length
-        ? `src/${tag}/${tag}-exact-${id}.ts`
-        : `src/${tag}/${shard}/component-${id}.ts`;
+    const path = fuzzyBenchmarkCorpusPath(size, index, width);
     const bytes = Buffer.from(path, "utf8");
     if (paths !== undefined) paths[index] = path;
     if (entries !== undefined) {
@@ -79,6 +73,39 @@ export function generateFuzzyCorpus(size, options = {}) {
   });
 }
 
+export function fuzzyBenchmarkCorpusPath(size, index, knownWidth) {
+  assertCorpusSize(size);
+  if (!Number.isSafeInteger(index) || index < 0 || index >= size) {
+    throw new RangeError(
+      `fuzzy benchmark corpus index must be in [0, ${size})`,
+    );
+  }
+  const width = knownWidth ?? Math.max(4, (size - 1).toString(36).length);
+  const tag = TAGS[index % TAGS.length];
+  const id = index.toString(36).padStart(width, "0");
+  const shard = id.slice(0, 2);
+  return index < TAGS.length
+    ? `src/${tag}/${tag}-exact-${id}.ts`
+    : `src/${tag}/${shard}/component-${id}.ts`;
+}
+
+export function fuzzyBenchmarkInvalidationPath(size) {
+  assertCorpusSize(size);
+  return `src/000-d2invalidated/d2invalidated-exact-${size}.ts`;
+}
+
+export function fuzzyBenchmarkFinalPathBytes(size, initialPathBytes) {
+  assertCorpusSize(size);
+  if (!Number.isSafeInteger(initialPathBytes) || initialPathBytes <= 0) {
+    throw new RangeError("initial fuzzy benchmark path bytes must be positive");
+  }
+  return (
+    initialPathBytes -
+    Buffer.byteLength(fuzzyBenchmarkCorpusPath(size, 0), "utf8") +
+    Buffer.byteLength(fuzzyBenchmarkInvalidationPath(size), "utf8")
+  );
+}
+
 export function isFullQuerySubsequence(candidate, query) {
   let queryIndex = 0;
   const foldedCandidate = candidate.toLowerCase();
@@ -92,6 +119,8 @@ export function isFullQuerySubsequence(candidate, query) {
 
 function assertCorpusSize(size) {
   if (!Number.isSafeInteger(size) || size <= 0 || size > 1_000_000) {
-    throw new RangeError("fuzzy benchmark corpus size must be in [1, 1,000,000]");
+    throw new RangeError(
+      "fuzzy benchmark corpus size must be in [1, 1,000,000]",
+    );
   }
 }

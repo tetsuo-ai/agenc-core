@@ -18,16 +18,25 @@ compact table on stderr. It does not write beneath the checkout.
 
 Each size/mode runs in a fresh process. Matcher build time is candidate
 preparation; matcher cold queries receive raw strings and warm queries reuse
-prepared candidates. End-to-end build time is persistent generation
-publication. End-to-end cold queries alternate non-extension queries; warm
-queries time true extensions after an untimed base query. Stable query samples
-must not call discovery. Invalidation latency begins at a healthy watcher event
-and ends when a newer generation makes the changed sentinel visible.
+prepared candidates. End-to-end build time includes the production ownership
+transfer into compact storage and persistent generation publication. End-to-end
+cold queries alternate non-extension queries; warm queries time true extensions
+after an untimed base query. Stable query samples
+must not call discovery, and the first service load must hydrate the exact
+published generation with zero discovery calls. Invalidation latency begins at
+one healthy watcher event and ends only after exactly one discovery publishes
+the next generation. Polls must first observe only the prior generation with no
+sentinel; the first newer response must be the immediately following generation
+and contain the exact sentinel once.
 
-The runner requires Node 26.5.0 and npm 11.17.0. It refuses staged, unstaged,
-untracked, or ignored changes below `runtime/src` and in this benchmark
-evidence directory, records both the exact commit and `HEAD:runtime/src` tree,
-and gives workers only a small allowlist of
+The runner requires Node 26.5.0 and npm 11.17.0. Corpus-v1 digests and logical
+byte totals are frozen in the report contract for every quick and full size;
+intentional generator changes require a reviewed version and descriptor update.
+The runner refuses staged, unstaged, untracked, or ignored changes below
+`runtime/src` and in this benchmark
+evidence directory, captures both the exact commit and `HEAD:runtime/src` tree
+before launching workers, and requires the clean identities to remain unchanged
+after all workers. It gives workers only a small allowlist of
 non-secret environment variables. Reports bind CPU/RAM, source and temporary
 filesystem types, Node/npm/V8, the production SQLite version and compile
 options, and the pinned-package ripgrep distribution/version. The parent owns
@@ -39,5 +48,10 @@ bytes separately report logical path bytes, the open main/WAL/SHM files, their
 sum, and the closed main database. A point may report `resource_limited`,
 `timed_out`, or `failed`; the harness never bypasses production bounds or
 fabricates unavailable latency or memory metrics; unavailable fields are
-`null`. In particular, a one-million-entry
-daemon point may truthfully expose the current 512 MiB cache ceiling.
+`null`. A validated full report is emitted before an acceptance failure returns
+nonzero, preserving resource-failure evidence. Full acceptance nevertheless
+requires every planned point to contain build, query, RSS, and index-byte
+measurements, and requires every daemon point to prove the atomic watcher
+invalidation. Matcher points must complete. Daemon query timing may truthfully
+report `QUERY_RESOURCE_LIMIT` after those measurements; a missing cutover is
+never accepted.

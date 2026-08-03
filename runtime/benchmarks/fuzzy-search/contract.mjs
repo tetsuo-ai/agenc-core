@@ -9,6 +9,37 @@ export const FUZZY_BENCHMARK_MODES = Object.freeze([
 export const FULL_QUERY_SAMPLE_COUNT = 20;
 export const QUICK_QUERY_SAMPLE_COUNT = 3;
 
+const MILLION_ENTRY_ACCEPTANCE_SIZE = 1_000_000;
+const CORPUS_GENERATOR_VERSION = "agenc-d2-fuzzy-corpus-v1";
+const FIRST_CORPUS_PATH = "src/d2alpha/d2alpha-exact-0000.ts";
+const EXPECTED_CORPUS_DESCRIPTORS = Object.freeze({
+  100: Object.freeze({
+    digest: "915205bdcfb1d35fde0ea8fb797c069a8d4f8ae953df1ce6fc5eb0d96b55e491",
+    generatorVersion: CORPUS_GENERATOR_VERSION,
+    pathBytes: 3_244,
+  }),
+  1_000: Object.freeze({
+    digest: "61ba341ddf6440069bd18eba177c2b0b5652decad61b66e499deadc3c5968a8c",
+    generatorVersion: CORPUS_GENERATOR_VERSION,
+    pathBytes: 32_224,
+  }),
+  10_000: Object.freeze({
+    digest: "219bfdca4c2dbec4461f9db4f7998ef29b63ccbc2c841c1ac18be9cf08d76f16",
+    generatorVersion: CORPUS_GENERATOR_VERSION,
+    pathBytes: 322_024,
+  }),
+  100_000: Object.freeze({
+    digest: "1d2e3dcee2439f22eda84d605c64adbf9b8b889dc4cfcce0084ec872916f35d0",
+    generatorVersion: CORPUS_GENERATOR_VERSION,
+    pathBytes: 3_220_024,
+  }),
+  1_000_000: Object.freeze({
+    digest: "188ab058412cb524fbed38c12ff39346a3ca8948fc58ff117a4caf46e9cba330",
+    generatorVersion: CORPUS_GENERATOR_VERSION,
+    pathBytes: 32_200_024,
+  }),
+});
+
 const POINT_STATUSES = new Set([
   "completed",
   "resource_limited",
@@ -20,7 +51,9 @@ export function summarizeFuzzySamples(samples) {
   if (!Array.isArray(samples) || samples.length === 0) {
     throw new TypeError("fuzzy benchmark samples must be a nonempty array");
   }
-  const sorted = samples.map(finiteNonnegative).sort((left, right) => left - right);
+  const sorted = samples
+    .map(finiteNonnegative)
+    .sort((left, right) => left - right);
   return Object.freeze({
     maxMs: sorted.at(-1),
     minMs: sorted[0],
@@ -37,14 +70,29 @@ export function validateFuzzyBenchmarkPoint(point) {
     throw new TypeError(`invalid fuzzy benchmark mode ${String(point.mode)}`);
   }
   if (!POINT_STATUSES.has(point.status)) {
-    throw new TypeError(`invalid fuzzy benchmark status ${String(point.status)}`);
+    throw new TypeError(
+      `invalid fuzzy benchmark status ${String(point.status)}`,
+    );
   }
   positiveSafeInteger(point.corpus?.size, "point.corpus.size");
   hexDigest(point.corpus?.digest, 64, "point.corpus.digest");
-  nonemptyString(point.corpus?.generatorVersion, "point.corpus.generatorVersion");
+  nonemptyString(
+    point.corpus?.generatorVersion,
+    "point.corpus.generatorVersion",
+  );
   nonnegativeSafeInteger(point.corpus?.pathBytes, "point.corpus.pathBytes");
+  const expectedCorpus = expectedCorpusDescriptor(point.corpus.size);
+  for (const key of ["digest", "generatorVersion", "pathBytes"]) {
+    if (point.corpus[key] !== expectedCorpus[key]) {
+      throw new TypeError(
+        `point.corpus.${key} does not match deterministic corpus ${point.corpus.size}`,
+      );
+    }
+  }
   const expectedBuildKind =
-    point.mode === "matcher_only" ? "prepared_candidates" : "persistent_generation";
+    point.mode === "matcher_only"
+      ? "prepared_candidates"
+      : "persistent_generation";
   if (point.build?.kind !== expectedBuildKind) {
     throw new TypeError(`point.build.kind must be ${expectedBuildKind}`);
   }
@@ -58,7 +106,18 @@ export function validateFuzzyBenchmarkPoint(point) {
   validateMemory(point.memory, point.status);
   validateIndexBytes(point.indexBytes);
   if (point.indexBytes.logicalPathBytes !== point.corpus.pathBytes) {
-    throw new TypeError("logical index bytes must equal generated corpus path bytes");
+    throw new TypeError(
+      "logical index bytes must equal generated corpus path bytes",
+    );
+  }
+  const requiredFinalPathBytes =
+    point.invalidation === null
+      ? point.corpus.pathBytes
+      : deterministicFinalPathBytes(point.corpus.size, point.corpus.pathBytes);
+  if (point.indexBytes.finalLogicalPathBytes !== requiredFinalPathBytes) {
+    throw new TypeError(
+      "final logical index bytes do not match deterministic invalidation",
+    );
   }
 
   if (point.query !== null) {
@@ -66,7 +125,9 @@ export function validateFuzzyBenchmarkPoint(point) {
     validateSummary(point.query.cold, "point.query.cold");
     validateSummary(point.query.warm, "point.query.warm");
   } else if (point.status === "completed") {
-    throw new TypeError("completed fuzzy benchmark point requires query metrics");
+    throw new TypeError(
+      "completed fuzzy benchmark point requires query metrics",
+    );
   }
 
   if (point.invalidation !== null) {
@@ -80,9 +141,12 @@ export function validateFuzzyBenchmarkPoint(point) {
       "point.invalidation.generationBefore",
     );
     if (
-      point.invalidation.generationAfter <= point.invalidation.generationBefore
+      point.invalidation.generationAfter !==
+      point.invalidation.generationBefore + 1
     ) {
-      throw new TypeError("invalidation must publish a newer generation");
+      throw new TypeError(
+        "invalidation must publish exactly the next generation",
+      );
     }
     positiveSafeInteger(
       point.invalidation.pollIntervalMs,
@@ -91,11 +155,46 @@ export function validateFuzzyBenchmarkPoint(point) {
     if (point.invalidation.sentinelVisible !== true) {
       throw new TypeError("invalidation must observe the changed sentinel");
     }
+    if (point.invalidation.discoveryCalls !== 1) {
+      throw new TypeError("invalidation must perform exactly one discovery");
+    }
     positiveSafeInteger(
-      point.invalidation.discoveryCalls,
-      "point.invalidation.discoveryCalls",
+      point.invalidation.priorGenerationObservations,
+      "point.invalidation.priorGenerationObservations",
     );
-    nonemptyString(point.invalidation.path, "point.invalidation.path");
+    if (point.invalidation.priorSentinelCount !== 0) {
+      throw new TypeError("the prior generation must not expose the sentinel");
+    }
+    if (point.invalidation.finalSentinelCount !== 1) {
+      throw new TypeError(
+        "the final generation must expose the sentinel exactly once",
+      );
+    }
+    const expectedInvalidationPath = expectedInvalidationPathForSize(
+      point.corpus.size,
+    );
+    if (point.invalidation.path !== expectedInvalidationPath) {
+      throw new TypeError(
+        "point.invalidation.path does not match the deterministic sentinel",
+      );
+    }
+    requireObject(point.telemetry, "point.telemetry");
+    if (
+      point.telemetry.firstLoadGenerationId !==
+      point.invalidation.generationBefore
+    ) {
+      throw new TypeError(
+        "the first service load must hydrate the initial generation",
+      );
+    }
+    if (point.telemetry.firstLoadDiscoveryCalls !== 0) {
+      throw new TypeError("the first service load must not invoke discovery");
+    }
+    if (point.telemetry.watcherEvents !== 1) {
+      throw new TypeError(
+        "invalidation must begin from exactly one watcher event",
+      );
+    }
   }
   if (point.mode === "matcher_only") {
     if (point.invalidation !== null) {
@@ -125,8 +224,13 @@ export function validateFuzzyBenchmarkPoint(point) {
       "finalOpenTotalBytes",
       "closedDatabaseBytes",
     ]) {
-      if (!Number.isSafeInteger(point.indexBytes[key]) || point.indexBytes[key] <= 0) {
-        throw new TypeError(`completed end-to-end point requires positive ${key}`);
+      if (
+        !Number.isSafeInteger(point.indexBytes[key]) ||
+        point.indexBytes[key] <= 0
+      ) {
+        throw new TypeError(
+          `completed end-to-end point requires positive ${key}`,
+        );
       }
     }
     for (const key of [
@@ -143,10 +247,14 @@ export function validateFuzzyBenchmarkPoint(point) {
     point.status === "completed" &&
     point.invalidation === null
   ) {
-    throw new TypeError("completed end-to-end point requires invalidation metrics");
+    throw new TypeError(
+      "completed end-to-end point requires invalidation metrics",
+    );
   }
   if (point.status === "completed" && point.error !== null) {
-    throw new TypeError("completed fuzzy benchmark point cannot report an error");
+    throw new TypeError(
+      "completed fuzzy benchmark point cannot report an error",
+    );
   }
   if (point.status !== "completed") {
     requireObject(point.error, "point.error");
@@ -172,20 +280,25 @@ export function validateFuzzyBenchmarkReport(report, options = {}) {
   }
   for (const point of report.points) validateFuzzyBenchmarkPoint(point);
 
-  const expectedSizes = options.quick === true ? QUICK_CORPUS_SIZES : FULL_CORPUS_SIZES;
+  const expectedSizes =
+    options.quick === true ? QUICK_CORPUS_SIZES : FULL_CORPUS_SIZES;
   const expected = new Set(
     FUZZY_BENCHMARK_MODES.flatMap((mode) =>
       expectedSizes.map((size) => `${mode}:${size}`),
     ),
   );
-  const actualKeys = report.points.map((point) => `${point.mode}:${point.corpus.size}`);
+  const actualKeys = report.points.map(
+    (point) => `${point.mode}:${point.corpus.size}`,
+  );
   const actual = new Set(actualKeys);
   if (
     actualKeys.length !== expected.size ||
     actual.size !== actualKeys.length ||
     [...expected].some((key) => !actual.has(key))
   ) {
-    throw new TypeError("fuzzy benchmark report does not contain the exact plan");
+    throw new TypeError(
+      "fuzzy benchmark report does not contain the exact plan",
+    );
   }
   const expectedSampleCount =
     options.quick === true ? QUICK_QUERY_SAMPLE_COUNT : FULL_QUERY_SAMPLE_COUNT;
@@ -200,6 +313,129 @@ export function validateFuzzyBenchmarkReport(report, options = {}) {
     }
   }
   return report;
+}
+
+export function assertFuzzyBenchmarkAcceptance(report) {
+  validateFuzzyBenchmarkReport(report, { quick: false });
+  const millionEntryPoint = report.points.find(
+    (point) =>
+      point?.mode === "end_to_end" &&
+      point?.corpus?.size === MILLION_ENTRY_ACCEPTANCE_SIZE,
+  );
+  if (
+    millionEntryPoint?.invalidation === null ||
+    millionEntryPoint === undefined
+  ) {
+    throw new TypeError(
+      "full fuzzy benchmark acceptance requires the million-entry atomic invalidation",
+    );
+  }
+  for (const point of report.points) {
+    const persistent = point.mode === "end_to_end";
+    requireAcceptanceMeasurements(point, persistent);
+    if (!persistent) {
+      if (point.status !== "completed") {
+        throw new TypeError(
+          `full matcher acceptance must complete at ${point.corpus.size}`,
+        );
+      }
+      continue;
+    }
+    if (point.invalidation === null) {
+      throw new TypeError(
+        `full end-to-end acceptance requires atomic invalidation at ${point.corpus.size}`,
+      );
+    }
+    if (
+      point.status !== "completed" &&
+      !(
+        point.status === "resource_limited" &&
+        point.error?.code === "QUERY_RESOURCE_LIMIT"
+      )
+    ) {
+      throw new TypeError(
+        `end-to-end acceptance at ${point.corpus.size} permits only completed queries or a measured query resource limit`,
+      );
+    }
+    if (point.status === "resource_limited") {
+      positiveSafeInteger(
+        point.telemetry?.resourceLimitedQueries,
+        `${point.corpus.size} resourceLimitedQueries`,
+      );
+    } else if (point.telemetry?.resourceLimitedQueries !== 0) {
+      throw new TypeError(
+        `completed ${point.corpus.size} acceptance cannot report resource-limited queries`,
+      );
+    }
+  }
+  return report;
+}
+
+function expectedCorpusDescriptor(size) {
+  const descriptor = EXPECTED_CORPUS_DESCRIPTORS[size];
+  if (descriptor === undefined) {
+    throw new TypeError(`no frozen corpus descriptor exists for size ${size}`);
+  }
+  return descriptor;
+}
+
+function expectedInvalidationPathForSize(size) {
+  return `src/000-d2invalidated/d2invalidated-exact-${size}.ts`;
+}
+
+function deterministicFinalPathBytes(size, initialPathBytes) {
+  return (
+    initialPathBytes -
+    Buffer.byteLength(FIRST_CORPUS_PATH, "utf8") +
+    Buffer.byteLength(expectedInvalidationPathForSize(size), "utf8")
+  );
+}
+
+function requireAcceptanceMeasurements(point, persistent) {
+  if (
+    point === undefined ||
+    point.build?.elapsedMs === null ||
+    point.query === null
+  ) {
+    throw new TypeError(
+      "full acceptance requires build and query measurements",
+    );
+  }
+  for (const key of [
+    "baselineRssBytes",
+    "afterCorpusRssBytes",
+    "afterBuildRssBytes",
+    "afterQueryRssBytes",
+    "peakRssBytes",
+  ]) {
+    if (point.memory?.[key] === null || point.memory?.[key] === undefined) {
+      throw new TypeError(`full acceptance requires point.memory.${key}`);
+    }
+  }
+  if (!persistent) return;
+  for (const key of [
+    "initialDatabaseBytes",
+    "initialOpenTotalBytes",
+    "finalDatabaseBytes",
+    "finalOpenTotalBytes",
+    "closedDatabaseBytes",
+  ]) {
+    positiveSafeInteger(
+      point.indexBytes?.[key],
+      `full point.indexBytes.${key}`,
+    );
+  }
+  for (const key of [
+    "initialWalBytes",
+    "initialShmBytes",
+    "finalWalBytes",
+    "finalShmBytes",
+  ]) {
+    nonnegativeSafeInteger(
+      point.indexBytes?.[key],
+      `full point.indexBytes.${key}`,
+    );
+  }
 }
 
 function validateEnvironment(environment) {
@@ -219,7 +455,10 @@ function validateEnvironment(environment) {
       filesystem.blockSizeBytes,
       `report.environment.filesystems.${name}.blockSizeBytes`,
     );
-    nonemptyString(filesystem.type, `report.environment.filesystems.${name}.type`);
+    nonemptyString(
+      filesystem.type,
+      `report.environment.filesystems.${name}.type`,
+    );
   }
 
   requireObject(environment.memory, "report.environment.memory");
@@ -238,32 +477,49 @@ function validateEnvironment(environment) {
     environment.runtime.node !== "v26.5.0" ||
     environment.runtime.npm !== "11.17.0"
   ) {
-    throw new TypeError("fuzzy benchmark report requires the pinned Node/npm toolchain");
+    throw new TypeError(
+      "fuzzy benchmark report requires the pinned Node/npm toolchain",
+    );
   }
   nonemptyString(environment.runtime.v8, "report.environment.runtime.v8");
 
   requireObject(environment.sqlite, "report.environment.sqlite");
-  nonemptyString(environment.sqlite.version, "report.environment.sqlite.version");
+  nonemptyString(
+    environment.sqlite.version,
+    "report.environment.sqlite.version",
+  );
   if (
     !Array.isArray(environment.sqlite.compileOptions) ||
     environment.sqlite.compileOptions.length === 0 ||
     environment.sqlite.compileOptions.length > 4_096
   ) {
-    throw new TypeError("report.environment.sqlite.compileOptions is not bounded");
+    throw new TypeError(
+      "report.environment.sqlite.compileOptions is not bounded",
+    );
   }
   for (const option of environment.sqlite.compileOptions) {
     nonemptyString(option, "report.environment.sqlite.compileOptions[]");
   }
   const sortedOptions = [...environment.sqlite.compileOptions].sort();
-  if (JSON.stringify(sortedOptions) !== JSON.stringify(environment.sqlite.compileOptions)) {
-    throw new TypeError("report.environment.sqlite.compileOptions must be sorted");
+  if (
+    JSON.stringify(sortedOptions) !==
+    JSON.stringify(environment.sqlite.compileOptions)
+  ) {
+    throw new TypeError(
+      "report.environment.sqlite.compileOptions must be sorted",
+    );
   }
 
   requireObject(environment.ripgrep, "report.environment.ripgrep");
   if (environment.ripgrep.distribution !== "pinned_package") {
-    throw new TypeError("report.environment.ripgrep must use the pinned package");
+    throw new TypeError(
+      "report.environment.ripgrep must use the pinned package",
+    );
   }
-  nonemptyString(environment.ripgrep.version, "report.environment.ripgrep.version");
+  nonemptyString(
+    environment.ripgrep.version,
+    "report.environment.ripgrep.version",
+  );
 }
 
 function validateMemory(memory, status) {
@@ -287,11 +543,18 @@ function validateMemory(memory, status) {
     memory.afterBuildRssBytes,
     memory.afterQueryRssBytes,
   ];
-  if (endpoints.some((value) => value === null) || memory.peakRssBytes === null) {
-    throw new TypeError("memory observations must be either complete or unavailable");
+  if (
+    endpoints.some((value) => value === null) ||
+    memory.peakRssBytes === null
+  ) {
+    throw new TypeError(
+      "memory observations must be either complete or unavailable",
+    );
   }
   if (memory.peakRssBytes < Math.max(...endpoints)) {
-    throw new TypeError("point.memory.peakRssBytes is below an endpoint observation");
+    throw new TypeError(
+      "point.memory.peakRssBytes is below an endpoint observation",
+    );
   }
 }
 
@@ -314,7 +577,10 @@ function validateIndexBytes(indexBytes) {
       nonnegativeSafeInteger(indexBytes[key], `point.indexBytes.${key}`);
     }
   }
-  positiveSafeInteger(indexBytes.logicalPathBytes, "point.indexBytes.logicalPathBytes");
+  positiveSafeInteger(
+    indexBytes.logicalPathBytes,
+    "point.indexBytes.logicalPathBytes",
+  );
   positiveSafeInteger(
     indexBytes.finalLogicalPathBytes,
     "point.indexBytes.finalLogicalPathBytes",
@@ -328,7 +594,9 @@ function validateIndexBytes(indexBytes) {
     ];
     const present = values.filter((value) => value !== null).length;
     if (present !== 0 && present !== values.length) {
-      throw new TypeError(`point.indexBytes.${prefix} open-file metrics are partial`);
+      throw new TypeError(
+        `point.indexBytes.${prefix} open-file metrics are partial`,
+      );
     }
   }
   if (
@@ -340,14 +608,18 @@ function validateIndexBytes(indexBytes) {
         indexBytes.initialWalBytes +
         indexBytes.initialShmBytes
   ) {
-    throw new TypeError("point.indexBytes.initialOpenTotalBytes is inconsistent");
+    throw new TypeError(
+      "point.indexBytes.initialOpenTotalBytes is inconsistent",
+    );
   }
   if (
     indexBytes.finalDatabaseBytes !== null &&
     indexBytes.finalWalBytes !== null &&
     indexBytes.finalShmBytes !== null &&
     indexBytes.finalOpenTotalBytes !==
-      indexBytes.finalDatabaseBytes + indexBytes.finalWalBytes + indexBytes.finalShmBytes
+      indexBytes.finalDatabaseBytes +
+        indexBytes.finalWalBytes +
+        indexBytes.finalShmBytes
   ) {
     throw new TypeError("point.indexBytes.finalOpenTotalBytes is inconsistent");
   }
@@ -356,7 +628,10 @@ function validateIndexBytes(indexBytes) {
 function validateSummary(summary, label) {
   requireObject(summary, label);
   positiveSafeInteger(summary.sampleCount, `${label}.sampleCount`);
-  if (!Array.isArray(summary.samplesMs) || summary.samplesMs.length !== summary.sampleCount) {
+  if (
+    !Array.isArray(summary.samplesMs) ||
+    summary.samplesMs.length !== summary.sampleCount
+  ) {
     throw new TypeError(`${label}.samplesMs does not match sampleCount`);
   }
   for (const sample of summary.samplesMs) finiteNonnegative(sample);
@@ -377,7 +652,9 @@ function nearestRank(sorted, quantile) {
 
 function finiteNonnegative(value) {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new TypeError(`expected a finite nonnegative number, received ${String(value)}`);
+    throw new TypeError(
+      `expected a finite nonnegative number, received ${String(value)}`,
+    );
   }
   return value;
 }
@@ -399,7 +676,9 @@ function hexDigest(value, length, label) {
     typeof value !== "string" ||
     !new RegExp(`^[0-9a-f]{${length}}$`, "u").test(value)
   ) {
-    throw new TypeError(`${label} must be ${length} lowercase hexadecimal characters`);
+    throw new TypeError(
+      `${label} must be ${length} lowercase hexadecimal characters`,
+    );
   }
 }
 

@@ -11,6 +11,7 @@ import { rgPath } from "@vscode/ripgrep";
 import Database from "better-sqlite3";
 
 import {
+  assertFuzzyBenchmarkAcceptance,
   FULL_CORPUS_SIZES,
   FULL_QUERY_SAMPLE_COUNT,
   FUZZY_BENCHMARK_MODES,
@@ -32,8 +33,20 @@ const workerPath = join(benchmarkRoot, "worker.mjs");
 const options = parseArguments(process.argv.slice(2));
 const npmVersion = assertPinnedToolchain();
 assertBenchmarkInputsAreClean();
+const sourceRevision = commandText(
+  "git",
+  ["rev-parse", "HEAD"],
+  repositoryRoot,
+);
+const productionTree = commandText(
+  "git",
+  ["rev-parse", "HEAD:runtime/src"],
+  repositoryRoot,
+);
 const sizes = options.quick ? QUICK_CORPUS_SIZES : FULL_CORPUS_SIZES;
-const samples = options.quick ? QUICK_QUERY_SAMPLE_COUNT : FULL_QUERY_SAMPLE_COUNT;
+const samples = options.quick
+  ? QUICK_QUERY_SAMPLE_COUNT
+  : FULL_QUERY_SAMPLE_COUNT;
 const points = [];
 
 for (const mode of FUZZY_BENCHMARK_MODES) {
@@ -45,30 +58,68 @@ for (const mode of FUZZY_BENCHMARK_MODES) {
         mode,
         samples,
         size,
-        timeoutMs: options.quick ? QUICK_WORKER_TIMEOUT_MS : FULL_WORKER_TIMEOUT_MS,
+        timeoutMs: options.quick
+          ? QUICK_WORKER_TIMEOUT_MS
+          : FULL_WORKER_TIMEOUT_MS,
       }),
     );
   }
 }
 
+assertBenchmarkInputsAreClean();
+const finalSourceRevision = commandText(
+  "git",
+  ["rev-parse", "HEAD"],
+  repositoryRoot,
+);
+const finalProductionTree = commandText(
+  "git",
+  ["rev-parse", "HEAD:runtime/src"],
+  repositoryRoot,
+);
+if (
+  finalSourceRevision !== sourceRevision ||
+  finalProductionTree !== productionTree
+) {
+  throw new Error(
+    "fuzzy benchmark refuses a source revision or production tree that changed during the run",
+  );
+}
+
 const report = {
   environment: collectEnvironment(),
   points,
-  productionTree: commandText("git", ["rev-parse", "HEAD:runtime/src"], repositoryRoot),
+  productionTree,
   schemaVersion: FUZZY_BENCHMARK_SCHEMA_VERSION,
-  sourceRevision: commandText("git", ["rev-parse", "HEAD"], repositoryRoot),
+  sourceRevision,
   suiteId: FUZZY_BENCHMARK_SUITE_ID,
 };
 
 validateFuzzyBenchmarkReport(report, { quick: options.quick });
-if (options.check && points.some((point) => point.status !== "completed")) {
-  throw new Error("quick fuzzy benchmark check requires every point to complete");
+let acceptanceFailure = null;
+try {
+  if (!options.quick) assertFuzzyBenchmarkAcceptance(report);
+  if (options.check && points.some((point) => point.status !== "completed")) {
+    throw new Error(
+      "quick fuzzy benchmark check requires every point to complete",
+    );
+  }
+} catch (error) {
+  acceptanceFailure = error instanceof Error ? error : new Error(String(error));
 }
 process.stderr.write(renderTable(points));
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+if (acceptanceFailure !== null) {
+  process.stderr.write(
+    `D2 fuzzy benchmark acceptance failed: ${acceptanceFailure.message}\n`,
+  );
+  process.exitCode = 1;
+}
 
 async function runWorker(options) {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-d2-fuzzy-benchmark-"));
+  const temporaryRoot = await mkdtemp(
+    join(tmpdir(), "agenc-d2-fuzzy-benchmark-"),
+  );
   const args = [
     "--import",
     "tsx",
@@ -142,11 +193,13 @@ async function runWorker(options) {
       });
       child.on("error", (error) => {
         clearTimeout(timer);
-        settle(failedWorkerPoint(options, {
-          code: "WORKER_SPAWN_FAILED",
-          message: error.message,
-          status: "failed",
-        }));
+        settle(
+          failedWorkerPoint(options, {
+            code: "WORKER_SPAWN_FAILED",
+            message: error.message,
+            status: "failed",
+          }),
+        );
       });
       child.on("close", (code, signal) => {
         clearTimeout(timer);
@@ -157,24 +210,31 @@ async function runWorker(options) {
         const stderrText = Buffer.concat(stderr).toString("utf8");
         if (code !== 0) {
           const resourceLimited =
-            signal === "SIGKILL" || /heap out of memory|allocation failed|out of memory/iu.test(stderrText);
-          settle(failedWorkerPoint(options, {
-            code: resourceLimited ? "WORKER_RESOURCE_LIMIT" : "WORKER_FAILED",
-            message: boundedErrorMessage(
-              `worker exited ${String(code)}/${String(signal)}: ${stderrText}`,
-            ),
-            status: resourceLimited ? "resource_limited" : "failed",
-          }));
+            signal === "SIGKILL" ||
+            /heap out of memory|allocation failed|out of memory/iu.test(
+              stderrText,
+            );
+          settle(
+            failedWorkerPoint(options, {
+              code: resourceLimited ? "WORKER_RESOURCE_LIMIT" : "WORKER_FAILED",
+              message: boundedErrorMessage(
+                `worker exited ${String(code)}/${String(signal)}: ${stderrText}`,
+              ),
+              status: resourceLimited ? "resource_limited" : "failed",
+            }),
+          );
           return;
         }
         try {
           settle(JSON.parse(Buffer.concat(stdout).toString("utf8")));
         } catch (error) {
-          settle(failedWorkerPoint(options, {
-            code: "WORKER_INVALID_JSON",
-            message: error instanceof Error ? error.message : String(error),
-            status: "failed",
-          }));
+          settle(
+            failedWorkerPoint(options, {
+              code: "WORKER_INVALID_JSON",
+              message: error instanceof Error ? error.message : String(error),
+              status: "failed",
+            }),
+          );
         }
       });
     });
@@ -223,7 +283,11 @@ function collectEnvironment() {
   } finally {
     sqlite.close();
   }
-  const ripgrepVersion = commandText(rgPath, ["--no-config", "--version"], repositoryRoot)
+  const ripgrepVersion = commandText(
+    rgPath,
+    ["--no-config", "--version"],
+    repositoryRoot,
+  )
     .split(/\r?\n/u)[0]
     .trim();
   return {
@@ -272,7 +336,10 @@ function failedWorkerPoint(options, failure) {
   return {
     build: {
       elapsedMs: null,
-      kind: options.mode === "matcher_only" ? "prepared_candidates" : "persistent_generation",
+      kind:
+        options.mode === "matcher_only"
+          ? "prepared_candidates"
+          : "persistent_generation",
     },
     corpus: {
       digest: corpus.digest,
@@ -280,7 +347,10 @@ function failedWorkerPoint(options, failure) {
       pathBytes: corpus.pathBytes,
       size: corpus.size,
     },
-    error: { code: failure.code, message: boundedErrorMessage(failure.message) },
+    error: {
+      code: failure.code,
+      message: boundedErrorMessage(failure.message),
+    },
     indexBytes: {
       closedDatabaseBytes: null,
       finalDatabaseBytes: null,
@@ -315,11 +385,15 @@ function boundedErrorMessage(message) {
 
 function assertPinnedToolchain() {
   if (process.version !== "v26.5.0") {
-    throw new Error(`fuzzy benchmark requires Node v26.5.0, received ${process.version}`);
+    throw new Error(
+      `fuzzy benchmark requires Node v26.5.0, received ${process.version}`,
+    );
   }
   const observedNpm = commandText("npm", ["--version"]);
   if (observedNpm !== "11.17.0") {
-    throw new Error(`fuzzy benchmark requires npm 11.17.0, received ${observedNpm}`);
+    throw new Error(
+      `fuzzy benchmark requires npm 11.17.0, received ${observedNpm}`,
+    );
   }
   return observedNpm;
 }
@@ -345,7 +419,9 @@ function assertGitPathIsClean(path, label) {
     });
     if (result.error !== undefined) throw result.error;
     if (result.status === 1) {
-      throw new Error(`fuzzy benchmark refuses dirty tracked files in ${label}`);
+      throw new Error(
+        `fuzzy benchmark refuses dirty tracked files in ${label}`,
+      );
     }
     if (result.status !== 0) {
       throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);

@@ -14,6 +14,8 @@ import {
   validateFuzzyBenchmarkPoint,
 } from "./contract.mjs";
 import {
+  fuzzyBenchmarkFinalPathBytes,
+  fuzzyBenchmarkInvalidationPath,
   generateFuzzyCorpus,
   isFullQuerySubsequence,
 } from "./corpus.mjs";
@@ -30,7 +32,8 @@ try {
   validateFuzzyBenchmarkPoint(point);
   process.stdout.write(`${JSON.stringify(point)}\n`);
 } catch (error) {
-  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  const message =
+    error instanceof Error ? (error.stack ?? error.message) : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
 }
@@ -73,7 +76,10 @@ function runMatcherOnly(options) {
 
   const afterQueryRssBytes = process.memoryUsage().rss;
   return Object.freeze({
-    build: Object.freeze({ elapsedMs: buildElapsedMs, kind: "prepared_candidates" }),
+    build: Object.freeze({
+      elapsedMs: buildElapsedMs,
+      kind: "prepared_candidates",
+    }),
     corpus: corpusDescriptor(corpus),
     error: null,
     indexBytes: emptyIndexBytes(corpus.pathBytes),
@@ -103,8 +109,10 @@ async function runEndToEnd(options) {
     import("../../src/app-server/fuzzy-file-search.ts"),
     import("../../src/app-server/fuzzy-file-index.ts"),
   ]);
-  const { AgenCFuzzyFileSearchService, FuzzyFileSearchBoundaryError } = searchModule;
-  const { PersistentFuzzyFileIndex } = indexModule;
+  const { AgenCFuzzyFileSearchService, FuzzyFileSearchBoundaryError } =
+    searchModule;
+  const { createFuzzyFileDiscoveryResult, PersistentFuzzyFileIndex } =
+    indexModule;
   const baselineRssBytes = process.memoryUsage().rss;
   const temporaryRoot = options.temporaryRoot;
   const databasePath = join(temporaryRoot, "fuzzy-index.sqlite");
@@ -125,17 +133,23 @@ async function runEndToEnd(options) {
     const afterCorpusRssBytes = process.memoryUsage().rss;
     let discoveryCalls = 0;
     let watcherChange = null;
+    let watcherEvents = 0;
     index = new PersistentFuzzyFileIndex({ databasePath });
 
     const buildStartedAt = performance.now();
+    const buildSignal = new AbortController().signal;
     let initialSnapshot = await index.publish(
       temporaryRoot,
-      discovery(activeEntries),
-      new AbortController().signal,
+      await createFuzzyFileDiscoveryResult(
+        discovery(activeEntries),
+        buildSignal,
+      ),
+      buildSignal,
       { sourceBoundary: "benchmark:initial" },
     );
     const buildElapsedMs = performance.now() - buildStartedAt;
-    if (initialSnapshot === null) throw new Error("benchmark generation was not published");
+    if (initialSnapshot === null)
+      throw new Error("benchmark generation was not published");
     const initialGeneration = initialSnapshot.generationId;
     initialSnapshot = null;
     globalThis.gc?.();
@@ -161,14 +175,29 @@ async function runEndToEnd(options) {
     let invalidation = null;
     let resourceLimitedQueries = 0;
     let firstLoadElapsedMs = null;
+    let firstLoadDiscoveryCalls = null;
+    let firstLoadGenerationId = null;
     let finalLogicalPathBytes = initialLogicalPathBytes;
 
     try {
       const coldSamples = [];
       const warmSamples = [];
       const firstLoadStartedAt = performance.now();
-      await search(service, temporaryRoot, "d2t");
+      const firstLoad = await search(service, temporaryRoot, "d2t");
       firstLoadElapsedMs = performance.now() - firstLoadStartedAt;
+      firstLoadDiscoveryCalls = discoveryCalls;
+      firstLoadGenerationId =
+        firstLoad.freshness?.roots[0]?.generationId ?? null;
+      if (firstLoadGenerationId !== initialGeneration) {
+        throw new Error(
+          `first service load observed generation ${String(firstLoadGenerationId)}, expected ${initialGeneration}`,
+        );
+      }
+      if (firstLoadDiscoveryCalls !== 0) {
+        throw new Error(
+          "first persistent service load unexpectedly invoked discovery",
+        );
+      }
       const discoveryBeforeQueries = discoveryCalls;
       for (let sample = 0; sample < options.samples; sample += 1) {
         const pair = queryPairs[sample % queryPairs.length];
@@ -186,7 +215,9 @@ async function runEndToEnd(options) {
         if (warm.matcher?.resourceLimited === true) resourceLimitedQueries += 1;
       }
       if (discoveryCalls !== discoveryBeforeQueries) {
-        throw new Error("stable indexed queries unexpectedly invoked discovery");
+        throw new Error(
+          "stable indexed queries unexpectedly invoked discovery",
+        );
       }
       query = Object.freeze({
         cold: summarizeFuzzySamples(coldSamples),
@@ -196,15 +227,15 @@ async function runEndToEnd(options) {
       if (typeof watcherChange !== "function") {
         throw new Error("benchmark watcher callback was not installed");
       }
-      const invalidatedPath = `src/d2invalidated/d2invalidated-exact-${options.size}.ts`;
+      const invalidatedPath = fuzzyBenchmarkInvalidationPath(options.size);
       activeEntries = [...activeEntries];
-      const invalidatedPathBytes = Buffer.byteLength(invalidatedPath, "utf8");
       activeEntries[0] = Object.freeze({
         matchType: "file",
         pathBytes: Buffer.from(invalidatedPath, "utf8"),
         relativePath: invalidatedPath,
       });
       const invalidationStartedAt = performance.now();
+      watcherEvents += 1;
       watcherChange();
       const observed = await waitForInvalidation({
         initialGeneration,
@@ -216,12 +247,20 @@ async function runEndToEnd(options) {
       invalidation = Object.freeze({
         discoveryCalls,
         elapsedMs: performance.now() - invalidationStartedAt,
+        finalSentinelCount: observed.finalSentinelCount,
         generationAfter: observed.generationId,
         generationBefore: initialGeneration,
         path: invalidatedPath,
         pollIntervalMs: INVALIDATION_POLL_INTERVAL_MS,
+        priorGenerationObservations: observed.priorGenerationObservations,
+        priorSentinelCount: observed.priorSentinelCount,
         sentinelVisible: observed.sentinelVisible,
       });
+      if (discoveryCalls !== 1) {
+        throw new Error(
+          `watcher invalidation invoked discovery ${discoveryCalls} times, expected exactly once`,
+        );
+      }
       if (resourceLimitedQueries > 0) {
         pointStatus = "resource_limited";
         pointError = Object.freeze({
@@ -229,8 +268,20 @@ async function runEndToEnd(options) {
           message: `${resourceLimitedQueries} timed queries reached a production resource limit`,
         });
       }
-      finalLogicalPathBytes =
-        initialLogicalPathBytes - initialFirstPathBytes + invalidatedPathBytes;
+      finalLogicalPathBytes = fuzzyBenchmarkFinalPathBytes(
+        options.size,
+        initialLogicalPathBytes,
+      );
+      if (
+        finalLogicalPathBytes !==
+        initialLogicalPathBytes -
+          initialFirstPathBytes +
+          Buffer.byteLength(invalidatedPath, "utf8")
+      ) {
+        throw new Error(
+          "deterministic invalidation path-byte accounting diverged",
+        );
+      }
     } catch (error) {
       if (error instanceof FuzzyFileSearchBoundaryError) {
         pointStatus = "resource_limited";
@@ -255,7 +306,10 @@ async function runEndToEnd(options) {
       initialOpenBytes,
     });
     return Object.freeze({
-      build: Object.freeze({ elapsedMs: buildElapsedMs, kind: "persistent_generation" }),
+      build: Object.freeze({
+        elapsedMs: buildElapsedMs,
+        kind: "persistent_generation",
+      }),
       corpus: corpusDetails,
       error: pointStatus === "completed" ? null : pointError,
       indexBytes,
@@ -271,9 +325,12 @@ async function runEndToEnd(options) {
       status: pointStatus,
       telemetry: Object.freeze({
         discoveryCalls,
+        firstLoadDiscoveryCalls,
         firstLoadElapsedMs,
+        firstLoadGenerationId,
         resourceLimitedQueries,
         watcherDebounceIncluded: true,
+        watcherEvents,
       }),
     });
   } finally {
@@ -285,19 +342,56 @@ async function runEndToEnd(options) {
 
 async function waitForInvalidation(options) {
   const deadline = performance.now() + options.timeoutMs;
+  let priorGenerationObservations = 0;
   while (performance.now() < deadline) {
-    const response = await search(options.service, options.root, "d2invalidated");
+    const response = await search(
+      options.service,
+      options.root,
+      "d2invalidated",
+    );
     const freshness = response.freshness?.roots[0];
-    if (
-      freshness?.generationId !== null &&
-      freshness?.generationId > options.initialGeneration &&
-      response.files.some((file) => file.path === options.path)
-    ) {
-      return { generationId: freshness.generationId, sentinelVisible: true };
+    const generationId = freshness?.generationId ?? null;
+    const sentinelCount = response.files.filter(
+      (file) => file.path === options.path,
+    ).length;
+    if (generationId === options.initialGeneration) {
+      priorGenerationObservations += 1;
+      if (sentinelCount !== 0) {
+        throw new Error(
+          "the prior generation exposed the invalidation sentinel",
+        );
+      }
+    } else if (generationId !== null) {
+      if (generationId !== options.initialGeneration + 1) {
+        throw new Error(
+          `invalidation observed generation ${generationId}, expected ${options.initialGeneration + 1}`,
+        );
+      }
+      if (priorGenerationObservations === 0) {
+        throw new Error(
+          "invalidation cut over before observing the prior generation",
+        );
+      }
+      if (sentinelCount !== 1) {
+        throw new Error(
+          `the final generation exposed ${sentinelCount} exact sentinels, expected one`,
+        );
+      }
+      return {
+        finalSentinelCount: sentinelCount,
+        generationId,
+        priorGenerationObservations,
+        priorSentinelCount: 0,
+        sentinelVisible: true,
+      };
     }
-    await new Promise((resolve) => setTimeout(resolve, INVALIDATION_POLL_INTERVAL_MS));
+    await new Promise((resolve) =>
+      setTimeout(resolve, INVALIDATION_POLL_INTERVAL_MS),
+    );
   }
-  throw new Error(`fuzzy benchmark invalidation exceeded ${options.timeoutMs}ms`);
+  throw new Error(
+    `fuzzy benchmark invalidation exceeded ${options.timeoutMs}ms`,
+  );
 }
 
 function search(service, root, query) {
@@ -316,7 +410,8 @@ function discovery(entries) {
 }
 
 function assertRankedResults(results, query) {
-  if (results.length === 0) throw new Error(`matcher returned no results for ${query}`);
+  if (results.length === 0)
+    throw new Error(`matcher returned no results for ${query}`);
   for (const result of results) {
     if (!isFullQuerySubsequence(result.candidate, query)) {
       throw new Error(`matcher returned a partial-query result for ${query}`);
@@ -325,12 +420,17 @@ function assertRankedResults(results, query) {
 }
 
 function assertSearchResponse(response, query) {
-  if (response.files.length === 0 && response.matcher?.resourceLimited !== true) {
+  if (
+    response.files.length === 0 &&
+    response.matcher?.resourceLimited !== true
+  ) {
     throw new Error(`indexed search returned no results for ${query}`);
   }
   for (const result of response.files) {
     if (!isFullQuerySubsequence(result.path, query)) {
-      throw new Error(`indexed search returned a partial-query result for ${query}`);
+      throw new Error(
+        `indexed search returned a partial-query result for ${query}`,
+      );
     }
   }
 }
@@ -448,6 +548,13 @@ function parseArguments(args) {
       throw new Error(`${label} must be a positive safe integer`);
     }
   }
-  if (temporaryRoot.length === 0) throw new Error("temporary root must not be empty");
-  return Object.freeze({ invalidationTimeoutMs, mode, samples, size, temporaryRoot });
+  if (temporaryRoot.length === 0)
+    throw new Error("temporary root must not be empty");
+  return Object.freeze({
+    invalidationTimeoutMs,
+    mode,
+    samples,
+    size,
+    temporaryRoot,
+  });
 }

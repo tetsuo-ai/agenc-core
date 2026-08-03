@@ -5,12 +5,15 @@ import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 
 import {
+  assertFuzzyBenchmarkAcceptance,
   FUZZY_BENCHMARK_SCHEMA_VERSION,
   FUZZY_BENCHMARK_SUITE_ID,
   summarizeFuzzySamples,
   validateFuzzyBenchmarkReport,
 } from "../../benchmarks/fuzzy-search/contract.mjs";
 import {
+  fuzzyBenchmarkFinalPathBytes,
+  fuzzyBenchmarkInvalidationPath,
   generateFuzzyCorpus,
   isFullQuerySubsequence,
 } from "../../benchmarks/fuzzy-search/corpus.mjs";
@@ -29,8 +32,47 @@ describe("D2 fuzzy benchmark contract", () => {
     expect(new Set(first.paths).size).toBe(100);
     expect(first.pathBytes).toBeLessThan(134_217_728);
     for (const pair of first.queryPairs) {
-      expect(first.paths.some((path) => isFullQuerySubsequence(path, pair.extension))).toBe(true);
+      expect(
+        first.paths.some((path) =>
+          isFullQuerySubsequence(path, pair.extension),
+        ),
+      ).toBe(true);
     }
+    expect(
+      [100, 1_000, 10_000, 100_000, 1_000_000].map((size) => {
+        const corpus = generateFuzzyCorpus(size, {
+          includeEntries: false,
+          includePaths: false,
+        });
+        return [size, corpus.digest, corpus.pathBytes];
+      }),
+    ).toEqual([
+      [
+        100,
+        "915205bdcfb1d35fde0ea8fb797c069a8d4f8ae953df1ce6fc5eb0d96b55e491",
+        3_244,
+      ],
+      [
+        1_000,
+        "61ba341ddf6440069bd18eba177c2b0b5652decad61b66e499deadc3c5968a8c",
+        32_224,
+      ],
+      [
+        10_000,
+        "219bfdca4c2dbec4461f9db4f7998ef29b63ccbc2c841c1ac18be9cf08d76f16",
+        322_024,
+      ],
+      [
+        100_000,
+        "1d2e3dcee2439f22eda84d605c64adbf9b8b889dc4cfcce0084ec872916f35d0",
+        3_220_024,
+      ],
+      [
+        1_000_000,
+        "188ab058412cb524fbed38c12ff39346a3ca8948fc58ff117a4caf46e9cba330",
+        32_200_024,
+      ],
+    ]);
   });
 
   test("uses nearest-rank ordered p50/p95 summaries", () => {
@@ -46,19 +88,177 @@ describe("D2 fuzzy benchmark contract", () => {
 
   test("rejects duplicate/malformed plans and missing completed metrics", () => {
     const report = validQuickReport();
-    expect(() => validateFuzzyBenchmarkReport(report, { quick: true })).not.toThrow();
+    expect(() =>
+      validateFuzzyBenchmarkReport(report, { quick: true }),
+    ).not.toThrow();
 
     const duplicate = structuredClone(report);
     duplicate.points.push(structuredClone(duplicate.points[0]));
-    expect(() => validateFuzzyBenchmarkReport(duplicate, { quick: true })).toThrow();
+    expect(() =>
+      validateFuzzyBenchmarkReport(duplicate, { quick: true }),
+    ).toThrow();
 
     const missing = structuredClone(report);
     missing.points[0].query = null;
-    expect(() => validateFuzzyBenchmarkReport(missing, { quick: true })).toThrow();
+    expect(() =>
+      validateFuzzyBenchmarkReport(missing, { quick: true }),
+    ).toThrow();
 
     const fabricated = structuredClone(report);
     fabricated.points[0].query.cold.p95Ms = 999;
-    expect(() => validateFuzzyBenchmarkReport(fabricated, { quick: true })).toThrow();
+    expect(() =>
+      validateFuzzyBenchmarkReport(fabricated, { quick: true }),
+    ).toThrow();
+  });
+
+  test("binds reports to the deterministic corpus and invalidation bytes", () => {
+    const report = validQuickReport();
+    for (const key of ["digest", "generatorVersion", "pathBytes"]) {
+      const fabricated = structuredClone(report);
+      fabricated.points[0].corpus[key] =
+        key === "digest"
+          ? "0".repeat(64)
+          : key === "pathBytes"
+            ? fabricated.points[0].corpus.pathBytes + 1
+            : "fabricated";
+      expect(() =>
+        validateFuzzyBenchmarkReport(fabricated, { quick: true }),
+      ).toThrow(/deterministic corpus/u);
+    }
+
+    const invalidFinalBytes = structuredClone(report);
+    const endToEnd = invalidFinalBytes.points.find(
+      (candidate: any) => candidate.mode === "end_to_end",
+    );
+    endToEnd.indexBytes.finalLogicalPathBytes += 1;
+    expect(() =>
+      validateFuzzyBenchmarkReport(invalidFinalBytes, { quick: true }),
+    ).toThrow(/deterministic invalidation/u);
+  });
+
+  test("requires exact atomic invalidation evidence", () => {
+    const mutations = [
+      (invalidation: any) => {
+        invalidation.generationAfter += 1;
+      },
+      (invalidation: any) => {
+        invalidation.discoveryCalls = 2;
+      },
+      (invalidation: any) => {
+        invalidation.priorGenerationObservations = 0;
+      },
+      (invalidation: any) => {
+        invalidation.priorSentinelCount = 1;
+      },
+      (invalidation: any) => {
+        invalidation.finalSentinelCount = 2;
+      },
+    ];
+    for (const mutate of mutations) {
+      const report = validQuickReport();
+      const endToEnd = report.points.find(
+        (candidate: any) => candidate.mode === "end_to_end",
+      );
+      mutate(endToEnd.invalidation);
+      expect(() =>
+        validateFuzzyBenchmarkReport(report, { quick: true }),
+      ).toThrow();
+    }
+  });
+
+  test("hard-gates full acceptance on measured million-entry invalidation", () => {
+    const report = validFullReport();
+    expect(() => assertFuzzyBenchmarkAcceptance(report)).not.toThrow();
+
+    const missingInvalidation = structuredClone(report);
+    const millionEntry = missingInvalidation.points.find(
+      (candidate: any) =>
+        candidate.mode === "end_to_end" && candidate.corpus.size === 1_000_000,
+    );
+    millionEntry.status = "resource_limited";
+    millionEntry.error = {
+      code: "CACHE_LIMIT",
+      message: "synthetic cache rejection",
+    };
+    millionEntry.invalidation = null;
+    millionEntry.indexBytes.finalLogicalPathBytes =
+      millionEntry.indexBytes.logicalPathBytes;
+    expect(() => assertFuzzyBenchmarkAcceptance(missingInvalidation)).toThrow(
+      /million-entry atomic invalidation/u,
+    );
+
+    const unavailableMetrics = structuredClone(report);
+    const unavailableMillion = unavailableMetrics.points.find(
+      (candidate: any) =>
+        candidate.mode === "end_to_end" && candidate.corpus.size === 1_000_000,
+    );
+    unavailableMillion.status = "resource_limited";
+    unavailableMillion.error = {
+      code: "QUERY_RESOURCE_LIMIT",
+      message: "synthetic query limit",
+    };
+    unavailableMillion.build.elapsedMs = null;
+    unavailableMillion.query = null;
+    unavailableMillion.memory = {
+      afterBuildRssBytes: null,
+      afterCorpusRssBytes: null,
+      afterQueryRssBytes: null,
+      baselineRssBytes: null,
+      peakRssBytes: null,
+    };
+    expect(() => assertFuzzyBenchmarkAcceptance(unavailableMetrics)).toThrow(
+      /build and query measurements/u,
+    );
+
+    const measuredQueryLimit = structuredClone(report);
+    const limitedMillion = measuredQueryLimit.points.find(
+      (candidate: any) =>
+        candidate.mode === "end_to_end" && candidate.corpus.size === 1_000_000,
+    );
+    limitedMillion.status = "resource_limited";
+    limitedMillion.error = {
+      code: "QUERY_RESOURCE_LIMIT",
+      message: "synthetic measured query limit",
+    };
+    limitedMillion.telemetry.resourceLimitedQueries = 1;
+    expect(() =>
+      assertFuzzyBenchmarkAcceptance(measuredQueryLimit),
+    ).not.toThrow();
+
+    const zeroDatabaseBytes = structuredClone(measuredQueryLimit);
+    const zeroDatabaseMillion = zeroDatabaseBytes.points.find(
+      (candidate: any) =>
+        candidate.mode === "end_to_end" && candidate.corpus.size === 1_000_000,
+    );
+    zeroDatabaseMillion.indexBytes.initialDatabaseBytes = 0;
+    zeroDatabaseMillion.indexBytes.initialOpenTotalBytes = 0;
+    expect(() => assertFuzzyBenchmarkAcceptance(zeroDatabaseBytes)).toThrow(
+      /positive safe integer/u,
+    );
+
+    const falseQueryLimit = structuredClone(measuredQueryLimit);
+    const falseQueryLimitMillion = falseQueryLimit.points.find(
+      (candidate: any) =>
+        candidate.mode === "end_to_end" && candidate.corpus.size === 1_000_000,
+    );
+    falseQueryLimitMillion.telemetry.resourceLimitedQueries = 0;
+    expect(() => assertFuzzyBenchmarkAcceptance(falseQueryLimit)).toThrow(
+      /positive safe integer/u,
+    );
+
+    const failedSmallerPoint = structuredClone(report);
+    const smallerEndToEnd = failedSmallerPoint.points.find(
+      (candidate: any) =>
+        candidate.mode === "end_to_end" && candidate.corpus.size === 10_000,
+    );
+    smallerEndToEnd.status = "failed";
+    smallerEndToEnd.error = { code: "FAILED", message: "synthetic failure" };
+    smallerEndToEnd.invalidation = null;
+    smallerEndToEnd.indexBytes.finalLogicalPathBytes =
+      smallerEndToEnd.indexBytes.logicalPathBytes;
+    expect(() => assertFuzzyBenchmarkAcceptance(failedSmallerPoint)).toThrow(
+      /atomic invalidation/u,
+    );
   });
 
   test("runs the quick matcher and persistent-index workers through the public script", async () => {
@@ -74,9 +274,15 @@ describe("D2 fuzzy benchmark contract", () => {
       },
     );
     const report = JSON.parse(stdout);
-    expect(() => validateFuzzyBenchmarkReport(report, { quick: true })).not.toThrow();
+    expect(() =>
+      validateFuzzyBenchmarkReport(report, { quick: true }),
+    ).not.toThrow();
     expect(report.points).toHaveLength(4);
-    expect(report.points.every((point: { status: string }) => point.status === "completed")).toBe(true);
+    expect(
+      report.points.every(
+        (point: { status: string }) => point.status === "completed",
+      ),
+    ).toBe(true);
   }, 120_000);
 
   test("refuses an untracked benchmark evidence file", async () => {
@@ -113,8 +319,16 @@ describe("D2 fuzzy benchmark contract", () => {
 });
 
 function validQuickReport(): any {
+  return validReport([100, 1_000], 3);
+}
+
+function validFullReport(): any {
+  return validReport([10_000, 100_000, 1_000_000], 20);
+}
+
+function validReport(sizes: readonly number[], sampleCount: number): any {
   const points = ["matcher_only", "end_to_end"].flatMap((mode) =>
-    [100, 1_000].map((size) => point(mode, size)),
+    sizes.map((size) => point(mode, size, sampleCount)),
   );
   return {
     environment: {
@@ -137,19 +351,39 @@ function validQuickReport(): any {
   };
 }
 
-function point(mode: string, size: number): any {
-  const summary = summarizeFuzzySamples([1, 2, 3]);
+function point(mode: string, size: number, sampleCount: number): any {
+  const corpus = generateFuzzyCorpus(size, {
+    includeEntries: false,
+    includePaths: false,
+  });
+  const summary = summarizeFuzzySamples(
+    Array.from({ length: sampleCount }, (_, index) => index + 1),
+  );
+  const invalidationPath = fuzzyBenchmarkInvalidationPath(size);
+  const invalidatedPathBytes = fuzzyBenchmarkFinalPathBytes(
+    size,
+    corpus.pathBytes,
+  );
   return {
     build: {
       elapsedMs: 1,
-      kind: mode === "matcher_only" ? "prepared_candidates" : "persistent_generation",
+      kind:
+        mode === "matcher_only"
+          ? "prepared_candidates"
+          : "persistent_generation",
     },
-    corpus: { digest: "a".repeat(64), generatorVersion: "test", pathBytes: size, size },
+    corpus: {
+      digest: corpus.digest,
+      generatorVersion: corpus.generatorVersion,
+      pathBytes: corpus.pathBytes,
+      size,
+    },
     error: null,
     indexBytes: {
       closedDatabaseBytes: mode === "end_to_end" ? 1 : null,
       finalDatabaseBytes: mode === "end_to_end" ? 1 : null,
-      finalLogicalPathBytes: size,
+      finalLogicalPathBytes:
+        mode === "end_to_end" ? invalidatedPathBytes : corpus.pathBytes,
       finalOpenTotalBytes: mode === "end_to_end" ? 1 : null,
       finalShmBytes: mode === "end_to_end" ? 0 : null,
       finalWalBytes: mode === "end_to_end" ? 0 : null,
@@ -157,7 +391,7 @@ function point(mode: string, size: number): any {
       initialOpenTotalBytes: mode === "end_to_end" ? 1 : null,
       initialShmBytes: mode === "end_to_end" ? 0 : null,
       initialWalBytes: mode === "end_to_end" ? 0 : null,
-      logicalPathBytes: size,
+      logicalPathBytes: corpus.pathBytes,
     },
     invalidation:
       mode === "end_to_end"
@@ -166,8 +400,11 @@ function point(mode: string, size: number): any {
             generationAfter: 2,
             generationBefore: 1,
             discoveryCalls: 1,
-            path: "src/d2invalidated.ts",
+            finalSentinelCount: 1,
+            path: invalidationPath,
             pollIntervalMs: 25,
+            priorGenerationObservations: 1,
+            priorSentinelCount: 0,
             sentinelVisible: true,
           }
         : null,
@@ -181,6 +418,14 @@ function point(mode: string, size: number): any {
     mode,
     query: { cold: summary, warm: summary },
     status: "completed",
-    telemetry: {},
+    telemetry:
+      mode === "end_to_end"
+        ? {
+            firstLoadDiscoveryCalls: 0,
+            firstLoadGenerationId: 1,
+            resourceLimitedQueries: 0,
+            watcherEvents: 1,
+          }
+        : {},
   };
 }
