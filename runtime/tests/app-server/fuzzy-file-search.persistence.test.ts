@@ -4,13 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
+  createFuzzyFileDiscoveryResult,
   FuzzyIndexBuildCancelledError,
   PersistentFuzzyFileIndex,
-  type FuzzyFileDiscoveryResult,
+  type FuzzyFileDiscoveryBatch,
+  type FuzzyIndexSnapshot,
 } from "../../src/app-server/fuzzy-file-index.js";
 import {
   AgenCFuzzyFileSearchService,
+  estimateFuzzyQueryCandidateCacheRetainedBytes,
   fuzzyAbsolutePathKey,
+  MAX_FUZZY_CACHE_BYTES,
 } from "../../src/app-server/fuzzy-file-search.js";
 
 const temporaryRoots: string[] = [];
@@ -24,6 +28,17 @@ afterEach(async () => {
 });
 
 describe("daemon persistent fuzzy-file search", () => {
+  test("accounts packed ordinals, cache objects, and boundary-sized strings", () => {
+    const retainedBytes = estimateFuzzyQueryCandidateCacheRetainedBytes(
+      1_000_000,
+      "r".repeat(262_144),
+      "q".repeat(256),
+    );
+
+    expect(retainedBytes).toBe(4_525_168);
+    expect(retainedBytes).toBeLessThan(MAX_FUZZY_CACHE_BYTES);
+  });
+
   test("deduplicates overlapping Windows roots with portable absolute bytes", () => {
     expect(
       fuzzyAbsolutePathKey(
@@ -61,10 +76,71 @@ describe("daemon persistent fuzzy-file search", () => {
     );
   });
 
+  test("keeps a parent candidate that is absent from an overlapping deeper snapshot", async () => {
+    const index = await temporaryIndex();
+    const parentRoot = "/overlap-parent";
+    const deeperRoot = "/overlap-parent/sub";
+    const service = new AgenCFuzzyFileSearchService({
+      index,
+      discover: async (root) =>
+        root === deeperRoot ? discovery([]) : discovery(["sub/parent-only.ts"]),
+      watchRoot: () => null,
+    });
+
+    const result = await service.search({
+      query: "parent-only",
+      roots: [parentRoot, deeperRoot],
+    });
+
+    expect(result.files).toEqual([
+      expect.objectContaining({
+        root: parentRoot,
+        path: "sub/parent-only.ts",
+      }),
+    ]);
+    await service.close();
+    index.close();
+  });
+
+  test("deduplicates only exact entries from an overlapping deeper snapshot", async () => {
+    const index = await temporaryIndex();
+    const parentRoot = "/exact-overlap-parent";
+    const deeperRoot = "/exact-overlap-parent/sub";
+    const service = new AgenCFuzzyFileSearchService({
+      index,
+      discover: async (root) =>
+        root === deeperRoot
+          ? discovery(["shared.ts", "different.ts"])
+          : discovery(["sub/shared.ts", "sub/parent-only.ts"]),
+      watchRoot: () => null,
+    });
+
+    const shared = await service.search({
+      query: "shared",
+      roots: [parentRoot, deeperRoot],
+    });
+    const parentOnly = await service.search({
+      query: "parent-only",
+      roots: [parentRoot, deeperRoot],
+    });
+
+    expect(shared.files).toEqual([
+      expect.objectContaining({ root: deeperRoot, path: "shared.ts" }),
+    ]);
+    expect(parentOnly.files).toEqual([
+      expect.objectContaining({
+        root: parentRoot,
+        path: "sub/parent-only.ts",
+      }),
+    ]);
+    await service.close();
+    index.close();
+  });
+
   test("uses a warm complete generation and atomically refreshes after a watcher event", async () => {
     const index = await temporaryIndex();
     let paths = ["src/alpha.ts"];
-    const discover = vi.fn(async (): Promise<FuzzyFileDiscoveryResult> =>
+    const discover = vi.fn(async (): Promise<FuzzyFileDiscoveryBatch> =>
       discovery(paths),
     );
     let signalChange = (): void => {};
@@ -233,8 +309,8 @@ describe("daemon persistent fuzzy-file search", () => {
     await expect(second).resolves.toMatchObject({
       files: [expect.objectContaining({ path: "complete.ts" })],
     });
-    expect(index.readCurrent("/project")?.entries).toEqual([
-      expect.objectContaining({ relativePath: "complete.ts" }),
+    expect(entryPaths(await index.readCurrent("/project"))).toEqual([
+      "complete.ts",
     ]);
     await service.close();
     index.close();
@@ -273,6 +349,133 @@ describe("daemon persistent fuzzy-file search", () => {
     index.close();
   });
 
+  test("coalesces concurrent cold hydration and creates one root watcher", async () => {
+    const index = await temporaryIndex();
+    const entries = Array.from(
+      { length: 600 },
+      (_, ordinal) => `entry-${ordinal.toString().padStart(4, "0")}.ts`,
+    );
+    await index.publish(
+      "/cold-root",
+      await ownedDiscovery(entries),
+      new AbortController().signal,
+    );
+    const readCurrent = vi.spyOn(index, "readCurrent");
+    const watcher = { close: vi.fn() } as unknown as FSWatcher;
+    const watchRoot = vi.fn(() => watcher);
+    const service = new AgenCFuzzyFileSearchService({ index, watchRoot });
+
+    await expect(
+      Promise.all([
+        service.search({ query: "entry-0001", roots: ["/cold-root"] }),
+        service.search({ query: "entry-0002", roots: ["/cold-root"] }),
+      ]),
+    ).resolves.toHaveLength(2);
+    expect(readCurrent).toHaveBeenCalledOnce();
+    expect(watchRoot).toHaveBeenCalledOnce();
+
+    await service.close();
+    expect(watcher.close).toHaveBeenCalledOnce();
+    index.close();
+  });
+
+  test("rejects persisted cold hydration before allocating a cache arena or watcher", async () => {
+    const index = await temporaryIndex();
+    await index.publish(
+      "/cold-cache-boundary",
+      await ownedDiscovery(["a.ts"]),
+      new AbortController().signal,
+    );
+    const watchRoot = vi.fn(() => null);
+    const service = new AgenCFuzzyFileSearchService({
+      index,
+      maximumCacheBytes: 1_200,
+      watchRoot,
+    });
+
+    await expect(
+      service.search({ query: "a", roots: ["/cold-cache-boundary"] }),
+    ).rejects.toMatchObject({ reason: "CACHE_LIMIT" });
+    expect(watchRoot).not.toHaveBeenCalled();
+    expect(await index.readCurrent("/cold-cache-boundary")).not.toBeNull();
+
+    await service.close();
+    index.close();
+  });
+
+  test("counts different in-flight cold roots against the root-state limit", async () => {
+    const index = await temporaryIndex();
+    const entries = Array.from(
+      { length: 600 },
+      (_, ordinal) => `entry-${ordinal.toString().padStart(4, "0")}.ts`,
+    );
+    await Promise.all([
+      index.publish(
+        "/cold-one",
+        await ownedDiscovery(entries),
+        new AbortController().signal,
+      ),
+      index.publish(
+        "/cold-two",
+        await ownedDiscovery(entries),
+        new AbortController().signal,
+      ),
+    ]);
+    const readCurrent = vi.spyOn(index, "readCurrent");
+    const service = new AgenCFuzzyFileSearchService({
+      index,
+      maximumRootStates: 1,
+      watchRoot: () => null,
+    });
+
+    const results = await Promise.allSettled([
+      service.search({ query: "entry", roots: ["/cold-one"] }),
+      service.search({ query: "entry", roots: ["/cold-two"] }),
+    ]);
+
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
+    expect(readCurrent).toHaveBeenCalledOnce();
+    await service.close();
+    index.close();
+  });
+
+  test("awaits an aborted cold load before close completes", async () => {
+    const index = await temporaryIndex();
+    let loadStarted = (): void => {};
+    const started = new Promise<void>((resolve) => {
+      loadStarted = resolve;
+    });
+    let loadSettled = false;
+    vi.spyOn(index, "readCurrent").mockImplementation(async (_root, signal) => {
+      loadStarted();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => setImmediate(() => resolve()), {
+          once: true,
+        });
+      });
+      loadSettled = true;
+      throw new FuzzyIndexBuildCancelledError();
+    });
+    const watchRoot = vi.fn(() => null);
+    const service = new AgenCFuzzyFileSearchService({ index, watchRoot });
+    const search = service.search({ query: "entry", roots: ["/closing"] });
+    await started;
+
+    const closing = service.close();
+    expect(loadSettled).toBe(false);
+    await closing;
+
+    expect(loadSettled).toBe(true);
+    expect(watchRoot).not.toHaveBeenCalled();
+    await expect(search).resolves.toEqual({ files: [] });
+    index.close();
+  });
+
   test("maps bounded discovery refusal to a typed traversal error", async () => {
     const index = await temporaryIndex();
     const service = new AgenCFuzzyFileSearchService({
@@ -288,7 +491,7 @@ describe("daemon persistent fuzzy-file search", () => {
     await expect(
       service.search({ query: "needle", roots: ["/project"] }),
     ).rejects.toMatchObject({ reason: "TRAVERSAL_LIMIT" });
-    expect(index.readCurrent("/project")).toBeNull();
+    expect(await index.readCurrent("/project")).toBeNull();
     await service.close();
     index.close();
   });
@@ -392,7 +595,7 @@ describe("daemon persistent fuzzy-file search", () => {
     const longPath = `${"a".repeat(100)}-needle.ts`;
     const service = new AgenCFuzzyFileSearchService({
       index,
-      maximumCacheBytes: 5_000,
+      maximumCacheBytes: 2_500,
       discover: async () => discovery([longPath]),
       watchRoot: () => {
         const watcher = { close: vi.fn() };
@@ -423,17 +626,108 @@ describe("daemon persistent fuzzy-file search", () => {
     await expect(
       service.search({ query: "needle", roots: ["/project"] }),
     ).rejects.toMatchObject({ reason: "CACHE_LIMIT" });
-    expect(index.readCurrent("/project")).toBeNull();
+    expect(await index.readCurrent("/project")).toBeNull();
 
     await service.close();
     index.close();
   });
 
-  test("rejects many short candidates when retained object overhead exceeds cache", async () => {
+  test("reserves concurrent builds before either can overcommit and publish", async () => {
+    const index = await temporaryIndex();
+    const publish = vi.spyOn(index, "publish");
+    const paths = Array.from(
+      { length: 2_000 },
+      (_, ordinal) => `entry-${ordinal.toString().padStart(4, "0")}.ts`,
+    );
+    const service = new AgenCFuzzyFileSearchService({
+      index,
+      maximumCacheBytes: 130_260,
+      discover: async () => discovery(paths),
+      watchRoot: () => null,
+    });
+
+    const results = await Promise.allSettled([
+      service.search({ query: "entry", roots: ["/reserved-one"] }),
+      service.search({ query: "entry", roots: ["/reserved-two"] }),
+    ]);
+
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({
+      status: "rejected",
+      reason: expect.objectContaining({ reason: "CACHE_LIMIT" }),
+    });
+    expect(publish).toHaveBeenCalledOnce();
+    const current = await Promise.all([
+      index.readCurrent("/reserved-one"),
+      index.readCurrent("/reserved-two"),
+    ]);
+    expect(current.filter((snapshot) => snapshot !== null)).toHaveLength(1);
+
+    await service.close();
+    index.close();
+  });
+
+  test("counts the old and incoming snapshots during replacement admission", async () => {
+    const index = await temporaryIndex();
+    const publish = vi.spyOn(index, "publish");
+    let paths = [`${"a".repeat(200)}-old.ts`];
+    const service = new AgenCFuzzyFileSearchService({
+      index,
+      maximumCacheBytes: 3_000,
+      discover: async () => discovery(paths),
+      watchRoot: () => null,
+    });
+
+    const first = await service.search({
+      query: "old",
+      roots: ["/replacement-physical-peak"],
+    });
+    const generationId = first.freshness?.roots[0]?.generationId;
+    paths = [`${"b".repeat(200)}-new.ts`];
+    const refreshed = await service.search({
+      query: "old",
+      roots: ["/replacement-physical-peak"],
+      refresh: true,
+    });
+
+    expect(refreshed.files.map((file) => file.path)).toEqual([
+      `${"a".repeat(200)}-old.ts`,
+    ]);
+    expect(publish).toHaveBeenCalledOnce();
+    expect(
+      (await index.readCurrent("/replacement-physical-peak"))?.generationId,
+    ).toBe(generationId);
+
+    await service.close();
+    index.close();
+  });
+
+  test("includes snapshot identity strings in pre-publication admission", async () => {
     const index = await temporaryIndex();
     const service = new AgenCFuzzyFileSearchService({
       index,
-      maximumCacheBytes: 2_500,
+      maximumCacheBytes: 1_200,
+      discover: async () => discovery(["a.ts"]),
+      watchRoot: () => null,
+    });
+
+    await expect(
+      service.search({ query: "a", roots: ["/identity-boundary"] }),
+    ).rejects.toMatchObject({ reason: "CACHE_LIMIT" });
+    expect(await index.readCurrent("/identity-boundary")).toBeNull();
+
+    await service.close();
+    index.close();
+  });
+
+  test("rejects a compact generation when its fixed store overhead exceeds cache", async () => {
+    const index = await temporaryIndex();
+    const service = new AgenCFuzzyFileSearchService({
+      index,
+      maximumCacheBytes: 1_000,
       discover: async () => discovery(["a.ts", "b.ts"]),
       watchRoot: () => null,
     });
@@ -441,7 +735,7 @@ describe("daemon persistent fuzzy-file search", () => {
     await expect(
       service.search({ query: "a", roots: ["/short-paths"] }),
     ).rejects.toMatchObject({ reason: "CACHE_LIMIT" });
-    expect(index.readCurrent("/short-paths")).toBeNull();
+    expect(await index.readCurrent("/short-paths")).toBeNull();
 
     await service.close();
     index.close();
@@ -580,7 +874,7 @@ describe("daemon persistent fuzzy-file search", () => {
 
     const index = await temporaryIndex();
     let paths = ["src/alpha.txt"];
-    let pendingDiscovery: Promise<FuzzyFileDiscoveryResult> | null = null;
+    let pendingDiscovery: Promise<FuzzyFileDiscoveryBatch> | null = null;
     const discover = vi.fn(async () =>
       pendingDiscovery === null ? discovery(paths) : await pendingDiscovery,
     );
@@ -636,7 +930,9 @@ describe("daemon persistent fuzzy-file search", () => {
       files: [],
       freshness: expect.objectContaining({ stale: true, degraded: true }),
     });
-    expect(index.readCurrent("/project")?.generationId).toBe(firstGeneration);
+    expect((await index.readCurrent("/project"))?.generationId).toBe(
+      firstGeneration,
+    );
 
     let rejectCancelled = (_error: Error): void => {};
     pendingDiscovery = new Promise((_resolve, reject) => {
@@ -651,7 +947,9 @@ describe("daemon persistent fuzzy-file search", () => {
     controller.abort(new Error("explicit refresh timeout"));
     rejectCancelled(new FuzzyIndexBuildCancelledError());
     await expect(timedOutRefresh).resolves.toEqual({ files: [] });
-    expect(index.readCurrent("/project")?.generationId).toBe(firstGeneration);
+    expect((await index.readCurrent("/project"))?.generationId).toBe(
+      firstGeneration,
+    );
 
     pendingDiscovery = null;
     const final = await service.search({
@@ -671,7 +969,7 @@ describe("daemon persistent fuzzy-file search", () => {
   });
 });
 
-function discovery(paths: readonly string[]): FuzzyFileDiscoveryResult {
+function discovery(paths: readonly string[]): FuzzyFileDiscoveryBatch {
   return {
     entries: paths.map((relativePath) => ({
       relativePath,
@@ -680,6 +978,22 @@ function discovery(paths: readonly string[]): FuzzyFileDiscoveryResult {
     })),
     truncated: false,
   };
+}
+
+function ownedDiscovery(paths: readonly string[]) {
+  return createFuzzyFileDiscoveryResult(
+    discovery(paths),
+    new AbortController().signal,
+  );
+}
+
+function entryPaths(
+  snapshot: FuzzyIndexSnapshot | null,
+): readonly string[] | null {
+  if (snapshot === null) return null;
+  return Array.from({ length: snapshot.entryStore.entryCount }, (_, ordinal) =>
+    snapshot.entryStore.relativePathAt(ordinal),
+  );
 }
 
 async function temporaryIndex(): Promise<PersistentFuzzyFileIndex> {

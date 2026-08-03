@@ -9,7 +9,6 @@ import {
   MAX_FUZZY_CANDIDATES,
   MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES,
   comparePortablePaths,
-  estimateFuzzyCandidateRetainedBytes,
   fuzzyPathRankScore,
   isFuzzyQueryExtension,
   prepareFuzzyCandidate,
@@ -17,8 +16,11 @@ import {
   validateFuzzyQuery,
 } from "../search/fuzzy-match.js";
 import {
+  assertOwnedFuzzyFileDiscoveryResult,
   canonicalizeFuzzyIndexRoot,
+  createFuzzyFileDiscoveryResult,
   discoverFuzzyFiles,
+  fuzzyIndexRootKey,
   FUZZY_INDEX_IDLE_TTL_MS as PERSISTENT_FUZZY_INDEX_IDLE_TTL_MS,
   FUZZY_FILE_INDEX_SCHEMA_VERSION,
   FuzzyIndexBoundaryError,
@@ -26,8 +28,8 @@ import {
   FuzzyIndexSourceChangedError,
   openPersistentFuzzyFileIndex,
   type FuzzyFileDiscovery,
-  type FuzzyFileDiscoveryResult,
   type FuzzyIndexedEntry,
+  type FuzzyIndexEntryStore,
   type FuzzyIndexSnapshot,
   type PersistentFuzzyFileIndex,
 } from "./fuzzy-file-index.js";
@@ -62,11 +64,17 @@ export const MAX_FUZZY_AUDIT_BACKOFF_MS = 3_600_000;
 
 const MATCH_YIELD_INTERVAL = 1_024;
 const FUZZY_AUDIT_BUILD_DURATION_MULTIPLIER = 10;
-const FUZZY_QUERY_CACHE_REFERENCE_BYTES = 16;
 const FUZZY_SNAPSHOT_RETAINED_OVERHEAD_BYTES = 256;
-const FUZZY_ENTRY_RETAINED_OVERHEAD_BYTES = 128;
-const FUZZY_BUFFER_RETAINED_OVERHEAD_BYTES = 96;
-const FUZZY_ARRAY_REFERENCE_BYTES = 8;
+const FUZZY_QUERY_CACHE_OBJECT_OVERHEAD_BYTES = 128;
+const FUZZY_PACKED_CANDIDATES_OBJECT_OVERHEAD_BYTES = 64;
+const FUZZY_TYPED_ARRAY_RETAINED_OVERHEAD_BYTES = 128;
+const JAVASCRIPT_STRING_RETAINED_OVERHEAD_BYTES = 24;
+const JAVASCRIPT_CODE_UNIT_BYTES = 2;
+const FUZZY_DIGEST_HEX_LENGTH = 64;
+const FUZZY_DIGEST_ESTIMATE = "0".repeat(FUZZY_DIGEST_HEX_LENGTH);
+const PACKED_ENTRY_ORDINAL_BITS = 20;
+const PACKED_ENTRY_ORDINAL_RANGE = 2 ** PACKED_ENTRY_ORDINAL_BITS;
+const PACKED_ENTRY_ORDINAL_MASK = PACKED_ENTRY_ORDINAL_RANGE - 1;
 const WATCHER_STATUS_ACTIVE = "active";
 const WATCHER_STATUS_UNSUPPORTED = "unsupported";
 const WATCHER_STATUS_FAILED = "failed";
@@ -87,21 +95,29 @@ interface ResolvedSearchRoot {
 }
 
 interface RankedEntry {
-  readonly entry: FuzzyIndexedEntry;
+  readonly entryStore: FuzzyIndexEntryStore;
+  readonly entryOrdinal: number;
+  readonly relativePath: string;
+  readonly matchType: FuzzyIndexedEntry["matchType"];
   readonly root: ResolvedSearchRoot;
   readonly score: number;
   readonly rankScore: number;
 }
 
-interface SearchCandidate {
-  readonly root: ResolvedSearchRoot;
-  readonly entry: FuzzyIndexedEntry;
+interface PackedSearchCandidates {
+  readonly ordinals: Uint32Array;
+  readonly length: number;
+}
+
+interface OverlappingDeeperRoot {
+  readonly parentPrefix: Buffer;
+  readonly entryStore: FuzzyIndexEntryStore;
 }
 
 interface QueryCandidateCache {
   readonly generationKey: string;
   readonly query: string;
-  readonly candidates: readonly SearchCandidate[];
+  readonly candidates: PackedSearchCandidates;
 }
 
 interface RootRuntimeState {
@@ -127,6 +143,13 @@ interface RootRuntimeState {
 interface RootBuild {
   readonly controller: AbortController;
   promise: Promise<void>;
+  waiters: number;
+  settled: boolean;
+}
+
+interface RootStateLoad {
+  readonly controller: AbortController;
+  promise: Promise<RootRuntimeState>;
   waiters: number;
   settled: boolean;
 }
@@ -185,12 +208,18 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
   readonly #now: () => number;
   readonly #watchRoot: FuzzyRootWatcher;
   readonly #rootStates = new Map<string, RootRuntimeState>();
+  readonly #rootStateLoads = new Map<string, RootStateLoad>();
+  readonly #rootStateLoadReservations = new Map<string, number>();
+  readonly #buildCacheReservations = new Map<string, number>();
   readonly #maximumRootStates: number;
   readonly #maximumCacheBytes: number;
   readonly #idleTtlMs: number;
   readonly #activeControllers = new Set<AbortController>();
   readonly #activeSettlements = new Set<Promise<void>>();
   readonly #activeBuildSettlements = new Set<Promise<void>>();
+  readonly #activeRootStateLoadSettlements = new Set<
+    Promise<RootRuntimeState>
+  >();
   readonly #buildControllers = new Set<AbortController>();
   readonly #buildQueue: QueuedBuild[] = [];
   #queryCandidateCache: QueryCandidateCache | null = null;
@@ -301,9 +330,13 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
     for (const controller of this.#buildControllers) {
       controller.abort("fuzzy-file search service closed");
     }
+    for (const load of this.#rootStateLoads.values()) {
+      load.controller.abort("fuzzy-file search service closed");
+    }
     const activeSettlements = [
       ...this.#activeSettlements,
       ...this.#activeBuildSettlements,
+      ...this.#activeRootStateLoadSettlements,
     ];
     if (activeSettlements.length === 0) {
       this.#finishClose();
@@ -320,6 +353,9 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
     for (const state of this.#rootStates.values())
       this.#disposeRootState(state);
     this.#rootStates.clear();
+    this.#rootStateLoads.clear();
+    this.#rootStateLoadReservations.clear();
+    this.#buildCacheReservations.clear();
     this.#queryCandidateCache = null;
     this.#pendingByToken.clear();
     if (this.#ownsIndex) this.#index?.close();
@@ -339,7 +375,15 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
     try {
       for (const root of roots) {
         if (signal.aborted) return { files: [] };
-        const state = this.#stateForRoot(root.canonicalRoot);
+        let state: RootRuntimeState;
+        try {
+          state = await this.#stateForRoot(root.canonicalRoot, signal);
+        } catch (error) {
+          if (error instanceof FuzzyIndexBuildCancelledError) {
+            return { files: [] };
+          }
+          throw error;
+        }
         state.activeSearches += 1;
         pinnedStates.set(root.canonicalRoot, state);
         const shouldAudit =
@@ -377,7 +421,7 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
         }
       }
       if (signal.aborted) return { files: [] };
-      const collection = collectRootEntries(roots, snapshots);
+      const collection = await collectRootEntries(roots, snapshots, signal);
       const generationKey = fuzzyQueryGenerationKey(roots, snapshots);
       const reusableCache = this.#queryCandidateCache;
       const rankingCandidates =
@@ -392,14 +436,22 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
         signal,
         params.limit ?? DEFAULT_FUZZY_RESULTS,
         collection.candidates.length,
+        roots,
+        snapshots,
       );
       if (signal.aborted) return { files: [] };
-      const queryCacheBytes =
-        ranking.matchedCandidates.length * FUZZY_QUERY_CACHE_REFERENCE_BYTES;
+      const queryCacheBytes = estimateFuzzyQueryCandidateCacheRetainedBytes(
+        ranking.matchedCandidates.length,
+        generationKey,
+        params.query,
+      );
       if (
         !ranking.matcher.resourceLimited &&
         ranking.matcher.evaluatedCandidates === rankingCandidates.length &&
-        cachedRootBytes(this.#rootStates) + queryCacheBytes <=
+        cachedRootBytes(this.#rootStates) +
+          reservedRootStateLoadBytes(this.#rootStateLoadReservations) +
+          reservedRootStateLoadBytes(this.#buildCacheReservations) +
+          queryCacheBytes <=
           this.#maximumCacheBytes
       ) {
         this.#queryCandidateCache = {
@@ -433,7 +485,10 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
     }
   }
 
-  #stateForRoot(canonicalRoot: string): RootRuntimeState {
+  async #stateForRoot(
+    canonicalRoot: string,
+    signal: AbortSignal,
+  ): Promise<RootRuntimeState> {
     const accessedAtMs = this.#now();
     this.#evictExpiredRootStates(accessedAtMs);
     const existing = this.#rootStates.get(canonicalRoot);
@@ -443,9 +498,76 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
       this.#rootStates.set(canonicalRoot, existing);
       return existing;
     }
+    let load = this.#rootStateLoads.get(canonicalRoot);
+    if (load === undefined) {
+      this.#evictRootStateForAdmission();
+      const controller = new AbortController();
+      load = {
+        controller,
+        promise: Promise.resolve(undefined as never),
+        waiters: 0,
+        settled: false,
+      };
+      const ownedLoad = load;
+      load.promise = this.#loadRootState(
+        canonicalRoot,
+        controller.signal,
+      ).finally(() => {
+        ownedLoad.settled = true;
+        this.#activeRootStateLoadSettlements.delete(ownedLoad.promise);
+        if (this.#rootStateLoads.get(canonicalRoot) === ownedLoad) {
+          this.#rootStateLoads.delete(canonicalRoot);
+        }
+        if (!this.#rootStates.has(canonicalRoot)) {
+          this.#rootStateLoadReservations.delete(canonicalRoot);
+        }
+      });
+      this.#rootStateLoads.set(canonicalRoot, load);
+      this.#activeRootStateLoadSettlements.add(load.promise);
+    }
+    load.waiters += 1;
+    try {
+      return await waitForBuildOrAbort(load.promise, signal);
+    } finally {
+      load.waiters -= 1;
+      if (load.waiters === 0 && !load.settled) {
+        load.controller.abort("fuzzy-file root load has no waiting request");
+      }
+    }
+  }
+
+  async #loadRootState(
+    canonicalRoot: string,
+    signal: AbortSignal,
+  ): Promise<RootRuntimeState> {
     this.#queryCandidateCache = null;
-    this.#evictRootStateForAdmission();
-    const snapshot = this.#persistentIndex().readCurrent(canonicalRoot);
+    const snapshot = await this.#persistentIndex().readCurrent(
+      canonicalRoot,
+      signal,
+      (entryStoreBytes) => {
+        this.#reserveRootStateLoad(
+          canonicalRoot,
+          estimateSnapshotCacheBytesFromParts(
+            entryStoreBytes,
+            fuzzyIndexRootKey(canonicalRoot),
+            canonicalRoot,
+            FUZZY_DIGEST_ESTIMATE,
+          ),
+        );
+      },
+    );
+    if (this.#closed || signal.aborted) {
+      throw new FuzzyIndexBuildCancelledError();
+    }
+    const concurrentlyLoaded = this.#rootStates.get(canonicalRoot);
+    if (concurrentlyLoaded !== undefined) {
+      this.#rootStateLoadReservations.delete(canonicalRoot);
+      concurrentlyLoaded.lastAccessMs = this.#now();
+      this.#rootStates.delete(canonicalRoot);
+      this.#rootStates.set(canonicalRoot, concurrentlyLoaded);
+      return concurrentlyLoaded;
+    }
+    const accessedAtMs = this.#now();
     const state: RootRuntimeState = {
       canonicalRoot,
       snapshot,
@@ -494,14 +616,15 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
         state.staleReason = STALE_REASON_WATCHER_UNAVAILABLE;
       }
     }
-    this.#rootStates.set(canonicalRoot, state);
-    try {
-      this.#makeCacheRoom(state.cacheBytes, state);
-    } catch (error) {
-      this.#disposeRootState(state);
-      this.#rootStates.delete(canonicalRoot);
-      throw error;
+    if (
+      snapshot !== null &&
+      this.#rootStateLoadReservations.get(canonicalRoot) !== state.cacheBytes
+    ) {
+      state.watcher?.close();
+      throw new Error("fuzzy-file root-load cache reservation changed");
     }
+    this.#rootStates.set(canonicalRoot, state);
+    this.#rootStateLoadReservations.delete(canonicalRoot);
     return state;
   }
 
@@ -562,41 +685,91 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
     }
   }
 
-  #makeCacheRoom(
-    incomingBytes: number,
+  #reserveBuildCache(
     protectedState: RootRuntimeState,
+    incomingBytes: number,
   ): void {
+    this.#queryCandidateCache = null;
     let projectedBytes =
-      cachedRootBytes(this.#rootStates) -
-      protectedState.cacheBytes +
-      incomingBytes;
-    if (projectedBytes <= this.#maximumCacheBytes) return;
-    for (const [canonicalRoot, state] of this.#rootStates) {
-      if (
-        state === protectedState ||
-        state.activeSearches > 0 ||
-        state.activeBuilds > 0
-      ) {
-        continue;
+      cachedRootBytes(this.#rootStates) +
+      incomingBytes +
+      reservedRootStateLoadBytes(this.#rootStateLoadReservations) +
+      reservedRootStateLoadBytes(
+        this.#buildCacheReservations,
+        protectedState.canonicalRoot,
+      );
+    if (projectedBytes > this.#maximumCacheBytes) {
+      for (const [canonicalRoot, state] of this.#rootStates) {
+        if (
+          state === protectedState ||
+          state.activeSearches > 0 ||
+          state.activeBuilds > 0
+        ) {
+          continue;
+        }
+        this.#disposeRootState(state);
+        this.#rootStates.delete(canonicalRoot);
+        projectedBytes -= state.cacheBytes;
+        if (projectedBytes <= this.#maximumCacheBytes) break;
       }
-      this.#disposeRootState(state);
-      this.#rootStates.delete(canonicalRoot);
-      projectedBytes -= state.cacheBytes;
-      if (projectedBytes <= this.#maximumCacheBytes) return;
     }
-    throw new FuzzyFileSearchBoundaryError(
-      "CACHE_LIMIT",
-      `fuzzy-file cache requires ${projectedBytes} bytes; maximum is ${this.#maximumCacheBytes}`,
+    if (projectedBytes > this.#maximumCacheBytes) {
+      throw new FuzzyFileSearchBoundaryError(
+        "CACHE_LIMIT",
+        `fuzzy-file cache requires ${projectedBytes} bytes; maximum is ${this.#maximumCacheBytes}`,
+      );
+    }
+    this.#buildCacheReservations.set(
+      protectedState.canonicalRoot,
+      incomingBytes,
     );
   }
 
+  #reserveRootStateLoad(canonicalRoot: string, incomingBytes: number): void {
+    this.#queryCandidateCache = null;
+    let projectedBytes =
+      cachedRootBytes(this.#rootStates) +
+      incomingBytes +
+      reservedRootStateLoadBytes(
+        this.#rootStateLoadReservations,
+        canonicalRoot,
+      ) +
+      reservedRootStateLoadBytes(this.#buildCacheReservations);
+    if (projectedBytes > this.#maximumCacheBytes) {
+      for (const [cachedRoot, state] of this.#rootStates) {
+        if (state.activeSearches > 0 || state.activeBuilds > 0) continue;
+        this.#disposeRootState(state);
+        this.#rootStates.delete(cachedRoot);
+        projectedBytes -= state.cacheBytes;
+        if (projectedBytes <= this.#maximumCacheBytes) break;
+      }
+    }
+    if (projectedBytes > this.#maximumCacheBytes) {
+      throw new FuzzyFileSearchBoundaryError(
+        "CACHE_LIMIT",
+        `fuzzy-file cache requires ${projectedBytes} bytes; maximum is ${this.#maximumCacheBytes}`,
+      );
+    }
+    this.#rootStateLoadReservations.set(canonicalRoot, incomingBytes);
+  }
+
   #evictRootStateForAdmission(): void {
-    if (this.#rootStates.size < this.#maximumRootStates) return;
+    if (
+      this.#rootStates.size + this.#rootStateLoads.size <
+      this.#maximumRootStates
+    ) {
+      return;
+    }
     for (const [canonicalRoot, state] of this.#rootStates) {
       if (state.activeSearches > 0 || state.activeBuilds > 0) continue;
       this.#disposeRootState(state);
       this.#rootStates.delete(canonicalRoot);
-      return;
+      if (
+        this.#rootStates.size + this.#rootStateLoads.size <
+        this.#maximumRootStates
+      ) {
+        return;
+      }
     }
     throw new Error(
       `fuzzy-file active root-state limit of ${this.#maximumRootStates} is exhausted`,
@@ -657,13 +830,35 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
       attempt += 1
     ) {
       const epochAtStart = state.changeEpoch;
-      const discovery = await this.#discover(state.canonicalRoot, signal);
+      const discoveredBatch = await this.#discover(state.canonicalRoot, signal);
       if (signal.aborted) throw new FuzzyIndexBuildCancelledError();
       if (state.changeEpoch !== epochAtStart) continue;
-      this.#makeCacheRoom(estimateDiscoveryCacheBytes(discovery), state);
-      let snapshot: FuzzyIndexSnapshot | null;
+      if (discoveredBatch.truncated) {
+        throw new FuzzyIndexBoundaryError(
+          "fuzzy-file discovery reached a bound; refusing to publish a prefix",
+        );
+      }
+      let reservationHeld = false;
       try {
-        snapshot = await this.#persistentIndex().publish(
+        const discovery = await createFuzzyFileDiscoveryResult(
+          discoveredBatch,
+          signal,
+          (entryStoreBytes) => {
+            this.#reserveBuildCache(
+              state,
+              estimateSnapshotCacheBytesFromParts(
+                entryStoreBytes,
+                fuzzyIndexRootKey(state.canonicalRoot),
+                state.canonicalRoot,
+                FUZZY_DIGEST_ESTIMATE,
+              ),
+            );
+            reservationHeld = true;
+          },
+        );
+        if (signal.aborted) throw new FuzzyIndexBuildCancelledError();
+        if (state.changeEpoch !== epochAtStart) continue;
+        const snapshot = await this.#persistentIndex().publish(
           state.canonicalRoot,
           discovery,
           signal,
@@ -672,18 +867,32 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
             isSourceBoundaryCurrent: () => state.changeEpoch === epochAtStart,
           },
         );
+        if (snapshot === null) {
+          throw new Error("fuzzy-file generation was not published");
+        }
+        const snapshotBytes = estimateSnapshotCacheBytes(snapshot);
+        if (
+          this.#buildCacheReservations.get(state.canonicalRoot) !==
+          snapshotBytes
+        ) {
+          throw new Error("fuzzy-file build cache reservation changed");
+        }
+        state.snapshot = snapshot;
+        state.cacheBytes = snapshotBytes;
+        this.#buildCacheReservations.delete(state.canonicalRoot);
+        reservationHeld = false;
       } catch (error) {
         if (error instanceof FuzzyIndexSourceChangedError) continue;
         throw error;
+      } finally {
+        if (reservationHeld) {
+          this.#buildCacheReservations.delete(state.canonicalRoot);
+        }
       }
+      const snapshot = state.snapshot;
       if (snapshot === null) {
-        throw new Error("fuzzy-file generation was not published");
+        throw new Error("fuzzy-file generation was not installed");
       }
-      const snapshotBytes = estimateSnapshotCacheBytes(snapshot);
-      this.#queryCandidateCache = null;
-      this.#makeCacheRoom(snapshotBytes, state);
-      state.snapshot = snapshot;
-      state.cacheBytes = snapshotBytes;
       const watcherDegraded = state.watcherStatus !== WATCHER_STATUS_ACTIVE;
       const directoryDegraded = snapshot.directoryCoverage !== "complete";
       state.stale = watcherDegraded;
@@ -833,36 +1042,45 @@ export async function runFuzzyFileSearch(
   let syntheticGeneration = 0;
   for (const root of roots) {
     if (signal.aborted) return [];
-    const discovery = await discoverFuzzyFiles(root.canonicalRoot, signal);
-    if (discovery.truncated) {
+    const discoveredBatch = await discoverFuzzyFiles(
+      root.canonicalRoot,
+      signal,
+    );
+    if (discoveredBatch.truncated) {
       throw new FuzzyFileSearchBoundaryError(
         "TRAVERSAL_LIMIT",
         "fuzzy-file discovery reached a bound; refusing to search a prefix",
       );
     }
+    const discovery = await createFuzzyFileDiscoveryResult(
+      discoveredBatch,
+      signal,
+    );
+    assertOwnedFuzzyFileDiscoveryResult(discovery);
     syntheticGeneration += 1;
+    const entryStore = discovery.entryStore;
     snapshots.set(root.canonicalRoot, {
       rootKey: root.canonicalRoot,
       canonicalRoot: root.canonicalRoot,
       generationId: syntheticGeneration,
       builtAtMs: Date.now(),
-      entryCount: discovery.entries.length,
-      pathBytes: discovery.entries.reduce(
-        (total, entry) => total + entry.pathBytes.byteLength,
-        0,
-      ),
+      entryCount: entryStore.entryCount,
+      pathBytes: entryStore.pathBytes,
       digest: "single-use",
       truncated: discovery.truncated,
       directoryCoverage: discovery.directoryCoverage ?? "complete",
-      entries: discovery.entries,
+      entryStore,
     });
   }
-  const collection = collectRootEntries(roots, snapshots);
+  const collection = await collectRootEntries(roots, snapshots, signal);
   const ranking = await rankSearchEntries(
     params.query,
     collection.candidates,
     signal,
     params.limit ?? DEFAULT_FUZZY_RESULTS,
+    collection.candidates.length,
+    roots,
+    snapshots,
   );
   return ranking.files;
 }
@@ -925,40 +1143,196 @@ async function resolveSearchRoots(
   });
 }
 
-function collectRootEntries(
+async function collectRootEntries(
   roots: readonly ResolvedSearchRoot[],
   snapshots: ReadonlyMap<string, FuzzyIndexSnapshot>,
-): {
-  readonly candidates: readonly SearchCandidate[];
+  signal: AbortSignal,
+): Promise<{
+  readonly candidates: PackedSearchCandidates;
   readonly truncated: boolean;
-} {
-  const candidates: SearchCandidate[] = [];
-  const seenAbsoluteBytes = new Set<string>();
+}> {
+  let candidateCapacity = 0;
+  for (const root of roots) {
+    const entryCount = snapshots.get(root.canonicalRoot)?.entryCount ?? 0;
+    candidateCapacity = Math.min(
+      MAX_FUZZY_CANDIDATES,
+      candidateCapacity + entryCount,
+    );
+  }
+  const ordinals = new Uint32Array(candidateCapacity);
+  let candidateCount = 0;
+  let visitedEntries = 0;
   let candidateBytes = 0;
   let truncated = false;
-  rootLoop: for (const root of roots) {
+  rootLoop: for (
+    let rootOrdinal = 0;
+    rootOrdinal < roots.length;
+    rootOrdinal += 1
+  ) {
+    const root = roots[rootOrdinal]!;
     const snapshot = snapshots.get(root.canonicalRoot);
     if (snapshot === undefined) continue;
-    for (const entry of snapshot.entries) {
-      const absoluteKey = fuzzyAbsolutePathKey(
-        root.canonicalRoot,
-        entry.pathBytes,
-      );
-      if (seenAbsoluteBytes.has(absoluteKey)) continue;
-      const nextBytes = Buffer.byteLength(entry.relativePath, "utf8");
+    const overlappingDeeperRoots = collectOverlappingDeeperRoots(
+      roots,
+      snapshots,
+      rootOrdinal,
+    );
+    for (
+      let entryOrdinal = 0;
+      entryOrdinal < snapshot.entryStore.entryCount;
+      entryOrdinal += 1
+    ) {
+      if (signal.aborted) {
+        return {
+          candidates: emptyPackedSearchCandidates(),
+          truncated: false,
+        };
+      }
+      visitedEntries += 1;
+      if (visitedEntries % MATCH_YIELD_INTERVAL === 0) {
+        await yieldToEventLoop();
+      }
       if (
-        candidates.length >= MAX_FUZZY_CANDIDATES ||
+        entryExistsInOverlappingDeeperRoot(
+          snapshot.entryStore,
+          entryOrdinal,
+          overlappingDeeperRoots,
+        )
+      ) {
+        continue;
+      }
+      const nextBytes = snapshot.entryStore.candidateByteLengthAt(entryOrdinal);
+      if (
+        candidateCount >= MAX_FUZZY_CANDIDATES ||
         candidateBytes + nextBytes > MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES
       ) {
         truncated = true;
         break rootLoop;
       }
-      seenAbsoluteBytes.add(absoluteKey);
       candidateBytes += nextBytes;
-      candidates.push({ root, entry });
+      ordinals[candidateCount] = packSearchCandidateOrdinal(
+        rootOrdinal,
+        entryOrdinal,
+      );
+      candidateCount += 1;
     }
   }
-  return { candidates, truncated };
+  return {
+    candidates: { ordinals, length: candidateCount },
+    truncated,
+  };
+}
+
+function collectOverlappingDeeperRoots(
+  roots: readonly ResolvedSearchRoot[],
+  snapshots: ReadonlyMap<string, FuzzyIndexSnapshot>,
+  rootOrdinal: number,
+): readonly OverlappingDeeperRoot[] {
+  const root = roots[rootOrdinal]!;
+  const overlaps: OverlappingDeeperRoot[] = [];
+  for (
+    let deeperRootOrdinal = 0;
+    deeperRootOrdinal < rootOrdinal;
+    deeperRootOrdinal += 1
+  ) {
+    const deeperRoot = roots[deeperRootOrdinal]!;
+    if (!isWithinAllowedRoot(root.canonicalRoot, deeperRoot.canonicalRoot)) {
+      continue;
+    }
+    const deeperSnapshot = snapshots.get(deeperRoot.canonicalRoot);
+    if (
+      deeperSnapshot === undefined ||
+      deeperSnapshot.entryStore.entryCount === 0
+    ) {
+      continue;
+    }
+    const child = relative(root.canonicalRoot, deeperRoot.canonicalRoot)
+      .replace(/\\/gu, "/")
+      .replace(/\/+$/gu, "");
+    if (child.length > 0) {
+      overlaps.push({
+        parentPrefix: Buffer.from(`${child}/`, "utf8"),
+        entryStore: deeperSnapshot.entryStore,
+      });
+    }
+  }
+  return overlaps;
+}
+
+function entryExistsInOverlappingDeeperRoot(
+  parentStore: FuzzyIndexEntryStore,
+  parentOrdinal: number,
+  overlaps: readonly OverlappingDeeperRoot[],
+): boolean {
+  for (const overlap of overlaps) {
+    if (
+      !parentStore.pathBytesStartWithAt(parentOrdinal, overlap.parentPrefix)
+    ) {
+      continue;
+    }
+    if (
+      entryStoreContainsParentPathSlice(
+        overlap.entryStore,
+        parentStore,
+        parentOrdinal,
+        overlap.parentPrefix.byteLength,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function entryStoreContainsParentPathSlice(
+  entryStore: FuzzyIndexEntryStore,
+  parentStore: FuzzyIndexEntryStore,
+  parentOrdinal: number,
+  parentSliceStart: number,
+): boolean {
+  let low = 0;
+  let high = entryStore.entryCount;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const comparison = parentStore.comparePathBytesSliceAt(
+      parentOrdinal,
+      parentSliceStart,
+      entryStore,
+      middle,
+    );
+    if (comparison > 0) low = middle + 1;
+    else if (comparison < 0) high = middle;
+    else return true;
+  }
+  return false;
+}
+
+function packSearchCandidateOrdinal(
+  rootOrdinal: number,
+  entryOrdinal: number,
+): number {
+  if (
+    rootOrdinal < 0 ||
+    rootOrdinal >= MAX_FUZZY_FILE_ROOTS ||
+    entryOrdinal < 0 ||
+    entryOrdinal >= PACKED_ENTRY_ORDINAL_RANGE
+  ) {
+    throw new FuzzyFileSearchBoundaryError(
+      "TRAVERSAL_LIMIT",
+      "fuzzy-file candidate ordinal exceeds its packed representation",
+    );
+  }
+  return rootOrdinal * PACKED_ENTRY_ORDINAL_RANGE + entryOrdinal;
+}
+
+function unpackSearchCandidateOrdinal(packed: number): {
+  readonly rootOrdinal: number;
+  readonly entryOrdinal: number;
+} {
+  return {
+    rootOrdinal: Math.floor(packed / PACKED_ENTRY_ORDINAL_RANGE),
+    entryOrdinal: packed & PACKED_ENTRY_ORDINAL_MASK,
+  };
 }
 
 function fuzzyQueryGenerationKey(
@@ -996,14 +1370,16 @@ export function fuzzyAbsolutePathKey(
 
 async function rankSearchEntries(
   query: string,
-  candidates: readonly SearchCandidate[],
+  candidates: PackedSearchCandidates,
   signal: AbortSignal,
   limit: number,
-  totalCandidateCount: number = candidates.length,
+  totalCandidateCount: number,
+  roots: readonly ResolvedSearchRoot[],
+  snapshots: ReadonlyMap<string, FuzzyIndexSnapshot>,
 ): Promise<{
   readonly files: readonly FuzzyFileSearchResult[];
   readonly matcher: FuzzyMatcherMetadata;
-  readonly matchedCandidates: readonly SearchCandidate[];
+  readonly matchedCandidates: PackedSearchCandidates;
 }> {
   const matcher = new BoundedFuzzyMatcher(query, { caseMode: "insensitive" });
   const workBudget = new FuzzyMatchWorkBudget({
@@ -1011,16 +1387,17 @@ async function rankSearchEntries(
     maximumCodePointVisits: MAX_FUZZY_QUERY_CODEPOINT_VISITS,
   });
   const top: RankedEntry[] = [];
-  const matchedCandidates: SearchCandidate[] = [];
+  const matchedOrdinals = new Uint32Array(candidates.length);
+  let matchedCount = 0;
   const startedAt = performance.now();
   let evaluatedCandidates = 0;
   let resourceLimited = false;
-  for (const [index, candidate] of candidates.entries()) {
+  for (let index = 0; index < candidates.length; index += 1) {
     if (signal.aborted) {
       return {
         files: [],
         matcher: matcherMetadata(matcher, false, 0, totalCandidateCount),
-        matchedCandidates: [],
+        matchedCandidates: emptyPackedSearchCandidates(),
       };
     }
     if (index > 0 && index % MATCH_YIELD_INTERVAL === 0) {
@@ -1029,17 +1406,24 @@ async function rankSearchEntries(
         return {
           files: [],
           matcher: matcherMetadata(matcher, false, 0, totalCandidateCount),
-          matchedCandidates: [],
+          matchedCandidates: emptyPackedSearchCandidates(),
         };
       }
     }
-    const searchCandidate =
-      candidate.entry.searchCandidate ??
-      prepareFuzzyCandidate(candidate.entry.relativePath);
+    const packedOrdinal = candidates.ordinals[index]!;
+    const { rootOrdinal, entryOrdinal } =
+      unpackSearchCandidateOrdinal(packedOrdinal);
+    const root = roots[rootOrdinal]!;
+    const snapshot = snapshots.get(root.canonicalRoot);
+    if (snapshot === undefined) {
+      throw new Error("fuzzy-file candidate references a missing generation");
+    }
     if (performance.now() - startedAt > MAX_FUZZY_QUERY_MS) {
       resourceLimited = true;
       break;
     }
+    const relativePath = snapshot.entryStore.relativePathAt(entryOrdinal);
+    const searchCandidate = prepareFuzzyCandidate(relativePath);
     const match = matcher.match(searchCandidate, {
       includeIndices: false,
       lengthBonus: false,
@@ -1052,17 +1436,18 @@ async function rankSearchEntries(
     }
     evaluatedCandidates += 1;
     if (match === null) continue;
-    matchedCandidates.push(candidate);
+    matchedOrdinals[matchedCount] = packedOrdinal;
+    matchedCount += 1;
     retainRankedEntry(
       top,
       {
-        entry: candidate.entry,
-        root: candidate.root,
+        entryStore: snapshot.entryStore,
+        entryOrdinal,
+        relativePath,
+        matchType: snapshot.entryStore.matchTypeAt(entryOrdinal),
+        root,
         score: match.score,
-        rankScore: fuzzyPathRankScore(
-          candidate.entry.relativePath,
-          match.score,
-        ),
+        rankScore: fuzzyPathRankScore(relativePath, match.score),
       },
       limit,
     );
@@ -1071,7 +1456,7 @@ async function rankSearchEntries(
     return {
       files: [],
       matcher: matcherMetadata(matcher, false, 0, totalCandidateCount),
-      matchedCandidates: [],
+      matchedCandidates: emptyPackedSearchCandidates(),
     };
   }
   const files: FuzzyFileSearchResult[] = [];
@@ -1080,9 +1465,7 @@ async function rankSearchEntries(
       resourceLimited = true;
       break;
     }
-    const searchCandidate =
-      ranked.entry.searchCandidate ??
-      prepareFuzzyCandidate(ranked.entry.relativePath);
+    const searchCandidate = prepareFuzzyCandidate(ranked.relativePath);
     const match = matcher.match(searchCandidate, {
       includeIndices: true,
       lengthBonus: false,
@@ -1099,10 +1482,9 @@ async function rankSearchEntries(
     }
     files.push({
       root: ranked.root.displayRoot,
-      path: ranked.entry.relativePath,
-      match_type: ranked.entry.matchType,
-      file_name:
-        posix.basename(ranked.entry.relativePath) || ranked.entry.relativePath,
+      path: ranked.relativePath,
+      match_type: ranked.matchType,
+      file_name: posix.basename(ranked.relativePath) || ranked.relativePath,
       score: ranked.score,
       indices: match.indices,
     });
@@ -1115,8 +1497,24 @@ async function rankSearchEntries(
       evaluatedCandidates,
       totalCandidateCount,
     ),
-    matchedCandidates: Object.freeze(matchedCandidates),
+    matchedCandidates: copyPackedSearchCandidates(
+      matchedOrdinals,
+      matchedCount,
+    ),
   };
+}
+
+function emptyPackedSearchCandidates(): PackedSearchCandidates {
+  return { ordinals: new Uint32Array(0), length: 0 };
+}
+
+function copyPackedSearchCandidates(
+  ordinals: Uint32Array,
+  length: number,
+): PackedSearchCandidates {
+  const packed = new Uint32Array(length);
+  packed.set(ordinals.subarray(0, length));
+  return { ordinals: packed, length };
 }
 
 type FuzzyMatcherMetadata = FuzzyFileMatcherMetadata;
@@ -1250,19 +1648,19 @@ function isWithinAllowedRoot(
   );
 }
 
-function waitForBuildOrAbort(
-  build: Promise<void>,
+function waitForBuildOrAbort<T>(
+  build: Promise<T>,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<T> {
   if (signal.aborted)
     return Promise.reject(new FuzzyIndexBuildCancelledError());
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     const abort = (): void => reject(new FuzzyIndexBuildCancelledError());
     signal.addEventListener("abort", abort, { once: true });
     void build.then(
-      () => {
+      (value) => {
         signal.removeEventListener("abort", abort);
-        resolve();
+        resolve(value);
       },
       (error: unknown) => {
         signal.removeEventListener("abort", abort);
@@ -1326,14 +1724,15 @@ function compareRankedEntries(left: RankedEntry, right: RankedEntry): number {
   if (rankScore !== 0) return rankScore;
   const score = right.score - left.score;
   if (score !== 0) return score;
-  const path = comparePortablePaths(
-    left.entry.relativePath,
-    right.entry.relativePath,
-  );
+  const path = comparePortablePaths(left.relativePath, right.relativePath);
   if (path !== 0) return path;
   const rootOrder = left.root.order - right.root.order;
   if (rootOrder !== 0) return rootOrder;
-  return Buffer.compare(left.entry.pathBytes, right.entry.pathBytes);
+  return left.entryStore.comparePathBytesAt(
+    left.entryOrdinal,
+    right.entryStore,
+    right.entryOrdinal,
+  );
 }
 
 function watchFuzzyRoot(
@@ -1410,38 +1809,68 @@ function cachedRootBytes(
   return bytes;
 }
 
-function estimateSnapshotCacheBytes(snapshot: FuzzyIndexSnapshot): number {
-  let bytes = FUZZY_SNAPSHOT_RETAINED_OVERHEAD_BYTES;
-  for (const entry of snapshot.entries) {
-    const candidate =
-      entry.searchCandidate ?? prepareFuzzyCandidate(entry.relativePath);
-    bytes +=
-      entry.pathBytes.byteLength +
-      FUZZY_BUFFER_RETAINED_OVERHEAD_BYTES +
-      FUZZY_ENTRY_RETAINED_OVERHEAD_BYTES +
-      FUZZY_ARRAY_REFERENCE_BYTES +
-      estimateFuzzyCandidateRetainedBytes(candidate);
-    if (!Number.isSafeInteger(bytes) || bytes > MAX_FUZZY_CACHE_BYTES) {
-      return MAX_FUZZY_CACHE_BYTES + 1;
-    }
+function reservedRootStateLoadBytes(
+  reservations: ReadonlyMap<string, number>,
+  excludedRoot?: string,
+): number {
+  let bytes = 0;
+  for (const [canonicalRoot, retainedBytes] of reservations) {
+    if (canonicalRoot !== excludedRoot) bytes += retainedBytes;
   }
   return bytes;
 }
 
-function estimateDiscoveryCacheBytes(
-  discovery: FuzzyFileDiscoveryResult,
+function estimateSnapshotCacheBytes(snapshot: FuzzyIndexSnapshot): number {
+  return estimateSnapshotCacheBytesFromParts(
+    snapshot.entryStore.retainedBytes,
+    snapshot.rootKey,
+    snapshot.canonicalRoot,
+    snapshot.digest,
+  );
+}
+
+function estimateSnapshotCacheBytesFromParts(
+  entryStoreBytes: number,
+  rootKey: string,
+  canonicalRoot: string,
+  digest: string,
 ): number {
-  let bytes = FUZZY_SNAPSHOT_RETAINED_OVERHEAD_BYTES;
-  for (const entry of discovery.entries) {
-    bytes +=
-      entry.pathBytes.byteLength +
-      FUZZY_BUFFER_RETAINED_OVERHEAD_BYTES +
-      FUZZY_ENTRY_RETAINED_OVERHEAD_BYTES +
-      FUZZY_ARRAY_REFERENCE_BYTES +
-      estimateFuzzyCandidateRetainedBytes(entry.relativePath);
-    if (!Number.isSafeInteger(bytes) || bytes > MAX_FUZZY_CACHE_BYTES) {
-      return MAX_FUZZY_CACHE_BYTES + 1;
-    }
+  return (
+    FUZZY_SNAPSHOT_RETAINED_OVERHEAD_BYTES +
+    entryStoreBytes +
+    estimateJavascriptStringRetainedBytes(rootKey) +
+    estimateJavascriptStringRetainedBytes(canonicalRoot) +
+    estimateJavascriptStringRetainedBytes(digest)
+  );
+}
+
+export function estimateFuzzyQueryCandidateCacheRetainedBytes(
+  candidateCount: number,
+  generationKey: string,
+  query: string,
+): number {
+  if (
+    !Number.isSafeInteger(candidateCount) ||
+    candidateCount < 0 ||
+    candidateCount > MAX_FUZZY_CANDIDATES
+  ) {
+    throw new RangeError(
+      `fuzzy-file cached candidate count must be in [0, ${MAX_FUZZY_CANDIDATES}]`,
+    );
   }
-  return bytes;
+  return (
+    FUZZY_QUERY_CACHE_OBJECT_OVERHEAD_BYTES +
+    FUZZY_PACKED_CANDIDATES_OBJECT_OVERHEAD_BYTES +
+    FUZZY_TYPED_ARRAY_RETAINED_OVERHEAD_BYTES +
+    candidateCount * Uint32Array.BYTES_PER_ELEMENT +
+    estimateJavascriptStringRetainedBytes(generationKey) +
+    estimateJavascriptStringRetainedBytes(query)
+  );
+}
+
+function estimateJavascriptStringRetainedBytes(value: string): number {
+  return (
+    JAVASCRIPT_STRING_RETAINED_OVERHEAD_BYTES +
+    value.length * JAVASCRIPT_CODE_UNIT_BYTES
+  );
 }

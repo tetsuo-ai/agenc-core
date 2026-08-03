@@ -24,7 +24,6 @@ import {
   comparePortablePaths,
   prepareFuzzyCandidate,
   validateFuzzyCandidate,
-  type PreparedFuzzyCandidate,
 } from "../search/fuzzy-match.js";
 import { selectPinnedRipgrepPath } from "../tools/system/pinned-ripgrep.js";
 import {
@@ -53,6 +52,8 @@ const MAX_COMPLETE_GENERATIONS_PER_ROOT = 2;
 const SQLITE_BUSY_TIMEOUT_MS = 5_000;
 const INTERRUPTED_BUILD_HEARTBEAT_GRACE_MS = 300_000;
 const PUBLISH_SLICE_ENTRIES = 4_096;
+const HYDRATION_SLICE_ENTRIES = 512;
+const PREPROCESS_HEARTBEAT_INTERVAL_MS = 1_000;
 const CLEANUP_BATCH_GENERATIONS = 128;
 const HASH_LENGTH_PREFIX_BYTES = 8;
 const PATH_SEPARATOR_BYTE = 0x2f;
@@ -62,6 +63,15 @@ const CURRENT_DIRECTORY_BYTE = 0x2e;
 const ENTRY_TYPE_FILE_TAG = "F";
 const ENTRY_TYPE_DIRECTORY_TAG = "D";
 const EMPTY_ERROR_TEXT = "";
+// Conservative 64-bit V8 accounting: each typed-array allowance includes both
+// its view/header and its independently allocated ArrayBuffer header.
+const COMPACT_ENTRY_STORE_OBJECT_OVERHEAD_BYTES = 256;
+const COMPACT_BUFFER_RETAINED_OVERHEAD_BYTES = 96;
+const COMPACT_TYPED_ARRAY_RETAINED_OVERHEAD_BYTES = 128;
+const COMPACT_BYTE_ARENA_COUNT = 2;
+const COMPACT_TYPED_ARRAY_COUNT = 3;
+const FILE_ENTRY_TYPE_CODE = 0;
+const DIRECTORY_ENTRY_TYPE_CODE = 1;
 const PINNED_RIPGREP_UNAVAILABLE_MESSAGE =
   "pinned ripgrep file discovery is unavailable; run `agenc doctor`, then reinstall the same AgenC version";
 const RECOVERABLE_SQLITE_CORRUPTION_CODES = new Set([
@@ -77,10 +87,43 @@ export interface FuzzyIndexedEntry {
   readonly relativePath: string;
   readonly pathBytes: Buffer;
   readonly matchType: FuzzyIndexedEntryType;
-  readonly searchCandidate?: PreparedFuzzyCandidate;
+}
+
+/** Immutable, allocation-bounded in-memory view of one persisted generation. */
+export interface FuzzyIndexEntryStore {
+  readonly entryCount: number;
+  readonly pathBytes: number;
+  readonly candidateBytes: number;
+  readonly arenaBackingBytes: number;
+  readonly retainedBytes: number;
+  relativePathAt(ordinal: number): string;
+  pathBytesAt(ordinal: number): Buffer;
+  candidateByteLengthAt(ordinal: number): number;
+  matchTypeAt(ordinal: number): FuzzyIndexedEntryType;
+  pathBytesStartWithAt(ordinal: number, prefix: Buffer): boolean;
+  comparePathBytesSliceAt(
+    ordinal: number,
+    sliceStart: number,
+    other: FuzzyIndexEntryStore,
+    otherOrdinal: number,
+  ): number;
+  comparePathBytesAt(
+    ordinal: number,
+    other: FuzzyIndexEntryStore,
+    otherOrdinal: number,
+  ): number;
 }
 
 export interface FuzzyFileDiscoveryResult {
+  /** AgenC-owned immutable store; callers relinquish input ownership at build. */
+  readonly entryStore: FuzzyIndexEntryStore;
+  readonly truncated: boolean;
+  readonly directoryCoverage?: FuzzyDirectoryCoverage;
+}
+
+const ownedFuzzyFileDiscoveryResults = new WeakSet<FuzzyFileDiscoveryResult>();
+
+export interface FuzzyFileDiscoveryBatch {
   readonly entries: readonly FuzzyIndexedEntry[];
   readonly truncated: boolean;
   readonly directoryCoverage?: FuzzyDirectoryCoverage;
@@ -98,7 +141,7 @@ export interface FuzzyFileDiscoveryOptions {
 export type FuzzyFileDiscovery = (
   canonicalRoot: string,
   signal: AbortSignal,
-) => Promise<FuzzyFileDiscoveryResult>;
+) => Promise<FuzzyFileDiscoveryBatch>;
 
 export interface FuzzyIndexSnapshot {
   readonly rootKey: string;
@@ -110,7 +153,345 @@ export interface FuzzyIndexSnapshot {
   readonly digest: string;
   readonly truncated: boolean;
   readonly directoryCoverage: FuzzyDirectoryCoverage;
-  readonly entries: readonly FuzzyIndexedEntry[];
+  readonly entryStore: FuzzyIndexEntryStore;
+}
+
+/**
+ * Conservative retained-byte estimate for the compact generation store.
+ * This is intentionally pure so admission can be proven at the named limits
+ * without first materializing a million JavaScript entry objects.
+ */
+export function estimateFuzzyIndexEntryStoreRetainedBytes(
+  entryCount: number,
+  pathBytes: number,
+  candidateBytes: number,
+): number {
+  validateCompactEntryStoreBounds(entryCount, pathBytes, candidateBytes);
+  const offsetEntries = entryCount + 1;
+  const offsetBytes =
+    offsetEntries * Uint32Array.BYTES_PER_ELEMENT * COMPACT_BYTE_ARENA_COUNT;
+  const typeBytes = entryCount * Uint8Array.BYTES_PER_ELEMENT;
+  return (
+    pathBytes +
+    candidateBytes +
+    offsetBytes +
+    typeBytes +
+    COMPACT_BYTE_ARENA_COUNT * COMPACT_BUFFER_RETAINED_OVERHEAD_BYTES +
+    COMPACT_TYPED_ARRAY_COUNT * COMPACT_TYPED_ARRAY_RETAINED_OVERHEAD_BYTES +
+    COMPACT_ENTRY_STORE_OBJECT_OVERHEAD_BYTES
+  );
+}
+
+export async function createFuzzyIndexEntryStore(
+  entries: readonly FuzzyIndexedEntry[],
+  signal: AbortSignal,
+): Promise<FuzzyIndexEntryStore> {
+  return (
+    await normalizeDiscoveredEntries(
+      entries,
+      signal,
+      () => {},
+      () => {},
+    )
+  ).entryStore;
+}
+
+/**
+ * Transfers a bounded discovery batch into AgenC-owned immutable storage.
+ * The caller must not mutate the batch after invoking this function.
+ */
+export async function createFuzzyFileDiscoveryResult(
+  batch: FuzzyFileDiscoveryBatch,
+  signal: AbortSignal,
+  onEntryStoreMeasured: (retainedBytes: number) => void = () => {},
+): Promise<FuzzyFileDiscoveryResult> {
+  const truncated = batch.truncated;
+  if (typeof truncated !== "boolean") {
+    throw new FuzzyIndexBoundaryError(
+      "fuzzy-file discovery truncated flag must be boolean",
+    );
+  }
+  const directoryCoverage = validateDirectoryCoverage(
+    batch.directoryCoverage ?? "complete",
+  );
+  const normalized = await normalizeDiscoveredEntries(
+    batch.entries,
+    signal,
+    () => {},
+    onEntryStoreMeasured,
+  );
+  const discovery = Object.freeze({
+    entryStore: normalized.entryStore,
+    truncated,
+    directoryCoverage,
+  });
+  ownedFuzzyFileDiscoveryResults.add(discovery);
+  return discovery;
+}
+
+export function assertOwnedFuzzyFileDiscoveryResult(
+  discovery: FuzzyFileDiscoveryResult,
+): void {
+  if (
+    !ownedFuzzyFileDiscoveryResults.has(discovery) ||
+    !Object.isFrozen(discovery) ||
+    !(discovery.entryStore instanceof CompactFuzzyIndexEntryStore)
+  ) {
+    throw new FuzzyIndexBoundaryError(
+      "fuzzy-file discovery must use AgenC-owned immutable storage",
+    );
+  }
+}
+
+class CompactFuzzyIndexEntryStore implements FuzzyIndexEntryStore {
+  readonly entryCount: number;
+  readonly pathBytes: number;
+  readonly candidateBytes: number;
+  readonly arenaBackingBytes: number;
+  readonly retainedBytes: number;
+  readonly #pathArena: Buffer;
+  readonly #candidateArena: Buffer;
+  readonly #pathOffsets: Uint32Array;
+  readonly #candidateOffsets: Uint32Array;
+  readonly #entryTypes: Uint8Array;
+
+  constructor(
+    pathArena: Buffer,
+    candidateArena: Buffer,
+    pathOffsets: Uint32Array,
+    candidateOffsets: Uint32Array,
+    entryTypes: Uint8Array,
+  ) {
+    this.entryCount = entryTypes.length;
+    this.pathBytes = pathArena.byteLength;
+    this.candidateBytes = candidateArena.byteLength;
+    this.arenaBackingBytes =
+      pathArena.buffer.byteLength + candidateArena.buffer.byteLength;
+    if (this.arenaBackingBytes !== this.pathBytes + this.candidateBytes) {
+      throw new FuzzyIndexBoundaryError(
+        "fuzzy-file compact arenas must use exact unpooled backing storage",
+      );
+    }
+    this.retainedBytes = estimateFuzzyIndexEntryStoreRetainedBytes(
+      this.entryCount,
+      this.pathBytes,
+      this.candidateBytes,
+    );
+    this.#pathArena = pathArena;
+    this.#candidateArena = candidateArena;
+    this.#pathOffsets = pathOffsets;
+    this.#candidateOffsets = candidateOffsets;
+    this.#entryTypes = entryTypes;
+    Object.freeze(this);
+  }
+
+  relativePathAt(ordinal: number): string {
+    this.#assertOrdinal(ordinal);
+    return this.#candidateArena.toString(
+      "utf8",
+      this.#candidateOffsets[ordinal],
+      this.#candidateOffsets[ordinal + 1],
+    );
+  }
+
+  pathBytesAt(ordinal: number): Buffer {
+    this.#assertOrdinal(ordinal);
+    return Buffer.from(
+      this.#pathArena.subarray(
+        this.#pathOffsets[ordinal],
+        this.#pathOffsets[ordinal + 1],
+      ),
+    );
+  }
+
+  candidateByteLengthAt(ordinal: number): number {
+    this.#assertOrdinal(ordinal);
+    return (
+      this.#candidateOffsets[ordinal + 1]! - this.#candidateOffsets[ordinal]!
+    );
+  }
+
+  matchTypeAt(ordinal: number): FuzzyIndexedEntryType {
+    this.#assertOrdinal(ordinal);
+    return this.#entryTypes[ordinal] === FILE_ENTRY_TYPE_CODE
+      ? "file"
+      : "directory";
+  }
+
+  pathBytesStartWithAt(ordinal: number, prefix: Buffer): boolean {
+    this.#assertOrdinal(ordinal);
+    const start = this.#pathOffsets[ordinal]!;
+    const end = this.#pathOffsets[ordinal + 1]!;
+    if (end - start < prefix.byteLength) return false;
+    for (let index = 0; index < prefix.byteLength; index += 1) {
+      if (this.#pathArena[start + index] !== prefix[index]) return false;
+    }
+    return true;
+  }
+
+  comparePathBytesSliceAt(
+    ordinal: number,
+    sliceStart: number,
+    other: FuzzyIndexEntryStore,
+    otherOrdinal: number,
+  ): number {
+    this.#assertOrdinal(ordinal);
+    const entryStart = this.#pathOffsets[ordinal]!;
+    const end = this.#pathOffsets[ordinal + 1]!;
+    if (
+      !Number.isSafeInteger(sliceStart) ||
+      sliceStart < 0 ||
+      sliceStart > end - entryStart
+    ) {
+      throw new RangeError("fuzzy-file path slice start is outside the entry");
+    }
+    const start = entryStart + sliceStart;
+    if (!(other instanceof CompactFuzzyIndexEntryStore)) {
+      return Buffer.compare(
+        this.#pathArena.subarray(start, end),
+        other.pathBytesAt(otherOrdinal),
+      );
+    }
+    other.#assertOrdinal(otherOrdinal);
+    const otherStart = other.#pathOffsets[otherOrdinal]!;
+    const otherEnd = other.#pathOffsets[otherOrdinal + 1]!;
+    const sharedLength = Math.min(end - start, otherEnd - otherStart);
+    for (let index = 0; index < sharedLength; index += 1) {
+      const difference =
+        this.#pathArena[start + index]! - other.#pathArena[otherStart + index]!;
+      if (difference !== 0) return difference;
+    }
+    return end - start - (otherEnd - otherStart);
+  }
+
+  comparePathBytesAt(
+    ordinal: number,
+    other: FuzzyIndexEntryStore,
+    otherOrdinal: number,
+  ): number {
+    this.#assertOrdinal(ordinal);
+    if (!(other instanceof CompactFuzzyIndexEntryStore)) {
+      return Buffer.compare(
+        this.#pathViewAt(ordinal),
+        other.pathBytesAt(otherOrdinal),
+      );
+    }
+    other.#assertOrdinal(otherOrdinal);
+    const leftStart = this.#pathOffsets[ordinal]!;
+    const leftEnd = this.#pathOffsets[ordinal + 1]!;
+    const rightStart = other.#pathOffsets[otherOrdinal]!;
+    const rightEnd = other.#pathOffsets[otherOrdinal + 1]!;
+    const sharedLength = Math.min(leftEnd - leftStart, rightEnd - rightStart);
+    for (let index = 0; index < sharedLength; index += 1) {
+      const difference =
+        this.#pathArena[leftStart + index]! -
+        other.#pathArena[rightStart + index]!;
+      if (difference !== 0) return difference;
+    }
+    return leftEnd - leftStart - (rightEnd - rightStart);
+  }
+
+  #pathViewAt(ordinal: number): Buffer {
+    this.#assertOrdinal(ordinal);
+    return this.#pathArena.subarray(
+      this.#pathOffsets[ordinal],
+      this.#pathOffsets[ordinal + 1],
+    );
+  }
+
+  #assertOrdinal(ordinal: number): void {
+    if (
+      !Number.isSafeInteger(ordinal) ||
+      ordinal < 0 ||
+      ordinal >= this.entryCount
+    ) {
+      throw new RangeError(
+        `fuzzy-file entry ordinal must be in [0, ${this.entryCount})`,
+      );
+    }
+  }
+}
+
+class CompactFuzzyIndexEntryStoreBuilder {
+  readonly #pathArena: Buffer;
+  readonly #candidateArena: Buffer;
+  readonly #pathOffsets: Uint32Array;
+  readonly #candidateOffsets: Uint32Array;
+  readonly #entryTypes: Uint8Array;
+  #entryCount = 0;
+  #pathOffset = 0;
+  #candidateOffset = 0;
+
+  constructor(entryCount: number, pathBytes: number, candidateBytes: number) {
+    validateCompactEntryStoreBounds(entryCount, pathBytes, candidateBytes);
+    this.#pathArena = Buffer.allocUnsafeSlow(pathBytes);
+    this.#candidateArena = Buffer.allocUnsafeSlow(candidateBytes);
+    this.#pathOffsets = new Uint32Array(entryCount + 1);
+    this.#candidateOffsets = new Uint32Array(entryCount + 1);
+    this.#entryTypes = new Uint8Array(entryCount);
+  }
+
+  add(entry: FuzzyIndexedEntry, requireSorted = false): void {
+    if (this.#entryCount >= this.#entryTypes.length) {
+      throw new FuzzyIndexBoundaryError(
+        "fuzzy-file entry store received too many entries",
+      );
+    }
+    const candidate = Buffer.from(entry.relativePath, "utf8");
+    if (requireSorted && this.#entryCount > 0) {
+      const previousStart = this.#pathOffsets[this.#entryCount - 1]!;
+      const previousEnd = this.#pathOffsets[this.#entryCount]!;
+      const previous = this.#pathArena.subarray(previousStart, previousEnd);
+      const order = Buffer.compare(previous, entry.pathBytes);
+      if (order >= 0) {
+        throw new FuzzyIndexBoundaryError(
+          order === 0
+            ? `fuzzy-file generation contains duplicate path bytes for '${entry.relativePath}'`
+            : "fuzzy-file generation changed while it was being normalized",
+        );
+      }
+    }
+    const nextPathOffset = this.#pathOffset + entry.pathBytes.byteLength;
+    const nextCandidateOffset = this.#candidateOffset + candidate.byteLength;
+    if (
+      nextPathOffset > this.#pathArena.byteLength ||
+      nextCandidateOffset > this.#candidateArena.byteLength
+    ) {
+      throw new FuzzyIndexBoundaryError(
+        "fuzzy-file entry store exceeded its validated byte bounds",
+      );
+    }
+    entry.pathBytes.copy(this.#pathArena, this.#pathOffset);
+    candidate.copy(this.#candidateArena, this.#candidateOffset);
+    this.#pathOffset = nextPathOffset;
+    this.#candidateOffset = nextCandidateOffset;
+    this.#entryCount += 1;
+    this.#pathOffsets[this.#entryCount] = this.#pathOffset;
+    this.#candidateOffsets[this.#entryCount] = this.#candidateOffset;
+    this.#entryTypes[this.#entryCount - 1] =
+      entry.matchType === "file"
+        ? FILE_ENTRY_TYPE_CODE
+        : DIRECTORY_ENTRY_TYPE_CODE;
+  }
+
+  finish(): CompactFuzzyIndexEntryStore {
+    if (
+      this.#entryCount !== this.#entryTypes.length ||
+      this.#pathOffset !== this.#pathArena.byteLength ||
+      this.#candidateOffset !== this.#candidateArena.byteLength
+    ) {
+      throw new FuzzyIndexBoundaryError(
+        "fuzzy-file entry store did not match its validated bounds",
+      );
+    }
+    return new CompactFuzzyIndexEntryStore(
+      this.#pathArena,
+      this.#candidateArena,
+      this.#pathOffsets,
+      this.#candidateOffsets,
+      this.#entryTypes,
+    );
+  }
 }
 
 export interface PersistentFuzzyFileIndexOptions {
@@ -140,11 +521,10 @@ interface EntryRow {
   readonly fingerprint: string;
 }
 
-interface GenerationEntryBoundsRow {
-  readonly entry_count: number;
+interface GenerationEntryLengthRow {
+  readonly ordinal: number;
   readonly path_bytes: number;
   readonly candidate_bytes: number;
-  readonly maximum_candidate_bytes: number;
 }
 
 export class FuzzyIndexBoundaryError extends Error {
@@ -216,7 +596,12 @@ export class PersistentFuzzyFileIndex {
     if (this.#db.open) this.#db.close();
   }
 
-  readCurrent(canonicalRoot: string): FuzzyIndexSnapshot | null {
+  async readCurrent(
+    canonicalRoot: string,
+    signal: AbortSignal = new AbortController().signal,
+    onEntryStoreMeasured?: (retainedBytes: number) => void,
+  ): Promise<FuzzyIndexSnapshot | null> {
+    throwIfCancelled(signal);
     const rootKey = fuzzyIndexRootKey(canonicalRoot);
     const row = this.#db
       .prepare<[string], GenerationRow>(
@@ -231,16 +616,24 @@ export class PersistentFuzzyFileIndex {
       .get(rootKey);
     if (row === undefined) return null;
     this.#touchRoot(rootKey);
-    const loaded = this.#readGenerationEntries(row.id, row.canonical_root);
-    const entries = loaded.entries;
-    const integrity = describeEntries(
-      entries,
+    if (!generationHeaderBoundsAreValid(row)) {
+      this.#invalidateGeneration(row.id, rootKey, "invalid generation bounds");
+      return null;
+    }
+    const loaded = await this.#readGenerationEntries(
+      row.id,
+      row.entry_count,
+      row.path_bytes,
       row.directory_coverage,
       row.canonical_root,
       row.source_boundary,
-      row.id,
+      signal,
+      onEntryStoreMeasured,
     );
+    const integrity = loaded.integrity;
     if (
+      loaded.entryStore === null ||
+      integrity === null ||
       row.completed_at_ms === null ||
       row.entry_count !== integrity.entryCount ||
       row.path_bytes !== integrity.pathBytes ||
@@ -260,7 +653,7 @@ export class PersistentFuzzyFileIndex {
       digest: integrity.digest,
       truncated: row.truncated !== 0,
       directoryCoverage: row.directory_coverage,
-      entries: Object.freeze(entries),
+      entryStore: loaded.entryStore,
     });
   }
 
@@ -271,13 +664,13 @@ export class PersistentFuzzyFileIndex {
     options: FuzzyIndexPublicationOptions = {},
   ): Promise<FuzzyIndexSnapshot | null> {
     throwIfCancelled(signal);
+    assertOwnedFuzzyFileDiscoveryResult(discovery);
     if (discovery.truncated) {
       throw new FuzzyIndexBoundaryError(
         "fuzzy-file discovery reached a bound; refusing to publish a prefix",
       );
     }
     const rootKey = fuzzyIndexRootKey(canonicalRoot);
-    const entries = normalizeDiscoveredEntries(discovery.entries);
     const directoryCoverage = validateDirectoryCoverage(
       discovery.directoryCoverage ?? "complete",
     );
@@ -288,14 +681,18 @@ export class PersistentFuzzyFileIndex {
       sourceBoundary,
       directoryCoverage,
     );
-    const integrity = describeEntries(
-      entries,
-      directoryCoverage,
-      canonicalRoot,
-      sourceBoundary,
-      generationId,
-    );
     try {
+      const heartbeat = this.#generationHeartbeat(generationId);
+      const entryStore = discovery.entryStore;
+      const integrity = await describeEntryStore(
+        entryStore,
+        directoryCoverage,
+        canonicalRoot,
+        sourceBoundary,
+        generationId,
+        signal,
+        heartbeat,
+      );
       const insert = this.#db.prepare<
         [number, number, string, Buffer, string, string]
       >(
@@ -312,17 +709,17 @@ export class PersistentFuzzyFileIndex {
       let insertedPathBytes = 0;
       for (
         let sliceStart = 0;
-        sliceStart < entries.length;
+        sliceStart < entryStore.entryCount;
         sliceStart += PUBLISH_SLICE_ENTRIES
       ) {
         const sliceEnd = Math.min(
-          entries.length,
+          entryStore.entryCount,
           sliceStart + PUBLISH_SLICE_ENTRIES,
         );
         this.#db
           .transaction(() => {
             for (let ordinal = sliceStart; ordinal < sliceEnd; ordinal += 1) {
-              const entry = entries[ordinal]!;
+              const entry = indexedEntryAt(entryStore, ordinal);
               throwIfCancelled(signal);
               insertedPathBytes += entry.pathBytes.byteLength;
               insert.run(
@@ -342,9 +739,9 @@ export class PersistentFuzzyFileIndex {
             );
           })
           .immediate();
-        if (sliceEnd < entries.length) await yieldToEventLoop();
+        if (sliceEnd < entryStore.entryCount) await yieldToEventLoop();
       }
-      if (entries.length === 0) {
+      if (entryStore.entryCount === 0) {
         this.#db
           .transaction(() => {
             throwIfCancelled(signal);
@@ -373,7 +770,7 @@ export class PersistentFuzzyFileIndex {
         digest: integrity.digest,
         truncated: discovery.truncated,
         directoryCoverage,
-        entries,
+        entryStore,
       });
     } catch (error) {
       this.#failGeneration(generationId, rootKey, errorMessage(error));
@@ -450,6 +847,27 @@ export class PersistentFuzzyFileIndex {
     return transaction.immediate();
   }
 
+  #generationHeartbeat(generationId: number): () => void {
+    let lastHeartbeatAtMs: number | null = null;
+    const update = this.#db.prepare<[number, number]>(
+      `UPDATE fuzzy_index_generations SET heartbeat_at_ms = ?
+        WHERE id = ? AND state = 'staging'`,
+    );
+    return (): void => {
+      const nowMs = this.#now();
+      if (
+        lastHeartbeatAtMs !== null &&
+        nowMs - lastHeartbeatAtMs < PREPROCESS_HEARTBEAT_INTERVAL_MS
+      ) {
+        return;
+      }
+      if (update.run(nowMs, generationId).changes !== 1) {
+        throw new FuzzyIndexSourceChangedError();
+      }
+      lastHeartbeatAtMs = nowMs;
+    };
+  }
+
   #completeGeneration(
     generationId: number,
     rootKey: string,
@@ -514,55 +932,161 @@ export class PersistentFuzzyFileIndex {
       .immediate();
   }
 
-  #readGenerationEntries(
+  async #readGenerationEntries(
     generationId: number,
+    declaredEntryCount: number,
+    declaredPathBytes: number,
+    directoryCoverage: FuzzyDirectoryCoverage,
     canonicalRoot: string,
-  ): {
-    readonly entries: FuzzyIndexedEntry[];
+    sourceBoundary: string,
+    signal: AbortSignal,
+    onEntryStoreMeasured: ((retainedBytes: number) => void) | undefined,
+  ): Promise<{
+    readonly entryStore: FuzzyIndexEntryStore | null;
+    readonly integrity: EntryIntegrity | null;
     readonly fingerprintsValid: boolean;
-  } {
-    const bounds = this.#db
-      .prepare<[number], GenerationEntryBoundsRow>(
-        `SELECT count(*) AS entry_count,
-                coalesce(sum(length(path_bytes)), 0) AS path_bytes,
-                coalesce(sum(length(CAST(relative_path AS BLOB))), 0)
-                  AS candidate_bytes,
-                coalesce(max(length(CAST(relative_path AS BLOB))), 0)
-                  AS maximum_candidate_bytes
-           FROM fuzzy_index_entries
-          WHERE generation_id = ?`,
-      )
-      .get(generationId);
-    if (!generationEntryBoundsAreValid(bounds)) {
-      return { entries: [], fingerprintsValid: false };
-    }
-
-    let fingerprintsValid = true;
-    const entries: FuzzyIndexedEntry[] = [];
-    const rows = this.#db
-      .prepare<[number], EntryRow>(
-        `SELECT relative_path, path_bytes, entry_type, fingerprint
-           FROM fuzzy_index_entries
-          WHERE generation_id = ? ORDER BY ordinal`,
-      )
-      .iterate(generationId);
-    try {
-      for (const row of rows) {
-        const entry = Object.freeze({
-          relativePath: row.relative_path,
-          pathBytes: Buffer.from(row.path_bytes),
-          matchType: row.entry_type,
-          searchCandidate: prepareFuzzyCandidate(row.relative_path),
-        });
-        if (row.fingerprint !== fingerprintEntry(entry, canonicalRoot)) {
-          fingerprintsValid = false;
-        }
-        entries.push(entry);
+  }> {
+    const hasNegativeOrdinal =
+      this.#db
+        .prepare<[number], { readonly present: number }>(
+          `SELECT 1 AS present FROM fuzzy_index_entries
+            WHERE generation_id = ? AND ordinal < 0 LIMIT 1`,
+        )
+        .get(generationId) !== undefined;
+    if (hasNegativeOrdinal) return invalidLoadedGeneration();
+    const readLengthSlice = this.#db.prepare<
+      [number, number, number],
+      GenerationEntryLengthRow
+    >(
+      `SELECT ordinal, length(path_bytes) AS path_bytes,
+              length(CAST(relative_path AS BLOB)) AS candidate_bytes
+         FROM fuzzy_index_entries
+        WHERE generation_id = ? AND ordinal >= ?
+        ORDER BY ordinal LIMIT ?`,
+    );
+    let measuredEntryCount = 0;
+    let measuredPathBytes = 0;
+    let measuredCandidateBytes = 0;
+    while (measuredEntryCount < declaredEntryCount) {
+      throwIfCancelled(signal);
+      const rows = readLengthSlice.all(
+        generationId,
+        measuredEntryCount,
+        HYDRATION_SLICE_ENTRIES,
+      );
+      if (rows.length === 0) {
+        return invalidLoadedGeneration();
       }
-    } catch {
-      fingerprintsValid = false;
+      for (const row of rows) {
+        throwIfCancelled(signal);
+        if (
+          measuredEntryCount >= declaredEntryCount ||
+          row.ordinal !== measuredEntryCount ||
+          !Number.isSafeInteger(row.path_bytes) ||
+          row.path_bytes < 0 ||
+          !Number.isSafeInteger(row.candidate_bytes) ||
+          row.candidate_bytes < 0 ||
+          row.candidate_bytes > MAX_FUZZY_CANDIDATE_UTF8_BYTES ||
+          !boundedCompactByteSum(measuredPathBytes, row.path_bytes) ||
+          !boundedCompactByteSum(measuredCandidateBytes, row.candidate_bytes)
+        ) {
+          return invalidLoadedGeneration();
+        }
+        measuredEntryCount += 1;
+        measuredPathBytes += row.path_bytes;
+        measuredCandidateBytes += row.candidate_bytes;
+      }
+      if (measuredEntryCount < declaredEntryCount) await yieldToEventLoop();
     }
-    return { entries, fingerprintsValid };
+    if (
+      measuredPathBytes !== declaredPathBytes ||
+      readLengthSlice.all(generationId, declaredEntryCount, 1).length !== 0
+    ) {
+      return invalidLoadedGeneration();
+    }
+    onEntryStoreMeasured?.(
+      estimateFuzzyIndexEntryStoreRetainedBytes(
+        measuredEntryCount,
+        measuredPathBytes,
+        measuredCandidateBytes,
+      ),
+    );
+    let fingerprintsValid = true;
+    const builder = new CompactFuzzyIndexEntryStoreBuilder(
+      measuredEntryCount,
+      measuredPathBytes,
+      measuredCandidateBytes,
+    );
+    const integrityHash = createEntryIntegrityHash(
+      directoryCoverage,
+      canonicalRoot,
+      sourceBoundary,
+      generationId,
+    );
+    let entryCount = 0;
+    let pathBytes = 0;
+    const readSlice = this.#db.prepare<
+      [number, number, number],
+      EntryRow & { readonly ordinal: number }
+    >(
+      `SELECT ordinal, relative_path, path_bytes, entry_type, fingerprint
+         FROM fuzzy_index_entries
+        WHERE generation_id = ? AND ordinal >= ?
+        ORDER BY ordinal LIMIT ?`,
+    );
+    try {
+      while (entryCount < measuredEntryCount) {
+        throwIfCancelled(signal);
+        const rows = readSlice.all(
+          generationId,
+          entryCount,
+          HYDRATION_SLICE_ENTRIES,
+        );
+        if (rows.length === 0) {
+          throw new FuzzyIndexBoundaryError(
+            "fuzzy-file generation ended before its declared entry count",
+          );
+        }
+        for (const row of rows) {
+          throwIfCancelled(signal);
+          if (row.ordinal !== entryCount) {
+            throw new FuzzyIndexBoundaryError(
+              "fuzzy-file generation contains a non-contiguous ordinal",
+            );
+          }
+          const entry = Object.freeze({
+            relativePath: row.relative_path,
+            pathBytes: Buffer.from(row.path_bytes),
+            matchType: row.entry_type,
+          });
+          const fingerprint = fingerprintEntry(entry, canonicalRoot);
+          if (row.fingerprint !== fingerprint) {
+            fingerprintsValid = false;
+          }
+          builder.add(entry);
+          addEntryIntegrity(
+            integrityHash,
+            fingerprint,
+            entry.pathBytes.byteLength,
+          );
+          entryCount += 1;
+          pathBytes += entry.pathBytes.byteLength;
+        }
+        if (entryCount < measuredEntryCount) await yieldToEventLoop();
+      }
+      return {
+        entryStore: builder.finish(),
+        integrity: finishEntryIntegrity(integrityHash, entryCount, pathBytes),
+        fingerprintsValid,
+      };
+    } catch (error) {
+      if (error instanceof FuzzyIndexBuildCancelledError) throw error;
+      return {
+        entryStore: null,
+        integrity: null,
+        fingerprintsValid: false,
+      };
+    }
   }
 
   #invalidateGeneration(
@@ -755,7 +1279,7 @@ async function discoverFuzzyFilesWithGit(
   canonicalRoot: string,
   signal: AbortSignal,
   options: FuzzyFileDiscoveryOptions,
-): Promise<FuzzyFileDiscoveryResult | null> {
+): Promise<FuzzyFileDiscoveryBatch | null> {
   const deadline = performance.now() + MAX_FUZZY_INDEX_BUILD_MS;
   const program = options.gitProgram ?? gitExe();
   const environment = fuzzyGitEnvironment(options.environment ?? process.env);
@@ -955,7 +1479,7 @@ export async function discoverFuzzyFiles(
   canonicalRoot: string,
   signal: AbortSignal,
   options: FuzzyFileDiscoveryOptions = {},
-): Promise<FuzzyFileDiscoveryResult> {
+): Promise<FuzzyFileDiscoveryBatch> {
   const gitDiscovery = await discoverFuzzyFilesWithGit(
     canonicalRoot,
     signal,
@@ -967,7 +1491,7 @@ export async function discoverFuzzyFiles(
 export async function discoverFuzzyFilesWithRipgrep(
   canonicalRoot: string,
   signal: AbortSignal,
-): Promise<FuzzyFileDiscoveryResult> {
+): Promise<FuzzyFileDiscoveryBatch> {
   const ripgrepPath = selectPinnedRipgrepPath();
   if (ripgrepPath === undefined) {
     throw new FuzzyIndexBoundaryError(PINNED_RIPGREP_UNAVAILABLE_MESSAGE);
@@ -1032,7 +1556,7 @@ export async function discoverFuzzyFilesWithRipgrep(
 export function entriesFromRipgrepPaths(
   rawFiles: readonly Buffer[],
   platform: NodeJS.Platform,
-): FuzzyFileDiscoveryResult {
+): FuzzyFileDiscoveryBatch {
   return entriesFromDiscoveredPaths(rawFiles, [], platform, "nonempty_only");
 }
 
@@ -1041,7 +1565,7 @@ function entriesFromDiscoveredPaths(
   rawDirectories: readonly Buffer[],
   platform: NodeJS.Platform,
   directoryCoverage: FuzzyDirectoryCoverage,
-): FuzzyFileDiscoveryResult {
+): FuzzyFileDiscoveryBatch {
   const byBytes = new Map<string, FuzzyIndexedEntry>();
   const budget: DiscoveryBudget = { candidateBytes: 0 };
   for (const rawPath of rawDirectories) {
@@ -1096,9 +1620,12 @@ function finalizeDiscoveredEntries(
   byBytes: ReadonlyMap<string, FuzzyIndexedEntry>,
   truncated: boolean,
   directoryCoverage: FuzzyDirectoryCoverage,
-): FuzzyFileDiscoveryResult {
-  const entries = [...byBytes.values()].sort(compareIndexedEntries);
-  return { entries: Object.freeze(entries), truncated, directoryCoverage };
+): FuzzyFileDiscoveryBatch {
+  return Object.freeze({
+    entries: Object.freeze([...byBytes.values()]),
+    truncated,
+    directoryCoverage,
+  });
 }
 
 const MAX_FUZZY_CANDIDATE_UTF8_BYTES_WITH_HEADROOM =
@@ -1227,67 +1754,167 @@ function databaseColumnExists(
   );
 }
 
-function normalizeDiscoveredEntries(
+interface NormalizedDiscoveredEntries {
+  readonly entryStore: FuzzyIndexEntryStore;
+}
+
+async function normalizeDiscoveredEntries(
   source: readonly FuzzyIndexedEntry[],
-): readonly FuzzyIndexedEntry[] {
+  signal: AbortSignal,
+  onYield: () => void,
+  onEntryStoreMeasured: (retainedBytes: number) => void,
+): Promise<NormalizedDiscoveredEntries> {
+  throwIfCancelled(signal);
   if (source.length > MAX_FUZZY_CANDIDATES) {
     throw new FuzzyIndexBoundaryError(
       `fuzzy-file generation has ${source.length} entries; maximum is ${MAX_FUZZY_CANDIDATES}`,
     );
   }
-  const entries = source
-    .map((entry) => {
-      const searchCandidate = prepareFuzzyCandidate(entry.relativePath);
-      if (entry.matchType !== "file" && entry.matchType !== "directory") {
-        throw new FuzzyIndexBoundaryError(
-          `fuzzy-file entry has invalid type '${String(entry.matchType)}'`,
-        );
-      }
-      if (entry.pathBytes.includes(0)) {
-        throw new FuzzyIndexBoundaryError("fuzzy-file path bytes contain NUL");
-      }
-      return Object.freeze({
-        relativePath: entry.relativePath,
-        pathBytes: Buffer.from(entry.pathBytes),
-        matchType: entry.matchType,
-        searchCandidate,
-      });
-    })
-    .sort(compareIndexedEntries);
   let totalBytes = 0;
   let totalCandidateBytes = 0;
-  const seen = new Set<string>();
-  for (const entry of entries) {
-    totalBytes += entry.pathBytes.byteLength;
-    totalCandidateBytes += Buffer.byteLength(entry.relativePath, "utf8");
-    if (totalBytes > MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES) {
+  for (let index = 0; index < source.length; index += 1) {
+    throwIfCancelled(signal);
+    const entry = source[index]!;
+    validateDiscoveredEntry(entry);
+    const candidateBytes = Buffer.byteLength(entry.relativePath, "utf8");
+    if (
+      !Number.isSafeInteger(totalBytes + entry.pathBytes.byteLength) ||
+      totalBytes + entry.pathBytes.byteLength >
+        MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES
+    ) {
       throw new FuzzyIndexBoundaryError(
         `fuzzy-file generation exceeds ${MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES} path bytes`,
       );
     }
-    if (totalCandidateBytes > MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES) {
+    if (
+      !Number.isSafeInteger(totalCandidateBytes + candidateBytes) ||
+      totalCandidateBytes + candidateBytes >
+        MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES
+    ) {
       throw new FuzzyIndexBoundaryError(
         `fuzzy-file generation exceeds ${MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES} candidate bytes`,
       );
     }
-    const key = entry.pathBytes.toString("hex");
-    if (seen.has(key)) {
+    totalBytes += entry.pathBytes.byteLength;
+    totalCandidateBytes += candidateBytes;
+    if ((index + 1) % HYDRATION_SLICE_ENTRIES === 0) {
+      onYield();
+      await yieldToEventLoop();
+    }
+  }
+  onEntryStoreMeasured(
+    estimateFuzzyIndexEntryStoreRetainedBytes(
+      source.length,
+      totalBytes,
+      totalCandidateBytes,
+    ),
+  );
+  throwIfCancelled(signal);
+  const entries: FuzzyIndexedEntry[] = new Array(source.length);
+  for (let index = 0; index < source.length; index += 1) {
+    entries[index] = source[index]!;
+    if ((index + 1) % HYDRATION_SLICE_ENTRIES === 0) {
+      throwIfCancelled(signal);
+      onYield();
+      await yieldToEventLoop();
+    }
+  }
+  await sortIndexedEntries(entries, signal, onYield);
+  for (let index = 1; index < entries.length; index += 1) {
+    throwIfCancelled(signal);
+    const entry = entries[index]!;
+    if (entry.pathBytes.equals(entries[index - 1]!.pathBytes)) {
       throw new FuzzyIndexBoundaryError(
         `fuzzy-file generation contains duplicate path bytes for '${entry.relativePath}'`,
       );
     }
-    seen.add(key);
+    if ((index + 1) % HYDRATION_SLICE_ENTRIES === 0) {
+      onYield();
+      await yieldToEventLoop();
+    }
   }
-  return Object.freeze(entries);
+  const builder = new CompactFuzzyIndexEntryStoreBuilder(
+    entries.length,
+    totalBytes,
+    totalCandidateBytes,
+  );
+  for (let index = 0; index < entries.length; index += 1) {
+    throwIfCancelled(signal);
+    const entry = entries[index]!;
+    validateDiscoveredEntry(entry);
+    builder.add(entry, true);
+    if ((index + 1) % HYDRATION_SLICE_ENTRIES === 0) {
+      onYield();
+      await yieldToEventLoop();
+    }
+  }
+  return {
+    entryStore: builder.finish(),
+  };
 }
 
-function describeEntries(
-  entries: readonly FuzzyIndexedEntry[],
+function validateDiscoveredEntry(entry: FuzzyIndexedEntry): void {
+  validateFuzzyCandidate(entry.relativePath);
+  if (entry.matchType !== "file" && entry.matchType !== "directory") {
+    throw new FuzzyIndexBoundaryError(
+      `fuzzy-file entry has invalid type '${String(entry.matchType)}'`,
+    );
+  }
+  if (entry.pathBytes.includes(0)) {
+    throw new FuzzyIndexBoundaryError("fuzzy-file path bytes contain NUL");
+  }
+}
+
+async function describeEntryStore(
+  entryStore: FuzzyIndexEntryStore,
   directoryCoverage: FuzzyDirectoryCoverage,
   canonicalRoot: string,
   sourceBoundary: string,
   buildEpoch: number,
-): EntryIntegrity {
+  signal: AbortSignal,
+  onYield: () => void,
+): Promise<EntryIntegrity> {
+  const hash = createEntryIntegrityHash(
+    directoryCoverage,
+    canonicalRoot,
+    sourceBoundary,
+    buildEpoch,
+  );
+  let pathBytes = 0;
+  for (let index = 0; index < entryStore.entryCount; index += 1) {
+    throwIfCancelled(signal);
+    const entry = indexedEntryAt(entryStore, index);
+    pathBytes += entry.pathBytes.byteLength;
+    addEntryIntegrity(
+      hash,
+      fingerprintEntry(entry, canonicalRoot),
+      entry.pathBytes.byteLength,
+    );
+    if ((index + 1) % HYDRATION_SLICE_ENTRIES === 0) {
+      onYield();
+      await yieldToEventLoop();
+    }
+  }
+  return finishEntryIntegrity(hash, entryStore.entryCount, pathBytes);
+}
+
+function indexedEntryAt(
+  entryStore: FuzzyIndexEntryStore,
+  ordinal: number,
+): FuzzyIndexedEntry {
+  return {
+    relativePath: entryStore.relativePathAt(ordinal),
+    pathBytes: entryStore.pathBytesAt(ordinal),
+    matchType: entryStore.matchTypeAt(ordinal),
+  };
+}
+
+function createEntryIntegrityHash(
+  directoryCoverage: FuzzyDirectoryCoverage,
+  canonicalRoot: string,
+  sourceBoundary: string,
+  buildEpoch: number,
+): ReturnType<typeof createHash> {
   const hash = createHash("sha256");
   updateLengthPrefixed(hash, Buffer.from(FUZZY_FILE_INDEX_POLICY_ID, "utf8"));
   updateLengthPrefixed(
@@ -1298,17 +1925,25 @@ function describeEntries(
   updateLengthPrefixed(hash, Buffer.from(sourceBoundary, "utf8"));
   updateLengthPrefixed(hash, Buffer.from(directoryCoverage, "utf8"));
   updateLengthPrefixed(hash, Buffer.from(String(buildEpoch), "utf8"));
-  let pathBytes = 0;
-  for (const entry of entries) {
-    pathBytes += entry.pathBytes.byteLength;
-    updateLengthPrefixed(
-      hash,
-      Buffer.from(fingerprintEntry(entry, canonicalRoot), "utf8"),
-    );
-    updateLengthPrefixed(hash, lengthBuffer(entry.pathBytes.byteLength));
-  }
+  return hash;
+}
+
+function addEntryIntegrity(
+  hash: ReturnType<typeof createHash>,
+  fingerprint: string,
+  pathBytes: number,
+): void {
+  updateLengthPrefixed(hash, Buffer.from(fingerprint, "utf8"));
+  updateLengthPrefixed(hash, lengthBuffer(pathBytes));
+}
+
+function finishEntryIntegrity(
+  hash: ReturnType<typeof createHash>,
+  entryCount: number,
+  pathBytes: number,
+): EntryIntegrity {
   return {
-    entryCount: entries.length,
+    entryCount,
     pathBytes,
     digest: hash.digest("hex"),
   };
@@ -1346,8 +1981,7 @@ function fingerprintEntry(
   );
   updateLengthPrefixed(hash, entry.pathBytes);
   updateLengthPrefixed(hash, Buffer.from(entry.relativePath, "utf8"));
-  const searchCandidate =
-    entry.searchCandidate ?? prepareFuzzyCandidate(entry.relativePath);
+  const searchCandidate = prepareFuzzyCandidate(entry.relativePath);
   updateLengthPrefixed(hash, Buffer.from(searchCandidate.portableText, "utf8"));
   updateLengthPrefixed(
     hash,
@@ -1485,6 +2119,57 @@ function compareIndexedEntries(
     : comparePortablePaths(left.relativePath, right.relativePath);
 }
 
+async function sortIndexedEntries(
+  entries: FuzzyIndexedEntry[],
+  signal: AbortSignal,
+  onYield: () => void,
+): Promise<void> {
+  if (entries.length < 2) return;
+  let source = entries;
+  let destination = new Array<FuzzyIndexedEntry>(entries.length);
+  let comparisonsSinceYield = 0;
+  for (let width = 1; width < entries.length; width *= 2) {
+    for (let start = 0; start < entries.length; start += width * 2) {
+      const middle = Math.min(start + width, entries.length);
+      const end = Math.min(start + width * 2, entries.length);
+      let left = start;
+      let right = middle;
+      let output = start;
+      while (left < middle || right < end) {
+        throwIfCancelled(signal);
+        if (
+          right >= end ||
+          (left < middle &&
+            compareIndexedEntries(source[left]!, source[right]!) <= 0)
+        ) {
+          destination[output] = source[left]!;
+          left += 1;
+        } else {
+          destination[output] = source[right]!;
+          right += 1;
+        }
+        output += 1;
+        comparisonsSinceYield += 1;
+        if (comparisonsSinceYield >= HYDRATION_SLICE_ENTRIES) {
+          comparisonsSinceYield = 0;
+          onYield();
+          await yieldToEventLoop();
+        }
+      }
+    }
+    [source, destination] = [destination, source];
+  }
+  if (source === entries) return;
+  for (let index = 0; index < entries.length; index += 1) {
+    entries[index] = source[index]!;
+    if ((index + 1) % HYDRATION_SLICE_ENTRIES === 0) {
+      throwIfCancelled(signal);
+      onYield();
+      await yieldToEventLoop();
+    }
+  }
+}
+
 function throwIfCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw new FuzzyIndexBuildCancelledError();
 }
@@ -1523,24 +2208,63 @@ function validateDirectoryCoverage(
   return value;
 }
 
-function generationEntryBoundsAreValid(
-  bounds: GenerationEntryBoundsRow | undefined,
-): boolean {
+function generationHeaderBoundsAreValid(
+  row: GenerationRow,
+): row is GenerationRow & {
+  readonly entry_count: number;
+  readonly path_bytes: number;
+} {
   return (
-    bounds !== undefined &&
-    Number.isSafeInteger(bounds.entry_count) &&
-    bounds.entry_count >= 0 &&
-    bounds.entry_count <= MAX_FUZZY_CANDIDATES &&
-    Number.isSafeInteger(bounds.path_bytes) &&
-    bounds.path_bytes >= 0 &&
-    bounds.path_bytes <= MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES &&
-    Number.isSafeInteger(bounds.candidate_bytes) &&
-    bounds.candidate_bytes >= 0 &&
-    bounds.candidate_bytes <= MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES &&
-    Number.isSafeInteger(bounds.maximum_candidate_bytes) &&
-    bounds.maximum_candidate_bytes >= 0 &&
-    bounds.maximum_candidate_bytes <= MAX_FUZZY_CANDIDATE_UTF8_BYTES
+    Number.isSafeInteger(row.entry_count) &&
+    row.entry_count !== null &&
+    row.entry_count >= 0 &&
+    row.entry_count <= MAX_FUZZY_CANDIDATES &&
+    Number.isSafeInteger(row.path_bytes) &&
+    row.path_bytes !== null &&
+    row.path_bytes >= 0 &&
+    row.path_bytes <= MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES
   );
+}
+
+function boundedCompactByteSum(current: number, incoming: number): boolean {
+  return (
+    Number.isSafeInteger(current + incoming) &&
+    current + incoming <= MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES
+  );
+}
+
+function invalidLoadedGeneration(): {
+  readonly entryStore: null;
+  readonly integrity: null;
+  readonly fingerprintsValid: false;
+} {
+  return {
+    entryStore: null,
+    integrity: null,
+    fingerprintsValid: false,
+  };
+}
+
+function validateCompactEntryStoreBounds(
+  entryCount: number,
+  pathBytes: number,
+  candidateBytes: number,
+): void {
+  if (
+    !Number.isSafeInteger(entryCount) ||
+    entryCount < 0 ||
+    entryCount > MAX_FUZZY_CANDIDATES ||
+    !Number.isSafeInteger(pathBytes) ||
+    pathBytes < 0 ||
+    pathBytes > MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES ||
+    !Number.isSafeInteger(candidateBytes) ||
+    candidateBytes < 0 ||
+    candidateBytes > MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES
+  ) {
+    throw new FuzzyIndexBoundaryError(
+      "fuzzy-file compact entry-store bounds are invalid",
+    );
+  }
 }
 
 function yieldToEventLoop(): Promise<void> {

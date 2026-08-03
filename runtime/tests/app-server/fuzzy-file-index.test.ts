@@ -6,9 +6,11 @@ import { promisify } from "node:util";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  createFuzzyFileDiscoveryResult,
   entriesFromRipgrepPaths,
   canonicalizeFuzzyIndexRoot,
   discoverFuzzyFiles,
+  estimateFuzzyIndexEntryStoreRetainedBytes,
   FuzzyIndexBuildCancelledError,
   FuzzyIndexSchemaError,
   FuzzyIndexSourceChangedError,
@@ -19,12 +21,23 @@ import {
   openPersistentFuzzyFileIndex,
   PersistentFuzzyFileIndex,
   type FuzzyIndexedEntry,
+  type FuzzyIndexSnapshot,
 } from "../../src/app-server/fuzzy-file-index.js";
 import { gitExe } from "../../src/utils/git.js";
-import { MAX_FUZZY_CANDIDATE_UTF8_BYTES } from "../../src/search/fuzzy-match.js";
+import {
+  MAX_FUZZY_CANDIDATES,
+  MAX_FUZZY_CANDIDATE_UTF8_BYTES,
+  MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES,
+} from "../../src/search/fuzzy-match.js";
 
 const temporaryRoots: string[] = [];
 const execFileAsync = promisify(execFile);
+const LEGACY_V2_PROJECT_DIGEST =
+  "5156e229effb835a601593dc91fbdeffc50a0754db8b31915753424b126f73e1";
+const LEGACY_V2_PROJECT_FINGERPRINTS = [
+  "73832b0709da0bec6e72d37eafb82b8c7e262747dc0eb85bcf2e0903b86e006c",
+  "41e8c5c12be30ea11c8db770e60807b749f80e63b075008f18280a01bae231a9",
+] as const;
 
 afterEach(async () => {
   await Promise.all(
@@ -35,6 +48,28 @@ afterEach(async () => {
 });
 
 describe("persistent fuzzy-file generations", () => {
+  test("fits the exact million-entry and byte ceilings in compact storage", () => {
+    const retainedBytes = estimateFuzzyIndexEntryStoreRetainedBytes(
+      MAX_FUZZY_CANDIDATES,
+      MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES,
+      MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES,
+    );
+
+    expect(retainedBytes).toBe(277_436_296);
+    expect(retainedBytes).toBeLessThan(536_870_912);
+  });
+
+  test("uses exact unpooled backing for small and empty retained arenas", async () => {
+    const small = await ownedDiscovery([entry("a.ts")]);
+    const empty = await ownedDiscovery([]);
+
+    expect(small.entryStore.pathBytes).toBeLessThan(Buffer.poolSize >>> 1);
+    expect(small.entryStore.arenaBackingBytes).toBe(
+      small.entryStore.pathBytes + small.entryStore.candidateBytes,
+    );
+    expect(empty.entryStore.arenaBackingBytes).toBe(0);
+  });
+
   test.skipIf(process.platform !== "linux")(
     "preserves normalization-sensitive filesystem root identities",
     async () => {
@@ -66,7 +101,7 @@ describe("persistent fuzzy-file generations", () => {
 
     const first = await store.publish(
       root,
-      { entries: firstEntries, truncated: false },
+      await ownedDiscovery(firstEntries),
       new AbortController().signal,
     );
     expect(first).toMatchObject({
@@ -75,16 +110,30 @@ describe("persistent fuzzy-file generations", () => {
       entryCount: 2,
       truncated: false,
     });
+    // Frozen from the schema-v2 implementation at 06bd552: compact hydration
+    // must not silently fork the persisted fingerprint or generation digest.
+    expect(first?.digest).toBe(LEGACY_V2_PROJECT_DIGEST);
+    const legacyInspection = new Database(databasePath, { readonly: true });
+    expect(
+      legacyInspection
+        .prepare("SELECT fingerprint FROM fuzzy_index_entries ORDER BY ordinal")
+        .all()
+        .map((row) => (row as { readonly fingerprint: string }).fingerprint),
+    ).toEqual(LEGACY_V2_PROJECT_FINGERPRINTS);
+    legacyInspection.close();
     store.close();
 
     const restarted = new PersistentFuzzyFileIndex({ databasePath });
-    const recovered = restarted.readCurrent(root);
+    const recovered = await restarted.readCurrent(root);
     expect(recovered?.generationId).toBe(first?.generationId);
-    expect(recovered?.entries.map((value) => value.relativePath)).toEqual([
-      "src",
+    expect(entryPaths(recovered)).toEqual(["src", "src/alpha.ts"]);
+    expect(Object.isFrozen(recovered?.entryStore)).toBe(true);
+    expect("pathViewAt" in (recovered?.entryStore ?? {})).toBe(false);
+    const mutableCopy = recovered?.entryStore.pathBytesAt(1);
+    mutableCopy?.fill(0);
+    expect(recovered?.entryStore.pathBytesAt(1).toString("utf8")).toBe(
       "src/alpha.ts",
-    ]);
-    expect(Object.isFrozen(recovered?.entries)).toBe(true);
+    );
     restarted.close();
 
     if (process.platform !== "win32") {
@@ -98,7 +147,7 @@ describe("persistent fuzzy-file generations", () => {
     const store = new PersistentFuzzyFileIndex({ databasePath });
     const first = await store.publish(
       root,
-      { entries: [entry("alpha.ts")], truncated: false },
+      await ownedDiscovery([entry("alpha.ts")]),
       new AbortController().signal,
     );
     const controller = new AbortController();
@@ -107,14 +156,137 @@ describe("persistent fuzzy-file generations", () => {
     await expect(
       store.publish(
         root,
-        { entries: [entry("beta.ts")], truncated: false },
+        await ownedDiscovery([entry("beta.ts")]),
         controller.signal,
       ),
     ).rejects.toThrow(FuzzyIndexBuildCancelledError);
-    expect(store.readCurrent(root)?.generationId).toBe(first?.generationId);
+    expect((await store.readCurrent(root))?.generationId).toBe(
+      first?.generationId,
+    );
+    expect(entryPaths(await store.readCurrent(root))).toEqual(["alpha.ts"]);
+    store.close();
+  });
+
+  test("rejects a forged wrapper around an owned compact entry store", async () => {
+    const { databasePath } = await temporaryDatabase();
+    const root = "/portable/forged-discovery";
+    const store = new PersistentFuzzyFileIndex({ databasePath });
+    const boundedPrefix = await ownedDiscovery([entry("prefix.ts")], true);
+    const forgedComplete = Object.freeze({
+      ...boundedPrefix,
+      truncated: false,
+    });
+
+    await expect(
+      store.publish(root, forgedComplete, new AbortController().signal),
+    ).rejects.toThrow(/AgenC-owned immutable storage/u);
+    const database = new Database(databasePath, { readonly: true });
     expect(
-      store.readCurrent(root)?.entries.map((value) => value.relativePath),
-    ).toEqual(["alpha.ts"]);
+      database
+        .prepare("SELECT count(*) AS count FROM fuzzy_index_generations")
+        .get(),
+    ).toEqual({ count: 0 });
+    database.close();
+    store.close();
+  });
+
+  test("captures bounded-discovery metadata before an ownership-transfer yield", async () => {
+    const { databasePath } = await temporaryDatabase();
+    const root = "/portable/mutated-discovery-metadata";
+    const store = new PersistentFuzzyFileIndex({ databasePath });
+    const batch = {
+      entries: Array.from({ length: 513 }, (_, index) =>
+        entry(`entry-${index.toString().padStart(4, "0")}.ts`),
+      ),
+      truncated: true,
+      directoryCoverage: "nonempty_only" as const,
+    };
+    const transfer = createFuzzyFileDiscoveryResult(
+      batch,
+      new AbortController().signal,
+    );
+    queueMicrotask(() => {
+      batch.truncated = false;
+    });
+    const discovery = await transfer;
+
+    expect(discovery.truncated).toBe(true);
+    await expect(
+      store.publish(root, discovery, new AbortController().signal),
+    ).rejects.toThrow(/refusing to publish a prefix/u);
+    expect(await store.readCurrent(root)).toBeNull();
+    store.close();
+  });
+
+  test("cancels bounded hydration without invalidating the valid generation", async () => {
+    const { databasePath } = await temporaryDatabase();
+    const root = "/portable/cancelled-hydration";
+    const store = new PersistentFuzzyFileIndex({ databasePath });
+    const entries = Array.from({ length: 2_000 }, (_, index) =>
+      entry(`entry-${index.toString().padStart(4, "0")}.ts`),
+    );
+    const published = await store.publish(
+      root,
+      await ownedDiscovery(entries),
+      new AbortController().signal,
+    );
+    const controller = new AbortController();
+    const reading = store.readCurrent(root, controller.signal);
+    queueMicrotask(() => controller.abort());
+
+    await expect(reading).rejects.toThrow(FuzzyIndexBuildCancelledError);
+    expect((await store.readCurrent(root))?.generationId).toBe(
+      published?.generationId,
+    );
+    store.close();
+  });
+
+  test("does not begin a generation when ownership transfer is cancelled", async () => {
+    const { databasePath } = await temporaryDatabase();
+    const root = "/portable/cancelled-preprocessing";
+    const store = new PersistentFuzzyFileIndex({ databasePath });
+    const controller = new AbortController();
+    const transfer = createFuzzyFileDiscoveryResult(
+      {
+        entries: Array.from({ length: 2_000 }, (_, index) =>
+          entry(`entry-${index.toString().padStart(4, "0")}.ts`),
+        ),
+        truncated: false,
+      },
+      controller.signal,
+    );
+    queueMicrotask(() => controller.abort());
+
+    await expect(transfer).rejects.toThrow(FuzzyIndexBuildCancelledError);
+    const database = new Database(databasePath, { readonly: true });
+    expect(
+      database
+        .prepare(
+          "SELECT count(*) AS count FROM fuzzy_index_generations WHERE state = 'staging'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    database.close();
+    expect(await store.readCurrent(root)).toBeNull();
+    store.close();
+  });
+
+  test("does not retain caller-owned entry buffers after ownership transfer", async () => {
+    const { databasePath } = await temporaryDatabase();
+    const root = "/portable/mutated-preprocessing";
+    const store = new PersistentFuzzyFileIndex({ databasePath });
+    const entries = Array.from({ length: 513 }, (_, index) =>
+      entry(`entry-${index.toString().padStart(4, "0")}.ts`),
+    );
+    const discovery = await ownedDiscovery(entries);
+    entries[0]!.pathBytes.fill(0);
+
+    await expect(
+      store.publish(root, discovery, new AbortController().signal),
+    ).resolves.toMatchObject({ entryCount: 513 });
+    expect(entryPaths(await store.readCurrent(root))).toContain(
+      "entry-0000.ts",
+    );
     store.close();
   });
 
@@ -125,23 +297,19 @@ describe("persistent fuzzy-file generations", () => {
     const reader = new PersistentFuzzyFileIndex({ databasePath });
     await writer.publish(
       root,
-      { entries: [entry("first.ts")], truncated: false },
+      await ownedDiscovery([entry("first.ts")]),
       new AbortController().signal,
     );
-    const acquired = reader.readCurrent(root);
+    const acquired = await reader.readCurrent(root);
 
     await writer.publish(
       root,
-      { entries: [entry("second.ts")], truncated: false },
+      await ownedDiscovery([entry("second.ts")]),
       new AbortController().signal,
     );
 
-    expect(acquired?.entries.map((value) => value.relativePath)).toEqual([
-      "first.ts",
-    ]);
-    expect(
-      reader.readCurrent(root)?.entries.map((value) => value.relativePath),
-    ).toEqual(["second.ts"]);
+    expect(entryPaths(acquired)).toEqual(["first.ts"]);
+    expect(entryPaths(await reader.readCurrent(root))).toEqual(["second.ts"]);
     reader.close();
     writer.close();
   });
@@ -153,7 +321,7 @@ describe("persistent fuzzy-file generations", () => {
     const reader = new PersistentFuzzyFileIndex({ databasePath });
     await writer.publish(
       root,
-      { entries: [entry("old.ts")], truncated: false },
+      await ownedDiscovery([entry("old.ts")]),
       new AbortController().signal,
     );
     const nextEntries = Array.from({ length: 5_000 }, (_, index) =>
@@ -162,7 +330,7 @@ describe("persistent fuzzy-file generations", () => {
 
     const publishing = writer.publish(
       root,
-      { entries: nextEntries, truncated: false },
+      await ownedDiscovery(nextEntries),
       new AbortController().signal,
       {
         sourceBoundary: "watch:7",
@@ -170,12 +338,10 @@ describe("persistent fuzzy-file generations", () => {
       },
     );
 
-    expect(
-      reader.readCurrent(root)?.entries.map((value) => value.relativePath),
-    ).toEqual(["old.ts"]);
+    expect(entryPaths(await reader.readCurrent(root))).toEqual(["old.ts"]);
     const published = await publishing;
     expect(published?.entryCount).toBe(5_000);
-    expect(reader.readCurrent(root)?.entryCount).toBe(5_000);
+    expect((await reader.readCurrent(root))?.entryCount).toBe(5_000);
     reader.close();
     writer.close();
   });
@@ -191,24 +357,24 @@ describe("persistent fuzzy-file generations", () => {
 
     const olderPublication = olderWriter.publish(
       root,
-      { entries: olderEntries, truncated: false },
+      await ownedDiscovery(olderEntries),
       new AbortController().signal,
     );
     const newer = await newerWriter.publish(
       root,
-      { entries: [entry("newer.ts")], truncated: false },
+      await ownedDiscovery([entry("newer.ts")]),
       new AbortController().signal,
     );
 
     await expect(olderPublication).rejects.toThrow(
       FuzzyIndexSourceChangedError,
     );
-    expect(olderWriter.readCurrent(root)?.generationId).toBe(
+    expect((await olderWriter.readCurrent(root))?.generationId).toBe(
       newer?.generationId,
     );
-    expect(
-      olderWriter.readCurrent(root)?.entries.map((value) => value.relativePath),
-    ).toEqual(["newer.ts"]);
+    expect(entryPaths(await olderWriter.readCurrent(root))).toEqual([
+      "newer.ts",
+    ]);
     newerWriter.close();
     olderWriter.close();
   });
@@ -230,7 +396,7 @@ describe("persistent fuzzy-file generations", () => {
     });
     await writer.publish(
       root,
-      { entries: [entry("old.ts")], truncated: false },
+      await ownedDiscovery([entry("old.ts")]),
       new AbortController().signal,
     );
     activeBuild = true;
@@ -239,7 +405,7 @@ describe("persistent fuzzy-file generations", () => {
     );
     const publishing = writer.publish(
       root,
-      { entries, truncated: false },
+      await ownedDiscovery(entries),
       new AbortController().signal,
     );
 
@@ -291,7 +457,7 @@ describe("persistent fuzzy-file generations", () => {
     await expect(
       store.publish(
         "/replacement",
-        { entries: [entry("replacement.ts")], truncated: false },
+        await ownedDiscovery([entry("replacement.ts")]),
         new AbortController().signal,
       ),
     ).resolves.toMatchObject({ entryCount: 1 });
@@ -314,7 +480,7 @@ describe("persistent fuzzy-file generations", () => {
     const store = new PersistentFuzzyFileIndex({ databasePath });
     const original = await store.publish(
       root,
-      { entries: [entry("original.ts")], truncated: false },
+      await ownedDiscovery([entry("original.ts")]),
       new AbortController().signal,
     );
     const entries = Array.from({ length: 5_000 }, (_, index) =>
@@ -323,26 +489,30 @@ describe("persistent fuzzy-file generations", () => {
     const controller = new AbortController();
     const cancelled = store.publish(
       root,
-      { entries, truncated: false },
+      await ownedDiscovery(entries),
       controller.signal,
     );
     queueMicrotask(() => controller.abort());
 
     await expect(cancelled).rejects.toThrow(FuzzyIndexBuildCancelledError);
-    expect(store.readCurrent(root)?.generationId).toBe(original?.generationId);
+    expect((await store.readCurrent(root))?.generationId).toBe(
+      original?.generationId,
+    );
     await expect(
       store.publish(
         root,
-        { entries: [entry("changed.ts")], truncated: false },
+        await ownedDiscovery([entry("changed.ts")]),
         new AbortController().signal,
         { isSourceBoundaryCurrent: () => false },
       ),
     ).rejects.toThrow(/source changed/u);
-    expect(store.readCurrent(root)?.generationId).toBe(original?.generationId);
+    expect((await store.readCurrent(root))?.generationId).toBe(
+      original?.generationId,
+    );
     await expect(
       store.publish(
         root,
-        { entries: [entry("prefix.ts")], truncated: true },
+        await ownedDiscovery([entry("prefix.ts")], true),
         new AbortController().signal,
       ),
     ).rejects.toThrow(/refusing to publish a prefix/u);
@@ -351,7 +521,7 @@ describe("persistent fuzzy-file generations", () => {
     await expect(
       store.publish(
         root,
-        { entries: [entry("progress.ts")], truncated: false },
+        await ownedDiscovery([entry("progress.ts")]),
         new AbortController().signal,
         {
           isSourceBoundaryCurrent: () => {
@@ -368,7 +538,9 @@ describe("persistent fuzzy-file generations", () => {
       ),
     ).rejects.toThrow(/changed state before publication/u);
     tamper.close();
-    expect(store.readCurrent(root)?.generationId).toBe(original?.generationId);
+    expect((await store.readCurrent(root))?.generationId).toBe(
+      original?.generationId,
+    );
     const inspection = new Database(databasePath, { readonly: true });
     expect(
       inspection
@@ -387,7 +559,7 @@ describe("persistent fuzzy-file generations", () => {
     const store = new PersistentFuzzyFileIndex({ databasePath });
     await store.publish(
       root,
-      { entries: [entry("authentic.ts")], truncated: false },
+      await ownedDiscovery([entry("authentic.ts")]),
       new AbortController().signal,
     );
     store.close();
@@ -399,8 +571,62 @@ describe("persistent fuzzy-file generations", () => {
     database.close();
 
     const reader = new PersistentFuzzyFileIndex({ databasePath });
-    expect(reader.readCurrent(root)).toBeNull();
-    expect(reader.readCurrent(root)).toBeNull();
+    expect(await reader.readCurrent(root)).toBeNull();
+    expect(await reader.readCurrent(root)).toBeNull();
+    reader.close();
+  });
+
+  test("rejects an extra row beyond the declared generation count", async () => {
+    const { databasePath } = await temporaryDatabase();
+    const root = "/portable/extra-row";
+    const store = new PersistentFuzzyFileIndex({ databasePath });
+    const published = await store.publish(
+      root,
+      await ownedDiscovery([]),
+      new AbortController().signal,
+    );
+    store.close();
+
+    const database = new Database(databasePath);
+    database
+      .prepare(
+        `INSERT INTO fuzzy_index_entries
+           (generation_id, ordinal, relative_path, path_bytes, entry_type,
+            fingerprint)
+         VALUES (?, 0, 'extra.ts', ?, 'file', 'tampered')`,
+      )
+      .run(published?.generationId, Buffer.from("extra.ts"));
+    database.close();
+
+    const reader = new PersistentFuzzyFileIndex({ databasePath });
+    expect(await reader.readCurrent(root)).toBeNull();
+    reader.close();
+  });
+
+  test("rejects a negative ordinal outside the declared generation range", async () => {
+    const { databasePath } = await temporaryDatabase();
+    const root = "/portable/negative-ordinal";
+    const store = new PersistentFuzzyFileIndex({ databasePath });
+    const published = await store.publish(
+      root,
+      await ownedDiscovery([]),
+      new AbortController().signal,
+    );
+    store.close();
+
+    const database = new Database(databasePath);
+    database
+      .prepare(
+        `INSERT INTO fuzzy_index_entries
+           (generation_id, ordinal, relative_path, path_bytes, entry_type,
+            fingerprint)
+         VALUES (?, -1, 'negative.ts', ?, 'file', 'tampered')`,
+      )
+      .run(published?.generationId, Buffer.from("negative.ts"));
+    database.close();
+
+    const reader = new PersistentFuzzyFileIndex({ databasePath });
+    expect(await reader.readCurrent(root)).toBeNull();
     reader.close();
   });
 
@@ -410,7 +636,7 @@ describe("persistent fuzzy-file generations", () => {
     const store = new PersistentFuzzyFileIndex({ databasePath });
     await store.publish(
       root,
-      { entries: [entry("authentic.ts")], truncated: false },
+      await ownedDiscovery([entry("authentic.ts")]),
       new AbortController().signal,
     );
     store.close();
@@ -422,8 +648,33 @@ describe("persistent fuzzy-file generations", () => {
     database.close();
 
     const reader = new PersistentFuzzyFileIndex({ databasePath });
-    expect(reader.readCurrent(root)).toBeNull();
-    expect(reader.readCurrent(root)).toBeNull();
+    expect(await reader.readCurrent(root)).toBeNull();
+    expect(await reader.readCurrent(root)).toBeNull();
+    reader.close();
+  });
+
+  test("invalidates persisted text whose decoded UTF-8 exceeds its measured arena", async () => {
+    const { databasePath } = await temporaryDatabase();
+    const root = "/portable/invalid-utf8-text";
+    const store = new PersistentFuzzyFileIndex({ databasePath });
+    await store.publish(
+      root,
+      await ownedDiscovery([entry("authentic.ts")]),
+      new AbortController().signal,
+    );
+    store.close();
+
+    const database = new Database(databasePath);
+    database
+      .prepare(
+        "UPDATE fuzzy_index_entries SET relative_path = CAST(x'80' AS TEXT)",
+      )
+      .run();
+    database.close();
+
+    const reader = new PersistentFuzzyFileIndex({ databasePath });
+    expect(await reader.readCurrent(root)).toBeNull();
+    expect(await reader.readCurrent(root)).toBeNull();
     reader.close();
   });
 
@@ -532,16 +783,16 @@ describe("persistent fuzzy-file generations", () => {
     });
     await store.publish(
       "/idle-root",
-      { entries: [entry("idle.ts")], truncated: false },
+      await ownedDiscovery([entry("idle.ts")]),
       new AbortController().signal,
     );
     nowMs = 101;
     await store.publish(
       "/replacement-root",
-      { entries: [entry("replacement.ts")], truncated: false },
+      await ownedDiscovery([entry("replacement.ts")]),
       new AbortController().signal,
     );
-    expect(store.readCurrent("/idle-root")).toBeNull();
+    expect(await store.readCurrent("/idle-root")).toBeNull();
     store.close();
 
     nowMs = 0;
@@ -554,21 +805,21 @@ describe("persistent fuzzy-file generations", () => {
       nowMs = index;
       await lruStore.publish(
         `/root-${index}`,
-        { entries: [entry(`file-${index}.ts`)], truncated: false },
+        await ownedDiscovery([entry(`file-${index}.ts`)]),
         new AbortController().signal,
       );
     }
     nowMs = MAX_FUZZY_INDEXED_ROOTS + 1;
-    expect(lruStore.readCurrent("/root-0")).not.toBeNull();
+    expect(await lruStore.readCurrent("/root-0")).not.toBeNull();
     nowMs += 1;
     await lruStore.publish(
       "/root-overflow",
-      { entries: [entry("overflow.ts")], truncated: false },
+      await ownedDiscovery([entry("overflow.ts")]),
       new AbortController().signal,
     );
-    expect(lruStore.readCurrent("/root-0")).not.toBeNull();
-    expect(lruStore.readCurrent("/root-1")).toBeNull();
-    expect(lruStore.readCurrent("/root-overflow")).not.toBeNull();
+    expect(await lruStore.readCurrent("/root-0")).not.toBeNull();
+    expect(await lruStore.readCurrent("/root-1")).toBeNull();
+    expect(await lruStore.readCurrent("/root-overflow")).not.toBeNull();
     lruStore.close();
   });
 
@@ -762,6 +1013,26 @@ function entry(
     pathBytes: Buffer.from(relativePath, "utf8"),
     matchType,
   };
+}
+
+function ownedDiscovery(
+  entries: readonly FuzzyIndexedEntry[],
+  truncated = false,
+  directoryCoverage?: "complete" | "nonempty_only",
+) {
+  return createFuzzyFileDiscoveryResult(
+    { entries, truncated, directoryCoverage },
+    new AbortController().signal,
+  );
+}
+
+function entryPaths(
+  snapshot: FuzzyIndexSnapshot | null,
+): readonly string[] | null {
+  if (snapshot === null) return null;
+  return Array.from({ length: snapshot.entryStore.entryCount }, (_, ordinal) =>
+    snapshot.entryStore.relativePathAt(ordinal),
+  );
 }
 
 async function temporaryDatabase(): Promise<{
