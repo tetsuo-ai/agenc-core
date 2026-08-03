@@ -30,6 +30,15 @@ export class OfflineRolloutUnsafePathError extends Error {
   }
 }
 
+export class OfflineRolloutDescriptorPathUnavailableError extends Error {
+  constructor(readonly directoryPath: string) {
+    super(
+      `offline canonical rollout cannot pin descriptor-relative directory path: ${directoryPath}`,
+    );
+    this.name = "OfflineRolloutDescriptorPathUnavailableError";
+  }
+}
+
 export interface PinnedOfflineRollout {
   readonly sourcePath: string;
   /** Current metadata read from the retained source descriptor. */
@@ -340,10 +349,7 @@ function pinDirectory(
     const canonicalPath = realpathSync(path);
     const operationPath = descriptorOperationPath(fd, canonicalPath);
     if (operationPath === undefined) {
-      throw new OfflineRolloutUnsafePathError(
-        path,
-        "platform has no descriptor-relative directory path",
-      );
+      throw new OfflineRolloutDescriptorPathUnavailableError(path);
     }
     return {
       path,

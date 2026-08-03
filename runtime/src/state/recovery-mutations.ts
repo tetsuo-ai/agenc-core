@@ -5,14 +5,22 @@ import type {
   RecoveryMutationCommand,
   RecoveryMutationContext,
 } from "../bin/state-cli.js";
-import { backfillPinnedRolloutFile } from "./backfill.js";
+import {
+  withPreparedPinnedRolloutRun,
+  type BackfillPinnedRolloutSource,
+  type PreparedPinnedRolloutRun,
+} from "./backfill.js";
 import {
   CanonicalJournalIntegrityError,
+  HARD_MAX_RECOVERY_SOURCE_BYTES,
+  HARD_MAX_RECOVERY_SCAN_MILLISECONDS,
+  MAX_RECOVERY_SOURCES_PER_RUN,
   RecoveryOperationalError,
   assertRecoverySha256,
 } from "./recovery-contract.js";
 import {
-  hashPinnedRecoverySource,
+  recoveryFailureSourcePath,
+  withPinnedRecoverySourceDigest,
   type RecoveryDescriptorBudget,
   type RecoveryFileLimitOverrides,
 } from "./recovery-file.js";
@@ -30,6 +38,8 @@ export interface RecoveryMutationAdapterOptions {
   readonly limits?: RecoveryFileLimitOverrides;
   readonly descriptorBudget?: RecoveryDescriptorBudget;
   readonly nowMilliseconds?: () => number;
+  /** Diagnostic seam invoked at the final boundary of the outer transaction. */
+  readonly beforeTransactionReturn?: () => void;
 }
 
 /**
@@ -79,26 +89,43 @@ function rescanQuarantine(
     "confirmedSourceSha256",
   );
   try {
-    repository.repairQuarantine(
-      {
-        quarantineId: incident.quarantineId,
-        confirmedSourceSha256,
-        actor: context.actor,
-        note: "descriptor-pinned strict rescan succeeded",
-        resolvedAtMs: operatedAtMilliseconds(context),
-      },
-      (active) => {
-        const replay = replayEvidence(driver, active, options);
+    withEvidenceReplayRun(driver, incident, options, (prepared, sources) =>
+      driver.transactionImmediate(() => {
+        const results = prepared.projectAll();
+        const sourceIndex = sources.findIndex(
+          ({ rolloutPath }) => rolloutPath === incident.sourcePath,
+        );
+        const replay = results[sourceIndex]?.proof;
+        if (replay === undefined) {
+          throw new Error("recovery run omitted the selected quarantine source");
+        }
         if (replay.sourceSha256 !== confirmedSourceSha256) {
           throw new Error(
             "confirmed source digest does not match descriptor-pinned replay",
           );
         }
-        return { sourceSha256: replay.sourceSha256 };
-      },
+        repository.repairQuarantine(
+          {
+            quarantineId: incident.quarantineId,
+            confirmedSourceSha256,
+            actor: context.actor,
+            note: "descriptor-pinned strict rescan succeeded",
+            resolvedAtMs: operatedAtMilliseconds(context),
+          },
+          () => ({ sourceSha256: replay.sourceSha256 }),
+        );
+        options.beforeTransactionReturn?.();
+        prepared.assertPinned();
+      }),
     );
   } catch (error) {
-    persistReplayFailure(driver, incident, context, options, error);
+    persistReplayFailure(
+      driver,
+      failureEvidence(repository, incident, error),
+      context,
+      options,
+      error,
+    );
     throw error;
   }
 }
@@ -112,19 +139,30 @@ function retryDeferred(
   const repository = new StateRecoveryIncidentRepository(driver);
   const block = requireDeferred(repository, command.id);
   try {
-    repository.retryDeferred(
-      {
-        blockId: block.blockId,
-        actor: context.actor,
-        note: "descriptor-pinned strict retry succeeded",
-        resolvedAtMs: operatedAtMilliseconds(context),
-      },
-      (active) => {
-        replayEvidence(driver, active, options);
-      },
+    withEvidenceReplayRun(driver, block, options, (prepared) =>
+      driver.transactionImmediate(() => {
+        prepared.projectAll();
+        repository.retryDeferred(
+          {
+            blockId: block.blockId,
+            actor: context.actor,
+            note: "descriptor-pinned strict retry succeeded",
+            resolvedAtMs: operatedAtMilliseconds(context),
+          },
+          () => {},
+        );
+        options.beforeTransactionReturn?.();
+        prepared.assertPinned();
+      }),
     );
   } catch (error) {
-    persistReplayFailure(driver, block, context, options, error);
+    persistReplayFailure(
+      driver,
+      failureEvidence(repository, block, error),
+      context,
+      options,
+      error,
+    );
     throw error;
   }
 }
@@ -147,71 +185,108 @@ function abandonRecovery(
   const abandonedAtMs = operatedAtMilliseconds(context);
   if (command.collection === "quarantine") {
     const evidence = requireQuarantine(repository, command.id);
-    assertAbandonmentEvidence(
-      driver,
-      evidence,
-      expectedRunId,
-      expectedSourceSha256,
-      options,
-    );
-    repository.abandonQuarantine({
-      quarantineId: evidence.quarantineId,
-      expectedRunId,
-      expectedSourceSha256,
-      verifiedCurrentSourceSha256: expectedSourceSha256,
-      actor: context.actor,
-      reason: command.reason ?? "operator abandonment",
-      abandonedAtMs,
-    });
+    try {
+      withEvidenceDigest(driver, evidence, options, (source, assertPinned) =>
+        driver.transactionImmediate(() => {
+          assertAbandonmentEvidence(
+            evidence,
+            source.sourceSha256,
+            expectedRunId,
+            expectedSourceSha256,
+          );
+          repository.abandonQuarantine({
+            quarantineId: evidence.quarantineId,
+            expectedRunId,
+            expectedSourceSha256,
+            verifiedCurrentSourceSha256: source.sourceSha256,
+            actor: context.actor,
+            reason: command.reason ?? "operator abandonment",
+            abandonedAtMs,
+          });
+          options.beforeTransactionReturn?.();
+          assertPinned();
+        }),
+      );
+    } catch (error) {
+      persistReplayFailure(driver, evidence, context, options, error);
+      throw error;
+    }
   } else {
     const evidence = requireDeferred(repository, command.id);
-    assertAbandonmentEvidence(
-      driver,
-      evidence,
-      expectedRunId,
-      expectedSourceSha256,
-      options,
-    );
-    repository.abandonDeferred({
-      blockId: evidence.blockId,
-      expectedRunId,
-      confirmedSourceSha256: expectedSourceSha256,
-      actor: context.actor,
-      reason: command.reason ?? "operator abandonment",
-      abandonedAtMs,
-    });
+    try {
+      withEvidenceDigest(driver, evidence, options, (source, assertPinned) =>
+        driver.transactionImmediate(() => {
+          assertAbandonmentEvidence(
+            evidence,
+            source.sourceSha256,
+            expectedRunId,
+            expectedSourceSha256,
+          );
+          repository.abandonDeferred({
+            blockId: evidence.blockId,
+            expectedRunId,
+            confirmedSourceSha256: source.sourceSha256,
+            actor: context.actor,
+            reason: command.reason ?? "operator abandonment",
+            abandonedAtMs,
+          });
+          options.beforeTransactionReturn?.();
+          assertPinned();
+        }),
+      );
+    } catch (error) {
+      persistReplayFailure(driver, evidence, context, options, error);
+      throw error;
+    }
   }
 }
 
 function assertAbandonmentEvidence(
-  driver: StateSqliteDriver,
   evidence: RecoveryQuarantineIncident | RecoveryDeferredBlock,
+  currentSourceSha256: string,
   expectedRunId: string,
   expectedSourceSha256: string,
-  options: RecoveryMutationAdapterOptions,
 ): void {
   if (evidence.runId !== expectedRunId) {
     throw new Error("confirmed run id does not match recovery evidence");
   }
-  const digest = hashEvidenceSource(driver, evidence, options);
-  if (digest.sourceSha256 !== expectedSourceSha256) {
+  if (currentSourceSha256 !== expectedSourceSha256) {
     throw new Error(
       "confirmed source digest does not match descriptor-pinned source",
     );
   }
 }
 
-function replayEvidence(
+function withEvidenceReplayRun<T>(
   driver: StateSqliteDriver,
   evidence: RecoveryQuarantineIncident | RecoveryDeferredBlock,
   options: RecoveryMutationAdapterOptions,
-) {
-  return backfillPinnedRolloutFile({
-    projectDir: driver.projectDir,
-    sessionId: sessionIdFromSourcePath(evidence.sourcePath),
-    rolloutPath: evidence.sourcePath,
-    threads: new StateThreadRepository(driver),
+  operation: (
+    prepared: PreparedPinnedRolloutRun,
+    sources: readonly BackfillPinnedRolloutSource[],
+  ) => T,
+): T {
+  const repository = new StateRecoveryIncidentRepository(driver);
+  const activeSources = repository.listActiveSourcesForRun(evidence.runId);
+  if (activeSources.length > MAX_RECOVERY_SOURCES_PER_RUN) {
+    throw new RecoveryOperationalError(
+      "concurrency_limit",
+      `run ${evidence.runId} exceeds the ${MAX_RECOVERY_SOURCES_PER_RUN}-source recovery limit`,
+      "RECOVERY_SOURCE_LIMIT",
+    );
+  }
+  const sources = activeSources.map((source) => ({
+    sessionId: sessionIdFromSourcePath(source.sourcePath),
+    rolloutPath: source.sourcePath,
     expectedRunId: evidence.runId,
+  }));
+  if (!sources.some(({ rolloutPath }) => rolloutPath === evidence.sourcePath)) {
+    throw new Error("active recovery evidence omitted its selected source");
+  }
+  return withPreparedPinnedRolloutRun({
+    projectDir: driver.projectDir,
+    sources,
+    threads: new StateThreadRepository(driver),
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
     ...(options.descriptorBudget !== undefined
       ? { descriptorBudget: options.descriptorBudget }
@@ -219,31 +294,41 @@ function replayEvidence(
     ...(options.nowMilliseconds !== undefined
       ? { nowMilliseconds: options.nowMilliseconds }
       : {}),
-  }).proof;
+  }, (prepared) => operation(prepared, prepared.sources));
 }
 
-function hashEvidenceSource(
+function withEvidenceDigest<T>(
   driver: StateSqliteDriver,
-  evidence: RecoveryQuarantineIncident | RecoveryDeferredBlock,
+  evidence: RecoveryEvidenceSource,
   options: RecoveryMutationAdapterOptions,
-) {
-  return hashPinnedRecoverySource({
+  operation: (digest: {
+    readonly sourceSha256: string;
+    readonly sourceByteLength: number;
+    readonly sourceMtimeMs: number;
+  }, assertPinned: () => void) => T,
+): T {
+  return withPinnedRecoverySourceDigest({
     projectDir: driver.projectDir,
     sessionId: sessionIdFromSourcePath(evidence.sourcePath),
     sourcePath: evidence.sourcePath,
-    ...(options.limits !== undefined ? { limits: options.limits } : {}),
+    limits: {
+      ...options.limits,
+      maxSourceBytes: HARD_MAX_RECOVERY_SOURCE_BYTES,
+      maxReadBytes: HARD_MAX_RECOVERY_SOURCE_BYTES,
+      maxScanMilliseconds: HARD_MAX_RECOVERY_SCAN_MILLISECONDS,
+    },
     ...(options.descriptorBudget !== undefined
       ? { descriptorBudget: options.descriptorBudget }
       : {}),
     ...(options.nowMilliseconds !== undefined
       ? { nowMilliseconds: options.nowMilliseconds }
       : {}),
-  });
+  }, operation);
 }
 
 function persistReplayFailure(
   driver: StateSqliteDriver,
-  evidence: RecoveryQuarantineIncident | RecoveryDeferredBlock,
+  evidence: RecoveryEvidenceSource,
   context: RecoveryMutationContext,
   options: RecoveryMutationAdapterOptions,
   error: unknown,
@@ -251,31 +336,114 @@ function persistReplayFailure(
   const repository = new StateRecoveryIncidentRepository(driver);
   const failedAtMs = operatedAtMilliseconds(context);
   if (error instanceof CanonicalJournalIntegrityError) {
-    const source = hashEvidenceSource(driver, evidence, options);
-    repository.recordCanonicalJournalFailure({
-      runId: evidence.runId,
-      sourceKind: evidence.sourceKind,
-      sourcePath: evidence.sourcePath,
-      error,
-      sourceSizeBytes: source.sourceByteLength,
-      sourceMtimeMs: Math.trunc(source.sourceMtimeMs),
-      sourceSha256: source.sourceSha256,
-      detectedAtMs: failedAtMs,
-    });
+    try {
+      withEvidenceDigest(driver, evidence, options, (source, assertPinned) =>
+        driver.transactionImmediate(() => {
+          repository.recordCanonicalJournalFailure({
+            runId: evidence.runId,
+            sourceKind: evidence.sourceKind,
+            sourcePath: evidence.sourcePath,
+            error,
+            sourceSizeBytes: source.sourceByteLength,
+            sourceMtimeMs: Math.trunc(source.sourceMtimeMs),
+            sourceSha256: source.sourceSha256,
+            detectedAtMs: failedAtMs,
+          });
+          options.beforeTransactionReturn?.();
+          assertPinned();
+        }),
+      );
+    } catch (digestError) {
+      if (!(digestError instanceof RecoveryOperationalError)) {
+        throw digestError;
+      }
+      recordOperationalFailureInTransaction(
+        driver,
+        repository,
+        evidence,
+        failedAtMs,
+        digestError,
+      );
+    }
     return;
   }
   if (error instanceof RecoveryOperationalError) {
-    repository.recordDeferred({
-      runId: evidence.runId,
-      sourceKind: evidence.sourceKind,
-      sourcePath: evidence.sourcePath,
-      reasonCode: error.reasonCode,
-      errorClass: error.errorClass,
-      safeDetail: { message: error.message },
-      failedAtMs,
-      nextRetryMs: failedAtMs + RECOVERY_RETRY_DELAY_MILLISECONDS,
-    });
+    try {
+      withEvidenceDigest(driver, evidence, options, (_source, assertPinned) =>
+        driver.transactionImmediate(() => {
+          recordOperationalFailure(repository, evidence, failedAtMs, error);
+          options.beforeTransactionReturn?.();
+          assertPinned();
+        }),
+      );
+    } catch (leaseError) {
+      if (!(leaseError instanceof RecoveryOperationalError)) throw leaseError;
+      // Unsupported platforms, live writers, descriptor exhaustion, and hard
+      // evidence ceilings cannot supply a retained digest lease. Persist their
+      // typed operational block without inventing source evidence.
+      recordOperationalFailureInTransaction(
+        driver,
+        repository,
+        evidence,
+        failedAtMs,
+        error,
+      );
+    }
   }
+}
+
+function recordOperationalFailureInTransaction(
+  driver: StateSqliteDriver,
+  repository: StateRecoveryIncidentRepository,
+  evidence: RecoveryEvidenceSource,
+  failedAtMs: number,
+  error: RecoveryOperationalError,
+): void {
+  driver.transactionImmediate(() => {
+    recordOperationalFailure(repository, evidence, failedAtMs, error);
+  });
+}
+
+function recordOperationalFailure(
+  repository: StateRecoveryIncidentRepository,
+  evidence: RecoveryEvidenceSource,
+  failedAtMs: number,
+  error: RecoveryOperationalError,
+): void {
+  repository.recordDeferred({
+    runId: evidence.runId,
+    sourceKind: evidence.sourceKind,
+    sourcePath: evidence.sourcePath,
+    reasonCode: error.reasonCode,
+    errorClass: error.errorClass,
+    safeDetail: { message: error.message },
+    failedAtMs,
+    nextRetryMs: failedAtMs + RECOVERY_RETRY_DELAY_MILLISECONDS,
+  });
+}
+
+interface RecoveryEvidenceSource {
+  readonly runId: string;
+  readonly sourceKind: RecoveryQuarantineIncident["sourceKind"];
+  readonly sourcePath: string;
+}
+
+function failureEvidence(
+  repository: StateRecoveryIncidentRepository,
+  fallback: RecoveryEvidenceSource,
+  error: unknown,
+): RecoveryEvidenceSource {
+  const sourcePath = recoveryFailureSourcePath(error);
+  const source = repository
+    .listActiveSourcesForRun(fallback.runId)
+    .find((candidate) => candidate.sourcePath === sourcePath);
+  return source === undefined
+    ? fallback
+    : {
+        runId: fallback.runId,
+        sourceKind: source.sourceKind,
+        sourcePath: source.sourcePath,
+      };
 }
 
 function requireQuarantine(

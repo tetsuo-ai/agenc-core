@@ -12,11 +12,16 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { backfillPinnedRolloutFile } from "../src/state/backfill.js";
+import {
+  HARD_MAX_RECOVERY_SCAN_MILLISECONDS,
+  HARD_MAX_RECOVERY_SOURCE_BYTES,
+  HARD_MAX_RECOVERY_STARTUP_READ_BYTES,
+} from "../src/state/recovery-contract.js";
 import { openStateDatabases } from "../src/state/sqlite-driver.js";
 import { StateThreadRepository } from "../src/state/threads.js";
 
 const DEFAULT_STRESS_EVENT_COUNT = 1_000_000;
-const MAXIMUM_STRESS_EVENT_COUNT = 2_000_000;
+const MAXIMUM_STRESS_EVENT_COUNT = DEFAULT_STRESS_EVENT_COUNT;
 const GENERATION_BATCH_EVENTS = 2_000;
 const MAXIMUM_RSS_GROWTH_KIB = 524_288;
 
@@ -44,6 +49,12 @@ try {
     sessionId,
     rolloutPath,
     threads: new StateThreadRepository(driver),
+    limits: {
+      maxSourceBytes: HARD_MAX_RECOVERY_SOURCE_BYTES,
+      maxEvents: DEFAULT_STRESS_EVENT_COUNT,
+      maxReadBytes: HARD_MAX_RECOVERY_STARTUP_READ_BYTES,
+      maxScanMilliseconds: HARD_MAX_RECOVERY_SCAN_MILLISECONDS,
+    },
   });
   const elapsedMilliseconds = Math.round(performance.now() - startedAt);
   const projected =

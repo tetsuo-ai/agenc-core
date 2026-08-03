@@ -494,13 +494,14 @@ describe("reproducible install and release contract", () => {
     expect(windowsJob).toContain(
       "tests/fnd/process-repository-helpers.native.test.ts",
     );
+    expect(windowsJob).toContain("tests/state/recovery-file.win32.test.ts");
     expect(windowsJob).toContain("tests/utils/execFileNoThrow.win32.test.ts");
     expect(windowsJob).toContain(
       "tests/workspace/bound-helper-transport.win32.test.ts",
     );
     expect(windowsJob).toContain("--config vitest.native.config.ts");
-    expect(windowsJob).toContain("numTotalTestSuites: 15");
-    expect(windowsJob).toContain("numTotalTests: 88");
+    expect(windowsJob).toContain("numTotalTestSuites: 16");
+    expect(windowsJob).toContain("numTotalTests: 90");
     expect(windowsJob).toContain(
       "npm.cmd ci --ignore-scripts --no-audit --no-fund",
     );
@@ -510,7 +511,7 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsJob).not.toContain("npm_config_build_from_source");
     expect(windowsJob).toContain(
-      "Windows FND/native capability lane passed 88 tests in 9 files with zero skipped",
+      "Windows FND/native capability lane passed 90 tests in 10 files with zero skipped",
     );
 
     expect(
@@ -2194,6 +2195,27 @@ describe("reproducible install and release contract", () => {
       readFileSync(join(REPO_ROOT, "packages/agenc/package.json"), "utf8"),
     ) as { scripts: Record<string, string>; files: string[] };
     expect(runtime.scripts.prepack).toBe("npm run build");
+    expect(runtime.scripts["check:recovery-million-event"]).toBe(
+      "tsx scripts/check-recovery-million-event.ts",
+    );
+    const recoveryMillionEvent = readFileSync(
+      join(REPO_ROOT, "runtime/scripts/check-recovery-million-event.ts"),
+      "utf8",
+    );
+    expect(recoveryMillionEvent).toContain(
+      "const DEFAULT_STRESS_EVENT_COUNT = 1_000_000",
+    );
+    expect(recoveryMillionEvent).toContain(
+      "const MAXIMUM_STRESS_EVENT_COUNT = DEFAULT_STRESS_EVENT_COUNT",
+    );
+    for (const override of [
+      "maxSourceBytes: HARD_MAX_RECOVERY_SOURCE_BYTES",
+      "maxEvents: DEFAULT_STRESS_EVENT_COUNT",
+      "maxReadBytes: HARD_MAX_RECOVERY_STARTUP_READ_BYTES",
+      "maxScanMilliseconds: HARD_MAX_RECOVERY_SCAN_MILLISECONDS",
+    ]) {
+      expect(recoveryMillionEvent).toContain(override);
+    }
     expect(sdk.scripts.prepack).toBe("npm run build");
     expect(launcher.scripts.prepack).toContain("check-package-ready.mjs");
     expect(runtime.files).toContain("dist");

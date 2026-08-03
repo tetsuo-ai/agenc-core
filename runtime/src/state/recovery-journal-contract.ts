@@ -146,6 +146,7 @@ export class StrictCanonicalJournalValidator {
       options.maxEvents,
       MAX_RECOVERY_CANONICAL_EVENTS,
       "maxEvents",
+      0,
     );
   }
 
@@ -558,7 +559,7 @@ export class StrictCanonicalJournalValidator {
       );
     }
     if (
-      reserved === undefined &&
+      (reserved === undefined || this.#options.identityRegistry !== undefined) &&
       this.#options.identityPolicy !== "trusted_replay" &&
       !this.#claimEventId(eventId)
     ) {
@@ -692,11 +693,13 @@ function boundedCeiling(
   requested: number | undefined,
   maximum: number,
   label: string,
+  minimum = 1,
 ): number {
   const value = requested ?? maximum;
-  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    const lowerBound = minimum === 0 ? "a non-negative" : "a positive";
     throw new TypeError(
-      `${label} must be a positive integer no greater than ${maximum}`,
+      `${label} must be ${lowerBound} integer no greater than ${maximum}`,
     );
   }
   return value;
