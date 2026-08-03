@@ -1705,7 +1705,8 @@ function createMultiAgentV2RuntimeTools(
           parentPath: current.agentPath,
           control,
           registry,
-          taskPrompt: ctx.workerPrompt,
+          taskPrompt: `CSV job item ${ctx.itemId}`,
+          invocationEnvelope: ctx.invocationEnvelope,
           agentName: ctx.workerName,
           runInBackground: true,
           ...(ctx.capacityPermit !== undefined
@@ -3880,7 +3881,8 @@ export async function resumeInterruptedAgentJobs(opts: {
         parentPath: ROOT_AGENT_PATH,
         control,
         registry,
-        taskPrompt: ctx.workerPrompt,
+        taskPrompt: `CSV job item ${ctx.itemId}`,
+        invocationEnvelope: ctx.invocationEnvelope,
         agentName: ctx.workerName,
         runInBackground: true,
         ...(ctx.capacityPermit !== undefined
@@ -3906,7 +3908,7 @@ export async function resumeInterruptedAgentJobs(opts: {
       try {
         registerAgentThreadTask(backgroundTaskLifecycle, thread as never, {
           description: `csv-job:${ctx.itemId}`,
-          prompt: ctx.workerPrompt,
+          prompt: `CSV job item ${ctx.itemId}`,
         });
       } catch {
         /* pill registration is best-effort */

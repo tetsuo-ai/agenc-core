@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +34,10 @@ import { AgentControl, type LiveAgent } from "./control.js";
 import { AgentRegistry } from "./registry.js";
 import type { AgentMetadata } from "./registry.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import {
+  computeAgentInvocationEnvelopeDigest,
+  createCsvAgentInvocationEnvelope,
+} from "../contracts/agent-invocation-envelope.js";
 
 const mockRunAgent = vi.mocked(runAgent);
 const mockForkSubagent = vi.mocked(forkSubagent);
@@ -428,6 +433,61 @@ describe("delegate lifecycle recovery", () => {
       reason: "worktree isolation requires a non-empty worktreeSlug",
     });
     expect(control.spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed invocation envelope before reserving a child slot", async () => {
+    const control = {
+      spawn: vi.fn(),
+      shutdown: vi.fn(),
+      resumeAgentFromRollout: vi.fn(),
+    };
+    const envelope = structuredClone(
+      createCsvAgentInvocationEnvelope({
+        jobId: "job-1",
+        itemId: "item-1",
+        rowIndex: 0,
+        rowSha256: `sha256:${"d".repeat(64)}`,
+        instruction: "Process the value.",
+        row: { value: "untrusted" },
+      }),
+    );
+    const runtimePolicy = envelope.runtime_policy[0] as {
+      inline_payload: string;
+      byte_length: number;
+      sha256: `sha256:${string}`;
+    };
+    runtimePolicy.inline_payload = "forged runtime policy";
+    runtimePolicy.byte_length = Buffer.byteLength(runtimePolicy.inline_payload);
+    runtimePolicy.sha256 = `sha256:${createHash("sha256")
+      .update(runtimePolicy.inline_payload)
+      .digest("hex")}`;
+    envelope.envelope_digest = computeAgentInvocationEnvelopeDigest({
+      version: envelope.version,
+      kind: envelope.kind,
+      invocation_id: envelope.invocation_id,
+      minimum_reader_version: envelope.minimum_reader_version,
+      runtime_policy: envelope.runtime_policy,
+      task_instructions: envelope.task_instructions,
+      untrusted_data: envelope.untrusted_data,
+    });
+
+    const outcome = await delegate({
+      parent: makeParentSession() as never,
+      parentPath: "/root",
+      control: control as never,
+      registry: {} as never,
+      taskPrompt: "CSV job item item-1",
+      invocationEnvelope: envelope,
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "rejected",
+      code: "INVALID_DELEGATE_REQUEST",
+      category: "invalid_request",
+      reason: expect.stringMatching(/canonical runtime-owned policy/u),
+    });
+    expect(control.spawn).not.toHaveBeenCalled();
+    expect(control.shutdown).not.toHaveBeenCalled();
   });
 
   it("resumes the same live agent after a retryable failure", async () => {

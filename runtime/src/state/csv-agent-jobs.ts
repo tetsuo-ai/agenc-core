@@ -7,6 +7,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  CSV_AGENT_JOB_ITEM_STATUSES,
+  CSV_AGENT_JOB_STATUSES,
   CSV_JOB_GC_PAGE_ITEMS,
   CSV_MAX_ACTIVE_IMPORTS,
   CSV_MAX_DURABLE_BYTES,
@@ -39,6 +41,7 @@ import {
   CSV_MAX_STAGING_ROWS_GLOBAL,
   CSV_OUTPUT_CONTRACT_VERSION,
   CSV_RESULT_BLOB_CHUNK_BYTES,
+  CSV_RESULT_AVAILABILITIES,
   CSV_RESERVED_OUTPUT_HEADERS,
   CSV_TERMINAL_JOB_RETENTION_MS,
   type CsvAgentJobItemStatus,
@@ -75,30 +78,17 @@ export type {
   CsvReviewStatus,
 } from "../contracts/csv-job-contract.js";
 
-const JOB_STATUSES: ReadonlySet<CsvAgentJobStatus> = new Set([
-  "pending",
-  "running",
-  "completed",
-  "failed",
-  "cancelled",
-  "needs_review",
-  "finished_with_unknown_outcomes",
-]);
+const JOB_STATUSES: ReadonlySet<CsvAgentJobStatus> = new Set(
+  CSV_AGENT_JOB_STATUSES,
+);
 
-const ITEM_STATUSES: ReadonlySet<CsvAgentJobItemStatus> = new Set([
-  "pending",
-  "running",
-  "completed",
-  "failed",
-  "cancelled",
-  "unknown_outcome",
-]);
+const ITEM_STATUSES: ReadonlySet<CsvAgentJobItemStatus> = new Set(
+  CSV_AGENT_JOB_ITEM_STATUSES,
+);
 
-const RESULT_AVAILABILITIES: ReadonlySet<CsvResultAvailability> = new Set([
-  "not_produced",
-  "available",
-  "unavailable_after_review",
-]);
+const RESULT_AVAILABILITIES: ReadonlySet<CsvResultAvailability> = new Set(
+  CSV_RESULT_AVAILABILITIES,
+);
 
 function parseEnum<T extends string>(
   raw: string,
@@ -960,8 +950,14 @@ interface StagedImportRecoveryRow {
   readonly import_owner_pid: number;
   readonly import_owner_boot_id: string | null;
   readonly import_owner_process_start: string | null;
+  readonly import_lease_expires_at: number;
   readonly total_items: number;
   readonly staging_bytes: number;
+}
+
+interface CsvImportRecoveryClaim {
+  readonly leaseOwner: string;
+  readonly leaseGeneration: string;
 }
 
 interface CsvOutputIntentRecoveryRow {
@@ -997,31 +993,128 @@ const LIVE_CSV_IMPORT_GENERATIONS = new Set<string>();
 const LIVE_CSV_OUTPUT_GENERATIONS = new Set<string>();
 const CSV_ROW_STORAGE_OVERHEAD_BYTES = 256;
 
-function currentBootId(): string | undefined {
-  if (process.platform !== "linux") return undefined;
+export interface CsvProcessIdentity {
+  readonly pid: number;
+  readonly bootId?: string;
+  readonly processStart?: string;
+}
+
+export type CsvProcessObservation =
+  | { readonly kind: "alive"; readonly processStart?: string }
+  | { readonly kind: "dead" }
+  | { readonly kind: "unknown" };
+
+export interface CsvProcessIdentityProbe {
+  readonly current: CsvProcessIdentity;
+  inspect(pid: number): CsvProcessObservation;
+}
+
+interface CsvProcessIdentityProbeOptions {
+  readonly platform?: NodeJS.Platform;
+  readonly pid?: number;
+  readonly readTextFile?: (path: string) => string;
+  readonly signalProcess?: (pid: number) => void;
+}
+
+function signalObservation(
+  pid: number,
+  signalProcess: (pid: number) => void,
+): CsvProcessObservation {
   try {
-    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-  } catch {
-    return undefined;
+    signalProcess(pid);
+    return { kind: "alive" };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return { kind: "dead" };
+    if (code === "EPERM" || code === "EACCES") return { kind: "alive" };
+    return { kind: "unknown" };
   }
 }
 
-function linuxProcessStart(pid: number): string | undefined {
-  if (process.platform !== "linux") return undefined;
+function linuxProcessObservation(
+  pid: number,
+  readTextFile: (path: string) => string,
+  signalProcess: (pid: number) => void,
+): CsvProcessObservation {
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const stat = readTextFile(`/proc/${pid}/stat`);
     const commandEnd = stat.lastIndexOf(")");
-    if (commandEnd < 0) return undefined;
+    if (commandEnd < 0) return { kind: "unknown" };
     const fieldsFromState = stat
       .slice(commandEnd + 2)
       .trim()
       .split(/\s+/u);
-    return fieldsFromState[19];
+    const processStart = fieldsFromState[19];
+    return processStart === undefined
+      ? { kind: "unknown" }
+      : { kind: "alive", processStart };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "dead";
-    return undefined;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { kind: "dead" };
+    }
+    return signalObservation(pid, signalProcess);
   }
 }
+
+export function createCsvProcessIdentityProbe(
+  options: CsvProcessIdentityProbeOptions = {},
+): CsvProcessIdentityProbe {
+  const platform = options.platform ?? process.platform;
+  const pid = options.pid ?? process.pid;
+  const readTextFile =
+    options.readTextFile ?? ((path: string) => readFileSync(path, "utf8"));
+  const signalProcess =
+    options.signalProcess ??
+    ((targetPid: number) => process.kill(targetPid, 0));
+  let bootId: string | undefined;
+  if (platform === "linux") {
+    try {
+      bootId = readTextFile("/proc/sys/kernel/random/boot_id").trim();
+    } catch {
+      bootId = undefined;
+    }
+  }
+  const currentObservation =
+    platform === "linux"
+      ? linuxProcessObservation(pid, readTextFile, signalProcess)
+      : signalObservation(pid, signalProcess);
+  const current: CsvProcessIdentity = {
+    pid,
+    ...(bootId !== undefined && bootId.length > 0 ? { bootId } : {}),
+    ...(currentObservation.kind === "alive" &&
+    currentObservation.processStart !== undefined
+      ? { processStart: currentObservation.processStart }
+      : {}),
+  };
+  return {
+    current,
+    inspect(targetPid) {
+      return platform === "linux"
+        ? linuxProcessObservation(targetPid, readTextFile, signalProcess)
+        : signalObservation(targetPid, signalProcess);
+    },
+  };
+}
+
+export interface CsvAgentJobsRepositoryOptions {
+  readonly processIdentityProbe?: CsvProcessIdentityProbe;
+}
+
+export const CSV_RECOVERY_DEFERRED_OWNER_ALIVE =
+  "CSV_RECOVERY_DEFERRED_OWNER_ALIVE" as const;
+export const CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_UNPROVEN =
+  "CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_UNPROVEN" as const;
+export const CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE =
+  "CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE" as const;
+
+type CsvRecoveryDeferralCode =
+  | typeof CSV_RECOVERY_DEFERRED_OWNER_ALIVE
+  | typeof CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_UNPROVEN
+  | typeof CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE;
+
+type CsvOwnerDeathProof =
+  | { readonly kind: "proven_dead" }
+  | { readonly kind: "deferred"; readonly code: CsvRecoveryDeferralCode };
 
 function serializeCsvRow(
   row: Readonly<Record<string, unknown>>,
@@ -1070,10 +1163,16 @@ function assertQuota(
 }
 
 export class CsvAgentJobsRepository {
-  private readonly ownerBootId = currentBootId();
-  private readonly ownerProcessStart = linuxProcessStart(process.pid);
+  private readonly processIdentityProbe: CsvProcessIdentityProbe;
+  private readonly ownerIdentity: CsvProcessIdentity;
 
-  constructor(private readonly driver: StateSqliteDriver) {
+  constructor(
+    private readonly driver: StateSqliteDriver,
+    options: CsvAgentJobsRepositoryOptions = {},
+  ) {
+    this.processIdentityProbe =
+      options.processIdentityProbe ?? createCsvProcessIdentityProbe();
+    this.ownerIdentity = this.processIdentityProbe.current;
     this.recoverAbandonedImports();
     this.resumeInterruptedJobGarbageCollection();
   }
@@ -1210,11 +1309,9 @@ export class CsvAgentJobsRepository {
           importId,
           leaseOwner,
           now + CSV_IMPORT_LEASE_SECONDS,
-          process.pid,
-          this.ownerBootId ?? null,
-          this.ownerProcessStart === "dead"
-            ? null
-            : (this.ownerProcessStart ?? null),
+          this.ownerIdentity.pid,
+          this.ownerIdentity.bootId ?? null,
+          this.ownerIdentity.processStart ?? null,
           leaseGeneration,
           CSV_JOB_IDENTITY_FORMAT_VERSION,
           inputBytes,
@@ -1536,74 +1633,41 @@ export class CsvAgentJobsRepository {
 
   recoverAbandonedImports(): number {
     const candidates = this.driver
-      .prepareState<[], StagedImportRecoveryRow>(
+      .prepareState<[number], StagedImportRecoveryRow>(
         `SELECT id, import_id, import_lease_owner, import_lease_generation,
                 import_owner_pid, import_owner_boot_id,
-                import_owner_process_start, total_items, staging_bytes
+                import_owner_process_start, import_lease_expires_at,
+                total_items, staging_bytes
          FROM csv_agent_jobs
          WHERE import_state IN ('staging', 'recovering')
            AND import_lease_owner IS NOT NULL
            AND import_lease_generation IS NOT NULL
            AND import_owner_pid IS NOT NULL
+           AND import_lease_expires_at <= ?
          ORDER BY created_at ASC, import_id ASC`,
       )
-      .all();
+      .all(nowSeconds());
     let recovered = 0;
     for (const candidate of candidates) {
-      if (!this.isImportOwnerProvenDead(candidate)) continue;
-      const fenced = this.driver.transactionImmediate(
-        () =>
-          this.driver
-            .prepareState(
-              `UPDATE csv_agent_jobs SET import_state = 'recovering',
-               updated_at = ?
-             WHERE id = ? AND import_id = ?
-               AND import_lease_owner = ? AND import_lease_generation = ?
-               AND import_state IN ('staging', 'recovering')`,
-            )
-            .run(
-              nowSeconds(),
-              candidate.id,
-              candidate.import_id,
-              candidate.import_lease_owner,
-              candidate.import_lease_generation,
-            ).changes,
-      );
-      if (fenced !== 1) continue;
-      this.driver.transactionImmediate(() => {
-        const abandoned = this.driver
-          .prepareState(
-            `UPDATE csv_agent_jobs SET import_state = 'aborted',
-               import_lease_owner = NULL, import_lease_expires_at = NULL,
-               import_owner_pid = NULL, import_owner_boot_id = NULL,
-               import_owner_process_start = NULL,
-               import_lease_generation = NULL,
-               last_error = 'CSV importer owner is proven dead', updated_at = ?
-             WHERE id = ? AND import_id = ? AND import_lease_owner = ?
-               AND import_lease_generation = ? AND import_state = 'recovering'`,
-          )
-          .run(
-            nowSeconds(),
-            candidate.id,
-            candidate.import_id,
-            candidate.import_lease_owner,
-            candidate.import_lease_generation,
-          );
-        if (abandoned.changes !== 1) {
-          throw new Error(
-            `CSV import recovery fence changed for ${candidate.import_id}`,
-          );
-        }
-        this.driver
-          .prepareState(
-            `UPDATE csv_storage_quota SET
-               active_imports = active_imports - 1,
-               durable_reserved_items = durable_reserved_items - ?,
-               durable_reserved_bytes = durable_reserved_bytes - ?,
-               updated_at = ? WHERE singleton = 1`,
-          )
-          .run(candidate.total_items, candidate.staging_bytes, nowSeconds());
+      if (LIVE_CSV_IMPORT_GENERATIONS.has(candidate.import_lease_generation)) {
+        continue;
+      }
+      const ownerProof = this.recordedOwnerDeathProof({
+        pid: candidate.import_owner_pid,
+        bootId: candidate.import_owner_boot_id,
+        processStart: candidate.import_owner_process_start,
       });
+      if (ownerProof.kind === "deferred") {
+        this.recordImportRecoveryDeferral(candidate, ownerProof.code);
+        continue;
+      }
+      const claim = this.claimAbandonedImportRecovery(candidate);
+      if (claim === null) continue;
+      try {
+        this.finishAbandonedImportRecovery(candidate, claim);
+      } finally {
+        this.releaseImportRecoveryClaim(claim);
+      }
       LIVE_CSV_IMPORT_GENERATIONS.delete(candidate.import_lease_generation);
       this.cleanupAbortedImport(candidate.id, candidate.import_id);
       recovered += 1;
@@ -1611,23 +1675,109 @@ export class CsvAgentJobsRepository {
     return recovered;
   }
 
-  private isImportOwnerProvenDead(row: StagedImportRecoveryRow): boolean {
-    if (LIVE_CSV_IMPORT_GENERATIONS.has(row.import_lease_generation)) {
-      return false;
-    }
-    if (row.import_owner_pid === process.pid) return true;
-    if (
-      this.ownerBootId === undefined ||
-      row.import_owner_boot_id === null ||
-      row.import_owner_process_start === null
-    ) {
-      return false;
-    }
-    if (row.import_owner_boot_id !== this.ownerBootId) return true;
-    const observedStart = linuxProcessStart(row.import_owner_pid);
-    if (observedStart === "dead") return true;
-    if (observedStart === undefined) return false;
-    return observedStart !== row.import_owner_process_start;
+  private claimAbandonedImportRecovery(
+    candidate: StagedImportRecoveryRow,
+  ): CsvImportRecoveryClaim | null {
+    const claim = {
+      leaseOwner: randomUUID(),
+      leaseGeneration: randomUUID(),
+    };
+    const now = nowSeconds();
+    const changes = this.driver.transactionImmediate(
+      () =>
+        this.driver
+          .prepareState(
+            `UPDATE csv_agent_jobs SET import_state = 'recovering',
+               import_lease_owner = ?, import_lease_expires_at = ?,
+               import_owner_pid = ?, import_owner_boot_id = ?,
+               import_owner_process_start = ?, import_lease_generation = ?,
+               updated_at = ?
+             WHERE id = ? AND import_id = ?
+               AND import_lease_owner = ? AND import_lease_generation = ?
+               AND import_state IN ('staging', 'recovering')`,
+          )
+          .run(
+            claim.leaseOwner,
+            now + CSV_IMPORT_LEASE_SECONDS,
+            this.ownerIdentity.pid,
+            this.ownerIdentity.bootId ?? null,
+            this.ownerIdentity.processStart ?? null,
+            claim.leaseGeneration,
+            now,
+            candidate.id,
+            candidate.import_id,
+            candidate.import_lease_owner,
+            candidate.import_lease_generation,
+          ).changes,
+    );
+    if (changes !== 1) return null;
+    LIVE_CSV_IMPORT_GENERATIONS.add(claim.leaseGeneration);
+    return claim;
+  }
+
+  private finishAbandonedImportRecovery(
+    candidate: StagedImportRecoveryRow,
+    claim: CsvImportRecoveryClaim,
+  ): void {
+    this.driver.transactionImmediate(() => {
+      const abandoned = this.driver
+        .prepareState(
+          `UPDATE csv_agent_jobs SET import_state = 'aborted',
+               import_lease_owner = NULL, import_lease_expires_at = NULL,
+               import_owner_pid = NULL, import_owner_boot_id = NULL,
+               import_owner_process_start = NULL,
+               import_lease_generation = NULL,
+               last_error = 'CSV importer owner is proven dead', updated_at = ?
+             WHERE id = ? AND import_id = ? AND import_lease_owner = ?
+               AND import_lease_generation = ? AND import_state = 'recovering'`,
+        )
+        .run(
+          nowSeconds(),
+          candidate.id,
+          candidate.import_id,
+          claim.leaseOwner,
+          claim.leaseGeneration,
+        );
+      if (abandoned.changes !== 1) {
+        throw new Error(
+          `CSV import recovery fence changed for ${candidate.import_id}`,
+        );
+      }
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+               active_imports = active_imports - 1,
+               durable_reserved_items = durable_reserved_items - ?,
+               durable_reserved_bytes = durable_reserved_bytes - ?,
+               updated_at = ? WHERE singleton = 1`,
+        )
+        .run(candidate.total_items, candidate.staging_bytes, nowSeconds());
+    });
+  }
+
+  private releaseImportRecoveryClaim(claim: CsvImportRecoveryClaim): void {
+    LIVE_CSV_IMPORT_GENERATIONS.delete(claim.leaseGeneration);
+  }
+
+  private recordImportRecoveryDeferral(
+    candidate: StagedImportRecoveryRow,
+    code: CsvRecoveryDeferralCode,
+  ): void {
+    this.driver
+      .prepareState(
+        `UPDATE csv_agent_jobs SET last_error = ?, updated_at = ?
+         WHERE id = ? AND import_id = ? AND import_lease_owner = ?
+           AND import_lease_generation = ?
+           AND import_state IN ('staging', 'recovering')`,
+      )
+      .run(
+        code,
+        nowSeconds(),
+        candidate.id,
+        candidate.import_id,
+        candidate.import_lease_owner,
+        candidate.import_lease_generation,
+      );
   }
 
   private cleanupAbortedImport(jobId: string, importId: string): void {
@@ -2157,9 +2307,9 @@ export class CsvAgentJobsRepository {
           input.temporaryIno,
           input.reservedBytes,
           ownerGeneration,
-          process.pid,
-          this.ownerBootId ?? null,
-          this.ownerProcessStart ?? null,
+          this.ownerIdentity.pid,
+          this.ownerIdentity.bootId ?? null,
+          this.ownerIdentity.processStart ?? null,
           now,
           now,
           input.jobId,
@@ -2336,7 +2486,21 @@ export class CsvAgentJobsRepository {
     const claimed: CsvOutputRecoveryIntent[] = [];
     for (const candidate of candidates) {
       if (claimed.length >= input.limit) break;
-      if (!this.isOutputIntentOwnerProvenDead(candidate)) continue;
+      if (LIVE_CSV_OUTPUT_GENERATIONS.has(candidate.owner_generation)) {
+        continue;
+      }
+      const ownerProof =
+        candidate.state === "abandoned"
+          ? ({ kind: "proven_dead" } as const)
+          : this.recordedOwnerDeathProof({
+              pid: candidate.owner_pid,
+              bootId: candidate.owner_boot_id,
+              processStart: candidate.owner_process_start,
+            });
+      if (ownerProof.kind === "deferred") {
+        this.recordOutputRecoveryDeferral(candidate, ownerProof.code);
+        continue;
+      }
       const ownerGeneration = randomUUID();
       const now = nowSeconds();
       const changes = this.driver.transactionImmediate(
@@ -2354,9 +2518,9 @@ export class CsvAgentJobsRepository {
             )
             .run(
               ownerGeneration,
-              process.pid,
-              this.ownerBootId ?? null,
-              this.ownerProcessStart ?? null,
+              this.ownerIdentity.pid,
+              this.ownerIdentity.bootId ?? null,
+              this.ownerIdentity.processStart ?? null,
               now,
               candidate.intent_id,
               candidate.owner_generation,
@@ -2499,23 +2663,59 @@ export class CsvAgentJobsRepository {
       .get(intentId)?.owner_generation;
   }
 
-  private isOutputIntentOwnerProvenDead(
-    row: CsvOutputIntentRecoveryRow,
-  ): boolean {
-    if (LIVE_CSV_OUTPUT_GENERATIONS.has(row.owner_generation)) return false;
-    if (row.owner_pid === process.pid) return true;
+  private recordOutputRecoveryDeferral(
+    candidate: CsvOutputIntentRecoveryRow,
+    code: CsvRecoveryDeferralCode,
+  ): void {
+    this.driver
+      .prepareState(
+        `UPDATE csv_output_intents SET last_error = ?, updated_at = ?
+         WHERE intent_id = ? AND owner_generation = ? AND state = ?`,
+      )
+      .run(
+        code,
+        nowSeconds(),
+        candidate.intent_id,
+        candidate.owner_generation,
+        candidate.state,
+      );
+  }
+
+  private recordedOwnerDeathProof(owner: {
+    readonly pid: number;
+    readonly bootId: string | null;
+    readonly processStart: string | null;
+  }): CsvOwnerDeathProof {
+    if (owner.pid === this.ownerIdentity.pid) return { kind: "proven_dead" };
     if (
-      this.ownerBootId === undefined ||
-      row.owner_boot_id === null ||
-      row.owner_process_start === null
+      owner.bootId !== null &&
+      this.ownerIdentity.bootId !== undefined &&
+      owner.bootId !== this.ownerIdentity.bootId
     ) {
-      return false;
+      return { kind: "proven_dead" };
     }
-    if (row.owner_boot_id !== this.ownerBootId) return true;
-    const observedStart = linuxProcessStart(row.owner_pid);
-    if (observedStart === "dead") return true;
-    if (observedStart === undefined) return false;
-    return observedStart !== row.owner_process_start;
+    const observed = this.processIdentityProbe.inspect(owner.pid);
+    if (observed.kind === "dead") return { kind: "proven_dead" };
+    if (observed.kind === "unknown") {
+      return {
+        kind: "deferred",
+        code: CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE,
+      };
+    }
+    if (
+      owner.processStart !== null &&
+      observed.processStart !== undefined &&
+      owner.processStart !== observed.processStart
+    ) {
+      return { kind: "proven_dead" };
+    }
+    if (owner.processStart === null || observed.processStart === undefined) {
+      return {
+        kind: "deferred",
+        code: CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_UNPROVEN,
+      };
+    }
+    return { kind: "deferred", code: CSV_RECOVERY_DEFERRED_OWNER_ALIVE };
   }
 
   getItem(jobId: string, itemId: string): CsvAgentJobItem | null {

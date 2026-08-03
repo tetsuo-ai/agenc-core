@@ -127,15 +127,56 @@ describe("runAgentsOnCsv", () => {
     );
     expect(result.summary.availableResults).toBe(2);
     expect(result.itemPage[0]).not.toHaveProperty("result");
-    expect(spawn.receivedPrompts[0]!.workerPrompt).toContain("Job ID: ");
-    expect(spawn.receivedPrompts[0]!.workerPrompt).toMatch(
-      /Item ID: csv_item_[0-9a-f]{64}/u,
+    const envelope = spawn.receivedPrompts[0]!.invocationEnvelope;
+    expect(envelope.invocation_id).toMatch(
+      /^csv-job:.+:csv_item_[0-9a-f]{64}$/u,
     );
-    expect(spawn.receivedPrompts[0]!.workerPrompt).toContain("process {value}");
-    expect(spawn.receivedPrompts[0]!.workerPrompt).toContain('"value": "a"');
+    expect(envelope.task_instructions[0]).toMatchObject({
+      inline_payload: "process {value}",
+      source: { kind: "csv_job_instruction" },
+    });
+    expect(envelope.untrusted_data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          inline_payload: '"a"',
+          source: expect.objectContaining({
+            kind: "csv_row_field",
+            column: "value",
+            row_index: 0,
+          }),
+        }),
+      ]),
+    );
+    expect(
+      envelope.task_instructions.some(
+        (block) =>
+          "inline_payload" in block && block.inline_payload.includes('"a"'),
+      ),
+    ).toBe(false);
     expect(spawn.receivedPrompts[0]!.workerName).toMatch(
       /^csv_row_0_[0-9a-f]{16}$/u,
     );
+  });
+
+  it("preserves accepted headers larger than the envelope block-ID bound", async () => {
+    const header = "h".repeat(513);
+    const csvPath = join(workDir, "wide-header.csv");
+    await writeFile(csvPath, `${header}\nvalue\n`, "utf8");
+    const spawn = fakeSpawnReporter();
+
+    const result = await runAgentsOnCsv({
+      csvPath,
+      instruction: "process the field",
+      spawn,
+    });
+
+    expect(result.summary.status).toBe("completed");
+    expect(
+      spawn.receivedPrompts[0]!.invocationEnvelope.untrusted_data[0],
+    ).toMatchObject({
+      source: { kind: "csv_row_field", column: header },
+      inline_payload: '"value"',
+    });
   });
 
   it("writes an output CSV when output_csv_path is set", async () => {

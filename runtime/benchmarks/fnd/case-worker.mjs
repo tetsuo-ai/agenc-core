@@ -149,8 +149,12 @@ async function prepareCase(fixture, temporaryRoot) {
 async function prepareCsvCase(fixture, temporaryRoot) {
   const csvPath = join(temporaryRoot, "input.csv");
   await writeFile(csvPath, fixture.payload.content, "utf8");
-  const { runAgentsOnCsv } =
-    await import("../../src/agents/jobs/job-orchestrator.ts");
+  const [{ runAgentsOnCsv }, { createCsvInputRootCapability }] =
+    await Promise.all([
+      import("../../src/agents/jobs/job-orchestrator.ts"),
+      import("../../src/agents/jobs/csv-reader.ts"),
+    ]);
+  const inputRootCapability = createCsvInputRootCapability(temporaryRoot);
   const spawn = {
     async spawn() {
       return { threadFinished: Promise.resolve() };
@@ -162,6 +166,7 @@ async function prepareCsvCase(fixture, temporaryRoot) {
     async run() {
       return runAgentsOnCsv({
         csvPath,
+        inputRootCapability,
         idColumn: "source_id",
         instruction: "Process {task}",
         maxConcurrency: 1,
@@ -171,15 +176,17 @@ async function prepareCsvCase(fixture, temporaryRoot) {
     },
     correctness(result) {
       const expectedCount = fixture.input.rowCount;
-      const terminalCount = result.items.filter(
-        (item) => item.status === "failed",
-      ).length;
+      const terminalCount =
+        result.summary.completedItems +
+        result.summary.failedItems +
+        result.summary.cancelledItems +
+        result.summary.unknownOutcomeItems;
       return {
         expected: `${expectedCount} generated rows reach one terminal state`,
         matchesOracle:
-          result.items.length === expectedCount &&
+          result.summary.totalItems === expectedCount &&
           terminalCount === expectedCount,
-        observed: `${result.items.length} rows returned; ${terminalCount} terminal failures`,
+        observed: `${result.summary.totalItems} rows summarized; ${terminalCount} terminal outcomes`,
         oracle: "generated row-count and terminal-state oracle",
       };
     },

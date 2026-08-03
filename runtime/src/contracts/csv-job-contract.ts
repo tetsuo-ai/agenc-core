@@ -136,25 +136,34 @@ export const CSV_RESERVED_OUTPUT_HEADERS: ReadonlySet<string> = new Set([
   "completed_at",
 ]);
 
-export type CsvAgentJobStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "needs_review"
-  | "finished_with_unknown_outcomes";
+export const CSV_AGENT_JOB_STATUSES = [
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "needs_review",
+  "finished_with_unknown_outcomes",
+] as const;
+export type CsvAgentJobStatus = (typeof CSV_AGENT_JOB_STATUSES)[number];
 
+export const CSV_AGENT_JOB_ITEM_STATUSES = [
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "unknown_outcome",
+] as const;
 export type CsvAgentJobItemStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "unknown_outcome";
+  (typeof CSV_AGENT_JOB_ITEM_STATUSES)[number];
 
-export type CsvResultAvailability =
-  "not_produced" | "available" | "unavailable_after_review";
+export const CSV_RESULT_AVAILABILITIES = [
+  "not_produced",
+  "available",
+  "unavailable_after_review",
+] as const;
+export type CsvResultAvailability = (typeof CSV_RESULT_AVAILABILITIES)[number];
 
 export type CsvReviewStatus = "pending" | "resolved" | "abandoned";
 export type CsvReviewDisposition =

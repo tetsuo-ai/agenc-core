@@ -20,6 +20,11 @@
  */
 
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import {
+  assertAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+  type AgentInvocationEnvelope,
+} from "../contracts/agent-invocation-envelope.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import type { Session } from "../session/session.js";
 import {
@@ -42,6 +47,7 @@ export interface ForkContextInput {
   readonly useProvidedParentMessages?: boolean;
   readonly taskPrompt: string;
   readonly taskContent?: readonly LLMContentPart[];
+  readonly invocationEnvelope?: AgentInvocationEnvelope;
   readonly worktreePath?: string;
 }
 
@@ -232,6 +238,14 @@ function rolloutBackedParentMessages(input: ForkContextInput): LLMMessage[] {
 export async function forkSubagent(
   input: ForkContextInput,
 ): Promise<ForkContextResult> {
+  if (input.invocationEnvelope !== undefined) {
+    assertAgentInvocationEnvelope(input.invocationEnvelope);
+    if (input.taskContent !== undefined) {
+      throw new TypeError(
+        "agent invocation envelope cannot be combined with legacy taskContent",
+      );
+    }
+  }
   // I-36: flush parent rollout.
   if (input.parent.rolloutStore) {
     try {
@@ -241,12 +255,18 @@ export async function forkSubagent(
     }
   }
 
-  const directivePrompt = buildDirective(input);
-  const directiveMessage = buildDirectiveMessage(input);
+  const directivePrompt =
+    input.invocationEnvelope === undefined
+      ? buildDirective(input)
+      : `Agent invocation ${input.invocationEnvelope.invocation_id}`;
+  const directiveMessages: ReadonlyArray<LLMMessage> =
+    input.invocationEnvelope === undefined
+      ? [buildDirectiveMessage(input)]
+      : materializeAgentInvocationMessages(input.invocationEnvelope);
 
   if (input.mode === undefined) {
     return {
-      messages: [directiveMessage],
+      messages: directiveMessages,
       directivePrompt,
     };
   }
@@ -256,7 +276,7 @@ export async function forkSubagent(
   switch (input.mode.kind) {
     case "full_history":
       return {
-        messages: [...parentMessages, directiveMessage],
+        messages: [...parentMessages, ...directiveMessages],
         directivePrompt,
       };
 
@@ -266,7 +286,7 @@ export async function forkSubagent(
           ...(input.parent.rolloutStore
             ? parentMessages
             : lastNUserTurns(parentMessages, input.mode.n)),
-          directiveMessage,
+          ...directiveMessages,
         ],
         directivePrompt,
       };
@@ -294,8 +314,7 @@ export function buildCacheSafeParams(opts: {
   readonly overrideSystemPrompt?: string;
   readonly overrideToolAllowlist?: ReadonlyArray<string>;
 }): CacheSafeParams {
-  const systemPrompt =
-    opts.overrideSystemPrompt ?? opts.parent.systemPrompt;
+  const systemPrompt = opts.overrideSystemPrompt ?? opts.parent.systemPrompt;
   const toolCatalogIds = opts.overrideToolAllowlist
     ? opts.parent.toolCatalogIds.filter((id) =>
         opts.overrideToolAllowlist!.includes(id),

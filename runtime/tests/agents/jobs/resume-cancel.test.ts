@@ -22,6 +22,7 @@ import {
   resumeAgentJobsFromRepository,
   runAgentsOnCsv as runAgentsOnCsvWithCapability,
   type AgentJobSpawn,
+  type AgentJobSpawnContext,
   type CsvIdempotencyProfile,
 } from "./job-orchestrator.js";
 import { createCsvInputRootCapability } from "./csv-reader.js";
@@ -53,12 +54,18 @@ function openRepository(): CsvAgentJobsRepository {
   return new CsvAgentJobsRepository(openStateDatabases({ cwd: workDir }));
 }
 
-function reportingSpawn(): AgentJobSpawn & { spawned: string[] } {
+function reportingSpawn(): AgentJobSpawn & {
+  spawned: string[];
+  envelopes: AgentJobSpawnContext["invocationEnvelope"][];
+} {
   const spawned: string[] = [];
+  const envelopes: AgentJobSpawnContext["invocationEnvelope"][] = [];
   return {
     spawned,
+    envelopes,
     async spawn(ctx) {
       spawned.push(ctx.itemId);
+      envelopes.push(ctx.invocationEnvelope);
       queueMicrotask(() => {
         recordAgentJobResult({
           jobId: ctx.jobId,
@@ -130,6 +137,24 @@ describe("resume across daemon restart", () => {
       unknownOutcomeItems: 2,
     });
     expect(spawn.spawned).toEqual(["item_6", "item_7", "item_8", "item_9"]);
+    expect(spawn.envelopes).toHaveLength(4);
+    expect(spawn.envelopes[0]!.task_instructions[0]).toMatchObject({
+      inline_payload: "process {value}",
+      source: { kind: "csv_job_instruction", item_id: "item_6" },
+    });
+    expect(spawn.envelopes[0]!.untrusted_data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          inline_payload: '"v6"',
+          source: expect.objectContaining({
+            kind: "csv_row_field",
+            item_id: "item_6",
+            row_index: 6,
+            column: "value",
+          }),
+        }),
+      ]),
+    );
     const output = await readFile(outputCsvPath, "utf8");
     expect(output.trimEnd().split("\n")).toHaveLength(11);
     expect(repository.getJob(jobId)?.status).toBe("needs_review");

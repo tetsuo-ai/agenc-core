@@ -37,11 +37,16 @@ names use a safe runtime prefix plus row/hash material. Without `id_column`, no
 source identity is invented. Duplicate, blank, oversized, malformed, or
 reserved input is rejected before the atomic import visibility fence opens.
 
-The approved instruction is passed unchanged. Each inert, null-prototype CSV
-row is attached as a labeled untrusted JSON block, so field contents cannot
-become privileged instructions. The spawn response contains contract version
-`1`, aggregate counters, and at most the first 20 item summaries without result
-bodies. `inspect_csv_agent_job` provides keyset pages (maximum 100 items), and
+The approved instruction is passed unchanged in the task-instruction channel.
+Runtime policy, approved task text, and every exact field from each inert,
+null-prototype CSV row are digest-bound in a versioned invocation envelope.
+Runtime policy uses the provider's privileged channel; task text and row data
+use separate, non-merging user channels. Each row field carries its column,
+row/item identity, byte length, and digest, so field contents cannot become
+privileged instructions. Malformed envelopes fail before a child slot is
+reserved. The spawn response contains contract version `1`, aggregate counters,
+and at most the first 20 item summaries without result bodies.
+`inspect_csv_agent_job` provides keyset pages (maximum 100 items), and
 returns an opaque `next_cursor` when another page exists. Supply that token
 unchanged as the next call's `cursor`; it is bound to the job and item-status
 filter, and forged, stale, or cross-job tokens are rejected. Do not decode it or

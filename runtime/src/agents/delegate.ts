@@ -19,6 +19,10 @@
 import type { Session } from "../session/session.js";
 import type { LLMMessage } from "../llm/types.js";
 import type { LLMContentPart } from "../llm/types.js";
+import {
+  assertAgentInvocationEnvelope,
+  type AgentInvocationEnvelope,
+} from "../contracts/agent-invocation-envelope.js";
 import type { AgentControl, LiveAgent } from "./control.js";
 import {
   AgentCapacityQueueFullError,
@@ -68,6 +72,7 @@ export interface DelegateOpts {
   /** Correlation id for the initial task/assignment. */
   readonly taskId?: string;
   readonly taskContent?: readonly LLMContentPart[];
+  readonly invocationEnvelope?: AgentInvocationEnvelope;
   readonly role?: string;
   readonly agentName?: string;
   readonly model?: string;
@@ -139,6 +144,23 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     opts.capacityPermit?.cancel();
     return { kind: "rejected", code, category, reason };
   };
+
+  if (opts.invocationEnvelope !== undefined) {
+    try {
+      assertAgentInvocationEnvelope(opts.invocationEnvelope);
+      if (opts.taskContent !== undefined) {
+        throw new TypeError(
+          "agent invocation envelope cannot be combined with legacy taskContent",
+        );
+      }
+    } catch (error) {
+      return reject(
+        "INVALID_DELEGATE_REQUEST",
+        "invalid_request",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
 
   if (
     isolation === "worktree" &&
@@ -251,6 +273,9 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       taskPrompt: opts.taskPrompt,
       ...(opts.taskContent !== undefined
         ? { taskContent: opts.taskContent }
+        : {}),
+      ...(opts.invocationEnvelope !== undefined
+        ? { invocationEnvelope: opts.invocationEnvelope }
         : {}),
       ...(worktree?.path !== undefined ? { worktreePath: worktree.path } : {}),
     });

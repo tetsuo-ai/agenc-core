@@ -714,6 +714,12 @@ describe("model-facing tools", () => {
       delegateMock.mockImplementation(
         async (ctx: {
           taskPrompt: string;
+          invocationEnvelope: {
+            invocation_id: string;
+            task_instructions: ReadonlyArray<{
+              inline_payload?: string;
+            }>;
+          };
           agentName: string;
           capacityPermit?: Parameters<AgentRegistry["consumeSpawnPermit"]>[0];
           capacityOwnerId?: string;
@@ -729,8 +735,12 @@ describe("model-facing tools", () => {
           }
           activeWorkers += 1;
           maxActiveWorkers = Math.max(maxActiveWorkers, activeWorkers);
-          const jobId = /Job ID: ([^\n]+)/.exec(ctx.taskPrompt)?.[1];
-          const itemId = /Item ID: ([^\n]+)/.exec(ctx.taskPrompt)?.[1];
+          const invocationMatch =
+            /^csv-job:(.+):(csv_item_[0-9a-f]{64})$/u.exec(
+              ctx.invocationEnvelope.invocation_id,
+            );
+          const jobId = invocationMatch?.[1];
+          const itemId = invocationMatch?.[2];
           expect(jobId).toBeDefined();
           expect(itemId).toBeDefined();
           const reportDone = new Promise<void>((resolve) => {
@@ -776,9 +786,13 @@ describe("model-facing tools", () => {
       expect(spawned.item_page[0].item_id).toMatch(/^csv_item_[0-9a-f]{64}$/u);
       expect(spawned.item_page[0].item_id).not.toBe("row1");
       expect(maxActiveWorkers).toBe(1);
-      expect(delegateMock.mock.calls[0]?.[0].taskPrompt).toContain(
-        "Approved task instruction:\n  process the structured value field  \n\n",
+      expect(delegateMock.mock.calls[0]?.[0].taskPrompt).toMatch(
+        /^CSV job item csv_item_[0-9a-f]{64}$/u,
       );
+      expect(
+        delegateMock.mock.calls[0]?.[0].invocationEnvelope.task_instructions[0]
+          .inline_payload,
+      ).toBe("  process the structured value field  ");
 
       const inspectedResult = await byName
         .get("inspect_csv_agent_job")!
