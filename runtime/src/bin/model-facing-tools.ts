@@ -14,6 +14,10 @@ import {
 } from "../agents/registry.js";
 import { loadNamedWorkflowManifest } from "../agents/workflow-manifest.js";
 import {
+  prepareLegacyWorkflowExecution,
+  WorkflowB3bRequiredError,
+} from "../agents/workflow-legacy-execution.js";
+import {
   assertLegacyCommandInvocation,
   validateWorkflowInvocationToolArgs,
   WORKFLOW_INVOCATION_SCHEMA,
@@ -4595,7 +4599,7 @@ function createCronAndWorkflowTools(
     {
       name: "WorkflowTool",
       description:
-        "Run a named local workflow from .agenc/workflows or AGENC_HOME/workflows. A workflow with a `steps` array is a DETERMINISTIC multi-agent pipeline: each step spawns an agent; steps with satisfied `after` dependencies run in parallel; `{{steps.<id>}}` / `{{group.<name>}}` in a step's message receive earlier results. A workflow with only `command` runs that single shell command (legacy shape).",
+        "Run a named local workflow from .agenc/workflows or AGENC_HOME/workflows. One-epoch legacy DAGs execute through a bounded compatibility runner; version-2 scheduler semantics require the B3b scheduler. A workflow with only `command` runs that single shell command (legacy shape).",
       metadata: toolMetadata("workflow", {
         mutating: true,
         deferred: true,
@@ -4633,6 +4637,18 @@ function createCronAndWorkflowTools(
         const { document } = loaded;
         const name = invocation.name;
         if (document.kind === "agent_dag") {
+          let execution;
+          try {
+            execution = prepareLegacyWorkflowExecution(document, invocation);
+          } catch (error) {
+            if (error instanceof WorkflowB3bRequiredError) {
+              return json(
+                { error: error.message, code: error.code, workflow: name },
+                true,
+              );
+            }
+            throw error;
+          }
           const session = opts.getSession();
           if (!session) {
             return json(
@@ -4648,7 +4664,8 @@ function createCronAndWorkflowTools(
               session,
               control,
               registry,
-              steps: document.manifest.steps as never,
+              steps: execution.steps,
+              maxConcurrency: execution.maxConcurrency,
             });
             const failed = run.steps.some(
               (step) => step.outcome !== "completed",

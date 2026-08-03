@@ -77,6 +77,7 @@ export interface RunAgentWorkflowOptions {
   readonly control: AgentControl;
   readonly registry: AgentRegistry;
   readonly steps: readonly WorkflowStepSpec[];
+  readonly maxConcurrency?: number;
   readonly parentPath?: string;
   readonly lifecycle?: BackgroundTaskLifecycle;
   /** Injectable for tests. Defaults to the real delegate(). */
@@ -188,6 +189,12 @@ export async function runAgentWorkflow(
   opts: RunAgentWorkflowOptions,
 ): Promise<{ readonly steps: readonly WorkflowStepResult[] }> {
   validateWorkflowSteps(opts.steps);
+  const maxConcurrency = opts.maxConcurrency ?? 16;
+  if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {
+    throw new WorkflowValidationError(
+      "workflow max concurrency must be a positive safe integer",
+    );
+  }
   const delegateFn = opts.delegateFn ?? delegate;
   const lifecycle = opts.lifecycle ?? backgroundTaskLifecycle;
   const parentPath = opts.parentPath ?? "/root";
@@ -281,8 +288,11 @@ export async function runAgentWorkflow(
       );
     }
     for (const step of wave) pending.delete(step.id);
-    const waveResults = await Promise.all(wave.map((step) => runStep(step)));
-    for (const result of waveResults) results.set(result.id, result);
+    for (let offset = 0; offset < wave.length; offset += maxConcurrency) {
+      const batch = wave.slice(offset, offset + maxConcurrency);
+      const batchResults = await Promise.all(batch.map((step) => runStep(step)));
+      for (const result of batchResults) results.set(result.id, result);
+    }
   }
 
   return {
