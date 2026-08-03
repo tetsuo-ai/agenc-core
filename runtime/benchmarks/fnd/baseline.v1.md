@@ -4,8 +4,8 @@ This artifact records bounded observations of known failures. Every row is
 informational: no current result is a passing performance threshold or gate.
 Generated inputs are synthetic and created only for the benchmark process.
 
-- JSON SHA-256: `48ec04dbcb0473767ae7dccc57c399ba95fe5d0f2849beddf4e08a354e368570`
-- Source revision: `23ba2edcc254d2e93abffccdc69a043144797498`
+- JSON SHA-256: `e6b7e2ad4e63928d531003e340f3d340b84deef3c20feffe51b775a076d4d2aa`
+- Source revision: `bf9d4531e6f259e853dd03dcd2580ee10404c503`
 - Production tree: `runtime/src` at Git object `1cf239e1710ad8923e8832c54d6b0706003cd0c4`
 - Loaded production closure: `37` module bindings across `4` cases
 - Plan SHA-256: `d158a4e11ca943e018af33c0df8ddeaef665dbb56ec0c92b07db76abc61cde46`
@@ -18,16 +18,16 @@ Generated inputs are synthetic and created only for the benchmark process.
 
 | Case | Input | Status | Median ms | MAD ms | Worker peak RSS bytes | RSS lower-bound bytes |
 | --- | ---: | --- | ---: | ---: | ---: | ---: |
-| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 81.406 | 0.895 | 156975104 | 156975104 |
-| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 169.121 | 2.626 | 189612032 | 187338752 |
-| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 378.334 | 17.446 | 204365824 | 201572352 |
-| `patch_delete_parser_suffix_slicing` | `hunkCount=8000` | `completed` | 2.804 | 0.159 | 90099712 | 90099712 |
-| `patch_delete_parser_suffix_slicing` | `hunkCount=16000` | `completed` | 5.510 | 0.124 | 105390080 | 105390080 |
-| `patch_delete_parser_suffix_slicing` | `hunkCount=32000` | `completed` | 11.360 | 0.299 | 128552960 | 128552960 |
-| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=32,queryCodeUnits=8` | `completed` | 4.126 | 0.108 | 92073984 | 92073984 |
-| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=64,queryCodeUnits=8` | `completed` | 12.024 | 0.014 | 93429760 | 93429760 |
-| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=128,queryCodeUnits=8` | `completed` | 47.368 | 1.234 | 101498880 | 101498880 |
-| `fuzzy_tui_query_truncation` | `candidateCount=2,indexedQueryCodeUnits=64,queryCodeUnits=69` | `completed` | 0.012 | 0.001 | 79085568 | 79085568 |
+| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 83.838 | 3.049 | 174833664 | 174833664 |
+| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 178.952 | 4.818 | 189100032 | 186261504 |
+| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 373.106 | 23.322 | 204140544 | 201629696 |
+| `patch_delete_parser_suffix_slicing` | `hunkCount=8000` | `completed` | 2.886 | 0.444 | 91709440 | 91709440 |
+| `patch_delete_parser_suffix_slicing` | `hunkCount=16000` | `completed` | 5.783 | 0.509 | 106840064 | 106840064 |
+| `patch_delete_parser_suffix_slicing` | `hunkCount=32000` | `completed` | 11.076 | 1.325 | 127021056 | 127021056 |
+| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=32,queryCodeUnits=8` | `completed` | 3.942 | 0.109 | 94523392 | 94523392 |
+| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=64,queryCodeUnits=8` | `completed` | 11.698 | 0.152 | 95350784 | 95350784 |
+| `fuzzy_daemon_recursive_scaling` | `candidateCount=32,pathStemCodeUnits=128,queryCodeUnits=8` | `completed` | 47.870 | 0.626 | 102785024 | 102785024 |
+| `fuzzy_tui_query_truncation` | `candidateCount=2,indexedQueryCodeUnits=64,queryCodeUnits=69` | `completed` | 0.014 | 0.002 | 80330752 | 80330752 |
 
 ## Known-failure policy
 
@@ -42,7 +42,7 @@ Run on the same pinned runtime and machine state; compare medians, MAD,
 operation counts, and relative scaling rather than one wall-clock sample.
 
 ```sh
-npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --source-revision 23ba2edcc254d2e93abffccdc69a043144797498 --output /tmp/agenc-fnd-baseline.v1.json --markdown-output /tmp/agenc-fnd-baseline.v1.md
+npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --source-revision bf9d4531e6f259e853dd03dcd2580ee10404c503 --output /tmp/agenc-fnd-baseline.v1.json --markdown-output /tmp/agenc-fnd-baseline.v1.md
 npm run check:fnd-benchmark-baseline --workspace=@tetsuo-ai/runtime
 ```
 
