@@ -13,6 +13,7 @@ import {
 } from "../../state/csv-agent-jobs.js";
 import {
   openStateDatabases,
+  resolveStateDatabasePaths,
   type StateSqliteDriver,
 } from "../../state/sqlite-driver.js";
 import {
@@ -31,7 +32,10 @@ import {
   resumeInterruptedAgentJobs,
   shutdownCsvJobRecoverySupervisor,
 } from "../../bin/model-facing-tools.js";
-import type { CsvAgentJobsRepositoryProvider } from "../../app-server/csv-agent-jobs-authority.js";
+import {
+  CsvAgentJobsRepositoryAuthority,
+  type CsvAgentJobsRepositoryProvider,
+} from "../../app-server/csv-agent-jobs-authority.js";
 
 let home: string;
 let cwd: string;
@@ -72,15 +76,20 @@ function persistedItem(jobId: string, rowIndex: number) {
   };
 }
 
-function createJob(jobId: string, itemCount: number): void {
-  repository.createJob(
+function createJobInRepository(
+  target: CsvAgentJobsRepository,
+  workspaceRoot: string,
+  jobId: string,
+  itemCount: number,
+): void {
+  target.createJob(
     {
       id: jobId,
       name: jobId,
       instruction: "process {value}",
       autoExport: false,
       inputHeaders: ["id", "value"],
-      inputCsvPath: join(cwd, `${jobId}.csv`),
+      inputCsvPath: join(workspaceRoot, `${jobId}.csv`),
       outputCsvPath: "",
       requestedMaxConcurrency: 1,
     },
@@ -88,6 +97,44 @@ function createJob(jobId: string, itemCount: number): void {
       persistedItem(jobId, index),
     ),
   );
+}
+
+function createJob(jobId: string, itemCount: number): void {
+  createJobInRepository(repository, cwd, jobId, itemCount);
+}
+
+function blockingCapacityRegistry(onAbort?: () => void): AgentRegistry {
+  return {
+    acquireSpawnPermit: vi.fn(
+      ({ signal }: { readonly signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          const rejectForAbort = (): void => {
+            onAbort?.();
+            reject(signal?.reason ?? new Error("capacity wait aborted"));
+          };
+          if (signal?.aborted === true) rejectForAbort();
+          else signal?.addEventListener("abort", rejectForAbort, {
+            once: true,
+          });
+        }),
+    ),
+  } as unknown as AgentRegistry;
+}
+
+function trackedRepositoryProvider(
+  target: CsvAgentJobsRepository,
+  counter: { active: number },
+): CsvAgentJobsRepositoryProvider {
+  return {
+    async withRepository<Result>(_workspaceRoot, operation) {
+      counter.active += 1;
+      try {
+        return await operation(target, new AbortController().signal);
+      } finally {
+        counter.active -= 1;
+      }
+    },
+  };
 }
 
 describe("CsvJobCompactingQueue", () => {
@@ -121,7 +168,7 @@ describe("CsvJobCompactingQueue", () => {
 });
 
 describe("CsvJobRecoverySupervisor", () => {
-  it("single-flights alias recovery and retains repository leases until shutdown", async () => {
+  it("single-flights aliases and retains only the creator lease until shutdown", async () => {
     createJob("alias-recovery", 1);
     let releaseRecovery!: () => void;
     const recoveryGate = new Promise<void>((resolve) => {
@@ -143,20 +190,7 @@ describe("CsvJobRecoverySupervisor", () => {
       });
     const ownershipSpy = vi.spyOn(repository, "claimSupervisorOwnership");
     const session = {} as Session;
-    const registry = {
-      acquireSpawnPermit: vi.fn(
-        ({ signal }: { readonly signal?: AbortSignal }) =>
-          new Promise<never>((_resolve, reject) => {
-            const rejectForAbort = (): void => {
-              reject(signal?.reason ?? new Error("capacity wait aborted"));
-            };
-            if (signal?.aborted === true) rejectForAbort();
-            else signal?.addEventListener("abort", rejectForAbort, {
-              once: true,
-            });
-          }),
-      ),
-    } as unknown as AgentRegistry;
+    const registry = blockingCapacityRegistry();
     _setAgentControlForTesting(session, {
       control: {} as never,
       registry,
@@ -185,19 +219,194 @@ describe("CsvJobRecoverySupervisor", () => {
         workspaceRoot: `${cwd}/.`,
         csvAgentJobsRepositories: provider,
       });
+      const repeated = resumeInterruptedAgentJobs({
+        session,
+        workspaceRoot: cwd,
+        csvAgentJobsRepositories: provider,
+      });
       releaseRecovery();
 
-      await expect(Promise.all([first, alias])).resolves.toEqual([1, 1]);
+      await expect(Promise.all([first, alias, repeated])).resolves.toEqual([
+        1, 1, 1,
+      ]);
       expect(recoverySpy).toHaveBeenCalledTimes(1);
       expect(ownershipSpy).toHaveBeenCalledTimes(1);
-      expect(activeLeases).toBe(2);
+      expect(activeLeases).toBe(1);
 
-      await shutdownCsvJobRecoverySupervisor(cwd);
+      await shutdownCsvJobRecoverySupervisor({
+        workspaceRoot: cwd,
+        csvAgentJobsRepositories: provider,
+      });
       await vi.waitFor(() => expect(activeLeases).toBe(0));
     } finally {
-      await shutdownCsvJobRecoverySupervisor(cwd);
-      await shutdownCsvJobRecoverySupervisor(`${cwd}/.`);
+      await shutdownCsvJobRecoverySupervisor({
+        workspaceRoot: cwd,
+        csvAgentJobsRepositories: provider,
+      });
       _clearAgentControlCacheForTesting(session);
+    }
+  });
+
+  it("uses repository identity when identical workspace strings have distinct providers", async () => {
+    createJob("provider-a", 1);
+    const secondaryHome = mkdtempSync(
+      join(tmpdir(), "agenc-linear-scheduler-secondary-home-"),
+    );
+    const secondaryCwd = mkdtempSync(
+      join(tmpdir(), "agenc-linear-scheduler-secondary-cwd-"),
+    );
+    mkdirSync(join(secondaryCwd, ".git"));
+    const secondaryDriver = openStateDatabases({
+      cwd: secondaryCwd,
+      agencHome: secondaryHome,
+    });
+    const secondaryRepository = new CsvAgentJobsRepository(secondaryDriver);
+    createJobInRepository(secondaryRepository, cwd, "provider-b", 1);
+    const session = {} as Session;
+    _setAgentControlForTesting(session, {
+      control: {} as never,
+      registry: blockingCapacityRegistry(),
+    });
+    const leasesA = { active: 0 };
+    const leasesB = { active: 0 };
+    const providerA = trackedRepositoryProvider(repository, leasesA);
+    const providerB = trackedRepositoryProvider(
+      secondaryRepository,
+      leasesB,
+    );
+
+    try {
+      await expect(
+        Promise.all([
+          resumeInterruptedAgentJobs({
+            session,
+            workspaceRoot: cwd,
+            csvAgentJobsRepositories: providerA,
+          }),
+          resumeInterruptedAgentJobs({
+            session,
+            workspaceRoot: cwd,
+            csvAgentJobsRepositories: providerB,
+          }),
+        ]),
+      ).resolves.toEqual([1, 1]);
+      expect(leasesA.active).toBe(1);
+      expect(leasesB.active).toBe(1);
+
+      await shutdownCsvJobRecoverySupervisor({
+        workspaceRoot: cwd,
+        csvAgentJobsRepositories: providerA,
+      });
+      await vi.waitFor(() => expect(leasesA.active).toBe(0));
+      expect(leasesB.active).toBe(1);
+      expect(secondaryRepository.getSupervisorState().registeredJobs).toBe(1);
+
+      await shutdownCsvJobRecoverySupervisor({
+        workspaceRoot: cwd,
+        csvAgentJobsRepositories: providerB,
+      });
+      await vi.waitFor(() => expect(leasesB.active).toBe(0));
+    } finally {
+      await shutdownCsvJobRecoverySupervisor({
+        workspaceRoot: cwd,
+        csvAgentJobsRepositories: providerA,
+      });
+      await shutdownCsvJobRecoverySupervisor({
+        workspaceRoot: cwd,
+        csvAgentJobsRepositories: providerB,
+      });
+      _clearAgentControlCacheForTesting(session);
+      secondaryDriver.close();
+      rmSync(secondaryHome, { recursive: true, force: true });
+      rmSync(secondaryCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("lets repository authority close drain the owner before its driver", async () => {
+    const authorityHome = mkdtempSync(
+      join(tmpdir(), "agenc-linear-scheduler-authority-home-"),
+    );
+    const authorityCwd = mkdtempSync(
+      join(tmpdir(), "agenc-linear-scheduler-authority-cwd-"),
+    );
+    mkdirSync(join(authorityCwd, ".git"));
+    const paths = resolveStateDatabasePaths({
+      cwd: authorityCwd,
+      agencHome: authorityHome,
+    });
+    const authorityDriver = openStateDatabases({
+      cwd: authorityCwd,
+      agencHome: authorityHome,
+    });
+    const authorityRepository = new CsvAgentJobsRepository(authorityDriver);
+    createJobInRepository(
+      authorityRepository,
+      authorityCwd,
+      "authority-close",
+      1,
+    );
+    let capacityWaitAborted = false;
+    const session = {} as Session;
+    _setAgentControlForTesting(session, {
+      control: {} as never,
+      registry: blockingCapacityRegistry(() => {
+        capacityWaitAborted = true;
+      }),
+    });
+    const authority = new CsvAgentJobsRepositoryAuthority({
+      canonicalizeWorkspace: async () => authorityCwd,
+      resolvePaths: () => paths,
+      openDriver: () => authorityDriver,
+      openRepository: async () => authorityRepository,
+    });
+    const leases = { active: 0 };
+    const provider: CsvAgentJobsRepositoryProvider = {
+      async withRepository<Result>(workspaceRoot, operation, options) {
+        leases.active += 1;
+        try {
+          return await authority.withRepository(
+            workspaceRoot,
+            operation,
+            options,
+          );
+        } finally {
+          leases.active -= 1;
+        }
+      },
+    };
+    const closeDriver = authorityDriver.close.bind(authorityDriver);
+    const closeEvidence: Array<{
+      readonly capacityWaitAborted: boolean;
+      readonly activeLeases: number;
+    }> = [];
+    vi.spyOn(authorityDriver, "close").mockImplementation(() => {
+      closeEvidence.push({
+        capacityWaitAborted,
+        activeLeases: leases.active,
+      });
+      closeDriver();
+    });
+
+    try {
+      await expect(
+        resumeInterruptedAgentJobs({
+          session,
+          workspaceRoot: authorityCwd,
+          csvAgentJobsRepositories: provider,
+        }),
+      ).resolves.toBe(1);
+      expect(leases.active).toBe(1);
+
+      await authority.close();
+
+      expect(closeEvidence).toEqual([
+        { capacityWaitAborted: true, activeLeases: 0 },
+      ]);
+    } finally {
+      await authority.close();
+      _clearAgentControlCacheForTesting(session);
+      rmSync(authorityHome, { recursive: true, force: true });
+      rmSync(authorityCwd, { recursive: true, force: true });
     }
   });
 

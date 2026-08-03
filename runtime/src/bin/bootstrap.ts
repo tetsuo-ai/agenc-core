@@ -1479,7 +1479,10 @@ export async function bootstrapLocalRuntimeSession(
         try {
           const { shutdownCsvJobRecoverySupervisor } =
             await import("./model-facing-tools.js");
-          await shutdownCsvJobRecoverySupervisor(workspaceRoot);
+          await shutdownCsvJobRecoverySupervisor({
+            workspaceRoot,
+            csvAgentJobsRepositories,
+          });
         } catch (error) {
           errors.push(error);
         }
