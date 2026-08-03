@@ -12,7 +12,7 @@ import {
   ExecutionAdmissionRepository,
   NANO_USD_PER_USD,
 } from "../../src/state/execution-admission.js";
-import { CSV_JOB_SCHEDULER_SCHEMA_VERSION } from "../../src/state/migrations/021_csv_job_scheduler.js";
+import { WORKFLOW_HANDOFF_ARTIFACTS_SCHEMA_VERSION } from "../../src/state/migrations/022_workflow_handoff_artifacts.js";
 import { STATE_DB_MIGRATIONS } from "../../src/state/migrations/index.js";
 import { cancelAgentRunTree } from "../../src/state/run-cancellation.js";
 import {
@@ -162,7 +162,7 @@ describe("execution admission schema migration", () => {
         db
           .prepare("SELECT MAX(version) AS version FROM schema_migrations")
           .get(),
-      ).toEqual({ version: CSV_JOB_SCHEDULER_SCHEMA_VERSION });
+      ).toEqual({ version: WORKFLOW_HANDOFF_ARTIFACTS_SCHEMA_VERSION });
     } finally {
       db.close();
     }

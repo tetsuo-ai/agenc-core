@@ -10,7 +10,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateSchemaMismatchError } from "./errors.js";
-import { CSV_JOB_SCHEDULER_SCHEMA_VERSION } from "./migrations/021_csv_job_scheduler.js";
+import { WORKFLOW_HANDOFF_ARTIFACTS_SCHEMA_VERSION } from "./migrations/022_workflow_handoff_artifacts.js";
 import {
   applyMigrations,
   openStateDatabases,
@@ -202,7 +202,7 @@ describe("openStateDatabases", () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
           .get()?.version,
-      ).toBe(CSV_JOB_SCHEDULER_SCHEMA_VERSION);
+      ).toBe(WORKFLOW_HANDOFF_ARTIFACTS_SCHEMA_VERSION);
     } finally {
       driver.close();
     }

@@ -79,7 +79,7 @@ const EXPECTED_CRITICAL_PATH_ADRS = Object.freeze([
   {
     id: "CP-0007",
     file: "0007-workflow-handoff-artifact.md",
-    status: "Accepted target; implementation pending",
+    status: "B3a artifact contract implemented; B3b scheduler consumption pending",
   },
   {
     id: "CP-0008",
