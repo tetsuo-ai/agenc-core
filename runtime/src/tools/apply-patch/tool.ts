@@ -201,6 +201,10 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
 
       const cwd = asNonEmptyString(args.cwd) ?? config.cwd;
       const sessionId = asNonEmptyString(args[SESSION_ID_ARG]);
+      const signal =
+        args.__abortSignal instanceof AbortSignal
+          ? args.__abortSignal
+          : undefined;
 
       try {
         const result = await applyPatchText(patch, {
@@ -213,6 +217,7 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
           allowedPaths,
           rawArgs,
           ...(sessionId !== undefined ? { sessionId } : {}),
+          ...(signal !== undefined ? { signal } : {}),
         });
         return {
           content: result.summary,

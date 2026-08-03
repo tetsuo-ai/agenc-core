@@ -14,9 +14,9 @@ nonzero exit status and the exact registered defect fingerprint. Do not use
 `skip`, `todo`, `test.fails`, or an assertion whose success means the unsafe
 behavior remains present.
 
-After A1, A2a, C1, and D1 promotion, the P0 inventory contains eight task-owned
-defect probes plus the FND-001 harness self-test, so the exact green audit
-summary is `files=9 expected-red=9 assertions=9 skipped=0 todo=0`. Each
+After A1, A2a, C1, D1, and D3 promotion, the P0 inventory contains seven
+task-owned defect probes plus the FND-001 harness self-test, so the exact green audit
+summary is `files=8 expected-red=8 assertions=8 skipped=0 todo=0`. Each
 remaining task-owned
 probe calls a production seam without a provider, public network, or
 uncontained subprocess:
@@ -29,7 +29,6 @@ uncontained subprocess:
 | B3a  | `../` in a workflow name escapes `.agenc/workflows` and dispatches the escaped command.          | Reject before dispatch.                                                                                                        |
 | C2   | The compaction policy tells the summarizer to obey instructions embedded in transcript context.  | Transcript instructions remain untrusted and cannot alter compaction policy.                                                   |
 | C3a  | Admission denial makes relevant memory recall return no candidates.                              | A deterministic lexical fallback returns the matching admitted file.                                                           |
-| D3   | Applying one patch hunk rewrites part of a CRLF file with LF.                                    | Preserve the file's CRLF convention exactly.                                                                                   |
 | E1a  | Recovery accepts and projects a JSONL record above the per-line byte ceiling.                    | Typed `line_limit` with zero projected rows.                                                                                   |
 
 Some production modules import repository-owned Markdown prompt assets. The
@@ -43,8 +42,9 @@ The FND-001 self-probe intentionally omits a required transition and proves the
 harness itself goes red; it does not claim a product defect remains and does not
 satisfy any task-owned P0 defect-probe gate.
 The A1 timeout/physical-settlement assertion, A2a canonical-journal integrity,
-C1 message-frame floor, and D1 pinned-ripgrep assertions are now ordinary
-regression coverage. The eight unresolved task-owned P0 probes remain
+C1 message-frame floor, D1 pinned-ripgrep assertions, and D3 byte-fidelity
+assertions are now ordinary regression coverage. The seven unresolved
+task-owned P0 probes remain
 registered alongside FND-001. When another product defect is fixed, promote
 its assertion into an ordinary test and verify that reversing the functional
 change in a disposable worktree makes that test fail.

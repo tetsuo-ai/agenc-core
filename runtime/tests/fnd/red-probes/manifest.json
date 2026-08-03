@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 9,
+  "probeCount": 8,
   "probes": [
     {
       "id": "a2b-corrupt-journal-never-recoverable",
@@ -56,15 +56,6 @@
       "fingerprint": "C3A:MEMORY:LEXICAL-FALLBACK-ON-ADMISSION-DENIAL",
       "sourceSha256": "c2cecc398507cbf70640a142d5350e357830928e700f653b078218b5716c2700",
       "timeoutMs": 10000
-    },
-    {
-      "id": "d3-apply-patch-crlf-fidelity",
-      "task": "D3",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/d3-apply-patch-crlf-fidelity.red-probe.ts",
-      "fingerprint": "D3:APPLY-PATCH:CRLF-FIDELITY",
-      "sourceSha256": "b6b6a214cf70565f237946bbfa922c439d550bce5ffb7bf2193f3a1d75ea802d",
-      "timeoutMs": 15000
     },
     {
       "id": "e1a-recovery-line-byte-limit",

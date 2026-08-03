@@ -79,6 +79,22 @@ export class ApplyPatchParseError extends Error {
   }
 }
 
+export type ApplyPatchInputErrorKind =
+  "nul_code_unit" | "unpaired_surrogate" | "input_limit";
+
+/** A pre-I/O payload-boundary failure with an exact UTF-16 offset. */
+export class ApplyPatchInputError extends Error {
+  readonly kind: ApplyPatchInputErrorKind;
+  readonly offset: number;
+
+  constructor(kind: ApplyPatchInputErrorKind, message: string, offset: number) {
+    super(`invalid patch input at UTF-16 offset ${offset}: ${message}`);
+    this.name = "ApplyPatchInputError";
+    this.kind = kind;
+    this.offset = offset;
+  }
+}
+
 export class ApplyPatchRuntimeError extends Error {
   constructor(message: string) {
     super(message);

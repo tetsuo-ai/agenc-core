@@ -11,7 +11,7 @@
  *     allowed roots used by AgenC's file tools.
  */
 
-import { readFile, stat } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { structuredPatch } from "diff";
 
@@ -25,7 +25,23 @@ import {
 } from "../system/filesystem.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import { parsePatch } from "./parser.js";
-import { seekSequence } from "./seek-sequence.js";
+import {
+  ApplyPatchMatchWorkBudget,
+  prepareSeekCorpus,
+  seekPreparedSequence,
+  type SeekSequenceControl,
+} from "./seek-sequence.js";
+import { assertApplyPatchActive } from "./control.js";
+import {
+  applyTextReplacements,
+  decodeApplyPatchFile,
+  parseTextDocument,
+  type TextReplacement,
+} from "./text-document.js";
+import {
+  APPLY_PATCH_FILE_READ_CHUNK_BYTES,
+  MAX_APPLY_PATCH_FILE_BYTES,
+} from "./limits.js";
 import {
   ApplyPatchRuntimeError,
   type AffectedPaths,
@@ -62,6 +78,8 @@ type ApplyPatchObservedPathState =
   | { readonly kind: "missing" }
   | { readonly kind: "unreadable" };
 
+const UNIFIED_DIFF_TIMEOUT_MS = 1_000;
+
 interface ApplyPatchRollbackHookInput {
   readonly path: string;
   readonly backup: {
@@ -76,6 +94,10 @@ export interface ApplyPatchRuntimeOptions {
   readonly allowedPaths: readonly string[];
   readonly rawArgs?: Record<string, unknown>;
   readonly sessionId?: string;
+  /** Cooperative cancellation, normally injected by the tool dispatcher. */
+  readonly signal?: AbortSignal;
+  /** Absolute epoch-millisecond deadline for planning and filesystem commit. */
+  readonly deadlineAt?: number;
   /**
    * Deterministic fault-injection seam for rollback transaction tests.
    * Production callers leave this unset.
@@ -119,11 +141,7 @@ const READ_BEFORE_WRITE_ERROR =
 const FILE_UNEXPECTEDLY_MODIFIED_ERROR =
   "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.";
 
-interface Replacement {
-  readonly startIndex: number;
-  readonly oldLength: number;
-  readonly newLines: readonly string[];
-}
+type Replacement = TextReplacement;
 
 interface MutationMetadataEntry {
   readonly filePath: string;
@@ -177,6 +195,28 @@ function resolvePatchPath(cwd: string, path: string): string {
   return (isAbsolute(path) ? path : resolve(cwd, path)).normalize("NFC");
 }
 
+function createRuntimeControl(
+  opts: ApplyPatchRuntimeOptions,
+): SeekSequenceControl {
+  if (
+    opts.deadlineAt !== undefined &&
+    (!Number.isFinite(opts.deadlineAt) || opts.deadlineAt < 0)
+  ) {
+    throw new ApplyPatchRuntimeError(
+      "apply_patch deadlineAt must be a finite non-negative epoch timestamp",
+    );
+  }
+  const injectedSignal = opts.rawArgs?.__abortSignal;
+  const signal =
+    opts.signal ??
+    (injectedSignal instanceof AbortSignal ? injectedSignal : undefined);
+  return {
+    ...(signal !== undefined ? { signal } : {}),
+    ...(opts.deadlineAt !== undefined ? { deadlineAt: opts.deadlineAt } : {}),
+    budget: new ApplyPatchMatchWorkBudget(),
+  };
+}
+
 async function resolveSafePath(
   path: string,
   opts: ApplyPatchRuntimeOptions,
@@ -196,28 +236,26 @@ async function resolveSafePath(
   return safe.resolved;
 }
 
-function splitSourceLines(contents: string): string[] {
-  const lines = contents.split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  return lines;
-}
-
 function computeReplacements(
   originalLines: readonly string[],
   path: string,
   chunks: readonly UpdateFileChunk[],
+  control: SeekSequenceControl,
 ): readonly Replacement[] {
   const replacements: Replacement[] = [];
+  const corpus = prepareSeekCorpus(originalLines, control);
   let lineIndex = 0;
 
   for (const chunk of chunks) {
+    assertApplyPatchActive(control, "replacement planning");
     let anchorIndex: number | null = null;
     if (chunk.changeContext !== null) {
-      const idx = seekSequence(
-        originalLines,
+      const idx = seekPreparedSequence(
+        corpus,
         [chunk.changeContext],
         lineIndex,
         false,
+        control,
       );
       if (idx === null) {
         throw new ApplyPatchRuntimeError(
@@ -233,11 +271,7 @@ function computeReplacements(
       // after its located anchor, not at EOF. Only fall back to end-of-file
       // when the chunk had no context anchor at all.
       const insertionIdx =
-        anchorIndex !== null
-          ? anchorIndex
-          : originalLines.at(-1) === ""
-            ? originalLines.length - 1
-            : originalLines.length;
+        anchorIndex !== null ? anchorIndex : originalLines.length;
       replacements.push({
         startIndex: insertionIdx,
         oldLength: 0,
@@ -248,23 +282,25 @@ function computeReplacements(
       continue;
     }
 
-    let pattern = [...chunk.oldLines];
-    let newSlice = [...chunk.newLines];
-    let found = seekSequence(
-      originalLines,
+    let pattern = chunk.oldLines;
+    let newSlice = chunk.newLines;
+    let found = seekPreparedSequence(
+      corpus,
       pattern,
       lineIndex,
       chunk.isEndOfFile,
+      control,
     );
 
     if (found === null && pattern.at(-1) === "") {
       pattern = pattern.slice(0, -1);
       if (newSlice.at(-1) === "") newSlice = newSlice.slice(0, -1);
-      found = seekSequence(
-        originalLines,
+      found = seekPreparedSequence(
+        corpus,
         pattern,
         lineIndex,
         chunk.isEndOfFile,
+        control,
       );
     }
 
@@ -282,30 +318,18 @@ function computeReplacements(
     lineIndex = found + pattern.length;
   }
 
-  return [...replacements].sort(
-    (left, right) => left.startIndex - right.startIndex,
-  );
+  return replacements;
 }
 
-function applyReplacements(
-  lines: readonly string[],
-  replacements: readonly Replacement[],
-): readonly string[] {
-  const next = [...lines];
-  for (const replacement of [...replacements].reverse()) {
-    next.splice(
-      replacement.startIndex,
-      replacement.oldLength,
-      ...replacement.newLines,
-    );
-  }
-  return next;
-}
-
-async function readFileToUpdate(pathAbs: string): Promise<string> {
+async function readFileToUpdate(
+  pathAbs: string,
+  control?: SeekSequenceControl,
+): Promise<string> {
   try {
-    return await readFile(pathAbs, "utf8");
+    const bytes = await readBoundedFile(pathAbs, control);
+    return decodeApplyPatchFile(bytes, pathAbs);
   } catch (error) {
+    if (error instanceof ApplyPatchRuntimeError) throw error;
     const code = (error as NodeJS.ErrnoException).code;
     throw new ApplyPatchRuntimeError(
       code
@@ -315,20 +339,67 @@ async function readFileToUpdate(pathAbs: string): Promise<string> {
   }
 }
 
+async function readBoundedFile(
+  pathAbs: string,
+  control?: SeekSequenceControl,
+): Promise<Buffer> {
+  const handle = await open(pathAbs, "r");
+  try {
+    const metadata = await handle.stat();
+    if (metadata.isFile() && metadata.size > MAX_APPLY_PATCH_FILE_BYTES) {
+      throw new ApplyPatchRuntimeError(
+        `${pathAbs} exceeds the ${MAX_APPLY_PATCH_FILE_BYTES}-byte apply_patch file limit`,
+      );
+    }
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    while (totalBytes <= MAX_APPLY_PATCH_FILE_BYTES) {
+      assertApplyPatchActive(control, "source reading");
+      const remainingBoundaryBytes =
+        MAX_APPLY_PATCH_FILE_BYTES + 1 - totalBytes;
+      const requestedBytes = Math.min(
+        APPLY_PATCH_FILE_READ_CHUNK_BYTES,
+        remainingBoundaryBytes,
+      );
+      const chunk = Buffer.allocUnsafe(requestedBytes);
+      const { bytesRead } = await handle.read(chunk, 0, requestedBytes, null);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      totalBytes += bytesRead;
+    }
+    if (totalBytes > MAX_APPLY_PATCH_FILE_BYTES) {
+      throw new ApplyPatchRuntimeError(
+        `${pathAbs} exceeds the ${MAX_APPLY_PATCH_FILE_BYTES}-byte apply_patch file limit`,
+      );
+    }
+    return Buffer.concat(chunks, totalBytes);
+  } finally {
+    await handle.close();
+  }
+}
+
 async function deriveNewContentsFromChunks(
   pathAbs: string,
   chunks: readonly UpdateFileChunk[],
   preReadContents?: string,
+  control: SeekSequenceControl = {
+    budget: new ApplyPatchMatchWorkBudget(),
+  },
 ): Promise<AppliedPatch> {
-  const originalContents = preReadContents ?? (await readFileToUpdate(pathAbs));
-
-  const originalLines = splitSourceLines(originalContents);
-  const replacements = computeReplacements(originalLines, pathAbs, chunks);
-  const newLines = [...applyReplacements(originalLines, replacements)];
-  if (newLines.at(-1) !== "") newLines.push("");
+  const originalContents =
+    preReadContents ?? (await readFileToUpdate(pathAbs, control));
+  assertApplyPatchActive(control, "source reading");
+  const document = parseTextDocument(originalContents, pathAbs, control);
+  const originalLines = document.lines.map((line) => line.text);
+  const replacements = computeReplacements(
+    originalLines,
+    pathAbs,
+    chunks,
+    control,
+  );
   return {
     originalContents,
-    newContents: newLines.join("\n"),
+    newContents: applyTextReplacements(document, replacements, control),
   };
 }
 
@@ -349,7 +420,7 @@ function unifiedPatchBody(
     afterText,
     undefined,
     undefined,
-    { context, timeout: 1_000 },
+    { context, timeout: UNIFIED_DIFF_TIMEOUT_MS },
   );
   return (patch?.hunks ?? [])
     .map((hunk) => {
@@ -696,6 +767,7 @@ function errorMessage(error: unknown): string {
 async function applyHunksToFiles(
   hunks: readonly ApplyPatchHunk[],
   opts: ApplyPatchRuntimeOptions,
+  control: SeekSequenceControl,
 ): Promise<{
   readonly affected: AffectedPaths;
   readonly mutationMetadata: readonly MutationMetadataEntry[];
@@ -703,6 +775,7 @@ async function applyHunksToFiles(
   if (hunks.length === 0) {
     throw new ApplyPatchRuntimeError("No files were modified.");
   }
+  assertApplyPatchActive(control, "transaction planning");
 
   const added: string[] = [];
   const modified: string[] = [];
@@ -719,6 +792,7 @@ async function applyHunksToFiles(
     { readonly deleted: boolean; readonly content: string }
   >();
   const planRead = async (pathAbs: string): Promise<string> => {
+    assertApplyPatchActive(control, "source reading");
     const pending = overlay.get(pathAbs);
     if (pending !== undefined) {
       if (pending.deleted) {
@@ -729,11 +803,15 @@ async function applyHunksToFiles(
       return pending.content;
     }
     const editorRead = workspaceAuthoritativeRead(pathAbs);
-    return editorRead?.content ?? readFileToUpdate(pathAbs);
+    const content =
+      editorRead?.content ?? (await readFileToUpdate(pathAbs, control));
+    assertApplyPatchActive(control, "source reading");
+    return content;
   };
   const planReadStateIfPresent = async (
     pathAbs: string,
   ): Promise<{ readonly existed: boolean; readonly content: string }> => {
+    assertApplyPatchActive(control, "source reading");
     const pending = overlay.get(pathAbs);
     if (pending !== undefined) {
       return pending.deleted
@@ -742,11 +820,20 @@ async function applyHunksToFiles(
     }
     const editorRead = workspaceAuthoritativeRead(pathAbs);
     if (editorRead !== null) {
+      parseTextDocument(editorRead.content, pathAbs, control);
       return { existed: true, content: editorRead.content };
     }
     try {
-      return { existed: true, content: await readFile(pathAbs, "utf8") };
+      const bytes = await readBoundedFile(pathAbs, control);
+      assertApplyPatchActive(control, "source reading");
+      const content = decodeApplyPatchFile(bytes, pathAbs);
+      parseTextDocument(content, pathAbs, control);
+      return {
+        existed: true,
+        content,
+      };
     } catch (error) {
+      if (error instanceof ApplyPatchRuntimeError) throw error;
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
         return { existed: false, content: "" };
@@ -761,10 +848,20 @@ async function applyHunksToFiles(
 
   // PHASE 1 — plan + validate entirely in memory.
   for (const hunk of hunks) {
+    assertApplyPatchActive(control, "transaction planning");
     const affectedPath = hunkAffectedPath(hunk);
     const pathAbs = await resolveSafePath(hunk.path, opts);
+    assertApplyPatchActive(control, "path resolution");
 
     if (hunk.kind === "add") {
+      if (
+        Buffer.byteLength(hunk.contents, "utf8") > MAX_APPLY_PATCH_FILE_BYTES
+      ) {
+        throw new ApplyPatchRuntimeError(
+          `${hunk.path} exceeds the ${MAX_APPLY_PATCH_FILE_BYTES}-byte apply_patch output limit`,
+        );
+      }
+      parseTextDocument(hunk.contents, hunk.path, control);
       const before = await planReadStateIfPresent(pathAbs);
       plannedOps.push({
         kind: "write",
@@ -801,6 +898,7 @@ async function applyHunksToFiles(
         pathAbs,
         originalContents,
       );
+      assertApplyPatchActive(control, "read-before-write validation");
       plannedOps.push({
         kind: "remove",
         path: pathAbs,
@@ -825,15 +923,18 @@ async function applyHunksToFiles(
 
     const currentContents = await planRead(pathAbs);
     await assertReadBeforeWriteGate(opts.sessionId, pathAbs, currentContents);
+    assertApplyPatchActive(control, "read-before-write validation");
     const applied = await deriveNewContentsFromChunks(
       pathAbs,
       hunk.chunks,
       currentContents,
+      control,
     );
     const writePathAbs =
       hunk.movePath === null
         ? pathAbs
         : await resolveSafePath(hunk.movePath, opts);
+    assertApplyPatchActive(control, "path resolution");
     const destinationBefore =
       writePathAbs === pathAbs
         ? { existed: true, content: currentContents }
@@ -872,6 +973,8 @@ async function applyHunksToFiles(
     });
   }
 
+  assertApplyPatchActive(control, "transaction admission");
+
   // PHASE 2 — reserve every path through the workspace coherence boundary
   // before touching disk. A dirty live editor buffer becomes a shadow
   // proposal; a stale buffer blocks the whole multi-file transaction.
@@ -901,6 +1004,7 @@ async function applyHunksToFiles(
     const uniqueTargets = [
       ...new Set(plannedOps.map((operation) => operation.path)),
     ].map((path) => ({ path }));
+    assertApplyPatchActive(control, "topology reservation");
     try {
       batchTopology = await reserveWorkspaceTopologyMutation(
         uniqueTargets,
@@ -918,6 +1022,12 @@ async function applyHunksToFiles(
         ),
       );
     }
+    try {
+      assertApplyPatchActive(control, "topology reservation");
+    } catch (error) {
+      await releaseBatchTopology();
+      throw error;
+    }
   }
   const admissions: Array<
     Awaited<ReturnType<typeof prepareWorkspaceMutation>>
@@ -928,6 +1038,7 @@ async function applyHunksToFiles(
       : undefined;
   try {
     for (const op of plannedOps) {
+      assertApplyPatchActive(control, "workspace admission");
       const admission = await prepareWorkspaceMutation(
         {
           path: op.path,
@@ -950,6 +1061,7 @@ async function applyHunksToFiles(
         throw new WorkspaceMutationRejectedError(rejection);
       }
       admissions.push(admission);
+      assertApplyPatchActive(control, "workspace admission");
     }
   } catch (error) {
     for (const prior of admissions) cancelWorkspaceMutation(prior);
@@ -957,6 +1069,7 @@ async function applyHunksToFiles(
     throw error;
   }
   try {
+    assertApplyPatchActive(control, "workspace admission");
     for (const admission of admissions) beginWorkspaceMutation(admission);
   } catch (error) {
     for (const admission of admissions) cancelWorkspaceMutation(admission);
@@ -976,8 +1089,10 @@ async function applyHunksToFiles(
   try {
     try {
       for (const op of plannedOps) {
+        assertApplyPatchActive(control, "rollback snapshot capture");
         if (!backups.has(op.path)) {
           const backup = await captureBackup(op.path);
+          assertApplyPatchActive(control, "rollback snapshot capture");
           if (
             backup.existed !== op.beforeExisted ||
             (backup.existed &&
@@ -995,7 +1110,9 @@ async function applyHunksToFiles(
       await opts.__testAfterBackupsCaptured?.({
         paths: [...backups.keys()],
       });
+      assertApplyPatchActive(control, "rollback snapshot capture");
       for (const op of plannedOps) {
+        assertApplyPatchActive(control, "filesystem commit");
         const backup = backups.get(op.path);
         if (backup === undefined) {
           throw new ApplyPatchRuntimeError(
@@ -1017,6 +1134,7 @@ async function applyHunksToFiles(
           path: op.path,
           kind: op.kind,
         });
+        assertApplyPatchActive(control, "filesystem commit");
         const afterState = operationExpectedState(op);
 
         // Mark the path before invoking the syscall: a rejected or interrupted
@@ -1042,6 +1160,9 @@ async function applyHunksToFiles(
           } else {
             await backup.guard.removeBoundEntry(beforeState, markEffectStarted);
           }
+          // Once a descriptor-bound effect may have happened, cancellation is
+          // routed through the transaction's normal verified rollback path.
+          assertApplyPatchActive(control, "filesystem commit");
         } catch (error) {
           if (
             error instanceof WorkspaceFileMutationPreEffectConflictError &&
@@ -1251,10 +1372,12 @@ async function applyHunksToFiles(
 async function applyParsedPatch(
   parsed: ApplyPatchArgs,
   opts: ApplyPatchRuntimeOptions,
+  control: SeekSequenceControl,
 ): Promise<ApplyPatchResult> {
   const { affected, mutationMetadata } = await applyHunksToFiles(
     parsed.hunks,
     opts,
+    control,
   );
   return {
     affected,
@@ -1270,5 +1393,8 @@ export async function applyPatchText(
   patch: string,
   opts: ApplyPatchRuntimeOptions,
 ): Promise<ApplyPatchResult> {
-  return applyParsedPatch(parsePatch(patch), opts);
+  const control = createRuntimeControl(opts);
+  assertApplyPatchActive(control, "payload parsing");
+  const parsed = parsePatch(patch, "lenient", control);
+  return applyParsedPatch(parsed, opts, control);
 }

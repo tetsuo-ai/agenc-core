@@ -342,9 +342,9 @@ describe("FND red-probe supervisor", () => {
     "audits the registered nonempty harness self-probe with zero skips and todos",
     async () => {
       await expect(auditRedProbes()).resolves.toEqual({
-        files: 9,
-        expectedRed: 9,
-        assertions: 9,
+        files: 8,
+        expectedRed: 8,
+        assertions: 8,
         skipped: 0,
         todos: 0,
       });
