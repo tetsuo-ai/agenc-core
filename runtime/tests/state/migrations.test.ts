@@ -59,7 +59,7 @@ describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-      20,
+      20, 21,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -82,6 +82,7 @@ describe("state migration registry", () => {
       "run_recovery_schema",
       "csv_job_identity_replay",
       "tool_pair_projection_schema",
+      "csv_job_scheduler",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -120,6 +121,7 @@ describe("state migration registry", () => {
       "018_run_recovery_schema.ts",
       "019_csv_job_identity_replay.ts",
       "020_tool_pair_projection_schema.ts",
+      "021_csv_job_scheduler.ts",
     ]);
   });
 

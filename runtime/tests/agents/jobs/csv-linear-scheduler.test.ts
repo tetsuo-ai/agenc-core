@@ -22,6 +22,16 @@ import {
   type AgentJobSpawn,
 } from "./job-orchestrator.js";
 import { AgentRegistry } from "../registry.js";
+import type { Session } from "../../session/session.js";
+import {
+  _clearAgentControlCacheForTesting,
+  _setAgentControlForTesting,
+} from "../../bin/delegate-tool.js";
+import {
+  resumeInterruptedAgentJobs,
+  shutdownCsvJobRecoverySupervisor,
+} from "../../bin/model-facing-tools.js";
+import type { CsvAgentJobsRepositoryProvider } from "../../app-server/csv-agent-jobs-authority.js";
 
 let home: string;
 let cwd: string;
@@ -111,6 +121,86 @@ describe("CsvJobCompactingQueue", () => {
 });
 
 describe("CsvJobRecoverySupervisor", () => {
+  it("single-flights alias recovery and retains repository leases until shutdown", async () => {
+    createJob("alias-recovery", 1);
+    let releaseRecovery!: () => void;
+    const recoveryGate = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    let recoveryEntered!: () => void;
+    const enteredRecovery = new Promise<void>((resolve) => {
+      recoveryEntered = resolve;
+    });
+    const claimRecovery = repository.claimCsvOutputRecoveryIntents.bind(
+      repository,
+    );
+    const recoverySpy = vi
+      .spyOn(repository, "claimCsvOutputRecoveryIntents")
+      .mockImplementation(async (input) => {
+        recoveryEntered();
+        await recoveryGate;
+        return claimRecovery(input);
+      });
+    const ownershipSpy = vi.spyOn(repository, "claimSupervisorOwnership");
+    const session = {} as Session;
+    const registry = {
+      acquireSpawnPermit: vi.fn(
+        ({ signal }: { readonly signal?: AbortSignal }) =>
+          new Promise<never>((_resolve, reject) => {
+            const rejectForAbort = (): void => {
+              reject(signal?.reason ?? new Error("capacity wait aborted"));
+            };
+            if (signal?.aborted === true) rejectForAbort();
+            else signal?.addEventListener("abort", rejectForAbort, {
+              once: true,
+            });
+          }),
+      ),
+    } as unknown as AgentRegistry;
+    _setAgentControlForTesting(session, {
+      control: {} as never,
+      registry,
+    });
+    let activeLeases = 0;
+    const provider: CsvAgentJobsRepositoryProvider = {
+      async withRepository<Result>(_workspaceRoot, operation) {
+        activeLeases += 1;
+        try {
+          return await operation(repository, new AbortController().signal);
+        } finally {
+          activeLeases -= 1;
+        }
+      },
+    };
+
+    try {
+      const first = resumeInterruptedAgentJobs({
+        session,
+        workspaceRoot: cwd,
+        csvAgentJobsRepositories: provider,
+      });
+      await enteredRecovery;
+      const alias = resumeInterruptedAgentJobs({
+        session,
+        workspaceRoot: `${cwd}/.`,
+        csvAgentJobsRepositories: provider,
+      });
+      releaseRecovery();
+
+      await expect(Promise.all([first, alias])).resolves.toEqual([1, 1]);
+      expect(recoverySpy).toHaveBeenCalledTimes(1);
+      expect(ownershipSpy).toHaveBeenCalledTimes(1);
+      expect(activeLeases).toBe(2);
+
+      await shutdownCsvJobRecoverySupervisor(cwd);
+      await vi.waitFor(() => expect(activeLeases).toBe(0));
+    } finally {
+      await shutdownCsvJobRecoverySupervisor(cwd);
+      await shutdownCsvJobRecoverySupervisor(`${cwd}/.`);
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
   it("adopts a crash-left registration without replaying its ambiguous item", async () => {
     createJob("restart-job", 2);
     expect(repository.queueNextSupervisorJobPage(1)).toBe(1);

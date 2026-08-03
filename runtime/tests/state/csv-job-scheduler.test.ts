@@ -576,7 +576,7 @@ describe("CSV scheduler migration", () => {
     }
   });
 
-  it("backs up the v19 database before applying the additive v21 schema", () => {
+  it("backs up the v20 database before applying the additive v21 schema", () => {
     const paths = resolveStateDatabasePaths({ cwd });
     mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
     const legacy = new Database(paths.stateDbPath);
@@ -617,7 +617,7 @@ describe("CSV scheduler migration", () => {
         backup
           .prepare("SELECT MAX(version) AS version FROM schema_migrations")
           .get(),
-      ).toEqual({ version: 19 });
+      ).toEqual({ version: 20 });
       expect(
         backup
           .prepare("PRAGMA table_info(csv_agent_jobs)")

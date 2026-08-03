@@ -10,9 +10,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateSchemaMismatchError } from "./errors.js";
-import {
-  TOOL_PAIR_PROJECTION_SCHEMA_VERSION,
-} from "./migrations/020_tool_pair_projection_schema.js";
+import { CSV_JOB_SCHEDULER_SCHEMA_VERSION } from "./migrations/021_csv_job_scheduler.js";
 import {
   applyMigrations,
   openStateDatabases,
@@ -204,7 +202,7 @@ describe("openStateDatabases", () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
           .get()?.version,
-      ).toBe(TOOL_PAIR_PROJECTION_SCHEMA_VERSION);
+      ).toBe(CSV_JOB_SCHEDULER_SCHEMA_VERSION);
     } finally {
       driver.close();
     }
@@ -583,7 +581,9 @@ function seedCurrentMainStateWithoutMigration19(): ReturnType<
   try {
     applyMigrations(
       raw,
-      STATE_DB_MIGRATIONS.filter((migration) => migration.version !== 19),
+      STATE_DB_MIGRATIONS.filter(
+        (migration) => migration.version !== 19 && migration.version !== 21,
+      ),
     );
     raw
       .prepare(

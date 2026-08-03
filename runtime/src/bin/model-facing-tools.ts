@@ -1533,7 +1533,21 @@ interface OwnedCsvRecoverySupervisor {
   readonly terminalObservation: Promise<void>;
 }
 
-const csvRecoverySupervisors = new Map<string, OwnedCsvRecoverySupervisor>();
+interface CsvRecoverySupervisorLease {
+  readonly repository: CsvAgentJobsRepository;
+  readonly workspaceRoots: Set<string>;
+  readonly initialization: Promise<OwnedCsvRecoverySupervisor | null>;
+}
+
+const csvRecoverySupervisorLeases = new WeakMap<
+  CsvAgentJobsRepository,
+  CsvRecoverySupervisorLease
+>();
+const csvRecoverySupervisorWorkspaces = new Map<
+  string,
+  CsvRecoverySupervisorLease
+>();
+
 function currentAgentContext(
   session: Session,
   args: Record<string, unknown>,
@@ -4082,28 +4096,126 @@ export async function resumeInterruptedAgentJobs(opts: {
   readonly csvAgentJobsRepositories: CsvAgentJobsRepositoryProvider;
   readonly signal?: AbortSignal;
 }): Promise<number> {
-  return opts.csvAgentJobsRepositories.withRepository(
+  let resolveStartup!: (startedJobs: number) => void;
+  let rejectStartup!: (error: unknown) => void;
+  const startup = new Promise<number>((resolve, reject) => {
+    resolveStartup = resolve;
+    rejectStartup = reject;
+  });
+  const repositoryLease = opts.csvAgentJobsRepositories.withRepository(
     opts.workspaceRoot,
-    (repository, signal) =>
-      resumeInterruptedAgentJobsWithRepository({
-        session: opts.session,
-        workspaceRoot: opts.workspaceRoot,
-        repository,
-        signal,
-      }),
+    async (repository, signal) => {
+      try {
+        const lease = getOrCreateCsvRecoverySupervisorLease({
+          session: opts.session,
+          workspaceRoot: opts.workspaceRoot,
+          repository,
+          signal,
+        });
+        const owned = await lease.initialization;
+        if (owned === null) {
+          resolveStartup(0);
+          return;
+        }
+        resolveStartup(await owned.supervisor.start());
+        await owned.terminalObservation;
+      } catch (error) {
+        rejectStartup(error);
+        throw error;
+      }
+    },
     { ...(opts.signal !== undefined ? { signal: opts.signal } : {}) },
   );
+  void repositoryLease.catch((error: unknown) => {
+    rejectStartup(error);
+    logError(error);
+  });
+  return startup;
 }
 
-async function resumeInterruptedAgentJobsWithRepository(opts: {
+function getOrCreateCsvRecoverySupervisorLease(opts: {
   readonly session: Session;
   readonly workspaceRoot: string;
   readonly repository: CsvAgentJobsRepository;
   readonly signal?: AbortSignal;
-}): Promise<number> {
+}): CsvRecoverySupervisorLease {
   opts.signal?.throwIfAborted();
-  const existing = csvRecoverySupervisors.get(opts.workspaceRoot);
-  if (existing !== undefined) return existing.supervisor.start();
+  const existing = csvRecoverySupervisorLeases.get(opts.repository);
+  if (existing !== undefined) {
+    registerCsvRecoveryWorkspace(existing, opts.workspaceRoot);
+    return existing;
+  }
+
+  let resolveInitialization!: (
+    owned: OwnedCsvRecoverySupervisor | null,
+  ) => void;
+  let rejectInitialization!: (error: unknown) => void;
+  const initialization = new Promise<OwnedCsvRecoverySupervisor | null>(
+    (resolve, reject) => {
+      resolveInitialization = resolve;
+      rejectInitialization = reject;
+    },
+  );
+  const lease: CsvRecoverySupervisorLease = {
+    repository: opts.repository,
+    workspaceRoots: new Set<string>(),
+    initialization,
+  };
+  csvRecoverySupervisorLeases.set(opts.repository, lease);
+  registerCsvRecoveryWorkspace(lease, opts.workspaceRoot);
+  void initializeCsvRecoverySupervisor(opts).then(
+    resolveInitialization,
+    rejectInitialization,
+  );
+  void initialization.then(
+    (owned) => {
+      if (owned === null) {
+        forgetCsvRecoverySupervisorLease(lease);
+        return;
+      }
+      void owned.terminalObservation.then(
+        () => forgetCsvRecoverySupervisorLease(lease),
+        () => forgetCsvRecoverySupervisorLease(lease),
+      );
+    },
+    () => forgetCsvRecoverySupervisorLease(lease),
+  );
+  return lease;
+}
+
+function registerCsvRecoveryWorkspace(
+  lease: CsvRecoverySupervisorLease,
+  workspaceRoot: string,
+): void {
+  const prior = csvRecoverySupervisorWorkspaces.get(workspaceRoot);
+  if (prior !== undefined && prior !== lease) {
+    prior.workspaceRoots.delete(workspaceRoot);
+  }
+  lease.workspaceRoots.add(workspaceRoot);
+  csvRecoverySupervisorWorkspaces.set(workspaceRoot, lease);
+}
+
+function forgetCsvRecoverySupervisorLease(
+  lease: CsvRecoverySupervisorLease,
+): void {
+  if (csvRecoverySupervisorLeases.get(lease.repository) === lease) {
+    csvRecoverySupervisorLeases.delete(lease.repository);
+  }
+  for (const workspaceRoot of lease.workspaceRoots) {
+    if (csvRecoverySupervisorWorkspaces.get(workspaceRoot) === lease) {
+      csvRecoverySupervisorWorkspaces.delete(workspaceRoot);
+    }
+  }
+  lease.workspaceRoots.clear();
+}
+
+async function initializeCsvRecoverySupervisor(opts: {
+  readonly session: Session;
+  readonly workspaceRoot: string;
+  readonly repository: CsvAgentJobsRepository;
+  readonly signal?: AbortSignal;
+}): Promise<OwnedCsvRecoverySupervisor | null> {
+  opts.signal?.throwIfAborted();
   const repository = opts.repository;
   const outputRootCapability = createCsvOutputRootCapability(
     opts.workspaceRoot,
@@ -4112,7 +4224,7 @@ async function resumeInterruptedAgentJobsWithRepository(opts: {
     signal: opts.signal,
   });
   if (repository.listRunnableJobsPage({ limit: 1 }).jobs.length === 0) {
-    return 0;
+    return null;
   }
   const { control, registry } = ensureAgentControl(opts.session);
   const { backgroundTaskLifecycle, registerAgentThreadTask } =
@@ -4238,44 +4350,29 @@ async function resumeInterruptedAgentJobsWithRepository(opts: {
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     onError: logError,
   });
-  let terminalObservation!: Promise<void>;
   const owned: OwnedCsvRecoverySupervisor = {
     supervisor,
-    terminalObservation: (terminalObservation = supervisor
-      .waitForCompletion()
-      .then(
-        () => {
-          if (
-            csvRecoverySupervisors.get(opts.workspaceRoot)
-              ?.terminalObservation === terminalObservation
-          ) {
-            csvRecoverySupervisors.delete(opts.workspaceRoot);
-          }
-        },
-        () => {
-          if (
-            csvRecoverySupervisors.get(opts.workspaceRoot)
-              ?.terminalObservation === terminalObservation
-          ) {
-            csvRecoverySupervisors.delete(opts.workspaceRoot);
-          }
-        },
-      )),
+    terminalObservation: supervisor.waitForCompletion().then(
+      () => undefined,
+      () => undefined,
+    ),
   };
-  csvRecoverySupervisors.set(opts.workspaceRoot, owned);
-  return supervisor.start();
+  return owned;
 }
 
 export async function shutdownCsvJobRecoverySupervisor(
   workspaceRoot: string,
 ): Promise<void> {
-  const owned = csvRecoverySupervisors.get(workspaceRoot);
-  if (owned === undefined) return;
+  const lease = csvRecoverySupervisorWorkspaces.get(workspaceRoot);
+  if (lease === undefined) return;
+  const owned = await lease.initialization;
+  if (owned === null) {
+    forgetCsvRecoverySupervisorLease(lease);
+    return;
+  }
   await owned.supervisor.shutdown();
   await owned.terminalObservation;
-  if (csvRecoverySupervisors.get(workspaceRoot) === owned) {
-    csvRecoverySupervisors.delete(workspaceRoot);
-  }
+  forgetCsvRecoverySupervisorLease(lease);
 }
 
 export async function startCronSchedulerRunner(opts: {

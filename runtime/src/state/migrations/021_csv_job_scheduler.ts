@@ -29,7 +29,7 @@ export const csvJobSchedulerMigration: SqlMigration = {
   name: "csv_job_scheduler",
   apply: (db) => {
     // Historical unit fixtures can record migration versions without creating
-    // the optional CSV tables. A real state database upgraded through v19 has
+    // the optional CSV tables. A real state database upgraded through v20 has
     // both tables and receives the additive scheduler schema.
     if (
       !tableExists(db, "csv_agent_jobs") ||
