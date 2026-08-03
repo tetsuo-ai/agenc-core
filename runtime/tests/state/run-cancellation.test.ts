@@ -28,7 +28,6 @@ import {
   importAgentState,
 } from "../../src/state/export-import.js";
 import { recoverDaemonStateOnStartup } from "../../src/state/recovery.js";
-import { BudgetLedger } from "../../src/budget/ledger.js";
 import {
   openStateDatabases,
   type StateSqliteDriver,
@@ -471,63 +470,5 @@ describe("state import over a cancel-locked run", () => {
     );
     // The refusal rolled the whole transaction back: run row untouched.
     expect(statusOf("locked_run")).toBe("cancelled");
-  });
-});
-
-describe("BudgetLedger.voidHoldsForAgent", () => {
-  it("releases open holds without touching recorded spend", () => {
-    const ledger = new BudgetLedger({
-      agencHome: home,
-      now: () => new Date("2026-07-18T00:10:00.000Z"),
-    });
-    ledger.addSpend("worker", 0.5, 1_000);
-    const reserved = ledger.tryReserve(
-      {
-        holdId: "hold-void-1",
-        agentId: "worker",
-        model: "test-model",
-        estimatedUsd: 2,
-        estimatedTokens: 4_000,
-        reservedAt: "2026-07-18T00:10:00.000Z",
-      },
-      () => null,
-    );
-    expect(reserved.reserved).toBe(true);
-    expect(ledger.listOpenHolds("worker")).toHaveLength(1);
-    expect(ledger.snapshot("worker").day.usd).toBeCloseTo(2.5, 10);
-
-    expect(ledger.voidHoldsForAgent("worker")).toBe(1);
-    expect(ledger.listOpenHolds("worker")).toHaveLength(0);
-    // Spend recorded before the hold is untouched; only the reservation
-    // debit was refunded.
-    expect(ledger.snapshot("worker").day.usd).toBeCloseTo(0.5, 10);
-    // Voiding again is a no-op.
-    expect(ledger.voidHoldsForAgent("worker")).toBe(0);
-  });
-
-  it("refunds the month window for a hold whose day already rolled (voided = full refund)", () => {
-    let now = new Date("2026-07-18T23:50:00.000Z");
-    const ledger = new BudgetLedger({ agencHome: home, now: () => now });
-    const reserved = ledger.tryReserve(
-      {
-        holdId: "hold-rolled-1",
-        agentId: "worker",
-        model: "test-model",
-        estimatedUsd: 4,
-        estimatedTokens: 8_000,
-        reservedAt: now.toISOString(),
-      },
-      () => null,
-    );
-    expect(reserved.reserved).toBe(true);
-    expect(ledger.snapshot("worker").month.usd).toBeCloseTo(4, 10);
-    // The day rolls (same month): the day debit is zeroed by the roll,
-    // but the month window still carries the hold's debit.
-    now = new Date("2026-07-19T00:10:00.000Z");
-    expect(ledger.voidHoldsForAgent("worker")).toBe(1);
-    expect(ledger.snapshot("worker").day.usd).toBeCloseTo(0, 10);
-    // `voided` is a FULL refund: the month debit is released too — unlike
-    // consumeHold's window_rolled, which keeps it (unknown usage).
-    expect(ledger.snapshot("worker").month.usd).toBeCloseTo(0, 10);
   });
 });

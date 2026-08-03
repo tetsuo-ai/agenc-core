@@ -34,21 +34,17 @@ the merge serializer spends its life reconciling them. This freeze is the
 
 ## 2. Admission + budget reservations (M3)
 
-Converges the existing `runtime/src/budget` policy/pricing machinery into one
-daemon-owned `ExecutionAdmissionKernel`; the surface `BudgetEnforcer` /
-`BudgetLedger` gates are retired from production rather than kept as a second
-engine:
+Converges the existing `runtime/src/budget` policy machinery into one
+daemon-owned `ExecutionAdmissionKernel`. The superseded file-backed budget
+gate has been removed, leaving SQLite as the sole durable authority:
 
-- `AdmissionRequest`/`AdmissionDecision` generalize today's
-  `AdmitRequest`/`AdmitResult` with: step identity, `kind`
+- `AdmissionRequest`/`AdmissionDecision` carry step identity, `kind`
   (`model_turn | tool_exec | spawn`), and the `allow | queue | deny |
   approval_required` decision vocabulary.
-- `BudgetReservation` adds what today's `BudgetHold` lacks: a durable
-  `reservationId` (the idempotency key for exactly-once reconcile) and
-  persistence. Holds move from in-memory to the state SQLite (pattern:
+- `BudgetReservation` has a durable `reservationId` (the idempotency key for
+  exactly-once reconcile) and is persisted in state SQLite (pattern:
   `runtime/src/state/csv-agent-jobs.ts`), so a crash between reserve and
-  reconcile is recoverable instead of a stranded debit. The ledger lockfile's
-  fail-open path is retired in the same change.
+  reconcile is recoverable instead of a stranded debit.
 - Resolution vocabulary: `reconciled | voided | held_unknown`. Unknown usage
   consumes its full reservation until recorded policy releases it.
 - One shared kernel instance is constructed at daemon bootstrap and injected

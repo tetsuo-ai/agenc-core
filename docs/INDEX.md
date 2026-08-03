@@ -71,7 +71,6 @@ history; the linked pages below are current product truth.
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, subsystem map, turn phases, recovery ladder, on-disk state |
 | [design/critical-path/README.md](design/critical-path/README.md) | Accepted target decisions for critical-path remediation; implementation is pending |
-| [design/budget-enforcement.md](design/budget-enforcement.md) | Historical budget research and superseded surface-ledger design |
 | [design/reproducible-installs-releases.md](design/reproducible-installs-releases.md) | M0 dependency, artifact, Docker, release, and crash-safe lock decisions |
 | [design/release-controller.md](design/release-controller.md) | Proposed one-command resumable release controller and automation safety contract |
 | [design/workspace-scoped-agent-roles.md](design/workspace-scoped-agent-roles.md) | Immutable workspace identity for role lookup, spawn, resume, and worktrees |
