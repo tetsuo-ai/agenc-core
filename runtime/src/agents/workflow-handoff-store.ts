@@ -1,6 +1,5 @@
 /** Crash-safe, quota-governed storage for workflow handoff bytes. */
 
-import { execFileSync } from "node:child_process";
 import { createHash, randomUUID, type Hash } from "node:crypto";
 import {
   chmodSync,
@@ -19,10 +18,14 @@ import {
   unlink,
   type FileHandle,
 } from "node:fs/promises";
-import { basename, join, resolve, win32 } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
-import { commitArtifactAtomically } from "../durability/atomic-artifact.js";
+import {
+  commitArtifactAtomically,
+  commitArtifactSourceAtomically,
+  type AtomicArtifactByteSource,
+} from "../durability/atomic-artifact.js";
 import type { StateSqliteDriver } from "../state/sqlite-driver.js";
 import {
   MAX_WORKFLOW_ARTIFACT_BYTES,
@@ -46,6 +49,7 @@ import {
   type WorkflowHandoffArtifact,
   type WorkflowHandoffOwner,
 } from "./workflow-handoff-schema.js";
+import { assertWindowsPrivatePathSecurity } from "./workflow-private-path.js";
 
 const ARTIFACT_ID_DIGEST_DOMAIN = "agenc.workflow-handoff.artifact-id.v2\0";
 const ARTIFACT_CONTENT_DIGEST_DOMAIN = "";
@@ -54,69 +58,7 @@ const ARTIFACT_FILE_MODE = 0o600;
 const ARTIFACT_ROOT_MODE = 0o700;
 const SHA256_PREFIX = "sha256:";
 const MAX_REFERENCE_FIELD_UTF8_BYTES = 1_024;
-const WINDOWS_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
-const WINDOWS_SECURITY_TIMEOUT_MS = 30_000;
-const WINDOWS_SECURITY_MAX_OUTPUT_BYTES = 1_048_576;
-const WINDOWS_HANDOFF_SECURITY_SCRIPT = String.raw`
-$ErrorActionPreference = 'Stop'
-$target = [System.IO.Path]::GetFullPath($env:AGENC_HANDOFF_SECURITY_PATH)
-$role = $env:AGENC_HANDOFF_SECURITY_ROLE
-$initialize = $env:AGENC_HANDOFF_SECURITY_INITIALIZE -eq '1'
-if (@('directory', 'file') -notcontains $role) { throw 'invalid role' }
-if ($target.StartsWith('\\') -or $target.StartsWith('\\?\') -or $target.StartsWith('\\.\')) {
-  throw 'network and device paths are unsupported'
-}
-$item = Get-Item -LiteralPath $target -Force
-if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-  throw 'reparse points are unsupported'
-}
-$drive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($target))
-if ($drive.DriveFormat -ne 'NTFS') { throw 'NTFS is required' }
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-if ($initialize) {
-  if ($role -eq 'directory') {
-    $acl = [System.Security.AccessControl.DirectorySecurity]::new()
-    $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-  } else {
-    $acl = [System.Security.AccessControl.FileSecurity]::new()
-    $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
-  }
-  $acl.SetOwner($sid)
-  $acl.SetAccessRuleProtection($true, $false)
-  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-    $sid,
-    [System.Security.AccessControl.FileSystemRights]::FullControl,
-    $inheritance,
-    [System.Security.AccessControl.PropagationFlags]::None,
-    [System.Security.AccessControl.AccessControlType]::Allow
-  )
-  [void]$acl.AddAccessRule($rule)
-  Set-Acl -LiteralPath $target -AclObject $acl
-}
-$verified = Get-Acl -LiteralPath $target
-if (-not $verified.AreAccessRulesProtected) { throw 'inherited ACL is unsupported' }
-if ($verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) {
-  throw 'path owner is not the current user'
-}
-$rules = @($verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-$hasFullControl = $false
-foreach ($rule in $rules) {
-  if ($rule.IsInherited) { throw 'inherited ACE is unsupported' }
-  if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
-    throw 'deny ACE is unsupported'
-  }
-  if ($rule.IdentityReference.Value -ne $sid.Value) { throw 'foreign ACE is unsupported' }
-  if (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq [System.Security.AccessControl.FileSystemRights]::FullControl) {
-    $hasFullControl = $true
-  }
-}
-if (-not $hasFullControl) { throw 'current-user full-control ACE is missing' }
-[Console]::Out.Write('OK')
-`;
-const WINDOWS_HANDOFF_SECURITY_SCRIPT_BASE64 = Buffer.from(
-  WINDOWS_HANDOFF_SECURITY_SCRIPT,
-  "utf16le",
-).toString("base64");
+const SOURCE_COPY_BYTES = 64 * 1_024;
 
 export type WorkflowHandoffStatus =
   | "intent"
@@ -181,6 +123,13 @@ export interface PublishWorkflowHandoffOptions {
   readonly owner: WorkflowHandoffOwner;
   readonly idempotencyKey: string;
   readonly bytes: Uint8Array;
+  readonly tokenCount: number;
+}
+
+export interface PublishWorkflowHandoffSourceOptions {
+  readonly owner: WorkflowHandoffOwner;
+  readonly idempotencyKey: string;
+  readonly source: AtomicArtifactByteSource;
   readonly tokenCount: number;
 }
 
@@ -357,6 +306,84 @@ export class WorkflowHandoffArtifactStore {
         trustedRoot: this.#trustedRoot,
         mode: ARTIFACT_FILE_MODE,
       });
+    }
+    await this.#hooks.afterArtifactInstalled?.(artifactId);
+    return metadataFromRow(
+      this.#commitIntent(artifactId, currentTime(this.#now)),
+    );
+  }
+
+  /** Publish a repeatable spill source without materializing its full bytes. */
+  async publishSource(
+    options: PublishWorkflowHandoffSourceOptions,
+  ): Promise<WorkflowHandoffArtifact> {
+    const now = currentTime(this.#now);
+    const owner = validateOwner(options.owner);
+    const idempotencyKey = validateBoundedString(
+      options.idempotencyKey,
+      "idempotency key",
+      MAX_WORKFLOW_ARTIFACT_IDEMPOTENCY_KEY_UTF8_BYTES,
+    );
+    if (
+      !Number.isSafeInteger(options.tokenCount) ||
+      options.tokenCount < 0 ||
+      options.tokenCount > MAX_WORKFLOW_STEP_RESULT_TOKENS
+    ) {
+      throw storeError(
+        "WORKFLOW_HANDOFF_INVALID",
+        `workflow handoff token count must be between 0 and ${MAX_WORKFLOW_STEP_RESULT_TOKENS}`,
+      );
+    }
+    if (
+      Number.isSafeInteger(options.source.byteLength) &&
+      options.source.byteLength > MAX_WORKFLOW_ARTIFACT_BYTES
+    ) {
+      throw storeError(
+        "WORKFLOW_HANDOFF_QUOTA",
+        `workflow handoff exceeds ${MAX_WORKFLOW_ARTIFACT_BYTES} bytes`,
+      );
+    }
+    const inspected = await inspectWorkflowHandoffSource(options.source);
+    const artifactId = artifactIdFor(owner, idempotencyKey);
+    const desired = Object.freeze({
+      artifactId,
+      owner,
+      idempotencyKey,
+      digest: `${SHA256_PREFIX}${inspected.sha256}`,
+      byteLength: inspected.byteLength,
+      tokenCount: options.tokenCount,
+      storageRef: storageReference(artifactId),
+      preview: inspected.preview,
+      previewTruncated:
+        Buffer.byteLength(inspected.preview, "utf8") < inspected.byteLength,
+      now,
+    });
+
+    const reserved = this.#reserveIntent(desired);
+    if (reserved.status === "committed") {
+      await this.#assertCommittedFile(reserved);
+      return metadataFromRow(reserved);
+    }
+    if (reserved.status !== "intent") {
+      throw storeError(
+        "WORKFLOW_HANDOFF_CONFLICT",
+        `workflow handoff ${artifactId} is ${reserved.status} and cannot be published`,
+      );
+    }
+
+    await this.#hooks.afterIntentReserved?.(artifactId);
+    if (process.platform === "win32") {
+      await commitWindowsArtifactSourceAtomically(
+        this.#artifactPath(artifactId),
+        this.#trustedRoot,
+        options.source,
+      );
+    } else {
+      await commitArtifactSourceAtomically(
+        this.#artifactPath(artifactId),
+        options.source,
+        { trustedRoot: this.#trustedRoot, mode: ARTIFACT_FILE_MODE },
+      );
     }
     await this.#hooks.afterArtifactInstalled?.(artifactId);
     return metadataFromRow(
@@ -1728,6 +1755,69 @@ async function descriptorOperationRoot(
   return undefined;
 }
 
+async function inspectWorkflowHandoffSource(
+  source: AtomicArtifactByteSource,
+): Promise<{
+  readonly byteLength: number;
+  readonly sha256: string;
+  readonly preview: string;
+}> {
+  if (
+    !Number.isSafeInteger(source.byteLength) ||
+    source.byteLength < 0 ||
+    !/^[0-9a-f]{64}$/u.test(source.sha256) ||
+    typeof source.chunks !== "function"
+  ) {
+    throw storeError(
+      "WORKFLOW_HANDOFF_INVALID",
+      "workflow handoff source metadata is invalid",
+    );
+  }
+  const hash = createHash("sha256");
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let byteLength = 0;
+  let preview = "";
+  let previewOpen = true;
+  const acceptText = (text: string): void => {
+    if (!previewOpen || text.length === 0) return;
+    const remaining =
+      MAX_WORKFLOW_STEP_PREVIEW_BYTES - Buffer.byteLength(preview, "utf8");
+    const prefix = remaining > 0 ? boundedUtf8Prefix(text, remaining) : "";
+    preview += prefix;
+    if (Buffer.byteLength(prefix, "utf8") < Buffer.byteLength(text, "utf8")) {
+      previewOpen = false;
+    }
+  };
+  try {
+    for await (const value of source.chunks()) {
+      if (!(value instanceof Uint8Array)) {
+        throw new TypeError("workflow handoff source emitted a non-byte chunk");
+      }
+      byteLength += value.byteLength;
+      if (byteLength > source.byteLength) {
+        throw new TypeError("workflow handoff source exceeded its length");
+      }
+      hash.update(value);
+      acceptText(decoder.decode(value, { stream: true }));
+    }
+    acceptText(decoder.decode());
+  } catch (cause) {
+    throw storeError(
+      "WORKFLOW_HANDOFF_INVALID",
+      "workflow handoff source must be stable valid UTF-8",
+      cause,
+    );
+  }
+  const sha256 = hash.digest("hex");
+  if (byteLength !== source.byteLength || sha256 !== source.sha256) {
+    throw storeError(
+      "WORKFLOW_HANDOFF_INVALID",
+      "workflow handoff source length or digest does not match",
+    );
+  }
+  return Object.freeze({ byteLength, sha256, preview });
+}
+
 async function commitWindowsArtifactAtomically(
   targetPath: string,
   trustedRoot: string,
@@ -1822,6 +1912,195 @@ async function commitWindowsArtifactAtomically(
   }
 }
 
+async function commitWindowsArtifactSourceAtomically(
+  targetPath: string,
+  trustedRoot: string,
+  source: AtomicArtifactByteSource,
+): Promise<void> {
+  const rootBefore = lstatSync(trustedRoot, { bigint: true });
+  const canonicalRoot = realpathSync(trustedRoot);
+  if (!safePrivateDirectory(rootBefore)) {
+    throw storeError(
+      "WORKFLOW_HANDOFF_UNSAFE_ROOT",
+      "workflow handoff Windows root is not a real directory",
+    );
+  }
+  assertWindowsPrivatePath(canonicalRoot, "directory", false);
+  if (
+    resolve(join(canonicalRoot, basename(targetPath))) !== resolve(targetPath) ||
+    resolve(targetPath) === canonicalRoot
+  ) {
+    throw storeError(
+      "WORKFLOW_HANDOFF_UNSAFE_ROOT",
+      "workflow handoff Windows target is outside its trusted root",
+    );
+  }
+
+  const temporaryPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
+  let temporaryExists = false;
+  try {
+    const handle = await open(
+      temporaryPath,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_EXCL |
+        noFollowFlag(),
+      ARTIFACT_FILE_MODE,
+    );
+    temporaryExists = true;
+    try {
+      const before = await handle.stat({ bigint: true });
+      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
+        throw storeError(
+          "WORKFLOW_HANDOFF_UNSAFE_ROOT",
+          "workflow handoff Windows temporary file is unsafe",
+        );
+      }
+      await copyWorkflowHandoffSource(handle, source);
+      await handle.sync();
+      const after = await handle.stat({ bigint: true });
+      if (
+        !sameIdentity(before, after) ||
+        after.size !== BigInt(source.byteLength)
+      ) {
+        throw storeError(
+          "WORKFLOW_HANDOFF_UNSAFE_ROOT",
+          "workflow handoff Windows temporary file changed while writing",
+        );
+      }
+    } finally {
+      await handle.close();
+    }
+    assertWindowsPrivatePath(temporaryPath, "file", true);
+
+    try {
+      await link(temporaryPath, targetPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const existing = await digestWindowsArtifactCandidate(targetPath);
+      if (
+        existing === undefined ||
+        existing.byteLength !== source.byteLength ||
+        existing.sha256 !== source.sha256
+      ) {
+        throw storeError(
+          "WORKFLOW_HANDOFF_CONFLICT",
+          "workflow handoff Windows target already contains different bytes",
+          error,
+        );
+      }
+    }
+    await unlink(temporaryPath);
+    temporaryExists = false;
+    assertWindowsPrivatePath(targetPath, "file", false);
+
+    const rootAfter = lstatSync(trustedRoot, { bigint: true });
+    const canonicalAfter = realpathSync(trustedRoot);
+    assertWindowsPrivatePath(canonicalAfter, "directory", false);
+    if (
+      canonicalAfter !== canonicalRoot ||
+      !sameIdentity(rootBefore, rootAfter) ||
+      !safePrivateDirectory(rootAfter)
+    ) {
+      throw storeError(
+        "WORKFLOW_HANDOFF_UNSAFE_ROOT",
+        "workflow handoff Windows root changed during publication",
+      );
+    }
+  } finally {
+    if (temporaryExists) await unlink(temporaryPath).catch(() => {});
+  }
+}
+
+async function copyWorkflowHandoffSource(
+  handle: FileHandle,
+  source: AtomicArtifactByteSource,
+): Promise<void> {
+  const hash = createHash("sha256");
+  let byteLength = 0;
+  let position = 0;
+  for await (const value of source.chunks()) {
+    if (!(value instanceof Uint8Array)) {
+      throw new TypeError("workflow handoff source emitted a non-byte chunk");
+    }
+    byteLength += value.byteLength;
+    if (byteLength > source.byteLength) {
+      throw new TypeError("workflow handoff source exceeded its length");
+    }
+    hash.update(value);
+    const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    let offset = 0;
+    while (offset < chunk.byteLength) {
+      const write = await handle.write(
+        chunk,
+        offset,
+        chunk.byteLength - offset,
+        position,
+      );
+      if (write.bytesWritten < 1) {
+        throw new Error("workflow handoff source write made no progress");
+      }
+      offset += write.bytesWritten;
+      position += write.bytesWritten;
+    }
+  }
+  if (
+    byteLength !== source.byteLength ||
+    hash.digest("hex") !== source.sha256
+  ) {
+    throw new TypeError("workflow handoff source length or digest changed");
+  }
+}
+
+async function digestWindowsArtifactCandidate(
+  path: string,
+): Promise<
+  { readonly byteLength: number; readonly sha256: string } | undefined
+> {
+  let pathBefore: BigIntStats;
+  try {
+    pathBefore = await lstat(path, { bigint: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) return undefined;
+  assertWindowsPrivatePath(path, "file", false);
+  const handle = await open(path, fsConstants.O_RDONLY | noFollowFlag());
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!sameSnapshot(pathBefore, opened)) return undefined;
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(SOURCE_COPY_BYTES);
+    let byteLength = 0;
+    while (true) {
+      const read = await handle.read(
+        buffer,
+        0,
+        buffer.byteLength,
+        byteLength,
+      );
+      if (read.bytesRead === 0) break;
+      hash.update(buffer.subarray(0, read.bytesRead));
+      byteLength += read.bytesRead;
+    }
+    const [after, pathAfter] = await Promise.all([
+      handle.stat({ bigint: true }),
+      lstat(path, { bigint: true }),
+    ]);
+    if (
+      !sameSnapshot(opened, after) ||
+      !sameSnapshot(after, pathAfter) ||
+      after.size !== BigInt(byteLength)
+    ) {
+      return undefined;
+    }
+    return { byteLength, sha256: hash.digest("hex") };
+  } finally {
+    await handle.close();
+  }
+}
+
 async function readWindowsArtifactCandidate(
   path: string,
 ): Promise<Buffer | undefined> {
@@ -1856,65 +2135,13 @@ function assertWindowsPrivatePath(
   role: "directory" | "file",
   initialize: boolean,
 ): void {
-  if (process.platform !== "win32") return;
-  const workingDirectory = win32.join(WINDOWS_SYSTEM_ROOT, "System32");
-  const executable = win32.join(
-    workingDirectory,
-    "WindowsPowerShell",
-    "v1.0",
-    "powershell.exe",
-  );
-  let output: Buffer;
   try {
-    output = execFileSync(
-      executable,
-      [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-EncodedCommand",
-        WINDOWS_HANDOFF_SECURITY_SCRIPT_BASE64,
-      ],
-      {
-        cwd: workingDirectory,
-        encoding: "buffer",
-        env: {
-          AGENC_HANDOFF_SECURITY_INITIALIZE: initialize ? "1" : "0",
-          AGENC_HANDOFF_SECURITY_PATH: path,
-          AGENC_HANDOFF_SECURITY_ROLE: role,
-          APPDATA: "",
-          COMSPEC: "",
-          HOMEDRIVE: "",
-          HOMEPATH: "",
-          LOCALAPPDATA: "",
-          LOGONSERVER: "",
-          PATH: workingDirectory,
-          PATHEXT: ".EXE",
-          PSMODULEPATH: "",
-          SYSTEMROOT: WINDOWS_SYSTEM_ROOT,
-          TEMP: workingDirectory,
-          TMP: workingDirectory,
-          USERDOMAIN: "",
-          USERNAME: "",
-          USERPROFILE: workingDirectory,
-          WINDIR: WINDOWS_SYSTEM_ROOT,
-        },
-        maxBuffer: WINDOWS_SECURITY_MAX_OUTPUT_BYTES,
-        timeout: WINDOWS_SECURITY_TIMEOUT_MS,
-        windowsHide: true,
-      },
-    );
+    assertWindowsPrivatePathSecurity(path, role, initialize);
   } catch (cause) {
     throw storeError(
       "WORKFLOW_HANDOFF_UNSAFE_ROOT",
       `workflow handoff Windows ACL validation failed for ${path}`,
       cause,
-    );
-  }
-  if (output.toString("utf8") !== "OK") {
-    throw storeError(
-      "WORKFLOW_HANDOFF_UNSAFE_ROOT",
-      `workflow handoff Windows ACL validation returned an invalid response for ${path}`,
     );
   }
 }

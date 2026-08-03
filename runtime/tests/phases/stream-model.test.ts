@@ -24,6 +24,8 @@ import type {
   ExecutionAdmissionClient,
 } from "../budget/admission-client.js";
 import type { AdmissionLease } from "../budget/admission-types.js";
+import { WorkflowHandoffSpool } from "../agents/workflow-handoff-spool.js";
+import { OpenAIProvider } from "../llm/providers/openai/adapter.js";
 
 const streamedDispatchCalls: string[] = [];
 
@@ -222,6 +224,30 @@ function mkProvider(
   };
 }
 
+function openAiSseResponse(frames: readonly string[]): Response {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const frame of frames) controller.enqueue(encoder.encode(frame));
+        controller.close();
+      },
+    }),
+    {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    },
+  );
+}
+
+async function readSpoolText(spool: WorkflowHandoffSpool): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of spool.seal().chunks()) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 function mkRegistry(tools: Tool[]): ToolRegistry {
   return {
     tools,
@@ -251,7 +277,176 @@ function mkRegistry(tools: Tool[]): ToolRegistry {
 }
 
 describe("streamModel — live assistant text sanitization", () => {
-  test("forwards reasoning summary and session-scoped transport hints to the provider", async () => {
+  test("writes provider text deltas to the assistant output sink", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    const sink = {
+      reset: vi.fn(),
+      writeCanonicalDelta: vi.fn(),
+    };
+    const provider = mkProvider(async (_messages, onChunk) => {
+      onChunk({ content: "hello ", done: false });
+      onChunk({ content: "", done: false, resetBuffer: true });
+      onChunk({ content: "world", done: false });
+      return {
+        content: "world",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "hello" }]),
+      undefined,
+      sink,
+    );
+
+    expect(sink.reset).toHaveBeenCalledTimes(2);
+    expect(sink.writeCanonicalDelta.mock.calls).toEqual([
+      ["hello "],
+      ["world"],
+    ]);
+  });
+
+  test("keeps reasoning-channel deltas out of canonical assistant output", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    let canonicalOutput = "";
+    const sink = {
+      reset: vi.fn(() => {
+        canonicalOutput = "";
+      }),
+      writeCanonicalDelta: vi.fn((delta: string) => {
+        canonicalOutput += delta;
+      }),
+    };
+    const provider = mkProvider(async (_messages, onChunk) => {
+      onChunk({
+        content: "",
+        done: false,
+        reasoningSummaryDelta: { delta: "hidden reasoning", summaryIndex: 0 },
+      });
+      onChunk({ content: "Visible answer", done: false });
+      return {
+        content: "Visible answer",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "hello" }]),
+      undefined,
+      sink,
+    );
+
+    expect(canonicalOutput).toBe("Visible answer");
+    expect(canonicalOutput).not.toContain("hidden reasoning");
+  });
+
+  test("keeps a reasoning-only OpenAI-compatible stream out of the workflow spool", async () => {
+    const hiddenReasoning = "private chain of thought";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      openAiSseResponse([
+        `data: {"id":"chatcmpl_hidden","model":"reasoner","choices":[{"index":0,"delta":{"reasoning_content":"${hiddenReasoning}"}}]}\n\n`,
+        'data: {"id":"chatcmpl_hidden","model":"reasoner","choices":[{"index":0,"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "reasoner",
+      useResponsesApi: false,
+      fetchImpl,
+    });
+    const spool = WorkflowHandoffSpool.create({
+      maximumBytes: 1_024,
+      maximumTokens: 1_024,
+    });
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    const { session, events } = mkSession(provider);
+
+    try {
+      await streamModel(
+        state,
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "think privately" }]),
+        undefined,
+        spool,
+      );
+
+      expect(await readSpoolText(spool)).toBe("");
+      expect(
+        events.some(
+          (event) =>
+            event.msg.type === "assistant_thinking_delta" &&
+            event.msg.payload.delta.includes(hiddenReasoning),
+        ),
+      ).toBe(true);
+      expect(
+        events.some(
+          (event) =>
+            event.msg.type === "agent_message" &&
+            event.msg.payload.message.includes(hiddenReasoning),
+        ),
+      ).toBe(false);
+    } finally {
+      await spool.dispose();
+    }
+  });
+
+  test("aborts the provider scope when the assistant output sink rejects a delta", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    const limitError = new Error("assistant output exceeds handoff limit");
+    let providerSignalAborted = false;
+    const sink = {
+      reset: vi.fn(),
+      writeCanonicalDelta: vi.fn(() => {
+        throw limitError;
+      }),
+    };
+    const provider = mkProvider(async (_messages, onChunk, options) => {
+      try {
+        onChunk({ content: "too large", done: false });
+      } finally {
+        providerSignalAborted = options?.signal?.aborted === true;
+      }
+      throw new Error("unreachable");
+    });
+    const { session } = mkSession(provider);
+
+    await expect(
+      streamModel(
+        state,
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "hello" }]),
+        undefined,
+        sink,
+      ),
+    ).rejects.toThrow(limitError.message);
+
+    expect(providerSignalAborted).toBe(true);
+    expect(sink.reset).toHaveBeenCalledTimes(1);
+    expect(sink.writeCanonicalDelta).toHaveBeenCalledTimes(1);
+  });
+
+  test("forwards reasoning summary and session-scoped transport hints", async () => {
     const ctx = mkCtx("chat");
     (ctx as TurnContext & { reasoningEffort?: "high" }).reasoningEffort = "high";
     (ctx as TurnContext & { reasoningSummary: "detailed" }).reasoningSummary =
@@ -739,6 +934,15 @@ describe("streamModel — live assistant text sanitization", () => {
       };
     });
     const { session, events } = mkSession(provider);
+    let canonicalOutput = "";
+    const sink = {
+      reset: vi.fn(() => {
+        canonicalOutput = "";
+      }),
+      writeCanonicalDelta: vi.fn((delta: string) => {
+        canonicalOutput += delta;
+      }),
+    };
 
     await streamModel(
       state,
@@ -746,6 +950,7 @@ describe("streamModel — live assistant text sanitization", () => {
       session,
       mkRequest([{ role: "user", content: "hello" }]),
       undefined,
+      sink,
     );
 
     const deltas = events.filter((event) => event.msg.type === "agent_message_delta");
@@ -765,7 +970,10 @@ describe("streamModel — live assistant text sanitization", () => {
     expect(finalMessage).toBeDefined();
     if (finalMessage?.msg.type === "agent_message") {
       expect(finalMessage.msg.payload.message).toBe("Hello  world");
+      expect(canonicalOutput).toBe(finalMessage.msg.payload.message);
     }
+    expect(canonicalOutput).not.toContain("oai-mem-citation");
+    expect(canonicalOutput).not.toContain("[Approval Required]");
 
     const warnings = events.filter((event) => event.msg.type === "warning");
     expect(warnings.some((event) => (

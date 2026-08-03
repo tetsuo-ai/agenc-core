@@ -40,6 +40,7 @@ import type {
   RunAgentResult,
 } from "./run-agent.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
+import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import { emitWarning } from "../session/event-log.js";
 import { AgentThread as AgentThreadClass } from "./thread.js";
 import { forkSubagent } from "./fork-context.js";
@@ -62,6 +63,8 @@ import {
 // ─────────────────────────────────────────────────────────────────────
 
 export type IsolationMode = "none" | "cwd" | "worktree";
+
+export type DelegateFinalMessageSink = AssistantOutputStreamSink;
 
 export interface DelegateOpts {
   readonly parent: Session;
@@ -103,6 +106,11 @@ export interface DelegateOpts {
     event: RunAgentProgressEvent,
     thread: AgentThread,
   ) => void | Promise<void>;
+  /**
+   * When provided, provider assistant-text deltas are consumed at the model
+   * stream boundary and the returned RunAgentResult never includes finalMessage.
+   */
+  readonly finalMessageSink?: DelegateFinalMessageSink;
 }
 
 export type DelegateOutcome =
@@ -381,6 +389,9 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         : {}),
       ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
       ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
+      ...(opts.finalMessageSink !== undefined
+        ? { finalMessageSink: opts.finalMessageSink }
+        : {}),
       onRoleProvenanceFailure: () => {
         preserveLiveAfterRoleProvenanceFailure = true;
       },
@@ -481,16 +492,30 @@ async function markAsyncThreadSpawnEdgeClosed(opts: {
 async function runToCompletion(
   params: Parameters<typeof runAgent>[0],
   onProgress?: (event: RunAgentProgressEvent) => void | Promise<void>,
+  finalMessageSink?: DelegateFinalMessageSink,
 ): Promise<RunAgentResult> {
   const iter = runAgent(params);
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const step = await iter.next();
     if (step.done) {
-      return step.value;
+      if (finalMessageSink === undefined) return step.value;
+      return withoutFinalMessage(step.value);
     }
     await onProgress?.(step.value);
   }
+}
+
+function withoutFinalMessage(result: RunAgentResult): RunAgentResult {
+  return {
+    threadId: result.threadId,
+    durationMs: result.durationMs,
+    outcome: result.outcome,
+    ...(result.error === undefined ? {} : { error: result.error }),
+    ...(result.toolCallCount === undefined
+      ? {}
+      : { toolCallCount: result.toolCallCount }),
+  };
 }
 
 async function runDelegateAgentLoop(opts: {
@@ -517,6 +542,7 @@ async function runDelegateAgentLoop(opts: {
     event: RunAgentProgressEvent,
     thread: AgentThread,
   ) => void | Promise<void>;
+  readonly finalMessageSink?: DelegateFinalMessageSink;
   readonly onRoleProvenanceFailure: () => void;
 }): Promise<RunAgentResult> {
   while (true) {
@@ -551,6 +577,9 @@ async function runDelegateAgentLoop(opts: {
           ? { serviceTier: opts.serviceTier }
           : {}),
         ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
+        ...(opts.finalMessageSink !== undefined
+          ? { finalMessageSink: opts.finalMessageSink }
+          : {}),
         onCacheSafeParams: (params) => {
           opts.thread.setSummaryCacheSafeParams(params);
         },
@@ -559,6 +588,7 @@ async function runDelegateAgentLoop(opts: {
         opts.thread.recordSummaryProgressEvent(event);
         return opts.onProgress?.(event, opts.thread);
       },
+      opts.finalMessageSink,
     );
 
     if (result.outcome !== "errored") {

@@ -13,15 +13,14 @@ import {
   type ThreadId,
 } from "../agents/registry.js";
 import { loadNamedWorkflowManifest } from "../agents/workflow-manifest.js";
-import {
-  prepareLegacyWorkflowExecution,
-  WorkflowB3bRequiredError,
-} from "../agents/workflow-legacy-execution.js";
+import { WorkflowHandoffArtifactStore } from "../agents/workflow-handoff-store.js";
 import {
   assertLegacyCommandInvocation,
+  resolveEffectiveWorkflowLimits,
   validateWorkflowInvocationToolArgs,
   WORKFLOW_INVOCATION_SCHEMA,
 } from "../agents/workflow-invocation.js";
+import { MAX_WORKFLOW_HANDOFF_TOKENS } from "../agents/workflow-manifest-schema.js";
 import type { Session } from "../session/session.js";
 import {
   createProvider,
@@ -133,6 +132,7 @@ import {
   waitForInitialization,
 } from "../services/lsp/manager.js";
 import { readSandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import { openStateDatabases } from "../state/sqlite-driver.js";
 
 export interface ModelFacingToolOptions {
   readonly workspaceRoot: string;
@@ -4599,7 +4599,7 @@ function createCronAndWorkflowTools(
     {
       name: "WorkflowTool",
       description:
-        "Run a named local workflow from .agenc/workflows or AGENC_HOME/workflows. One-epoch legacy DAGs execute through a bounded compatibility runner; version-2 scheduler semantics require the B3b scheduler. A workflow with only `command` runs that single shell command (legacy shape).",
+        "Run a named local workflow from .agenc/workflows or AGENC_HOME/workflows. Version-2 DAGs and the one-epoch v1 compatibility format use the bounded event-driven scheduler. A workflow with only `command` runs that single shell command (legacy shape).",
       metadata: toolMetadata("workflow", {
         mutating: true,
         deferred: true,
@@ -4637,18 +4637,6 @@ function createCronAndWorkflowTools(
         const { document } = loaded;
         const name = invocation.name;
         if (document.kind === "agent_dag") {
-          let execution;
-          try {
-            execution = prepareLegacyWorkflowExecution(document, invocation);
-          } catch (error) {
-            if (error instanceof WorkflowB3bRequiredError) {
-              return json(
-                { error: error.message, code: error.code, workflow: name },
-                true,
-              );
-            }
-            throw error;
-          }
           const session = opts.getSession();
           if (!session) {
             return json(
@@ -4657,28 +4645,57 @@ function createCronAndWorkflowTools(
             );
           }
           const { control, registry } = ensureAgentControl(session);
-          const { runAgentWorkflow, WorkflowValidationError } =
-            await import("../agents/workflow-runner.js");
+          let driver: ReturnType<typeof openStateDatabases> | undefined;
           try {
-            const run = await runAgentWorkflow({
+            const effectiveLimits = resolveEffectiveWorkflowLimits(
+              document.manifest,
+              invocation,
+              registry.maxThreads,
+              MAX_WORKFLOW_HANDOFF_TOKENS,
+            );
+            driver = openStateDatabases({
+              cwd: opts.workspaceRoot,
+              agencHome: stateRoot(opts),
+            });
+            const artifactStore = new WorkflowHandoffArtifactStore({
+              driver,
+              trustedRoot: join(driver.projectDir, "workflow-handoffs"),
+            });
+            await artifactStore.recoverIntents();
+            const { runAgentWorkflowV2 } =
+              await import("../agents/workflow-scheduler.js");
+            const run = await runAgentWorkflowV2({
               session,
               control,
               registry,
-              steps: execution.steps,
-              maxConcurrency: execution.maxConcurrency,
+              workflowId: name,
+              manifest: document.manifest,
+              manifestDigest: document.manifestDigest,
+              sourceVersion: document.sourceVersion,
+              effectiveLimits,
+              artifactStore,
+              signal: abortSignalFromArgs(args),
             });
-            const failed = run.steps.some(
-              (step) => step.outcome !== "completed",
-            );
             return json(
-              { workflow: name, steps: run.steps },
-              failed ? true : undefined,
+              run,
+              run.outcome === "completed" ? undefined : true,
             );
           } catch (error) {
-            if (error instanceof WorkflowValidationError) {
-              return json({ error: error.message, workflow: name }, true);
-            }
-            throw error;
+            return json(
+              {
+                error: error instanceof Error ? error.message : String(error),
+                ...(typeof error === "object" &&
+                error !== null &&
+                "code" in error &&
+                typeof error.code === "string"
+                  ? { code: error.code }
+                  : {}),
+                workflow: name,
+              },
+              true,
+            );
+          } finally {
+            driver?.close();
           }
         }
         try {

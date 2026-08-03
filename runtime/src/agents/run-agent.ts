@@ -118,6 +118,7 @@ import {
 import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
+import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -167,6 +168,8 @@ export interface RunAgentParams {
   readonly taskId?: string;
   /** Exact commit captured at the start of this worktree-backed run. */
   readonly worktreeBaseCommit?: string;
+  /** Backpressured provider-delta sink for bounded workflow handoffs. */
+  readonly finalMessageSink?: AssistantOutputStreamSink;
 }
 
 export type ChildToolPolicyDecision =
@@ -3749,6 +3752,9 @@ export async function* runAgent(
             }
           : {}),
         signal: chatOptions.signal,
+        ...(params.finalMessageSink === undefined
+          ? {}
+          : { assistantOutputSink: params.finalMessageSink }),
       });
       // eslint-disable-next-line no-constant-condition
       while (true) {

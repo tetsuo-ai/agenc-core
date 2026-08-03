@@ -2162,3 +2162,73 @@ export type WorkflowHandoffArtifact = {
   preview: string
   preview_truncated: boolean
 }
+
+export type WorkflowStepOutcomeV2 = "succeeded" | "failed" | "cancelled" | "unknown_outcome" | "handoff_failed" | "blocked_dependency_failed" | "blocked_dependency_unknown"
+
+export type WorkflowRunOutcomeV2 = "completed" | "failed" | "cancelled" | "unknown_outcome"
+
+export type WorkflowCancellationCause = "user_abort" | "workflow_deadline" | "daemon_shutdown" | "fail_fast_peer"
+
+export type WorkflowCancellationV2 = {
+  cause: WorkflowCancellationCause
+  causal_step_id?: string
+  sequence: number
+}
+
+export type WorkflowHandoffReferenceV2 = {
+  artifact_id: string
+  storage_ref: string
+  digest: `sha256:${string}`
+  byte_length: number
+  token_count: number
+  preview?: string
+  preview_truncated: boolean
+}
+
+export type WorkflowStepResultV2 = {
+  id: string
+  ordinal: number
+  outcome: WorkflowStepOutcomeV2
+  task_name?: string
+  duration_ms?: number
+  error?: string
+  cancellation?: WorkflowCancellationV2
+  handoff?: WorkflowHandoffReferenceV2
+}
+
+export type WorkflowGroupOutcomeV2 = WorkflowStepOutcomeV2
+
+export type WorkflowGroupResultV2 = {
+  name: string
+  outcome: WorkflowGroupOutcomeV2
+  member_ids: string[]
+  handoff?: WorkflowHandoffReferenceV2
+}
+
+export type WorkflowEffectiveLimitsV2 = {
+  max_concurrency: number
+  max_handoff_tokens: number
+  failure_policy: "continue_independent" | "fail_fast"
+}
+
+export type WorkflowSchedulerOperationCounts = {
+  node_transitions: number
+  edge_consumptions: number
+  ready_enqueues: number
+  ready_dequeues: number
+  launches: number
+}
+
+export type WorkflowRunResultV2 = {
+  workflow_result_version: 2
+  run_id: string
+  workflow_id: string
+  manifest_format_version: 2
+  manifest_digest: `sha256:${string}`
+  outcome: WorkflowRunOutcomeV2
+  effective_limits: WorkflowEffectiveLimitsV2
+  steps: WorkflowStepResultV2[]
+  groups: WorkflowGroupResultV2[]
+  cancellation?: WorkflowCancellationV2
+  operation_counts: WorkflowSchedulerOperationCounts
+}

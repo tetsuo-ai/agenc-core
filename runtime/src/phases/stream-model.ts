@@ -98,6 +98,7 @@ export { resolveSessionReasoningEffort };
 import type { Session } from "../session/session.js";
 import { disposeProviderStartupPrewarmHandle } from "../session/startup-prewarm.js";
 import type { TurnContext } from "../session/turn-context.js";
+import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import type {
   AssistantMessage,
   ToolUseBlock,
@@ -520,14 +521,14 @@ function emitSanitizedAssistantDelta(
   display: AssistantDisplayState,
   delta: string,
   session: Session,
-): void {
+): string {
   // gaphunt3 #43: sanitize only the new delta (plus the carry window) instead
   // of re-scanning display.visibleText on every chunk.
   const sanitized = display.sanitizer.push(delta);
   if (sanitized.newMatches.length > 0) {
     emitSpoofWarnings(display, sanitized.newMatches, session);
   }
-  if (sanitized.text.length === 0) return;
+  if (sanitized.text.length === 0) return "";
   session.emit({
     id: session.nextInternalSubId(),
     msg: {
@@ -535,6 +536,7 @@ function emitSanitizedAssistantDelta(
       payload: { delta: sanitized.text },
     },
   });
+  return sanitized.text;
 }
 
 function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
@@ -831,6 +833,7 @@ export async function streamModel(
   session: Session,
   request: StreamModelRequestContract,
   signal?: AbortSignal,
+  assistantOutputSink?: AssistantOutputStreamSink,
 ): Promise<TurnState> {
   if (signal?.aborted) {
     throw new StreamModelError(new Error("aborted before provider call"));
@@ -909,6 +912,29 @@ export async function streamModel(
   const streamedToolBlocks = new Map<string, ToolUseBlock>();
   const malformedToolCompletionIds = new Set<string>();
   let receivedProviderChunk = false;
+  let streamedCanonicalAssistantText = "";
+
+  const resetCanonicalAssistantOutput = (): void => {
+    if (assistantOutputSink === undefined) return;
+    try {
+      assistantOutputSink.reset();
+      streamedCanonicalAssistantText = "";
+    } catch (error) {
+      if (!scoped.signal.aborted) scoped.abort(error);
+      throw error;
+    }
+  };
+
+  const writeCanonicalAssistantDelta = (delta: string): void => {
+    if (assistantOutputSink === undefined || delta.length === 0) return;
+    try {
+      assistantOutputSink.writeCanonicalDelta(delta);
+      streamedCanonicalAssistantText += delta;
+    } catch (error) {
+      if (!scoped.signal.aborted) scoped.abort(error);
+      throw error;
+    }
+  };
 
   const onChunk = (chunk: LLMStreamChunk): void => {
     receivedProviderChunk = true;
@@ -928,6 +954,12 @@ export async function streamModel(
     // visible text goes through the same hidden-tag stripping + UI-spoof
     // sanitization pipeline as the final assistant message so raw tags
     // never reach the UI.
+    if (chunk.resetBuffer) {
+      resetCanonicalAssistantOutput();
+      display.parser = new AssistantVisibleTextStreamParser(planMode);
+      display.sanitizer = new IncrementalSpoofSanitizer();
+      display.visibleText = "";
+    }
     if (chunk.content && chunk.content.length > 0) {
       let visibleDelta: string;
       if (chunk.resetBuffer) {
@@ -942,7 +974,12 @@ export async function streamModel(
         visibleDelta = display.parser.pushStr(chunk.content);
         display.visibleText += visibleDelta;
       }
-      emitSanitizedAssistantDelta(display, visibleDelta, session);
+      const canonicalDelta = emitSanitizedAssistantDelta(
+        display,
+        visibleDelta,
+        session,
+      );
+      writeCanonicalAssistantDelta(canonicalDelta);
     }
 
     // Incremental thinking emission. Messages-API providers emit
@@ -1010,6 +1047,7 @@ export async function streamModel(
     provider: Pick<LLMProvider, "chatStream">,
     attempt: "primary" | "prewarm" | "prewarm_fallback",
   ): Promise<LLMResponse> => {
+    resetCanonicalAssistantOutput();
     const messages = buildProviderMessages(request);
     const options = buildProviderOptions(request, ctx, scoped.signal);
     const recoveryFallback = state.pendingAdmissionFallback;
@@ -1135,6 +1173,7 @@ export async function streamModel(
           payload: { delta: flushed.text },
         },
       });
+      writeCanonicalAssistantDelta(flushed.text);
     }
   }
 
@@ -1143,6 +1182,14 @@ export async function streamModel(
     planMode,
     providerName,
   );
+  const canonicalAssistantText = assistant.text ?? "";
+  if (
+    assistantOutputSink !== undefined &&
+    streamedCanonicalAssistantText !== canonicalAssistantText
+  ) {
+    resetCanonicalAssistantOutput();
+    writeCanonicalAssistantDelta(canonicalAssistantText);
+  }
   const maxOutputTruncated = response.finishReason === "length";
   const mergedToolCalls = maxOutputTruncated
     ? new Map<string, LLMToolCall>()

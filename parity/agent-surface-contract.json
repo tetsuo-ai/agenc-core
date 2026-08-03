@@ -135,7 +135,7 @@
     "runtime/src/agents/run-agent.ts",
     "runtime/src/agents/delegate.ts",
     "runtime/src/agents/worktree.ts",
-    "runtime/src/agents/workflow-runner.ts",
+    "runtime/src/agents/workflow-scheduler.ts",
     "runtime/src/session/child-run-journal.ts",
     "runtime/src/session/event-log.ts",
     "runtime/src/session/session.ts",
@@ -196,7 +196,7 @@
     "runtime/tests/agents/v2/spawn-isolation.test.ts",
     "runtime/tests/agents/worktree.test.ts",
     "runtime/tests/agents/delegate-worktree.test.ts",
-    "runtime/tests/agents/workflow-runner.test.ts",
+    "runtime/tests/agents/workflow-scheduler.test.ts",
     "runtime/tests/agents/thread-manager.test.ts",
     "runtime/tests/agents/thread.test.ts",
     "runtime/tests/agents/thread-rollout-truncation.test.ts",
@@ -407,7 +407,7 @@
         "runtime/src/agents/v2/list-agents.ts",
         "runtime/src/agents/v2/close-agent.ts",
         "runtime/src/agents/worktree.ts",
-        "runtime/src/agents/workflow-runner.ts",
+        "runtime/src/agents/workflow-scheduler.ts",
         "runtime/src/session/child-run-journal.ts",
         "runtime/src/session/event-log.ts",
         "runtime/src/bin/model-facing-tools.ts",
@@ -489,13 +489,13 @@
         "runtime/tests/agents/v2/spawn-isolation.test.ts",
         "runtime/tests/agents/worktree.test.ts",
         "runtime/tests/agents/delegate-worktree.test.ts",
-        "runtime/tests/agents/workflow-runner.test.ts",
+        "runtime/tests/agents/workflow-scheduler.test.ts",
         "runtime/tests/llm/model-registry.test.ts",
         "runtime/tests/llm/models-manager.test.ts",
         "runtime/tests/phases/stream-model.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/jobs/job-orchestrator.test.ts tests/agents/run-agent.test.ts tests/agents/v2/common.test.ts tests/agents/v2/spawn-isolation.test.ts tests/agents/worktree.test.ts tests/agents/delegate-worktree.test.ts tests/agents/workflow-runner.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/jobs/job-orchestrator.test.ts tests/agents/run-agent.test.ts tests/agents/v2/common.test.ts tests/agents/v2/spawn-isolation.test.ts tests/agents/worktree.test.ts tests/agents/delegate-worktree.test.ts tests/agents/workflow-scheduler.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
       ],
       "status": "required"
     },

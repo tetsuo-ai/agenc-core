@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmod,
   mkdir,
@@ -153,6 +154,76 @@ function seedIntents(options: {
 }
 
 describe("workflow handoff publication and integrity", () => {
+  it("publishes a repeatable fixed-chunk source without a whole-result buffer", async () => {
+    const artifactStore = store();
+    const chunks = [
+      Buffer.from("streamed "),
+      Buffer.from("handoff "),
+      Buffer.from("🙂 tail"),
+    ];
+    const byteLength = chunks.reduce(
+      (total, chunk) => total + chunk.byteLength,
+      0,
+    );
+    const sha256 = createHash("sha256")
+      .update(Buffer.concat(chunks))
+      .digest("hex");
+    let iterations = 0;
+
+    const artifact = await artifactStore.publishSource({
+      owner: OWNER,
+      idempotencyKey: "stream-source",
+      tokenCount: 4,
+      source: {
+        byteLength,
+        sha256,
+        async *chunks() {
+          iterations += 1;
+          for (const chunk of chunks) yield chunk;
+        },
+      },
+    });
+
+    expect(iterations).toBe(2);
+    expect(artifact).toMatchObject({
+      byte_length: byteLength,
+      digest: `sha256:${sha256}`,
+      preview: "streamed handoff 🙂 tail",
+      preview_truncated: false,
+    });
+    const stored = await artifactStore.read(artifact.artifact_id);
+    expect(stored.artifact).toEqual(artifact);
+    expect(Buffer.from(stored.bytes)).toEqual(Buffer.concat(chunks));
+  });
+
+  it("keeps a streamed preview contiguous at a multibyte boundary", async () => {
+    const artifactStore = store();
+    const prefix = "x".repeat(MAX_WORKFLOW_STEP_PREVIEW_BYTES - 1);
+    const chunks = [
+      Buffer.from(prefix),
+      Buffer.from("🙂"),
+      Buffer.from("tail"),
+    ];
+    const bytes = Buffer.concat(chunks);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+
+    const artifact = await artifactStore.publishSource({
+      owner: OWNER,
+      idempotencyKey: "stream-preview-boundary",
+      tokenCount: 1,
+      source: {
+        byteLength: bytes.byteLength,
+        sha256,
+        async *chunks() {
+          for (const chunk of chunks) yield chunk;
+        },
+      },
+    });
+
+    expect(artifact.preview).toBe(prefix);
+    expect(artifact.preview_truncated).toBe(true);
+  });
+
   it("publishes immutable digest-bound bytes and reads only for the owner", async () => {
     const artifactStore = store();
     const body = "x".repeat(MAX_WORKFLOW_STEP_PREVIEW_BYTES) + "🙂tail";

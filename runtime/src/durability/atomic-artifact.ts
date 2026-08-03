@@ -18,6 +18,8 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 
 import { hitM4DurabilityFailpoint } from "./failpoints.js";
 
+const ATOMIC_ARTIFACT_STREAM_BUFFER_BYTES = 64 * 1_024;
+
 export type AtomicArtifactCommitResult = "committed" | "already_committed";
 
 export class AtomicArtifactConflictError extends Error {
@@ -62,6 +64,13 @@ export interface AtomicArtifactCommitOptions {
   /** Existing directory that owns this exact, immediate-child artifact. */
   readonly trustedRoot: string;
   readonly mode?: number;
+}
+
+/** Repeatable, bounded byte source for publication without whole-file buffers. */
+export interface AtomicArtifactByteSource {
+  readonly byteLength: number;
+  readonly sha256: string;
+  chunks(): AsyncIterable<Uint8Array>;
 }
 
 export interface AtomicArtifactCleanupOptions {
@@ -373,6 +382,111 @@ export async function commitArtifactAtomically(
     // process that observed EEXIST may reach acknowledgement before the process
     // that created the link; syncing here makes that answer independently
     // durable rather than relying on the winner's next step.
+    await fsyncPinnedRoot(pinned);
+    await assertPinnedRootCurrent(scope, pinned);
+    hitM4DurabilityFailpoint("after_artifact_commit");
+    return outcome;
+  } finally {
+    if (tempExists) {
+      try {
+        await unlink(tempPath);
+      } catch {
+        // The durable target, if published, is independent of the temp link.
+      }
+    }
+    await closePinnedRoot(pinned);
+  }
+}
+
+/**
+ * Streaming companion to {@link commitArtifactAtomically}. The source is
+ * copied from a repeatable producer and verified against its declared length
+ * and SHA-256 before the immutable target is linked.
+ */
+export async function commitArtifactSourceAtomically(
+  targetPath: string,
+  source: AtomicArtifactByteSource,
+  options: AtomicArtifactCommitOptions,
+): Promise<AtomicArtifactCommitResult> {
+  assertAtomicArtifactByteSource(source);
+  const scope = artifactScope(targetPath, options.trustedRoot);
+  const pinned = await pinTrustedRoot(scope, {
+    allowMissing: false,
+    operation: "commit",
+  });
+  if (pinned === undefined) {
+    throw new AtomicArtifactUnsafePathError(
+      scope.targetPath,
+      scope.trustedRoot,
+    );
+  }
+
+  const tempName = `${scope.targetName}.${process.pid}.${randomUUID()}.tmp`;
+  const tempPath = join(pinned.operationPath, tempName);
+  const pinnedTargetPath = join(pinned.operationPath, scope.targetName);
+  let tempExists = false;
+  try {
+    await assertPinnedRootCurrent(scope, pinned);
+    await atomicArtifactOperationForTesting?.({
+      operation: "commit",
+      targetPath: scope.targetPath,
+      trustedRoot: scope.trustedRoot,
+    });
+
+    const handle = await open(
+      tempPath,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_EXCL |
+        noFollowFlag(),
+      options.mode ?? 0o600,
+    );
+    tempExists = true;
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.nlink !== 1) {
+        throw new AtomicArtifactUnsafePathError(
+          scope.targetPath,
+          scope.trustedRoot,
+        );
+      }
+      await copyAtomicArtifactSource(handle, source);
+      await handle.sync();
+      const afterWrite = await handle.stat();
+      if (
+        !isSameIdentity(opened, afterWrite) ||
+        afterWrite.nlink !== 1 ||
+        afterWrite.size !== source.byteLength
+      ) {
+        throw new AtomicArtifactUnsafePathError(
+          scope.targetPath,
+          scope.trustedRoot,
+        );
+      }
+    } finally {
+      await handle.close();
+    }
+
+    await assertPinnedRootCurrent(scope, pinned);
+    hitM4DurabilityFailpoint("before_artifact_commit");
+    let outcome: AtomicArtifactCommitResult = "committed";
+    try {
+      await link(tempPath, pinnedTargetPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const existing = await digestExistingRegularFile(pinnedTargetPath);
+      if (
+        existing === undefined ||
+        existing.byteLength !== source.byteLength ||
+        existing.sha256 !== source.sha256
+      ) {
+        throw new AtomicArtifactConflictError(scope.targetPath);
+      }
+      outcome = "already_committed";
+    }
+
+    await unlink(tempPath);
+    tempExists = false;
     await fsyncPinnedRoot(pinned);
     await assertPinnedRootCurrent(scope, pinned);
     hitM4DurabilityFailpoint("after_artifact_commit");
@@ -886,6 +1000,100 @@ async function readExistingRegularFile(
     const afterRead = await handle.stat();
     if (!isSameIdentity(opened, afterRead)) return undefined;
     return bytes;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ELOOP" || code === "EISDIR") {
+      return undefined;
+    }
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+function assertAtomicArtifactByteSource(
+  source: AtomicArtifactByteSource,
+): void {
+  if (
+    !Number.isSafeInteger(source.byteLength) ||
+    source.byteLength < 0 ||
+    !/^[0-9a-f]{64}$/u.test(source.sha256) ||
+    typeof source.chunks !== "function"
+  ) {
+    throw new TypeError("atomic artifact byte source metadata is invalid");
+  }
+}
+
+async function copyAtomicArtifactSource(
+  handle: Awaited<ReturnType<typeof open>>,
+  source: AtomicArtifactByteSource,
+): Promise<void> {
+  const hash = createHash("sha256");
+  let byteLength = 0;
+  let position = 0;
+  for await (const value of source.chunks()) {
+    if (!(value instanceof Uint8Array)) {
+      throw new TypeError("atomic artifact byte source emitted a non-byte chunk");
+    }
+    if (value.byteLength === 0) continue;
+    byteLength += value.byteLength;
+    if (byteLength > source.byteLength) {
+      throw new TypeError("atomic artifact byte source exceeded its length");
+    }
+    const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    hash.update(chunk);
+    let offset = 0;
+    while (offset < chunk.byteLength) {
+      const write = await handle.write(
+        chunk,
+        offset,
+        chunk.byteLength - offset,
+        position,
+      );
+      if (write.bytesWritten < 1) {
+        throw new Error("atomic artifact source write made no progress");
+      }
+      offset += write.bytesWritten;
+      position += write.bytesWritten;
+    }
+  }
+  if (byteLength !== source.byteLength) {
+    throw new TypeError("atomic artifact byte source ended before its length");
+  }
+  if (hash.digest("hex") !== source.sha256) {
+    throw new TypeError("atomic artifact byte source digest does not match");
+  }
+}
+
+async function digestExistingRegularFile(
+  targetPath: string,
+): Promise<
+  { readonly byteLength: number; readonly sha256: string } | undefined
+> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    const pathStat = await lstat(targetPath);
+    if (!pathStat.isFile() || pathStat.isSymbolicLink()) return undefined;
+    handle = await open(targetPath, fsConstants.O_RDONLY | noFollowFlag());
+    const opened = await handle.stat();
+    if (!opened.isFile() || !isSameIdentity(opened, pathStat)) return undefined;
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(ATOMIC_ARTIFACT_STREAM_BUFFER_BYTES);
+    let byteLength = 0;
+    while (true) {
+      const read = await handle.read(buffer, 0, buffer.byteLength, byteLength);
+      if (read.bytesRead === 0) break;
+      hash.update(buffer.subarray(0, read.bytesRead));
+      byteLength += read.bytesRead;
+    }
+    const afterRead = await handle.stat();
+    if (
+      !isSameIdentity(opened, afterRead) ||
+      afterRead.size !== byteLength
+    ) {
+      return undefined;
+    }
+    return { byteLength, sha256: hash.digest("hex") };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === "ELOOP" || code === "EISDIR") {

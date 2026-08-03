@@ -2,10 +2,10 @@
 
 | Field | Value |
 | --- | --- |
-| Status | B3a artifact contract implemented; B3b scheduler consumption pending |
+| Status | B3a artifact contract and B3b event-driven scheduler implemented |
 | Audit snapshot | `d2b228e87ea63bd6a5d93e6f599f36bce88d672b` |
 | Audit date | 2026-07-31 |
-| Owners | Workflow artifact contract (B3a), then bounded scheduler consumption (B3b) |
+| Owners | Workflow artifact contract (B3a) and bounded scheduler consumption (B3b) |
 | Compatibility | Exact `workflow_handoff.v1/state-schema.22` epoch; old readers and garbage collectors fail closed and preserve unknown bytes |
 
 ## Context
@@ -78,10 +78,18 @@ responses are constructed incrementally within their separate protocol-byte
 ceilings; rendering pressure cannot invalidate an already committed handoff.
 
 Scheduler memory retains only status, digest, byte/token counts, reference, and
-bounded preview. Child output is streamed or spilled rather than accumulated in
-one result map. Consumers receive a bounded deterministic extract or admitted
-reduction plus a digest-bound reference as untrusted data under CP-0008. Raw
-child text is never concatenated into workflow policy or template syntax.
+bounded preview. Provider text deltas are synchronously written to a private
+disk spool in fixed-size UTF-8 chunks before runtime display aggregation. The
+spool retains at most a trailing high surrogate between deltas and resets for
+each provider attempt. Byte and token ceilings are checked while deltas arrive;
+a ceiling failure aborts the child before publication. Token fallback uses the
+central UTF-8 estimator on complete decoded segments, including surrogate pairs
+split across provider chunks. Artifact publication consumes the sealed spool as
+a repeatable fixed-size source, so neither the scheduler nor the artifact store
+constructs a whole child result in memory. Consumers receive a bounded
+deterministic extract or admitted reduction plus a digest-bound reference as
+untrusted data under CP-0008. Raw child text is never concatenated into workflow
+policy or template syntax.
 
 ### Retention and cleanup
 
@@ -138,7 +146,7 @@ Primary references: SQLite's [atomic commit](https://www.sqlite.org/atomiccommit
 [RIFL](https://web.stanford.edu/~ouster/cgi-bin/papers/rifl.pdf), and
 [OrchBench](https://arxiv.org/abs/2607.25656).
 
-## Implemented B3a surfaces
+## Implemented B3a and B3b surfaces
 
 The version-1 schema and kind registry live in
 `runtime/src/agents/workflow-handoff-schema.ts`, with the standalone JSON
@@ -169,5 +177,21 @@ Evidence is in:
 - `runtime/tests/sdk-package/workflow-handoff.contract.test.ts`; and
 - `runtime/benchmarks/workflow-contract-1024.ts`.
 
-The B3a layer does not release dependencies or replace the existing scheduler.
-That remains the separately reviewed B3b rollout gate.
+`compileWorkflowGraph` validates the graph once in O(V + E), and
+`runAgentWorkflowV2` consumes each direct edge once while scheduling newly ready
+steps immediately. Dependencies are released only after durable artifact commit.
+Its ready queue is an append-only FIFO consumed through a monotonic cursor;
+public operation counts include both enqueue and dequeue totals so the 1,024-node
+guard can reject hidden queue rescans or front-removal regressions.
+The public `workflow_result_version: 2` contract preserves failure,
+authoritative cancellation, unknown outcome, handoff failure, and both blocked
+dependency causes. Scheduler state remains deliberately non-resumable: a daemon
+crash never replays steps automatically, while committed artifacts and child
+effect evidence remain available for reviewed recovery.
+
+Additional B3b evidence is in:
+
+- `runtime/tests/agents/workflow-graph.test.ts`;
+- `runtime/tests/agents/workflow-scheduler.test.ts`;
+- `runtime/tests/sdk-package/workflow-result.contract.test.ts`; and
+- `runtime/benchmarks/workflow-scheduler-1024.ts`.

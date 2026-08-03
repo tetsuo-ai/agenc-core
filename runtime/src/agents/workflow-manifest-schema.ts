@@ -12,6 +12,10 @@ import {
   type FiniteJsonLimits,
   type FiniteJsonValue,
 } from "./workflow-finite-json.js";
+import {
+  compileWorkflowGraph,
+  WorkflowGraphValidationError,
+} from "./workflow-graph.js";
 
 export const WORKFLOW_MANIFEST_VERSION = 2;
 export const MAX_WORKFLOW_MANIFEST_BYTES = 16_777_216;
@@ -490,113 +494,15 @@ function validateDagSemantics(
   manifest: WorkflowDagManifestV2,
   label: string,
 ): void {
-  const stepsById = new Map<string, WorkflowStepV2>();
-  const groups = new Map<string, string[]>();
-
-  for (const step of manifest.steps) {
-    if (stepsById.has(step.id)) {
-      throw semanticError(
-        label,
-        `contains duplicate step id ${JSON.stringify(step.id)}`,
-      );
+  try {
+    compileWorkflowGraph(manifest, {
+      maximumExpandedEdges: MAX_WORKFLOW_EXPANDED_EDGES,
+    });
+  } catch (error) {
+    if (error instanceof WorkflowGraphValidationError) {
+      throw semanticError(label, error.message);
     }
-    stepsById.set(step.id, step);
-    if (step.group !== undefined) {
-      const members = groups.get(step.group) ?? [];
-      members.push(step.id);
-      groups.set(step.group, members);
-    }
-  }
-
-  const dependencies = new Map<string, Set<string>>();
-  const dependents = new Map<string, Set<string>>();
-  for (const step of manifest.steps) {
-    const stepDependencies = new Set<string>();
-    const declaredAfter = new Set<string>();
-    const addReference = (
-      reference: WorkflowRef,
-      rejectDuplicate: boolean,
-    ): void => {
-      const referenceKey =
-        "step" in reference
-          ? `step\0${reference.step}`
-          : `group\0${reference.group}`;
-      if (rejectDuplicate && declaredAfter.has(referenceKey)) {
-        throw semanticError(
-          label,
-          `step ${JSON.stringify(step.id)} repeats dependency ${JSON.stringify(referenceKey.replace("\0", ":"))}`,
-        );
-      }
-      if (rejectDuplicate) declaredAfter.add(referenceKey);
-      if ("step" in reference) {
-        if (!stepsById.has(reference.step)) {
-          throw semanticError(
-            label,
-            `step ${JSON.stringify(step.id)} references unknown step ${JSON.stringify(reference.step)}`,
-          );
-        }
-        if (reference.step === step.id) {
-          throw semanticError(
-            label,
-            `step ${JSON.stringify(step.id)} references itself`,
-          );
-        }
-        stepDependencies.add(reference.step);
-        return;
-      }
-
-      const members = groups.get(reference.group);
-      if (members === undefined) {
-        throw semanticError(
-          label,
-          `step ${JSON.stringify(step.id)} references unknown group ${JSON.stringify(reference.group)}`,
-        );
-      }
-      for (const member of members) {
-        if (member !== step.id) stepDependencies.add(member);
-      }
-    };
-    for (const reference of step.after ?? []) {
-      addReference(reference, true);
-    }
-    for (const reference of Object.values(step.inputs ?? {})) {
-      addReference(reference, false);
-    }
-    dependencies.set(step.id, stepDependencies);
-    for (const dependency of stepDependencies) {
-      const downstream = dependents.get(dependency) ?? new Set<string>();
-      downstream.add(step.id);
-      dependents.set(dependency, downstream);
-    }
-  }
-
-  const ready: string[] = [];
-  const remaining = new Map<string, number>();
-  for (const [stepId, stepDependencies] of dependencies) {
-    remaining.set(stepId, stepDependencies.size);
-    if (stepDependencies.size === 0) ready.push(stepId);
-  }
-
-  let visited = 0;
-  for (let cursor = 0; cursor < ready.length; cursor += 1) {
-    const stepId = ready[cursor]!;
-    visited += 1;
-    for (const dependent of dependents.get(stepId) ?? []) {
-      const next = (remaining.get(dependent) ?? 0) - 1;
-      remaining.set(dependent, next);
-      if (next === 0) ready.push(dependent);
-    }
-  }
-
-  if (visited !== manifest.steps.length) {
-    const cyclic = [...remaining]
-      .filter(([, count]) => count > 0)
-      .map(([stepId]) => stepId)
-      .sort();
-    throw semanticError(
-      label,
-      `contains a dependency cycle involving ${cyclic.map((id) => JSON.stringify(id)).join(", ")}`,
-    );
+    throw error;
   }
 }
 

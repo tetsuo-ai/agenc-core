@@ -1992,3 +1992,112 @@ export const WorkflowHandoffArtifactSchema = lazySchema(() =>
       }
     }),
 )
+
+// ============================================================================
+// Event-driven Workflow Result Types
+// ============================================================================
+
+export const WorkflowStepOutcomeV2Schema = lazySchema(() =>
+  z.enum([
+    'succeeded',
+    'failed',
+    'cancelled',
+    'unknown_outcome',
+    'handoff_failed',
+    'blocked_dependency_failed',
+    'blocked_dependency_unknown',
+  ]),
+)
+
+export const WorkflowRunOutcomeV2Schema = lazySchema(() =>
+  z.enum(['completed', 'failed', 'cancelled', 'unknown_outcome']),
+)
+
+export const WorkflowCancellationV2Schema = lazySchema(() =>
+  z
+    .object({
+      cause: z.enum([
+        'user_abort',
+        'workflow_deadline',
+        'daemon_shutdown',
+        'fail_fast_peer',
+      ]),
+      causal_step_id: z.string().optional(),
+      sequence: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    })
+    .strict(),
+)
+
+export const WorkflowHandoffReferenceV2Schema = lazySchema(() =>
+  z
+    .object({
+      artifact_id: z.string().regex(/^wh_[0-9a-f]{48}$/u),
+      storage_ref: z
+        .string()
+        .regex(/^workflow-handoff:wh_[0-9a-f]{48}$/u),
+      digest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
+      byte_length: z.number().int().min(0).max(16_777_216),
+      token_count: z.number().int().min(0).max(131_072),
+      preview: z.string().optional(),
+      preview_truncated: z.boolean(),
+    })
+    .strict(),
+)
+
+export const WorkflowStepResultV2Schema = lazySchema(() =>
+  z
+    .object({
+      id: z.string().min(1),
+      ordinal: z.number().int().min(0).max(1_023),
+      outcome: WorkflowStepOutcomeV2Schema(),
+      task_name: z.string().optional(),
+      duration_ms: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+      error: z.string().optional(),
+      cancellation: WorkflowCancellationV2Schema().optional(),
+      handoff: WorkflowHandoffReferenceV2Schema().optional(),
+    })
+    .strict(),
+)
+
+export const WorkflowGroupResultV2Schema = lazySchema(() =>
+  z
+    .object({
+      name: z.string().min(1),
+      outcome: WorkflowStepOutcomeV2Schema(),
+      member_ids: z.array(z.string().min(1)).min(1).max(1_024),
+      handoff: WorkflowHandoffReferenceV2Schema().optional(),
+    })
+    .strict(),
+)
+
+export const WorkflowRunResultV2Schema = lazySchema(() =>
+  z
+    .object({
+      workflow_result_version: z.literal(2),
+      run_id: z.string().min(1),
+      workflow_id: z.string().min(1),
+      manifest_format_version: z.literal(2),
+      manifest_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
+      outcome: WorkflowRunOutcomeV2Schema(),
+      effective_limits: z
+        .object({
+          max_concurrency: z.number().int().min(1).max(64),
+          max_handoff_tokens: z.number().int().min(1).max(32_768),
+          failure_policy: z.enum(['continue_independent', 'fail_fast']),
+        })
+        .strict(),
+      steps: z.array(WorkflowStepResultV2Schema()).min(1).max(1_024),
+      groups: z.array(WorkflowGroupResultV2Schema()).max(256),
+      cancellation: WorkflowCancellationV2Schema().optional(),
+      operation_counts: z
+        .object({
+          node_transitions: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+          edge_consumptions: z.number().int().min(0).max(65_536),
+          ready_enqueues: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+          ready_dequeues: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+          launches: z.number().int().min(0).max(1_024),
+        })
+        .strict(),
+    })
+    .strict(),
+)

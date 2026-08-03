@@ -148,7 +148,7 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 | `EnterPlanMode` | Enter plan permission posture |
 | `ExitPlanMode` | Exit plan mode (approval path) |
 | `VerifyPlanExecution` | Compare plan vs progress summary |
-| `WorkflowTool` | Agent workflow runner |
+| `WorkflowTool` | Bounded event-driven agent DAG runner; see [workflows.md](workflows.md) |
 | `CronCreate` / `CronDelete` / `CronList` | Local scheduled prompts (`.agenc/scheduled_tasks.json`) |
 | `RemoteTrigger` | Deferred; inspect local scheduled defs only |
 

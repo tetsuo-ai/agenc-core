@@ -23,15 +23,15 @@ type StreamChunk = {
   content: string;
   done: boolean;
   toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+  reasoningSummaryDelta?: { delta: string; summaryIndex: number };
 };
 
 describe("OpenAIProvider streaming gaps", () => {
   // GAP (a): the chat-completions streaming loop previously read only
   // `delta.content` and dropped `delta.reasoning_content`, so
   // DeepSeek-reasoner / openai-compat reasoning models lost their
-  // chain-of-thought on the streamed path. The non-streaming path
-  // (`parseChatCompletionsResponse`) already falls back to
-  // `reasoning_content`; this pins the streamed path to mirror it.
+  // chain-of-thought on the streamed path. It must remain available through
+  // the explicit thinking channel without becoming visible assistant text.
   test("captures delta.reasoning_content on the chat-completions streaming path", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
@@ -54,15 +54,29 @@ describe("OpenAIProvider streaming gaps", () => {
       (chunk) => chunks.push(chunk),
     );
 
-    // Reasoning deltas are forwarded mid-stream instead of being dropped.
+    // Reasoning deltas remain explicit hidden-channel events instead of
+    // masquerading as canonical assistant content.
     expect(chunks).toEqual([
-      { content: "Step 1. ", done: false },
-      { content: "Step 2.", done: false },
+      {
+        content: "",
+        done: false,
+        reasoningSummaryDelta: { delta: "Step 1. ", summaryIndex: 0 },
+      },
+      {
+        content: "",
+        done: false,
+        reasoningSummaryDelta: { delta: "Step 2.", summaryIndex: 0 },
+      },
       { content: "", done: true },
     ]);
-    // With no visible `delta.content`, the final response falls back to
-    // the accumulated reasoning_content (mirroring the non-streaming path).
-    expect(response.content).toBe("Step 1. Step 2.");
+    expect(response.content).toBe("");
+    expect(response.thinking).toEqual([
+      {
+        text: "Step 1. Step 2.",
+        redacted: false,
+        kind: "reasoning_summary",
+      },
+    ]);
     // Reasoning token usage is preserved for cost accounting.
     expect(response.usage.reasoningOutputTokens).toBe(6);
   });
@@ -90,7 +104,11 @@ describe("OpenAIProvider streaming gaps", () => {
     );
 
     expect(chunks).toEqual([
-      { content: "thinking...", done: false },
+      {
+        content: "",
+        done: false,
+        reasoningSummaryDelta: { delta: "thinking...", summaryIndex: 0 },
+      },
       { content: "Answer.", done: false },
       { content: "", done: true },
     ]);

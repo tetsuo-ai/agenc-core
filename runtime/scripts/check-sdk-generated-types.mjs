@@ -13,6 +13,7 @@ const paths = {
   schemas: "src/entrypoints/sdk/coreSchemas.ts",
   coreTypes: "src/entrypoints/sdk/coreTypes.ts",
   generated: "src/entrypoints/sdk/coreTypes.generated.ts",
+  packageWorkflowResult: "../packages/agenc-sdk/src/workflow-result.generated.ts",
 };
 const checkCommand =
   "npm --workspace=@tetsuo-ai/runtime run check:sdk-generated-types";
@@ -32,10 +33,11 @@ function expectCondition(failures, condition, message) {
 }
 
 async function main() {
-  const [schemas, coreTypes, generated] = await Promise.all([
+  const [schemas, coreTypes, generated, packageWorkflowResult] = await Promise.all([
     readRuntimeFile(paths.schemas),
     readRuntimeFile(paths.coreTypes),
     readRuntimeFile(paths.generated),
+    readRuntimeFile(paths.packageWorkflowResult),
   ]);
   const failures = [];
   const sources = [
@@ -85,6 +87,49 @@ async function main() {
       failures,
       schemas.includes(marker),
       `${paths.schemas} is missing workflow handoff marker ${marker}`,
+    );
+  }
+  for (const marker of [
+    "export const WorkflowStepOutcomeV2Schema",
+    "export const WorkflowRunOutcomeV2Schema",
+    "export const WorkflowRunResultV2Schema",
+    "workflow_result_version: z.literal(2)",
+    "manifest_format_version: z.literal(2)",
+    "blocked_dependency_unknown",
+    "unknown_outcome",
+  ]) {
+    expectCondition(
+      failures,
+      schemas.includes(marker),
+      `${paths.schemas} is missing workflow result marker ${marker}`,
+    );
+  }
+  for (const marker of [
+    "export type WorkflowStepOutcomeV2",
+    "export type WorkflowRunOutcomeV2",
+    "export type WorkflowRunResultV2",
+    "workflow_result_version: 2",
+    "manifest_format_version: 2",
+    'outcome: WorkflowRunOutcomeV2',
+  ]) {
+    expectCondition(
+      failures,
+      generated.includes(marker),
+      `${paths.generated} is missing workflow result marker ${marker}`,
+    );
+  }
+  for (const marker of [
+    "export const AGENC_WORKFLOW_RESULT_VERSION = 2 as const",
+    "export const AGENC_WORKFLOW_STEP_OUTCOMES_V2",
+    "export const AGENC_WORKFLOW_RUN_OUTCOMES_V2",
+    "export interface WorkflowRunResultV2",
+    '"blocked_dependency_unknown"',
+    '"unknown_outcome"',
+  ]) {
+    expectCondition(
+      failures,
+      packageWorkflowResult.includes(marker),
+      `${paths.packageWorkflowResult} is missing workflow result marker ${marker}`,
     );
   }
   for (const marker of [

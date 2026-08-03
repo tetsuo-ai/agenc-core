@@ -221,6 +221,7 @@ import {
   toAgenCModelContext,
   type AgenCToolUseContext,
 } from "./agenc-tool-use-context.js";
+import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 
 export interface RunTurnOptions {
   readonly systemPrompt?: string;
@@ -235,6 +236,8 @@ export interface RunTurnOptions {
   /** Authenticated durable metadata for the current seed user message. */
   readonly seedUserMessageRuntimeOnly?: LLMMessage["runtimeOnly"];
   readonly signal?: AbortSignal;
+  /** Optional synchronous sink for bounded provider assistant-text deltas. */
+  readonly assistantOutputSink?: AssistantOutputStreamSink;
   readonly querySource?: string;
   readonly skipCacheWrite?: boolean;
   /** Workspace instruction policy. Agentic turns default to workspace_agent. */
@@ -3088,6 +3091,7 @@ async function tryRunSamplingRequest(
   request: StreamModelRequestContract,
   signal: AbortSignal,
   events: PhaseEvent[],
+  assistantOutputSink?: AssistantOutputStreamSink,
 ): Promise<SamplingRequestResult> {
   // Plan-mode stream state (T11). When the turn's collaboration mode is
   // `plan`, stash per-turn plan-mode bookkeeping on turn-state so the
@@ -3107,7 +3111,14 @@ async function tryRunSamplingRequest(
   // Phase 2: stream model.
   let streamModelError: StreamModelError | null = null;
   try {
-    await streamModel(state, ctx, session, request, signal);
+    await streamModel(
+      state,
+      ctx,
+      session,
+      request,
+      signal,
+      assistantOutputSink,
+    );
     enforcePlanModeToolBoundary(state, ctx, request);
   } catch (error) {
     if (error instanceof StreamModelError) {
@@ -3265,6 +3276,7 @@ async function runSamplingRequest(
   signal: AbortSignal,
   events: PhaseEvent[],
   querySource: string,
+  assistantOutputSink?: AssistantOutputStreamSink,
 ): Promise<SamplingRequestResult> {
   const prepared = await prepareSamplingRequestBoundary(
     state,
@@ -3291,6 +3303,7 @@ async function runSamplingRequest(
         prepared.request,
         signal,
         events,
+        assistantOutputSink,
       ),
     isTransient: (err) => {
       if (isPartialProviderResponseError(err)) return false;
@@ -4615,6 +4628,7 @@ async function* runTurnKernelInner(
         signal,
         pending,
         turnQuerySource,
+        opts.assistantOutputSink,
       );
       for (const ev of pending) {
         yield ev;
@@ -5184,6 +5198,7 @@ export function runTurn(
         initialHistoryPersistence?: RunTurnOptions["initialHistoryPersistence"];
         seedUserMessageRuntimeOnly?: LLMMessage["runtimeOnly"];
         signal?: AbortSignal;
+        assistantOutputSink?: AssistantOutputStreamSink;
         querySource?: string;
         displayUserMessage?: string | null;
         rootHumanTurnText?: string;
@@ -5201,6 +5216,7 @@ export function runTurn(
       initialHistoryPersistence: opts.initialHistoryPersistence,
       seedUserMessageRuntimeOnly: opts.seedUserMessageRuntimeOnly,
       signal: opts.signal,
+      assistantOutputSink: opts.assistantOutputSink,
       querySource: opts.querySource,
       displayUserMessage: opts.displayUserMessage,
       rootHumanTurnText: opts.rootHumanTurnText,

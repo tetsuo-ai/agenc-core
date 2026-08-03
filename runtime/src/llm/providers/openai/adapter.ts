@@ -1220,9 +1220,8 @@ export class OpenAIProvider implements LLMProvider {
       let content = "";
       // DeepSeek-reasoner / openai-compat reasoning models stream
       // chain-of-thought on `delta.reasoning_content` rather than
-      // `delta.content`. Accumulate it alongside content so it is not
-      // dropped from the streamed path (the non-streaming path in
-      // `parseChatCompletionsResponse` already falls back to it).
+      // `delta.content`. Preserve it as an explicit hidden thinking channel;
+      // it must never become canonical assistant content.
       let reasoningContent = "";
       let model = requestModel;
       let finishReason: LLMResponse["finishReason"] = "stop";
@@ -1289,7 +1288,15 @@ export class OpenAIProvider implements LLMProvider {
             delta.reasoning_content.length > 0
           ) {
             reasoningContent += delta.reasoning_content;
-            onChunk({ content: delta.reasoning_content, done: false });
+            onChunk({
+              content: "",
+              done: false,
+              reasoningSummaryDelta: {
+                delta: delta.reasoning_content,
+                summaryIndex:
+                  typeof choice.index === "number" ? choice.index : 0,
+              },
+            });
           }
 
           const deltaToolCalls = Array.isArray(delta.tool_calls)
@@ -1361,14 +1368,10 @@ export class OpenAIProvider implements LLMProvider {
               {
                 message: {
                   role: "assistant",
-                  // Pass an explicit non-string `content` when only
-                  // reasoning was streamed so `parseChatCompletionsResponse`
-                  // reaches its `reasoning_content` fallback instead of
-                  // short-circuiting on an empty string.
-                  content:
-                    content.length > 0 || reasoningContent.length === 0
-                      ? content
-                      : null,
+                  // An explicit string, including the empty string, prevents
+                  // the generic non-streaming parser from promoting
+                  // `reasoning_content` into visible assistant output.
+                  content,
                   ...(reasoningContent.length > 0
                     ? { reasoning_content: reasoningContent }
                     : {}),
@@ -1412,7 +1415,20 @@ export class OpenAIProvider implements LLMProvider {
           ? { toolCalls: parsed.toolCalls }
           : {}),
       });
-      return parsed;
+      return {
+        ...parsed,
+        ...(reasoningContent.length > 0
+          ? {
+            thinking: Object.freeze([
+              Object.freeze({
+                text: reasoningContent,
+                redacted: false,
+                kind: "reasoning_summary" as const,
+              }),
+            ]),
+          }
+          : {}),
+      };
     }
   }
 

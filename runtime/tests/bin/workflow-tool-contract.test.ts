@@ -65,8 +65,11 @@ function bindWorkflowSession(): Session {
     services: {},
   } as unknown as Session;
   bindSessionAgentControl(session, {
-    control: {} as never,
-    registry: {} as never,
+    control: { shutdown: vi.fn(async () => {}) } as never,
+    registry: {
+      maxThreads: 64,
+      acquireSpawnPermit: vi.fn(async () => ({ cancel: vi.fn() })),
+    } as never,
   });
   return session;
 }
@@ -75,14 +78,27 @@ function completeDelegation(
   onJoin?: (agentName: string) => void | Promise<void>,
 ): void {
   delegateMock.mockImplementation(
-    async (options: { readonly agentName?: string; readonly taskPrompt: string }) => {
+    async (options: {
+      readonly agentName?: string;
+      readonly taskPrompt: string;
+      readonly invocationEnvelope: {
+        readonly untrusted_data: readonly [{ readonly inline_payload: string }];
+      };
+      readonly finalMessageSink: {
+        reset(): void;
+        writeCanonicalDelta(delta: string): void;
+      };
+    }) => {
       const agentName = options.agentName ?? "unnamed";
+      const workflowInputs = JSON.parse(
+        options.invocationEnvelope.untrusted_data[0].inline_payload,
+      ) as { logical_step_id: string };
+      const logicalStepId = workflowInputs.logical_step_id;
       let joinPromise:
         | Promise<{
             readonly threadId: string;
             readonly durationMs: number;
             readonly outcome: "completed";
-            readonly finalMessage: string;
           }>
         | undefined;
       return {
@@ -97,12 +113,15 @@ function completeDelegation(
           },
           join() {
             joinPromise ??= (async () => {
-              await onJoin?.(agentName);
+              await onJoin?.(logicalStepId);
+              options.finalMessageSink.reset();
+              options.finalMessageSink.writeCanonicalDelta(
+                `${logicalStepId} complete`,
+              );
               return {
                 threadId: `thread-${agentName}`,
                 durationMs: 1,
                 outcome: "completed" as const,
-                finalMessage: `${agentName} complete`,
               };
             })();
             return joinPromise;
@@ -215,13 +234,23 @@ describe("WorkflowTool manifest boundary", () => {
 
     expect(result.isError).toBeUndefined();
     expect(joined).toEqual(["first", "second"]);
-    expect(delegateMock.mock.calls[1]?.[0]).toEqual(
-      expect.objectContaining({ taskPrompt: "first complete" }),
+    const secondEnvelope = delegateMock.mock.calls[1]?.[0]
+      .invocationEnvelope as {
+      readonly task_instructions: readonly [{ readonly inline_payload: string }];
+      readonly untrusted_data: readonly [{ readonly inline_payload: string }];
+    };
+    expect(secondEnvelope.task_instructions[0].inline_payload).toBe(
+      "[[workflow-input:legacy_0]]",
+    );
+    expect(secondEnvelope.untrusted_data[0].inline_payload).toContain(
+      "first complete",
     );
   });
 
-  it("fails closed on version-2 structured references and inputs until B3b", async () => {
-    const { workspaceRoot, workflowRoot, tool } = await fixture();
+  it("executes version-2 structured references through the v2 result contract", async () => {
+    const session = bindWorkflowSession();
+    const { workspaceRoot, workflowRoot, tool } = await fixture(session);
+    completeDelegation();
     await writeFile(
       join(workflowRoot, "v2.json"),
       JSON.stringify({
@@ -244,10 +273,10 @@ describe("WorkflowTool manifest boundary", () => {
       executionArgs(workspaceRoot, { name: "v2" }),
     );
 
-    expect(result.isError).toBe(true);
-    expect(result.content).toContain("WORKFLOW_B3B_REQUIRED");
-    expect(result.content).toContain("B3b scheduler");
-    expect(delegateMock).not.toHaveBeenCalled();
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain('"workflow_result_version":2');
+    expect(result.content).toContain('"outcome":"completed"');
+    expect(delegateMock).toHaveBeenCalledTimes(2);
   });
 
   it("caps every accepted legacy DAG wave at sixteen active steps", async () => {
