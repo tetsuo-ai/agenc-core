@@ -30,90 +30,100 @@ const benchmarkRoot = dirname(fileURLToPath(import.meta.url));
 const runtimeRoot = resolve(benchmarkRoot, "../..");
 const repositoryRoot = resolve(runtimeRoot, "..");
 const workerPath = join(benchmarkRoot, "worker.mjs");
-const options = parseArguments(process.argv.slice(2));
-const npmVersion = assertPinnedToolchain();
-assertBenchmarkInputsAreClean();
-const sourceRevision = commandText(
-  "git",
-  ["rev-parse", "HEAD"],
-  repositoryRoot,
-);
-const productionTree = commandText(
-  "git",
-  ["rev-parse", "HEAD:runtime/src"],
-  repositoryRoot,
-);
-const sizes = options.quick ? QUICK_CORPUS_SIZES : FULL_CORPUS_SIZES;
-const samples = options.quick
-  ? QUICK_QUERY_SAMPLE_COUNT
-  : FULL_QUERY_SAMPLE_COUNT;
-const points = [];
-
-for (const mode of FUZZY_BENCHMARK_MODES) {
-  for (const size of sizes) {
-    process.stderr.write(`D2 fuzzy benchmark ${mode} ${size}\n`);
-    points.push(
-      await runWorker({
-        invalidationTimeoutMs: options.quick ? 30_000 : 900_000,
-        mode,
-        samples,
-        size,
-        timeoutMs: options.quick
-          ? QUICK_WORKER_TIMEOUT_MS
-          : FULL_WORKER_TIMEOUT_MS,
-      }),
-    );
-  }
-}
-
-assertBenchmarkInputsAreClean();
-const finalSourceRevision = commandText(
-  "git",
-  ["rev-parse", "HEAD"],
-  repositoryRoot,
-);
-const finalProductionTree = commandText(
-  "git",
-  ["rev-parse", "HEAD:runtime/src"],
-  repositoryRoot,
-);
 if (
-  finalSourceRevision !== sourceRevision ||
-  finalProductionTree !== productionTree
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-  throw new Error(
-    "fuzzy benchmark refuses a source revision or production tree that changed during the run",
-  );
+  await main();
 }
 
-const report = {
-  environment: collectEnvironment(),
-  points,
-  productionTree,
-  schemaVersion: FUZZY_BENCHMARK_SCHEMA_VERSION,
-  sourceRevision,
-  suiteId: FUZZY_BENCHMARK_SUITE_ID,
-};
+async function main() {
+  const options = parseArguments(process.argv.slice(2));
+  const npmVersion = assertPinnedToolchain();
+  assertBenchmarkInputsAreClean();
+  const sourceRevision = commandText(
+    "git",
+    ["rev-parse", "HEAD"],
+    repositoryRoot,
+  );
+  const productionTree = commandText(
+    "git",
+    ["rev-parse", "HEAD:runtime/src"],
+    repositoryRoot,
+  );
+  const sizes = options.quick ? QUICK_CORPUS_SIZES : FULL_CORPUS_SIZES;
+  const samples = options.quick
+    ? QUICK_QUERY_SAMPLE_COUNT
+    : FULL_QUERY_SAMPLE_COUNT;
+  const points = [];
 
-validateFuzzyBenchmarkReport(report, { quick: options.quick });
-let acceptanceFailure = null;
-try {
-  if (!options.quick) assertFuzzyBenchmarkAcceptance(report);
-  if (options.check && points.some((point) => point.status !== "completed")) {
+  for (const mode of FUZZY_BENCHMARK_MODES) {
+    for (const size of sizes) {
+      process.stderr.write(`D2 fuzzy benchmark ${mode} ${size}\n`);
+      points.push(
+        await runWorker({
+          invalidationTimeoutMs: options.quick ? 30_000 : 900_000,
+          mode,
+          samples,
+          size,
+          timeoutMs: options.quick
+            ? QUICK_WORKER_TIMEOUT_MS
+            : FULL_WORKER_TIMEOUT_MS,
+        }),
+      );
+    }
+  }
+
+  assertBenchmarkInputsAreClean();
+  const finalSourceRevision = commandText(
+    "git",
+    ["rev-parse", "HEAD"],
+    repositoryRoot,
+  );
+  const finalProductionTree = commandText(
+    "git",
+    ["rev-parse", "HEAD:runtime/src"],
+    repositoryRoot,
+  );
+  if (
+    finalSourceRevision !== sourceRevision ||
+    finalProductionTree !== productionTree
+  ) {
     throw new Error(
-      "quick fuzzy benchmark check requires every point to complete",
+      "fuzzy benchmark refuses a source revision or production tree that changed during the run",
     );
   }
-} catch (error) {
-  acceptanceFailure = error instanceof Error ? error : new Error(String(error));
-}
-process.stderr.write(renderTable(points));
-process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-if (acceptanceFailure !== null) {
-  process.stderr.write(
-    `D2 fuzzy benchmark acceptance failed: ${acceptanceFailure.message}\n`,
-  );
-  process.exitCode = 1;
+
+  const report = {
+    environment: collectEnvironment(npmVersion),
+    points,
+    productionTree,
+    schemaVersion: FUZZY_BENCHMARK_SCHEMA_VERSION,
+    sourceRevision,
+    suiteId: FUZZY_BENCHMARK_SUITE_ID,
+  };
+
+  validateFuzzyBenchmarkReport(report, { quick: options.quick });
+  let acceptanceFailure = null;
+  try {
+    if (!options.quick) assertFuzzyBenchmarkAcceptance(report);
+    if (options.check && points.some((point) => point.status !== "completed")) {
+      throw new Error(
+        "quick fuzzy benchmark check requires every point to complete",
+      );
+    }
+  } catch (error) {
+    acceptanceFailure =
+      error instanceof Error ? error : new Error(String(error));
+  }
+  process.stderr.write(renderTable(points));
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  if (acceptanceFailure !== null) {
+    process.stderr.write(
+      `D2 fuzzy benchmark acceptance failed: ${acceptanceFailure.message}\n`,
+    );
+    process.exitCode = 1;
+  }
 }
 
 async function runWorker(options) {
@@ -265,7 +275,7 @@ function benchmarkEnvironment() {
   return environment;
 }
 
-function collectEnvironment() {
+function collectEnvironment(npmVersion) {
   const processors = cpus();
   const sourceFilesystem = statfsSync(repositoryRoot);
   const temporaryFilesystem = statfsSync(resolve(tmpdir()));
@@ -406,13 +416,17 @@ function assertBenchmarkInputsAreClean() {
   );
 }
 
-function assertGitPathIsClean(path, label) {
+export function assertGitPathIsClean(
+  path,
+  label,
+  gitRepositoryRoot = repositoryRoot,
+) {
   for (const args of [
     ["diff", "--quiet", "--", path],
     ["diff", "--cached", "--quiet", "--", path],
   ]) {
     const result = spawnSync("git", args, {
-      cwd: repositoryRoot,
+      cwd: gitRepositoryRoot,
       encoding: "utf8",
       env: benchmarkEnvironment(),
       maxBuffer: 65_536,
@@ -430,7 +444,7 @@ function assertGitPathIsClean(path, label) {
   const untracked = commandText(
     "git",
     ["ls-files", "--others", "--exclude-standard", "--", path],
-    repositoryRoot,
+    gitRepositoryRoot,
   );
   if (untracked.length > 0) {
     throw new Error(`fuzzy benchmark refuses untracked files in ${label}`);
@@ -438,7 +452,7 @@ function assertGitPathIsClean(path, label) {
   const ignored = commandText(
     "git",
     ["ls-files", "--others", "--ignored", "--exclude-standard", "--", path],
-    repositoryRoot,
+    gitRepositoryRoot,
   );
   if (ignored.length > 0) {
     throw new Error(`fuzzy benchmark refuses ignored files in ${label}`);

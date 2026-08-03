@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { describe, expect, test } from "vitest";
@@ -18,6 +20,7 @@ import {
   generateFuzzyCorpus,
   isFullQuerySubsequence,
 } from "../../benchmarks/fuzzy-search/corpus.mjs";
+import { assertGitPathIsClean } from "../../benchmarks/fuzzy-search/run.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -361,34 +364,45 @@ describe("D2 fuzzy benchmark contract", () => {
   }, 120_000);
 
   test("refuses an untracked benchmark evidence file", async () => {
-    const runtimeRoot = new URL("../..", import.meta.url);
-    const marker = new URL(
-      "../../benchmarks/fuzzy-search/provenance-test-marker.tmp",
-      import.meta.url,
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "agenc-d2-provenance-test-"),
     );
-    await writeFile(marker, "untracked benchmark evidence\n", "utf8");
+    const evidencePath = "runtime/benchmarks/fuzzy-search";
+    const evidenceRoot = join(repositoryRoot, evidencePath);
     try {
-      let failure: any = null;
-      try {
-        await execFileAsync(
-          process.execPath,
-          ["benchmarks/fuzzy-search/run.mjs", "--quick"],
-          {
-            cwd: runtimeRoot,
-            env: { ...process.env, NODE_OPTIONS: "" },
-            maxBuffer: 4 * 1024 * 1024,
-            timeout: 10_000,
-          },
-        );
-      } catch (error) {
-        failure = error;
-      }
-      expect(failure).not.toBeNull();
-      expect(String(failure.stderr)).toContain(
-        "refuses untracked files in benchmark evidence tree",
+      await mkdir(evidenceRoot, { recursive: true });
+      await writeFile(join(evidenceRoot, "tracked.mjs"), "export {};\n", "utf8");
+      await execFileAsync("git", ["init", "--quiet"], { cwd: repositoryRoot });
+      await execFileAsync("git", ["add", evidencePath], { cwd: repositoryRoot });
+      await execFileAsync(
+        "git",
+        [
+          "-c",
+          "user.name=AgenC Test",
+          "-c",
+          "user.email=test@invalid.example",
+          "commit",
+          "--quiet",
+          "-m",
+          "fixture",
+        ],
+        { cwd: repositoryRoot },
       );
+      await writeFile(
+        join(evidenceRoot, "provenance-test-marker.tmp"),
+        "untracked benchmark evidence\n",
+        "utf8",
+      );
+
+      expect(() =>
+        assertGitPathIsClean(
+          evidencePath,
+          "benchmark evidence tree",
+          repositoryRoot,
+        ),
+      ).toThrow("refuses untracked files in benchmark evidence tree");
     } finally {
-      await rm(marker, { force: true });
+      await rm(repositoryRoot, { force: true, recursive: true });
     }
   });
 });
