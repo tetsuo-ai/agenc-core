@@ -178,6 +178,7 @@ export class InvalidAgentPathError extends Error {
 
 export class AgentConcurrencyLimitError extends Error {
   readonly code = "AGENT_CONCURRENCY_LIMIT" as const;
+  readonly category = "retryable_capacity" as const;
 
   constructor(
     public readonly limit: number,
@@ -185,6 +186,16 @@ export class AgentConcurrencyLimitError extends Error {
   ) {
     super(`agent concurrency limit reached (${activeCount}/${limit})`);
     this.name = "AgentConcurrencyLimitError";
+  }
+}
+
+export class AgentCapacityQueueFullError extends Error {
+  readonly code = "AGENT_CAPACITY_QUEUE_FULL" as const;
+  readonly category = "retryable_capacity" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentCapacityQueueFullError";
   }
 }
 
@@ -240,6 +251,49 @@ export class SpawnReservation {
   }
 }
 
+const AGENT_CAPACITY_PERMIT_SECRET = Symbol("agent-capacity-permit");
+
+/** One generation-bound, single-consumption reservation transfer. */
+export class AgentCapacityPermit {
+  private state: "ready" | "consumed" | "cancelled" = "ready";
+
+  constructor(
+    secret: symbol,
+    private readonly registry: AgentRegistry,
+    private readonly registryGeneration: string,
+    readonly ownerId: string,
+    readonly permitId: number,
+    private readonly reservation: SpawnReservation,
+  ) {
+    if (secret !== AGENT_CAPACITY_PERMIT_SECRET) {
+      throw new Error("AgentCapacityPermit cannot be constructed externally");
+    }
+  }
+
+  consumeFor(registry: AgentRegistry, generation: string): SpawnReservation {
+    if (registry !== this.registry || generation !== this.registryGeneration) {
+      throw new Error(
+        "agent capacity permit belongs to another registry generation",
+      );
+    }
+    if (this.state !== "ready") {
+      throw new Error(`agent capacity permit was already ${this.state}`);
+    }
+    this.state = "consumed";
+    return this.reservation;
+  }
+
+  cancel(): void {
+    if (this.state !== "ready") return;
+    this.state = "cancelled";
+    this.reservation.release();
+  }
+
+  isConsumed(): boolean {
+    return this.state === "consumed";
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // AgentRegistry
 // ─────────────────────────────────────────────────────────────────────
@@ -249,8 +303,28 @@ export interface AgentRegistryOpts {
   readonly maxThreads?: number;
 }
 
+export interface AgentCapacityWaitOptions {
+  readonly ownerId: string;
+  readonly signal?: AbortSignal;
+}
+
+interface AgentCapacityWaiter {
+  readonly permitId: number;
+  readonly ownerId: string;
+  readonly accountedBytes: number;
+  readonly signal?: AbortSignal;
+  readonly resolve: (permit: AgentCapacityPermit) => void;
+  readonly reject: (error: Error) => void;
+  readonly onAbort: () => void;
+  active: boolean;
+}
+
 /** Safe bound used when the operator has not selected a session limit. */
 export const DEFAULT_MAX_AGENT_THREADS = 32;
+export const MAX_AGENT_CAPACITY_WAITERS_GLOBAL = 4_096;
+export const MAX_AGENT_CAPACITY_WAITERS_PER_OWNER = 1_024;
+export const MAX_AGENT_CAPACITY_WAITER_BYTES = 4_194_304;
+const AGENT_CAPACITY_WAITER_BASE_BYTES = 128;
 
 export class AgentRegistry {
   private readonly byPath = new Map<AgentPath, AgentMetadata>();
@@ -264,6 +338,11 @@ export class AgentRegistry {
   private nicknameResetCount = 0;
   private readonly slotLock: AsyncLock<void> = new AsyncLock<void>(undefined);
   private totalCount = 0;
+  private readonly generation = crypto.randomUUID();
+  private readonly capacityWaiters: AgentCapacityWaiter[] = [];
+  private readonly capacityWaitersByOwner = new Map<string, number>();
+  private capacityWaiterBytes = 0;
+  private nextCapacityPermitId = 1;
   readonly maxThreads: number;
 
   constructor(opts: AgentRegistryOpts = {}) {
@@ -288,7 +367,11 @@ export class AgentRegistry {
    */
   async reserveSpawnSlot(): Promise<SpawnReservation> {
     return this.slotLock.with(() => {
-      if (this.totalCount >= this.maxThreads) {
+      this.discardInactiveCapacityWaiters();
+      if (
+        this.totalCount >= this.maxThreads ||
+        this.capacityWaiters.length > 0
+      ) {
         throw new AgentConcurrencyLimitError(this.maxThreads, this.totalCount);
       }
       this.totalCount += 1;
@@ -296,9 +379,88 @@ export class AgentRegistry {
     });
   }
 
+  /**
+   * Cancellable FIFO admission used by batch schedulers. The returned permit
+   * already owns exactly one registry slot and must be transferred to
+   * AgentControl or cancelled; AgentControl never reserves a second slot.
+   */
+  async acquireSpawnPermit(
+    options: AgentCapacityWaitOptions,
+  ): Promise<AgentCapacityPermit> {
+    if (options.ownerId.length === 0) {
+      throw new Error("agent capacity ownerId must be non-empty");
+    }
+    options.signal?.throwIfAborted();
+    let queued: Promise<AgentCapacityPermit> | undefined;
+    const immediate = await this.slotLock.with(() => {
+      // The signal can abort while this acquisition is waiting for slotLock.
+      // Recheck under the lock before installing a waiter; registering an
+      // abort listener on an already-aborted signal would otherwise strand it.
+      options.signal?.throwIfAborted();
+      this.discardInactiveCapacityWaiters();
+      if (
+        this.totalCount < this.maxThreads &&
+        this.capacityWaiters.length === 0
+      ) {
+        this.totalCount += 1;
+        return this.createCapacityPermit(
+          options.ownerId,
+          new SpawnReservation(this, new AbortController()),
+        );
+      }
+      const ownerWaiters =
+        this.capacityWaitersByOwner.get(options.ownerId) ?? 0;
+      const accountedBytes =
+        AGENT_CAPACITY_WAITER_BASE_BYTES +
+        Buffer.byteLength(options.ownerId, "utf8");
+      if (
+        this.capacityWaiters.length >= MAX_AGENT_CAPACITY_WAITERS_GLOBAL ||
+        ownerWaiters >= MAX_AGENT_CAPACITY_WAITERS_PER_OWNER ||
+        this.capacityWaiterBytes + accountedBytes >
+          MAX_AGENT_CAPACITY_WAITER_BYTES
+      ) {
+        throw new AgentCapacityQueueFullError(
+          "agent capacity wait queue is full",
+        );
+      }
+      queued = new Promise<AgentCapacityPermit>((resolve, reject) => {
+        const permitId = this.nextCapacityPermitId;
+        this.nextCapacityPermitId += 1;
+        const waiter: AgentCapacityWaiter = {
+          permitId,
+          ownerId: options.ownerId,
+          accountedBytes,
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          resolve,
+          reject,
+          onAbort: () => this.cancelCapacityWaiter(permitId),
+          active: true,
+        };
+        options.signal?.addEventListener("abort", waiter.onAbort, {
+          once: true,
+        });
+        this.capacityWaiters.push(waiter);
+        this.capacityWaitersByOwner.set(options.ownerId, ownerWaiters + 1);
+        this.capacityWaiterBytes += accountedBytes;
+      });
+      return undefined;
+    });
+    return immediate ?? queued!;
+  }
+
+  consumeSpawnPermit(
+    permit: AgentCapacityPermit,
+    expectedOwnerId: string,
+  ): SpawnReservation {
+    if (permit.ownerId !== expectedOwnerId) {
+      throw new Error("agent capacity permit owner does not match spawn owner");
+    }
+    return permit.consumeFor(this, this.generation);
+  }
+
   /** Called by SpawnReservation.release() to roll back the counter. */
   rollbackSpawnReservation(): void {
-    this.totalCount = Math.max(0, this.totalCount - 1);
+    this.recycleCapacitySlot();
   }
 
   /**
@@ -342,8 +504,87 @@ export class AgentRegistry {
       if (!entry) return;
       const [path] = entry;
       this.byPath.delete(path);
-      this.totalCount = Math.max(0, this.totalCount - 1);
+      this.recycleCapacitySlot();
     });
+  }
+
+  private createCapacityPermit(
+    ownerId: string,
+    reservation: SpawnReservation,
+  ): AgentCapacityPermit {
+    const permitId = this.nextCapacityPermitId;
+    this.nextCapacityPermitId += 1;
+    return new AgentCapacityPermit(
+      AGENT_CAPACITY_PERMIT_SECRET,
+      this,
+      this.generation,
+      ownerId,
+      permitId,
+      reservation,
+    );
+  }
+
+  private recycleCapacitySlot(): void {
+    this.discardInactiveCapacityWaiters();
+    const waiter = this.capacityWaiters.shift();
+    if (waiter === undefined) {
+      this.totalCount = Math.max(0, this.totalCount - 1);
+      return;
+    }
+    this.removeCapacityWaiterAccounting(waiter);
+    waiter.active = false;
+    waiter.signal?.removeEventListener("abort", waiter.onAbort);
+    const permit = this.createCapacityPermit(
+      waiter.ownerId,
+      new SpawnReservation(this, new AbortController()),
+    );
+    queueMicrotask(() => {
+      if (waiter.signal?.aborted === true) {
+        permit.cancel();
+        waiter.reject(
+          waiter.signal.reason instanceof Error
+            ? waiter.signal.reason
+            : new Error("agent capacity wait aborted"),
+        );
+        return;
+      }
+      waiter.resolve(permit);
+    });
+  }
+
+  private cancelCapacityWaiter(permitId: number): void {
+    const index = this.capacityWaiters.findIndex(
+      (candidate) => candidate.permitId === permitId && candidate.active,
+    );
+    if (index < 0) return;
+    const [waiter] = this.capacityWaiters.splice(index, 1);
+    if (waiter === undefined) return;
+    waiter.active = false;
+    this.removeCapacityWaiterAccounting(waiter);
+    waiter.signal?.removeEventListener("abort", waiter.onAbort);
+    queueMicrotask(() =>
+      waiter.reject(
+        waiter.signal?.reason instanceof Error
+          ? waiter.signal.reason
+          : new Error("agent capacity wait aborted"),
+      ),
+    );
+  }
+
+  private discardInactiveCapacityWaiters(): void {
+    while (this.capacityWaiters[0]?.active === false) {
+      this.capacityWaiters.shift();
+    }
+  }
+
+  private removeCapacityWaiterAccounting(waiter: AgentCapacityWaiter): void {
+    const ownerCount = this.capacityWaitersByOwner.get(waiter.ownerId) ?? 0;
+    if (ownerCount <= 1) this.capacityWaitersByOwner.delete(waiter.ownerId);
+    else this.capacityWaitersByOwner.set(waiter.ownerId, ownerCount - 1);
+    this.capacityWaiterBytes = Math.max(
+      0,
+      this.capacityWaiterBytes - waiter.accountedBytes,
+    );
   }
 
   /** Register the session's root thread. */

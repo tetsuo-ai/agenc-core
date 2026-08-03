@@ -147,6 +147,35 @@ function makeRealDelegateHarness(label: string) {
 }
 
 describe("delegate lifecycle recovery", () => {
+  it("retires a transferred live slot when fork setup fails", async () => {
+    const live = makeLive("thread-fork-failure", "/root/fork_failure");
+    const control = {
+      spawn: vi.fn(async () => live),
+      shutdown: vi.fn(async () => {}),
+      resumeAgentFromRollout: vi.fn(),
+    };
+    mockForkSubagent.mockRejectedValueOnce(new Error("fork context failed"));
+
+    const outcome = await delegate({
+      parent: makeParentSession() as never,
+      parentPath: "/root",
+      control: control as never,
+      registry: {} as never,
+      taskPrompt: "cannot fork",
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "rejected",
+      code: "AGENT_SPAWN_REJECTED",
+      category: "spawn_failed",
+      reason: expect.stringContaining("fork context failed"),
+    });
+    expect(control.shutdown).toHaveBeenCalledWith(
+      "thread-fork-failure",
+      "delegate_fork_failed",
+    );
+  });
+
   it("launches in the background by default", async () => {
     const live = makeLive("thread-bg", "/root/background");
     const control = {
@@ -234,10 +263,9 @@ describe("delegate lifecycle recovery", () => {
     }
     await outcome.thread.join();
     expect(outcome.thread.summaryCacheSafeParams).toBe(cacheSafeParams);
-    expect(outcome.thread.summaryMessages.map((message) => message.type)).toEqual([
-      "assistant",
-      "user",
-    ]);
+    expect(
+      outcome.thread.summaryMessages.map((message) => message.type),
+    ).toEqual(["assistant", "user"]);
     expect(outcome.thread.summaryMessages[0]?.message.content).toEqual([
       expect.objectContaining({
         type: "tool_use",
@@ -395,6 +423,8 @@ describe("delegate lifecycle recovery", () => {
 
     expect(outcome).toEqual({
       kind: "rejected",
+      code: "INVALID_DELEGATE_REQUEST",
+      category: "invalid_request",
       reason: "worktree isolation requires a non-empty worktreeSlug",
     });
     expect(control.spawn).not.toHaveBeenCalled();
@@ -413,7 +443,10 @@ describe("delegate lifecycle recovery", () => {
       })),
     };
     const resumeManager = {
-      recordFailure: vi.fn(() => ({ kind: "resume" as const, reason: "retry" })),
+      recordFailure: vi.fn(() => ({
+        kind: "resume" as const,
+        reason: "retry",
+      })),
       recordSuccess: vi.fn(),
     };
 
@@ -453,7 +486,10 @@ describe("delegate lifecycle recovery", () => {
     expect(control.assertAgentMetadataRoleWorkspace).toHaveBeenCalledWith(
       live1.metadata,
     );
-    expect(control.shutdown).toHaveBeenCalledWith("thread-1", "delegate_resume");
+    expect(control.shutdown).toHaveBeenCalledWith(
+      "thread-1",
+      "delegate_resume",
+    );
     expect(control.resumeAgentFromRollout).toHaveBeenCalledWith({
       rootThreadId: "thread-1",
       parentPath: "/root",
@@ -477,7 +513,10 @@ describe("delegate lifecycle recovery", () => {
       resumeAgentFromRollout: vi.fn(),
     };
     const resumeManager = {
-      recordFailure: vi.fn(() => ({ kind: "resume" as const, reason: "retry" })),
+      recordFailure: vi.fn(() => ({
+        kind: "resume" as const,
+        reason: "retry",
+      })),
       recordSuccess: vi.fn(),
     };
     mockRunAgent.mockImplementationOnce(() =>
@@ -577,7 +616,10 @@ describe("delegate lifecycle recovery", () => {
     expect(control.assertAgentMetadataRoleWorkspace).toHaveBeenCalledWith(
       live1.metadata,
     );
-    expect(control.shutdown).toHaveBeenCalledWith("thread-1", "delegate_restart");
+    expect(control.shutdown).toHaveBeenCalledWith(
+      "thread-1",
+      "delegate_restart",
+    );
     expect(control.shutdown).toHaveBeenCalledWith(
       "thread-2",
       "delegate_teardown",

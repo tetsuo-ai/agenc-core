@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -651,8 +658,16 @@ describe("model-facing tools", () => {
       spawn.inputSchema as { properties: Record<string, unknown> }
     ).properties;
 
-    expect(properties.max_concurrency).toMatchObject({ type: "number" });
-    expect(properties.max_workers).toMatchObject({ type: "number" });
+    expect(properties.max_concurrency).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 64,
+    });
+    expect(properties.max_workers).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 64,
+    });
 
     const accepted = await spawn.execute({
       csv_path: "input.csv",
@@ -675,12 +690,20 @@ describe("model-facing tools", () => {
 
   it("uses max_workers as the CSV agent concurrency alias", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-csv-alias-"));
+    let session: Session | undefined;
     try {
       const csvPath = join(root, "input.csv");
       await writeFile(csvPath, "id,value\nrow1,a\nrow2,b\n", "utf8");
-      const session = fakeSession();
+      session = fakeSession();
+      const registry = new AgentRegistry();
+      _setAgentControlForTesting(session, {
+        control: {
+          shutdown: vi.fn(async () => {}),
+        } as never,
+        registry,
+      });
       const tools = createModelFacingTools({
-        workspaceRoot: process.cwd(),
+        workspaceRoot: root,
         getSession: () => session,
       });
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
@@ -689,34 +712,47 @@ describe("model-facing tools", () => {
       let maxActiveWorkers = 0;
       const reports: Promise<void>[] = [];
       delegateMock.mockImplementation(
-        async (ctx: { taskPrompt: string; agentName: string }) => {
+        async (ctx: {
+          taskPrompt: string;
+          agentName: string;
+          capacityPermit?: Parameters<AgentRegistry["consumeSpawnPermit"]>[0];
+          capacityOwnerId?: string;
+          registry: AgentRegistry;
+        }) => {
+          if (
+            ctx.capacityPermit !== undefined &&
+            ctx.capacityOwnerId !== undefined
+          ) {
+            ctx.registry
+              .consumeSpawnPermit(ctx.capacityPermit, ctx.capacityOwnerId)
+              .release();
+          }
           activeWorkers += 1;
           maxActiveWorkers = Math.max(maxActiveWorkers, activeWorkers);
           const jobId = /Job ID: ([^\n]+)/.exec(ctx.taskPrompt)?.[1];
           const itemId = /Item ID: ([^\n]+)/.exec(ctx.taskPrompt)?.[1];
           expect(jobId).toBeDefined();
           expect(itemId).toBeDefined();
-          reports.push(
-            new Promise<void>((resolve) => {
-              setTimeout(() => {
-                void report
-                  .execute({
-                    job_id: jobId,
-                    item_id: itemId,
-                    result: { worker: ctx.agentName },
-                  })
-                  .finally(() => {
-                    activeWorkers -= 1;
-                    resolve();
-                  });
-              }, 5);
-            }),
-          );
+          const reportDone = new Promise<void>((resolve) => {
+            setTimeout(() => {
+              void report
+                .execute({
+                  job_id: jobId,
+                  item_id: itemId,
+                  result: { worker: ctx.agentName },
+                })
+                .finally(() => {
+                  activeWorkers -= 1;
+                  resolve();
+                });
+            }, 5);
+          });
+          reports.push(reportDone);
           return {
             kind: "async_launched",
             thread: {
               threadId: `thread-${ctx.agentName}`,
-              join: vi.fn(() => new Promise<void>(() => {})),
+              join: vi.fn(() => reportDone),
             },
           };
         },
@@ -724,18 +760,216 @@ describe("model-facing tools", () => {
 
       const result = await byName.get("spawn_agents_on_csv")!.execute({
         csv_path: csvPath,
-        instruction: "process {value}",
+        instruction: "  process the structured value field  ",
         id_column: "id",
         max_workers: 1,
       });
 
       await Promise.all(reports);
       expect(result.isError).not.toBe(true);
-      expect(JSON.parse(result.content).items).toMatchObject([
-        { item_id: "row1", status: "completed" },
-        { item_id: "row2", status: "completed" },
+      const spawned = JSON.parse(result.content);
+      expect(spawned.contract_version).toBe(1);
+      expect(spawned.item_page).toMatchObject([
+        { source_id: "row1", status: "completed" },
+        { source_id: "row2", status: "completed" },
       ]);
+      expect(spawned.item_page[0].item_id).toMatch(/^csv_item_[0-9a-f]{64}$/u);
+      expect(spawned.item_page[0].item_id).not.toBe("row1");
       expect(maxActiveWorkers).toBe(1);
+      expect(delegateMock.mock.calls[0]?.[0].taskPrompt).toContain(
+        "Approved task instruction:\n  process the structured value field  \n\n",
+      );
+
+      const inspectedResult = await byName
+        .get("inspect_csv_agent_job")!
+        .execute({
+          job_id: spawned.job_id,
+          status: "completed",
+          limit: 1,
+        });
+      const inspected = JSON.parse(inspectedResult.content);
+      expect(inspected.summary).toMatchObject({
+        status: "completed",
+        total_items: 2,
+        completed_items: 2,
+      });
+      expect(inspected.items).toHaveLength(1);
+      expect(inspected.next_cursor).toMatch(/^agenc-csv-items-v1:/u);
+      const forgedCursor = `${inspected.next_cursor.slice(0, -1)}${
+        inspected.next_cursor.endsWith("a") ? "b" : "a"
+      }`;
+      const forgedCursorResult = await byName
+        .get("inspect_csv_agent_job")!
+        .execute({
+          job_id: spawned.job_id,
+          status: "completed",
+          cursor: forgedCursor,
+          limit: 1,
+        });
+      expect(forgedCursorResult.isError).toBe(true);
+      expect(JSON.parse(forgedCursorResult.content).error).toMatch(
+        /invalid or stale CSV item page cursor/u,
+      );
+      const nextInspectedResult = await byName
+        .get("inspect_csv_agent_job")!
+        .execute({
+          job_id: spawned.job_id,
+          status: "completed",
+          cursor: inspected.next_cursor,
+          limit: 1,
+        });
+      const nextInspected = JSON.parse(nextInspectedResult.content);
+      expect(nextInspected.items).toHaveLength(1);
+      expect(nextInspected.items[0].item_id).not.toBe(
+        inspected.items[0].item_id,
+      );
+
+      const blobResult = await byName
+        .get("read_csv_agent_job_result")!
+        .execute({
+          job_id: spawned.job_id,
+          item_id: spawned.item_page[0].item_id,
+        });
+      const blob = JSON.parse(blobResult.content);
+      expect(blob.result_availability).toBe("available");
+      expect(
+        JSON.parse(Buffer.from(blob.data_base64, "base64").toString("utf8")),
+      ).toMatchObject({ worker: expect.any(String) });
+    } finally {
+      if (session !== undefined) _clearAgentControlCacheForTesting(session);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects invalid CSV job option combinations before starting work", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-csv-options-"));
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => fakeSession(root),
+      });
+      const spawn = tools.find((tool) => tool.name === "spawn_agents_on_csv")!;
+
+      const mismatchedAliases = await spawn.execute({
+        csv_path: "input.csv",
+        instruction: "process",
+        max_concurrency: 2,
+        max_workers: 3,
+      });
+      expect(mismatchedAliases.isError).toBe(true);
+      expect(JSON.parse(mismatchedAliases.content).error).toMatch(
+        /must match/u,
+      );
+
+      const invalidSchema = await spawn.execute({
+        csv_path: "input.csv",
+        instruction: "process",
+        output_schema: [],
+      });
+      expect(invalidSchema.isError).toBe(true);
+      expect(JSON.parse(invalidSchema.content).error).toMatch(
+        /must be a JSON object/u,
+      );
+
+      const zeroConcurrency = await spawn.execute({
+        csv_path: "input.csv",
+        instruction: "process",
+        max_concurrency: 0,
+      });
+      expect(zeroConcurrency.isError).toBe(true);
+      expect(JSON.parse(zeroConcurrency.content).error).toMatch(
+        /must be >= 1/u,
+      );
+      expect(delegateMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects CSV input paths outside the authenticated workspace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-csv-workspace-"));
+    const outside = await mkdtemp(join(tmpdir(), "agenc-csv-outside-"));
+    try {
+      const outsideCsv = join(outside, "outside.csv");
+      await writeFile(outsideCsv, "id\nsecret\n", "utf8");
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => fakeSession(root),
+      });
+      const spawn = tools.find((tool) => tool.name === "spawn_agents_on_csv")!;
+
+      const result = await spawn.execute({
+        csv_path: outsideCsv,
+        instruction: "process",
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toMatch(
+        /outside the authorized input root/u,
+      );
+      expect(delegateMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects workspace symlinks to outside CSV inputs",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-csv-workspace-"));
+      const outside = await mkdtemp(join(tmpdir(), "agenc-csv-outside-"));
+      try {
+        const outsideCsv = join(outside, "outside.csv");
+        await writeFile(outsideCsv, "id\nsecret\n", "utf8");
+        await symlink(outsideCsv, join(root, "linked.csv"), "file");
+        const tools = createModelFacingTools({
+          workspaceRoot: root,
+          getSession: () => fakeSession(root),
+        });
+        const spawn = tools.find(
+          (tool) => tool.name === "spawn_agents_on_csv",
+        )!;
+
+        const result = await spawn.execute({
+          csv_path: "linked.csv",
+          instruction: "process",
+        });
+        expect(result.isError).toBe(true);
+        expect(JSON.parse(result.content).error).toMatch(
+          /outside the authorized input root/u,
+        );
+        expect(delegateMock).not.toHaveBeenCalled();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+        await rm(outside, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("propagates the hidden CSV tool abort signal before import", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-csv-abort-"));
+    try {
+      await writeFile(join(root, "input.csv"), "id\nrow1\n", "utf8");
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => fakeSession(root),
+      });
+      const spawn = tools.find((tool) => tool.name === "spawn_agents_on_csv")!;
+      const controller = new AbortController();
+      controller.abort(new Error("CSV request cancelled"));
+      const args: Record<string, unknown> = {
+        csv_path: "input.csv",
+        instruction: "process",
+      };
+      Object.defineProperty(args, "__abortSignal", {
+        enumerable: false,
+        value: controller.signal,
+      });
+
+      const result = await spawn.execute(args);
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toBe("CSV request cancelled");
+      expect(delegateMock).not.toHaveBeenCalled();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

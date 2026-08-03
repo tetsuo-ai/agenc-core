@@ -242,6 +242,8 @@ Canonical v2 surface (`runtime/src/agents/v2/`). Details:
 | `list_agents` | Inspect agent tree |
 | `spawn_agents_on_csv` | Batch CSV agent jobs |
 | `report_agent_job_result` | Record CSV job item result |
+| `inspect_csv_agent_job` | Read a bounded summary and keyset-paginated item page |
+| `read_csv_agent_job_result` | Read one bounded base64 result chunk |
 
 ### MCP helpers (built-in) + bridge
 

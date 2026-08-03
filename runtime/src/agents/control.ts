@@ -49,6 +49,7 @@ import {
   InvalidAgentMetadataError,
   ROOT_AGENT_PATH,
   type AgentPath,
+  type AgentCapacityPermit,
   type AgentRegistry,
   type AgentMetadata,
   type ThreadId,
@@ -456,6 +457,8 @@ export class AgentControl {
     readonly agentPath?: AgentPath;
     readonly preferredNickname?: string;
     readonly depthCap?: number;
+    readonly capacityPermit?: AgentCapacityPermit;
+    readonly capacityOwnerId?: string;
     /** Fail-closed role identity for restart/rehydration spawns. */
     readonly expectedRoleProvenance?: Pick<
       AgentMetadata,
@@ -476,6 +479,8 @@ export class AgentControl {
     readonly agentPath?: AgentPath;
     readonly preferredNickname?: string;
     readonly depthCap?: number;
+    readonly capacityPermit?: AgentCapacityPermit;
+    readonly capacityOwnerId?: string;
     readonly expectedRoleProvenance?: Pick<
       AgentMetadata,
       "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
@@ -610,7 +615,20 @@ export class AgentControl {
     // spawn, release the still-pre-dispatch durable reservation immediately.
     let reservation: Awaited<ReturnType<AgentRegistry["reserveSpawnSlot"]>>;
     try {
-      reservation = await this.registry.reserveSpawnSlot();
+      if (opts.capacityPermit !== undefined) {
+        if (
+          opts.capacityOwnerId === undefined ||
+          opts.capacityOwnerId.length === 0
+        ) {
+          throw new Error("capacityOwnerId is required with a capacity permit");
+        }
+        reservation = this.registry.consumeSpawnPermit(
+          opts.capacityPermit,
+          opts.capacityOwnerId,
+        );
+      } else {
+        reservation = await this.registry.reserveSpawnSlot();
+      }
     } catch (error) {
       finishSpawnAdmission("local_slot_reservation", (reservationId) => {
         admission?.void(reservationId, "session_concurrency_limit");

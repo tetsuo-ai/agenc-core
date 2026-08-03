@@ -1,7 +1,7 @@
-import { readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { sourcePath } from "../helpers/source-path.ts";
+import { runtimeRootPath, sourcePath } from "../helpers/source-path.ts";
 import Database from "better-sqlite3";
 import {
   LOGS_DB_MIGRATIONS,
@@ -58,7 +58,8 @@ describe("state migration registry", () => {
 
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      20,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -79,6 +80,7 @@ describe("state migration registry", () => {
       "run_effects_session_call_step_index",
       "effect_evidence_v2",
       "run_recovery_schema",
+      "csv_job_identity_replay",
       "tool_pair_projection_schema",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
@@ -116,6 +118,7 @@ describe("state migration registry", () => {
       "016_run_effects_session_call_step_index.ts",
       "017_effect_evidence_v2.ts",
       "018_run_recovery_schema.ts",
+      "019_csv_job_identity_replay.ts",
       "020_tool_pair_projection_schema.ts",
     ]);
   });
@@ -517,6 +520,146 @@ describe("state migration registry", () => {
         review_disposition: null,
       });
       expect(rows[2]?.legacy_review_json).toContain("human_verified");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("migrates legacy CSV running rows to non-executable review state", () => {
+    const db = new Database(":memory:");
+    try {
+      applyMigrations(db, STATE_DB_MIGRATIONS.slice(0, 16));
+      const recipe = JSON.parse(
+        readFileSync(
+          join(
+            runtimeRootPath,
+            "tests/fnd/fixtures/csv/legacy-v2-on-state-v16.sqlite-seed.json",
+          ),
+          "utf8",
+        ),
+      ) as {
+        readonly statements: ReadonlyArray<{
+          readonly sql: string;
+          readonly params: ReadonlyArray<unknown>;
+        }>;
+      };
+      for (const statement of recipe.statements) {
+        db.prepare(statement.sql).run(...statement.params);
+      }
+      db.prepare(
+        `INSERT INTO csv_agent_jobs (
+           id, name, status, instruction, output_schema_json,
+           input_headers_json, input_csv_path, output_csv_path, auto_export,
+           max_runtime_seconds, created_at, updated_at, started_at,
+           completed_at, last_error
+         ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 0, NULL, ?, ?, ?, ?, NULL)`,
+      ).run(
+        "legacy-completed-without-result",
+        "legacy missing result",
+        "completed",
+        "process",
+        '["value"]',
+        "/input.csv",
+        "",
+        1,
+        2,
+        1,
+        2,
+      );
+      db.prepare(
+        `INSERT INTO csv_agent_job_items (
+           job_id, item_id, row_index, source_id, row_json, status,
+           assigned_thread_id, attempt_count, result_json, last_error,
+           created_at, updated_at, completed_at, reported_at
+         ) VALUES (?, ?, 0, NULL, ?, 'completed', NULL, 1, NULL, NULL,
+                   1, 2, 2, 2)`,
+      ).run(
+        "legacy-completed-without-result",
+        "legacy-source-identity",
+        '{"value":"x"}',
+      );
+
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+
+      expect(
+        db
+          .prepare(
+            `SELECT status, id_column, import_state, identity_format_version,
+                    unknown_outcome_items, output_mode
+             FROM csv_agent_jobs WHERE id = 'legacy-csv-v2'`,
+          )
+          .get(),
+      ).toEqual({
+        status: "running",
+        id_column: null,
+        import_state: "visible",
+        identity_format_version: 0,
+        unknown_outcome_items: 1,
+        output_mode: "replace_existing_regular",
+      });
+      const migratedItems = db
+        .prepare(
+          `SELECT item_id, source_id, status, dispatch_state, review_status,
+                  review_reason, worker_name, result_digest
+           FROM csv_agent_job_items
+           WHERE job_id = 'legacy-csv-v2'
+           ORDER BY row_index`,
+        )
+        .all() as Array<Record<string, unknown>>;
+      expect(migratedItems).toEqual([
+        expect.objectContaining({
+          source_id: "pending-row",
+          status: "pending",
+          dispatch_state: "not_dispatched",
+          review_status: null,
+          review_reason: null,
+        }),
+        expect.objectContaining({
+          source_id: "running-row",
+          status: "unknown_outcome",
+          dispatch_state: "ambiguous",
+          review_status: "pending",
+          review_reason: "legacy_csv_ambiguous",
+        }),
+        expect.objectContaining({
+          source_id: "completed-row",
+          status: "completed",
+          dispatch_state: "settled",
+          review_status: null,
+          review_reason: null,
+        }),
+      ]);
+      for (const [rowIndex, migrated] of migratedItems.entries()) {
+        expect(migrated.item_id).toMatch(/^csv_item_[0-9a-f]{64}$/u);
+        expect(migrated.worker_name).toMatch(
+          new RegExp(`^csv_row_${rowIndex}_[0-9a-f]{16}$`, "u"),
+        );
+        expect(migrated.item_id).not.toBe(migrated.source_id);
+      }
+      expect(migratedItems[2]?.result_digest).toMatch(/^[0-9a-f]{64}$/u);
+      expect(
+        db
+          .prepare(
+            `SELECT job.status AS job_status, item.status AS item_status,
+                    item.result_availability, item.last_error
+             FROM csv_agent_jobs AS job
+             JOIN csv_agent_job_items AS item ON item.job_id = job.id
+             WHERE job.id = 'legacy-completed-without-result'`,
+          )
+          .get(),
+      ).toEqual({
+        job_status: "failed",
+        item_status: "failed",
+        result_availability: "not_produced",
+        last_error: "legacy_csv_completed_without_result",
+      });
+      expect(() =>
+        db
+          .prepare(
+            "UPDATE csv_agent_jobs SET status = 'unknown_outcome' WHERE id = 'legacy-csv-v2'",
+          )
+          .run(),
+      ).toThrow();
     } finally {
       db.close();
     }

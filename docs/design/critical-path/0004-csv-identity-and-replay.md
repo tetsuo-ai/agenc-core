@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted target; implementation pending |
+| Status | Implemented |
 | Audit snapshot | `d2b228e87ea63bd6a5d93e6f599f36bce88d672b` |
 | Audit date | 2026-07-31 |
 | Owner | CSV identity, import visibility, and replay safety (B1); consumed by bounded CSV scheduling and workflows |
@@ -67,7 +67,9 @@ never a fabricated retry key.
 
 The public result is a bounded, versioned summary plus keyset-paginated item
 inspection and a separate bounded result-blob API. No compatibility adapter may
-materialize every row of a large job.
+materialize every row of a large job. Continuation cursors are opaque and bound
+to the exact job and status filter; clients pass `next_cursor` back unchanged,
+and stale, forged, or cross-scope cursors fail closed.
 
 ### Prompt boundary
 
@@ -108,3 +110,22 @@ visibility fencing, unknown review behavior, and no duplicate physical effect.
 Primary references: [RIFL](https://web.stanford.edu/~ouster/cgi-bin/papers/rifl.pdf),
 [OrchBench](https://arxiv.org/abs/2607.25656), and
 [The Instruction Hierarchy](https://arxiv.org/abs/2404.13208).
+
+## Implementation
+
+The contract and named limits live in
+`runtime/src/contracts/csv-job-contract.ts`. Migration `019` installs the
+visibility fence, identity/evidence columns, exact status enums, counters, and
+quota triggers; the state driver takes a pre-migration rollback backup.
+`runtime/src/state/csv-agent-jobs.ts` owns atomic import promotion, transition
+guards, review resolution, keyset pages, result chunks, retirement, and stale
+staging cleanup.
+
+`runtime/src/agents/jobs/csv-reader.ts` performs descriptor-based bounded UTF-8
+ingestion and creates inert rows plus runtime-owned identities.
+`runtime/src/agents/jobs/job-orchestrator.ts` keeps approved instructions apart
+from structured row data, dispatches through cancellable FIFO admission, holds
+capacity until workers retire, and applies the replay rules above. The
+model-facing surface returns only a versioned summary and first bounded page;
+operators use `inspect_csv_agent_job` and `read_csv_agent_job_result` for
+bounded follow-up reads.

@@ -148,6 +148,24 @@ describe("AgentControl", () => {
     expect(live.metadata.agentPath).toBe("/root/task_3");
   });
 
+  it("atomically transfers one pre-reserved capacity permit without reserving again", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry({ maxThreads: 1 });
+    const control = new AgentControl({ session, registry });
+    const permit = await registry.acquireSpawnPermit({ ownerId: "csv-job" });
+
+    const live = await control.spawn({
+      parentPath: "/root",
+      agentName: "csv_worker",
+      capacityPermit: permit,
+      capacityOwnerId: "csv-job",
+    });
+    expect(registry.activeCount).toBe(1);
+    expect(permit.isConsumed()).toBe(true);
+    await control.shutdown(live.agentId, "test_complete");
+    expect(registry.activeCount).toBe(0);
+  });
+
   it("keeps an idle reusable worker alive indefinitely between assignments", async () => {
     vi.useFakeTimers();
     try {

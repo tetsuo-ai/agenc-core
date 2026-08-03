@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   recordAgentJobResult,
-  runAgentsOnCsv,
+  runAgentsOnCsv as runAgentsOnCsvWithCapability,
   type AgentJobSpawn,
 } from "src/agents/jobs/job-orchestrator";
+import { createCsvInputRootCapability } from "src/agents/jobs/csv-reader";
 
 let workDir: string;
 
@@ -18,6 +19,18 @@ afterEach(async () => {
   vi.useRealTimers();
   await rm(workDir, { recursive: true, force: true });
 });
+
+function runAgentsOnCsv(
+  opts: Omit<
+    Parameters<typeof runAgentsOnCsvWithCapability>[0],
+    "inputRootCapability"
+  >,
+) {
+  return runAgentsOnCsvWithCapability({
+    ...opts,
+    inputRootCapability: createCsvInputRootCapability(workDir),
+  });
+}
 
 /**
  * Spawn that reports a result for every item on the next microtask, the
@@ -62,7 +75,7 @@ describe("gaphunt3 #6: per-item runtime watchdog timer is cleared on completion"
       spawn: fastSpawnReporter(),
     });
 
-    expect(result.items.every((item) => item.status === "completed")).toBe(
+    expect(result.itemPage.every((item) => item.status === "completed")).toBe(
       true,
     );
 
@@ -92,7 +105,7 @@ describe("gaphunt3 #6: per-item runtime watchdog timer is cleared on completion"
         spawn: fastSpawnReporter(),
       });
 
-      expect(result.items.every((item) => item.status === "completed")).toBe(
+      expect(result.itemPage.every((item) => item.status === "completed")).toBe(
         true,
       );
 

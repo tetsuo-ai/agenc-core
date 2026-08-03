@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 8,
+  "probeCount": 7,
   "probes": [
     {
       "id": "a2b-corrupt-journal-never-recoverable",
@@ -19,15 +19,6 @@
       "file": "tests/fnd/red-probes/a3-tool-result-body-digest.red-probe.ts",
       "fingerprint": "A3:DURABLE-TURN:TOOL-RESULT-BODY-DIGEST",
       "sourceSha256": "447d60061aa6144710cfc266831c2b119fa5d63ccddb625ae11a85211e819a98",
-      "timeoutMs": 10000
-    },
-    {
-      "id": "b1-csv-prototype-header-roundtrip",
-      "task": "B1",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/b1-csv-prototype-header-roundtrip.red-probe.ts",
-      "fingerprint": "B1:CSV:PROTOTYPE-HEADER-INERT-ROUNDTRIP",
-      "sourceSha256": "33d9dab2eae101696d9245afd4b81eee96073592d2b7a6b2973f35b46b37b66d",
       "timeoutMs": 10000
     },
     {

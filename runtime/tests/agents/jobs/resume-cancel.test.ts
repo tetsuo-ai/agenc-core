@@ -12,6 +12,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { CsvAgentJobsRepository } from "../../state/csv-agent-jobs.js";
@@ -19,9 +20,12 @@ import { openStateDatabases } from "../../state/sqlite-driver.js";
 import {
   recordAgentJobResult,
   resumeAgentJobsFromRepository,
-  runAgentsOnCsv,
+  runAgentsOnCsv as runAgentsOnCsvWithCapability,
   type AgentJobSpawn,
+  type CsvIdempotencyProfile,
 } from "./job-orchestrator.js";
+import { createCsvInputRootCapability } from "./csv-reader.js";
+import { createCsvOutputRootCapability } from "./csv-output.js";
 
 let workDir: string;
 
@@ -32,6 +36,18 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(workDir, { recursive: true, force: true });
 });
+
+function runAgentsOnCsv(
+  opts: Omit<
+    Parameters<typeof runAgentsOnCsvWithCapability>[0],
+    "inputRootCapability"
+  >,
+) {
+  return runAgentsOnCsvWithCapability({
+    ...opts,
+    inputRootCapability: createCsvInputRootCapability(workDir),
+  });
+}
 
 function openRepository(): CsvAgentJobsRepository {
   return new CsvAgentJobsRepository(openStateDatabases({ cwd: workDir }));
@@ -55,16 +71,28 @@ function reportingSpawn(): AgentJobSpawn & { spawned: string[] } {
   };
 }
 
+function persistedItem(itemId: string, rowIndex: number) {
+  const row = { id: `row${rowIndex}`, value: `v${rowIndex}` };
+  const contentSha256 = createHash("sha256")
+    .update(JSON.stringify(row))
+    .digest("hex");
+  return {
+    itemId,
+    rowIndex,
+    contentSha256,
+    workerName: `csv_row_${rowIndex}_${contentSha256.slice(0, 16)}`,
+    row,
+  };
+}
+
 describe("resume across daemon restart", () => {
-  it("re-dispatches orphaned rows and completes all 10 with exactly 10 output rows", async () => {
+  it("holds orphaned dispatches for review instead of replaying them", async () => {
     const repository = openRepository();
     const outputCsvPath = join(workDir, "out.csv");
     const jobId = "job_killed_mid_flight";
-    const rows = Array.from({ length: 10 }, (_, i) => ({
-      itemId: `item_${i}`,
-      rowIndex: i,
-      row: { id: `row${i}`, value: `v${i}` },
-    }));
+    const rows = Array.from({ length: 10 }, (_, i) =>
+      persistedItem(`item_${i}`, i),
+    );
     repository.createJob(
       {
         id: jobId,
@@ -88,30 +116,28 @@ describe("resume across daemon restart", () => {
     repository.markItemRunningWithThread(jobId, "item_5", "thread_5");
 
     const spawn = reportingSpawn();
-    const results = await resumeAgentJobsFromRepository({ repository, spawn });
+    const results = await resumeAgentJobsFromRepository({
+      repository,
+      spawn,
+      outputRootCapability: createCsvOutputRootCapability(workDir),
+    });
 
     expect(results).toHaveLength(1);
-    const items = results[0]!.items;
-    expect(items).toHaveLength(10);
-    expect(items.every((item) => item.status === "completed")).toBe(true);
-    // Only the 6 unfinished rows were re-dispatched.
-    expect(spawn.spawned.sort()).toEqual(
-      ["item_4", "item_5", "item_6", "item_7", "item_8", "item_9"].sort(),
-    );
-    // Completed rows kept their original results.
-    expect(items.find((i) => i.itemId === "item_0")?.result).toEqual({
-      echoed: "v0",
+    expect(results[0]!.summary).toMatchObject({
+      status: "needs_review",
+      completedItems: 8,
+      pendingItems: 0,
+      unknownOutcomeItems: 2,
     });
-    // Exactly 10 output rows — idempotent, no duplicates.
-    const csv = await readFile(outputCsvPath, "utf8");
-    const lines = csv.trim().split("\n");
-    expect(lines).toHaveLength(11); // header + 10 rows
-    expect(repository.getJob(jobId)?.status).toBe("completed");
+    expect(spawn.spawned).toEqual(["item_6", "item_7", "item_8", "item_9"]);
+    const output = await readFile(outputCsvPath, "utf8");
+    expect(output.trimEnd().split("\n")).toHaveLength(11);
+    expect(repository.getJob(jobId)?.status).toBe("needs_review");
     expect(
       repository
-        .listItems({ jobId })
-        .every((item) => item.status === "completed"),
-    ).toBe(true);
+        .listItems({ jobId, status: "unknown_outcome" })
+        .map((item) => item.itemId),
+    ).toEqual(["item_4", "item_5"]);
   });
 
   it("is a no-op when no jobs are running", async () => {
@@ -121,23 +147,112 @@ describe("resume across daemon restart", () => {
     expect(results).toEqual([]);
     expect(spawn.spawned).toEqual([]);
   });
+
+  it("preserves create_new output policy across restart", async () => {
+    const repository = openRepository();
+    const outputCsvPath = join(workDir, "create-new.csv");
+    await writeFile(outputCsvPath, "concurrent owner\n", "utf8");
+    repository.createJob(
+      {
+        id: "create-new-resume",
+        name: "create-new resume",
+        instruction: "process the row",
+        autoExport: true,
+        inputHeaders: ["id", "value"],
+        inputCsvPath: join(workDir, "input.csv"),
+        outputCsvPath,
+        outputMode: "create_new",
+      },
+      [persistedItem("create-new-item", 0)],
+    );
+
+    await expect(
+      resumeAgentJobsFromRepository({
+        repository,
+        spawn: reportingSpawn(),
+        outputRootCapability: createCsvOutputRootCapability(workDir),
+      }),
+    ).rejects.toThrow(/already exists in create_new mode/u);
+    expect(await readFile(outputCsvPath, "utf8")).toBe("concurrent owner\n");
+    expect(repository.getJob("create-new-resume")?.outputMode).toBe(
+      "create_new",
+    );
+  });
+
+  it("replays only after an acknowledged operation key is authoritatively absent", async () => {
+    const repository = openRepository();
+    const row = persistedItem("opaque-item", 0);
+    repository.createJob(
+      {
+        id: "idempotent-job",
+        name: "idempotent job",
+        instruction: "process {value}",
+        autoExport: false,
+        inputHeaders: ["id", "value"],
+        inputCsvPath: join(workDir, "input.csv"),
+        outputCsvPath: "",
+      },
+      [row],
+    );
+    repository.markJobRunning("idempotent-job");
+    repository.beginItemDispatch("idempotent-job", "opaque-item", {
+      idempotencyProfile: "synthetic-profile",
+      idempotencyProfileVersion: 1,
+      operationKey: "stable-operation-key",
+    });
+    repository.acknowledgeItemDispatch("idempotent-job", "opaque-item", {
+      threadId: "dead-thread",
+      providerAcknowledgedKey: "stable-operation-key",
+    });
+    let lookups = 0;
+    const profile: CsvIdempotencyProfile = {
+      name: "synthetic-profile",
+      version: 1,
+      deriveOperationKey: () => "stable-operation-key",
+      async lookup() {
+        lookups += 1;
+        return { kind: "not_found", evidence: { lookup: "authoritative" } };
+      },
+    };
+    const spawn = reportingSpawn();
+
+    const results = await resumeAgentJobsFromRepository({
+      repository,
+      spawn,
+      idempotencyProfiles: new Map([[profile.name, profile]]),
+    });
+
+    expect(lookups).toBe(1);
+    expect(spawn.spawned).toEqual(["opaque-item"]);
+    expect(results[0]!.summary).toMatchObject({
+      status: "completed",
+      completedItems: 1,
+      unknownOutcomeItems: 0,
+    });
+    expect(repository.getItem("idempotent-job", "opaque-item")).toMatchObject({
+      status: "completed",
+      attemptCount: 2,
+      operationKey: "stable-operation-key",
+    });
+  });
 });
 
 describe("real cancellation", () => {
-  it("stops outstanding rows and marks them cancelled", async () => {
+  it("cancels queued rows and holds dispatched rows with ambiguous outcomes", async () => {
     const csvPath = join(workDir, "input.csv");
     await writeFile(
       csvPath,
-      ["id,value", ...Array.from({ length: 6 }, (_, i) => `row${i},v${i}`)].join(
-        "\n",
-      ) + "\n",
+      [
+        "id,value",
+        ...Array.from({ length: 6 }, (_, i) => `row${i},v${i}`),
+      ].join("\n") + "\n",
       "utf8",
     );
     const repository = openRepository();
     let cancelCalls = 0;
     const spawn: AgentJobSpawn = {
       async spawn(ctx) {
-        if (ctx.itemId === "row0") {
+        if (ctx.row.id === "row0") {
           queueMicrotask(() => {
             recordAgentJobResult({
               jobId: ctx.jobId,
@@ -165,17 +280,21 @@ describe("real cancellation", () => {
 
     expect(result.stoppedEarly).toBe(true);
     expect(cancelCalls).toBe(1);
-    const byId = new Map(result.items.map((item) => [item.itemId, item]));
-    expect(byId.get("row0")?.status).toBe("completed");
-    // The in-flight worker (row1) and every queued row are cancelled.
-    for (const id of ["row1", "row2", "row3", "row4", "row5"]) {
-      expect(byId.get(id)?.status).toBe("cancelled");
+    const bySourceId = new Map(
+      result.itemPage.map((item) => [item.sourceId, item]),
+    );
+    expect(bySourceId.get("row0")?.status).toBe("completed");
+    expect(bySourceId.get("row1")?.status).toBe("unknown_outcome");
+    for (const id of ["row2", "row3", "row4", "row5"]) {
+      expect(bySourceId.get(id)?.status).toBe("cancelled");
     }
-    // DB agrees — including the item-level cancelled status round-trip.
     const dbItems = repository.listItems({ jobId: result.jobId });
+    expect(dbItems.filter((item) => item.status === "cancelled")).toHaveLength(
+      4,
+    );
     expect(
-      dbItems.filter((item) => item.status === "cancelled"),
-    ).toHaveLength(5);
-    expect(repository.getJob(result.jobId)?.status).toBe("cancelled");
+      dbItems.filter((item) => item.status === "unknown_outcome"),
+    ).toHaveLength(1);
+    expect(repository.getJob(result.jobId)?.status).toBe("needs_review");
   }, 15_000);
 });

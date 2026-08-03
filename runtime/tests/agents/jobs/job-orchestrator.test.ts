@@ -7,10 +7,12 @@ import { CsvAgentJobsRepository } from "../../state/csv-agent-jobs.js";
 import { openStateDatabases } from "../../state/sqlite-driver.js";
 import {
   recordAgentJobResult,
-  runAgentsOnCsv,
+  runAgentsOnCsv as runAgentsOnCsvWithCapability,
   type AgentJobSpawn,
   type AgentJobSpawnContext,
 } from "./job-orchestrator.js";
+import { createCsvInputRootCapability } from "./csv-reader.js";
+import { createCsvOutputRootCapability } from "./csv-output.js";
 
 let workDir: string;
 
@@ -22,6 +24,18 @@ afterEach(async () => {
   vi.useRealTimers();
   await rm(workDir, { recursive: true, force: true });
 });
+
+function runAgentsOnCsv(
+  opts: Omit<
+    Parameters<typeof runAgentsOnCsvWithCapability>[0],
+    "inputRootCapability"
+  >,
+) {
+  return runAgentsOnCsvWithCapability({
+    ...opts,
+    inputRootCapability: createCsvInputRootCapability(workDir),
+  });
+}
 
 function fakeSpawnReporter(): AgentJobSpawn & {
   receivedPrompts: AgentJobSpawnContext[];
@@ -59,13 +73,16 @@ describe("runAgentsOnCsv", () => {
     const spawn: AgentJobSpawn = {
       async spawn(ctx) {
         markSpawned();
-        setTimeout(() => {
-          recordAgentJobResult({
-            jobId: ctx.jobId,
-            itemId: ctx.itemId,
-            result: { completedAfterHours: true },
-          });
-        }, 2 * 60 * 60_000);
+        setTimeout(
+          () => {
+            recordAgentJobResult({
+              jobId: ctx.jobId,
+              itemId: ctx.itemId,
+              result: { completedAfterHours: true },
+            });
+          },
+          2 * 60 * 60_000,
+        );
       },
       async cancelOutstanding() {},
     };
@@ -85,12 +102,8 @@ describe("runAgentsOnCsv", () => {
 
     expect(await outcome).toMatchObject({
       result: {
-        items: [
-          {
-            status: "completed",
-            result: { completedAfterHours: true },
-          },
-        ],
+        summary: { completedItems: 1, availableResults: 1 },
+        itemPage: [{ status: "completed", resultAvailability: "available" }],
       },
     });
   });
@@ -105,12 +118,24 @@ describe("runAgentsOnCsv", () => {
       idColumn: "id",
       spawn,
     });
-    expect(result.items.map((item) => item.itemId)).toEqual(["row1", "row2"]);
-    expect(result.items.every((item) => item.status === "completed")).toBe(true);
-    expect(result.items[0]!.result).toEqual({ echoed: "a" });
+    expect(result.itemPage.map((item) => item.sourceId)).toEqual([
+      "row1",
+      "row2",
+    ]);
+    expect(result.itemPage.every((item) => item.status === "completed")).toBe(
+      true,
+    );
+    expect(result.summary.availableResults).toBe(2);
+    expect(result.itemPage[0]).not.toHaveProperty("result");
     expect(spawn.receivedPrompts[0]!.workerPrompt).toContain("Job ID: ");
-    expect(spawn.receivedPrompts[0]!.workerPrompt).toContain("Item ID: row1");
-    expect(spawn.receivedPrompts[0]!.workerPrompt).toContain("process a");
+    expect(spawn.receivedPrompts[0]!.workerPrompt).toMatch(
+      /Item ID: csv_item_[0-9a-f]{64}/u,
+    );
+    expect(spawn.receivedPrompts[0]!.workerPrompt).toContain("process {value}");
+    expect(spawn.receivedPrompts[0]!.workerPrompt).toContain('"value": "a"');
+    expect(spawn.receivedPrompts[0]!.workerName).toMatch(
+      /^csv_row_0_[0-9a-f]{16}$/u,
+    );
   });
 
   it("writes an output CSV when output_csv_path is set", async () => {
@@ -122,12 +147,13 @@ describe("runAgentsOnCsv", () => {
       instruction: "do",
       idColumn: "id",
       outputCsvPath: outPath,
+      outputRootCapability: createCsvOutputRootCapability(workDir),
       spawn: fakeSpawnReporter(),
     });
     const written = await readFile(outPath, "utf8");
     // Header matches reference render_job_csv: input headers + fixed suffix
     expect(written).toContain(
-      "id,value,job_id,item_id,row_index,source_id,status,attempt_count,last_error,result_json,reported_at,completed_at",
+      "id,value,job_id,item_id,row_index,source_id,status,attempt_count,last_error,result_json,result_availability,reported_at,completed_at",
     );
     const lines = written.split("\n").filter((l) => l.length > 0);
     expect(lines).toHaveLength(2);
@@ -136,7 +162,7 @@ describe("runAgentsOnCsv", () => {
     expect(data[0]).toBe("row1"); // id column value
     expect(data[1]).toBe("hi"); // value column value
     // reference-shape suffix begins at index 2
-    expect(data[3]).toBe("row1"); // item_id (idColumn=id resolved to "row1")
+    expect(data[3]).toMatch(/^csv_item_[0-9a-f]{64}$/u);
     expect(data[4]).toBe("0"); // row_index
     expect(data[5]).toBe("row1"); // source_id (echoes idColumn value)
     expect(data[6]).toBe("completed"); // status
@@ -155,7 +181,7 @@ describe("runAgentsOnCsv", () => {
             jobId: ctx.jobId,
             itemId: ctx.itemId,
             result: {},
-            stop: ctx.itemId === "row1",
+            stop: ctx.row.id === "row1",
           });
         });
       },
@@ -169,17 +195,17 @@ describe("runAgentsOnCsv", () => {
       spawn,
     });
     expect(result.stoppedEarly).toBe(true);
-    expect(result.items[0]!.status).toBe("completed");
+    expect(result.itemPage[0]!.status).toBe("completed");
     // Deliberate divergence from the reference loop (which left
     // never-dispatched items in `pending` forever): a cancelled job
     // marks its outstanding rows `cancelled` so the job's terminal
     // state is unambiguous. row2 and row3 never dispatch.
-    expect(result.items.slice(1).every((it) => it.status === "cancelled")).toBe(
-      true,
-    );
+    expect(
+      result.itemPage.slice(1).every((it) => it.status === "cancelled"),
+    ).toBe(true);
   });
 
-  it("normalizes zero maxConcurrency to one worker", async () => {
+  it("rejects maxConcurrency outside the persisted job contract", async () => {
     const csvPath = join(workDir, "input.csv");
     await writeFile(csvPath, "id,value\nrow1,a\nrow2,b\n", "utf8");
     let activeWorkers = 0;
@@ -206,20 +232,201 @@ describe("runAgentsOnCsv", () => {
       async cancelOutstanding() {},
     };
 
+    await expect(
+      runAgentsOnCsv({
+        csvPath,
+        instruction: "process {value}",
+        idColumn: "id",
+        maxConcurrency: 0,
+        spawn,
+      }),
+    ).rejects.toThrow(/between 1 and 64/u);
+    await expect(
+      runAgentsOnCsv({
+        csvPath,
+        instruction: "process {value}",
+        idColumn: "id",
+        maxConcurrency: 65,
+        spawn,
+      }),
+    ).rejects.toThrow(/between 1 and 64/u);
+    expect(reports).toEqual([]);
+    expect(maxActiveWorkers).toBe(0);
+  });
+
+  it("rejects invalid result and runtime bounds before importing", async () => {
+    const csvPath = join(workDir, "input.csv");
+    await writeFile(csvPath, "id,value\nrow1,a\n", "utf8");
+    const spawn = fakeSpawnReporter();
+    await expect(
+      runAgentsOnCsv({
+        csvPath,
+        instruction: "process",
+        maxResultBytes: 0,
+        spawn,
+      }),
+    ).rejects.toThrow(/maxResultBytes/u);
+    await expect(
+      runAgentsOnCsv({
+        csvPath,
+        instruction: "process",
+        maxRuntimeSeconds: Number.MAX_SAFE_INTEGER,
+        spawn,
+      }),
+    ).rejects.toThrow(/maxRuntimeSeconds/u);
+    expect(spawn.receivedPrompts).toEqual([]);
+  });
+
+  it("retries capacity refusals at the FIFO head without cancelling the job", async () => {
+    const csvPath = join(workDir, "input.csv");
+    await writeFile(csvPath, "id\na\nb\nc\n", "utf8");
+    const attempts: string[] = [];
+    let refused = false;
+    const spawn: AgentJobSpawn = {
+      async spawn(ctx) {
+        const sourceId = String(ctx.row.id);
+        attempts.push(sourceId);
+        if (!refused) {
+          refused = true;
+          return { kind: "capacity_unavailable", retryAfterMs: 1 };
+        }
+        queueMicrotask(() => {
+          recordAgentJobResult({
+            jobId: ctx.jobId,
+            itemId: ctx.itemId,
+            result: { sourceId },
+          });
+        });
+      },
+      async cancelOutstanding() {},
+    };
+
     const result = await runAgentsOnCsv({
       csvPath,
-      instruction: "process {value}",
+      instruction: "x",
       idColumn: "id",
-      maxConcurrency: 0,
+      maxConcurrency: 1,
       spawn,
     });
 
-    await Promise.all(reports);
-    expect(result.items.map((item) => item.status)).toEqual([
-      "completed",
-      "completed",
+    expect(attempts).toEqual(["a", "a", "b", "c"]);
+    expect(result.summary).toMatchObject({
+      status: "completed",
+      completedItems: 3,
+    });
+    expect(result.itemPage.map((entry) => entry.sourceId)).toEqual([
+      "a",
+      "b",
+      "c",
     ]);
-    expect(maxActiveWorkers).toBe(1);
+  });
+
+  it("holds capacity until a completed worker exits or is explicitly retired", async () => {
+    vi.useFakeTimers();
+    const csvPath = join(workDir, "input.csv");
+    await writeFile(csvPath, "id\nrow1\n", "utf8");
+    let spawned!: () => void;
+    const didSpawn = new Promise<void>((resolve) => {
+      spawned = resolve;
+    });
+    const retireItem = vi.fn(async () => {});
+    const spawn: AgentJobSpawn = {
+      async spawn(ctx) {
+        spawned();
+        queueMicrotask(() => {
+          recordAgentJobResult({
+            jobId: ctx.jobId,
+            itemId: ctx.itemId,
+            result: { ok: true },
+          });
+        });
+        return {
+          kind: "launched",
+          threadId: "lingering-thread",
+          threadFinished: new Promise<void>(() => {}),
+        };
+      },
+      async cancelOutstanding() {},
+      retireItem,
+    };
+
+    const running = runAgentsOnCsv({
+      csvPath,
+      instruction: "x",
+      idColumn: "id",
+      spawn,
+    });
+    await didSpawn;
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await running;
+
+    expect(retireItem).toHaveBeenCalledWith(
+      result.jobId,
+      result.itemPage[0]!.itemId,
+      "lingering-thread",
+    );
+    expect(result.summary.status).toBe("completed");
+  });
+
+  it("surfaces a completed worker that cannot be authoritatively retired", async () => {
+    const csvPath = join(workDir, "input.csv");
+    await writeFile(csvPath, "id\nrow1\n", "utf8");
+    const retirementFailure = new Error("worker shutdown fence failed");
+    const retireItem = vi.fn(async () => {
+      throw retirementFailure;
+    });
+    const spawn: AgentJobSpawn = {
+      async spawn(ctx) {
+        queueMicrotask(() => {
+          recordAgentJobResult({
+            jobId: ctx.jobId,
+            itemId: ctx.itemId,
+            result: { ok: true },
+          });
+        });
+        return {
+          kind: "launched",
+          threadId: "unretired-thread",
+          threadFinished: Promise.resolve(),
+        };
+      },
+      async cancelOutstanding() {},
+      retireItem,
+    };
+
+    await expect(
+      runAgentsOnCsv({
+        csvPath,
+        instruction: "x",
+        idColumn: "id",
+        spawn,
+      }),
+    ).rejects.toBe(retirementFailure);
+    expect(retireItem).toHaveBeenCalledOnce();
+  });
+
+  it("returns only a bounded first item page and never embeds result bodies", async () => {
+    const csvPath = join(workDir, "input.csv");
+    await writeFile(
+      csvPath,
+      ["id", ...Array.from({ length: 60 }, (_, index) => `row-${index}`)].join(
+        "\n",
+      ) + "\n",
+      "utf8",
+    );
+    const result = await runAgentsOnCsv({
+      csvPath,
+      instruction: "x",
+      idColumn: "id",
+      maxConcurrency: 8,
+      spawn: fakeSpawnReporter(),
+    });
+
+    expect(result.summary.totalItems).toBe(60);
+    expect(result.itemPage).toHaveLength(20);
+    expect(result.nextItemCursor).toMatch(/^agenc-csv-items-v1:/u);
+    expect(result.itemPage[0]).not.toHaveProperty("row");
+    expect(result.itemPage[0]).not.toHaveProperty("result");
   });
 
   it("rejects when csv contains zero data rows", async () => {
@@ -279,17 +486,39 @@ describe("runAgentsOnCsv with SQLite repository", () => {
         spawn: fakeSpawnReporter(),
         repository,
         jobName: "smoke-test",
+        outputRootCapability: createCsvOutputRootCapability(cwd),
       });
       const persisted = repository.getJob(result.jobId);
       expect(persisted?.status).toBe("completed");
       expect(persisted?.name).toBe("smoke-test");
       expect(persisted?.inputHeaders).toEqual(["id", "value"]);
+      expect(persisted?.outputDigest).toMatch(/^[0-9a-f]{64}$/u);
+      expect(persisted?.outputBytes).toBeGreaterThan(0);
+      expect(result.outputArtifact?.sha256).toBe(persisted?.outputDigest);
       const items = repository.listItems({ jobId: result.jobId });
       expect(items).toHaveLength(2);
       expect(items.every((it) => it.status === "completed")).toBe(true);
       expect(items[0]!.result).toEqual({ echoed: "a" });
       const progress = repository.getJobProgress(result.jobId);
       expect(progress.completedItems).toBe(2);
+      expect(
+        driver
+          .prepareState<
+            [],
+            {
+              readonly intents: number;
+              readonly files: number;
+              readonly bytes: number;
+            }
+          >(
+            `SELECT
+               (SELECT COUNT(*) FROM csv_output_intents) AS intents,
+               output_staging_files AS files,
+               output_staging_bytes AS bytes
+             FROM csv_storage_quota WHERE singleton = 1`,
+          )
+          .get(),
+      ).toMatchObject({ intents: 0, files: 0, bytes: 0 });
     } finally {
       driver.close();
       if (originalAgencHome) process.env.AGENC_HOME = originalAgencHome;

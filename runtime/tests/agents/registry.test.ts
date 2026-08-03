@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   InvalidAgentPathError,
+  AgentCapacityPermit,
+  AgentCapacityQueueFullError,
   AgentConcurrencyLimitError,
   AgentPathExistsError,
   AgentRegistry,
+  MAX_AGENT_CAPACITY_WAITERS_PER_OWNER,
+  MAX_AGENT_CAPACITY_WAITER_BYTES,
   MEMORY_AGENT_PATH,
   ROOT_AGENT_PATH,
   buildChildMetadata,
@@ -147,6 +151,125 @@ describe("AgentRegistry", () => {
     expect(reg.hasNickname(nickname)).toBe(true);
     const next = reg.allocateNickname(role);
     expect(next).not.toBe(nickname);
+  });
+
+  it("hands saturated capacity to cancellable waiters in FIFO order", async () => {
+    const reg = new AgentRegistry({ maxThreads: 1 });
+    const occupied = await reg.reserveSpawnSlot();
+    const firstPending = reg.acquireSpawnPermit({ ownerId: "csv-job-a" });
+    const secondPending = reg.acquireSpawnPermit({ ownerId: "csv-job-b" });
+
+    occupied.release();
+    const first = await firstPending;
+    expect(first.ownerId).toBe("csv-job-a");
+    expect(() => reg.consumeSpawnPermit(first, "csv-job-b")).toThrow(/owner/u);
+    const firstReservation = reg.consumeSpawnPermit(first, "csv-job-a");
+    expect(() => reg.consumeSpawnPermit(first, "csv-job-a")).toThrow(
+      /already consumed/u,
+    );
+
+    firstReservation.release();
+    const second = await secondPending;
+    expect(second.ownerId).toBe("csv-job-b");
+    second.cancel();
+    expect(reg.activeCount).toBe(0);
+  });
+
+  it("removes an aborted capacity waiter exactly once", async () => {
+    const reg = new AgentRegistry({ maxThreads: 1 });
+    const occupied = await reg.reserveSpawnSlot();
+    const controller = new AbortController();
+    const aborted = reg.acquireSpawnPermit({
+      ownerId: "cancelled-job",
+      signal: controller.signal,
+    });
+    const next = reg.acquireSpawnPermit({ ownerId: "next-job" });
+    controller.abort(new Error("test cancellation"));
+    await expect(aborted).rejects.toThrow(/test cancellation/u);
+
+    occupied.release();
+    const permit = await next;
+    expect(permit.ownerId).toBe("next-job");
+    permit.cancel();
+    expect(reg.activeCount).toBe(0);
+  });
+
+  it("returns a handed-off slot when abort wins before permit delivery", async () => {
+    const reg = new AgentRegistry({ maxThreads: 1 });
+    const occupied = await reg.reserveSpawnSlot();
+    const controller = new AbortController();
+    const pending = reg.acquireSpawnPermit({
+      ownerId: "handoff-race",
+      signal: controller.signal,
+    });
+
+    occupied.release();
+    controller.abort(new Error("handoff cancelled"));
+    await expect(pending).rejects.toThrow(/handoff cancelled/u);
+
+    const replacement = await reg.acquireSpawnPermit({
+      ownerId: "replacement",
+    });
+    replacement.cancel();
+    expect(reg.activeCount).toBe(0);
+  });
+
+  it("rejects forged, cross-registry, and oversized capacity permits", async () => {
+    const first = new AgentRegistry({ maxThreads: 1 });
+    const second = new AgentRegistry({ maxThreads: 1 });
+    expect(
+      () =>
+        new AgentCapacityPermit(
+          Symbol("forged"),
+          first,
+          "forged-generation",
+          "owner",
+          1,
+          {} as never,
+        ),
+    ).toThrow(/cannot be constructed/u);
+    const permit = await first.acquireSpawnPermit({ ownerId: "owner" });
+    expect(() => second.consumeSpawnPermit(permit, "owner")).toThrow(
+      /another registry generation/u,
+    );
+    permit.cancel();
+
+    const occupied = await first.reserveSpawnSlot();
+    await expect(
+      first.acquireSpawnPermit({
+        ownerId: "x".repeat(MAX_AGENT_CAPACITY_WAITER_BYTES),
+      }),
+    ).rejects.toBeInstanceOf(AgentCapacityQueueFullError);
+    occupied.release();
+  });
+
+  it("bounds the capacity queue per owner", async () => {
+    const reg = new AgentRegistry({ maxThreads: 1 });
+    const occupied = await reg.reserveSpawnSlot();
+    const controllers: AbortController[] = [];
+    const pending: Array<Promise<AgentCapacityPermit>> = [];
+    for (
+      let index = 0;
+      index < MAX_AGENT_CAPACITY_WAITERS_PER_OWNER;
+      index += 1
+    ) {
+      const controller = new AbortController();
+      controllers.push(controller);
+      pending.push(
+        reg.acquireSpawnPermit({
+          ownerId: "bounded-owner",
+          signal: controller.signal,
+        }),
+      );
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+    }
+    await expect(
+      reg.acquireSpawnPermit({ ownerId: "bounded-owner" }),
+    ).rejects.toBeInstanceOf(AgentCapacityQueueFullError);
+    for (const controller of controllers) controller.abort();
+    await Promise.allSettled(pending);
+    occupied.release();
+    expect(reg.activeCount).toBe(0);
   });
 
   it("registers the root thread outside the spawn counter", () => {

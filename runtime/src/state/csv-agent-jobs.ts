@@ -1,35 +1,79 @@
 /**
- * CSV agent-jobs persistence.
- *
- * AgenC stores imported batch jobs in `csv_agent_jobs` /
- * `csv_agent_job_items` so they do not collide with the existing
- * `agent_jobs` queue table. The schema is created by migration v2 in the
- * versioned state migration registry.
- *
- * Dates are stored as Unix epoch seconds.
- *
- * @module
+ * Durable CSV job state. Operator source IDs are data only; item and worker
+ * identities are runtime-owned. Every public selector joins the import
+ * visibility fence, and ambiguous dispatches are held for review.
  */
 
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import {
+  CSV_JOB_GC_PAGE_ITEMS,
+  CSV_MAX_ACTIVE_IMPORTS,
+  CSV_MAX_DURABLE_BYTES,
+  CSV_MAX_DURABLE_ITEMS,
+  CSV_MAX_DURABLE_JOBS,
+  CSV_DEFAULT_ITEM_PAGE_SIZE,
+  CSV_DEFAULT_MAX_CONCURRENCY,
+  CSV_IMPORT_LEASE_SECONDS,
+  CSV_JOB_CONTRACT_VERSION,
+  CSV_JOB_IDENTITY_FORMAT_VERSION,
+  CSV_MAX_COLUMNS,
+  CSV_MAX_HEADER_BYTES,
+  CSV_MAX_ITEM_PAGE_BYTES,
+  CSV_MAX_ITEM_PROJECTION_BYTES,
+  CSV_MAX_ITEM_PAGE_SIZE,
+  CSV_MAX_JOB_GC_MS_PER_SLICE,
+  CSV_MAX_JOB_TOMBSTONE_BYTES,
+  CSV_MAX_JOB_TOMBSTONES,
+  CSV_MAX_JOB_CONCURRENCY,
+  CSV_MAX_OUTPUT_BYTES,
+  CSV_MAX_OUTPUT_STAGING_BYTES_GLOBAL,
+  CSV_MAX_OUTPUT_STAGING_FILES_GLOBAL,
+  CSV_MAX_RESULT_BLOB_BYTES_GLOBAL,
+  CSV_MAX_RESULT_PREVIEW_BYTES,
+  CSV_MAX_RESULT_BYTES,
+  CSV_MAX_RESULT_BYTES_PER_JOB,
+  CSV_MAX_ROWS,
+  CSV_MAX_STAGING_BYTES_GLOBAL,
+  CSV_MAX_STAGING_GC_MS_PER_START,
+  CSV_MAX_STAGING_ROWS_GLOBAL,
+  CSV_OUTPUT_CONTRACT_VERSION,
+  CSV_RESULT_BLOB_CHUNK_BYTES,
+  CSV_RESERVED_OUTPUT_HEADERS,
+  CSV_TERMINAL_JOB_RETENTION_MS,
+  type CsvAgentJobItemStatus,
+  type CsvAgentJobStatus,
+  type CsvJobEffectReference,
+  type CsvJobItemCursor,
+  type CsvResultAvailability,
+  type CsvReviewDisposition,
+  type CsvReviewDomainAction,
+  type CsvReviewStatus,
+} from "../contracts/csv-job-contract.js";
+import {
+  canonicalizeCsvResult,
+  compileCsvOutputSchema,
+  type CanonicalCsvResult,
+  type ValidatedCsvResult,
+} from "../agents/jobs/csv-schema.js";
+import type {
+  CsvOutputArtifact,
+  CsvOutputMode,
+  CsvOutputRecoveryIntent,
+} from "../agents/jobs/csv-output.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import { resolveDurableEffectReview } from "./effect-review.js";
+import { StateRunDurabilityRepository } from "./run-durability.js";
+import type { EffectReviewResolution } from "../contracts/run-contracts.js";
 
-// ─────────────────────────────────────────────────────────────────────
-// Status enums
-// ─────────────────────────────────────────────────────────────────────
-
-export type CsvAgentJobStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
-
-export type CsvAgentJobItemStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
+export type {
+  CsvAgentJobItemStatus,
+  CsvAgentJobStatus,
+  CsvResultAvailability,
+  CsvReviewDisposition,
+  CsvReviewDomainAction,
+  CsvReviewStatus,
+} from "../contracts/csv-job-contract.js";
 
 const JOB_STATUSES: ReadonlySet<CsvAgentJobStatus> = new Set([
   "pending",
@@ -37,6 +81,8 @@ const JOB_STATUSES: ReadonlySet<CsvAgentJobStatus> = new Set([
   "completed",
   "failed",
   "cancelled",
+  "needs_review",
+  "finished_with_unknown_outcomes",
 ]);
 
 const ITEM_STATUSES: ReadonlySet<CsvAgentJobItemStatus> = new Set([
@@ -45,25 +91,35 @@ const ITEM_STATUSES: ReadonlySet<CsvAgentJobItemStatus> = new Set([
   "completed",
   "failed",
   "cancelled",
+  "unknown_outcome",
 ]);
 
+const RESULT_AVAILABILITIES: ReadonlySet<CsvResultAvailability> = new Set([
+  "not_produced",
+  "available",
+  "unavailable_after_review",
+]);
+
+function parseEnum<T extends string>(
+  raw: string,
+  values: ReadonlySet<T>,
+  label: string,
+): T {
+  if (!values.has(raw as T)) throw new Error(`invalid ${label}: ${raw}`);
+  return raw as T;
+}
+
 function parseJobStatus(raw: string): CsvAgentJobStatus {
-  if (!JOB_STATUSES.has(raw as CsvAgentJobStatus)) {
-    throw new Error(`invalid agent job status: ${raw}`);
-  }
-  return raw as CsvAgentJobStatus;
+  return parseEnum(raw, JOB_STATUSES, "CSV job status");
 }
 
 function parseItemStatus(raw: string): CsvAgentJobItemStatus {
-  if (!ITEM_STATUSES.has(raw as CsvAgentJobItemStatus)) {
-    throw new Error(`invalid agent job item status: ${raw}`);
-  }
-  return raw as CsvAgentJobItemStatus;
+  return parseEnum(raw, ITEM_STATUSES, "CSV job item status");
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Records and create-params
-// ─────────────────────────────────────────────────────────────────────
+function parseResultAvailability(raw: string): CsvResultAvailability {
+  return parseEnum(raw, RESULT_AVAILABILITIES, "CSV result availability");
+}
 
 export interface CsvAgentJob {
   readonly id: string;
@@ -72,14 +128,44 @@ export interface CsvAgentJob {
   readonly instruction: string;
   readonly autoExport: boolean;
   readonly maxRuntimeSeconds?: number;
+  readonly requestedMaxConcurrency: number;
+  readonly lastEffectiveMaxConcurrency?: number;
   readonly outputSchema?: Record<string, unknown>;
+  readonly outputSchemaDigest?: string;
+  readonly outputSchemaContractVersion?: number;
+  readonly executionGate: "ready" | "legacy_schema_review_required";
   readonly inputHeaders: ReadonlyArray<string>;
   readonly inputCsvPath: string;
   readonly outputCsvPath: string;
+  readonly outputMode: CsvOutputMode;
+  readonly idColumn?: string;
+  readonly importId: string;
+  readonly importState: "staging" | "visible" | "aborted";
+  readonly importDigest?: string;
+  readonly identityFormatVersion: 0 | 1;
+  readonly inputBytes: number;
+  readonly maxItems: number;
+  readonly maxResultBytes: number;
+  readonly maxResultBytesPerJob: number;
+  readonly totalItems: number;
+  readonly pendingItems: number;
+  readonly runningItems: number;
+  readonly completedItems: number;
+  readonly failedItems: number;
+  readonly cancelledItems: number;
+  readonly unknownOutcomeItems: number;
+  readonly resultBytes: number;
+  readonly resultReservedBytes: number;
+  readonly stagingBytes: number;
+  readonly durableBytes: number;
+  readonly outputContractVersion?: number;
+  readonly outputDigest?: string;
+  readonly outputBytes: number;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly startedAt?: number;
   readonly completedAt?: number;
+  readonly retiredAt?: number;
   readonly lastError?: string;
 }
 
@@ -88,12 +174,32 @@ export interface CsvAgentJobItem {
   readonly itemId: string;
   readonly rowIndex: number;
   readonly sourceId?: string;
-  readonly row: Record<string, unknown>;
+  readonly contentSha256?: string;
+  readonly workerName: string;
+  readonly identityFormatVersion: 0 | 1;
+  readonly row: Readonly<Record<string, unknown>>;
   readonly status: CsvAgentJobItemStatus;
+  readonly dispatchState:
+    "not_dispatched" | "dispatching" | "acknowledged" | "settled" | "ambiguous";
   readonly assignedThreadId?: string;
   readonly attemptCount: number;
   readonly result?: Record<string, unknown>;
+  readonly resultDigest?: string;
+  readonly resultAvailability: CsvResultAvailability;
+  readonly resultSizeBytes: number;
   readonly lastError?: string;
+  readonly reviewStatus?: CsvReviewStatus;
+  readonly reviewReason?: string;
+  readonly reviewDisposition?: CsvReviewDisposition;
+  readonly reviewDomainAction?: CsvReviewDomainAction;
+  readonly reviewEvidence?: Record<string, unknown>;
+  readonly effect?: CsvJobEffectReference;
+  readonly executionSemantics: "at_most_once" | "idempotent_with_key";
+  readonly idempotencyProfile?: string;
+  readonly idempotencyProfileVersion?: number;
+  readonly operationKey?: string;
+  readonly providerAcknowledgedKey?: string;
+  readonly lookupEvidence?: Record<string, unknown>;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly completedAt?: number;
@@ -106,6 +212,56 @@ export interface CsvAgentJobProgress {
   readonly runningItems: number;
   readonly completedItems: number;
   readonly failedItems: number;
+  readonly cancelledItems: number;
+  readonly unknownOutcomeItems: number;
+  readonly reviewPendingItems: number;
+}
+
+export interface CsvAgentJobSummary extends CsvAgentJobProgress {
+  readonly contractVersion: typeof CSV_JOB_CONTRACT_VERSION;
+  readonly jobId: string;
+  readonly status: CsvAgentJobStatus;
+  readonly resultBytes: number;
+  readonly availableResults: number;
+  readonly unavailableAfterReviewResults: number;
+  readonly notProducedResults: number;
+}
+
+export interface CsvAgentJobItemSummary {
+  readonly itemId: string;
+  readonly rowIndex: number;
+  readonly sourceId?: string;
+  readonly sourceIdTruncated?: boolean;
+  readonly sourceIdDigest?: string;
+  readonly status: CsvAgentJobItemStatus;
+  readonly attemptCount: number;
+  readonly resultAvailability: CsvResultAvailability;
+  readonly resultSizeBytes: number;
+  readonly resultDigest?: string;
+  readonly resultPreviewJson?: string;
+  readonly resultPreviewTruncated?: boolean;
+  readonly lastError?: string;
+  readonly lastErrorTruncated?: boolean;
+  readonly reviewStatus?: CsvReviewStatus;
+  readonly reviewReason?: string;
+  readonly reviewReasonTruncated?: boolean;
+}
+
+export interface CsvAgentJobItemPage {
+  readonly contractVersion: typeof CSV_JOB_CONTRACT_VERSION;
+  readonly items: ReadonlyArray<CsvAgentJobItemSummary>;
+  readonly nextCursor?: CsvJobItemCursor;
+}
+
+export interface CsvResultBlobChunk {
+  readonly contractVersion: typeof CSV_JOB_CONTRACT_VERSION;
+  readonly itemId: string;
+  readonly availability: CsvResultAvailability;
+  readonly totalBytes: number;
+  readonly digest?: string;
+  readonly byteOffset: number;
+  readonly dataBase64: string;
+  readonly nextByteOffset?: number;
 }
 
 export interface CsvAgentJobCreateParams {
@@ -114,22 +270,67 @@ export interface CsvAgentJobCreateParams {
   readonly instruction: string;
   readonly autoExport: boolean;
   readonly maxRuntimeSeconds?: number;
+  readonly requestedMaxConcurrency?: number;
   readonly outputSchema?: Record<string, unknown>;
   readonly inputHeaders: ReadonlyArray<string>;
   readonly inputCsvPath: string;
   readonly outputCsvPath: string;
+  readonly outputMode?: CsvOutputMode;
+  readonly idColumn?: string;
+  readonly importId?: string;
+  readonly importDigest?: string;
+  readonly inputBytes?: number;
+  readonly maxItems?: number;
+  readonly maxResultBytes?: number;
+  readonly maxResultBytesPerJob?: number;
 }
 
 export interface CsvAgentJobItemCreateParams {
   readonly itemId: string;
   readonly rowIndex: number;
   readonly sourceId?: string;
-  readonly row: Record<string, unknown>;
+  readonly contentSha256: string;
+  readonly workerName: string;
+  readonly row: Readonly<Record<string, unknown>>;
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Row decoders
-// ─────────────────────────────────────────────────────────────────────
+export interface CsvAgentJobImportHandle {
+  readonly jobId: string;
+  readonly importId: string;
+  readonly leaseOwner: string;
+  readonly leaseGeneration: string;
+}
+
+export interface CsvAgentJobImportCompletion {
+  readonly importDigest: string;
+  readonly inputBytes: number;
+  readonly totalItems: number;
+}
+
+export interface CsvDispatchEvidence {
+  readonly effect?: CsvJobEffectReference;
+  readonly idempotencyProfile?: string;
+  readonly idempotencyProfileVersion?: number;
+  readonly operationKey?: string;
+}
+
+export interface CsvDispatchAcknowledgement {
+  readonly threadId?: string;
+  readonly providerAcknowledgedKey?: string;
+  readonly effect?: CsvJobEffectReference;
+}
+
+export interface CsvUnknownOutcomeResolution {
+  readonly jobId: string;
+  readonly itemId: string;
+  readonly disposition: CsvReviewDisposition;
+  readonly domainAction: CsvReviewDomainAction;
+  readonly evidence: Record<string, unknown>;
+  readonly actor: string;
+  readonly reason: string;
+  readonly effectReview?: EffectReviewResolution;
+  readonly result?: Record<string, unknown>;
+}
 
 interface JobRow {
   id: string;
@@ -138,14 +339,47 @@ interface JobRow {
   instruction: string;
   auto_export: number;
   max_runtime_seconds: number | null;
+  requested_max_concurrency: number;
+  last_effective_max_concurrency: number | null;
   output_schema_json: string | null;
+  output_schema_digest: string | null;
+  output_schema_contract_version: number | null;
+  execution_gate: "ready" | "legacy_schema_review_required";
   input_headers_json: string;
   input_csv_path: string;
   output_csv_path: string;
+  output_mode: CsvOutputMode;
+  id_column: string | null;
+  import_id: string;
+  import_state: "staging" | "visible" | "aborted";
+  import_digest: string | null;
+  import_lease_generation: string | null;
+  import_last_batch_row: number;
+  import_last_batch_digest: string | null;
+  identity_format_version: 0 | 1;
+  input_bytes: number;
+  max_items: number;
+  max_result_bytes: number;
+  max_result_bytes_per_job: number;
+  total_items: number;
+  pending_items: number;
+  running_items: number;
+  completed_items: number;
+  failed_items: number;
+  cancelled_items: number;
+  unknown_outcome_items: number;
+  result_bytes: number;
+  result_reserved_bytes: number;
+  staging_bytes: number;
+  durable_bytes: number;
+  output_contract_version: number | null;
+  output_digest: string | null;
+  output_bytes: number;
   created_at: number;
   updated_at: number;
   started_at: number | null;
   completed_at: number | null;
+  retired_at: number | null;
   last_error: string | null;
 }
 
@@ -154,16 +388,47 @@ interface ItemRow {
   item_id: string;
   row_index: number;
   source_id: string | null;
+  content_sha256: string | null;
+  worker_name: string;
+  identity_format_version: 0 | 1;
   row_json: string;
   status: string;
+  dispatch_state: CsvAgentJobItem["dispatchState"];
   assigned_thread_id: string | null;
   attempt_count: number;
   result_json: string | null;
+  result_digest: string | null;
+  result_availability: string;
+  result_size_bytes: number;
+  result_reserved_bytes: number;
+  row_size_bytes: number;
   last_error: string | null;
+  review_status: CsvReviewStatus | null;
+  review_reason: string | null;
+  review_disposition: CsvReviewDisposition | null;
+  review_domain_action: CsvReviewDomainAction | null;
+  review_evidence_json: string | null;
+  effect_run_id: string | null;
+  effect_step_id: string | null;
+  effect_epoch: number | null;
+  execution_semantics: "at_most_once" | "idempotent_with_key";
+  idempotency_profile: string | null;
+  idempotency_profile_version: number | null;
+  operation_key: string | null;
+  provider_acknowledged_key: string | null;
+  lookup_evidence_json: string | null;
   created_at: number;
   updated_at: number;
   completed_at: number | null;
   reported_at: number | null;
+}
+
+interface ResultBlobRow {
+  item_id: string;
+  result_json: string | null;
+  result_availability: string;
+  result_size_bytes: number;
+  result_digest: string | null;
 }
 
 function decodeJob(row: JobRow): CsvAgentJob {
@@ -176,36 +441,143 @@ function decodeJob(row: JobRow): CsvAgentJob {
     ...(row.max_runtime_seconds !== null
       ? { maxRuntimeSeconds: row.max_runtime_seconds }
       : {}),
-    ...(row.output_schema_json !== null
-      ? { outputSchema: JSON.parse(row.output_schema_json) as Record<string, unknown> }
+    requestedMaxConcurrency: row.requested_max_concurrency,
+    ...(row.last_effective_max_concurrency !== null
+      ? { lastEffectiveMaxConcurrency: row.last_effective_max_concurrency }
       : {}),
+    ...(row.output_schema_json !== null
+      ? {
+          outputSchema: JSON.parse(row.output_schema_json) as Record<
+            string,
+            unknown
+          >,
+        }
+      : {}),
+    ...(row.output_schema_digest !== null
+      ? { outputSchemaDigest: row.output_schema_digest }
+      : {}),
+    ...(row.output_schema_contract_version !== null
+      ? { outputSchemaContractVersion: row.output_schema_contract_version }
+      : {}),
+    executionGate: row.execution_gate,
     inputHeaders: JSON.parse(row.input_headers_json) as string[],
     inputCsvPath: row.input_csv_path,
     outputCsvPath: row.output_csv_path,
+    outputMode: row.output_mode,
+    ...(row.id_column !== null ? { idColumn: row.id_column } : {}),
+    importId: row.import_id,
+    importState: row.import_state,
+    ...(row.import_digest !== null ? { importDigest: row.import_digest } : {}),
+    identityFormatVersion: row.identity_format_version,
+    inputBytes: row.input_bytes,
+    maxItems: row.max_items,
+    maxResultBytes: row.max_result_bytes,
+    maxResultBytesPerJob: row.max_result_bytes_per_job,
+    totalItems: row.total_items,
+    pendingItems: row.pending_items,
+    runningItems: row.running_items,
+    completedItems: row.completed_items,
+    failedItems: row.failed_items,
+    cancelledItems: row.cancelled_items,
+    unknownOutcomeItems: row.unknown_outcome_items,
+    resultBytes: row.result_bytes,
+    resultReservedBytes: row.result_reserved_bytes,
+    stagingBytes: row.staging_bytes,
+    durableBytes: row.durable_bytes,
+    ...(row.output_contract_version !== null
+      ? { outputContractVersion: row.output_contract_version }
+      : {}),
+    ...(row.output_digest !== null ? { outputDigest: row.output_digest } : {}),
+    outputBytes: row.output_bytes,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.started_at !== null ? { startedAt: row.started_at } : {}),
     ...(row.completed_at !== null ? { completedAt: row.completed_at } : {}),
+    ...(row.retired_at !== null ? { retiredAt: row.retired_at } : {}),
     ...(row.last_error !== null ? { lastError: row.last_error } : {}),
   };
 }
 
+function decodeInertRow(json: string): Readonly<Record<string, unknown>> {
+  const parsed = JSON.parse(json) as Record<string, unknown>;
+  const inert = Object.create(null) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(parsed)) {
+    Object.defineProperty(inert, key, {
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value,
+    });
+  }
+  return Object.freeze(inert);
+}
+
+function decodeJsonObject(
+  json: string | null,
+): Record<string, unknown> | undefined {
+  return json === null
+    ? undefined
+    : (JSON.parse(json) as Record<string, unknown>);
+}
+
 function decodeItem(row: ItemRow): CsvAgentJobItem {
+  const result = decodeJsonObject(row.result_json);
+  const reviewEvidence = decodeJsonObject(row.review_evidence_json);
+  const lookupEvidence = decodeJsonObject(row.lookup_evidence_json);
+  const effect =
+    row.effect_run_id !== null &&
+    row.effect_step_id !== null &&
+    row.effect_epoch !== null
+      ? {
+          runId: row.effect_run_id,
+          stepId: row.effect_step_id,
+          epoch: row.effect_epoch,
+        }
+      : undefined;
   return {
     jobId: row.job_id,
     itemId: row.item_id,
     rowIndex: row.row_index,
     ...(row.source_id !== null ? { sourceId: row.source_id } : {}),
-    row: JSON.parse(row.row_json) as Record<string, unknown>,
+    ...(row.content_sha256 !== null
+      ? { contentSha256: row.content_sha256 }
+      : {}),
+    workerName: row.worker_name,
+    identityFormatVersion: row.identity_format_version,
+    row: decodeInertRow(row.row_json),
     status: parseItemStatus(row.status),
+    dispatchState: row.dispatch_state,
     ...(row.assigned_thread_id !== null
       ? { assignedThreadId: row.assigned_thread_id }
       : {}),
     attemptCount: row.attempt_count,
-    ...(row.result_json !== null
-      ? { result: JSON.parse(row.result_json) as Record<string, unknown> }
-      : {}),
+    ...(result !== undefined ? { result } : {}),
+    ...(row.result_digest !== null ? { resultDigest: row.result_digest } : {}),
+    resultAvailability: parseResultAvailability(row.result_availability),
+    resultSizeBytes: row.result_size_bytes,
     ...(row.last_error !== null ? { lastError: row.last_error } : {}),
+    ...(row.review_status !== null ? { reviewStatus: row.review_status } : {}),
+    ...(row.review_reason !== null ? { reviewReason: row.review_reason } : {}),
+    ...(row.review_disposition !== null
+      ? { reviewDisposition: row.review_disposition }
+      : {}),
+    ...(row.review_domain_action !== null
+      ? { reviewDomainAction: row.review_domain_action }
+      : {}),
+    ...(reviewEvidence !== undefined ? { reviewEvidence } : {}),
+    ...(effect !== undefined ? { effect } : {}),
+    executionSemantics: row.execution_semantics,
+    ...(row.idempotency_profile !== null
+      ? { idempotencyProfile: row.idempotency_profile }
+      : {}),
+    ...(row.idempotency_profile_version !== null
+      ? { idempotencyProfileVersion: row.idempotency_profile_version }
+      : {}),
+    ...(row.operation_key !== null ? { operationKey: row.operation_key } : {}),
+    ...(row.provider_acknowledged_key !== null
+      ? { providerAcknowledgedKey: row.provider_acknowledged_key }
+      : {}),
+    ...(lookupEvidence !== undefined ? { lookupEvidence } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.completed_at !== null ? { completedAt: row.completed_at } : {}),
@@ -214,142 +586,1465 @@ function decodeItem(row: ItemRow): CsvAgentJobItem {
 }
 
 function nowSeconds(): number {
-  return Math.floor(Date.now() / 1000);
+  return Math.floor(Date.now() / 1_000);
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Repository
-// ─────────────────────────────────────────────────────────────────────
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+const CSV_ITEM_CURSOR_PREFIX = "agenc-csv-items-v1:";
+const CSV_ITEM_CURSOR_DOMAIN = "agenc.csv.item-cursor.v1\0";
+const CSV_ITEM_CURSOR_MAX_BYTES = 2_048;
+
+interface DecodedCsvItemCursor {
+  readonly rowIndex: number;
+  readonly itemId: string;
+}
+
+function csvItemCursorScope(
+  jobId: string,
+  status: CsvAgentJobItemStatus | undefined,
+): string {
+  return sha256(
+    JSON.stringify({
+      jobId,
+      status: status ?? null,
+    }),
+  );
+}
+
+export function encodeCsvJobItemCursor(opts: {
+  readonly jobId: string;
+  readonly status?: CsvAgentJobItemStatus;
+  readonly rowIndex: number;
+  readonly itemId: string;
+}): CsvJobItemCursor {
+  if (
+    !Number.isSafeInteger(opts.rowIndex) ||
+    opts.rowIndex < 0 ||
+    opts.itemId.length === 0
+  ) {
+    throw new Error("invalid CSV item page boundary");
+  }
+  const encoded = Buffer.from(
+    JSON.stringify({
+      v: 1,
+      scope: csvItemCursorScope(opts.jobId, opts.status),
+      rowIndex: opts.rowIndex,
+      itemId: opts.itemId,
+    }),
+    "utf8",
+  ).toString("base64url");
+  const digest = sha256(`${CSV_ITEM_CURSOR_DOMAIN}${encoded}`);
+  return `${CSV_ITEM_CURSOR_PREFIX}${encoded}.${digest}`;
+}
+
+function decodeCsvJobItemCursor(
+  cursor: CsvJobItemCursor,
+  jobId: string,
+  status: CsvAgentJobItemStatus | undefined,
+): DecodedCsvItemCursor {
+  try {
+    if (
+      Buffer.byteLength(cursor, "utf8") > CSV_ITEM_CURSOR_MAX_BYTES ||
+      !cursor.startsWith(CSV_ITEM_CURSOR_PREFIX)
+    ) {
+      throw new Error("invalid cursor envelope");
+    }
+    const body = cursor.slice(CSV_ITEM_CURSOR_PREFIX.length);
+    const separator = body.lastIndexOf(".");
+    if (separator <= 0 || separator === body.length - 1) {
+      throw new Error("invalid cursor envelope");
+    }
+    const encoded = body.slice(0, separator);
+    const digest = body.slice(separator + 1);
+    if (
+      !/^[A-Za-z0-9_-]+$/.test(encoded) ||
+      !/^[a-f0-9]{64}$/.test(digest) ||
+      digest !== sha256(`${CSV_ITEM_CURSOR_DOMAIN}${encoded}`)
+    ) {
+      throw new Error("invalid cursor integrity");
+    }
+    const decoded = Buffer.from(encoded, "base64url");
+    if (decoded.toString("base64url") !== encoded) {
+      throw new Error("non-canonical cursor encoding");
+    }
+    const parsed = JSON.parse(decoded.toString("utf8")) as {
+      readonly v?: unknown;
+      readonly scope?: unknown;
+      readonly rowIndex?: unknown;
+      readonly itemId?: unknown;
+    };
+    if (
+      parsed.v !== 1 ||
+      parsed.scope !== csvItemCursorScope(jobId, status) ||
+      !Number.isSafeInteger(parsed.rowIndex) ||
+      (parsed.rowIndex as number) < 0 ||
+      typeof parsed.itemId !== "string" ||
+      parsed.itemId.length === 0
+    ) {
+      throw new Error("invalid cursor scope or keyset");
+    }
+    return {
+      rowIndex: parsed.rowIndex as number,
+      itemId: parsed.itemId,
+    };
+  } catch {
+    throw new Error("invalid or stale CSV item page cursor");
+  }
+}
+
+function requireNonempty(value: string, label: string): void {
+  if (value.length === 0) throw new Error(`${label} must be non-empty`);
+}
+
+function normalizePageLimit(limit: number | undefined): number {
+  if (limit === undefined) return CSV_DEFAULT_ITEM_PAGE_SIZE;
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new Error("CSV item page limit must be a positive integer");
+  }
+  return Math.min(limit, CSV_MAX_ITEM_PAGE_SIZE);
+}
+
+interface Utf8Projection {
+  readonly value: string;
+  readonly truncated: boolean;
+  readonly digest?: string;
+}
+
+function truncateUtf8(value: string, maxBytes: number): Utf8Projection {
+  const encoded = Buffer.from(value, "utf8");
+  if (encoded.byteLength <= maxBytes) {
+    return { value, truncated: false };
+  }
+  let end = maxBytes;
+  while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end -= 1;
+  return {
+    value: encoded.subarray(0, end).toString("utf8"),
+    truncated: true,
+    digest: createHash("sha256").update(encoded).digest("hex"),
+  };
+}
+
+const CSV_ITEM_TEXT_PROJECTION_BYTES = 1_024;
+
+function projectItemSummary(
+  row: Pick<
+    ItemRow,
+    | "item_id"
+    | "row_index"
+    | "source_id"
+    | "status"
+    | "attempt_count"
+    | "result_availability"
+    | "result_size_bytes"
+    | "result_digest"
+    | "result_json"
+    | "last_error"
+    | "review_status"
+    | "review_reason"
+  >,
+): CsvAgentJobItemSummary {
+  const source =
+    row.source_id === null
+      ? undefined
+      : truncateUtf8(row.source_id, CSV_ITEM_TEXT_PROJECTION_BYTES);
+  const preview =
+    row.result_json === null
+      ? undefined
+      : truncateUtf8(row.result_json, CSV_MAX_RESULT_PREVIEW_BYTES);
+  const error =
+    row.last_error === null
+      ? undefined
+      : truncateUtf8(row.last_error, CSV_ITEM_TEXT_PROJECTION_BYTES);
+  const reviewReason =
+    row.review_reason === null
+      ? undefined
+      : truncateUtf8(row.review_reason, CSV_ITEM_TEXT_PROJECTION_BYTES);
+  const projected: CsvAgentJobItemSummary = {
+    itemId: row.item_id,
+    rowIndex: row.row_index,
+    ...(source !== undefined
+      ? {
+          sourceId: source.value,
+          ...(source.truncated
+            ? {
+                sourceIdTruncated: true,
+                sourceIdDigest: source.digest,
+              }
+            : {}),
+        }
+      : {}),
+    status: parseItemStatus(row.status),
+    attemptCount: row.attempt_count,
+    resultAvailability: parseResultAvailability(row.result_availability),
+    resultSizeBytes: row.result_size_bytes,
+    ...(row.result_digest !== null ? { resultDigest: row.result_digest } : {}),
+    ...(preview !== undefined
+      ? {
+          resultPreviewJson: preview.value,
+          ...(preview.truncated ? { resultPreviewTruncated: true } : {}),
+        }
+      : {}),
+    ...(error !== undefined
+      ? {
+          lastError: error.value,
+          ...(error.truncated ? { lastErrorTruncated: true } : {}),
+        }
+      : {}),
+    ...(row.review_status !== null ? { reviewStatus: row.review_status } : {}),
+    ...(reviewReason !== undefined
+      ? {
+          reviewReason: reviewReason.value,
+          ...(reviewReason.truncated ? { reviewReasonTruncated: true } : {}),
+        }
+      : {}),
+  };
+  const encodedBytes = Buffer.byteLength(JSON.stringify(projected), "utf8");
+  if (encodedBytes > CSV_MAX_ITEM_PROJECTION_BYTES) {
+    throw new Error(
+      `CSV item projection is ${encodedBytes} bytes; limit is ${CSV_MAX_ITEM_PROJECTION_BYTES}`,
+    );
+  }
+  return projected;
+}
+
+function assertSha256(value: string, label: string): void {
+  if (!/^[0-9a-f]{64}$/u.test(value)) {
+    throw new Error(`${label} must be a lowercase SHA-256 digest`);
+  }
+}
+
+function validateCreateParams(
+  params: CsvAgentJobCreateParams,
+  items: ReadonlyArray<CsvAgentJobItemCreateParams>,
+): void {
+  requireNonempty(params.id, "CSV job id");
+  requireNonempty(params.name, "CSV job name");
+  requireNonempty(params.instruction, "CSV job instruction");
+  if (
+    params.inputHeaders.length === 0 ||
+    params.inputHeaders.length > CSV_MAX_COLUMNS
+  ) {
+    throw new Error(
+      `CSV inputHeaders must contain between 1 and ${CSV_MAX_COLUMNS} headers`,
+    );
+  }
+  if (
+    Buffer.byteLength(params.inputHeaders.join(","), "utf8") >
+    CSV_MAX_HEADER_BYTES
+  ) {
+    throw new Error(`CSV inputHeaders exceed ${CSV_MAX_HEADER_BYTES} bytes`);
+  }
+  const headerSet = new Set<string>();
+  for (const header of params.inputHeaders) {
+    if (header.trim().length === 0) {
+      throw new Error("CSV inputHeaders contain a blank header");
+    }
+    if (headerSet.has(header)) {
+      throw new Error(`duplicate CSV input header: ${header}`);
+    }
+    headerSet.add(header);
+    if (
+      CSV_RESERVED_OUTPUT_HEADERS.has(header) &&
+      !(header === "source_id" && params.idColumn === "source_id")
+    ) {
+      throw new Error(`CSV input header is reserved for output: ${header}`);
+    }
+  }
+  if (params.idColumn !== undefined && !headerSet.has(params.idColumn)) {
+    throw new Error(
+      `CSV idColumn is not present in inputHeaders: ${params.idColumn}`,
+    );
+  }
+  const requestedMaxConcurrency =
+    params.requestedMaxConcurrency ?? CSV_DEFAULT_MAX_CONCURRENCY;
+  if (
+    !Number.isSafeInteger(requestedMaxConcurrency) ||
+    requestedMaxConcurrency < 1 ||
+    requestedMaxConcurrency > CSV_MAX_JOB_CONCURRENCY
+  ) {
+    throw new Error(
+      `CSV requestedMaxConcurrency must be between 1 and ${CSV_MAX_JOB_CONCURRENCY}`,
+    );
+  }
+  const maxItems = params.maxItems ?? CSV_MAX_ROWS;
+  if (
+    !Number.isSafeInteger(maxItems) ||
+    maxItems <= 0 ||
+    maxItems > CSV_MAX_ROWS
+  ) {
+    throw new Error(`CSV maxItems must be between 1 and ${CSV_MAX_ROWS}`);
+  }
+  if (items.length > maxItems) {
+    throw new Error(`CSV job has ${items.length} rows; limit is ${maxItems}`);
+  }
+  const seenItems = new Set<string>();
+  const seenRows = new Set<number>();
+  const seenSourceIds = new Map<string, number>();
+  for (const item of items) {
+    requireNonempty(item.itemId, "CSV item id");
+    requireNonempty(item.workerName, "CSV worker name");
+    assertSha256(item.contentSha256, "CSV item contentSha256");
+    const descriptors = Object.getOwnPropertyDescriptors(item.row);
+    for (const symbol of Object.getOwnPropertySymbols(item.row)) {
+      if (Object.getOwnPropertyDescriptor(item.row, symbol)?.enumerable) {
+        throw new Error("CSV row contains an enumerable symbol field");
+      }
+    }
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (!descriptor.enumerable) continue;
+      if (!("value" in descriptor)) {
+        throw new Error(`CSV row contains an accessor field: ${key}`);
+      }
+      if (!headerSet.has(key)) {
+        throw new Error(`CSV row contains an unknown field: ${key}`);
+      }
+      if (typeof descriptor.value !== "string") {
+        throw new Error(`CSV row field ${key} must be a string`);
+      }
+    }
+    if (!/^[a-z0-9_]{1,96}$/u.test(item.workerName)) {
+      throw new Error(`unsafe CSV worker name: ${item.workerName}`);
+    }
+    if (seenItems.has(item.itemId)) {
+      throw new Error(`duplicate CSV item id: ${item.itemId}`);
+    }
+    seenItems.add(item.itemId);
+    if (seenRows.has(item.rowIndex)) {
+      throw new Error(`duplicate CSV row index: ${item.rowIndex}`);
+    }
+    seenRows.add(item.rowIndex);
+    if (params.idColumn !== undefined) {
+      if (item.sourceId === undefined || item.sourceId.trim().length === 0) {
+        throw new Error(`blank source_id at CSV data row ${item.rowIndex + 1}`);
+      }
+      const first = seenSourceIds.get(item.sourceId);
+      if (first !== undefined) {
+        throw new Error(
+          `duplicate source_id at CSV data rows ${first + 1} and ${item.rowIndex + 1}`,
+        );
+      }
+      seenSourceIds.set(item.sourceId, item.rowIndex);
+    } else if (item.sourceId !== undefined) {
+      throw new Error(
+        "source_id must be absent when idColumn is not configured",
+      );
+    }
+  }
+}
+
+interface CsvStorageQuotaRow {
+  readonly active_imports: number;
+  readonly staging_rows: number;
+  readonly staging_bytes: number;
+  readonly durable_jobs: number;
+  readonly durable_items: number;
+  readonly durable_bytes: number;
+  readonly durable_reserved_items: number;
+  readonly durable_reserved_bytes: number;
+  readonly result_blob_bytes: number;
+  readonly result_reserved_bytes: number;
+  readonly tombstones: number;
+  readonly tombstone_bytes: number;
+  readonly output_staging_files: number;
+  readonly output_staging_bytes: number;
+}
+
+interface StagedImportRecoveryRow {
+  readonly id: string;
+  readonly import_id: string;
+  readonly import_lease_owner: string;
+  readonly import_lease_generation: string;
+  readonly import_owner_pid: number;
+  readonly import_owner_boot_id: string | null;
+  readonly import_owner_process_start: string | null;
+  readonly total_items: number;
+  readonly staging_bytes: number;
+}
+
+interface CsvOutputIntentRecoveryRow {
+  readonly intent_id: string;
+  readonly target_path: string;
+  readonly temporary_path: string;
+  readonly temporary_dev: string;
+  readonly temporary_ino: string;
+  readonly state:
+    "writing" | "flushed" | "published" | "abandoned" | "recovering";
+  readonly recovery_prior_state:
+    "writing" | "flushed" | "published" | "abandoned" | null;
+  readonly owner_generation: string;
+  readonly owner_pid: number;
+  readonly owner_boot_id: string | null;
+  readonly owner_process_start: string | null;
+}
+
+export class CsvStorageQuotaError extends Error {
+  readonly code = "CSV_STORAGE_QUOTA_EXCEEDED" as const;
+  readonly category = "retryable_capacity" as const;
+
+  constructor(
+    readonly quota: string,
+    readonly limit: number,
+  ) {
+    super(`CSV ${quota} quota is full (limit ${limit})`);
+    this.name = "CsvStorageQuotaError";
+  }
+}
+
+const LIVE_CSV_IMPORT_GENERATIONS = new Set<string>();
+const LIVE_CSV_OUTPUT_GENERATIONS = new Set<string>();
+const CSV_ROW_STORAGE_OVERHEAD_BYTES = 256;
+
+function currentBootId(): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  try {
+    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function linuxProcessStart(pid: number): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const commandEnd = stat.lastIndexOf(")");
+    if (commandEnd < 0) return undefined;
+    const fieldsFromState = stat
+      .slice(commandEnd + 2)
+      .trim()
+      .split(/\s+/u);
+    return fieldsFromState[19];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "dead";
+    return undefined;
+  }
+}
+
+function serializeCsvRow(
+  row: Readonly<Record<string, unknown>>,
+  headers: ReadonlyArray<string>,
+): string {
+  const descriptors = Object.getOwnPropertyDescriptors(row);
+  const inert = Object.create(null) as Record<string, string>;
+  for (const header of headers) {
+    const descriptor = descriptors[header];
+    Object.defineProperty(inert, header, {
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value:
+        descriptor !== undefined && "value" in descriptor
+          ? (descriptor.value as string)
+          : "",
+    });
+  }
+  return JSON.stringify(inert);
+}
+
+function stagedRowBytes(
+  item: CsvAgentJobItemCreateParams,
+  rowJson: string,
+): number {
+  return (
+    Buffer.byteLength(rowJson, "utf8") +
+    Buffer.byteLength(item.itemId, "utf8") +
+    Buffer.byteLength(item.workerName, "utf8") +
+    Buffer.byteLength(item.sourceId ?? "", "utf8") +
+    Buffer.byteLength(item.contentSha256, "utf8") +
+    CSV_ROW_STORAGE_OVERHEAD_BYTES
+  );
+}
+
+function assertQuota(
+  current: number,
+  requested: number,
+  limit: number,
+  label: string,
+): void {
+  if (current + requested > limit) {
+    throw new CsvStorageQuotaError(label, limit);
+  }
+}
 
 export class CsvAgentJobsRepository {
-  constructor(private readonly driver: StateSqliteDriver) {}
+  private readonly ownerBootId = currentBootId();
+  private readonly ownerProcessStart = linuxProcessStart(process.pid);
+
+  constructor(private readonly driver: StateSqliteDriver) {
+    this.recoverAbandonedImports();
+    this.resumeInterruptedJobGarbageCollection();
+  }
+
+  private getQuota(): CsvStorageQuotaRow {
+    const quota = this.driver
+      .prepareState<[], CsvStorageQuotaRow>(
+        `SELECT * FROM csv_storage_quota WHERE singleton = 1`,
+      )
+      .get();
+    if (quota === undefined)
+      throw new Error("CSV storage quota row is missing");
+    return quota;
+  }
 
   createJob(
     params: CsvAgentJobCreateParams,
     items: ReadonlyArray<CsvAgentJobItemCreateParams>,
   ): CsvAgentJob {
-    const now = nowSeconds();
-    const inputHeadersJson = JSON.stringify(params.inputHeaders);
-    const outputSchemaJson =
-      params.outputSchema !== undefined
-        ? JSON.stringify(params.outputSchema)
-        : null;
-    const maxRuntimeSeconds = params.maxRuntimeSeconds ?? null;
+    validateCreateParams(params, items);
+    const importDigest =
+      params.importDigest ??
+      sha256(
+        JSON.stringify({
+          headers: params.inputHeaders,
+          idColumn: params.idColumn ?? null,
+          rows: items.map((item) => [
+            item.rowIndex,
+            item.itemId,
+            item.sourceId ?? null,
+            item.contentSha256,
+          ]),
+        }),
+      );
+    const handle = this.beginJobImport(params);
+    try {
+      this.appendJobImportItems(handle, items);
+      return this.promoteJobImport(handle, {
+        importDigest,
+        inputBytes: params.inputBytes ?? 0,
+        totalItems: items.length,
+      });
+    } catch (error) {
+      this.abortJobImport(handle, "CSV import failed");
+      this.deleteAbortedImport(handle);
+      throw error;
+    }
+  }
 
-    this.driver.transaction(() => {
+  beginJobImport(params: CsvAgentJobCreateParams): CsvAgentJobImportHandle {
+    validateCreateParams(params, []);
+    const now = nowSeconds();
+    const importId = params.importId ?? randomUUID();
+    const leaseOwner = randomUUID();
+    const leaseGeneration = randomUUID();
+    const maxItems = params.maxItems ?? CSV_MAX_ROWS;
+    const maxResultBytes = params.maxResultBytes ?? CSV_MAX_RESULT_BYTES;
+    const maxResultBytesPerJob =
+      params.maxResultBytesPerJob ?? CSV_MAX_RESULT_BYTES_PER_JOB;
+    const requestedMaxConcurrency =
+      params.requestedMaxConcurrency ?? CSV_DEFAULT_MAX_CONCURRENCY;
+    const compiledOutputSchema = compileCsvOutputSchema(params.outputSchema);
+    const inputBytes = params.inputBytes ?? 0;
+    if (!Number.isSafeInteger(inputBytes) || inputBytes < 0) {
+      throw new Error("CSV inputBytes must be a non-negative integer");
+    }
+    if (
+      !Number.isSafeInteger(maxResultBytes) ||
+      maxResultBytes <= 0 ||
+      maxResultBytes > CSV_MAX_RESULT_BYTES
+    ) {
+      throw new Error(
+        `CSV maxResultBytes must be between 1 and ${CSV_MAX_RESULT_BYTES}`,
+      );
+    }
+    if (
+      !Number.isSafeInteger(maxResultBytesPerJob) ||
+      maxResultBytesPerJob <= 0 ||
+      maxResultBytesPerJob > CSV_MAX_RESULT_BYTES_PER_JOB
+    ) {
+      throw new Error(
+        `CSV maxResultBytesPerJob must be between 1 and ${CSV_MAX_RESULT_BYTES_PER_JOB}`,
+      );
+    }
+    this.driver.transactionImmediate(() => {
+      const quota = this.getQuota();
+      assertQuota(
+        quota.active_imports,
+        1,
+        CSV_MAX_ACTIVE_IMPORTS,
+        "active import",
+      );
+      assertQuota(
+        quota.durable_jobs + quota.active_imports,
+        1,
+        CSV_MAX_DURABLE_JOBS,
+        "durable job",
+      );
       this.driver
         .prepareState(
           `INSERT INTO csv_agent_jobs (
-            id, name, status, instruction, auto_export, max_runtime_seconds,
-            output_schema_json, input_headers_json, input_csv_path,
-            output_csv_path, created_at, updated_at, started_at,
-            completed_at, last_error
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)`,
+          id, name, status, instruction, auto_export, max_runtime_seconds,
+          requested_max_concurrency, output_schema_json,
+          output_schema_digest, output_schema_contract_version, execution_gate,
+          input_headers_json, input_csv_path,
+          output_csv_path, output_mode, id_column, import_id, import_state,
+          import_digest,
+          import_lease_owner, import_lease_expires_at,
+          import_owner_pid, import_owner_boot_id, import_owner_process_start,
+          import_lease_generation,
+          identity_format_version, input_bytes, max_items, max_result_bytes,
+          max_result_bytes_per_job,
+          created_at, updated_at
+        ) VALUES (
+          ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?,
+          'staging', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )`,
         )
         .run(
           params.id,
           params.name,
-          "pending",
           params.instruction,
           params.autoExport ? 1 : 0,
-          maxRuntimeSeconds,
-          outputSchemaJson,
-          inputHeadersJson,
+          params.maxRuntimeSeconds ?? null,
+          requestedMaxConcurrency,
+          compiledOutputSchema?.canonicalJson ?? null,
+          compiledOutputSchema?.digest ?? null,
+          compiledOutputSchema?.contractVersion ?? null,
+          JSON.stringify(params.inputHeaders),
           params.inputCsvPath,
           params.outputCsvPath,
+          params.outputMode ?? "replace_existing_regular",
+          params.idColumn ?? null,
+          importId,
+          leaseOwner,
+          now + CSV_IMPORT_LEASE_SECONDS,
+          process.pid,
+          this.ownerBootId ?? null,
+          this.ownerProcessStart === "dead"
+            ? null
+            : (this.ownerProcessStart ?? null),
+          leaseGeneration,
+          CSV_JOB_IDENTITY_FORMAT_VERSION,
+          inputBytes,
+          maxItems,
+          maxResultBytes,
+          maxResultBytesPerJob,
           now,
           now,
         );
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET active_imports = active_imports + 1,
+             updated_at = ? WHERE singleton = 1`,
+        )
+        .run(now);
+    });
+    LIVE_CSV_IMPORT_GENERATIONS.add(leaseGeneration);
+    return Object.freeze({
+      jobId: params.id,
+      importId,
+      leaseOwner,
+      leaseGeneration,
+    });
+  }
+
+  appendJobImportItems(
+    handle: CsvAgentJobImportHandle,
+    items: ReadonlyArray<CsvAgentJobItemCreateParams>,
+  ): void {
+    if (items.length === 0) return;
+    const staged = this.getStagedImport(handle);
+    validateCreateParams(
+      {
+        id: staged.id,
+        name: staged.name,
+        instruction: staged.instruction,
+        autoExport: staged.auto_export === 1,
+        inputHeaders: JSON.parse(staged.input_headers_json) as string[],
+        inputCsvPath: staged.input_csv_path,
+        outputCsvPath: staged.output_csv_path,
+        ...(staged.id_column !== null ? { idColumn: staged.id_column } : {}),
+        maxItems: staged.max_items,
+        maxResultBytes: staged.max_result_bytes,
+      },
+      items,
+    );
+    const inputHeaders = JSON.parse(staged.input_headers_json) as string[];
+    const sizedItems = items.map((item) => {
+      const rowJson = serializeCsvRow(item.row, inputHeaders);
+      return { item, rowJson, bytes: stagedRowBytes(item, rowJson) };
+    });
+    const batchBytes = sizedItems.reduce((sum, entry) => sum + entry.bytes, 0);
+    const now = nowSeconds();
+    this.driver.transactionImmediate(() => {
+      const current = this.getStagedImport(handle);
+      if (current.total_items + items.length > current.max_items) {
+        throw new Error(
+          `CSV job has more than ${current.max_items} staged rows`,
+        );
+      }
+      const quota = this.getQuota();
+      assertQuota(
+        quota.staging_rows,
+        items.length,
+        CSV_MAX_STAGING_ROWS_GLOBAL,
+        "staging row",
+      );
+      assertQuota(
+        quota.staging_bytes,
+        batchBytes,
+        CSV_MAX_STAGING_BYTES_GLOBAL,
+        "staging byte",
+      );
+      assertQuota(
+        quota.durable_items + quota.durable_reserved_items,
+        items.length,
+        CSV_MAX_DURABLE_ITEMS,
+        "durable item",
+      );
+      assertQuota(
+        quota.durable_bytes + quota.durable_reserved_bytes,
+        batchBytes,
+        CSV_MAX_DURABLE_BYTES,
+        "durable byte",
+      );
+      if (current.id_column !== null) {
+        const existingSourceId = this.driver.prepareState<
+          [string, string],
+          { readonly row_index: number }
+        >(
+          `SELECT row_index FROM csv_agent_job_items
+           WHERE job_id = ? AND source_id = ?`,
+        );
+        for (const { item } of sizedItems) {
+          const first = existingSourceId.get(current.id, item.sourceId!);
+          if (first !== undefined) {
+            throw new Error(
+              `duplicate source_id at CSV data rows ${first.row_index + 1} and ${item.rowIndex + 1}`,
+            );
+          }
+        }
+      }
       const insertItem = this.driver.prepareState(
         `INSERT INTO csv_agent_job_items (
-          job_id, item_id, row_index, source_id, row_json, status,
-          assigned_thread_id, attempt_count, result_json, last_error,
-          created_at, updated_at, completed_at, reported_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL, ?, ?, NULL, NULL)`,
+          job_id, item_id, row_index, source_id, content_sha256, worker_name,
+          identity_format_version, row_json, status, dispatch_state,
+          assigned_thread_id, attempt_count, result_json, result_availability,
+          result_size_bytes, result_reserved_bytes, row_size_bytes,
+          execution_semantics, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'not_dispatched', NULL, 0, NULL,
+          'not_produced', 0, 0, ?, 'at_most_once', ?, ?
+        )`,
       );
-      for (const item of items) {
+      for (const { item, rowJson, bytes } of sizedItems) {
         insertItem.run(
-          params.id,
+          handle.jobId,
           item.itemId,
           item.rowIndex,
           item.sourceId ?? null,
-          JSON.stringify(item.row),
-          "pending",
+          item.contentSha256,
+          item.workerName,
+          CSV_JOB_IDENTITY_FORMAT_VERSION,
+          rowJson,
+          bytes,
           now,
           now,
         );
       }
+      const batchDigest = sha256(
+        `${current.import_last_batch_digest ?? "agenc.csv.import.v1"}\0${JSON.stringify(
+          items.map((item) => [
+            item.rowIndex,
+            item.itemId,
+            item.sourceId ?? null,
+            item.contentSha256,
+          ]),
+        )}`,
+      );
+      const updated = this.driver
+        .prepareState(
+          `UPDATE csv_agent_jobs SET import_lease_expires_at = ?, updated_at = ?,
+             staging_bytes = staging_bytes + ?,
+             import_last_batch_row = ?, import_last_batch_digest = ?
+           WHERE id = ? AND import_id = ? AND import_lease_owner = ?
+             AND import_lease_generation = ? AND import_state = 'staging'`,
+        )
+        .run(
+          now + CSV_IMPORT_LEASE_SECONDS,
+          now,
+          batchBytes,
+          Math.max(...items.map((item) => item.rowIndex)),
+          batchDigest,
+          handle.jobId,
+          handle.importId,
+          handle.leaseOwner,
+          handle.leaseGeneration,
+        );
+      if (updated.changes !== 1) {
+        throw new Error(`CSV import lease changed for job ${handle.jobId}`);
+      }
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+             staging_rows = staging_rows + ?,
+             staging_bytes = staging_bytes + ?,
+             durable_reserved_items = durable_reserved_items + ?,
+             durable_reserved_bytes = durable_reserved_bytes + ?,
+             updated_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(items.length, batchBytes, items.length, batchBytes, now);
     });
+  }
 
-    const created = this.getJob(params.id);
-    if (!created) {
-      throw new Error(`failed to load created agent job ${params.id}`);
+  promoteJobImport(
+    handle: CsvAgentJobImportHandle,
+    completion: CsvAgentJobImportCompletion,
+  ): CsvAgentJob {
+    assertSha256(completion.importDigest, "CSV import digest");
+    if (
+      !Number.isSafeInteger(completion.inputBytes) ||
+      completion.inputBytes < 0
+    ) {
+      throw new Error("CSV inputBytes must be a non-negative integer");
+    }
+    if (
+      !Number.isSafeInteger(completion.totalItems) ||
+      completion.totalItems < 0
+    ) {
+      throw new Error("CSV totalItems must be a non-negative integer");
+    }
+    const now = nowSeconds();
+    this.driver.transactionImmediate(() => {
+      const current = this.getStagedImport(handle);
+      if (current.total_items !== completion.totalItems) {
+        throw new Error(
+          `CSV import promotion expected ${completion.totalItems} rows but staged ${current.total_items}`,
+        );
+      }
+      const promoted = this.driver
+        .prepareState(
+          `UPDATE csv_agent_jobs
+           SET import_state = 'visible', import_digest = ?, input_bytes = ?,
+               import_lease_owner = NULL, import_lease_expires_at = NULL,
+               import_owner_pid = NULL, import_owner_boot_id = NULL,
+               import_owner_process_start = NULL,
+               import_lease_generation = NULL,
+               durable_bytes = staging_bytes, updated_at = ?
+           WHERE id = ? AND import_id = ? AND import_lease_owner = ?
+             AND import_lease_generation = ?
+             AND import_state = 'staging' AND total_items = ?`,
+        )
+        .run(
+          completion.importDigest,
+          completion.inputBytes,
+          now,
+          handle.jobId,
+          handle.importId,
+          handle.leaseOwner,
+          handle.leaseGeneration,
+          completion.totalItems,
+        );
+      if (promoted.changes !== 1) {
+        throw new Error(`CSV import promotion failed for job ${handle.jobId}`);
+      }
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+             active_imports = active_imports - 1,
+             staging_rows = staging_rows - ?,
+             staging_bytes = staging_bytes - ?,
+             durable_jobs = durable_jobs + 1,
+             durable_items = durable_items + ?,
+             durable_bytes = durable_bytes + ?,
+             durable_reserved_items = durable_reserved_items - ?,
+             durable_reserved_bytes = durable_reserved_bytes - ?,
+             updated_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(
+          current.total_items,
+          current.staging_bytes,
+          current.total_items,
+          current.staging_bytes,
+          current.total_items,
+          current.staging_bytes,
+          now,
+        );
+    });
+    LIVE_CSV_IMPORT_GENERATIONS.delete(handle.leaseGeneration);
+    const created = this.getJob(handle.jobId);
+    if (created === null) {
+      throw new Error(`failed to load CSV job ${handle.jobId}`);
     }
     return created;
+  }
+
+  abortJobImport(handle: CsvAgentJobImportHandle, reason: string): void {
+    const now = nowSeconds();
+    this.driver.transactionImmediate(() => {
+      const current = this.getStagedImport(handle);
+      const aborted = this.driver
+        .prepareState(
+          `UPDATE csv_agent_jobs SET import_state = 'aborted', last_error = ?,
+             import_lease_owner = NULL, import_lease_expires_at = NULL,
+             import_owner_pid = NULL, import_owner_boot_id = NULL,
+             import_owner_process_start = NULL,
+             import_lease_generation = NULL, updated_at = ?
+           WHERE id = ? AND import_id = ? AND import_lease_owner = ?
+             AND import_lease_generation = ? AND import_state = 'staging'`,
+        )
+        .run(
+          truncateUtf8(reason, CSV_ITEM_TEXT_PROJECTION_BYTES * 4).value,
+          now,
+          handle.jobId,
+          handle.importId,
+          handle.leaseOwner,
+          handle.leaseGeneration,
+        );
+      if (aborted.changes !== 1) {
+        throw new Error(`CSV import abort failed for job ${handle.jobId}`);
+      }
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+             active_imports = active_imports - 1,
+             durable_reserved_items = durable_reserved_items - ?,
+             durable_reserved_bytes = durable_reserved_bytes - ?,
+             updated_at = ? WHERE singleton = 1`,
+        )
+        .run(current.total_items, current.staging_bytes, now);
+    });
+    LIVE_CSV_IMPORT_GENERATIONS.delete(handle.leaseGeneration);
+  }
+
+  deleteAbortedImport(handle: CsvAgentJobImportHandle): void {
+    this.cleanupAbortedImport(handle.jobId, handle.importId);
+  }
+
+  private getStagedImport(handle: CsvAgentJobImportHandle): JobRow {
+    const row = this.driver
+      .prepareState<[string, string, string, string], JobRow>(
+        `SELECT * FROM csv_agent_jobs
+         WHERE id = ? AND import_id = ? AND import_lease_owner = ?
+           AND import_lease_generation = ? AND import_state = 'staging'`,
+      )
+      .get(
+        handle.jobId,
+        handle.importId,
+        handle.leaseOwner,
+        handle.leaseGeneration,
+      );
+    if (row === undefined) {
+      throw new Error(`CSV import lease is not active for job ${handle.jobId}`);
+    }
+    return row;
+  }
+
+  recoverAbandonedImports(): number {
+    const candidates = this.driver
+      .prepareState<[], StagedImportRecoveryRow>(
+        `SELECT id, import_id, import_lease_owner, import_lease_generation,
+                import_owner_pid, import_owner_boot_id,
+                import_owner_process_start, total_items, staging_bytes
+         FROM csv_agent_jobs
+         WHERE import_state IN ('staging', 'recovering')
+           AND import_lease_owner IS NOT NULL
+           AND import_lease_generation IS NOT NULL
+           AND import_owner_pid IS NOT NULL
+         ORDER BY created_at ASC, import_id ASC`,
+      )
+      .all();
+    let recovered = 0;
+    for (const candidate of candidates) {
+      if (!this.isImportOwnerProvenDead(candidate)) continue;
+      const fenced = this.driver.transactionImmediate(
+        () =>
+          this.driver
+            .prepareState(
+              `UPDATE csv_agent_jobs SET import_state = 'recovering',
+               updated_at = ?
+             WHERE id = ? AND import_id = ?
+               AND import_lease_owner = ? AND import_lease_generation = ?
+               AND import_state IN ('staging', 'recovering')`,
+            )
+            .run(
+              nowSeconds(),
+              candidate.id,
+              candidate.import_id,
+              candidate.import_lease_owner,
+              candidate.import_lease_generation,
+            ).changes,
+      );
+      if (fenced !== 1) continue;
+      this.driver.transactionImmediate(() => {
+        const abandoned = this.driver
+          .prepareState(
+            `UPDATE csv_agent_jobs SET import_state = 'aborted',
+               import_lease_owner = NULL, import_lease_expires_at = NULL,
+               import_owner_pid = NULL, import_owner_boot_id = NULL,
+               import_owner_process_start = NULL,
+               import_lease_generation = NULL,
+               last_error = 'CSV importer owner is proven dead', updated_at = ?
+             WHERE id = ? AND import_id = ? AND import_lease_owner = ?
+               AND import_lease_generation = ? AND import_state = 'recovering'`,
+          )
+          .run(
+            nowSeconds(),
+            candidate.id,
+            candidate.import_id,
+            candidate.import_lease_owner,
+            candidate.import_lease_generation,
+          );
+        if (abandoned.changes !== 1) {
+          throw new Error(
+            `CSV import recovery fence changed for ${candidate.import_id}`,
+          );
+        }
+        this.driver
+          .prepareState(
+            `UPDATE csv_storage_quota SET
+               active_imports = active_imports - 1,
+               durable_reserved_items = durable_reserved_items - ?,
+               durable_reserved_bytes = durable_reserved_bytes - ?,
+               updated_at = ? WHERE singleton = 1`,
+          )
+          .run(candidate.total_items, candidate.staging_bytes, nowSeconds());
+      });
+      LIVE_CSV_IMPORT_GENERATIONS.delete(candidate.import_lease_generation);
+      this.cleanupAbortedImport(candidate.id, candidate.import_id);
+      recovered += 1;
+    }
+    return recovered;
+  }
+
+  private isImportOwnerProvenDead(row: StagedImportRecoveryRow): boolean {
+    if (LIVE_CSV_IMPORT_GENERATIONS.has(row.import_lease_generation)) {
+      return false;
+    }
+    if (row.import_owner_pid === process.pid) return true;
+    if (
+      this.ownerBootId === undefined ||
+      row.import_owner_boot_id === null ||
+      row.import_owner_process_start === null
+    ) {
+      return false;
+    }
+    if (row.import_owner_boot_id !== this.ownerBootId) return true;
+    const observedStart = linuxProcessStart(row.import_owner_pid);
+    if (observedStart === "dead") return true;
+    if (observedStart === undefined) return false;
+    return observedStart !== row.import_owner_process_start;
+  }
+
+  private cleanupAbortedImport(jobId: string, importId: string): void {
+    const deadline = Date.now() + CSV_MAX_STAGING_GC_MS_PER_START;
+    while (Date.now() <= deadline) {
+      const finished = this.driver.transactionImmediate(() => {
+        const batch = this.driver
+          .prepareState<
+            [string, string, number],
+            { readonly count: number; readonly bytes: number }
+          >(
+            `SELECT COUNT(*) AS count, COALESCE(SUM(row_size_bytes), 0) AS bytes
+             FROM (
+               SELECT item.row_size_bytes
+               FROM csv_agent_job_items AS item
+               JOIN csv_agent_jobs AS job ON job.id = item.job_id
+               WHERE item.job_id = ? AND job.import_id = ?
+                 AND job.import_state = 'aborted'
+               ORDER BY item.row_index ASC, item.item_id ASC
+               LIMIT ?
+             )`,
+          )
+          .get(jobId, importId, CSV_JOB_GC_PAGE_ITEMS);
+        if (batch === undefined || batch.count === 0) {
+          this.driver
+            .prepareState(
+              `DELETE FROM csv_agent_jobs
+               WHERE id = ? AND import_id = ? AND import_state = 'aborted'`,
+            )
+            .run(jobId, importId);
+          return true;
+        }
+        this.driver
+          .prepareState(
+            `DELETE FROM csv_agent_job_items WHERE rowid IN (
+               SELECT item.rowid FROM csv_agent_job_items AS item
+               JOIN csv_agent_jobs AS job ON job.id = item.job_id
+               WHERE item.job_id = ? AND job.import_id = ?
+                 AND job.import_state = 'aborted'
+               ORDER BY item.row_index ASC, item.item_id ASC
+               LIMIT ?
+             )`,
+          )
+          .run(jobId, importId, CSV_JOB_GC_PAGE_ITEMS);
+        this.driver
+          .prepareState(
+            `UPDATE csv_storage_quota SET
+               staging_rows = staging_rows - ?,
+               staging_bytes = staging_bytes - ?, updated_at = ?
+             WHERE singleton = 1`,
+          )
+          .run(batch.count, batch.bytes, nowSeconds());
+        return false;
+      });
+      if (finished) return;
+    }
+  }
+
+  cleanupExpiredStagedImport(_importId: string, _now = nowSeconds()): boolean {
+    // Kept as a fail-closed compatibility shim. Wall-clock expiry is not proof
+    // that an importer died; recovery uses exact boot/process/generation proof.
+    return false;
   }
 
   getJob(jobId: string): CsvAgentJob | null {
     const row = this.driver
       .prepareState<[string], JobRow>(
-        `SELECT * FROM csv_agent_jobs WHERE id = ?`,
+        `SELECT * FROM csv_agent_jobs
+         WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL`,
       )
       .get(jobId);
-    return row ? decodeJob(row) : null;
+    return row === undefined ? null : decodeJob(row);
   }
 
-  listJobs(opts: {
-    readonly status?: CsvAgentJobStatus;
-    readonly limit?: number;
-  } = {}): ReadonlyArray<CsvAgentJob> {
-    const where: string[] = [];
+  listJobs(
+    opts: {
+      readonly status?: CsvAgentJobStatus;
+      readonly limit?: number;
+      readonly beforeUpdatedAt?: number;
+    } = {},
+  ): ReadonlyArray<CsvAgentJob> {
+    const limit = Math.min(opts.limit ?? CSV_MAX_ITEM_PAGE_SIZE, CSV_MAX_ROWS);
+    if (!Number.isSafeInteger(limit) || limit <= 0) {
+      throw new Error("CSV job list limit must be a positive integer");
+    }
+    const where = ["import_state = 'visible'", "retired_at IS NULL"];
     const binds: unknown[] = [];
     if (opts.status !== undefined) {
       where.push("status = ?");
       binds.push(opts.status);
     }
-    let sql = `SELECT * FROM csv_agent_jobs`;
-    if (where.length > 0) sql += ` WHERE ${where.join(" AND ")}`;
-    sql += ` ORDER BY updated_at DESC`;
-    if (opts.limit !== undefined) {
-      sql += ` LIMIT ?`;
-      binds.push(opts.limit);
+    if (opts.beforeUpdatedAt !== undefined) {
+      where.push("updated_at < ?");
+      binds.push(opts.beforeUpdatedAt);
     }
-    const rows = this.driver
-      .prepareState<unknown[], JobRow>(sql)
-      .all(...binds);
-    return rows.map(decodeJob);
+    binds.push(limit);
+    return this.driver
+      .prepareState<unknown[], JobRow>(
+        `SELECT * FROM csv_agent_jobs
+         WHERE ${where.join(" AND ")}
+         ORDER BY updated_at DESC, id ASC LIMIT ?`,
+      )
+      .all(...binds)
+      .map(decodeJob);
+  }
+
+  retireJob(jobId: string): void {
+    const now = nowSeconds();
+    const result = this.driver
+      .prepareState(
+        `UPDATE csv_agent_jobs SET retired_at = ?, updated_at = ?
+         WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL
+           AND status IN (
+             'completed', 'failed', 'cancelled',
+             'finished_with_unknown_outcomes'
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM csv_agent_job_items AS item
+             WHERE item.job_id = csv_agent_jobs.id
+               AND item.review_status = 'pending'
+           )`,
+      )
+      .run(now, now, jobId);
+    if (result.changes !== 1) {
+      throw new Error(`CSV job ${jobId} is not safely retireable`);
+    }
   }
 
   deleteJob(jobId: string): void {
-    // CASCADE on csv_agent_job_items.job_id → csv_agent_jobs.id removes
-    // the children automatically.
-    this.driver
-      .prepareState(`DELETE FROM csv_agent_jobs WHERE id = ?`)
-      .run(jobId);
+    this.beginJobTombstone(jobId);
+    this.continueJobGarbageCollection(jobId);
   }
 
-  markJobRunning(jobId: string): void {
+  collectRetainedTerminalJobs(now = nowSeconds()): number {
+    const cutoff = now - Math.floor(CSV_TERMINAL_JOB_RETENTION_MS / 1_000);
+    const candidates = this.driver
+      .prepareState<[number, number], { readonly id: string }>(
+        `SELECT id FROM csv_agent_jobs
+         WHERE import_state = 'visible' AND retired_at IS NULL
+           AND completed_at IS NOT NULL AND completed_at <= ?
+           AND status IN ('completed', 'failed', 'cancelled')
+           AND output_digest IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM csv_agent_job_items AS item
+             WHERE item.job_id = csv_agent_jobs.id
+               AND (item.review_status = 'pending'
+                 OR item.status IN ('running', 'unknown_outcome'))
+           )
+         ORDER BY completed_at ASC, id ASC LIMIT ?`,
+      )
+      .all(cutoff, CSV_JOB_GC_PAGE_ITEMS);
+    for (const candidate of candidates) {
+      this.retireJob(candidate.id);
+      this.deleteJob(candidate.id);
+    }
+    return candidates.length;
+  }
+
+  private beginJobTombstone(jobId: string): void {
+    const job = this.driver
+      .prepareState<[string], JobRow>(
+        `SELECT * FROM csv_agent_jobs WHERE id = ? AND import_state = 'visible'
+           AND retired_at IS NOT NULL`,
+      )
+      .get(jobId);
+    if (job === undefined) {
+      throw new Error(`CSV job ${jobId} must be retired before deletion`);
+    }
+    if (job.status === "finished_with_unknown_outcomes") {
+      throw new Error(
+        "CSV jobs with abandoned unknown outcomes cannot be deleted",
+      );
+    }
+    const resultSet = createHash("sha256");
+    const resultRows = this.driver
+      .prepareState<
+        [string],
+        {
+          readonly item_id: string;
+          readonly status: string;
+          readonly result_digest: string | null;
+          readonly result_availability: string;
+        }
+      >(
+        `SELECT item_id, status, result_digest, result_availability
+         FROM csv_agent_job_items WHERE job_id = ?
+         ORDER BY row_index ASC, item_id ASC`,
+      )
+      .iterate(jobId);
+    for (const row of resultRows) {
+      resultSet.update(
+        JSON.stringify([
+          row.item_id,
+          row.status,
+          row.result_availability,
+          row.result_digest,
+        ]),
+      );
+    }
+    const evidence = createHash("sha256");
+    let evidenceCount = 0;
+    for (const row of this.driver
+      .prepareState<
+        [string],
+        { readonly sequence: number; readonly evidence_json: string | null }
+      >(
+        `SELECT sequence, evidence_json FROM csv_agent_job_review_history
+         WHERE job_id = ? ORDER BY sequence ASC`,
+      )
+      .iterate(jobId)) {
+      evidence.update(JSON.stringify([row.sequence, row.evidence_json]));
+      evidenceCount += 1;
+    }
+    const counters = JSON.stringify({
+      totalItems: job.total_items,
+      pendingItems: job.pending_items,
+      runningItems: job.running_items,
+      completedItems: job.completed_items,
+      failedItems: job.failed_items,
+      cancelledItems: job.cancelled_items,
+      unknownOutcomeItems: job.unknown_outcome_items,
+      resultBytes: job.result_bytes,
+    });
+    const evidenceReferences = JSON.stringify({
+      historyCount: evidenceCount,
+      historyDigest: evidence.digest("hex"),
+    });
+    const resultSetDigest = resultSet.digest("hex");
+    const payloadBytes = Buffer.byteLength(
+      JSON.stringify({
+        jobId,
+        status: job.status,
+        counters,
+        inputDigest: job.import_digest,
+        outputDigest: job.output_digest,
+        outputSchemaDigest: job.output_schema_digest,
+        resultSetDigest,
+        evidenceReferences,
+      }),
+      "utf8",
+    );
+    this.driver.transactionImmediate(() => {
+      const existing = this.driver
+        .prepareState<[string], { readonly job_id: string }>(
+          `SELECT job_id FROM csv_job_tombstones WHERE job_id = ?`,
+        )
+        .get(jobId);
+      if (existing !== undefined) return;
+      const quota = this.getQuota();
+      assertQuota(quota.tombstones, 1, CSV_MAX_JOB_TOMBSTONES, "job tombstone");
+      assertQuota(
+        quota.tombstone_bytes,
+        payloadBytes,
+        CSV_MAX_JOB_TOMBSTONE_BYTES,
+        "job tombstone byte",
+      );
+      this.driver
+        .prepareState(
+          `INSERT INTO csv_job_tombstones (
+             job_id, final_status, final_counters_json, input_digest,
+             output_digest, output_schema_digest, result_set_digest,
+             evidence_references_json, payload_bytes, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          jobId,
+          job.status,
+          counters,
+          job.import_digest,
+          job.output_digest,
+          job.output_schema_digest,
+          resultSetDigest,
+          evidenceReferences,
+          payloadBytes,
+          nowSeconds(),
+        );
+      this.driver
+        .prepareState(
+          `INSERT INTO csv_job_gc_intents (
+             job_id, cursor_row_index, state, created_at, updated_at
+           ) VALUES (?, -1, 'tombstoned', ?, ?)`,
+        )
+        .run(jobId, nowSeconds(), nowSeconds());
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET tombstones = tombstones + 1,
+             tombstone_bytes = tombstone_bytes + ?, updated_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(payloadBytes, nowSeconds());
+    });
+  }
+
+  private continueJobGarbageCollection(jobId: string): void {
+    const deadline = Date.now() + CSV_MAX_JOB_GC_MS_PER_SLICE;
+    while (Date.now() <= deadline) {
+      const finished = this.driver.transactionImmediate(() => {
+        const batch = this.driver
+          .prepareState<
+            [string, number],
+            {
+              readonly count: number;
+              readonly durable_bytes: number;
+              readonly result_bytes: number;
+              readonly reserved_bytes: number;
+            }
+          >(
+            `SELECT COUNT(*) AS count,
+                    COALESCE(SUM(row_size_bytes + result_size_bytes), 0)
+                      AS durable_bytes,
+                    COALESCE(SUM(result_size_bytes), 0) AS result_bytes,
+                    COALESCE(SUM(result_reserved_bytes), 0) AS reserved_bytes
+             FROM (
+               SELECT row_size_bytes, result_size_bytes, result_reserved_bytes
+               FROM csv_agent_job_items WHERE job_id = ?
+               ORDER BY row_index ASC, item_id ASC LIMIT ?
+             )`,
+          )
+          .get(jobId, CSV_JOB_GC_PAGE_ITEMS);
+        if (batch === undefined || batch.count === 0) {
+          const removed = this.driver
+            .prepareState(
+              `DELETE FROM csv_agent_jobs WHERE id = ? AND retired_at IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1 FROM csv_job_tombstones WHERE job_id = ?
+                 )`,
+            )
+            .run(jobId, jobId);
+          if (removed.changes !== 1) {
+            throw new Error(
+              `CSV job ${jobId} garbage collection lost its fence`,
+            );
+          }
+          this.driver
+            .prepareState(
+              `UPDATE csv_storage_quota SET durable_jobs = durable_jobs - 1,
+                 updated_at = ? WHERE singleton = 1`,
+            )
+            .run(nowSeconds());
+          return true;
+        }
+        this.driver
+          .prepareState(
+            `DELETE FROM csv_agent_job_items WHERE rowid IN (
+               SELECT rowid FROM csv_agent_job_items WHERE job_id = ?
+               ORDER BY row_index ASC, item_id ASC LIMIT ?
+             )`,
+          )
+          .run(jobId, CSV_JOB_GC_PAGE_ITEMS);
+        this.driver
+          .prepareState(
+            `UPDATE csv_storage_quota SET
+               durable_items = durable_items - ?,
+               durable_bytes = durable_bytes - ?,
+               result_blob_bytes = result_blob_bytes - ?,
+               result_reserved_bytes = result_reserved_bytes - ?,
+               updated_at = ? WHERE singleton = 1`,
+          )
+          .run(
+            batch.count,
+            batch.durable_bytes,
+            batch.result_bytes,
+            batch.reserved_bytes,
+            nowSeconds(),
+          );
+        this.driver
+          .prepareState(
+            `UPDATE csv_job_gc_intents SET state = 'deleting', updated_at = ?
+             WHERE job_id = ?`,
+          )
+          .run(nowSeconds(), jobId);
+        return false;
+      });
+      if (finished) return;
+    }
+  }
+
+  private resumeInterruptedJobGarbageCollection(): void {
+    const pending = this.driver
+      .prepareState<[], { readonly job_id: string }>(
+        `SELECT job_id FROM csv_job_gc_intents
+         ORDER BY created_at ASC, job_id ASC LIMIT 1`,
+      )
+      .get();
+    if (pending !== undefined) {
+      this.continueJobGarbageCollection(pending.job_id);
+    }
+  }
+
+  markJobRunning(jobId: string, effectiveMaxConcurrency?: number): void {
+    if (
+      effectiveMaxConcurrency !== undefined &&
+      (!Number.isSafeInteger(effectiveMaxConcurrency) ||
+        effectiveMaxConcurrency < 1 ||
+        effectiveMaxConcurrency > CSV_MAX_JOB_CONCURRENCY)
+    ) {
+      throw new Error(
+        `CSV effective concurrency must be between 1 and ${CSV_MAX_JOB_CONCURRENCY}`,
+      );
+    }
     const now = nowSeconds();
     this.driver
       .prepareState(
         `UPDATE csv_agent_jobs
-         SET status = 'running',
-             started_at = COALESCE(started_at, ?),
-             updated_at = ?
-         WHERE id = ?`,
+         SET status = 'running', started_at = COALESCE(started_at, ?),
+             completed_at = NULL, updated_at = ?, last_error = NULL,
+             last_effective_max_concurrency = COALESCE(
+               ?, requested_max_concurrency
+             )
+         WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL
+           AND status IN ('pending', 'running')`,
       )
-      .run(now, now, jobId);
+      .run(now, now, effectiveMaxConcurrency ?? null, jobId);
   }
 
-  markJobCompleted(jobId: string): void {
-    const now = nowSeconds();
-    this.driver
-      .prepareState(
-        `UPDATE csv_agent_jobs
-         SET status = 'completed', completed_at = ?, updated_at = ?
-         WHERE id = ?`,
-      )
-      .run(now, now, jobId);
+  markJobCompleted(jobId: string): CsvAgentJobStatus {
+    return this.refreshJobOutcome(jobId);
   }
 
   markJobFailed(jobId: string, error: string): void {
@@ -358,7 +2053,8 @@ export class CsvAgentJobsRepository {
       .prepareState(
         `UPDATE csv_agent_jobs
          SET status = 'failed', completed_at = ?, updated_at = ?, last_error = ?
-         WHERE id = ?`,
+         WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL
+           AND status IN ('pending', 'running')`,
       )
       .run(now, now, error, jobId);
   }
@@ -369,20 +2065,469 @@ export class CsvAgentJobsRepository {
       .prepareState(
         `UPDATE csv_agent_jobs
          SET status = 'cancelled', completed_at = ?, updated_at = ?, last_error = ?
-         WHERE id = ?`,
+         WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL
+           AND status IN ('pending', 'running')`,
       )
       .run(now, now, reason, jobId);
   }
 
-  // ──────────────── items ────────────────
+  recordOutputArtifact(
+    jobId: string,
+    artifact: {
+      readonly contractVersion: number;
+      readonly bytes: number;
+      readonly sha256: string;
+    },
+  ): void {
+    if (artifact.contractVersion !== CSV_OUTPUT_CONTRACT_VERSION) {
+      throw new Error("unsupported CSV output contract version");
+    }
+    if (
+      !Number.isSafeInteger(artifact.bytes) ||
+      artifact.bytes < 0 ||
+      artifact.bytes > CSV_MAX_OUTPUT_BYTES
+    ) {
+      throw new Error("invalid CSV output byte count");
+    }
+    assertSha256(artifact.sha256, "CSV output digest");
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_agent_jobs SET output_contract_version = ?,
+           output_digest = ?, output_bytes = ?, updated_at = ?
+         WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL`,
+      )
+      .run(
+        artifact.contractVersion,
+        artifact.sha256,
+        artifact.bytes,
+        nowSeconds(),
+        jobId,
+      );
+    if (updated.changes !== 1) {
+      throw new Error(`cannot record CSV output artifact for job ${jobId}`);
+    }
+  }
+
+  beginCsvOutputIntent(input: {
+    readonly jobId: string;
+    readonly rootPath: string;
+    readonly targetPath: string;
+    readonly temporaryPath: string;
+    readonly temporaryDev: string;
+    readonly temporaryIno: string;
+    readonly reservedBytes: number;
+  }): string {
+    const intentId = randomUUID();
+    const ownerGeneration = randomUUID();
+    const now = nowSeconds();
+    this.driver.transactionImmediate(() => {
+      const quota = this.getQuota();
+      assertQuota(
+        quota.output_staging_files,
+        1,
+        CSV_MAX_OUTPUT_STAGING_FILES_GLOBAL,
+        "output staging file",
+      );
+      assertQuota(
+        quota.output_staging_bytes,
+        input.reservedBytes,
+        CSV_MAX_OUTPUT_STAGING_BYTES_GLOBAL,
+        "output staging byte",
+      );
+      const inserted = this.driver
+        .prepareState(
+          `INSERT INTO csv_output_intents (
+             intent_id, job_id, root_path, target_path, temporary_path, temporary_dev,
+             temporary_ino, reserved_bytes, state, owner_generation,
+             owner_pid, owner_boot_id, owner_process_start, created_at, updated_at
+           )
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'writing', ?, ?, ?, ?, ?, ?
+           WHERE EXISTS (
+             SELECT 1 FROM csv_agent_jobs WHERE id = ?
+               AND import_state = 'visible' AND retired_at IS NULL
+           )`,
+        )
+        .run(
+          intentId,
+          input.jobId,
+          input.rootPath,
+          input.targetPath,
+          input.temporaryPath,
+          input.temporaryDev,
+          input.temporaryIno,
+          input.reservedBytes,
+          ownerGeneration,
+          process.pid,
+          this.ownerBootId ?? null,
+          this.ownerProcessStart ?? null,
+          now,
+          now,
+          input.jobId,
+        );
+      if (inserted.changes !== 1) {
+        throw new Error(
+          `cannot create CSV output intent for job ${input.jobId}`,
+        );
+      }
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+             output_staging_files = output_staging_files + 1,
+             output_staging_bytes = output_staging_bytes + ?, updated_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(input.reservedBytes, now);
+    });
+    LIVE_CSV_OUTPUT_GENERATIONS.add(ownerGeneration);
+    return intentId;
+  }
+
+  markCsvOutputIntentFlushed(intentId: string): void {
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_output_intents SET state = 'flushed', updated_at = ?
+         WHERE intent_id = ? AND state = 'writing'`,
+      )
+      .run(nowSeconds(), intentId);
+    if (updated.changes !== 1) {
+      throw new Error(`CSV output intent ${intentId} is not writable`);
+    }
+  }
+
+  markCsvOutputIntentPublished(intentId: string): void {
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_output_intents SET state = 'published', updated_at = ?
+         WHERE intent_id = ? AND state = 'flushed'`,
+      )
+      .run(nowSeconds(), intentId);
+    if (updated.changes !== 1) {
+      throw new Error(`CSV output intent ${intentId} is not publishable`);
+    }
+  }
+
+  completeCsvOutputIntent(
+    intentId: string,
+    artifact: {
+      readonly contractVersion: number;
+      readonly path: string;
+      readonly bytes: number;
+      readonly sha256: string;
+    },
+  ): void {
+    const ownerGeneration = this.outputIntentGeneration(intentId);
+    assertSha256(artifact.sha256, "CSV output digest");
+    if (
+      artifact.contractVersion !== CSV_OUTPUT_CONTRACT_VERSION ||
+      !Number.isSafeInteger(artifact.bytes) ||
+      artifact.bytes < 0 ||
+      artifact.bytes > CSV_MAX_OUTPUT_BYTES
+    ) {
+      throw new Error("invalid CSV output artifact");
+    }
+    const now = nowSeconds();
+    this.driver.transactionImmediate(() => {
+      const intent = this.driver
+        .prepareState<
+          [string],
+          {
+            readonly job_id: string;
+            readonly target_path: string;
+            readonly reserved_bytes: number;
+          }
+        >(
+          `SELECT job_id, target_path, reserved_bytes FROM csv_output_intents
+           WHERE intent_id = ? AND state IN ('flushed', 'published')`,
+        )
+        .get(intentId);
+      if (intent === undefined || intent.target_path !== artifact.path) {
+        throw new Error(`CSV output intent ${intentId} changed before commit`);
+      }
+      const recorded = this.driver
+        .prepareState(
+          `UPDATE csv_agent_jobs SET output_contract_version = ?,
+             output_digest = ?, output_bytes = ?, updated_at = ?
+           WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL`,
+        )
+        .run(
+          artifact.contractVersion,
+          artifact.sha256,
+          artifact.bytes,
+          now,
+          intent.job_id,
+        );
+      if (recorded.changes !== 1) {
+        throw new Error(`cannot record CSV output for job ${intent.job_id}`);
+      }
+      this.driver
+        .prepareState(`DELETE FROM csv_output_intents WHERE intent_id = ?`)
+        .run(intentId);
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+             output_staging_files = output_staging_files - 1,
+             output_staging_bytes = output_staging_bytes - ?, updated_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(intent.reserved_bytes, now);
+    });
+    if (ownerGeneration !== undefined) {
+      LIVE_CSV_OUTPUT_GENERATIONS.delete(ownerGeneration);
+    }
+  }
+
+  abandonCsvOutputIntent(intentId: string, retainForRecovery: boolean): void {
+    const ownerGeneration = this.outputIntentGeneration(intentId);
+    const now = nowSeconds();
+    this.driver.transactionImmediate(() => {
+      const intent = this.driver
+        .prepareState<[string], { readonly reserved_bytes: number }>(
+          `SELECT reserved_bytes FROM csv_output_intents WHERE intent_id = ?`,
+        )
+        .get(intentId);
+      if (intent === undefined) return;
+      if (retainForRecovery) {
+        this.driver
+          .prepareState(
+            `UPDATE csv_output_intents SET
+               recovery_prior_state = COALESCE(recovery_prior_state, state),
+               state = 'abandoned', updated_at = ?
+             WHERE intent_id = ?`,
+          )
+          .run(now, intentId);
+        return;
+      }
+      this.driver
+        .prepareState(`DELETE FROM csv_output_intents WHERE intent_id = ?`)
+        .run(intentId);
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+             output_staging_files = output_staging_files - 1,
+             output_staging_bytes = output_staging_bytes - ?, updated_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(intent.reserved_bytes, now);
+    });
+    if (ownerGeneration !== undefined) {
+      LIVE_CSV_OUTPUT_GENERATIONS.delete(ownerGeneration);
+    }
+  }
+
+  claimCsvOutputRecoveryIntents(input: {
+    readonly rootPath: string;
+    readonly limit: number;
+  }): ReadonlyArray<CsvOutputRecoveryIntent> {
+    if (!Number.isSafeInteger(input.limit) || input.limit <= 0) {
+      throw new Error("CSV output recovery limit must be a positive integer");
+    }
+    const candidates = this.driver
+      .prepareState<[string, number], CsvOutputIntentRecoveryRow>(
+        `SELECT intent_id, target_path, temporary_path, temporary_dev,
+                temporary_ino, state, recovery_prior_state,
+                owner_generation, owner_pid,
+                owner_boot_id, owner_process_start
+         FROM csv_output_intents
+         WHERE root_path = ?
+           AND state IN ('writing', 'flushed', 'published', 'abandoned', 'recovering')
+         ORDER BY created_at ASC, intent_id ASC LIMIT ?`,
+      )
+      .all(input.rootPath, CSV_MAX_OUTPUT_STAGING_FILES_GLOBAL);
+    const claimed: CsvOutputRecoveryIntent[] = [];
+    for (const candidate of candidates) {
+      if (claimed.length >= input.limit) break;
+      if (!this.isOutputIntentOwnerProvenDead(candidate)) continue;
+      const ownerGeneration = randomUUID();
+      const now = nowSeconds();
+      const changes = this.driver.transactionImmediate(
+        () =>
+          this.driver
+            .prepareState(
+              `UPDATE csv_output_intents SET state = 'recovering',
+               recovery_prior_state = COALESCE(
+                 recovery_prior_state,
+                 CASE WHEN state = 'recovering' THEN 'abandoned' ELSE state END
+               ),
+               owner_generation = ?, owner_pid = ?, owner_boot_id = ?,
+               owner_process_start = ?, last_error = NULL, updated_at = ?
+             WHERE intent_id = ? AND owner_generation = ? AND state = ?`,
+            )
+            .run(
+              ownerGeneration,
+              process.pid,
+              this.ownerBootId ?? null,
+              this.ownerProcessStart ?? null,
+              now,
+              candidate.intent_id,
+              candidate.owner_generation,
+              candidate.state,
+            ).changes,
+      );
+      if (changes !== 1) continue;
+      LIVE_CSV_OUTPUT_GENERATIONS.add(ownerGeneration);
+      claimed.push({
+        intentId: candidate.intent_id,
+        ownerGeneration,
+        priorState:
+          candidate.recovery_prior_state ??
+          (candidate.state === "recovering" ? "abandoned" : candidate.state),
+        targetPath: candidate.target_path,
+        temporaryPath: candidate.temporary_path,
+        temporaryDev: candidate.temporary_dev,
+        temporaryIno: candidate.temporary_ino,
+      });
+    }
+    return claimed;
+  }
+
+  finishCsvOutputIntentRecovery(input: {
+    readonly intentId: string;
+    readonly ownerGeneration: string;
+    readonly artifact?: CsvOutputArtifact;
+  }): void {
+    if (input.artifact !== undefined) {
+      assertSha256(input.artifact.sha256, "CSV output digest");
+      if (
+        input.artifact.contractVersion !== CSV_OUTPUT_CONTRACT_VERSION ||
+        !Number.isSafeInteger(input.artifact.bytes) ||
+        input.artifact.bytes < 0 ||
+        input.artifact.bytes > CSV_MAX_OUTPUT_BYTES
+      ) {
+        throw new Error("invalid recovered CSV output artifact");
+      }
+    }
+    const now = nowSeconds();
+    this.driver.transactionImmediate(() => {
+      const intent = this.driver
+        .prepareState<
+          [string, string],
+          {
+            readonly job_id: string;
+            readonly target_path: string;
+            readonly reserved_bytes: number;
+          }
+        >(
+          `SELECT job_id, target_path, reserved_bytes
+           FROM csv_output_intents
+           WHERE intent_id = ? AND owner_generation = ?
+             AND state = 'recovering'`,
+        )
+        .get(input.intentId, input.ownerGeneration);
+      if (
+        intent === undefined ||
+        (input.artifact !== undefined &&
+          input.artifact.path !== intent.target_path)
+      ) {
+        throw new Error(
+          `CSV output recovery fence changed for ${input.intentId}`,
+        );
+      }
+      if (input.artifact !== undefined) {
+        const recorded = this.driver
+          .prepareState(
+            `UPDATE csv_agent_jobs SET output_contract_version = ?,
+               output_digest = ?, output_bytes = ?, updated_at = ?
+             WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL`,
+          )
+          .run(
+            input.artifact.contractVersion,
+            input.artifact.sha256,
+            input.artifact.bytes,
+            now,
+            intent.job_id,
+          );
+        if (recorded.changes !== 1) {
+          throw new Error(
+            `cannot record recovered CSV output for job ${intent.job_id}`,
+          );
+        }
+      }
+      const removed = this.driver
+        .prepareState(
+          `DELETE FROM csv_output_intents
+           WHERE intent_id = ? AND owner_generation = ? AND state = 'recovering'`,
+        )
+        .run(input.intentId, input.ownerGeneration);
+      if (removed.changes !== 1) {
+        throw new Error(
+          `CSV output recovery fence changed for ${input.intentId}`,
+        );
+      }
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+             output_staging_files = output_staging_files - 1,
+             output_staging_bytes = output_staging_bytes - ?, updated_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(intent.reserved_bytes, now);
+    });
+    LIVE_CSV_OUTPUT_GENERATIONS.delete(input.ownerGeneration);
+  }
+
+  deferCsvOutputIntentRecovery(input: {
+    readonly intentId: string;
+    readonly ownerGeneration: string;
+    readonly reason: string;
+  }): void {
+    if (
+      input.reason.length === 0 ||
+      Buffer.byteLength(input.reason, "utf8") > 1_024
+    ) {
+      throw new Error("invalid CSV output recovery diagnostic");
+    }
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_output_intents SET state = 'abandoned', last_error = ?,
+           updated_at = ?
+         WHERE intent_id = ? AND owner_generation = ? AND state = 'recovering'`,
+      )
+      .run(input.reason, nowSeconds(), input.intentId, input.ownerGeneration);
+    if (updated.changes !== 1) {
+      throw new Error(
+        `CSV output recovery fence changed for ${input.intentId}`,
+      );
+    }
+    LIVE_CSV_OUTPUT_GENERATIONS.delete(input.ownerGeneration);
+  }
+
+  private outputIntentGeneration(intentId: string): string | undefined {
+    return this.driver
+      .prepareState<[string], { readonly owner_generation: string }>(
+        `SELECT owner_generation FROM csv_output_intents WHERE intent_id = ?`,
+      )
+      .get(intentId)?.owner_generation;
+  }
+
+  private isOutputIntentOwnerProvenDead(
+    row: CsvOutputIntentRecoveryRow,
+  ): boolean {
+    if (LIVE_CSV_OUTPUT_GENERATIONS.has(row.owner_generation)) return false;
+    if (row.owner_pid === process.pid) return true;
+    if (
+      this.ownerBootId === undefined ||
+      row.owner_boot_id === null ||
+      row.owner_process_start === null
+    ) {
+      return false;
+    }
+    if (row.owner_boot_id !== this.ownerBootId) return true;
+    const observedStart = linuxProcessStart(row.owner_pid);
+    if (observedStart === "dead") return true;
+    if (observedStart === undefined) return false;
+    return observedStart !== row.owner_process_start;
+  }
 
   getItem(jobId: string, itemId: string): CsvAgentJobItem | null {
     const row = this.driver
       .prepareState<[string, string], ItemRow>(
-        `SELECT * FROM csv_agent_job_items WHERE job_id = ? AND item_id = ?`,
+        `SELECT item.* FROM csv_agent_job_items AS item
+         JOIN csv_agent_jobs AS job ON job.id = item.job_id
+         WHERE item.job_id = ? AND item.item_id = ?
+           AND job.import_state = 'visible' AND job.retired_at IS NULL`,
       )
       .get(jobId, itemId);
-    return row ? decodeItem(row) : null;
+    return row === undefined ? null : decodeItem(row);
   }
 
   listItems(opts: {
@@ -390,32 +2535,282 @@ export class CsvAgentJobsRepository {
     readonly status?: CsvAgentJobItemStatus;
     readonly limit?: number;
   }): ReadonlyArray<CsvAgentJobItem> {
-    const where: string[] = ["job_id = ?"];
+    const limit = Math.min(opts.limit ?? CSV_MAX_ROWS, CSV_MAX_ROWS);
+    const where = [
+      "item.job_id = ?",
+      "job.import_state = 'visible'",
+      "job.retired_at IS NULL",
+    ];
     const binds: unknown[] = [opts.jobId];
     if (opts.status !== undefined) {
-      where.push("status = ?");
+      where.push("item.status = ?");
       binds.push(opts.status);
     }
-    let sql = `SELECT * FROM csv_agent_job_items WHERE ${where.join(" AND ")} ORDER BY row_index ASC`;
-    if (opts.limit !== undefined) {
-      sql += ` LIMIT ?`;
-      binds.push(opts.limit);
+    binds.push(limit);
+    return this.driver
+      .prepareState<unknown[], ItemRow>(
+        `SELECT item.* FROM csv_agent_job_items AS item
+         JOIN csv_agent_jobs AS job ON job.id = item.job_id
+         WHERE ${where.join(" AND ")}
+         ORDER BY item.row_index ASC, item.item_id ASC LIMIT ?`,
+      )
+      .all(...binds)
+      .map(decodeItem);
+  }
+
+  listItemsPage(opts: {
+    readonly jobId: string;
+    readonly status?: CsvAgentJobItemStatus;
+    readonly cursor?: CsvJobItemCursor;
+    readonly limit?: number;
+  }): CsvAgentJobItemPage {
+    const limit = normalizePageLimit(opts.limit);
+    const cursor =
+      opts.cursor === undefined
+        ? undefined
+        : decodeCsvJobItemCursor(opts.cursor, opts.jobId, opts.status);
+    if (cursor !== undefined) {
+      const cursorWhere = [
+        "item.job_id = ?",
+        "item.row_index = ?",
+        "item.item_id = ?",
+        "job.import_state = 'visible'",
+        "job.retired_at IS NULL",
+      ];
+      const cursorBinds: unknown[] = [
+        opts.jobId,
+        cursor.rowIndex,
+        cursor.itemId,
+      ];
+      if (opts.status !== undefined) {
+        cursorWhere.push("item.status = ?");
+        cursorBinds.push(opts.status);
+      }
+      const boundary = this.driver
+        .prepareState<unknown[], { readonly present: number }>(
+          `SELECT 1 AS present
+           FROM csv_agent_job_items AS item
+           JOIN csv_agent_jobs AS job ON job.id = item.job_id
+           WHERE ${cursorWhere.join(" AND ")}`,
+        )
+        .get(...cursorBinds);
+      if (boundary === undefined) {
+        throw new Error("invalid or stale CSV item page cursor");
+      }
     }
+    const where = [
+      "item.job_id = ?",
+      "job.import_state = 'visible'",
+      "job.retired_at IS NULL",
+    ];
+    const binds: unknown[] = [opts.jobId];
+    if (opts.status !== undefined) {
+      where.push("item.status = ?");
+      binds.push(opts.status);
+    }
+    if (cursor !== undefined) {
+      where.push(
+        "(item.row_index > ? OR (item.row_index = ? AND item.item_id > ?))",
+      );
+      binds.push(cursor.rowIndex, cursor.rowIndex, cursor.itemId);
+    }
+    binds.push(limit + 1);
     const rows = this.driver
-      .prepareState<unknown[], ItemRow>(sql)
+      .prepareState<
+        unknown[],
+        Pick<
+          ItemRow,
+          | "item_id"
+          | "row_index"
+          | "source_id"
+          | "status"
+          | "attempt_count"
+          | "result_availability"
+          | "result_size_bytes"
+          | "result_digest"
+          | "result_json"
+          | "last_error"
+          | "review_status"
+          | "review_reason"
+        >
+      >(
+        `SELECT item.item_id, item.row_index, item.source_id, item.status,
+                item.attempt_count, item.result_availability,
+                item.result_size_bytes, item.result_digest,
+                substr(item.result_json, 1, ${CSV_MAX_RESULT_PREVIEW_BYTES + 1})
+                  AS result_json,
+                item.last_error,
+                item.review_status, item.review_reason
+         FROM csv_agent_job_items AS item
+         JOIN csv_agent_jobs AS job ON job.id = item.job_id
+         WHERE ${where.join(" AND ")}
+         ORDER BY item.row_index ASC, item.item_id ASC LIMIT ?`,
+      )
       .all(...binds);
-    return rows.map(decodeItem);
+    const projected: CsvAgentJobItemSummary[] = [];
+    let pageBytes = Buffer.byteLength(
+      JSON.stringify({ contractVersion: CSV_JOB_CONTRACT_VERSION, items: [] }),
+      "utf8",
+    );
+    for (const row of rows.slice(0, limit)) {
+      const item = projectItemSummary(row);
+      const itemBytes = Buffer.byteLength(JSON.stringify(item), "utf8") + 1;
+      if (
+        projected.length > 0 &&
+        pageBytes + itemBytes > CSV_MAX_ITEM_PAGE_BYTES
+      ) {
+        break;
+      }
+      projected.push(item);
+      pageBytes += itemBytes;
+    }
+    const hasMore = rows.length > projected.length;
+    const lastRow =
+      projected.length === 0 ? undefined : rows[projected.length - 1];
+    return {
+      contractVersion: CSV_JOB_CONTRACT_VERSION,
+      items: projected,
+      ...(hasMore && lastRow !== undefined
+        ? {
+            nextCursor: encodeCsvJobItemCursor({
+              jobId: opts.jobId,
+              ...(opts.status !== undefined ? { status: opts.status } : {}),
+              rowIndex: lastRow.row_index,
+              itemId: lastRow.item_id,
+            }),
+          }
+        : {}),
+    };
+  }
+
+  getSummary(jobId: string): CsvAgentJobSummary | null {
+    const job = this.getJob(jobId);
+    if (job === null) return null;
+    const availability = this.driver
+      .prepareState<
+        [string],
+        {
+          available: number;
+          unavailable: number;
+          not_produced: number;
+          review_pending: number;
+        }
+      >(
+        `SELECT
+           SUM(result_availability = 'available') AS available,
+           SUM(result_availability = 'unavailable_after_review') AS unavailable,
+           SUM(result_availability = 'not_produced') AS not_produced,
+           SUM(review_status = 'pending') AS review_pending
+         FROM csv_agent_job_items WHERE job_id = ?`,
+      )
+      .get(jobId);
+    return {
+      contractVersion: CSV_JOB_CONTRACT_VERSION,
+      jobId,
+      status: job.status,
+      totalItems: job.totalItems,
+      pendingItems: job.pendingItems,
+      runningItems: job.runningItems,
+      completedItems: job.completedItems,
+      failedItems: job.failedItems,
+      cancelledItems: job.cancelledItems,
+      unknownOutcomeItems: job.unknownOutcomeItems,
+      reviewPendingItems: availability?.review_pending ?? 0,
+      resultBytes: job.resultBytes,
+      availableResults: availability?.available ?? 0,
+      unavailableAfterReviewResults: availability?.unavailable ?? 0,
+      notProducedResults: availability?.not_produced ?? 0,
+    };
+  }
+
+  readResultBlob(opts: {
+    readonly jobId: string;
+    readonly itemId: string;
+    readonly byteOffset?: number;
+    readonly maxBytes?: number;
+  }): CsvResultBlobChunk | null {
+    const offset = opts.byteOffset ?? 0;
+    const maxBytes = Math.min(
+      opts.maxBytes ?? CSV_RESULT_BLOB_CHUNK_BYTES,
+      CSV_RESULT_BLOB_CHUNK_BYTES,
+    );
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new Error("CSV result byteOffset must be a non-negative integer");
+    }
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      throw new Error("CSV result maxBytes must be a positive integer");
+    }
+    const row = this.driver
+      .prepareState<[string, string], ResultBlobRow>(
+        `SELECT item.item_id, item.result_json, item.result_availability,
+                item.result_size_bytes, item.result_digest
+         FROM csv_agent_job_items AS item
+         JOIN csv_agent_jobs AS job ON job.id = item.job_id
+         WHERE item.job_id = ? AND item.item_id = ?
+           AND job.import_state = 'visible' AND job.retired_at IS NULL`,
+      )
+      .get(opts.jobId, opts.itemId);
+    if (row === undefined) return null;
+    const availability = parseResultAvailability(row.result_availability);
+    const bytes = Buffer.from(row.result_json ?? "", "utf8");
+    const end = Math.min(bytes.byteLength, offset + maxBytes);
+    const chunk =
+      offset >= bytes.byteLength
+        ? Buffer.alloc(0)
+        : bytes.subarray(offset, end);
+    return {
+      contractVersion: CSV_JOB_CONTRACT_VERSION,
+      itemId: row.item_id,
+      availability,
+      totalBytes: row.result_size_bytes,
+      ...(row.result_digest !== null ? { digest: row.result_digest } : {}),
+      byteOffset: offset,
+      dataBase64: chunk.toString("base64"),
+      ...(end < bytes.byteLength ? { nextByteOffset: end } : {}),
+    };
+  }
+
+  private itemResultReservation(jobId: string, itemId: string): number {
+    return (
+      this.driver
+        .prepareState<
+          [string, string],
+          { readonly result_reserved_bytes: number }
+        >(
+          `SELECT result_reserved_bytes FROM csv_agent_job_items
+           WHERE job_id = ? AND item_id = ?`,
+        )
+        .get(jobId, itemId)?.result_reserved_bytes ?? 0
+    );
+  }
+
+  private releaseResultReservation(
+    jobId: string,
+    reservedBytes: number,
+    now: number,
+  ): void {
+    if (reservedBytes === 0) return;
+    const jobRelease = this.driver
+      .prepareState(
+        `UPDATE csv_agent_jobs SET
+           result_reserved_bytes = result_reserved_bytes - ?
+         WHERE id = ? AND result_reserved_bytes >= ?`,
+      )
+      .run(reservedBytes, jobId, reservedBytes);
+    const globalRelease = this.driver
+      .prepareState(
+        `UPDATE csv_storage_quota SET
+           result_reserved_bytes = result_reserved_bytes - ?, updated_at = ?
+         WHERE singleton = 1 AND result_reserved_bytes >= ?`,
+      )
+      .run(reservedBytes, now, reservedBytes);
+    if (jobRelease.changes !== 1 || globalRelease.changes !== 1) {
+      throw new Error("CSV result reservation accounting is inconsistent");
+    }
   }
 
   markItemRunning(jobId: string, itemId: string): void {
-    const now = nowSeconds();
-    this.driver
-      .prepareState(
-        `UPDATE csv_agent_job_items
-         SET status = 'running', attempt_count = attempt_count + 1, updated_at = ?
-         WHERE job_id = ? AND item_id = ?`,
-      )
-      .run(now, jobId, itemId);
+    this.beginItemDispatch(jobId, itemId, {});
   }
 
   markItemRunningWithThread(
@@ -423,39 +2818,180 @@ export class CsvAgentJobsRepository {
     itemId: string,
     threadId: string,
   ): void {
-    const now = nowSeconds();
-    this.driver
-      .prepareState(
-        `UPDATE csv_agent_job_items
-         SET status = 'running',
-             assigned_thread_id = ?,
-             attempt_count = attempt_count + 1,
-             updated_at = ?
-         WHERE job_id = ? AND item_id = ?`,
-      )
-      .run(threadId, now, jobId, itemId);
+    this.beginItemDispatch(jobId, itemId, {});
+    this.acknowledgeItemDispatch(jobId, itemId, { threadId });
   }
 
-  markItemPending(jobId: string, itemId: string): void {
+  beginItemDispatch(
+    jobId: string,
+    itemId: string,
+    evidence: CsvDispatchEvidence,
+  ): void {
+    const idempotentEvidence =
+      evidence.idempotencyProfile !== undefined ||
+      evidence.idempotencyProfileVersion !== undefined ||
+      evidence.operationKey !== undefined;
+    if (
+      idempotentEvidence &&
+      (evidence.idempotencyProfile === undefined ||
+        evidence.idempotencyProfileVersion === undefined ||
+        evidence.operationKey === undefined)
+    ) {
+      throw new Error("CSV idempotency dispatch evidence must be complete");
+    }
     const now = nowSeconds();
-    this.driver
+    this.driver.transactionImmediate(() => {
+      const job = this.getJob(jobId);
+      if (job === null || !["pending", "running"].includes(job.status)) {
+        throw new Error(`CSV item ${jobId}/${itemId} is not dispatchable`);
+      }
+      const quota = this.getQuota();
+      assertQuota(
+        quota.result_blob_bytes + quota.result_reserved_bytes,
+        job.maxResultBytes,
+        CSV_MAX_RESULT_BLOB_BYTES_GLOBAL,
+        "result blob byte",
+      );
+      assertQuota(
+        job.resultBytes + job.resultReservedBytes,
+        job.maxResultBytes,
+        job.maxResultBytesPerJob,
+        "per-job result byte",
+      );
+      assertQuota(
+        quota.durable_bytes + quota.result_reserved_bytes,
+        job.maxResultBytes,
+        CSV_MAX_DURABLE_BYTES,
+        "durable byte",
+      );
+      const result = this.driver
+        .prepareState(
+          `UPDATE csv_agent_job_items SET
+             status = 'running', dispatch_state = 'dispatching',
+             assigned_thread_id = NULL, attempt_count = attempt_count + 1,
+             effect_run_id = ?, effect_step_id = ?, effect_epoch = ?,
+             execution_semantics = ?,
+             idempotency_profile = ?, idempotency_profile_version = ?,
+             operation_key = ?, provider_acknowledged_key = NULL,
+             lookup_evidence_json = NULL, completed_at = NULL,
+             reported_at = NULL, updated_at = ?, last_error = NULL,
+             result_reserved_bytes = ?
+           WHERE job_id = ? AND item_id = ? AND status = 'pending'
+             AND result_reserved_bytes = 0
+             AND EXISTS (
+               SELECT 1 FROM csv_agent_jobs AS job
+               WHERE job.id = csv_agent_job_items.job_id
+                 AND job.import_state = 'visible'
+                 AND job.retired_at IS NULL
+                 AND job.status IN ('pending', 'running')
+             )`,
+        )
+        .run(
+          evidence.effect?.runId ?? null,
+          evidence.effect?.stepId ?? null,
+          evidence.effect?.epoch ?? null,
+          idempotentEvidence ? "idempotent_with_key" : "at_most_once",
+          evidence.idempotencyProfile ?? null,
+          evidence.idempotencyProfileVersion ?? null,
+          evidence.operationKey ?? null,
+          now,
+          job.maxResultBytes,
+          jobId,
+          itemId,
+        );
+      if (result.changes !== 1) {
+        throw new Error(`CSV item ${jobId}/${itemId} is not dispatchable`);
+      }
+      const jobReservation = this.driver
+        .prepareState(
+          `UPDATE csv_agent_jobs SET
+             result_reserved_bytes = result_reserved_bytes + ?
+           WHERE id = ?`,
+        )
+        .run(job.maxResultBytes, jobId);
+      const globalReservation = this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+             result_reserved_bytes = result_reserved_bytes + ?, updated_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(job.maxResultBytes, now);
+      if (jobReservation.changes !== 1 || globalReservation.changes !== 1) {
+        throw new Error("CSV result reservation accounting is inconsistent");
+      }
+    });
+  }
+
+  acknowledgeItemDispatch(
+    jobId: string,
+    itemId: string,
+    acknowledgement: CsvDispatchAcknowledgement,
+  ): void {
+    const now = nowSeconds();
+    const result = this.driver
       .prepareState(
-        `UPDATE csv_agent_job_items
-         SET status = 'pending', updated_at = ?
-         WHERE job_id = ? AND item_id = ?`,
+        `UPDATE csv_agent_job_items SET
+           dispatch_state = 'acknowledged', assigned_thread_id = ?,
+           provider_acknowledged_key = ?,
+           effect_run_id = COALESCE(?, effect_run_id),
+           effect_step_id = COALESCE(?, effect_step_id),
+           effect_epoch = COALESCE(?, effect_epoch), updated_at = ?
+         WHERE job_id = ? AND item_id = ? AND status = 'running'
+           AND dispatch_state = 'dispatching'
+           AND (? IS NULL OR operation_key = ?)`,
       )
-      .run(now, jobId, itemId);
+      .run(
+        acknowledgement.threadId ?? null,
+        acknowledgement.providerAcknowledgedKey ?? null,
+        acknowledgement.effect?.runId ?? null,
+        acknowledgement.effect?.stepId ?? null,
+        acknowledgement.effect?.epoch ?? null,
+        now,
+        jobId,
+        itemId,
+        acknowledgement.providerAcknowledgedKey ?? null,
+        acknowledgement.providerAcknowledgedKey ?? null,
+      );
+    if (result.changes !== 1) {
+      throw new Error(
+        `CSV item ${jobId}/${itemId} dispatch acknowledgement failed`,
+      );
+    }
   }
 
   setItemThread(jobId: string, itemId: string, threadId: string): void {
+    this.acknowledgeItemDispatch(jobId, itemId, { threadId });
+  }
+
+  markItemPending(
+    jobId: string,
+    itemId: string,
+    lookupEvidence?: Record<string, unknown>,
+  ): void {
     const now = nowSeconds();
-    this.driver
-      .prepareState(
-        `UPDATE csv_agent_job_items
-         SET assigned_thread_id = ?, updated_at = ?
-         WHERE job_id = ? AND item_id = ?`,
-      )
-      .run(threadId, now, jobId, itemId);
+    this.driver.transactionImmediate(() => {
+      const reservation = this.itemResultReservation(jobId, itemId);
+      const result = this.driver
+        .prepareState(
+          `UPDATE csv_agent_job_items SET
+             status = 'pending', dispatch_state = 'not_dispatched',
+             assigned_thread_id = NULL, lookup_evidence_json = ?,
+             result_reserved_bytes = 0,
+             updated_at = ?, completed_at = NULL
+           WHERE job_id = ? AND item_id = ?
+             AND status IN ('pending', 'running')`,
+        )
+        .run(
+          lookupEvidence === undefined ? null : JSON.stringify(lookupEvidence),
+          now,
+          jobId,
+          itemId,
+        );
+      if (result.changes !== 1) {
+        throw new Error(`CSV item ${jobId}/${itemId} cannot return to pending`);
+      }
+      this.releaseResultReservation(jobId, reservation, now);
+    });
   }
 
   markItemCompleted(
@@ -463,77 +2999,556 @@ export class CsvAgentJobsRepository {
     itemId: string,
     result: Record<string, unknown>,
   ): void {
-    const now = nowSeconds();
-    this.driver
-      .prepareState(
-        `UPDATE csv_agent_job_items
-         SET status = 'completed',
-             result_json = ?,
-             completed_at = ?,
-             reported_at = ?,
-             updated_at = ?
-         WHERE job_id = ? AND item_id = ?`,
-      )
-      .run(JSON.stringify(result), now, now, now, jobId, itemId);
+    const canonical = canonicalizeCsvResult(result);
+    this.persistCanonicalResult(jobId, itemId, canonical, true, "running");
+  }
+
+  markItemCompletedValidated(
+    jobId: string,
+    itemId: string,
+    validated: ValidatedCsvResult,
+  ): void {
+    const job = this.getJob(jobId);
+    if (job === null) throw new Error(`unknown CSV job ${jobId}`);
+    const canonical = validated.consumeFor(jobId, job.outputSchemaDigest);
+    this.persistCanonicalResult(jobId, itemId, canonical, false, "running");
+  }
+
+  private persistCanonicalResult(
+    jobId: string,
+    itemId: string,
+    canonical: CanonicalCsvResult,
+    validateSchema: boolean,
+    expectedStatus: "running" | "unknown_outcome",
+  ): void {
+    this.driver.transactionImmediate(() => {
+      const job = this.getJob(jobId);
+      if (job === null) throw new Error(`unknown CSV job ${jobId}`);
+      if (canonical.bytes > job.maxResultBytes) {
+        throw new Error(
+          `CSV item result is ${canonical.bytes} bytes; limit is ${job.maxResultBytes}`,
+        );
+      }
+      if (validateSchema) {
+        const schemaViolation = compileCsvOutputSchema(
+          job.outputSchema,
+        )?.validate(canonical.value);
+        if (schemaViolation !== undefined && schemaViolation !== null) {
+          throw new Error(schemaViolation);
+        }
+      }
+      const previous = this.driver
+        .prepareState<
+          [string, string, "running" | "unknown_outcome"],
+          {
+            readonly result_size_bytes: number;
+            readonly result_reserved_bytes: number;
+          }
+        >(
+          `SELECT item.result_size_bytes, item.result_reserved_bytes
+           FROM csv_agent_job_items AS item
+           JOIN csv_agent_jobs AS job ON job.id = item.job_id
+           WHERE item.job_id = ? AND item.item_id = ?
+             AND item.status = ?
+             AND job.import_state = 'visible' AND job.retired_at IS NULL`,
+        )
+        .get(jobId, itemId, expectedStatus);
+      if (previous === undefined) {
+        throw new Error(`CSV item ${jobId}/${itemId} cannot be completed`);
+      }
+      const nextJobResultBytes =
+        job.resultBytes - previous.result_size_bytes + canonical.bytes;
+      if (nextJobResultBytes > job.maxResultBytesPerJob) {
+        throw new Error(
+          `CSV job result bytes would be ${nextJobResultBytes}; limit is ${job.maxResultBytesPerJob}`,
+        );
+      }
+      const quota = this.getQuota();
+      const nextGlobalResultBytes =
+        quota.result_blob_bytes +
+        quota.result_reserved_bytes -
+        previous.result_reserved_bytes -
+        previous.result_size_bytes +
+        canonical.bytes;
+      if (nextGlobalResultBytes > CSV_MAX_RESULT_BLOB_BYTES_GLOBAL) {
+        throw new CsvStorageQuotaError(
+          "result blob byte",
+          CSV_MAX_RESULT_BLOB_BYTES_GLOBAL,
+        );
+      }
+      const nextGlobalDurableBytes =
+        quota.durable_bytes +
+        quota.result_reserved_bytes -
+        previous.result_reserved_bytes -
+        previous.result_size_bytes +
+        canonical.bytes;
+      if (nextGlobalDurableBytes > CSV_MAX_DURABLE_BYTES) {
+        throw new CsvStorageQuotaError("durable byte", CSV_MAX_DURABLE_BYTES);
+      }
+      const now = nowSeconds();
+      const update = this.driver
+        .prepareState(
+          `UPDATE csv_agent_job_items SET
+             status = 'completed', dispatch_state = 'settled', result_json = ?,
+             result_digest = ?, result_availability = 'available',
+             result_size_bytes = ?, result_reserved_bytes = 0,
+             completed_at = ?, reported_at = ?,
+             updated_at = ?, last_error = NULL
+           WHERE job_id = ? AND item_id = ?
+             AND status = ?`,
+        )
+        .run(
+          canonical.json,
+          canonical.digest,
+          canonical.bytes,
+          now,
+          now,
+          now,
+          jobId,
+          itemId,
+          expectedStatus,
+        );
+      if (update.changes !== 1) {
+        throw new Error(`CSV item ${jobId}/${itemId} cannot be completed`);
+      }
+      const jobAccounting = this.driver
+        .prepareState(
+          `UPDATE csv_agent_jobs SET
+             result_reserved_bytes = result_reserved_bytes - ?,
+             durable_bytes = durable_bytes - ? + ?
+           WHERE id = ? AND result_reserved_bytes >= ?`,
+        )
+        .run(
+          previous.result_reserved_bytes,
+          previous.result_size_bytes,
+          canonical.bytes,
+          jobId,
+          previous.result_reserved_bytes,
+        );
+      const globalAccounting = this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+             result_reserved_bytes = result_reserved_bytes - ?,
+             result_blob_bytes = result_blob_bytes - ? + ?,
+             durable_bytes = durable_bytes - ? + ?, updated_at = ?
+           WHERE singleton = 1 AND result_reserved_bytes >= ?`,
+        )
+        .run(
+          previous.result_reserved_bytes,
+          previous.result_size_bytes,
+          canonical.bytes,
+          previous.result_size_bytes,
+          canonical.bytes,
+          now,
+          previous.result_reserved_bytes,
+        );
+      if (jobAccounting.changes !== 1 || globalAccounting.changes !== 1) {
+        throw new Error("CSV result persistence accounting is inconsistent");
+      }
+    });
   }
 
   markItemFailed(jobId: string, itemId: string, error: string): void {
     const now = nowSeconds();
-    this.driver
-      .prepareState(
-        `UPDATE csv_agent_job_items
-         SET status = 'failed',
-             last_error = ?,
-             completed_at = ?,
-             reported_at = ?,
-             updated_at = ?
-         WHERE job_id = ? AND item_id = ?`,
-      )
-      .run(error, now, now, now, jobId, itemId);
+    this.driver.transactionImmediate(() => {
+      const reservation = this.itemResultReservation(jobId, itemId);
+      const update = this.driver
+        .prepareState(
+          `UPDATE csv_agent_job_items SET
+             status = 'failed', dispatch_state = 'settled', last_error = ?,
+             result_reserved_bytes = 0,
+             completed_at = ?, reported_at = ?, updated_at = ?
+           WHERE job_id = ? AND item_id = ?
+             AND status IN ('pending', 'running')`,
+        )
+        .run(
+          truncateUtf8(error, CSV_ITEM_TEXT_PROJECTION_BYTES * 4).value,
+          now,
+          now,
+          now,
+          jobId,
+          itemId,
+        );
+      if (update.changes !== 1) {
+        throw new Error(`CSV item ${jobId}/${itemId} cannot be failed`);
+      }
+      this.releaseResultReservation(jobId, reservation, now);
+    });
   }
 
   markItemCancelled(jobId: string, itemId: string, reason: string): void {
     const now = nowSeconds();
-    this.driver
-      .prepareState(
-        `UPDATE csv_agent_job_items
-         SET status = 'cancelled',
-             last_error = ?,
-             completed_at = ?,
-             updated_at = ?
-         WHERE job_id = ? AND item_id = ?`,
-      )
-      .run(reason, now, now, jobId, itemId);
+    this.driver.transactionImmediate(() => {
+      const reservation = this.itemResultReservation(jobId, itemId);
+      const update = this.driver
+        .prepareState(
+          `UPDATE csv_agent_job_items SET
+             status = 'cancelled', dispatch_state = 'settled', last_error = ?,
+             result_reserved_bytes = 0, completed_at = ?, updated_at = ?
+           WHERE job_id = ? AND item_id = ?
+             AND status IN ('pending', 'running')`,
+        )
+        .run(
+          truncateUtf8(reason, CSV_ITEM_TEXT_PROJECTION_BYTES * 4).value,
+          now,
+          now,
+          jobId,
+          itemId,
+        );
+      if (update.changes !== 1) {
+        throw new Error(`CSV item ${jobId}/${itemId} cannot be cancelled`);
+      }
+      this.releaseResultReservation(jobId, reservation, now);
+    });
+  }
+
+  markItemUnknownOutcome(
+    jobId: string,
+    itemId: string,
+    reason: string,
+    lookupEvidence?: Record<string, unknown>,
+  ): void {
+    const now = nowSeconds();
+    this.driver.transactionImmediate(() => {
+      const itemUpdate = this.driver
+        .prepareState(
+          `UPDATE csv_agent_job_items SET
+             status = 'unknown_outcome', dispatch_state = 'ambiguous',
+             last_error = ?, review_status = 'pending', review_reason = ?,
+             review_disposition = NULL, review_domain_action = NULL,
+             review_evidence_json = NULL, lookup_evidence_json = ?,
+             completed_at = NULL, updated_at = ?
+           WHERE job_id = ? AND item_id = ? AND status = 'running'`,
+        )
+        .run(
+          reason,
+          reason,
+          lookupEvidence !== undefined ? JSON.stringify(lookupEvidence) : null,
+          now,
+          jobId,
+          itemId,
+        );
+      if (itemUpdate.changes !== 1) {
+        throw new Error(`CSV item ${jobId}/${itemId} cannot become ambiguous`);
+      }
+      this.driver
+        .prepareState(
+          `INSERT INTO csv_agent_job_review_history (
+             job_id, item_id, review_status, disposition, domain_action,
+             actor, reason, evidence_json, effect_run_id, effect_step_id,
+             effect_epoch, created_at
+           )
+           SELECT job_id, item_id, 'pending', NULL, NULL,
+                  'agenc_runtime', ?, ?, effect_run_id, effect_step_id,
+                  effect_epoch, ?
+           FROM csv_agent_job_items WHERE job_id = ? AND item_id = ?`,
+        )
+        .run(
+          truncateUtf8(reason, CSV_ITEM_TEXT_PROJECTION_BYTES * 4).value,
+          lookupEvidence !== undefined ? JSON.stringify(lookupEvidence) : null,
+          now,
+          jobId,
+          itemId,
+        );
+      const jobUpdate = this.driver
+        .prepareState(
+          `UPDATE csv_agent_jobs SET last_error = ?, updated_at = ?
+           WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL`,
+        )
+        .run(
+          truncateUtf8(reason, CSV_ITEM_TEXT_PROJECTION_BYTES * 4).value,
+          now,
+          jobId,
+        );
+      if (jobUpdate.changes !== 1) {
+        throw new Error(`CSV job ${jobId} cannot enter review`);
+      }
+      this.refreshJobOutcome(jobId);
+    });
+  }
+
+  resolveUnknownOutcome(resolution: CsvUnknownOutcomeResolution): void {
+    const valid =
+      (resolution.disposition === "confirmed_committed" &&
+        resolution.domainAction === "mark_completed") ||
+      (resolution.disposition === "confirmed_no_effect" &&
+        resolution.domainAction === "retry_new_attempt") ||
+      (resolution.disposition === "remains_unknown" &&
+        resolution.domainAction === "abandon_item");
+    if (!valid) throw new Error("invalid CSV review disposition/domain action");
+    requireNonempty(resolution.actor.trim(), "CSV review actor");
+    requireNonempty(resolution.reason.trim(), "CSV review reason");
+    const now = nowSeconds();
+    const canonicalEvidence = canonicalizeCsvResult(resolution.evidence);
+    const evidenceJson = canonicalEvidence.json;
+    this.driver.transactionImmediate(() => {
+      const reviewedItem = this.getItem(resolution.jobId, resolution.itemId);
+      if (
+        reviewedItem === null ||
+        reviewedItem.status !== "unknown_outcome" ||
+        reviewedItem.reviewStatus !== "pending"
+      ) {
+        throw new Error(
+          `CSV item ${resolution.jobId}/${resolution.itemId} is not awaiting review`,
+        );
+      }
+      this.resolveCanonicalEffectReview(reviewedItem, resolution);
+      const reservation = this.itemResultReservation(
+        resolution.jobId,
+        resolution.itemId,
+      );
+      let changes = 0;
+      if (
+        resolution.domainAction === "mark_completed" &&
+        resolution.result !== undefined
+      ) {
+        this.persistCanonicalResult(
+          resolution.jobId,
+          resolution.itemId,
+          canonicalizeCsvResult(resolution.result),
+          true,
+          "unknown_outcome",
+        );
+        changes = this.driver
+          .prepareState(
+            `UPDATE csv_agent_job_items SET review_status = 'resolved',
+               review_disposition = ?, review_domain_action = ?,
+               review_evidence_json = ?, updated_at = ?
+             WHERE job_id = ? AND item_id = ? AND status = 'completed'
+               AND review_status = 'pending'`,
+          )
+          .run(
+            resolution.disposition,
+            resolution.domainAction,
+            evidenceJson,
+            now,
+            resolution.jobId,
+            resolution.itemId,
+          ).changes;
+      } else if (resolution.domainAction === "mark_completed") {
+        changes = this.driver
+          .prepareState(
+            `UPDATE csv_agent_job_items SET status = 'completed',
+               dispatch_state = 'settled',
+               result_availability = 'unavailable_after_review',
+               result_json = NULL, result_digest = NULL, result_size_bytes = 0,
+               result_reserved_bytes = 0,
+               review_status = 'resolved', review_disposition = ?,
+               review_domain_action = ?, review_evidence_json = ?,
+               completed_at = ?, updated_at = ?
+             WHERE job_id = ? AND item_id = ? AND status = 'unknown_outcome'
+               AND review_status = 'pending'`,
+          )
+          .run(
+            resolution.disposition,
+            resolution.domainAction,
+            evidenceJson,
+            now,
+            now,
+            resolution.jobId,
+            resolution.itemId,
+          ).changes;
+      } else if (resolution.domainAction === "retry_new_attempt") {
+        changes = this.driver
+          .prepareState(
+            `UPDATE csv_agent_job_items SET status = 'pending',
+               dispatch_state = 'not_dispatched', assigned_thread_id = NULL,
+               result_json = NULL, result_digest = NULL,
+               result_availability = 'not_produced', result_size_bytes = 0,
+               result_reserved_bytes = 0,
+               review_status = 'resolved', review_disposition = ?,
+               review_domain_action = ?, review_evidence_json = ?,
+               completed_at = NULL, updated_at = ?
+             WHERE job_id = ? AND item_id = ? AND status = 'unknown_outcome'
+               AND review_status = 'pending'`,
+          )
+          .run(
+            resolution.disposition,
+            resolution.domainAction,
+            evidenceJson,
+            now,
+            resolution.jobId,
+            resolution.itemId,
+          ).changes;
+      } else {
+        changes = this.driver
+          .prepareState(
+            `UPDATE csv_agent_job_items SET review_status = 'abandoned',
+               review_disposition = ?, review_domain_action = ?,
+               review_evidence_json = ?, result_reserved_bytes = 0,
+               completed_at = ?, updated_at = ?
+             WHERE job_id = ? AND item_id = ? AND status = 'unknown_outcome'
+               AND review_status = 'pending'`,
+          )
+          .run(
+            resolution.disposition,
+            resolution.domainAction,
+            evidenceJson,
+            now,
+            now,
+            resolution.jobId,
+            resolution.itemId,
+          ).changes;
+      }
+      if (changes !== 1) {
+        throw new Error(
+          `CSV item ${resolution.jobId}/${resolution.itemId} is not awaiting review`,
+        );
+      }
+      this.driver
+        .prepareState(
+          `INSERT INTO csv_agent_job_review_history (
+             job_id, item_id, review_status, disposition, domain_action,
+             actor, reason, evidence_json, effect_run_id, effect_step_id,
+             effect_epoch, created_at
+           )
+           SELECT job_id, item_id, ?, ?, ?, ?, ?, ?, effect_run_id,
+                  effect_step_id, effect_epoch, ?
+           FROM csv_agent_job_items WHERE job_id = ? AND item_id = ?`,
+        )
+        .run(
+          resolution.domainAction === "abandon_item" ? "abandoned" : "resolved",
+          resolution.disposition,
+          resolution.domainAction,
+          resolution.actor,
+          truncateUtf8(resolution.reason, CSV_ITEM_TEXT_PROJECTION_BYTES * 4)
+            .value,
+          evidenceJson,
+          now,
+          resolution.jobId,
+          resolution.itemId,
+        );
+      if (
+        resolution.domainAction !== "mark_completed" ||
+        resolution.result === undefined
+      ) {
+        this.releaseResultReservation(resolution.jobId, reservation, now);
+      }
+      this.refreshJobOutcome(resolution.jobId);
+    });
+  }
+
+  /**
+   * A CSV row is only a projection of A1 effect evidence. When dispatch
+   * supplied a canonical effect identity, append/fsync its canonical review
+   * event before advancing the CSV projection. Effectless legacy rows retain
+   * their local migration review; callers cannot attach an unrelated A1
+   * resolution to one after the fact.
+   */
+  private resolveCanonicalEffectReview(
+    item: CsvAgentJobItem,
+    resolution: CsvUnknownOutcomeResolution,
+  ): void {
+    if (item.effect === undefined) {
+      if (resolution.effectReview !== undefined) {
+        throw new Error("CSV review has no canonical effect identity");
+      }
+      return;
+    }
+    const review = resolution.effectReview;
+    if (review === undefined) {
+      throw new Error("CSV review requires canonical A1 effect evidence");
+    }
+    const expectedWorkflowStatus =
+      resolution.domainAction === "abandon_item" ? "abandoned" : "resolved";
+    if (
+      review.disposition !== resolution.disposition ||
+      review.domainAction !== resolution.domainAction ||
+      review.workflowStatus !== expectedWorkflowStatus ||
+      review.actorId !== resolution.actor
+    ) {
+      throw new Error(
+        "CSV review disagrees with canonical A1 effect resolution",
+      );
+    }
+
+    const effects = new StateRunDurabilityRepository(this.driver);
+    const effect = effects.getEffect(item.effect.runId, item.effect.stepId);
+    if (effect === undefined || effect.epoch !== item.effect.epoch) {
+      throw new Error(
+        "CSV review canonical effect identity is missing or stale",
+      );
+    }
+    if (effect.outcome !== "unknown_outcome") {
+      throw new Error("CSV review canonical effect is not an unknown outcome");
+    }
+    const canonical = resolveDurableEffectReview(this.driver, {
+      sessionId: effect.sessionId,
+      toolCallId: effect.callId,
+      resolution: review,
+    });
+    if (
+      canonical.kind === "not_found" ||
+      !canonical.durable ||
+      canonical.runId !== item.effect.runId ||
+      canonical.stepId !== item.effect.stepId
+    ) {
+      throw new Error("CSV review did not append canonical A1 effect evidence");
+    }
   }
 
   getJobProgress(jobId: string): CsvAgentJobProgress {
-    const row = this.driver
-      .prepareState<
-        [string],
-        {
-          total: number;
-          pending: number;
-          running: number;
-          completed: number;
-          failed: number;
-        }
-      >(
-        `SELECT
-            COUNT(*) AS total,
-            SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
-            SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
-            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
-         FROM csv_agent_job_items
-         WHERE job_id = ?`,
-      )
-      .get(jobId);
+    const job = this.getJob(jobId);
+    const reviewPendingItems =
+      job === null
+        ? 0
+        : (this.driver
+            .prepareState<[string], { readonly count: number }>(
+              `SELECT COUNT(*) AS count FROM csv_agent_job_items
+               WHERE job_id = ? AND review_status = 'pending'`,
+            )
+            .get(jobId)?.count ?? 0);
     return {
-      totalItems: row?.total ?? 0,
-      pendingItems: row?.pending ?? 0,
-      runningItems: row?.running ?? 0,
-      completedItems: row?.completed ?? 0,
-      failedItems: row?.failed ?? 0,
+      totalItems: job?.totalItems ?? 0,
+      pendingItems: job?.pendingItems ?? 0,
+      runningItems: job?.runningItems ?? 0,
+      completedItems: job?.completedItems ?? 0,
+      failedItems: job?.failedItems ?? 0,
+      cancelledItems: job?.cancelledItems ?? 0,
+      unknownOutcomeItems: job?.unknownOutcomeItems ?? 0,
+      reviewPendingItems,
     };
+  }
+
+  refreshJobOutcome(jobId: string): CsvAgentJobStatus {
+    return this.driver.transactionImmediate(() => {
+      const job = this.getJob(jobId);
+      if (job === null) throw new Error(`unknown CSV job ${jobId}`);
+      let status: CsvAgentJobStatus;
+      let completedAt: number | null = null;
+      if (job.runningItems > 0 || job.pendingItems > 0) {
+        status = job.startedAt === undefined ? "pending" : "running";
+      } else if (job.unknownOutcomeItems > 0) {
+        const pendingReviews =
+          this.driver
+            .prepareState<[string], { count: number }>(
+              `SELECT COUNT(*) AS count FROM csv_agent_job_items
+             WHERE job_id = ? AND status = 'unknown_outcome'
+               AND review_status = 'pending'`,
+            )
+            .get(jobId)?.count ?? 0;
+        status =
+          pendingReviews > 0
+            ? "needs_review"
+            : "finished_with_unknown_outcomes";
+        if (pendingReviews === 0) completedAt = nowSeconds();
+      } else if (job.failedItems > 0) {
+        status = "failed";
+        completedAt = nowSeconds();
+      } else if (job.cancelledItems > 0) {
+        status = "cancelled";
+        completedAt = nowSeconds();
+      } else {
+        status = "completed";
+        completedAt = nowSeconds();
+      }
+      this.driver
+        .prepareState(
+          `UPDATE csv_agent_jobs SET status = ?, completed_at = ?, updated_at = ?
+           WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL`,
+        )
+        .run(status, completedAt, nowSeconds(), jobId);
+      return status;
+    });
   }
 }

@@ -26,6 +26,36 @@ LIVE multi-agent surface):
 | `list_agents` | Read the live agent tree and current statuses |
 | `spawn_agents_on_csv` | Fan out workers from CSV rows (job orchestrator) |
 | `report_agent_job_result` | Report a CSV/job worker result back to the orchestrator |
+| `inspect_csv_agent_job` | Read a bounded job summary and keyset item page |
+| `read_csv_agent_job_result` | Read one bounded base64 result chunk |
+
+### CSV job contract
+
+CSV fan-out keeps three identities separate. A configured `source_id` is exact
+user data, `item_id` is an opaque runtime-owned content identity, and worker
+names use a safe runtime prefix plus row/hash material. Without `id_column`, no
+source identity is invented. Duplicate, blank, oversized, malformed, or
+reserved input is rejected before the atomic import visibility fence opens.
+
+The approved instruction is passed unchanged. Each inert, null-prototype CSV
+row is attached as a labeled untrusted JSON block, so field contents cannot
+become privileged instructions. The spawn response contains contract version
+`1`, aggregate counters, and at most the first 20 item summaries without result
+bodies. `inspect_csv_agent_job` provides keyset pages (maximum 100 items), and
+returns an opaque `next_cursor` when another page exists. Supply that token
+unchanged as the next call's `cursor`; it is bound to the job and item-status
+filter, and forged, stale, or cross-job tokens are rejected. Do not decode it or
+construct pagination from row/item IDs. `read_csv_agent_job_result` returns at
+most 64 KiB of one result as base64.
+
+Dispatch is at-most-once by default. A process restart replays a dispatched
+item only when a registered versioned idempotency profile, its persisted
+operation key, provider acknowledgement, and a bounded authoritative lookup
+all prove the retry safe. Other interrupted dispatches enter
+`unknown_outcome` and hold the job in `needs_review`. Cancellation leaves
+undispatched rows cancelled and treats unresolved dispatched rows as
+ambiguous; capacity is released only after the worker exits or is explicitly
+retired.
 
 ### Worker lifecycle
 

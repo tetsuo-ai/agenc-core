@@ -64,7 +64,7 @@ const EXPECTED_CRITICAL_PATH_ADRS = Object.freeze([
   {
     id: "CP-0004",
     file: "0004-csv-identity-and-replay.md",
-    status: "Accepted target; implementation pending",
+    status: "Implemented",
   },
   {
     id: "CP-0005",

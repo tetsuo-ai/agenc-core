@@ -62,14 +62,24 @@ import {
 import { delegate } from "../agents/delegate.js";
 import {
   runAgentsOnCsv,
-  recordAgentJobResult,
+  recordAgentJobResultAsync,
   resumeAgentJobsFromRepository,
   type AgentJobProgressEmitter,
   type AgentJobSpawn,
   type AgentJobSpawnContext,
 } from "../agents/jobs/job-orchestrator.js";
+import { createCsvInputRootCapability } from "../agents/jobs/csv-reader.js";
+import {
+  createCsvOutputRootCapability,
+  recoverCsvOutputIntents,
+} from "../agents/jobs/csv-output.js";
 import { CsvAgentJobsRepository } from "../state/csv-agent-jobs.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
+import {
+  CSV_MAX_ITEM_PAGE_SIZE,
+  CSV_MAX_JOB_CONCURRENCY,
+  CSV_RESULT_BLOB_CHUNK_BYTES,
+} from "../contracts/csv-job-contract.js";
 import { ensureAgentControl } from "./delegate-tool.js";
 import { createMultiAgentV2Tools } from "../agents/v2/index.js";
 import {
@@ -230,6 +240,12 @@ function toolMetadata(
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
+    : undefined;
+}
+
+function exactNonBlankStringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
     : undefined;
 }
 
@@ -1584,6 +1600,7 @@ function createMultiAgentV2RuntimeTools(
         "instruction",
         "id_column",
         "output_csv_path",
+        "output_mode",
         "max_concurrency",
         "max_workers",
         "max_runtime_seconds",
@@ -1597,35 +1614,91 @@ function createMultiAgentV2RuntimeTools(
     const session = sessionOrError;
     const { control, registry } = ensureAgentControl(session);
     const current = currentAgentContext(session, args);
-    const instruction = stringValue(args.instruction);
-    if (!instruction || instruction.trim().length === 0) {
+    const instruction = exactNonBlankStringValue(args.instruction);
+    if (instruction === undefined) {
       return json({ error: "instruction must be non-empty" }, true);
     }
-    const csvPath = stringValue(args.csv_path)!;
-    const idColumn = stringValue(args.id_column);
-    const outputCsvPath = stringValue(args.output_csv_path);
-    const maxConcurrencyArg = optionalUnsignedIntegerArg(
+    const csvPath = exactNonBlankStringValue(args.csv_path);
+    if (csvPath === undefined) {
+      return json({ error: "csv_path must be non-empty" }, true);
+    }
+    const idColumn = exactNonBlankStringValue(args.id_column);
+    if (args.id_column !== undefined && idColumn === undefined) {
+      return json({ error: "id_column must be a non-empty string" }, true);
+    }
+    const outputCsvPath = exactNonBlankStringValue(args.output_csv_path);
+    if (args.output_csv_path !== undefined && outputCsvPath === undefined) {
+      return json(
+        { error: "output_csv_path must be a non-empty string" },
+        true,
+      );
+    }
+    const outputMode = stringValue(args.output_mode);
+    if (
+      outputMode !== undefined &&
+      outputMode !== "replace_existing_regular" &&
+      outputMode !== "create_new"
+    ) {
+      return json({ error: "invalid output_mode" }, true);
+    }
+    const maxConcurrencyArg = optionalPositiveIntegerArg(
       args,
       "max_concurrency",
     );
     if (isToolResult(maxConcurrencyArg)) return maxConcurrencyArg;
-    const maxWorkersArg = optionalUnsignedIntegerArg(args, "max_workers");
+    const maxWorkersArg = optionalPositiveIntegerArg(args, "max_workers");
     if (isToolResult(maxWorkersArg)) return maxWorkersArg;
+    if (
+      maxConcurrencyArg !== undefined &&
+      maxWorkersArg !== undefined &&
+      maxConcurrencyArg !== maxWorkersArg
+    ) {
+      return json(
+        {
+          error: "max_concurrency and max_workers must match when both are set",
+        },
+        true,
+      );
+    }
     const maxRuntimeSeconds = optionalPositiveIntegerArg(
       args,
       "max_runtime_seconds",
     );
     if (isToolResult(maxRuntimeSeconds)) return maxRuntimeSeconds;
     const maxConcurrency = maxConcurrencyArg ?? maxWorkersArg;
-    const outputSchema =
-      typeof args.output_schema === "object" &&
-      args.output_schema !== null &&
-      !Array.isArray(args.output_schema)
-        ? (args.output_schema as Record<string, unknown>)
-        : undefined;
+    if (
+      args.output_schema !== undefined &&
+      (typeof args.output_schema !== "object" ||
+        args.output_schema === null ||
+        Array.isArray(args.output_schema))
+    ) {
+      return json({ error: "output_schema must be a JSON object" }, true);
+    }
+    const outputSchema = args.output_schema as
+      Record<string, unknown> | undefined;
 
     const outstandingThreadIds = new Set<string>();
     const spawn: AgentJobSpawn = {
+      async acquireCapacity(ctx) {
+        try {
+          const permit = await registry.acquireSpawnPermit({
+            ownerId: ctx.jobId,
+            ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
+          });
+          return { kind: "acquired" as const, permit };
+        } catch (error) {
+          if (ctx.signal?.aborted === true) throw error;
+          if (
+            typeof error === "object" &&
+            error !== null &&
+            "category" in error &&
+            error.category === "retryable_capacity"
+          ) {
+            return { kind: "capacity_unavailable" as const };
+          }
+          throw error;
+        }
+      },
       async spawn(ctx: AgentJobSpawnContext) {
         const outcome = await delegate({
           parent: session,
@@ -1633,13 +1706,19 @@ function createMultiAgentV2RuntimeTools(
           control,
           registry,
           taskPrompt: ctx.workerPrompt,
-          agentName: ctx.itemId,
+          agentName: ctx.workerName,
           runInBackground: true,
+          ...(ctx.capacityPermit !== undefined
+            ? {
+                capacityPermit: ctx.capacityPermit,
+                capacityOwnerId: ctx.jobId,
+              }
+            : {}),
         });
         if (outcome.kind === "rejected") {
-          throw new Error(
-            `agent-jobs spawn rejected for item ${ctx.itemId}: ${outcome.reason}`,
-          );
+          return outcome.category === "retryable_capacity"
+            ? { kind: "capacity_unavailable" as const }
+            : { kind: "rejected" as const, reason: outcome.reason };
         }
         const thread = outcome.thread;
         outstandingThreadIds.add(thread.threadId);
@@ -1652,26 +1731,46 @@ function createMultiAgentV2RuntimeTools(
         const threadFinished = thread
           .join()
           .then(() => undefined)
-          .catch(() => undefined)
-          .finally(() => outstandingThreadIds.delete(thread.threadId));
-        return { threadId: thread.threadId, threadFinished };
+          .catch(() => undefined);
+        return {
+          kind: "launched" as const,
+          threadId: thread.threadId,
+          threadFinished,
+        };
       },
       async cancelOutstanding() {
         // Hard-cancel: shut down every worker thread this job still has
         // in flight. The orchestrator then finalizes their items as
         // cancelled via the stopRequested finalize guard.
         const ids = [...outstandingThreadIds];
-        outstandingThreadIds.clear();
-        await Promise.all(
-          ids.map((id) =>
-            control.shutdown(id, "agent_job_cancelled").catch(() => {}),
-          ),
+        const outcomes = await Promise.allSettled(
+          ids.map(async (id) => {
+            await control.shutdown(id, "agent_job_cancelled");
+            outstandingThreadIds.delete(id);
+          }),
         );
+        const failures = outcomes
+          .filter(
+            (outcome): outcome is PromiseRejectedResult =>
+              outcome.status === "rejected",
+          )
+          .map((outcome) => outcome.reason);
+        if (failures.length > 0) {
+          throw new AggregateError(
+            failures,
+            "one or more CSV workers could not be cancelled",
+          );
+        }
+      },
+      async retireItem(_jobId, _itemId, threadId) {
+        await control.shutdown(threadId, "csv_job_item_retired");
+        outstandingThreadIds.delete(threadId);
       },
     };
 
     const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
     const callId = callIdFromArgs(args, "agent_job");
+    const signal = abortSignalFromArgs(args);
     // Mirror agenc `notify_background_event(turn, "agent_job_progress:{json}")`
     // (agent_jobs.rs:172-174) by emitting a `tool_progress` event whose
     // chunk is the agenc line verbatim. Operators wired to the AgenC
@@ -1684,6 +1783,9 @@ function createMultiAgentV2RuntimeTools(
         running_items: update.runningItems,
         completed_items: update.completedItems,
         failed_items: update.failedItems,
+        cancelled_items: update.cancelledItems,
+        unknown_outcome_items: update.unknownOutcomeItems,
+        review_pending_items: update.reviewPendingItems,
         ...(update.etaSeconds !== undefined
           ? { eta_seconds: update.etaSeconds }
           : {}),
@@ -1703,27 +1805,104 @@ function createMultiAgentV2RuntimeTools(
     try {
       const result = await runAgentsOnCsv({
         csvPath,
+        inputRootCapability: createCsvInputRootCapability(opts.workspaceRoot),
         instruction,
         ...(idColumn !== undefined ? { idColumn } : {}),
         ...(outputCsvPath !== undefined ? { outputCsvPath } : {}),
+        outputRootCapability: createCsvOutputRootCapability(opts.workspaceRoot),
+        ...(outputMode !== undefined
+          ? {
+              outputMode: outputMode as
+                "replace_existing_regular" | "create_new",
+            }
+          : {}),
         ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
         ...(maxRuntimeSeconds !== undefined ? { maxRuntimeSeconds } : {}),
         ...(outputSchema !== undefined ? { outputSchema } : {}),
         spawn,
         repository,
         progressEmitter,
+        ...(signal !== undefined ? { signal } : {}),
       });
       return json({
+        contract_version: result.contractVersion,
         job_id: result.jobId,
-        items: result.items.map((item) => ({
+        summary: {
+          status: result.summary.status,
+          total_items: result.summary.totalItems,
+          pending_items: result.summary.pendingItems,
+          running_items: result.summary.runningItems,
+          completed_items: result.summary.completedItems,
+          failed_items: result.summary.failedItems,
+          cancelled_items: result.summary.cancelledItems,
+          unknown_outcome_items: result.summary.unknownOutcomeItems,
+          review_pending_items: result.summary.reviewPendingItems,
+          result_bytes: result.summary.resultBytes,
+          available_results: result.summary.availableResults,
+          unavailable_after_review_results:
+            result.summary.unavailableAfterReviewResults,
+          not_produced_results: result.summary.notProducedResults,
+        },
+        item_page: result.itemPage.map((item) => ({
           item_id: item.itemId,
+          row_index: item.rowIndex,
+          ...(item.sourceId !== undefined ? { source_id: item.sourceId } : {}),
+          ...(item.sourceIdTruncated === true
+            ? {
+                source_id_truncated: true,
+                source_id_digest: item.sourceIdDigest,
+              }
+            : {}),
           status: item.status,
-          ...(item.error !== undefined ? { error: item.error } : {}),
-          ...(item.result !== undefined ? { result: item.result } : {}),
+          attempt_count: item.attemptCount,
+          result_availability: item.resultAvailability,
+          result_size_bytes: item.resultSizeBytes,
+          ...(item.resultDigest !== undefined
+            ? { result_digest: item.resultDigest }
+            : {}),
+          ...(item.resultPreviewJson !== undefined
+            ? {
+                result_preview_json: item.resultPreviewJson,
+                result_preview_truncated: item.resultPreviewTruncated === true,
+              }
+            : {}),
+          ...(item.lastError !== undefined
+            ? {
+                last_error: item.lastError,
+                ...(item.lastErrorTruncated === true
+                  ? { last_error_truncated: true }
+                  : {}),
+              }
+            : {}),
+          ...(item.reviewStatus !== undefined
+            ? { review_status: item.reviewStatus }
+            : {}),
+          ...(item.reviewReason !== undefined
+            ? {
+                review_reason: item.reviewReason,
+                ...(item.reviewReasonTruncated === true
+                  ? { review_reason_truncated: true }
+                  : {}),
+              }
+            : {}),
         })),
+        ...(result.nextItemCursor !== undefined
+          ? {
+              next_item_cursor: result.nextItemCursor,
+            }
+          : {}),
         stopped_early: result.stoppedEarly,
         ...(result.outputCsvPath !== undefined
           ? { output_csv_path: result.outputCsvPath }
+          : {}),
+        ...(result.outputArtifact !== undefined
+          ? {
+              output_artifact: {
+                contract_version: result.outputArtifact.contractVersion,
+                bytes: result.outputArtifact.bytes,
+                sha256: result.outputArtifact.sha256,
+              },
+            }
           : {}),
       });
     } catch (error) {
@@ -1759,7 +1938,7 @@ function createMultiAgentV2RuntimeTools(
     if (stop !== undefined && typeof stop !== "boolean") {
       return json({ error: "stop must be a boolean" }, true);
     }
-    const outcome = recordAgentJobResult({
+    const outcome = await recordAgentJobResultAsync({
       jobId,
       itemId,
       result: result as Record<string, unknown>,
@@ -1779,12 +1958,173 @@ function createMultiAgentV2RuntimeTools(
     }
   };
 
+  const inspectCsvAgentJob = async (
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    const strict = strictArgs(args, {
+      allowed: new Set(["job_id", "status", "cursor", "limit"]),
+      required: ["job_id"],
+    });
+    if (strict) return strict;
+    const jobId = stringValue(args.job_id)!;
+    const status = stringValue(args.status);
+    const allowedStatuses = new Set([
+      "pending",
+      "running",
+      "completed",
+      "failed",
+      "cancelled",
+      "unknown_outcome",
+    ]);
+    if (status !== undefined && !allowedStatuses.has(status)) {
+      return json({ error: `invalid CSV item status: ${status}` }, true);
+    }
+    const cursor = stringValue(args.cursor);
+    if (args.cursor !== undefined && cursor === undefined) {
+      return json({ error: "cursor must be a non-empty string" }, true);
+    }
+    const limit = optionalPositiveIntegerArg(args, "limit");
+    if (isToolResult(limit)) return limit;
+    const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
+    const summary = repository.getSummary(jobId);
+    if (summary === null) {
+      return json({ error: `unknown job_id: ${jobId}` }, true);
+    }
+    let page: ReturnType<CsvAgentJobsRepository["listItemsPage"]>;
+    try {
+      page = repository.listItemsPage({
+        jobId,
+        ...(status !== undefined
+          ? {
+              status: status as
+                | "pending"
+                | "running"
+                | "completed"
+                | "failed"
+                | "cancelled"
+                | "unknown_outcome",
+            }
+          : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      });
+    } catch (error) {
+      return json({ error: errorMessage(error) }, true);
+    }
+    return json({
+      contract_version: summary.contractVersion,
+      job_id: jobId,
+      summary: {
+        status: summary.status,
+        total_items: summary.totalItems,
+        pending_items: summary.pendingItems,
+        running_items: summary.runningItems,
+        completed_items: summary.completedItems,
+        failed_items: summary.failedItems,
+        cancelled_items: summary.cancelledItems,
+        unknown_outcome_items: summary.unknownOutcomeItems,
+        review_pending_items: summary.reviewPendingItems,
+        result_bytes: summary.resultBytes,
+      },
+      items: page.items.map((item) => ({
+        item_id: item.itemId,
+        row_index: item.rowIndex,
+        ...(item.sourceId !== undefined ? { source_id: item.sourceId } : {}),
+        ...(item.sourceIdTruncated === true
+          ? {
+              source_id_truncated: true,
+              source_id_digest: item.sourceIdDigest,
+            }
+          : {}),
+        status: item.status,
+        attempt_count: item.attemptCount,
+        result_availability: item.resultAvailability,
+        result_size_bytes: item.resultSizeBytes,
+        ...(item.resultDigest !== undefined
+          ? { result_digest: item.resultDigest }
+          : {}),
+        ...(item.resultPreviewJson !== undefined
+          ? {
+              result_preview_json: item.resultPreviewJson,
+              result_preview_truncated: item.resultPreviewTruncated === true,
+            }
+          : {}),
+        ...(item.lastError !== undefined
+          ? {
+              last_error: item.lastError,
+              ...(item.lastErrorTruncated === true
+                ? { last_error_truncated: true }
+                : {}),
+            }
+          : {}),
+        ...(item.reviewStatus !== undefined
+          ? { review_status: item.reviewStatus }
+          : {}),
+        ...(item.reviewReason !== undefined
+          ? {
+              review_reason: item.reviewReason,
+              ...(item.reviewReasonTruncated === true
+                ? { review_reason_truncated: true }
+                : {}),
+            }
+          : {}),
+      })),
+      ...(page.nextCursor !== undefined
+        ? { next_cursor: page.nextCursor }
+        : {}),
+    });
+  };
+
+  const readCsvAgentJobResult = async (
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    const strict = strictArgs(args, {
+      allowed: new Set(["job_id", "item_id", "byte_offset", "max_bytes"]),
+      required: ["job_id", "item_id"],
+    });
+    if (strict) return strict;
+    const byteOffset = optionalUnsignedIntegerArg(args, "byte_offset");
+    if (isToolResult(byteOffset)) return byteOffset;
+    const maxBytes = optionalPositiveIntegerArg(args, "max_bytes");
+    if (isToolResult(maxBytes)) return maxBytes;
+    const jobId = stringValue(args.job_id)!;
+    const itemId = stringValue(args.item_id)!;
+    const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
+    let chunk: ReturnType<CsvAgentJobsRepository["readResultBlob"]>;
+    try {
+      chunk = repository.readResultBlob({
+        jobId,
+        itemId,
+        ...(byteOffset !== undefined ? { byteOffset } : {}),
+        ...(maxBytes !== undefined ? { maxBytes } : {}),
+      });
+    } catch (error) {
+      return json({ error: errorMessage(error) }, true);
+    }
+    if (chunk === null) {
+      return json({ error: `unknown CSV job item: ${jobId}/${itemId}` }, true);
+    }
+    return json({
+      contract_version: chunk.contractVersion,
+      job_id: jobId,
+      item_id: chunk.itemId,
+      result_availability: chunk.availability,
+      total_bytes: chunk.totalBytes,
+      ...(chunk.digest !== undefined ? { digest: chunk.digest } : {}),
+      byte_offset: chunk.byteOffset,
+      data_base64: chunk.dataBase64,
+      ...(chunk.nextByteOffset !== undefined
+        ? { next_byte_offset: chunk.nextByteOffset }
+        : {}),
+    });
+  };
+
   return [
     ...multiAgentV2Tools,
     {
       name: "spawn_agents_on_csv",
       description:
-        "Spawn one subagent per row of a CSV file. Each row is rendered into the instruction template (using `{column_name}` placeholders); the subagents must call `report_agent_job_result` exactly once with their analysis. Optionally writes an output CSV with each row's status and result.",
+        "Spawn one subagent per CSV row. The approved instruction is kept separate from an inert structured row payload; subagents must call `report_agent_job_result` exactly once. Optionally writes an output CSV with each row's status and result.",
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "spawn", "batch", "csv", "job"],
@@ -1801,28 +2141,41 @@ function createMultiAgentV2RuntimeTools(
           instruction: {
             type: "string",
             description:
-              "Instruction template applied to each row. Use `{column_name}` placeholders to inject values from the row.",
+              "Approved instruction applied unchanged to every row. CSV values are supplied separately as untrusted structured data.",
           },
           id_column: {
             type: "string",
-            description: "Optional column name to use as the stable item id.",
+            description:
+              "Optional source-ID column. Values remain exact user data and are never used as item, worker, or path identities.",
           },
           output_csv_path: {
             type: "string",
-            description: "Optional output CSV path for exported results.",
+            description:
+              "Optional output CSV path beneath the authenticated workspace output root. Omit for an AgenC-owned job output path.",
+          },
+          output_mode: {
+            type: "string",
+            enum: ["replace_existing_regular", "create_new"],
+            description:
+              "Publication policy. Defaults to replace_existing_regular; create_new rejects any existing target.",
           },
           max_concurrency: {
-            type: "number",
+            type: "integer",
+            minimum: 1,
+            maximum: CSV_MAX_JOB_CONCURRENCY,
             description:
               "Maximum concurrent workers for this job. Defaults to 16 and is capped by config.",
           },
           max_workers: {
-            type: "number",
+            type: "integer",
+            minimum: 1,
+            maximum: CSV_MAX_JOB_CONCURRENCY,
             description:
               "Alias for max_concurrency. Set to 1 to run sequentially.",
           },
           max_runtime_seconds: {
-            type: "number",
+            type: "integer",
+            minimum: 1,
             description:
               "Optional maximum runtime per worker before it is failed. Omit for no runtime deadline.",
           },
@@ -1864,6 +2217,64 @@ function createMultiAgentV2RuntimeTools(
         additionalProperties: false,
       },
       execute: reportAgentJobResultHandler,
+    },
+    {
+      name: "inspect_csv_agent_job",
+      description:
+        "Read a bounded summary and keyset-paginated item page for a CSV agent job. Result bodies are not embedded.",
+      metadata: toolMetadata("agent", {
+        mutating: false,
+        keywords: ["agent", "job", "csv", "inspect", "status"],
+      }),
+      isReadOnly: true,
+      recoveryCategory: "idempotent",
+      inputSchema: {
+        type: "object",
+        properties: {
+          job_id: { type: "string" },
+          status: { type: "string" },
+          cursor: {
+            type: "string",
+            description:
+              "Opaque continuation token returned by the preceding page.",
+          },
+          limit: {
+            type: "integer",
+            minimum: 1,
+            maximum: CSV_MAX_ITEM_PAGE_SIZE,
+          },
+        },
+        required: ["job_id"],
+        additionalProperties: false,
+      },
+      execute: inspectCsvAgentJob,
+    },
+    {
+      name: "read_csv_agent_job_result",
+      description:
+        "Read one bounded base64 chunk of an available CSV job item result blob.",
+      metadata: toolMetadata("agent", {
+        mutating: false,
+        keywords: ["agent", "job", "csv", "result", "read"],
+      }),
+      isReadOnly: true,
+      recoveryCategory: "idempotent",
+      inputSchema: {
+        type: "object",
+        properties: {
+          job_id: { type: "string" },
+          item_id: { type: "string" },
+          byte_offset: { type: "integer", minimum: 0 },
+          max_bytes: {
+            type: "integer",
+            minimum: 1,
+            maximum: CSV_RESULT_BLOB_CHUNK_BYTES,
+          },
+        },
+        required: ["job_id", "item_id"],
+        additionalProperties: false,
+      },
+      execute: readCsvAgentJobResult,
     },
   ];
 }
@@ -3405,7 +3816,14 @@ export async function resumeInterruptedAgentJobs(opts: {
 }): Promise<number> {
   opts.signal?.throwIfAborted();
   const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
-  if (repository.listJobs({ status: "running" }).length === 0) {
+  const outputRootCapability = createCsvOutputRootCapability(
+    opts.workspaceRoot,
+  );
+  await recoverCsvOutputIntents(outputRootCapability, repository);
+  if (
+    repository.listJobs({ status: "running" }).length === 0 &&
+    repository.listJobs({ status: "pending" }).length === 0
+  ) {
     return 0;
   }
   const { control, registry } = ensureAgentControl(opts.session);
@@ -3415,14 +3833,46 @@ export async function resumeInterruptedAgentJobs(opts: {
   const outstandingThreadIds = new Set<string>();
   const cancelOutstandingThreads = async (): Promise<void> => {
     const ids = [...outstandingThreadIds];
-    outstandingThreadIds.clear();
-    await Promise.all(
-      ids.map((id) =>
-        control.shutdown(id, "agent_job_cancelled").catch(() => {}),
-      ),
+    const outcomes = await Promise.allSettled(
+      ids.map(async (id) => {
+        await control.shutdown(id, "agent_job_cancelled");
+        outstandingThreadIds.delete(id);
+      }),
     );
+    const failures = outcomes
+      .filter(
+        (outcome): outcome is PromiseRejectedResult =>
+          outcome.status === "rejected",
+      )
+      .map((outcome) => outcome.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        "one or more recovered CSV workers could not be cancelled",
+      );
+    }
   };
   const spawn: AgentJobSpawn = {
+    async acquireCapacity(ctx) {
+      try {
+        const permit = await registry.acquireSpawnPermit({
+          ownerId: ctx.jobId,
+          ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
+        });
+        return { kind: "acquired" as const, permit };
+      } catch (error) {
+        if (ctx.signal?.aborted === true) throw error;
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "category" in error &&
+          error.category === "retryable_capacity"
+        ) {
+          return { kind: "capacity_unavailable" as const };
+        }
+        throw error;
+      }
+    },
     async spawn(ctx: AgentJobSpawnContext) {
       opts.signal?.throwIfAborted();
       const outcome = await delegate({
@@ -3431,21 +3881,25 @@ export async function resumeInterruptedAgentJobs(opts: {
         control,
         registry,
         taskPrompt: ctx.workerPrompt,
-        agentName: ctx.itemId,
+        agentName: ctx.workerName,
         runInBackground: true,
+        ...(ctx.capacityPermit !== undefined
+          ? {
+              capacityPermit: ctx.capacityPermit,
+              capacityOwnerId: ctx.jobId,
+            }
+          : {}),
       });
       if (opts.signal?.aborted === true) {
         if (outcome.kind !== "rejected") {
-          await control
-            .shutdown(outcome.thread.threadId, "session_shutdown")
-            .catch(() => {});
+          await control.shutdown(outcome.thread.threadId, "session_shutdown");
         }
         opts.signal.throwIfAborted();
       }
       if (outcome.kind === "rejected") {
-        throw new Error(
-          `agent-jobs resume spawn rejected for item ${ctx.itemId}: ${outcome.reason}`,
-        );
+        return outcome.category === "retryable_capacity"
+          ? { kind: "capacity_unavailable" as const }
+          : { kind: "rejected" as const, reason: outcome.reason };
       }
       const thread = outcome.thread;
       outstandingThreadIds.add(thread.threadId);
@@ -3460,16 +3914,28 @@ export async function resumeInterruptedAgentJobs(opts: {
       const threadFinished = thread
         .join()
         .then(() => undefined)
-        .catch(() => undefined)
-        .finally(() => outstandingThreadIds.delete(thread.threadId));
-      return { threadId: thread.threadId, threadFinished };
+        .catch(() => undefined);
+      return {
+        kind: "launched" as const,
+        threadId: thread.threadId,
+        threadFinished,
+      };
     },
     async cancelOutstanding() {
       await cancelOutstandingThreads();
     },
+    async retireItem(_jobId, _itemId, threadId) {
+      await control.shutdown(threadId, "csv_job_item_retired");
+      outstandingThreadIds.delete(threadId);
+    },
   };
   opts.signal?.throwIfAborted();
-  const resumed = await resumeAgentJobsFromRepository({ repository, spawn });
+  const resumed = await resumeAgentJobsFromRepository({
+    repository,
+    spawn,
+    outputRootCapability,
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+  });
   if (opts.signal?.aborted === true) {
     await cancelOutstandingThreads();
     opts.signal.throwIfAborted();
