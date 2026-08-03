@@ -1476,6 +1476,13 @@ export async function bootstrapLocalRuntimeSession(
         }
         clearActiveCostSidecar?.();
         clearActiveCostSidecar = null;
+        try {
+          const { shutdownCsvJobRecoverySupervisor } =
+            await import("./model-facing-tools.js");
+          await shutdownCsvJobRecoverySupervisor(workspaceRoot);
+        } catch (error) {
+          errors.push(error);
+        }
         if (sessionForShutdown !== null && agentControlForShutdown !== null) {
           await shutdownSessionLifecycle({
             session: sessionForShutdown,

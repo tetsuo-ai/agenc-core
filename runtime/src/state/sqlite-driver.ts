@@ -28,6 +28,7 @@ import { AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION } from "./migrations/012
 import { RUN_DURABILITY_SCHEMA_VERSION } from "./migrations/015_run_durability_schema.js";
 import { EFFECT_EVIDENCE_V2_SCHEMA_VERSION } from "./migrations/017_effect_evidence_v2.js";
 import { CSV_JOB_IDENTITY_REPLAY_SCHEMA_VERSION } from "./migrations/019_csv_job_identity_replay.js";
+import { CSV_JOB_SCHEDULER_SCHEMA_VERSION } from "./migrations/021_csv_job_scheduler.js";
 import { replayAtomicSessionSnapshotWrites } from "./atomic-snapshot-writes.js";
 
 export interface OpenStateDatabaseOptions {
@@ -48,6 +49,7 @@ export const STATE_PRE_V12_BACKUP_FILENAME = "agenc-state_1.pre-v12.sqlite";
 export const STATE_PRE_V15_BACKUP_FILENAME = "agenc-state_1.pre-v15.sqlite";
 export const STATE_PRE_V17_BACKUP_FILENAME = "agenc-state_1.pre-v17.sqlite";
 export const STATE_PRE_V19_BACKUP_FILENAME = "agenc-state_1.pre-v19.sqlite";
+export const STATE_PRE_V21_BACKUP_FILENAME = "agenc-state_1.pre-v21.sqlite";
 
 export type SqliteDatabase = BetterSqlite3.Database;
 export type SqliteStatement<
@@ -290,6 +292,14 @@ function applyStateMigrations(
           STATE_PRE_V19_BACKUP_FILENAME,
           CSV_JOB_IDENTITY_REPLAY_SCHEMA_VERSION,
           "pre-v19",
+        );
+      }
+      if (!hasAppliedMigrationVersion(db, CSV_JOB_SCHEDULER_SCHEMA_VERSION)) {
+        createPreMigrationStateBackupLocked(
+          paths,
+          STATE_PRE_V21_BACKUP_FILENAME,
+          CSV_JOB_SCHEDULER_SCHEMA_VERSION,
+          "pre-v21",
         );
       }
     }

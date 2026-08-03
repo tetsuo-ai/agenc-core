@@ -19,6 +19,7 @@ import {
   CSV_DEFAULT_ITEM_PAGE_SIZE,
   CSV_DEFAULT_MAX_CONCURRENCY,
   CSV_IMPORT_LEASE_SECONDS,
+  CSV_JOB_REGISTRATION_QUANTUM_ITEMS,
   CSV_JOB_CONTRACT_VERSION,
   CSV_JOB_IDENTITY_FORMAT_VERSION,
   CSV_MAX_COLUMNS,
@@ -44,8 +45,13 @@ import {
   CSV_OUTPUT_CONTRACT_VERSION,
   CSV_RESULT_BLOB_CHUNK_BYTES,
   CSV_RESULT_AVAILABILITIES,
+  CSV_RECOVERY_JOB_PAGE_SIZE,
+  CSV_RECOVERY_PAGE_ROWS,
   CSV_RESERVED_OUTPUT_HEADERS,
   CSV_TERMINAL_JOB_RETENTION_MS,
+  MAX_CSV_AUTOMATIC_FULL_RECONCILIATIONS_PER_JOB_LIFECYCLE,
+  MAX_CSV_JOB_REGISTRATION_HOLD_MS,
+  MAX_RECOVERED_CSV_JOBS,
   type CsvAgentJobItemStatus,
   type CsvAgentJobStatus,
   type CsvJobEffectReference,
@@ -147,6 +153,10 @@ export interface CsvAgentJob {
   readonly failedItems: number;
   readonly cancelledItems: number;
   readonly unknownOutcomeItems: number;
+  readonly reviewPendingItems: number;
+  readonly availableResults: number;
+  readonly unavailableAfterReviewResults: number;
+  readonly notProducedResults: number;
   readonly resultBytes: number;
   readonly resultReservedBytes: number;
   readonly stagingBytes: number;
@@ -154,6 +164,10 @@ export interface CsvAgentJob {
   readonly outputContractVersion?: number;
   readonly outputDigest?: string;
   readonly outputBytes: number;
+  readonly createdAtMs: number;
+  readonly automaticFullReconciliations: number;
+  readonly counterIntegrityState: "unchecked" | "ok" | "poisoned";
+  readonly counterIntegrityError?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly startedAt?: number;
@@ -246,6 +260,68 @@ export interface CsvAgentJobItemPage {
   readonly nextCursor?: CsvJobItemCursor;
 }
 
+/** Internal, trusted keyset used by the restart supervisor. */
+export interface CsvAgentJobSchedulerCursor {
+  readonly createdAtMs: number;
+  readonly jobId: string;
+}
+
+export interface CsvAgentJobSchedulerPage {
+  readonly jobs: ReadonlyArray<CsvAgentJob>;
+  readonly nextCursor?: CsvAgentJobSchedulerCursor;
+}
+
+/** Internal, trusted item keyset. Item state may change after this boundary. */
+export interface CsvAgentJobItemSchedulerCursor {
+  readonly rowIndex: number;
+  readonly itemId: string;
+}
+
+export interface CsvAgentJobItemSchedulerPage {
+  readonly items: ReadonlyArray<CsvAgentJobItem>;
+  readonly nextCursor?: CsvAgentJobItemSchedulerCursor;
+}
+
+export type CsvJobSupervisorRegistrationSubstate =
+  "unregistered" | "recovery_queued" | "registered" | "rotating" | "done";
+
+export interface CsvJobSupervisorState {
+  readonly epoch: number;
+  readonly jobCursor?: CsvAgentJobSchedulerCursor;
+  readonly nextQueueSequence: number;
+  readonly registeredJobs: number;
+  readonly epochScanComplete: boolean;
+  readonly backgroundScanRequired: boolean;
+  readonly updatedAtMs: number;
+}
+
+export interface CsvJobSupervisorRegistration {
+  readonly jobId: string;
+  readonly substate: CsvJobSupervisorRegistrationSubstate;
+  readonly supervisorEpoch: number;
+  readonly registrationGeneration: string;
+  readonly queueSequence: number;
+  readonly itemCursor?: CsvAgentJobItemSchedulerCursor;
+  readonly admittedItems: number;
+  readonly registeredAtMs?: number;
+  readonly lastAdmittedAtMs?: number;
+  readonly updatedAtMs: number;
+}
+
+export interface CsvJobSupervisorRegistrationClaim {
+  readonly supervisorEpoch: number;
+  readonly jobId: string;
+  readonly registrationGeneration: string;
+}
+
+export interface CsvJobCounterReconciliation {
+  readonly matches: boolean;
+  readonly rowVisits: number;
+  readonly automaticReconciliations: number;
+  readonly integrityState: "ok" | "poisoned";
+  readonly diagnostic?: string;
+}
+
 export interface CsvResultBlobChunk {
   readonly contractVersion: typeof CSV_JOB_CONTRACT_VERSION;
   readonly itemId: string;
@@ -305,6 +381,7 @@ export interface CsvDispatchEvidence {
   readonly idempotencyProfile?: string;
   readonly idempotencyProfileVersion?: number;
   readonly operationKey?: string;
+  readonly supervisorClaim?: CsvJobSupervisorRegistrationClaim;
 }
 
 export interface CsvDispatchAcknowledgement {
@@ -419,6 +496,10 @@ interface JobRow {
   failed_items: number;
   cancelled_items: number;
   unknown_outcome_items: number;
+  review_pending_items: number;
+  available_results: number;
+  unavailable_after_review_results: number;
+  not_produced_results: number;
   result_bytes: number;
   result_reserved_bytes: number;
   staging_bytes: number;
@@ -426,6 +507,10 @@ interface JobRow {
   output_contract_version: number | null;
   output_digest: string | null;
   output_bytes: number;
+  created_at_ms: number;
+  automatic_full_reconciliations: number;
+  counter_integrity_state: "unchecked" | "ok" | "poisoned";
+  counter_integrity_error: string | null;
   created_at: number;
   updated_at: number;
   started_at: number | null;
@@ -542,6 +627,30 @@ interface CsvJobItemStatusAccounting {
   readonly unknown_outcome_items: number;
 }
 
+interface SupervisorStateRow {
+  supervisor_epoch: number;
+  job_cursor_created_at_ms: number | null;
+  job_cursor_job_id: string | null;
+  next_queue_sequence: number;
+  registered_jobs: number;
+  epoch_scan_complete: number;
+  background_scan_required: number;
+  updated_at_ms: number;
+}
+
+interface SupervisorRegistrationRow {
+  job_id: string;
+  substate: CsvJobSupervisorRegistrationSubstate;
+  supervisor_epoch: number;
+  registration_generation: string;
+  queue_sequence: number;
+  item_cursor_row_index: number;
+  item_cursor_item_id: string | null;
+  admitted_items: number;
+  registered_at_ms: number | null;
+  last_admitted_at_ms: number | null;
+  updated_at_ms: number;
+}
 function decodeJob(row: JobRow): CsvAgentJob {
   return {
     id: row.id,
@@ -591,6 +700,10 @@ function decodeJob(row: JobRow): CsvAgentJob {
     failedItems: row.failed_items,
     cancelledItems: row.cancelled_items,
     unknownOutcomeItems: row.unknown_outcome_items,
+    reviewPendingItems: row.review_pending_items,
+    availableResults: row.available_results,
+    unavailableAfterReviewResults: row.unavailable_after_review_results,
+    notProducedResults: row.not_produced_results,
     resultBytes: row.result_bytes,
     resultReservedBytes: row.result_reserved_bytes,
     stagingBytes: row.staging_bytes,
@@ -600,6 +713,12 @@ function decodeJob(row: JobRow): CsvAgentJob {
       : {}),
     ...(row.output_digest !== null ? { outputDigest: row.output_digest } : {}),
     outputBytes: row.output_bytes,
+    createdAtMs: row.created_at_ms,
+    automaticFullReconciliations: row.automatic_full_reconciliations,
+    counterIntegrityState: row.counter_integrity_state,
+    ...(row.counter_integrity_error !== null
+      ? { counterIntegrityError: row.counter_integrity_error }
+      : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.started_at !== null ? { startedAt: row.started_at } : {}),
@@ -693,6 +812,53 @@ function decodeItem(row: ItemRow): CsvAgentJobItem {
     updatedAt: row.updated_at,
     ...(row.completed_at !== null ? { completedAt: row.completed_at } : {}),
     ...(row.reported_at !== null ? { reportedAt: row.reported_at } : {}),
+  };
+}
+
+function decodeSupervisorState(row: SupervisorStateRow): CsvJobSupervisorState {
+  return {
+    epoch: row.supervisor_epoch,
+    ...(row.job_cursor_created_at_ms !== null && row.job_cursor_job_id !== null
+      ? {
+          jobCursor: {
+            createdAtMs: row.job_cursor_created_at_ms,
+            jobId: row.job_cursor_job_id,
+          },
+        }
+      : {}),
+    nextQueueSequence: row.next_queue_sequence,
+    registeredJobs: row.registered_jobs,
+    epochScanComplete: row.epoch_scan_complete !== 0,
+    backgroundScanRequired: row.background_scan_required !== 0,
+    updatedAtMs: row.updated_at_ms,
+  };
+}
+
+function decodeSupervisorRegistration(
+  row: SupervisorRegistrationRow,
+): CsvJobSupervisorRegistration {
+  return {
+    jobId: row.job_id,
+    substate: row.substate,
+    supervisorEpoch: row.supervisor_epoch,
+    registrationGeneration: row.registration_generation,
+    queueSequence: row.queue_sequence,
+    ...(row.item_cursor_row_index >= 0 && row.item_cursor_item_id !== null
+      ? {
+          itemCursor: {
+            rowIndex: row.item_cursor_row_index,
+            itemId: row.item_cursor_item_id,
+          },
+        }
+      : {}),
+    admittedItems: row.admitted_items,
+    ...(row.registered_at_ms !== null
+      ? { registeredAtMs: row.registered_at_ms }
+      : {}),
+    ...(row.last_admitted_at_ms !== null
+      ? { lastAdmittedAtMs: row.last_admitted_at_ms }
+      : {}),
+    updatedAtMs: row.updated_at_ms,
   };
 }
 
@@ -816,6 +982,18 @@ function normalizePageLimit(limit: number | undefined): number {
     throw new Error("CSV item page limit must be a positive integer");
   }
   return Math.min(limit, CSV_MAX_ITEM_PAGE_SIZE);
+}
+
+function normalizeSchedulerLimit(
+  limit: number | undefined,
+  maximum: number,
+  label: string,
+): number {
+  const value = limit ?? maximum;
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new Error(`${label} must be between 1 and ${maximum}`);
+  }
+  return value;
 }
 
 interface Utf8Projection {
@@ -1880,6 +2058,426 @@ export class CsvAgentJobsRepository {
     return repository;
   }
 
+  getSupervisorState(): CsvJobSupervisorState {
+    const row = this.driver
+      .prepareState<[], SupervisorStateRow>(
+        `SELECT supervisor_epoch, job_cursor_created_at_ms,
+                job_cursor_job_id, next_queue_sequence, registered_jobs,
+                epoch_scan_complete, background_scan_required, updated_at_ms
+         FROM csv_job_supervisor_state WHERE singleton = 1`,
+      )
+      .get();
+    if (row === undefined) throw new Error("CSV supervisor state is missing");
+    return decodeSupervisorState(row);
+  }
+
+  /**
+   * Fence claims left by a dead supervisor and put their jobs back on the
+   * durable recovery queue without rewinding an already-admitted item cursor.
+   */
+  claimSupervisorOwnership(): CsvJobSupervisorState {
+    return this.driver.transactionImmediate(() => {
+      const prior = this.getSupervisorState();
+      const epoch = prior.epoch + 1;
+      const now = Date.now();
+      this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_registrations SET
+             substate = 'recovery_queued', supervisor_epoch = ?,
+             registration_generation = lower(hex(randomblob(16))),
+             admitted_items = 0, registered_at_ms = NULL,
+             last_admitted_at_ms = NULL, updated_at_ms = ?
+           WHERE substate IN ('recovery_queued', 'registered', 'rotating')`,
+        )
+        .run(epoch, now);
+      const updated = this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_state SET supervisor_epoch = ?,
+             registered_jobs = 0, updated_at_ms = ? WHERE singleton = 1`,
+        )
+        .run(epoch, now);
+      if (updated.changes !== 1) {
+        throw new Error("CSV supervisor state is missing");
+      }
+      return this.getSupervisorState();
+    });
+  }
+
+  setSupervisorBackgroundScanRequired(required: boolean): void {
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_job_supervisor_state
+         SET background_scan_required = ?, updated_at_ms = ?
+         WHERE singleton = 1`,
+      )
+      .run(required ? 1 : 0, Date.now());
+    if (updated.changes !== 1) {
+      throw new Error("CSV supervisor state is missing");
+    }
+  }
+
+  /**
+   * Persist one bounded job-keyset page as visibly queued registrations. The
+   * durable cursor advances in the same transaction, so a crash can repeat a
+   * page but cannot skip it.
+   */
+  queueNextSupervisorJobPage(
+    requestedLimit = CSV_RECOVERY_JOB_PAGE_SIZE,
+  ): number {
+    const requested = normalizeSchedulerLimit(
+      requestedLimit,
+      CSV_RECOVERY_JOB_PAGE_SIZE,
+      "CSV supervisor job page limit",
+    );
+    return this.driver.transactionImmediate(() => {
+      const state = this.getSupervisorState();
+      this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_registrations
+           SET substate = 'done', updated_at_ms = ?
+           WHERE substate = 'recovery_queued' AND NOT EXISTS (
+             SELECT 1 FROM csv_agent_jobs AS job
+             WHERE job.id = csv_job_supervisor_registrations.job_id
+               AND job.import_state = 'visible' AND job.retired_at IS NULL
+               AND job.execution_gate = 'ready'
+               AND job.counter_integrity_state <> 'poisoned'
+               AND job.status IN ('pending', 'running')
+               AND (job.pending_items > 0 OR job.running_items > 0)
+           )`,
+        )
+        .run(Date.now());
+      const page = this.listRunnableJobsPage({
+        limit: requested,
+        ...(state.jobCursor !== undefined ? { cursor: state.jobCursor } : {}),
+      });
+      let nextSequence = state.nextQueueSequence;
+      let queued = 0;
+      const insert = this.driver.prepareState(
+        `INSERT INTO csv_job_supervisor_registrations (
+           job_id, substate, supervisor_epoch, registration_generation,
+           queue_sequence, item_cursor_row_index, item_cursor_item_id,
+           admitted_items, registered_at_ms, last_admitted_at_ms, updated_at_ms
+         ) VALUES (?, 'recovery_queued', ?, ?, ?, -1, NULL, 0, NULL, NULL, ?)
+         ON CONFLICT(job_id) DO UPDATE SET
+           substate = 'recovery_queued',
+           supervisor_epoch = excluded.supervisor_epoch,
+           registration_generation = excluded.registration_generation,
+           queue_sequence = excluded.queue_sequence,
+           item_cursor_row_index = -1,
+           item_cursor_item_id = NULL,
+           admitted_items = 0,
+           registered_at_ms = NULL,
+           last_admitted_at_ms = NULL,
+           updated_at_ms = excluded.updated_at_ms
+         WHERE csv_job_supervisor_registrations.substate IN (
+           'unregistered', 'done'
+         )`,
+      );
+      for (const job of page.jobs) {
+        const result = insert.run(
+          job.id,
+          state.epoch,
+          randomUUID(),
+          nextSequence,
+          Date.now(),
+        );
+        if (result.changes === 0) continue;
+        nextSequence += 1;
+        queued += 1;
+      }
+      const lastJob = page.jobs.at(-1);
+      const nextCursor =
+        page.nextCursor ??
+        (lastJob === undefined
+          ? state.jobCursor
+          : { createdAtMs: lastJob.createdAtMs, jobId: lastJob.id });
+      const scanComplete = page.nextCursor === undefined;
+      this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_state SET
+             job_cursor_created_at_ms = ?, job_cursor_job_id = ?,
+             next_queue_sequence = ?, epoch_scan_complete = ?,
+             background_scan_required = ?, updated_at_ms = ?
+           WHERE singleton = 1`,
+        )
+        .run(
+          nextCursor?.createdAtMs ?? null,
+          nextCursor?.jobId ?? null,
+          nextSequence,
+          scanComplete ? 1 : 0,
+          scanComplete ? 0 : 1,
+          Date.now(),
+        );
+      return queued;
+    });
+  }
+
+  getSupervisorRegistration(
+    jobId: string,
+  ): CsvJobSupervisorRegistration | null {
+    const row = this.driver
+      .prepareState<[string], SupervisorRegistrationRow>(
+        `SELECT * FROM csv_job_supervisor_registrations WHERE job_id = ?`,
+      )
+      .get(jobId);
+    return row === undefined ? null : decodeSupervisorRegistration(row);
+  }
+
+  listSupervisorRegistrations(opts: {
+    readonly substate: CsvJobSupervisorRegistrationSubstate;
+    readonly limit?: number;
+  }): ReadonlyArray<CsvJobSupervisorRegistration> {
+    const limit = normalizeSchedulerLimit(
+      opts.limit,
+      MAX_RECOVERED_CSV_JOBS,
+      "CSV supervisor registration list limit",
+    );
+    return this.driver
+      .prepareState<
+        [CsvJobSupervisorRegistrationSubstate, number],
+        SupervisorRegistrationRow
+      >(
+        `SELECT * FROM csv_job_supervisor_registrations
+         WHERE substate = ? ORDER BY queue_sequence ASC, job_id ASC LIMIT ?`,
+      )
+      .all(opts.substate, limit)
+      .map(decodeSupervisorRegistration);
+  }
+
+  registerNextSupervisorJob(): CsvJobSupervisorRegistration | null {
+    return this.driver.transactionImmediate(() => {
+      const state = this.getSupervisorState();
+      if (state.registeredJobs >= MAX_RECOVERED_CSV_JOBS) return null;
+      const row = this.driver
+        .prepareState<[], SupervisorRegistrationRow>(
+          `SELECT registration.*
+           FROM csv_job_supervisor_registrations AS registration
+           JOIN csv_agent_jobs AS job ON job.id = registration.job_id
+           WHERE registration.substate = 'recovery_queued'
+             AND job.import_state = 'visible' AND job.retired_at IS NULL
+             AND job.execution_gate = 'ready'
+             AND job.counter_integrity_state <> 'poisoned'
+             AND job.status IN ('pending', 'running')
+             AND (job.pending_items > 0 OR job.running_items > 0)
+           ORDER BY registration.queue_sequence ASC, registration.job_id ASC
+           LIMIT 1`,
+        )
+        .get();
+      if (row === undefined) return null;
+      const generation = randomUUID();
+      const now = Date.now();
+      const update = this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_registrations SET
+             substate = 'registered', supervisor_epoch = ?,
+             registration_generation = ?,
+             admitted_items = 0, registered_at_ms = ?,
+             last_admitted_at_ms = NULL, updated_at_ms = ?
+           WHERE job_id = ? AND substate = 'recovery_queued'
+             AND registration_generation = ?`,
+        )
+        .run(
+          state.epoch,
+          generation,
+          now,
+          now,
+          row.job_id,
+          row.registration_generation,
+        );
+      if (update.changes !== 1) return null;
+      const counted = this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_state SET
+             registered_jobs = registered_jobs + 1, updated_at_ms = ?
+           WHERE singleton = 1 AND registered_jobs < ?`,
+        )
+        .run(now, MAX_RECOVERED_CSV_JOBS);
+      if (counted.changes !== 1) {
+        throw new Error("CSV supervisor registration capacity changed");
+      }
+      return this.getSupervisorRegistration(row.job_id);
+    });
+  }
+
+  rotateSupervisorRegistration(
+    claim: CsvJobSupervisorRegistrationClaim,
+    resetItemCursor: boolean,
+  ): boolean {
+    return this.driver.transactionImmediate(() => {
+      const registration = this.getSupervisorRegistration(claim.jobId);
+      if (
+        registration === null ||
+        registration.substate !== "registered" ||
+        registration.supervisorEpoch !== claim.supervisorEpoch ||
+        registration.registrationGeneration !== claim.registrationGeneration
+      ) {
+        return false;
+      }
+      const otherJobsWait =
+        this.driver
+          .prepareState<[string], { readonly present: number }>(
+            `SELECT 1 AS present FROM csv_job_supervisor_registrations
+             WHERE substate = 'recovery_queued' AND job_id <> ? LIMIT 1`,
+          )
+          .get(claim.jobId) !== undefined;
+      const heldForMs =
+        Date.now() - (registration.registeredAtMs ?? registration.updatedAtMs);
+      if (
+        !resetItemCursor &&
+        (!otherJobsWait ||
+          (registration.admittedItems < CSV_JOB_REGISTRATION_QUANTUM_ITEMS &&
+            heldForMs < MAX_CSV_JOB_REGISTRATION_HOLD_MS))
+      ) {
+        return false;
+      }
+      const state = this.getSupervisorState();
+      const now = Date.now();
+      const rotating = this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_registrations SET
+             substate = 'rotating', updated_at_ms = ?
+           WHERE job_id = ? AND substate = 'registered'
+             AND supervisor_epoch = ? AND registration_generation = ?`,
+        )
+        .run(
+          now,
+          claim.jobId,
+          claim.supervisorEpoch,
+          claim.registrationGeneration,
+        );
+      if (rotating.changes !== 1) return false;
+      this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_registrations SET
+             substate = 'recovery_queued', supervisor_epoch = ?,
+             registration_generation = ?, queue_sequence = ?,
+             item_cursor_row_index = CASE WHEN ? THEN -1
+               ELSE item_cursor_row_index END,
+             item_cursor_item_id = CASE WHEN ? THEN NULL
+               ELSE item_cursor_item_id END,
+             admitted_items = 0, registered_at_ms = NULL,
+             last_admitted_at_ms = NULL, updated_at_ms = ?
+           WHERE job_id = ? AND substate = 'rotating'`,
+        )
+        .run(
+          state.epoch,
+          randomUUID(),
+          state.nextQueueSequence,
+          resetItemCursor ? 1 : 0,
+          resetItemCursor ? 1 : 0,
+          now,
+          claim.jobId,
+        );
+      const counted = this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_state SET next_queue_sequence = ?,
+             registered_jobs = registered_jobs - 1, updated_at_ms = ?
+           WHERE singleton = 1 AND registered_jobs > 0`,
+        )
+        .run(state.nextQueueSequence + 1, now);
+      if (counted.changes !== 1) {
+        throw new Error("CSV supervisor registration count is inconsistent");
+      }
+      return true;
+    });
+  }
+
+  finishSupervisorRegistration(
+    claim: CsvJobSupervisorRegistrationClaim,
+  ): boolean {
+    return this.driver.transactionImmediate(() => {
+      const now = Date.now();
+      const updated = this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_registrations SET
+             substate = 'done', updated_at_ms = ?
+           WHERE job_id = ? AND substate IN ('registered', 'rotating')
+             AND supervisor_epoch = ? AND registration_generation = ?`,
+        )
+        .run(
+          now,
+          claim.jobId,
+          claim.supervisorEpoch,
+          claim.registrationGeneration,
+        );
+      if (updated.changes !== 1) return false;
+      const counted = this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_state SET
+             registered_jobs = registered_jobs - 1, updated_at_ms = ?
+           WHERE singleton = 1 AND registered_jobs > 0`,
+        )
+        .run(now);
+      if (counted.changes !== 1) {
+        throw new Error("CSV supervisor registration count is inconsistent");
+      }
+      return true;
+    });
+  }
+
+  listReadyItemsForSupervisor(
+    claim: CsvJobSupervisorRegistrationClaim,
+    limit = CSV_RECOVERY_PAGE_ROWS,
+  ): CsvAgentJobItemSchedulerPage {
+    const registration = this.getSupervisorRegistration(claim.jobId);
+    if (
+      registration === null ||
+      registration.substate !== "registered" ||
+      registration.supervisorEpoch !== claim.supervisorEpoch ||
+      registration.registrationGeneration !== claim.registrationGeneration
+    ) {
+      throw new Error(`stale CSV supervisor claim for job ${claim.jobId}`);
+    }
+    return this.listItemsForScheduler({
+      jobId: claim.jobId,
+      status: "pending",
+      limit: normalizeSchedulerLimit(
+        limit,
+        CSV_RECOVERY_PAGE_ROWS,
+        "CSV supervisor ready page limit",
+      ),
+      ...(registration.itemCursor !== undefined
+        ? { cursor: registration.itemCursor }
+        : {}),
+    });
+  }
+
+  beginNextSupervisorEpochIfNeeded(): boolean {
+    return this.driver.transactionImmediate(() => {
+      const state = this.getSupervisorState();
+      if (!state.epochScanComplete) return false;
+      const unregisteredEligible =
+        this.driver
+          .prepareState<[], { readonly present: number }>(
+            `SELECT 1 AS present
+             FROM csv_agent_jobs AS job
+             LEFT JOIN csv_job_supervisor_registrations AS registration
+               ON registration.job_id = job.id
+             WHERE job.import_state = 'visible' AND job.retired_at IS NULL
+               AND job.execution_gate = 'ready'
+               AND job.counter_integrity_state <> 'poisoned'
+               AND job.status IN ('pending', 'running')
+               AND (job.pending_items > 0 OR job.running_items > 0)
+               AND (registration.job_id IS NULL OR registration.substate IN (
+                 'unregistered', 'done'
+               ))
+             LIMIT 1`,
+          )
+          .get() !== undefined;
+      if (!unregisteredEligible) return false;
+      const updated = this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_state SET
+             supervisor_epoch = supervisor_epoch + 1,
+             job_cursor_created_at_ms = NULL, job_cursor_job_id = NULL,
+             epoch_scan_complete = 0, background_scan_required = 1,
+             updated_at_ms = ? WHERE singleton = 1`,
+        )
+        .run(Date.now());
+      return updated.changes === 1;
+    });
+  }
+
   private getQuota(): CsvStorageQuotaRow {
     const quota = this.driver
       .prepareState<[], CsvStorageQuotaRow>(
@@ -1988,10 +2586,10 @@ export class CsvAgentJobsRepository {
           import_lease_generation,
           identity_format_version, input_bytes, max_items, max_result_bytes,
           max_result_bytes_per_job,
-          created_at, updated_at
+          created_at, updated_at, created_at_ms
         ) VALUES (
           ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?,
-          'staging', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          'staging', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )`,
         )
         .run(
@@ -2023,6 +2621,7 @@ export class CsvAgentJobsRepository {
           maxResultBytesPerJob,
           now,
           now,
+          Date.now(),
         );
       this.driver
         .prepareState(
@@ -2648,6 +3247,69 @@ export class CsvAgentJobsRepository {
       )
       .all(...binds)
       .map(decodeJob);
+  }
+
+  /**
+   * Stable keyset page for the restart supervisor. `created_at` and `id` never
+   * change, so progress cannot skip or duplicate a job when item transitions
+   * update the job's ordinary `updated_at` ordering.
+   */
+  listRunnableJobsPage(
+    opts: {
+      readonly cursor?: CsvAgentJobSchedulerCursor;
+      readonly limit?: number;
+    } = {},
+  ): CsvAgentJobSchedulerPage {
+    const limit = normalizeSchedulerLimit(
+      opts.limit,
+      CSV_RECOVERY_JOB_PAGE_SIZE,
+      "CSV supervisor job page limit",
+    );
+    const where = [
+      "import_state = 'visible'",
+      "retired_at IS NULL",
+      "execution_gate = 'ready'",
+      "counter_integrity_state <> 'poisoned'",
+      "status IN ('pending', 'running')",
+      "(pending_items > 0 OR running_items > 0)",
+    ];
+    const binds: unknown[] = [];
+    if (opts.cursor !== undefined) {
+      if (
+        !Number.isSafeInteger(opts.cursor.createdAtMs) ||
+        opts.cursor.createdAtMs < 0 ||
+        opts.cursor.jobId.length === 0
+      ) {
+        throw new Error("invalid CSV supervisor job cursor");
+      }
+      where.push("(created_at_ms > ? OR (created_at_ms = ? AND id > ?))");
+      binds.push(
+        opts.cursor.createdAtMs,
+        opts.cursor.createdAtMs,
+        opts.cursor.jobId,
+      );
+    }
+    binds.push(limit + 1);
+    const rows = this.driver
+      .prepareState<unknown[], JobRow>(
+        `SELECT * FROM csv_agent_jobs
+         WHERE ${where.join(" AND ")}
+         ORDER BY created_at_ms ASC, id ASC LIMIT ?`,
+      )
+      .all(...binds);
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+    return {
+      jobs: visible.map(decodeJob),
+      ...(rows.length > visible.length && last !== undefined
+        ? {
+            nextCursor: {
+              createdAtMs: last.created_at_ms,
+              jobId: last.id,
+            },
+          }
+        : {}),
+    };
   }
 
   retireJob(jobId: string): void {
@@ -3795,6 +4457,89 @@ export class CsvAgentJobsRepository {
       .map(decodeItem);
   }
 
+  /**
+   * Full-item keyset page for scheduler/recovery internals. Unlike the opaque
+   * inspection cursor, this trusted boundary remains valid if the boundary
+   * item's status changes while a worker is running.
+   */
+  listItemsForScheduler(opts: {
+    readonly jobId: string;
+    readonly status?: CsvAgentJobItemStatus;
+    readonly cursor?: CsvAgentJobItemSchedulerCursor;
+    readonly limit?: number;
+  }): CsvAgentJobItemSchedulerPage {
+    const limit = normalizeSchedulerLimit(
+      opts.limit,
+      CSV_RECOVERY_PAGE_ROWS,
+      "CSV supervisor item page limit",
+    );
+    const where = [
+      "item.job_id = ?",
+      "job.import_state = 'visible'",
+      "job.retired_at IS NULL",
+    ];
+    const binds: unknown[] = [opts.jobId];
+    if (opts.status !== undefined) {
+      where.push("item.status = ?");
+      binds.push(opts.status);
+    }
+    if (opts.cursor !== undefined) {
+      if (
+        !Number.isSafeInteger(opts.cursor.rowIndex) ||
+        opts.cursor.rowIndex < 0 ||
+        opts.cursor.itemId.length === 0
+      ) {
+        throw new Error("invalid CSV supervisor item cursor");
+      }
+      where.push(
+        "(item.row_index > ? OR (item.row_index = ? AND item.item_id > ?))",
+      );
+      binds.push(
+        opts.cursor.rowIndex,
+        opts.cursor.rowIndex,
+        opts.cursor.itemId,
+      );
+    }
+    binds.push(limit + 1);
+    const rows = this.driver
+      .prepareState<unknown[], ItemRow>(
+        `SELECT item.* FROM csv_agent_job_items AS item
+         JOIN csv_agent_jobs AS job ON job.id = item.job_id
+         WHERE ${where.join(" AND ")}
+         ORDER BY item.row_index ASC, item.item_id ASC LIMIT ?`,
+      )
+      .all(...binds);
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+    return {
+      items: visible.map(decodeItem),
+      ...(rows.length > visible.length && last !== undefined
+        ? {
+            nextCursor: {
+              rowIndex: last.row_index,
+              itemId: last.item_id,
+            },
+          }
+        : {}),
+    };
+  }
+
+  *iterateItemsForScheduler(
+    jobId: string,
+    limit = CSV_RECOVERY_PAGE_ROWS,
+  ): IterableIterator<CsvAgentJobItem> {
+    let cursor: CsvAgentJobItemSchedulerCursor | undefined;
+    do {
+      const page = this.listItemsForScheduler({
+        jobId,
+        limit,
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      yield* page.items;
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+  }
+
   listItemsPage(opts: {
     readonly jobId: string;
     readonly status?: CsvAgentJobItemStatus;
@@ -3923,24 +4668,6 @@ export class CsvAgentJobsRepository {
   getSummary(jobId: string): CsvAgentJobSummary | null {
     const job = this.getJob(jobId);
     if (job === null) return null;
-    const availability = this.driver
-      .prepareState<
-        [string],
-        {
-          available: number;
-          unavailable: number;
-          not_produced: number;
-          review_pending: number;
-        }
-      >(
-        `SELECT
-           SUM(result_availability = 'available') AS available,
-           SUM(result_availability = 'unavailable_after_review') AS unavailable,
-           SUM(result_availability = 'not_produced') AS not_produced,
-           SUM(review_status = 'pending') AS review_pending
-         FROM csv_agent_job_items WHERE job_id = ?`,
-      )
-      .get(jobId);
     return {
       contractVersion: CSV_JOB_CONTRACT_VERSION,
       jobId,
@@ -3952,11 +4679,11 @@ export class CsvAgentJobsRepository {
       failedItems: job.failedItems,
       cancelledItems: job.cancelledItems,
       unknownOutcomeItems: job.unknownOutcomeItems,
-      reviewPendingItems: availability?.review_pending ?? 0,
+      reviewPendingItems: job.reviewPendingItems,
       resultBytes: job.resultBytes,
-      availableResults: availability?.available ?? 0,
-      unavailableAfterReviewResults: availability?.unavailable ?? 0,
-      notProducedResults: availability?.not_produced ?? 0,
+      availableResults: job.availableResults,
+      unavailableAfterReviewResults: job.unavailableAfterReviewResults,
+      notProducedResults: job.notProducedResults,
     };
   }
 
@@ -4124,6 +4851,12 @@ export class CsvAgentJobsRepository {
     }
     const now = nowSeconds();
     this.driver.transactionImmediate(() => {
+      if (
+        evidence.supervisorClaim !== undefined &&
+        evidence.supervisorClaim.jobId !== jobId
+      ) {
+        throw new Error("CSV supervisor claim job identity changed");
+      }
       const job = this.getJob(jobId);
       if (job === null || !["pending", "running"].includes(job.status)) {
         throw new Error(`CSV item ${jobId}/${itemId} is not dispatchable`);
@@ -4184,6 +4917,47 @@ export class CsvAgentJobsRepository {
         );
       if (result.changes !== 1) {
         throw new Error(`CSV item ${jobId}/${itemId} is not dispatchable`);
+      }
+      if (evidence.supervisorClaim !== undefined) {
+        const itemBoundary = this.driver
+          .prepareState<[string, string], { readonly row_index: number }>(
+            `SELECT row_index FROM csv_agent_job_items
+             WHERE job_id = ? AND item_id = ?`,
+          )
+          .get(jobId, itemId);
+        if (itemBoundary === undefined) {
+          throw new Error(`CSV item ${jobId}/${itemId} disappeared`);
+        }
+        const claim = evidence.supervisorClaim;
+        const claimed = this.driver
+          .prepareState(
+            `UPDATE csv_job_supervisor_registrations SET
+               item_cursor_row_index = ?, item_cursor_item_id = ?,
+               admitted_items = admitted_items + 1,
+               last_admitted_at_ms = ?, updated_at_ms = ?
+             WHERE job_id = ? AND substate = 'registered'
+               AND supervisor_epoch = ? AND registration_generation = ?
+               AND (
+                 item_cursor_row_index = -1
+                 OR item_cursor_row_index < ?
+                 OR (item_cursor_row_index = ? AND item_cursor_item_id < ?)
+               )`,
+          )
+          .run(
+            itemBoundary.row_index,
+            itemId,
+            Date.now(),
+            Date.now(),
+            jobId,
+            claim.supervisorEpoch,
+            claim.registrationGeneration,
+            itemBoundary.row_index,
+            itemBoundary.row_index,
+            itemId,
+          );
+        if (claimed.changes !== 1) {
+          throw new Error(`stale CSV supervisor claim for job ${jobId}`);
+        }
       }
       const jobReservation = this.driver
         .prepareState(
@@ -4955,15 +5729,6 @@ export class CsvAgentJobsRepository {
 
   getJobProgress(jobId: string): CsvAgentJobProgress {
     const job = this.getJob(jobId);
-    const reviewPendingItems =
-      job === null
-        ? 0
-        : (this.driver
-            .prepareState<[string], { readonly count: number }>(
-              `SELECT COUNT(*) AS count FROM csv_agent_job_items
-               WHERE job_id = ? AND review_status = 'pending'`,
-            )
-            .get(jobId)?.count ?? 0);
     return {
       totalItems: job?.totalItems ?? 0,
       pendingItems: job?.pendingItems ?? 0,
@@ -4972,8 +5737,148 @@ export class CsvAgentJobsRepository {
       failedItems: job?.failedItems ?? 0,
       cancelledItems: job?.cancelledItems ?? 0,
       unknownOutcomeItems: job?.unknownOutcomeItems ?? 0,
-      reviewPendingItems,
+      reviewPendingItems: job?.reviewPendingItems ?? 0,
     };
+  }
+
+  reconcileJobCounters(
+    jobId: string,
+    phase: "startup" | "finalization" | "anomaly" | "operator",
+  ): CsvJobCounterReconciliation {
+    return this.driver.transactionImmediate(() => {
+      const job = this.getJob(jobId);
+      if (job === null) throw new Error(`unknown CSV job ${jobId}`);
+      const automatic = phase !== "operator";
+      const priorAutomaticReconciliations = job.automaticFullReconciliations;
+      if (
+        automatic &&
+        priorAutomaticReconciliations >=
+          MAX_CSV_AUTOMATIC_FULL_RECONCILIATIONS_PER_JOB_LIFECYCLE
+      ) {
+        const diagnostic =
+          "CSV counter reconciliation limit exhausted before " + phase;
+        this.poisonJobCounterIntegrity(jobId, diagnostic);
+        return {
+          matches: false,
+          rowVisits: 0,
+          automaticReconciliations: priorAutomaticReconciliations,
+          integrityState: "poisoned",
+          diagnostic,
+        };
+      }
+      const aggregate = this.driver
+        .prepareState<
+          [string],
+          {
+            readonly total_items: number;
+            readonly pending_items: number;
+            readonly running_items: number;
+            readonly completed_items: number;
+            readonly failed_items: number;
+            readonly cancelled_items: number;
+            readonly unknown_outcome_items: number;
+            readonly review_pending_items: number;
+            readonly available_results: number;
+            readonly unavailable_after_review_results: number;
+            readonly not_produced_results: number;
+            readonly result_bytes: number;
+          }
+        >(
+          `SELECT
+             COUNT(*) AS total_items,
+             COALESCE(SUM(status = 'pending'), 0) AS pending_items,
+             COALESCE(SUM(status = 'running'), 0) AS running_items,
+             COALESCE(SUM(status = 'completed'), 0) AS completed_items,
+             COALESCE(SUM(status = 'failed'), 0) AS failed_items,
+             COALESCE(SUM(status = 'cancelled'), 0) AS cancelled_items,
+             COALESCE(SUM(status = 'unknown_outcome'), 0)
+               AS unknown_outcome_items,
+             COALESCE(SUM(review_status = 'pending'), 0)
+               AS review_pending_items,
+             COALESCE(SUM(result_availability = 'available'), 0)
+               AS available_results,
+             COALESCE(SUM(
+               result_availability = 'unavailable_after_review'
+             ), 0) AS unavailable_after_review_results,
+             COALESCE(SUM(result_availability = 'not_produced'), 0)
+               AS not_produced_results,
+             COALESCE(SUM(result_size_bytes), 0) AS result_bytes
+           FROM csv_agent_job_items WHERE job_id = ?`,
+        )
+        .get(jobId);
+      if (aggregate === undefined) {
+        throw new Error(`cannot aggregate CSV job ${jobId}`);
+      }
+      const expected = {
+        total_items: job.totalItems,
+        pending_items: job.pendingItems,
+        running_items: job.runningItems,
+        completed_items: job.completedItems,
+        failed_items: job.failedItems,
+        cancelled_items: job.cancelledItems,
+        unknown_outcome_items: job.unknownOutcomeItems,
+        review_pending_items: job.reviewPendingItems,
+        available_results: job.availableResults,
+        unavailable_after_review_results: job.unavailableAfterReviewResults,
+        not_produced_results: job.notProducedResults,
+        result_bytes: job.resultBytes,
+      };
+      const matches = Object.entries(expected).every(
+        ([key, value]) => aggregate[key as keyof typeof aggregate] === value,
+      );
+      const automaticReconciliations =
+        priorAutomaticReconciliations + (automatic ? 1 : 0);
+      const diagnostic = matches
+        ? undefined
+        : truncateUtf8(
+            `CSV counter integrity mismatch during ${phase}: expected=${JSON.stringify(
+              expected,
+            )} observed=${JSON.stringify(aggregate)}`,
+            CSV_ITEM_TEXT_PROJECTION_BYTES * 4,
+          ).value;
+      const updated = this.driver
+        .prepareState(
+          `UPDATE csv_agent_jobs SET
+             automatic_full_reconciliations = ?,
+             counter_integrity_state = ?, counter_integrity_error = ?,
+             updated_at = ?
+           WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL`,
+        )
+        .run(
+          automaticReconciliations,
+          matches ? "ok" : "poisoned",
+          diagnostic ?? null,
+          nowSeconds(),
+          jobId,
+        );
+      if (updated.changes !== 1) {
+        throw new Error(`cannot record CSV counter integrity for ${jobId}`);
+      }
+      return {
+        matches,
+        rowVisits: aggregate.total_items,
+        automaticReconciliations,
+        integrityState: matches ? "ok" : "poisoned",
+        ...(diagnostic !== undefined ? { diagnostic } : {}),
+      };
+    });
+  }
+
+  private poisonJobCounterIntegrity(jobId: string, diagnostic: string): void {
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_agent_jobs SET counter_integrity_state = 'poisoned',
+           counter_integrity_error = ?, updated_at = ?
+         WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL`,
+      )
+      .run(
+        truncateUtf8(diagnostic, CSV_ITEM_TEXT_PROJECTION_BYTES * 4).value,
+        nowSeconds(),
+        jobId,
+      );
+    if (updated.changes !== 1) {
+      throw new Error(`cannot poison CSV counter integrity for ${jobId}`);
+    }
   }
 
   refreshJobOutcome(jobId: string): CsvAgentJobStatus {
@@ -4985,14 +5890,7 @@ export class CsvAgentJobsRepository {
       if (job.runningItems > 0 || job.pendingItems > 0) {
         status = job.startedAt === undefined ? "pending" : "running";
       } else if (job.unknownOutcomeItems > 0) {
-        const pendingReviews =
-          this.driver
-            .prepareState<[string], { count: number }>(
-              `SELECT COUNT(*) AS count FROM csv_agent_job_items
-             WHERE job_id = ? AND status = 'unknown_outcome'
-               AND review_status = 'pending'`,
-            )
-            .get(jobId)?.count ?? 0;
+        const pendingReviews = job.reviewPendingItems;
         status =
           pendingReviews > 0
             ? "needs_review"
