@@ -101,6 +101,7 @@ import { executeTools } from "../phases/execute-tools.js";
 import { drainPendingExtraction } from "../services/extractMemories/extractMemories.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
 import { runSessionMemoryPostSamplingHook } from "../memory/session/sessionMemory.js";
+import { createAdmittedMemorySelector } from "../memory/admitted-selector.js";
 import {
   applyPendingBudgetContinuation,
   postSampleRecovery,
@@ -3002,6 +3003,7 @@ async function prepareSamplingRequestBoundary(
       ? { effectsPolicy: "local_read_only" as const }
       : {}),
     sessionKey: session,
+    admittedMemorySelector: createAdmittedMemorySelector(session),
     turnProvenance: {
       turnId: ctx.subId,
       rootHumanTurn,

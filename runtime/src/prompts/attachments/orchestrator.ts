@@ -45,6 +45,8 @@ import { relevantMemoriesProducer } from "./relevant-memories.js";
 import { skillListingProducer } from "./skill-listing.js";
 import type { Attachment } from "./types.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
+import type { AdmittedMemorySelector } from "../../memory/recall-contract.js";
+import { isMemoryRecallAbort } from "../../memory/recall-contract.js";
 
 /**
  * Inputs every producer receives. Mirrors the upstream donor's
@@ -52,6 +54,11 @@ import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.
  * AgenC types.
  */
 export interface GetAttachmentsOptions {
+  /**
+   * Narrow, admission-aware memory selection dependency. Producers never
+   * receive ambient Session authority and fall back lexically when absent.
+   */
+  readonly admittedMemorySelector?: AdmittedMemorySelector;
   /**
    * Bounds producer-side effects for authority-scoped turns. Editor
    * interactions use `local_read_only`: the main model request still runs,
@@ -211,9 +218,9 @@ export const __INTERNAL = {
  * Run every producer in parallel and return the flattened attachment
  * list.
  *
- * Producer failures are logged (per producer) and treated as empty
- * outputs — one failing producer must not block the others. Matches
- * AgenC's `maybe()` wrapper at `attachments.ts:1006`.
+ * Non-cancellation producer failures are logged (per producer) and treated as
+ * empty outputs so one failing producer does not block the others. Caller
+ * cancellation retains its exact reason and is propagated after settlement.
  */
 export async function getAttachments(
   opts: GetAttachmentsOptions,
@@ -228,6 +235,9 @@ export async function getAttachments(
     if (result.status === "fulfilled") {
       all.push(...result.value);
       continue;
+    }
+    if (isMemoryRecallAbort(result.reason, opts.signal)) {
+      throw opts.signal.reason ?? result.reason;
     }
     // Producer threw. Producer authors are responsible for not throwing,
     // but we never let one failure block the others. Surface to console

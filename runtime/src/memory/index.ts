@@ -12,7 +12,6 @@
  *   - Session-memory services keep their own session/turn-context boundary.
  */
 import { memoryAge, memoryFreshnessText } from './age.js'
-import type { RelevantMemory } from './find-relevant.js'
 
 type AgenCMdModule = typeof import('./agencmd.js')
 
@@ -23,7 +22,15 @@ export {
   memoryFreshnessText,
 } from './age.js'
 
-export type { RelevantMemory } from './find-relevant.js'
+export {
+  findRelevantMemories,
+  type FindRelevantMemoriesOptions,
+  type RelevantMemory,
+} from './find-relevant.js'
+export {
+  type AdmittedMemorySelector,
+  type MemoryRecallMode,
+} from './recall-contract.js'
 export type { ExternalAgenCMdInclude, MemoryFileInfo } from './agencmd.js'
 
 export {
@@ -57,6 +64,8 @@ export {
 export {
   formatMemoryManifest,
   MAX_MEMORY_FILES,
+  readMemoryContent,
+  scanMemoryRoots,
   scanMemoryFiles,
   type MemoryHeader,
 } from './scan.js'
@@ -110,24 +119,6 @@ export function formatRelevantMemoryHeader(
   return staleness
     ? `${staleness}\n\nMemory: ${path}:`
     : `Memory (saved ${memoryAge(mtimeMs)}): ${path}:`
-}
-
-export async function findRelevantMemories(
-  query: string,
-  memoryDir: string,
-  signal: AbortSignal,
-  recentTools: readonly string[] = [],
-  alreadySurfaced: ReadonlySet<string> = new Set(),
-): Promise<RelevantMemory[]> {
-  // Keep the side-query chain out of scan/path-only imports.
-  const memoryRecall = await import('./find-relevant.js')
-  return memoryRecall.findRelevantMemories(
-    query,
-    memoryDir,
-    signal,
-    recentTools,
-    alreadySurfaced,
-  )
 }
 
 export async function getMemoryFiles(

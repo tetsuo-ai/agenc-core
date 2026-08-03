@@ -70,15 +70,12 @@ describe("attachments orchestrator", () => {
     _resetAttachmentTrackingStateForTest(opts.sessionKey);
   });
 
-  test("returns an empty list even when the abort signal is already aborted", async () => {
-    // Producer authors are expected to honor the signal; with no
-    // producers registered we still resolve cleanly. This pins the
-    // orchestrator contract — never throw on the consumer's behalf.
+  test("propagates the original reason when attachment collection is aborted", async () => {
     const ac = new AbortController();
-    ac.abort();
+    const reason = new Error("cancel attachment collection");
+    ac.abort(reason);
     const opts = makeOpts({ signal: ac.signal });
-    const out = await getAttachments(opts);
-    expect(out).toEqual([]);
+    await expect(getAttachments(opts)).rejects.toBe(reason);
     _resetAttachmentTrackingStateForTest(opts.sessionKey);
   });
 

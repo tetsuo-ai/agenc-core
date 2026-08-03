@@ -7,19 +7,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { getAttachmentTrackingState } from "../../session/attachment-state.js";
-import { sideQuery } from "../../utils/sideQuery.js";
+import type {
+  AdmittedMemorySelector,
+  MemorySelectorRequest,
+} from "../../memory/recall-contract.js";
 import type { GetAttachmentsOptions } from "./orchestrator.js";
 import { relevantMemoriesProducer } from "./relevant-memories.js";
-
-vi.mock("../../utils/sideQuery.js", () => ({
-  sideQuery: vi.fn(),
-}));
 
 let root: string;
 let cwd: string;
 let agencHome: string;
 let savedAgencHome: string | undefined;
 let savedDisableAutoMemory: string | undefined;
+let selectedMemoryTitle = "";
+const selectorCall = vi.fn(
+  async (request: MemorySelectorRequest) => ({
+    kind: "selected" as const,
+    candidateIds: request.candidates
+      .filter((candidate) => candidate.title === selectedMemoryTitle)
+      .map((candidate) => candidate.id),
+  }),
+);
+const admittedMemorySelector: AdmittedMemorySelector = {
+  select: selectorCall,
+};
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "agenc-relevant-memory-"));
@@ -31,7 +42,8 @@ beforeEach(() => {
   savedDisableAutoMemory = process.env.AGENC_DISABLE_AUTO_MEMORY;
   process.env.AGENC_HOME = agencHome;
   delete process.env.AGENC_DISABLE_AUTO_MEMORY;
-  vi.mocked(sideQuery).mockReset();
+  selectedMemoryTitle = "";
+  selectorCall.mockClear();
 });
 
 afterEach(() => {
@@ -61,6 +73,7 @@ function makeOpts(
     subagentDepth: 0,
     signal: new AbortController().signal,
     agencHome,
+    admittedMemorySelector,
     ...partial,
   };
 }
@@ -82,14 +95,7 @@ function writeMemory(
 }
 
 function selectMemory(name: string): void {
-  vi.mocked(sideQuery).mockResolvedValue({
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({ selected_memories: [name] }),
-      },
-    ],
-  } as never);
+  selectedMemoryTitle = name.replace(/\.md$/u, "");
 }
 
 describe("relevantMemoriesProducer", () => {
@@ -100,17 +106,26 @@ describe("relevantMemoriesProducer", () => {
       trackingState,
     );
     expect(out).toEqual([]);
-    expect(sideQuery).not.toHaveBeenCalled();
+    expect(selectorCall).not.toHaveBeenCalled();
   });
 
-  test("skips one-word prompts that cannot drive useful recall", async () => {
+  test("recalls a matching memory for a one-word prompt", async () => {
+    const memoryPath = writeMemory(
+      join(agencHome, "memory"),
+      "browser.md",
+      "Browser guidance",
+      "Use the browser workflow.",
+    );
+    selectMemory("browser.md");
     const trackingState = getAttachmentTrackingState({});
     const out = await relevantMemoriesProducer(
       makeOpts({ userInput: "browser" }),
       trackingState,
     );
-    expect(out).toEqual([]);
-    expect(sideQuery).not.toHaveBeenCalled();
+    expect(out).toMatchObject([
+      { kind: "relevant_memories", memories: [{ path: memoryPath }] },
+    ]);
+    expect(selectorCall).toHaveBeenCalledTimes(1);
   });
 
   test("skips when auto-memory is disabled", async () => {
@@ -118,7 +133,7 @@ describe("relevantMemoriesProducer", () => {
     const trackingState = getAttachmentTrackingState({});
     const out = await relevantMemoriesProducer(makeOpts(), trackingState);
     expect(out).toEqual([]);
-    expect(sideQuery).not.toHaveBeenCalled();
+    expect(selectorCall).not.toHaveBeenCalled();
   });
 
   test("surfaces selected durable memory with bounded content and citation metadata", async () => {
@@ -132,7 +147,20 @@ describe("relevantMemoriesProducer", () => {
     selectMemory("browser.md");
     const trackingState = getAttachmentTrackingState({});
 
-    const out = await relevantMemoriesProducer(makeOpts(), trackingState);
+    const out = await relevantMemoriesProducer(
+      makeOpts({
+        messages: [
+          { role: "user", content: "use browser automation" },
+          {
+            role: "tool",
+            content: "completed",
+            toolCallId: "tool-1",
+            toolName: "browser",
+          },
+        ],
+      }),
+      trackingState,
+    );
 
     expect(out).toHaveLength(1);
     expect(out[0]?.kind).toBe("relevant_memories");
@@ -148,6 +176,7 @@ describe("relevantMemoriesProducer", () => {
     expect(out[0].memories[0]?.citation?.path).toBe(memoryPath);
     expect(trackingState.surfacedRelevantMemoryPaths.has(memoryPath)).toBe(true);
     expect(trackingState.surfacedRelevantMemoryBytes).toBeGreaterThan(0);
+    expect(selectorCall.mock.calls[0]?.[0].recentTools).toEqual(["browser"]);
   });
 
   test("dedupes memories already surfaced in the session", async () => {
@@ -165,12 +194,7 @@ describe("relevantMemoriesProducer", () => {
     const out = await relevantMemoriesProducer(makeOpts(), trackingState);
 
     expect(out).toEqual([]);
-    const query = vi.mocked(sideQuery).mock.calls[0]?.[0] as
-      | { messages: Array<{ content: string }> }
-      | undefined;
-    if (query !== undefined) {
-      expect(query.messages[0]?.content).not.toContain("browser.md");
-    }
+    expect(selectorCall).not.toHaveBeenCalled();
   });
 
   test("injects project/CWD-keyed memories on the first turn without a user query", async () => {
@@ -188,7 +212,7 @@ describe("relevantMemoriesProducer", () => {
       "Conventions for this workspace",
       "Follow the workspace conventions.",
     );
-    writeMemory(
+    const unrelatedGlobalPath = writeMemory(
       globalMemoryDir,
       "cooking.md",
       "Slow braising technique",
@@ -202,18 +226,18 @@ describe("relevantMemoriesProducer", () => {
     );
 
     // Session-start recall must stay cheap: no model-side selection.
-    expect(sideQuery).not.toHaveBeenCalled();
+    expect(selectorCall).not.toHaveBeenCalled();
     expect(out).toHaveLength(1);
     if (out[0]?.kind !== "relevant_memories") {
       throw new Error("expected relevant_memories");
     }
     const paths = out[0].memories.map((memory) => memory.path);
-    // Project-memory-dir files rank first; global files qualify only via
-    // project signal tokens (cwd basename "repo" matches the filename).
-    expect(paths).toEqual([projectPath, matchingGlobalPath]);
-    expect(out[0].memories[0]?.content).toContain(
-      "Run the runtime build twice.",
+    expect(new Set(paths)).toEqual(
+      new Set([projectPath, matchingGlobalPath, unrelatedGlobalPath]),
     );
+    expect(
+      out[0].memories.find((memory) => memory.path === projectPath)?.content,
+    ).toContain("Run the runtime build twice.");
     expect(trackingState.surfacedRelevantMemoryPaths.has(projectPath)).toBe(
       true,
     );
@@ -249,7 +273,7 @@ describe("relevantMemoriesProducer", () => {
       trackingState,
     );
     expect(second).toEqual([]);
-    expect(sideQuery).not.toHaveBeenCalled();
+    expect(selectorCall).not.toHaveBeenCalled();
   });
 
   test("skips session-start recall for subagents", async () => {
@@ -265,7 +289,7 @@ describe("relevantMemoriesProducer", () => {
       trackingState,
     );
     expect(out).toEqual([]);
-    expect(sideQuery).not.toHaveBeenCalled();
+    expect(selectorCall).not.toHaveBeenCalled();
   });
 
   test("does not double-inject when the first prompt is a real query", async () => {
@@ -327,5 +351,25 @@ describe("relevantMemoriesProducer", () => {
     expect(
       Buffer.byteLength(out[0].memories[0]?.content ?? "", "utf8"),
     ).toBeLessThan(5000);
+  });
+
+  test("never crosses the cumulative session byte budget with truncation metadata", async () => {
+    const memoryDir = join(agencHome, "memory");
+    writeMemory(
+      memoryDir,
+      "large.md",
+      "Large browser guidance",
+      "browser ".repeat(2_000),
+    );
+    selectMemory("large.md");
+    const trackingState = getAttachmentTrackingState({});
+    trackingState.surfacedRelevantMemoryBytes = 60 * 1_024 - 8;
+
+    const out = await relevantMemoriesProducer(makeOpts(), trackingState);
+
+    expect(out[0]?.kind).toBe("relevant_memories");
+    expect(trackingState.surfacedRelevantMemoryBytes).toBeLessThanOrEqual(
+      60 * 1_024,
+    );
   });
 });

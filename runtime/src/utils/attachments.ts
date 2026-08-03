@@ -88,15 +88,12 @@ const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {
   MAX_LINES_TO_READ,
-  FILE_READ_TOOL_NAME,
 } from 'src/tools/FileReadTool/prompt.js'
 import { getDefaultFileReadingLimits } from 'src/tools/FileReadTool/limits.js'
 import { cacheKeys, type FileStateCache } from './fileStateCache.js'
 import {
   createAbortController,
-  createChildAbortController,
 } from './abortController.js'
-import { isAbortError } from './errors.js'
 import {
   getFileModificationTimeAsync,
   isFileWithinReadSizeLimit,
@@ -174,7 +171,6 @@ import type { SandboxExecutionBrokerLike } from '../sandbox/execution-broker.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {
   extractTextContent,
-  getUserMessageText,
   isThinkingMessage,
 } from './messages.js'
 import { isHumanTurn } from './messagePredicates.js'
@@ -216,18 +212,15 @@ import { getPDFPageCount } from './pdf.js'
 import { PDF_AT_MENTION_INLINE_THRESHOLD } from '../constants/apiLimits.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import {
-  findRelevantMemories,
   formatRelevantMemoryHeader,
   getConditionalRulesForCwdLevelDirectory,
   getAutoMemPath,
   getGlobalMemoryPath,
   getManagedAndUserConditionalRules,
   getMemoryFilesForNestedDirectory,
-  isAutoMemoryEnabled,
   isMemoryMention,
   type MemoryFileInfo,
 } from '../memory/index.js'
-import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 import {
   readUnreadMessages,
   markMessagesAsReadByPredicate,
@@ -258,28 +251,6 @@ export const PLAN_MODE_ATTACHMENT_CONFIG = {
 export const AUTO_MODE_ATTACHMENT_CONFIG = {
   TURNS_BETWEEN_ATTACHMENTS: 5,
   FULL_REMINDER_EVERY_N_ATTACHMENTS: 5,
-} as const
-
-const MAX_MEMORY_LINES = 200
-// Line cap alone doesn't bound size (200 × 500-char lines = 100KB).  The
-// surfacer injects up to 5 files per turn via <system-reminder>, bypassing
-// the per-message tool-result budget, so a tight per-file byte cap keeps
-// aggregate injection bounded (5 × 4KB = 20KB/turn).  Enforced via
-// readFileInRange's truncateOnByteLimit option.  Truncation means the
-// most-relevant memory still surfaces: the frontmatter + opening context
-// is usually what matters.
-const MAX_MEMORY_BYTES = 4096
-
-export const RELEVANT_MEMORIES_CONFIG = {
-  // Per-turn cap (5 × 4KB = 20KB) bounds a single injection, but over a
-  // long session the selector keeps surfacing distinct files — ~26K tokens/
-  // session observed in prod.  Cap the cumulative bytes: once hit, stop
-  // prefetching entirely.  Budget is ~3 full injections; after that the
-  // most-relevant memories are already in context.  Scanning messages
-  // (rather than tracking in toolUseContext) means compact naturally
-  // resets the counter — old attachments are gone from context, so
-  // re-surfacing is valid.
-  MAX_SESSION_BYTES: 60 * 1024,
 } as const
 
 export const VERIFY_PLAN_REMINDER_CONFIG = {
@@ -507,7 +478,7 @@ export type Attachment =
          */
         header?: string
         /**
-         * lineCount when the file was truncated by readMemoriesForSurfacing,
+         * lineCount when the relevant-memory producer supplied a bounded view,
          * else undefined. Threaded to the readFileState write so
          * getChangedFiles skips truncated memories (partial content would
          * yield a misleading diff).
@@ -861,7 +832,7 @@ export async function getAttachments(
     ),
     maybe('changed_files', () => getChangedFiles(context)),
     maybe('nested_memory', () => getNestedMemoryAttachments(context)),
-    // relevant_memories moved to async prefetch (startRelevantMemoryPrefetch)
+    // relevant_memories is owned by the per-turn attachment orchestrator.
     maybe('dynamic_skill', () => getDynamicSkillAttachments(context)),
     maybe('skill_listing', () => getSkillListingAttachments(context)),
     // Inter-turn skill discovery now runs via startSkillDiscoveryPrefetch
@@ -2244,57 +2215,6 @@ async function getNestedMemoryAttachments(
   return attachments
 }
 
-async function getRelevantMemoryAttachments(
-  input: string,
-  agents: AgentDefinition[],
-  readFileState: FileStateCache,
-  recentTools: readonly string[],
-  signal: AbortSignal,
-  alreadySurfaced: ReadonlySet<string>,
-): Promise<Attachment[]> {
-  // If an agent is @-mentioned, search only its memory dir (isolation).
-  // Otherwise search both durable memory dirs: global first, then project.
-  const memoryDirs = extractLegacyAgentMentions(input).flatMap(mention => {
-    const agentType = mention.replace('agent-', '')
-    const agentDef = agents.find(def => def.agentType === agentType)
-    return agentDef?.memory
-      ? [getAgentMemoryDir(agentType, agentDef.memory)]
-      : []
-  })
-  const dirs =
-    memoryDirs.length > 0
-      ? memoryDirs
-      : getDurableMemorySearchDirs()
-
-  const allResults = await Promise.all(
-    dirs.map(dir =>
-      findRelevantMemories(
-        input,
-        dir,
-        signal,
-        recentTools,
-        alreadySurfaced,
-      ).catch(() => []),
-    ),
-  )
-  // alreadySurfaced is filtered inside the selector so Sonnet spends its
-  // 5-slot budget on fresh candidates; readFileState catches files the
-  // model read via FileReadTool. The redundant alreadySurfaced check here
-  // is a belt-and-suspenders guard (multi-dir results may re-introduce a
-  // path the selector filtered in a different dir).
-  const selected = allResults
-    .flat()
-    .filter(m => !readFileState.has(m.path) && !alreadySurfaced.has(m.path))
-    .slice(0, 5)
-
-  const memories = await readMemoriesForSurfacing(selected, signal)
-
-  if (memories.length === 0) {
-    return []
-  }
-  return [{ type: 'relevant_memories' as const, memories }]
-}
-
 /**
  * Scan messages for past relevant_memories attachments.  Returns both the
  * set of surfaced paths (for selector de-dup) and cumulative byte count
@@ -2320,148 +2240,11 @@ export function collectSurfacedMemories(messages: ReadonlyArray<Message>): {
 }
 
 /**
- * Reads a set of relevance-ranked memory files for injection as
- * <system-reminder> attachments. Enforces both MAX_MEMORY_LINES and
- * MAX_MEMORY_BYTES via readFileInRange's truncateOnByteLimit option.
- * Truncation surfaces partial
- * content with a note rather than dropping the file — findRelevantMemories
- * already picked this as most-relevant, so the frontmatter + opening context
- * is worth surfacing even if later lines are cut.
- *
- * Exported for direct testing without mocking the ranker + GB gates.
- */
-export async function readMemoriesForSurfacing(
-  selected: ReadonlyArray<{ path: string; mtimeMs: number }>,
-  signal?: AbortSignal,
-): Promise<
-  Array<{
-    path: string
-    content: string
-    mtimeMs: number
-    header: string
-    limit?: number
-  }>
-> {
-  const results = await Promise.all(
-    selected.map(async ({ path: filePath, mtimeMs }) => {
-      try {
-        const result = await readFileInRange(
-          filePath,
-          0,
-          MAX_MEMORY_LINES,
-          MAX_MEMORY_BYTES,
-          signal,
-          { truncateOnByteLimit: true },
-        )
-        const truncated =
-          result.totalLines > MAX_MEMORY_LINES || result.truncatedByBytes
-        const content = truncated
-          ? result.content +
-            `\n\n> This memory file was truncated (${result.truncatedByBytes ? `${MAX_MEMORY_BYTES} byte limit` : `first ${MAX_MEMORY_LINES} lines`}). Use the ${FILE_READ_TOOL_NAME} tool to view the complete file at: ${filePath}`
-          : result.content
-        return {
-          path: filePath,
-          content,
-          mtimeMs,
-          header: memoryHeader(filePath, mtimeMs),
-          limit: truncated ? result.lineCount : undefined,
-        }
-      } catch {
-        return null
-      }
-    }),
-  )
-  return results.filter(r => r !== null)
-}
-
-/**
  * Header string for a relevant-memory block.  Exported so messages.ts
  * can fall back for resumed sessions where the stored header is missing.
  */
 export function memoryHeader(path: string, mtimeMs: number): string {
   return formatRelevantMemoryHeader(path, mtimeMs)
-}
-
-/**
- * A memory relevance-selector prefetch handle. The promise is started once
- * per user turn and runs while the main model streams and tools execute.
- * At the collect point (post-tools), the caller reads settledAt to
- * consume-if-ready or skip-and-retry-next-iteration — the prefetch never
- * blocks the turn.
- *
- * Disposable: query.ts binds with `using`, so [Symbol.dispose] fires on all
- * generator exit paths (return, throw, .return() closure) — aborting the
- * in-flight request and emitting terminal telemetry without instrumenting
- * each of the ~13 return sites inside the while loop.
- */
-export type MemoryPrefetch = {
-  promise: Promise<Attachment[]>
-  /** Set by promise.finally(). null until the promise settles. */
-  settledAt: number | null
-  /** Set by the collect point in query.ts. -1 until consumed. */
-  consumedOnIteration: number
-  [Symbol.dispose](): void
-}
-
-/**
- * Starts the relevant memory search as an async prefetch.
- * Extracts the last real user prompt from messages (skipping isMeta system
- * injections) and kicks off a non-blocking search. Returns a Disposable
- * handle with settlement tracking. Bound with `using` in query.ts.
- */
-export function startRelevantMemoryPrefetch(
-  messages: ReadonlyArray<Message>,
-  toolUseContext: ToolUseContext,
-): MemoryPrefetch | undefined {
-  if (!isAutoMemoryEnabled() || true) {
-    return undefined
-  }
-
-  const lastUserMessage = messages.findLast(m => m.type === 'user' && !m.isMeta)
-  if (!lastUserMessage) {
-    return undefined
-  }
-
-  const input = getUserMessageText(lastUserMessage) ?? ''
-  // Single-word prompts lack enough context for meaningful term extraction
-  if (!input || !/\s/.test(input.trim())) {
-    return undefined
-  }
-
-  const surfaced = collectSurfacedMemories(messages)
-  if (surfaced.totalBytes >= RELEVANT_MEMORIES_CONFIG.MAX_SESSION_BYTES) {
-    return undefined
-  }
-
-  // Chained to the turn-level abort so user Escape cancels the sideQuery
-  // immediately, not just on [Symbol.dispose] when queryLoop exits.
-  const controller = createChildAbortController(toolUseContext.abortController)
-  const promise = getRelevantMemoryAttachments(
-    input,
-    toolUseContext.options.agentDefinitions.activeAgents,
-    toolUseContext.readFileState,
-    collectRecentSuccessfulTools(messages, lastUserMessage),
-    controller.signal,
-    surfaced.paths,
-  ).catch(e => {
-    if (!isAbortError(e)) {
-      logError(e)
-    }
-    return []
-  })
-
-  const handle: MemoryPrefetch = {
-    promise,
-    settledAt: null,
-    consumedOnIteration: -1,
-    [Symbol.dispose]() {
-      controller.abort()
-    },
-  }
-  void promise.finally(() => {
-    handle.settledAt = Date.now()
-  })
-  return handle
 }
 
 type ToolResultBlock = {
@@ -2551,12 +2334,9 @@ export function collectRecentSuccessfulTools(
  * readFileState. Survivors are then marked in readFileState so subsequent
  * turns won't re-surface them.
  *
- * The mark-after-filter ordering is load-bearing: readMemoriesForSurfacing
- * used to write to readFileState during the prefetch, which meant the filter
- * saw every prefetch-selected path as "already in context" and dropped them
- * all (self-referential filter). Deferring the write to here, after the
- * filter runs, breaks that cycle while still deduping against tool calls
- * from any iteration.
+ * The mark-after-filter ordering is load-bearing: marking before the filter
+ * would make every selected path look pre-existing and drop it. Deferring the
+ * write until after filtering preserves cross-iteration tool-call dedupe.
  */
 export function filterDuplicateMemoryAttachments(
   attachments: Attachment[],

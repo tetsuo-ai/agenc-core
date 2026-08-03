@@ -14,9 +14,9 @@ nonzero exit status and the exact registered defect fingerprint. Do not use
 `skip`, `todo`, `test.fails`, or an assertion whose success means the unsafe
 behavior remains present.
 
-After A1, A2a, B1, C1, D1, D3, and E1a promotion, the P0 inventory contains five
-task-owned defect probes plus the FND-001 harness self-test, so the exact green
-audit summary is `files=6 expected-red=6 assertions=6 skipped=0 todo=0`. Each
+After A1, A2a, B1, C1, C3a, D1, D3, and E1a promotion, the P0 inventory contains
+four task-owned defect probes plus the FND-001 harness self-test, so the exact
+green audit summary is `files=5 expected-red=5 assertions=5 skipped=0 todo=0`. Each
 remaining task-owned
 probe calls a production seam without a provider, public network, or
 uncontained subprocess:
@@ -27,7 +27,6 @@ uncontained subprocess:
 | A3   | Substituting a tool-result body leaves the durable prefix digest unchanged.                      | The complete tool-result body changes the digest.                                                                              |
 | B3a  | `../` in a workflow name escapes `.agenc/workflows` and dispatches the escaped command.          | Reject before dispatch.                                                                                                        |
 | C2   | The compaction policy tells the summarizer to obey instructions embedded in transcript context.  | Transcript instructions remain untrusted and cannot alter compaction policy.                                                   |
-| C3a  | Admission denial makes relevant memory recall return no candidates.                              | A deterministic lexical fallback returns the matching admitted file.                                                           |
 
 Some production modules import repository-owned Markdown prompt assets. The
 red-probe bootstrap admits only exact `.md` files under the canonical
@@ -40,12 +39,13 @@ The FND-001 self-probe intentionally omits a required transition and proves the
 harness itself goes red; it does not claim a product defect remains and does not
 satisfy any task-owned P0 defect-probe gate.
 The A1 timeout/physical-settlement assertion, A2a canonical-journal integrity,
-B1 prototype-header round trip, C1 message-frame floor, D1 pinned-ripgrep
-assertions, D3 byte-fidelity assertions, and E1a recovery line-limit assertion
-are now ordinary regression coverage. The five unresolved task-owned P0 probes
-remain registered alongside FND-001. When another product defect is fixed,
-promote its assertion into an ordinary test and verify that reversing the
-functional change in a disposable worktree makes that test fail.
+B1 prototype-header round trip, C1 message-frame floor, C3a admitted memory
+recall and lexical fallback, D1 pinned-ripgrep assertions, D3 byte-fidelity
+assertions, and E1a recovery line-limit assertion are now ordinary regression
+coverage. The four unresolved task-owned P0 probes remain registered alongside
+FND-001. When another product defect is fixed, promote its assertion into an
+ordinary test and verify that reversing the functional change in a disposable
+worktree makes that test fail.
 
 The hard per-probe deadline bounds authenticated bootstrap and cold static
 imports. Trusted heartbeat sequence 1 seals the bootstrap capability boundary

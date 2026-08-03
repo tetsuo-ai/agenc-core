@@ -945,22 +945,17 @@ describe("attachments orchestrator — live producer registry", () => {
     expect(checkForLSPDiagnostics(explicitDangerBroker)).toEqual([]);
   });
 
-  test("aborted signal short-circuits without emitting attachments or throwing", async () => {
+  test("aborted signal propagates the caller's exact reason", async () => {
     const sessionKey = {};
     const trackingState = getAttachmentTrackingState(sessionKey);
     trackingState.pendingCriticalReminder = "Should never surface.";
 
     const ac = new AbortController();
-    ac.abort();
-    const out = await getAttachments(
-      makeOpts({ sessionKey, signal: ac.signal }),
-    );
-    // Producers MAY honor the abort signal and emit nothing; what we
-    // pin here is "the orchestrator does not throw on the consumer's
-    // behalf when a producer skips on abort."
-    for (const att of out) {
-      expect(typeof att.kind).toBe("string");
-    }
+    const reason = new Error("attachment recall cancelled");
+    ac.abort(reason);
+    await expect(
+      getAttachments(makeOpts({ sessionKey, signal: ac.signal })),
+    ).rejects.toBe(reason);
 
     _resetAttachmentTrackingStateForTest(sessionKey);
   });

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 6,
+  "probeCount": 5,
   "probes": [
     {
       "id": "a2b-corrupt-journal-never-recoverable",
@@ -37,15 +37,6 @@
       "file": "tests/fnd/red-probes/c2-compaction-transcript-instruction-trust.red-probe.ts",
       "fingerprint": "C2:COMPACTION:TRANSCRIPT-INSTRUCTION-TRUST",
       "sourceSha256": "372c1ee37b9a02f6360438802a83edfa1fc5588a14451c1d094f811117020528",
-      "timeoutMs": 10000
-    },
-    {
-      "id": "c3a-memory-recall-lexical-fallback",
-      "task": "C3a",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/c3a-memory-recall-lexical-fallback.red-probe.ts",
-      "fingerprint": "C3A:MEMORY:LEXICAL-FALLBACK-ON-ADMISSION-DENIAL",
-      "sourceSha256": "c2cecc398507cbf70640a142d5350e357830928e700f653b078218b5716c2700",
       "timeoutMs": 10000
     },
     {

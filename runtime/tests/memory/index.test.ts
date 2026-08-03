@@ -2,7 +2,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sideQuery } from "../utils/sideQuery.js";
 import * as memory from "./index.js";
 import {
   findRelevantMemories,
@@ -29,18 +28,11 @@ vi.mock("../utils/settings/settings.js", () => ({
 }));
 vi.mock("../tools.js", () => ({}));
 vi.mock("src/tools.js", () => ({}));
-vi.mock("../utils/model/model.js", () => ({
-  getDefaultSonnetModel: () => "sonnet-test",
-}));
-vi.mock("../utils/sideQuery.js", () => ({
-  sideQuery: vi.fn(),
-}));
 
 let tempDir = "";
 
 afterEach(async () => {
   vi.useRealTimers();
-  vi.mocked(sideQuery).mockReset();
   if (tempDir) {
     await rm(tempDir, { recursive: true, force: true });
     tempDir = "";
@@ -149,17 +141,6 @@ describe("memory public access surface", () => {
       "utf8",
     );
 
-    vi.mocked(sideQuery).mockResolvedValueOnce({
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            selected_memories: ["target.md", "already.md", "missing.md"],
-          }),
-        },
-      ],
-    } as never);
-
     const result = await findRelevantMemories(
       "use browser automation",
       tempDir,
@@ -171,17 +152,6 @@ describe("memory public access surface", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.path).toBe(targetPath);
     expect(result[0]?.mtimeMs).toBeTypeOf("number");
-
-    const options = vi.mocked(sideQuery).mock.calls[0]?.[0] as {
-      messages: Array<{ content: string }>;
-      querySource: string;
-    };
-    expect(options.querySource).toBe("memdir_relevance");
-    expect(options.messages[0]?.content).toContain("target.md");
-    expect(options.messages[0]?.content).toContain(
-      "Recently used tools: mcp__browser__open",
-    );
-    expect(options.messages[0]?.content).not.toContain("already.md");
   });
 
   it("loads instruction memory files through the public surface", async () => {

@@ -1,138 +1,161 @@
-/**
- * Ports the upstream `src/memdir/findRelevantMemories.ts` scanner flow onto
- * AgenC memory primitives.
- */
-import { logForDebugging } from '../utils/debug.js'
-import { errorMessage } from '../utils/errors.js'
-import { getDefaultSonnetModel } from '../utils/model/model.js'
-import { sideQuery } from '../utils/sideQuery.js'
-import { jsonParse } from '../utils/slowOperations.js'
 import {
-  formatMemoryManifest,
+  MAX_RELEVANT_MEMORIES,
+  buildMemorySelectorRequest,
+  isMemoryRecallAbort,
+  normalizeMemoryQuery,
+  rankMemoryHeaders,
+  throwIfMemoryRecallAborted,
+  type AdmittedMemorySelector,
+  type MemoryRecallMode,
+  type RankedMemoryHeader,
+} from "./recall-contract.js";
+import {
+  scanMemoryRoots,
   type MemoryHeader,
-  scanMemoryFiles,
-} from './scan.js'
+} from "./scan.js";
 
-export type RelevantMemory = {
-  path: string
-  mtimeMs: number
+export interface RelevantMemory {
+  readonly path: string;
+  readonly mtimeMs: number;
+  readonly header: MemoryHeader;
 }
 
-const SELECT_MEMORIES_SYSTEM_PROMPT = `You are selecting memories that will be useful to AgenC as it processes a user's query. You will be given the user's query and a list of available memory files with their filenames and descriptions.
+export interface FindRelevantMemoriesOptions {
+  readonly query: string;
+  readonly memoryDirs: readonly string[];
+  readonly signal: AbortSignal;
+  readonly recentTools?: readonly string[];
+  readonly alreadySurfaced?: ReadonlySet<string>;
+  readonly mode?: MemoryRecallMode;
+  readonly admittedMemorySelector?: AdmittedMemorySelector;
+}
 
-Return a list of filenames for the memories that will clearly be useful to AgenC as it processes the user's query (up to 5). Only include memories that you are certain will be helpful based on their name and description.
-- If you are unsure if a memory will be useful in processing the user's query, then do not include it in your list. Be selective and discerning.
-- If there are no memories in the list that would clearly be useful, feel free to return an empty list.
-- If a list of recently-used tools is provided, do not select memories that are usage reference or API documentation for those tools (AgenC is already exercising them). DO still select memories containing warnings, gotchas, or known issues about those tools — active use is exactly when those matter.
-`
-
-/**
- * Find memory files relevant to a query by scanning memory file headers
- * and asking Sonnet to select the most relevant ones.
- *
- * Returns absolute file paths + mtime of the most relevant memories
- * (up to 5). Excludes MEMORY.md (already loaded in system prompt).
- * mtime is threaded through so callers can surface freshness to the
- * main model without a second stat.
- *
- * `alreadySurfaced` filters paths shown in prior turns before the
- * Sonnet call, so the selector spends its 5-slot budget on fresh
- * candidates instead of re-picking files the caller will discard.
- */
-export async function findRelevantMemories(
+export function findRelevantMemories(
   query: string,
   memoryDir: string,
   signal: AbortSignal,
+  recentTools?: readonly string[],
+  alreadySurfaced?: ReadonlySet<string>,
+): Promise<RelevantMemory[]>;
+export function findRelevantMemories(
+  options: FindRelevantMemoriesOptions,
+): Promise<RelevantMemory[]>;
+export async function findRelevantMemories(
+  queryOrOptions: string | FindRelevantMemoriesOptions,
+  memoryDir?: string,
+  signal?: AbortSignal,
   recentTools: readonly string[] = [],
   alreadySurfaced: ReadonlySet<string> = new Set(),
 ): Promise<RelevantMemory[]> {
-  const memories = (await scanMemoryFiles(memoryDir, signal)).filter(
-    m => !alreadySurfaced.has(m.filePath),
-  )
-  if (memories.length === 0) {
-    return []
-  }
-
-  const selectedFilenames = await selectRelevantMemories(
-    query,
-    memories,
+  const options = normalizeFindOptions(
+    queryOrOptions,
+    memoryDir,
     signal,
     recentTools,
-  )
-  const byFilename = new Map(memories.map(m => [m.filename, m]))
-  const selected = selectedFilenames
-    .map(filename => byFilename.get(filename))
-    .filter((m): m is MemoryHeader => m !== undefined)
+    alreadySurfaced,
+  );
+  throwIfMemoryRecallAborted(options.signal);
+  const scan = await scanMemoryRoots(options.memoryDirs, options.signal);
+  if (scan.kind !== "complete") return [];
+  const headers = scan.headers.filter(
+    (header) => !options.alreadySurfaced.has(header.filePath),
+  );
+  const ranked = rankMemoryHeaders(
+    normalizeMemoryQuery(options.query),
+    headers,
+    options.mode,
+    options.signal,
+  );
+  if (ranked.length === 0) return [];
 
-  return selected.map(m => ({ path: m.filePath, mtimeMs: m.mtimeMs }))
+  const lexicalFallback = selectLexicalFallback(ranked);
+  if (
+    options.admittedMemorySelector === undefined ||
+    options.mode === "session_start"
+  ) {
+    return lexicalFallback;
+  }
+  const request = buildMemorySelectorRequest(
+    options.query,
+    options.mode,
+    ranked,
+    options.recentTools,
+  );
+  try {
+    const selection = await options.admittedMemorySelector.select(
+      request,
+      options.signal,
+    );
+    throwIfMemoryRecallAborted(options.signal);
+    if (selection.kind !== "selected") return lexicalFallback;
+    const byId = new Map(
+      request.candidates.map((candidate, index) => [candidate.id, ranked[index]!] as const),
+    );
+    const selected: RankedMemoryHeader[] = [];
+    const seen = new Set<string>();
+    for (const candidateId of selection.candidateIds) {
+      const entry = byId.get(candidateId);
+      if (entry === undefined || seen.has(candidateId)) return lexicalFallback;
+      seen.add(candidateId);
+      selected.push(entry);
+    }
+    return toRelevantMemories(selected.slice(0, MAX_RELEVANT_MEMORIES));
+  } catch (error) {
+    if (isMemoryRecallAbort(error, options.signal)) {
+      throw options.signal.reason ?? error;
+    }
+    return lexicalFallback;
+  }
 }
 
-async function selectRelevantMemories(
-  query: string,
-  memories: MemoryHeader[],
-  signal: AbortSignal,
+function normalizeFindOptions(
+  queryOrOptions: string | FindRelevantMemoriesOptions,
+  memoryDir: string | undefined,
+  signal: AbortSignal | undefined,
   recentTools: readonly string[],
-): Promise<string[]> {
-  const validFilenames = new Set(memories.map(m => m.filename))
-
-  const manifest = formatMemoryManifest(memories)
-
-  // When AgenC is actively using a tool (e.g. mcp__X__spawn),
-  // surfacing that tool's reference docs is noise — the conversation
-  // already contains working usage.  The selector otherwise matches
-  // on keyword overlap ("spawn" in query + "spawn" in a memory
-  // description → false positive).
-  const toolsSection =
-    recentTools.length > 0
-      ? `\n\nRecently used tools: ${recentTools.join(', ')}`
-      : ''
-
-  try {
-    const result = await sideQuery({
-      model: getDefaultSonnetModel(),
-      system: SELECT_MEMORIES_SYSTEM_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: `Query: ${query}\n\nAvailable memories:\n${manifest}${toolsSection}`,
-        },
-      ],
-      max_tokens: 256,
-      output_format: {
-        type: 'json_schema',
-        schema: {
-          type: 'object',
-          properties: {
-            selected_memories: { type: 'array', items: { type: 'string' } },
-          },
-          required: ['selected_memories'],
-          additionalProperties: false,
-        },
-      },
-      signal,
-      querySource: 'memdir_relevance',
-    })
-
-    const textBlock = result.content.find(block => block.type === 'text')
-    if (!textBlock || textBlock.type !== 'text') {
-      return []
-    }
-
-    const parsed: { selected_memories?: unknown } = jsonParse(textBlock.text)
-    const list = Array.isArray(parsed?.selected_memories)
-      ? parsed.selected_memories
-      : []
-    return list.filter(
-      (f): f is string => typeof f === 'string' && validFilenames.has(f),
-    )
-  } catch (e) {
-    if (signal.aborted) {
-      return []
-    }
-    logForDebugging(
-      `[memdir] selectRelevantMemories failed: ${errorMessage(e)}`,
-      { level: 'warn' },
-    )
-    return []
+  alreadySurfaced: ReadonlySet<string>,
+): Required<
+  Omit<FindRelevantMemoriesOptions, "admittedMemorySelector">
+> &
+  Pick<FindRelevantMemoriesOptions, "admittedMemorySelector"> {
+  if (typeof queryOrOptions !== "string") {
+    return {
+      query: queryOrOptions.query,
+      memoryDirs: queryOrOptions.memoryDirs,
+      signal: queryOrOptions.signal,
+      recentTools: queryOrOptions.recentTools ?? [],
+      alreadySurfaced: queryOrOptions.alreadySurfaced ?? new Set(),
+      mode: queryOrOptions.mode ?? "query",
+      ...(queryOrOptions.admittedMemorySelector !== undefined
+        ? { admittedMemorySelector: queryOrOptions.admittedMemorySelector }
+        : {}),
+    };
   }
+  if (memoryDir === undefined || signal === undefined) {
+    throw new TypeError("legacy memory recall requires a directory and signal");
+  }
+  return {
+    query: queryOrOptions,
+    memoryDirs: [memoryDir],
+    signal,
+    recentTools,
+    alreadySurfaced,
+    mode: "query",
+  };
+}
+
+function selectLexicalFallback(
+  ranked: readonly RankedMemoryHeader[],
+): RelevantMemory[] {
+  return toRelevantMemories(ranked.slice(0, MAX_RELEVANT_MEMORIES));
+}
+
+function toRelevantMemories(
+  ranked: readonly RankedMemoryHeader[],
+): RelevantMemory[] {
+  return ranked.map(({ header }) => ({
+    path: header.filePath,
+    mtimeMs: header.mtimeMs,
+    header,
+  }));
 }
