@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_C3A_QUERY_CODEPOINTS,
   MAX_C3A_QUERY_TERMS,
-  MAX_C3A_SELECTOR_CANDIDATES,
+  MAX_MEMORY_SELECTOR_CANDIDATES,
   MAX_C3A_TERM_OCCURRENCES_PER_TERM,
   MAX_MEMORY_SELECTOR_TOTAL_UTF8_BYTES,
   buildMemorySelectorRequest,
@@ -44,9 +44,10 @@ describe("C3a lexical recall contract", () => {
     expect(query.truncated).toBe(true);
 
     const terms = normalizeMemoryQuery(
-      Array.from({ length: MAX_C3A_QUERY_TERMS + 1 }, (_, index) => `t${index}`).join(
-        " ",
-      ),
+      Array.from(
+        { length: MAX_C3A_QUERY_TERMS + 1 },
+        (_, index) => `t${index}`,
+      ).join(" "),
     );
     expect(terms.terms).toHaveLength(MAX_C3A_QUERY_TERMS);
     expect(normalizeMemoryQuery("STRASSE Straße ΟΣ ος").terms).toEqual([
@@ -56,9 +57,7 @@ describe("C3a lexical recall contract", () => {
   });
 
   it("ranks exact phrase, coverage, capped occurrences, mtime, then path", () => {
-    const repeated = "alpha ".repeat(
-      MAX_C3A_TERM_OCCURRENCES_PER_TERM + 20,
-    );
+    const repeated = "alpha ".repeat(MAX_C3A_TERM_OCCURRENCES_PER_TERM + 20);
     const ranked = rankMemoryHeaders(
       normalizeMemoryQuery("alpha beta"),
       [
@@ -90,7 +89,12 @@ describe("C3a lexical recall contract", () => {
   it("returns no normal-query result without terms or overlap", () => {
     const candidates = [header("recent.md", "unrelated", "", 10_000)];
     expect(
-      rankMemoryHeaders(normalizeMemoryQuery("!!!"), candidates, "query", SIGNAL),
+      rankMemoryHeaders(
+        normalizeMemoryQuery("!!!"),
+        candidates,
+        "query",
+        SIGNAL,
+      ),
     ).toEqual([]);
     expect(
       rankMemoryHeaders(
@@ -113,7 +117,7 @@ describe("C3a lexical recall contract", () => {
   it("builds at most fifty structured candidates under the exact byte cap", () => {
     const ranked = rankMemoryHeaders(
       normalizeMemoryQuery("memory"),
-      Array.from({ length: MAX_C3A_SELECTOR_CANDIDATES + 10 }, (_, index) =>
+      Array.from({ length: MAX_MEMORY_SELECTOR_CANDIDATES + 10 }, (_, index) =>
         header(
           `${index}.md`,
           `memory ${"\u0000😀".repeat(4_000)}`,
@@ -124,19 +128,16 @@ describe("C3a lexical recall contract", () => {
       "query",
       SIGNAL,
     );
-    const request = buildMemorySelectorRequest(
-      "memory",
-      "query",
-      ranked,
-      [],
-    );
+    const request = buildMemorySelectorRequest("memory", "query", ranked, []);
 
-    expect(request.candidates).toHaveLength(MAX_C3A_SELECTOR_CANDIDATES);
-    expect(Buffer.byteLength(JSON.stringify(request), "utf8")).toBeLessThanOrEqual(
-      MAX_MEMORY_SELECTOR_TOTAL_UTF8_BYTES,
-    );
+    expect(request.candidates).toHaveLength(MAX_MEMORY_SELECTOR_CANDIDATES);
+    expect(
+      Buffer.byteLength(JSON.stringify(request), "utf8"),
+    ).toBeLessThanOrEqual(MAX_MEMORY_SELECTOR_TOTAL_UTF8_BYTES);
     expect(request.candidates[0]?.id).toBe("candidate-1");
-    expect(request.candidates[0]?.omitted.descriptionUtf8Bytes).toBeGreaterThan(0);
+    expect(request.candidates[0]?.omitted.descriptionUtf8Bytes).toBeGreaterThan(
+      0,
+    );
   });
 
   it("propagates the original abort reason during lexical scoring", () => {

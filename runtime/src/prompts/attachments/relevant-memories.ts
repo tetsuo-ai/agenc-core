@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { join, normalize, sep } from "node:path";
+import { isAbsolute, join, normalize, sep } from "node:path";
 
 import {
   findRelevantMemories,
@@ -8,6 +8,7 @@ import {
   MEMORY_DIRNAME,
   PROJECT_MEMORY_DIR,
   readMemoryContent,
+  resolveMemoryIndexDatabasePath,
   type MemoryRecallMode,
   type RelevantMemory,
 } from "../../memory/index.js";
@@ -53,6 +54,13 @@ export const relevantMemoriesProducer: AttachmentProducer = async (
     alreadySurfaced: trackingState.surfacedRelevantMemoryPaths,
     ...(opts.admittedMemorySelector !== undefined
       ? { admittedMemorySelector: opts.admittedMemorySelector }
+      : {}),
+    ...(opts.agencHome !== undefined && isAbsolute(opts.agencHome)
+      ? {
+          memoryIndexDatabasePath: resolveMemoryIndexDatabasePath(
+            opts.agencHome,
+          ),
+        }
       : {}),
   });
   if (selected.length === 0) return [];
@@ -163,6 +171,7 @@ async function readMemoriesForAttachment(
           selectedMemory.mtimeMs,
         ),
         ...(result.truncated ? { limit: result.lineCount } : {}),
+        selectionSource: selectedMemory.selectionSource,
         citation: {
           path: selectedMemory.path,
           lineStart: 1,

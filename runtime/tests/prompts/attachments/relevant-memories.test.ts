@@ -11,6 +11,7 @@ import type {
   AdmittedMemorySelector,
   MemorySelectorRequest,
 } from "../../memory/recall-contract.js";
+import { closeFullCorpusMemoryIndexes } from "../../memory/find-relevant.js";
 import type { GetAttachmentsOptions } from "./orchestrator.js";
 import { relevantMemoriesProducer } from "./relevant-memories.js";
 
@@ -20,14 +21,12 @@ let agencHome: string;
 let savedAgencHome: string | undefined;
 let savedDisableAutoMemory: string | undefined;
 let selectedMemoryTitle = "";
-const selectorCall = vi.fn(
-  async (request: MemorySelectorRequest) => ({
-    kind: "selected" as const,
-    candidateIds: request.candidates
-      .filter((candidate) => candidate.title === selectedMemoryTitle)
-      .map((candidate) => candidate.id),
-  }),
-);
+const selectorCall = vi.fn(async (request: MemorySelectorRequest) => ({
+  kind: "selected" as const,
+  candidateIds: request.candidates
+    .filter((candidate) => candidate.title === selectedMemoryTitle)
+    .map((candidate) => candidate.id),
+}));
 const admittedMemorySelector: AdmittedMemorySelector = {
   select: selectorCall,
 };
@@ -47,6 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closeFullCorpusMemoryIndexes();
   if (savedAgencHome === undefined) {
     delete process.env.AGENC_HOME;
   } else {
@@ -87,8 +87,14 @@ function writeMemory(
   const path = join(dir, name);
   writeFileSync(
     path,
-    ["---", `description: ${description}`, "type: usage", "---", "", content]
-      .join("\n"),
+    [
+      "---",
+      `description: ${description}`,
+      "type: usage",
+      "---",
+      "",
+      content,
+    ].join("\n"),
     "utf8",
   );
   return path;
@@ -123,7 +129,10 @@ describe("relevantMemoriesProducer", () => {
       trackingState,
     );
     expect(out).toMatchObject([
-      { kind: "relevant_memories", memories: [{ path: memoryPath }] },
+      {
+        kind: "relevant_memories",
+        memories: [{ path: memoryPath, selectionSource: "reranked" }],
+      },
     ]);
     expect(selectorCall).toHaveBeenCalledTimes(1);
   });
@@ -174,7 +183,9 @@ describe("relevantMemoriesProducer", () => {
     );
     expect(out[0].memories[0]?.header).toContain("Memory");
     expect(out[0].memories[0]?.citation?.path).toBe(memoryPath);
-    expect(trackingState.surfacedRelevantMemoryPaths.has(memoryPath)).toBe(true);
+    expect(trackingState.surfacedRelevantMemoryPaths.has(memoryPath)).toBe(
+      true,
+    );
     expect(trackingState.surfacedRelevantMemoryBytes).toBeGreaterThan(0);
     expect(selectorCall.mock.calls[0]?.[0].recentTools).toEqual(["browser"]);
   });
@@ -238,6 +249,9 @@ describe("relevantMemoriesProducer", () => {
     expect(
       out[0].memories.find((memory) => memory.path === projectPath)?.content,
     ).toContain("Run the runtime build twice.");
+    expect(
+      out[0].memories.every((memory) => memory.selectionSource === "lexical"),
+    ).toBe(true);
     expect(trackingState.surfacedRelevantMemoryPaths.has(projectPath)).toBe(
       true,
     );
@@ -332,8 +346,9 @@ describe("relevantMemoriesProducer", () => {
       memoryDir,
       "large.md",
       "Large browser guidance",
-      Array.from({ length: 260 }, (_, i) => `line ${i} ${"x".repeat(40)}`)
-        .join("\n"),
+      Array.from({ length: 260 }, (_, i) => `line ${i} ${"x".repeat(40)}`).join(
+        "\n",
+      ),
     );
     selectMemory("large.md");
     const trackingState = getAttachmentTrackingState({});

@@ -10,6 +10,10 @@ import {
   type RankedMemoryHeader,
 } from "./recall-contract.js";
 import {
+  PersistentMemoryIndex,
+  type MemoryIndexRootSpec,
+} from "./full-corpus-index.js";
+import {
   scanMemoryRoots,
   type MemoryHeader,
 } from "./scan.js";
@@ -18,6 +22,7 @@ export interface RelevantMemory {
   readonly path: string;
   readonly mtimeMs: number;
   readonly header: MemoryHeader;
+  readonly selectionSource: "lexical" | "reranked";
 }
 
 export interface FindRelevantMemoriesOptions {
@@ -28,6 +33,25 @@ export interface FindRelevantMemoriesOptions {
   readonly alreadySurfaced?: ReadonlySet<string>;
   readonly mode?: MemoryRecallMode;
   readonly admittedMemorySelector?: AdmittedMemorySelector;
+  readonly memoryIndexDatabasePath?: string;
+}
+
+type NormalizedFindRelevantMemoriesOptions = Required<
+  Omit<
+    FindRelevantMemoriesOptions,
+    "admittedMemorySelector" | "memoryIndexDatabasePath"
+  >
+> &
+  Pick<
+    FindRelevantMemoriesOptions,
+    "admittedMemorySelector" | "memoryIndexDatabasePath"
+  >;
+
+const fullCorpusIndexes = new Map<string, PersistentMemoryIndex>();
+
+export function closeFullCorpusMemoryIndexes(): void {
+  for (const index of fullCorpusIndexes.values()) index.close();
+  fullCorpusIndexes.clear();
 }
 
 export function findRelevantMemories(
@@ -55,17 +79,23 @@ export async function findRelevantMemories(
     alreadySurfaced,
   );
   throwIfMemoryRecallAborted(options.signal);
-  const scan = await scanMemoryRoots(options.memoryDirs, options.signal);
-  if (scan.kind !== "complete") return [];
-  const headers = scan.headers.filter(
-    (header) => !options.alreadySurfaced.has(header.filePath),
-  );
-  const ranked = rankMemoryHeaders(
-    normalizeMemoryQuery(options.query),
-    headers,
-    options.mode,
-    options.signal,
-  );
+  const indexed = await tryFullCorpusRanking(options);
+  let ranked: RankedMemoryHeader[];
+  if (indexed !== null) {
+    ranked = indexed;
+  } else {
+    const scan = await scanMemoryRoots(options.memoryDirs, options.signal);
+    if (scan.kind !== "complete") return [];
+    const headers = scan.headers.filter(
+      (header) => !options.alreadySurfaced.has(header.filePath),
+    );
+    ranked = rankMemoryHeaders(
+      normalizeMemoryQuery(options.query),
+      headers,
+      options.mode,
+      options.signal,
+    );
+  }
   if (ranked.length === 0) return [];
 
   const lexicalFallback = selectLexicalFallback(ranked);
@@ -99,7 +129,10 @@ export async function findRelevantMemories(
       seen.add(candidateId);
       selected.push(entry);
     }
-    return toRelevantMemories(selected.slice(0, MAX_RELEVANT_MEMORIES));
+    return toRelevantMemories(
+      selected.slice(0, MAX_RELEVANT_MEMORIES),
+      "reranked",
+    );
   } catch (error) {
     if (isMemoryRecallAbort(error, options.signal)) {
       throw options.signal.reason ?? error;
@@ -114,10 +147,7 @@ function normalizeFindOptions(
   signal: AbortSignal | undefined,
   recentTools: readonly string[],
   alreadySurfaced: ReadonlySet<string>,
-): Required<
-  Omit<FindRelevantMemoriesOptions, "admittedMemorySelector">
-> &
-  Pick<FindRelevantMemoriesOptions, "admittedMemorySelector"> {
+): NormalizedFindRelevantMemoriesOptions {
   if (typeof queryOrOptions !== "string") {
     return {
       query: queryOrOptions.query,
@@ -128,6 +158,9 @@ function normalizeFindOptions(
       mode: queryOrOptions.mode ?? "query",
       ...(queryOrOptions.admittedMemorySelector !== undefined
         ? { admittedMemorySelector: queryOrOptions.admittedMemorySelector }
+        : {}),
+      ...(queryOrOptions.memoryIndexDatabasePath !== undefined
+        ? { memoryIndexDatabasePath: queryOrOptions.memoryIndexDatabasePath }
         : {}),
     };
   }
@@ -147,15 +180,76 @@ function normalizeFindOptions(
 function selectLexicalFallback(
   ranked: readonly RankedMemoryHeader[],
 ): RelevantMemory[] {
-  return toRelevantMemories(ranked.slice(0, MAX_RELEVANT_MEMORIES));
+  return toRelevantMemories(
+    ranked.slice(0, MAX_RELEVANT_MEMORIES),
+    "lexical",
+  );
 }
 
 function toRelevantMemories(
   ranked: readonly RankedMemoryHeader[],
+  selectionSource: RelevantMemory["selectionSource"],
 ): RelevantMemory[] {
   return ranked.map(({ header }) => ({
     path: header.filePath,
     mtimeMs: header.mtimeMs,
     header,
+    selectionSource,
   }));
+}
+
+async function tryFullCorpusRanking(
+  options: NormalizedFindRelevantMemoriesOptions,
+): Promise<RankedMemoryHeader[] | null> {
+  if (
+    options.memoryIndexDatabasePath === undefined ||
+    options.mode === "session_start"
+  ) {
+    return null;
+  }
+  const normalizedQuery = normalizeMemoryQuery(options.query);
+  if (normalizedQuery.terms.length === 0) return [];
+  const index = getFullCorpusIndex(options.memoryIndexDatabasePath);
+  const roots: MemoryIndexRootSpec[] = options.memoryDirs.map((path, rootIndex) => ({
+    path,
+    role: rootIndex === 0 ? "global" : "project",
+  }));
+  try {
+    await index.refresh(roots, options.signal);
+    const result = await index.query(roots, normalizedQuery.terms, options.signal);
+    throwIfMemoryRecallAborted(options.signal);
+    if (
+      result.kind === "unavailable" ||
+      result.kind === "query_resource_limited"
+    ) {
+      return null;
+    }
+    const ranked: RankedMemoryHeader[] = [];
+    for (const candidate of result.candidates) {
+      throwIfMemoryRecallAborted(options.signal);
+      if (options.alreadySurfaced.has(candidate.canonicalPath)) continue;
+      const header = index.readHeader(candidate);
+      if (header === null) continue;
+      ranked.push({
+        header,
+        exactPhrase: false,
+        distinctTermCoverage: 1,
+        cappedTermOccurrences: 1,
+      });
+    }
+    return ranked;
+  } catch (error) {
+    if (isMemoryRecallAbort(error, options.signal)) {
+      throw options.signal.reason ?? error;
+    }
+    return null;
+  }
+}
+
+function getFullCorpusIndex(databasePath: string): PersistentMemoryIndex {
+  const existing = fullCorpusIndexes.get(databasePath);
+  if (existing !== undefined) return existing;
+  const index = new PersistentMemoryIndex({ databasePath });
+  fullCorpusIndexes.set(databasePath, index);
+  return index;
 }

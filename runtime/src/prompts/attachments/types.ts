@@ -52,6 +52,8 @@ export interface RelevantMemoriesAttachment {
     readonly header?: string;
     /** Truncation marker line count. Undefined for full reads. */
     readonly limit?: number;
+    /** Selection path used for this memory; absent only in legacy transcripts. */
+    readonly selectionSource?: "lexical" | "reranked";
     /** Structured citation metadata for audit/usage tracking. */
     readonly citation?: {
       readonly path: string;

@@ -20,6 +20,7 @@ const entry = [
   'src/bin/agenc.ts',
   'src/bin/agenc-main.ts',
   'src/bin/tui-trust-prompt.tsx',
+  'src/memory/memory-query-helper.mjs',
   'src/sandbox/linux-launcher/main.ts',
   'src/sandbox/linux-launcher/main-impl.ts',
   'src/tui/main.tsx',
@@ -618,6 +619,7 @@ const agencKnownMissingOptionalExternal = {
 
 export const __agencBuildConfigTest = {
   agencOptionalExternal,
+  entry,
   featureFlagLiteral,
   inlineCopiedTreeFeatureCalls,
   isBundledBareImport,

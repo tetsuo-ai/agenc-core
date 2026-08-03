@@ -23,10 +23,19 @@ export {
 } from './age.js'
 
 export {
+  closeFullCorpusMemoryIndexes,
   findRelevantMemories,
   type FindRelevantMemoriesOptions,
   type RelevantMemory,
 } from './find-relevant.js'
+export {
+  PersistentMemoryIndex,
+  resolveMemoryIndexDatabasePath,
+  type MemoryFullCorpusQueryResult,
+  type MemoryIndexGenerationStatus,
+  type MemoryIndexRefreshResult,
+  type MemoryIndexRootSpec,
+} from './full-corpus-index.js'
 export {
   type AdmittedMemorySelector,
   type MemoryRecallMode,

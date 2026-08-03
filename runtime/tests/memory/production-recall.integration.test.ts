@@ -9,6 +9,7 @@ import type {
 } from "../../src/budget/admission-client.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import { createAdmittedMemorySelector } from "../../src/memory/admitted-selector.js";
+import { closeFullCorpusMemoryIndexes } from "../../src/memory/find-relevant.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -24,9 +25,11 @@ let previousAgenCHome: string | undefined;
 let previousDisableMemory: string | undefined;
 
 afterEach(async () => {
+  closeFullCorpusMemoryIndexes();
   if (previousAgenCHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = previousAgenCHome;
-  if (previousDisableMemory === undefined) delete process.env.AGENC_DISABLE_AUTO_MEMORY;
+  if (previousDisableMemory === undefined)
+    delete process.env.AGENC_DISABLE_AUTO_MEMORY;
   else process.env.AGENC_DISABLE_AUTO_MEMORY = previousDisableMemory;
   if (temporaryRoot !== "") {
     await rm(temporaryRoot, { recursive: true, force: true });
@@ -34,8 +37,8 @@ afterEach(async () => {
   }
 });
 
-describe("C3a production memory recall wiring", () => {
-  it("runs the real producer through admission and a provider before injection", async () => {
+describe("C3b production memory recall wiring", () => {
+  it("runs full-corpus recall older than 200 through admission and a provider", async () => {
     previousAgenCHome = process.env.AGENC_HOME;
     previousDisableMemory = process.env.AGENC_DISABLE_AUTO_MEMORY;
     temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-production-"));
@@ -46,7 +49,15 @@ describe("C3a production memory recall wiring", () => {
     const memoryPath = join(agencHome, "memory", "browser.md");
     await writeFile(
       memoryPath,
-      "---\nname: Browser warning\ndescription: Browser automation failure recovery\ntype: user\n---\nUse the safe browser recovery sequence.\n",
+      "---\nname: Browser warning\ndescription: uniquebrowserfailure recovery\ntype: user\n---\nUse the safe browser recovery sequence.\n",
+    );
+    await Promise.all(
+      Array.from({ length: 220 }, (_, index) =>
+        writeFile(
+          join(agencHome, "memory", `recent-${index}.md`),
+          `---\nname: Recent ${index}\ndescription: unrelated compiler note\ntype: user\n---\nRecent.\n`,
+        ),
+      ),
     );
     process.env.AGENC_HOME = agencHome;
     delete process.env.AGENC_DISABLE_AUTO_MEMORY;
@@ -96,7 +107,10 @@ describe("C3a production memory recall wiring", () => {
       subscribe: vi.fn(() => () => undefined),
     } as unknown as ExecutionAdmissionClient;
     const chat = vi.fn(
-      async (_messages: LLMMessage[], _options?: LLMChatOptions): Promise<LLMResponse> => ({
+      async (
+        _messages: LLMMessage[],
+        _options?: LLMChatOptions,
+      ): Promise<LLMResponse> => ({
         content: JSON.stringify({ selected_candidate_ids: ["candidate-1"] }),
         structuredOutput: {
           type: "json_schema",
@@ -143,7 +157,7 @@ describe("C3a production memory recall wiring", () => {
     const attachments = await relevantMemoriesProducer(
       {
         sessionKey,
-        userInput: "browser automation",
+        userInput: "uniquebrowserfailure",
         loadedTools: [],
         messages: [],
         permissionContext: { mode: "default" } as never,
@@ -159,10 +173,11 @@ describe("C3a production memory recall wiring", () => {
     expect(acquire).toHaveBeenCalledTimes(1);
     expect(acquire.mock.calls[0]?.[0].stepId).toBe("memory-selector:0");
     expect(chat).toHaveBeenCalledTimes(1);
+    expect(chat.mock.calls[0]?.[0][0]?.content).toContain("Browser warning");
     expect(attachments).toHaveLength(1);
     expect(attachments[0]).toMatchObject({
       kind: "relevant_memories",
-      memories: [{ path: memoryPath }],
+      memories: [{ path: memoryPath, selectionSource: "reranked" }],
     });
   });
 });

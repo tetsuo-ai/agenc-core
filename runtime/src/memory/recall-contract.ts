@@ -15,7 +15,7 @@ export const MAX_C3A_TOTAL_HEADER_BYTES = 4_194_304;
 export const MAX_C3A_QUERY_CODEPOINTS = 1_024;
 export const MAX_C3A_QUERY_TERMS = 128;
 export const MAX_C3A_TERM_OCCURRENCES_PER_TERM = 8;
-export const MAX_C3A_SELECTOR_CANDIDATES = 50;
+export const MAX_MEMORY_SELECTOR_CANDIDATES = 50;
 export const MAX_MEMORY_SELECTOR_EXTRACT_UTF8_BYTES_PER_CANDIDATE = 4_096;
 export const MAX_MEMORY_SELECTOR_TOTAL_UTF8_BYTES = 262_144;
 export const MAX_MEMORY_SELECTOR_INPUT_TOKENS = 32_768;
@@ -83,7 +83,9 @@ export interface AdmittedMemorySelector {
 
 export function throwIfMemoryRecallAborted(signal: AbortSignal): void {
   if (!signal.aborted) return;
-  throw signal.reason ?? new DOMException("Memory recall aborted", "AbortError");
+  throw (
+    signal.reason ?? new DOMException("Memory recall aborted", "AbortError")
+  );
 }
 
 export function isMemoryRecallAbort(
@@ -91,11 +93,9 @@ export function isMemoryRecallAbort(
   signal?: AbortSignal,
 ): boolean {
   if (signal?.aborted === true) return true;
-  return (
-    error instanceof DOMException
-      ? error.name === "AbortError"
-      : error instanceof Error && error.name === "AbortError"
-  );
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : error instanceof Error && error.name === "AbortError";
 }
 
 export function normalizeMemoryText(value: string): string {
@@ -164,11 +164,7 @@ export function rankMemoryHeaders(
     const exactPhrase =
       query.phrase.length > 0 && haystack.includes(query.phrase);
     const distinctTermCoverage = counts.size;
-    if (
-      mode === "query" &&
-      !exactPhrase &&
-      distinctTermCoverage === 0
-    ) {
+    if (mode === "query" && !exactPhrase && distinctTermCoverage === 0) {
       continue;
     }
     let cappedTermOccurrences = 0;
@@ -217,7 +213,7 @@ export function buildMemorySelectorRequest(
     type: string | null;
     mtimeMs: number;
     omitted: { titleUtf8Bytes: number; descriptionUtf8Bytes: number };
-  }> = ranked.slice(0, MAX_C3A_SELECTOR_CANDIDATES).map((entry, index) => ({
+  }> = ranked.slice(0, MAX_MEMORY_SELECTOR_CANDIDATES).map((entry, index) => ({
     id: `candidate-${index + 1}`,
     title: "",
     description: "",
@@ -304,7 +300,8 @@ function fitSelectorField(
   const sourceBytes = Buffer.byteLength(value, "utf8");
   for (const codepoint of value) {
     const codepointBytes = Buffer.byteLength(codepoint, "utf8");
-    const encodedBytes = Buffer.byteLength(JSON.stringify(codepoint), "utf8") - 2;
+    const encodedBytes =
+      Buffer.byteLength(JSON.stringify(codepoint), "utf8") - 2;
     if (
       utf8Bytes + codepointBytes > rawByteLimit ||
       serializedDeltaBytes + encodedBytes > serializedByteLimit

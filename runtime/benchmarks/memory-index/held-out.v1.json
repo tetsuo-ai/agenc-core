@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "agenc-memory-relevance-v1",
+  "newestBaselineSize": 200,
+  "minimumFullCorpusTop1Recall": 1,
+  "maximumPrecisionRegression": 0,
+  "cases": [
+    {
+      "id": "old-browser-recovery",
+      "queryTerms": ["uniquebrowserfailure"],
+      "title": "Old browser recovery",
+      "description": "uniquebrowserfailure recovery sequence"
+    },
+    {
+      "id": "old-database-migration",
+      "queryTerms": ["uniquedatabasemigration"],
+      "title": "Old database migration",
+      "description": "uniquedatabasemigration rollback notes"
+    },
+    {
+      "id": "old-unicode-cafe",
+      "queryTerms": ["cafeuniquerecall"],
+      "title": "Café incident",
+      "description": "caféuniquerecall normalization guidance"
+    }
+  ]
+}
