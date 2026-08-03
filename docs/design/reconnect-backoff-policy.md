@@ -1,8 +1,9 @@
 # Finite reconnect and Retry-After policy
 
-Status: E2 implementation, based on A1 commit
-`49dac01e515527c18dc2bef220ffdc48f93cda21`. This branch must be rebased after
-A1 lands; the rebase must preserve A1's unknown-physical-effect retry refusal.
+Status: E2 implementation, rebased onto `main` after A1 merged as
+`0024f9e04` ([#1644](https://github.com/tetsuo-ai/agenc-core/pull/1644)).
+A1's replay-admission semantics are already present and remain authoritative;
+E2 preserves their unknown-physical-effect retry refusal.
 
 ## Compatibility contract
 
@@ -51,7 +52,9 @@ another provider request.
 `runtime/src/llm/retry-after.ts` owns RFC 9110 parsing at the provider HTTP
 adapter boundary. It accepts nonnegative decimal delta-seconds and all three
 HTTP-date forms, treating obsolete date forms as UTC independently of the host
-timezone. It rejects partial integers,
+timezone and normalizing their permitted `23:59:60` leap second. Only HTTP
+optional whitespace (space and horizontal tab) is discarded at field edges;
+Unicode whitespace remains invalid syntax. It rejects partial integers,
 negative values, invalid calendar dates, weekday mismatches, non-finite spellings,
 and unsafe integer overflow. The adapter returns one immutable classification:
 `absent`, `invalid`, `valid`, or `over_policy`.
@@ -75,17 +78,19 @@ and after the retry callback, before sleep, during the abortable sleep, and
 immediately after wake. Telemetry contains only bounded numbers and closed reason
 codes; raw provider error or abort text is not copied into reconnect warnings.
 
-## A1 ordering and rollback
+## A1 dependency and rollback
 
 The live run-turn callback checks replay safety before reserving another ladder
 entry. Side-effecting, interactive, or unknown-physical-effect streamed work
 therefore remains non-retryable regardless of Retry-After or jitter. Delay policy
 never decides retry eligibility.
 
-Rebase order is A1, then E2. After rebase, rerun the production run-turn
-side-effect tests and the full host-functional suite. Rollback is the single E2
-commit: it restores the earlier delay implementation without reverting A1 effect
-settlement or changing persisted state.
+The dependency order is merged A1, then E2. Integrate E2 only on a current
+`main` containing #1644; there is no outstanding A1 rebase. Rerun the production
+run-turn side-effect tests and the full host-functional suite after any later
+rebase. Rolling back the E2 production commit restores the earlier delay
+implementation without reverting A1 effect settlement or changing persisted
+state.
 
 The choice of full jitter follows the measured contention results in the
 [AWS Architecture guidance](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/)

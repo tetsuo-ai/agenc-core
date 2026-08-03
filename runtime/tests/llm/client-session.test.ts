@@ -531,6 +531,67 @@ describe("ProviderHttpClientSession", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  test.each([
+    { label: "fractional", retryAfter: "1.5" },
+    { label: "non-HTTP Unicode whitespace", retryAfter: "\u00a01\u00a0" },
+  ])(
+    "rejects $label Retry-After syntax and uses the warned fallback delay",
+    async ({ retryAfter }) => {
+      const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+      const warnings: Array<{ cause: string; message: string }> = [];
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: { message: "slow down" } }), {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+              "retry-after": retryAfter,
+            },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+      const session = new ProviderHttpClientSession({
+        providerName: "openai",
+        baseURL: "https://example.test/v1",
+        wireApi: "responses",
+        requestRetry: {
+          maxRetries: 1,
+          retry429: true,
+          baseDelayMs: 200,
+        },
+        fetchImpl,
+        emitWarning: (warning) => warnings.push(warning),
+      });
+
+      const pending = session.requestJson<{ ok: boolean }>({
+        body: { ping: "pong" },
+      });
+
+      await vi.advanceTimersByTimeAsync(199);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(warnings).toEqual([
+        {
+          cause: "retry_after_ambiguous",
+          message:
+            "provider returned an invalid Retry-After header (syntax); falling back to exponential backoff",
+        },
+      ]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const response = await pending;
+
+      expect(response.data.ok).toBe(true);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(random).toHaveBeenCalledTimes(1);
+    },
+  );
+
   test("aborts retry when an HTTP-date Retry-After exceeds the documented T13 ceiling", async () => {
     vi.setSystemTime(new Date("2026-04-21T12:00:00Z"));
     const warnings: Array<{ cause: string; message: string }> = [];
