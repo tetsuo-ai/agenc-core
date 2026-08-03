@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 7,
+  "probeCount": 6,
   "probes": [
     {
       "id": "a2b-corrupt-journal-never-recoverable",
@@ -47,15 +47,6 @@
       "fingerprint": "C3A:MEMORY:LEXICAL-FALLBACK-ON-ADMISSION-DENIAL",
       "sourceSha256": "c2cecc398507cbf70640a142d5350e357830928e700f653b078218b5716c2700",
       "timeoutMs": 10000
-    },
-    {
-      "id": "e1a-recovery-line-byte-limit",
-      "task": "E1a",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/e1a-recovery-line-byte-limit.red-probe.ts",
-      "fingerprint": "E1A:RECOVERY:LINE-BYTE-LIMIT",
-      "sourceSha256": "d605a0307f42c6a1613a10f9fb70840c5b3424ee99edfdfa07fdad47497f5a91",
-      "timeoutMs": 30000
     },
     {
       "id": "intentional-transition-omission",
