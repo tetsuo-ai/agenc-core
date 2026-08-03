@@ -1,0 +1,36 @@
+{
+  "oracle": {
+    "repository": "https://github.com/helix-editor/nucleo",
+    "commit": "e9cca9fd56480c6a4aca7a9df5edf115eb58ba17",
+    "configuration": "Config::DEFAULT.match_paths()",
+    "atom": "Atom::new(query, caseMode, Normalization::Smart, AtomKind::Fuzzy, false)"
+  },
+  "cases": [
+    { "query": "a", "candidate": "a", "caseMode": "insensitive", "score": 34, "indices": [0] },
+    { "query": "fb", "candidate": "src/FooBar.ts", "caseMode": "insensitive", "score": 51, "indices": [4, 7] },
+    { "query": "FB", "candidate": "src/fooBar.ts", "caseMode": "insensitive", "score": 51, "indices": [4, 7] },
+    { "query": "abc", "candidate": "long/path/a-b-c.ts", "caseMode": "insensitive", "score": 76, "indices": [10, 12, 14] },
+    { "query": "og", "candidate": "to-go", "caseMode": "insensitive", "score": 37, "indices": [1, 3] },
+    { "query": "og", "candidate": "ongoing", "caseMode": "insensitive", "score": 47, "indices": [0, 2] },
+    { "query": "aa", "candidate": "aba-a", "caseMode": "insensitive", "score": 53, "indices": [0, 4] },
+    { "query": "resume", "candidate": "résumé.ts", "caseMode": "insensitive", "score": 159, "indices": [0, 1, 2, 3, 4, 5] },
+    { "query": "résumé", "candidate": "resume.ts", "caseMode": "insensitive", "score": null, "indices": [] },
+    { "query": "😀b", "candidate": "a😀/b.ts", "caseMode": "insensitive", "score": 54, "indices": [1, 3] },
+    { "query": "^'!$", "candidate": "path/^'!$.txt", "caseMode": "insensitive", "score": 104, "indices": [5, 6, 7, 8] },
+    { "query": "foo bar", "candidate": "path/foo bar.txt", "caseMode": "insensitive", "score": 184, "indices": [5, 6, 7, 8, 9, 10, 11] },
+    { "query": "rtsfi", "candidate": "runtime/src/generated/zz/file-index.ts", "caseMode": "insensitive", "score": 97, "indices": [0, 3, 8, 25, 26] },
+    { "query": "a", "candidate": "a", "caseMode": "smart", "score": 34, "indices": [0] },
+    { "query": "fb", "candidate": "src/FooBar.ts", "caseMode": "smart", "score": 51, "indices": [4, 7] },
+    { "query": "FB", "candidate": "src/fooBar.ts", "caseMode": "smart", "score": null, "indices": [] },
+    { "query": "abc", "candidate": "long/path/a-b-c.ts", "caseMode": "smart", "score": 76, "indices": [10, 12, 14] },
+    { "query": "og", "candidate": "to-go", "caseMode": "smart", "score": 37, "indices": [1, 3] },
+    { "query": "og", "candidate": "ongoing", "caseMode": "smart", "score": 47, "indices": [0, 2] },
+    { "query": "aa", "candidate": "aba-a", "caseMode": "smart", "score": 53, "indices": [0, 4] },
+    { "query": "resume", "candidate": "résumé.ts", "caseMode": "smart", "score": 159, "indices": [0, 1, 2, 3, 4, 5] },
+    { "query": "résumé", "candidate": "resume.ts", "caseMode": "smart", "score": null, "indices": [] },
+    { "query": "😀b", "candidate": "a😀/b.ts", "caseMode": "smart", "score": 54, "indices": [1, 3] },
+    { "query": "^'!$", "candidate": "path/^'!$.txt", "caseMode": "smart", "score": 104, "indices": [5, 6, 7, 8] },
+    { "query": "foo bar", "candidate": "path/foo bar.txt", "caseMode": "smart", "score": 184, "indices": [5, 6, 7, 8, 9, 10, 11] },
+    { "query": "rtsfi", "candidate": "runtime/src/generated/zz/file-index.ts", "caseMode": "smart", "score": 97, "indices": [0, 3, 8, 25, 26] }
+  ]
+}

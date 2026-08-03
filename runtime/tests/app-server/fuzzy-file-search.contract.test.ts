@@ -91,7 +91,9 @@ describe("AgenC daemon fuzzy file search", () => {
   it("returns no files for empty query or empty roots", async () => {
     const service = new AgenCFuzzyFileSearchService();
 
-    await expect(service.search({ query: "", roots: ["/tmp"] })).resolves.toEqual({
+    await expect(
+      service.search({ query: "", roots: ["/tmp"] }),
+    ).resolves.toEqual({
       files: [],
     });
     await expect(service.search({ query: "src", roots: [] })).resolves.toEqual({
@@ -158,7 +160,9 @@ describe("AgenC daemon fuzzy file search", () => {
         query: "visible",
         roots: [root],
       });
-      expect(visibleFiles.map((file) => file.path)).toContain("sub/visible.txt");
+      expect(visibleFiles.map((file) => file.path)).toContain(
+        "sub/visible.txt",
+      );
     });
   });
 
@@ -236,7 +240,10 @@ describe("AgenC daemon fuzzy file search", () => {
       await mkdir(join(gitDir, "info"), { recursive: true });
       await mkdir(repo, { recursive: true });
       await writeFile(join(repo, ".git"), `gitdir: ${gitDir}\n`);
-      await writeFile(join(gitDir, "info", "exclude"), "excluded-worktree.txt\n");
+      await writeFile(
+        join(gitDir, "info", "exclude"),
+        "excluded-worktree.txt\n",
+      );
       await writeFile(join(repo, "excluded-worktree.txt"), "x");
       await writeFile(join(repo, "visible-worktree.txt"), "x");
 
@@ -283,20 +290,23 @@ describe("AgenC daemon fuzzy file search", () => {
     await withTempTree(async (root) => {
       await writeFile(join(root, "alpha.txt"), "x");
       const service = new AgenCFuzzyFileSearchService();
+      try {
+        await expect(
+          service.search({ query: "alpha", roots: [root] }),
+        ).resolves.toMatchObject({
+          files: [expect.objectContaining({ path: "alpha.txt" })],
+        });
 
-      await expect(
-        service.search({ query: "alpha", roots: [root] }),
-      ).resolves.toMatchObject({
-        files: [expect.objectContaining({ path: "alpha.txt" })],
-      });
+        await writeFile(join(root, "beta.txt"), "x");
 
-      await writeFile(join(root, "beta.txt"), "x");
-
-      await expect(
-        service.search({ query: "beta", roots: [root] }),
-      ).resolves.toMatchObject({
-        files: [expect.objectContaining({ path: "beta.txt" })],
-      });
+        await expect(
+          service.search({ query: "beta", roots: [root], refresh: true }),
+        ).resolves.toMatchObject({
+          files: [expect.objectContaining({ path: "beta.txt" })],
+        });
+      } finally {
+        await service.close();
+      }
     });
   });
 
@@ -396,6 +406,82 @@ describe("AgenC daemon fuzzy file search", () => {
     await expect(first).resolves.toEqual({ files: [] });
   });
 
+  it("enforces trusted root authority and post-canonicalization root limits", async () => {
+    const runSearch = vi.fn(async () => []);
+    const service = new AgenCFuzzyFileSearchService({ runSearch });
+
+    await expect(
+      service.search(
+        { query: "needle", roots: ["/outside-workspace"] },
+        { allowedRoots: ["/trusted-workspace"] },
+      ),
+    ).rejects.toMatchObject({ reason: "UNAUTHORIZED_ROOT" });
+    await expect(
+      service.search(
+        {
+          query: "needle",
+          roots: Array.from({ length: 32 }, (_, index) => `/root-${index}`),
+        },
+        { allowedRoots: ["/"] },
+      ),
+    ).resolves.toEqual({ files: [] });
+    await expect(
+      service.search(
+        { query: "needle", roots: Array.from({ length: 64 }, () => "/alias") },
+        { allowedRoots: ["/"] },
+      ),
+    ).resolves.toEqual({ files: [] });
+    await expect(
+      service.search(
+        {
+          query: "needle",
+          roots: Array.from({ length: 33 }, (_, index) => `/root-${index}`),
+        },
+        { allowedRoots: ["/"] },
+      ),
+    ).rejects.toMatchObject({ reason: "ROOT_COUNT_LIMIT" });
+    expect(runSearch).toHaveBeenCalledTimes(2);
+  });
+
+  it("enforces direct-service query, encoding, raw-root, and result bounds before search", async () => {
+    const runSearch = vi.fn(async () => []);
+    const service = new AgenCFuzzyFileSearchService({ runSearch });
+    const options = { allowedRoots: ["/"] } as const;
+
+    await expect(
+      service.search(
+        { query: "😀".repeat(256), roots: ["/workspace"] },
+        options,
+      ),
+    ).resolves.toEqual({ files: [] });
+    expect(runSearch).toHaveBeenCalledOnce();
+    for (const [params, reason] of [
+      [{ query: "😀".repeat(257), roots: ["/workspace"] }, "QUERY_LIMIT"],
+      [{ query: "\ud800", roots: ["/workspace"] }, "QUERY_ENCODING"],
+      [{ query: "needle", roots: ["/workspace/\udc00"] }, "ROOT_PATH_LIMIT"],
+      [
+        {
+          query: "needle",
+          roots: Array.from({ length: 65 }, (_, index) => `/root-${index}`),
+        },
+        "RAW_ROOT_COUNT_LIMIT",
+      ],
+      [
+        { query: "needle", roots: ["/workspace"], limit: 1_001 },
+        "RESULT_LIMIT",
+      ],
+      [
+        { query: "needle", roots: ["/workspace"], refresh: "yes" },
+        "REFRESH_FLAG",
+      ],
+    ] as const) {
+      await expect(service.search(params, options)).rejects.toMatchObject({
+        reason,
+      });
+    }
+    expect(runSearch).toHaveBeenCalledOnce();
+  });
+
   it("does not share cancellation tokens across JSON-RPC connections", async () => {
     const firstStarted = createDeferred();
     const releaseFirst = createDeferred();
@@ -435,6 +521,7 @@ describe("AgenC daemon fuzzy file search", () => {
     });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
+      fuzzyAllowedRoots: ["/workspace"],
       fuzzyFileSearch,
     });
     const clientA = dispatcher.createConnection();
@@ -503,6 +590,7 @@ describe("AgenC daemon fuzzy file search", () => {
     };
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
+      fuzzyAllowedRoots: ["/workspace"],
       fuzzyFileSearch,
     });
     const connection = dispatcher.createConnection();
@@ -537,6 +625,7 @@ describe("AgenC daemon fuzzy file search", () => {
           query: "src",
           roots: ["/workspace"],
           cancellationToken: "search_1",
+          limit: 1,
         },
       }),
     ).resolves.toEqual({
@@ -560,8 +649,10 @@ describe("AgenC daemon fuzzy file search", () => {
         query: "src",
         roots: ["/workspace"],
         cancellationToken: "search_1",
+        limit: 1,
       },
       {
+        allowedRoots: ["/workspace"],
         cancellationScope: expect.stringMatching(/^connection_/),
         signal: expect.any(AbortSignal),
       },
@@ -592,16 +683,49 @@ describe("AgenC daemon fuzzy file search", () => {
         cancellationToken: null,
       },
       {
+        allowedRoots: ["/workspace"],
         cancellationScope: expect.stringMatching(/^connection_/),
         signal: expect.any(AbortSignal),
       },
     );
   });
 
+  it("closes only the fuzzy-file service owned by the dispatcher", async () => {
+    const closeOwnedService = vi
+      .spyOn(AgenCFuzzyFileSearchService.prototype, "close")
+      .mockResolvedValue(undefined);
+
+    try {
+      const ownedDispatcher = new AgenCDaemonJsonRpcDispatcher({
+        agentManager: new AgenCDaemonAgentManager(),
+      });
+
+      await ownedDispatcher.close();
+
+      expect(closeOwnedService).toHaveBeenCalledOnce();
+    } finally {
+      closeOwnedService.mockRestore();
+    }
+
+    const injectedService = {
+      search: vi.fn(async () => ({ files: [] })),
+      close: vi.fn(async () => {}),
+    };
+    const injectedDispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      fuzzyFileSearch: injectedService,
+    });
+
+    await injectedDispatcher.close();
+
+    expect(injectedService.close).not.toHaveBeenCalled();
+  });
+
   it("rejects malformed fs.fuzzy_search params before searching", async () => {
     const fuzzyFileSearch = { search: vi.fn(async () => ({ files: [] })) };
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
+      fuzzyAllowedRoots: ["/workspace"],
       fuzzyFileSearch,
     });
     const connection = dispatcher.createConnection();
@@ -669,13 +793,13 @@ describe("AgenC daemon fuzzy file search", () => {
         params: {
           query: "src",
           roots: ["/workspace"],
-          limit: 10,
+          unsupported: true,
         },
       }),
     ).resolves.toMatchObject({
       error: {
         code: -32602,
-        message: "fs.fuzzy_search does not accept param 'limit'",
+        message: "fs.fuzzy_search does not accept param 'unsupported'",
         data: { code: "INVALID_ARGUMENT" },
       },
     });
@@ -692,6 +816,128 @@ describe("AgenC daemon fuzzy file search", () => {
         message: "fs.fuzzy_search param 'roots' must not contain empty paths",
       },
     });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-refresh",
+        method: "fs.fuzzy_search",
+        params: {
+          query: "src",
+          roots: ["/workspace"],
+          refresh: "yes",
+        },
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "fs.fuzzy_search param 'refresh' must be a boolean",
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "oversized-query",
+        method: "fs.fuzzy_search",
+        params: { query: "q".repeat(257), roots: ["/workspace"] },
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: expect.stringContaining("maximum is 256"),
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "nul-root",
+        method: "fs.fuzzy_search",
+        params: { query: "src", roots: ["/workspace\0other"] },
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: expect.stringContaining("embedded NUL"),
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "too-many-raw-roots",
+        method: "fs.fuzzy_search",
+        params: {
+          query: "src",
+          roots: Array.from({ length: 65 }, (_, index) => `/root-${index}`),
+        },
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: expect.stringContaining("at most 64 raw roots"),
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "oversized-root",
+        method: "fs.fuzzy_search",
+        params: { query: "src", roots: [`/${"r".repeat(16_384)}`] },
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: expect.stringContaining("maximum is 16384"),
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "aggregate-roots",
+        method: "fs.fuzzy_search",
+        params: {
+          query: "src",
+          roots: Array.from(
+            { length: 17 },
+            (_, index) =>
+              `/${String(index).padStart(2, "0")}${"r".repeat(15_998)}`,
+          ),
+        },
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: expect.stringContaining("roots exceed 262144"),
+      },
+    });
+    for (const malformedText of ["\ud800", "\udc00"]) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id: `bad-query-${malformedText.charCodeAt(0)}`,
+          method: "fs.fuzzy_search",
+          params: { query: malformedText, roots: ["/workspace"] },
+        }),
+      ).resolves.toMatchObject({
+        error: {
+          code: -32602,
+          message: expect.stringContaining("lone UTF-16"),
+        },
+      });
+    }
+    for (const limit of [0, 1_001, 1.5, Number.POSITIVE_INFINITY]) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id: `bad-limit-${String(limit)}`,
+          method: "fs.fuzzy_search",
+          params: { query: "src", roots: ["/workspace"], limit },
+        }),
+      ).resolves.toMatchObject({
+        error: {
+          code: -32602,
+          message: expect.stringContaining("integer from 1 to 1000"),
+        },
+      });
+    }
     expect(fuzzyFileSearch.search).not.toHaveBeenCalled();
   });
 });

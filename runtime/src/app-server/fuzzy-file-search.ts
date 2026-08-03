@@ -1,81 +1,184 @@
-/**
- * Ports fuzzy file search request handling onto AgenC's daemon protocol.
- *
- * Shape difference from the reference:
- *   - AgenC exposes the single-shot search as `fs.fuzzy_search` and keeps
- *     session streaming for a later notification/subscription row.
- */
+/** Persistent, cancellation-safe fuzzy-file search for the daemon protocol. */
 
-import { lstat, readFile, readdir, realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import ignore from "ignore";
+import { watch, type FSWatcher } from "node:fs";
+import { isAbsolute, posix, relative } from "node:path";
+import {
+  BoundedFuzzyMatcher,
+  FuzzyBoundaryError,
+  MAX_FUZZY_CANDIDATES,
+  MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES,
+  comparePortablePaths,
+  fuzzyPathRankScore,
+  isFuzzyQueryExtension,
+  prepareFuzzyCandidate,
+  validateFuzzyCandidate,
+  validateFuzzyQuery,
+} from "../search/fuzzy-match.js";
+import {
+  canonicalizeFuzzyIndexRoot,
+  discoverFuzzyFiles,
+  FUZZY_INDEX_IDLE_TTL_MS as PERSISTENT_FUZZY_INDEX_IDLE_TTL_MS,
+  FUZZY_FILE_INDEX_SCHEMA_VERSION,
+  FuzzyIndexBoundaryError,
+  FuzzyIndexBuildCancelledError,
+  FuzzyIndexSourceChangedError,
+  openPersistentFuzzyFileIndex,
+  type FuzzyFileDiscovery,
+  type FuzzyIndexedEntry,
+  type FuzzyIndexSnapshot,
+  type PersistentFuzzyFileIndex,
+} from "./fuzzy-file-index.js";
 import type {
   FuzzyFileSearchParams,
   FuzzyFileSearchResponse,
   FuzzyFileSearchResult,
+  JsonObject,
 } from "./protocol/index.js";
 
-const MATCH_LIMIT = 50;
-const MATCH_YIELD_INTERVAL = 256;
-const SKIPPED_DIRECTORY_NAMES = new Set([".git"]);
+export const DEFAULT_FUZZY_RESULTS = 50;
+export const MAX_FUZZY_RESULTS = 1_000;
+export const MAX_FUZZY_QUERY_CODEPOINTS = 256;
+export const MAX_FUZZY_RAW_ROOTS = 64;
+export const MAX_FUZZY_FILE_ROOTS = 32;
+export const MAX_FUZZY_FILE_ROOT_UTF8_BYTES = 16_384;
+export const MAX_FUZZY_FILE_ROOTS_UTF8_BYTES = 262_144;
+export const MAX_FUZZY_FILE_ACTIVE_ROOT_STATES = 64;
+export const MAX_FUZZY_WATCHERS = 64;
+export const MAX_FUZZY_CACHE_BYTES = 536_870_912;
+export const FUZZY_INDEX_IDLE_TTL_MS = PERSISTENT_FUZZY_INDEX_IDLE_TTL_MS;
+export const MAX_FUZZY_QUERY_MATRIX_CELLS = 16_777_216;
+export const MAX_FUZZY_QUERY_CODEPOINT_VISITS = 100_000_000;
+export const MAX_FUZZY_QUERY_MS = 500;
+export const MAX_FUZZY_CONCURRENT_BUILDS = 2;
+export const MAX_FUZZY_BUILD_QUEUE = 64;
+export const FUZZY_WATCH_DEBOUNCE_MS = 100;
+export const MIN_FUZZY_AUDIT_INTERVAL_MS = 60_000;
+export const MAX_FUZZY_AUDIT_BACKOFF_MS = 3_600_000;
 
-const SCORE_MATCH = 16;
-const PENALTY_GAP_START = 3;
-const PENALTY_GAP_EXTENSION = 1;
-const BONUS_BOUNDARY = SCORE_MATCH / 2;
-const BONUS_BOUNDARY_DELIMITER = BONUS_BOUNDARY + 1;
-const BONUS_CAMEL123 = BONUS_BOUNDARY - PENALTY_GAP_START;
-const BONUS_NON_WORD = BONUS_BOUNDARY;
-const BONUS_CONSECUTIVE =
-  PENALTY_GAP_START + PENALTY_GAP_EXTENSION;
-const BONUS_FIRST_CHAR_MULTIPLIER = 2;
+const MATCH_YIELD_INTERVAL = 1_024;
+const FUZZY_AUDIT_BUILD_DURATION_MULTIPLIER = 10;
+const FUZZY_QUERY_CACHE_REFERENCE_BYTES = 16;
+const WATCHER_STATUS_ACTIVE = "active";
+const WATCHER_STATUS_UNSUPPORTED = "unsupported";
+const WATCHER_STATUS_FAILED = "failed";
+const WATCHER_STATUS_NOT_STARTED = "not_started";
+const STALE_REASON_RESTART_GAP = "restart_gap";
+const STALE_REASON_WATCHER_EVENT = "watcher_event";
+const STALE_REASON_WATCHER_UNAVAILABLE = "watcher_unavailable";
+const STALE_REASON_BUILD_RACE = "changed_during_build";
+const DEGRADED_REASON_EMPTY_DIRECTORIES = "empty_directories_unavailable";
+const MAX_SOURCE_CONVERGENCE_ATTEMPTS = 3;
 
-interface SearchEntry {
+// These additive response details remain internal until the protocol/SDK lane
+// publishes them. Keeping them local lets persistence land independently
+// without weakening the existing JSON-RPC boundary types.
+interface FuzzyFileIndexRootFreshness extends JsonObject {
   readonly root: string;
-  readonly absolutePath: string;
-  readonly relativePath: string;
-  readonly match_type: "file" | "directory";
+  readonly canonicalRoot: string;
+  readonly generationId: number | null;
+  readonly builtAt: string | null;
+  readonly ageMs: number | null;
+  readonly watcherStatus: "active" | "unsupported" | "failed" | "not_started";
+  readonly directoryCoverage: "complete" | "nonempty_only";
+  readonly lastAuditAt: string | null;
+  readonly building: boolean;
+  readonly stale: boolean;
+  readonly degraded: boolean;
+  readonly truncated: boolean;
+  readonly reason: string | null;
 }
 
-interface SearchRoot {
+interface FuzzyFileIndexFreshness extends JsonObject {
+  readonly schemaVersion: number;
+  readonly stale: boolean;
+  readonly degraded: boolean;
+  readonly truncated: boolean;
+  readonly roots: readonly FuzzyFileIndexRootFreshness[];
+}
+
+interface FuzzyFileMatcherMetadata extends JsonObject {
+  readonly quality: "optimal" | "degraded";
+  readonly resourceLimited: boolean;
+  readonly evaluatedCandidates: number;
+  readonly totalCandidates: number;
+}
+
+interface FuzzyFileSearchExtensions {
+  readonly limit?: number;
+  readonly refresh?: boolean;
+}
+
+type ValidatedFuzzyFileSearchParams = FuzzyFileSearchParams &
+  FuzzyFileSearchExtensions;
+
+type FuzzyWatcherStatus = FuzzyFileIndexRootFreshness["watcherStatus"];
+
+interface ResolvedSearchRoot {
   readonly displayRoot: string;
-  readonly absoluteRoot: string;
-  readonly ignoreContext: IgnoreContext;
+  readonly canonicalRoot: string;
+  readonly order: number;
 }
 
-interface IgnoreContext {
-  readonly repoRoot: string | null;
-  readonly ancestorMatchers: readonly IgnoreMatcher[];
-}
-
-interface IgnoreMatcher {
-  readonly basePath: string;
-  readonly matcher: ReturnType<typeof ignore>;
-}
-
-interface WalkFrame {
-  readonly currentPath: string;
-  readonly ignoreMatchers: readonly IgnoreMatcher[];
-}
-
-interface FuzzyMatch {
-  readonly indices: readonly number[];
+interface RankedEntry {
+  readonly entry: FuzzyIndexedEntry;
+  readonly root: ResolvedSearchRoot;
   readonly score: number;
+  readonly rankScore: number;
+  readonly indices: readonly number[];
 }
 
-type CharClass =
-  | "whitespace"
-  | "delimiter"
-  | "nonWord"
-  | "lower"
-  | "upper"
-  | "number";
+interface SearchCandidate {
+  readonly root: ResolvedSearchRoot;
+  readonly entry: FuzzyIndexedEntry;
+}
+
+interface QueryCandidateCache {
+  readonly generationKey: string;
+  readonly query: string;
+  readonly candidates: readonly SearchCandidate[];
+}
+
+interface RootRuntimeState {
+  readonly canonicalRoot: string;
+  snapshot: FuzzyIndexSnapshot | null;
+  watcher: FSWatcher | null;
+  watcherStatus: FuzzyWatcherStatus;
+  changeEpoch: number;
+  stale: boolean;
+  degraded: boolean;
+  staleReason: string | null;
+  activeBuilds: number;
+  activeSearches: number;
+  build: RootBuild | null;
+  lastAccessMs: number;
+  cacheBytes: number;
+  watchDebounceTimer: ReturnType<typeof setTimeout> | null;
+  lastAuditAtMs: number | null;
+  nextAuditAtMs: number;
+  auditBackoffMs: number;
+}
+
+interface RootBuild {
+  readonly controller: AbortController;
+  promise: Promise<void>;
+  waiters: number;
+  settled: boolean;
+}
+
+interface QueuedBuild {
+  readonly signal: AbortSignal;
+  readonly run: () => Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+  readonly removeAbortListener: () => void;
+}
 
 export interface AgenCFuzzyFileSearch {
   search(
     params: FuzzyFileSearchParams,
     options?: AgenCFuzzyFileSearchSearchOptions,
   ): Promise<FuzzyFileSearchResponse>;
+  close?(): void | Promise<void>;
 }
 
 export type AgenCFuzzyFileSearchRunner = (
@@ -85,51 +188,130 @@ export type AgenCFuzzyFileSearchRunner = (
 
 export interface AgenCFuzzyFileSearchServiceOptions {
   readonly runSearch?: AgenCFuzzyFileSearchRunner;
+  readonly index?: PersistentFuzzyFileIndex;
+  readonly discover?: FuzzyFileDiscovery;
+  readonly now?: () => number;
+  readonly watchRoot?: FuzzyRootWatcher;
+  readonly maximumRootStates?: number;
+  readonly maximumCacheBytes?: number;
+  readonly idleTtlMs?: number;
 }
 
 export interface AgenCFuzzyFileSearchSearchOptions {
   readonly cancellationScope?: string;
   readonly signal?: AbortSignal;
+  /** Trusted authority supplied by the dispatcher, never copied from params. */
+  readonly allowedRoots?: readonly string[];
 }
+
+export type FuzzyRootWatcher = (
+  canonicalRoot: string,
+  onChange: () => void,
+  onError: () => void,
+) => FSWatcher | null;
 
 export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
   readonly #pendingByToken = new Map<string, AbortController>();
-  readonly #runSearch: AgenCFuzzyFileSearchRunner;
+  readonly #runSearch: AgenCFuzzyFileSearchRunner | null;
+  #index: PersistentFuzzyFileIndex | null;
+  readonly #ownsIndex: boolean;
+  readonly #discover: FuzzyFileDiscovery;
+  readonly #now: () => number;
+  readonly #watchRoot: FuzzyRootWatcher;
+  readonly #rootStates = new Map<string, RootRuntimeState>();
+  readonly #maximumRootStates: number;
+  readonly #maximumCacheBytes: number;
+  readonly #idleTtlMs: number;
+  readonly #activeControllers = new Set<AbortController>();
+  readonly #activeSettlements = new Set<Promise<void>>();
+  readonly #activeBuildSettlements = new Set<Promise<void>>();
+  readonly #buildControllers = new Set<AbortController>();
+  readonly #buildQueue: QueuedBuild[] = [];
+  #queryCandidateCache: QueryCandidateCache | null = null;
+  #activeBuildCount = 0;
+  #closed = false;
+  #closePromise: Promise<void> | null = null;
 
   constructor(options: AgenCFuzzyFileSearchServiceOptions = {}) {
-    this.#runSearch = options.runSearch ?? runFuzzyFileSearch;
+    this.#runSearch = options.runSearch ?? null;
+    this.#index = options.index ?? null;
+    this.#ownsIndex = this.#runSearch === null && options.index === undefined;
+    this.#discover = options.discover ?? discoverFuzzyFiles;
+    this.#now = options.now ?? Date.now;
+    this.#watchRoot = options.watchRoot ?? watchFuzzyRoot;
+    this.#maximumRootStates = validateMaximumRootStates(
+      options.maximumRootStates ?? MAX_FUZZY_FILE_ACTIVE_ROOT_STATES,
+    );
+    this.#maximumCacheBytes = validatePositiveBoundedOption(
+      "maximumCacheBytes",
+      options.maximumCacheBytes ?? MAX_FUZZY_CACHE_BYTES,
+      MAX_FUZZY_CACHE_BYTES,
+    );
+    this.#idleTtlMs = validatePositiveBoundedOption(
+      "idleTtlMs",
+      options.idleTtlMs ?? FUZZY_INDEX_IDLE_TTL_MS,
+      FUZZY_INDEX_IDLE_TTL_MS,
+    );
   }
 
   async search(
     params: FuzzyFileSearchParams,
     options: AgenCFuzzyFileSearchSearchOptions = {},
   ): Promise<FuzzyFileSearchResponse> {
+    if (this.#closed) throw new Error("fuzzy-file search service is closed");
+    validateSearchParamsBeforeIo(params);
     const cancellationToken = normalizedToken(params.cancellationToken);
     const cancellationKey =
       cancellationToken === null
         ? null
         : `${normalizedToken(options.cancellationScope) ?? "default"}\0${cancellationToken}`;
     const controller = new AbortController();
+    let settleRequest = (): void => {};
+    const settlement = new Promise<void>((resolve) => {
+      settleRequest = resolve;
+    });
+    this.#activeControllers.add(controller);
+    this.#activeSettlements.add(settlement);
     const parentSignal = options.signal;
     const forwardParentAbort = (): void => {
       controller.abort(parentSignal?.reason ?? "request.cancel");
     };
-    if (parentSignal?.aborted === true) {
-      forwardParentAbort();
-    } else {
-      parentSignal?.addEventListener("abort", forwardParentAbort, { once: true });
-    }
+    if (parentSignal?.aborted === true) forwardParentAbort();
+    else
+      parentSignal?.addEventListener("abort", forwardParentAbort, {
+        once: true,
+      });
     if (cancellationKey !== null) {
       this.#pendingByToken.get(cancellationKey)?.abort();
       this.#pendingByToken.set(cancellationKey, controller);
     }
+
     try {
       if (params.query.length === 0 || params.roots.length === 0) {
         return { files: [] };
       }
-      return {
-        files: await this.#runSearch(params, controller.signal),
-      };
+      if (this.#runSearch !== null) {
+        await resolveSearchRoots(
+          params.roots,
+          options.allowedRoots ?? params.roots,
+        );
+        return { files: await this.#runSearch(params, controller.signal) };
+      }
+      try {
+        return await this.#searchPersistent(
+          params,
+          controller.signal,
+          options.allowedRoots,
+        );
+      } catch (error) {
+        if (error instanceof FuzzyIndexBoundaryError) {
+          throw new FuzzyFileSearchBoundaryError(
+            "TRAVERSAL_LIMIT",
+            error.message,
+          );
+        }
+        throw error;
+      }
     } finally {
       if (
         cancellationKey !== null &&
@@ -138,605 +320,1141 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
         this.#pendingByToken.delete(cancellationKey);
       }
       parentSignal?.removeEventListener("abort", forwardParentAbort);
+      this.#activeControllers.delete(controller);
+      this.#activeSettlements.delete(settlement);
+      settleRequest();
     }
+  }
+
+  close(): Promise<void> {
+    if (this.#closePromise !== null) return this.#closePromise;
+    this.#closed = true;
+    for (const controller of this.#activeControllers) {
+      controller.abort("fuzzy-file search service closed");
+    }
+    for (const controller of this.#buildControllers) {
+      controller.abort("fuzzy-file search service closed");
+    }
+    const activeSettlements = [
+      ...this.#activeSettlements,
+      ...this.#activeBuildSettlements,
+    ];
+    if (activeSettlements.length === 0) {
+      this.#finishClose();
+      this.#closePromise = Promise.resolve();
+      return this.#closePromise;
+    }
+    this.#closePromise = Promise.allSettled(activeSettlements).then(() => {
+      this.#finishClose();
+    });
+    return this.#closePromise;
+  }
+
+  #finishClose(): void {
+    for (const state of this.#rootStates.values())
+      this.#disposeRootState(state);
+    this.#rootStates.clear();
+    this.#queryCandidateCache = null;
+    this.#pendingByToken.clear();
+    if (this.#ownsIndex) this.#index?.close();
+  }
+
+  async #searchPersistent(
+    params: ValidatedFuzzyFileSearchParams,
+    signal: AbortSignal,
+    allowedRoots: readonly string[] | undefined,
+  ): Promise<FuzzyFileSearchResponse> {
+    const roots = await resolveSearchRoots(
+      params.roots,
+      allowedRoots ?? params.roots,
+    );
+    const snapshots = new Map<string, FuzzyIndexSnapshot>();
+    const pinnedStates = new Map<string, RootRuntimeState>();
+    try {
+      for (const root of roots) {
+        if (signal.aborted) return { files: [] };
+        const state = this.#stateForRoot(root.canonicalRoot);
+        state.activeSearches += 1;
+        pinnedStates.set(root.canonicalRoot, state);
+        const shouldAudit =
+          state.snapshot !== null && this.#now() >= state.nextAuditAtMs;
+        const shouldRefresh =
+          params.refresh === true ||
+          state.snapshot === null ||
+          shouldAudit ||
+          (state.activeBuilds === 0 &&
+            state.watchDebounceTimer === null &&
+            isRefreshableStaleReason(state.staleReason));
+        if (shouldRefresh) {
+          try {
+            await this.#refreshRoot(state, signal);
+          } catch (error) {
+            if (
+              signal.aborted ||
+              error instanceof FuzzyIndexBuildCancelledError
+            ) {
+              return { files: [] };
+            }
+            if (state.snapshot === null) throw error;
+            state.stale = true;
+            state.degraded = true;
+            state.staleReason = errorMessage(error);
+            state.auditBackoffMs = Math.min(
+              MAX_FUZZY_AUDIT_BACKOFF_MS,
+              state.auditBackoffMs * 2,
+            );
+            state.nextAuditAtMs = this.#now() + state.auditBackoffMs;
+          }
+        }
+        if (state.snapshot !== null) {
+          snapshots.set(root.canonicalRoot, state.snapshot);
+        }
+      }
+      if (signal.aborted) return { files: [] };
+      const collection = collectRootEntries(roots, snapshots);
+      const generationKey = fuzzyQueryGenerationKey(roots, snapshots);
+      const reusableCache = this.#queryCandidateCache;
+      const rankingCandidates =
+        reusableCache !== null &&
+        reusableCache.generationKey === generationKey &&
+        isFuzzyQueryExtension(reusableCache.query, params.query, "insensitive")
+          ? reusableCache.candidates
+          : collection.candidates;
+      const ranking = await rankSearchEntries(
+        params.query,
+        rankingCandidates,
+        signal,
+        params.limit ?? DEFAULT_FUZZY_RESULTS,
+        collection.candidates.length,
+      );
+      if (signal.aborted) return { files: [] };
+      const queryCacheBytes =
+        ranking.matchedCandidates.length * FUZZY_QUERY_CACHE_REFERENCE_BYTES;
+      if (
+        !ranking.matcher.resourceLimited &&
+        ranking.matcher.evaluatedCandidates === rankingCandidates.length &&
+        cachedRootBytes(this.#rootStates) + queryCacheBytes <=
+          this.#maximumCacheBytes
+      ) {
+        this.#queryCandidateCache = {
+          generationKey,
+          query: params.query,
+          candidates: ranking.matchedCandidates,
+        };
+      } else {
+        this.#queryCandidateCache = null;
+      }
+      const rootFreshness = roots.map((root) =>
+        this.#freshnessForRoot(root, pinnedStates.get(root.canonicalRoot)),
+      );
+      const freshness: FuzzyFileIndexFreshness = {
+        schemaVersion: FUZZY_FILE_INDEX_SCHEMA_VERSION,
+        stale: rootFreshness.some((root) => root.stale),
+        degraded: rootFreshness.some((root) => root.degraded),
+        truncated:
+          collection.truncated ||
+          ranking.matcher.resourceLimited ||
+          rootFreshness.some((root) => root.truncated),
+        roots: rootFreshness,
+      };
+      return {
+        files: ranking.files,
+        freshness,
+        matcher: ranking.matcher,
+      };
+    } finally {
+      for (const state of pinnedStates.values()) state.activeSearches -= 1;
+    }
+  }
+
+  #stateForRoot(canonicalRoot: string): RootRuntimeState {
+    const accessedAtMs = this.#now();
+    this.#evictExpiredRootStates(accessedAtMs);
+    const existing = this.#rootStates.get(canonicalRoot);
+    if (existing !== undefined) {
+      existing.lastAccessMs = accessedAtMs;
+      this.#rootStates.delete(canonicalRoot);
+      this.#rootStates.set(canonicalRoot, existing);
+      return existing;
+    }
+    this.#queryCandidateCache = null;
+    this.#evictRootStateForAdmission();
+    const snapshot = this.#persistentIndex().readCurrent(canonicalRoot);
+    const state: RootRuntimeState = {
+      canonicalRoot,
+      snapshot,
+      watcher: null,
+      watcherStatus: WATCHER_STATUS_NOT_STARTED,
+      changeEpoch: 0,
+      stale: snapshot !== null,
+      degraded: snapshot !== null,
+      staleReason: snapshot === null ? null : STALE_REASON_RESTART_GAP,
+      activeBuilds: 0,
+      activeSearches: 0,
+      build: null,
+      lastAccessMs: accessedAtMs,
+      cacheBytes: snapshot === null ? 0 : estimateSnapshotCacheBytes(snapshot),
+      watchDebounceTimer: null,
+      lastAuditAtMs: snapshot?.builtAtMs ?? null,
+      nextAuditAtMs:
+        snapshot === null
+          ? Number.POSITIVE_INFINITY
+          : accessedAtMs + MIN_FUZZY_AUDIT_INTERVAL_MS,
+      auditBackoffMs: MIN_FUZZY_AUDIT_INTERVAL_MS,
+    };
+    state.watcher = this.#watchRoot(
+      canonicalRoot,
+      () => {
+        state.changeEpoch += 1;
+        state.stale = true;
+        state.staleReason = STALE_REASON_WATCHER_EVENT;
+        this.#scheduleWatcherRefresh(state);
+      },
+      () => {
+        this.#clearWatcherDebounce(state);
+        state.watcherStatus = WATCHER_STATUS_FAILED;
+        state.stale = true;
+        state.degraded = true;
+        state.staleReason = STALE_REASON_WATCHER_UNAVAILABLE;
+      },
+    );
+    if (state.watcher !== null) {
+      state.watcherStatus = WATCHER_STATUS_ACTIVE;
+    } else {
+      state.watcherStatus = WATCHER_STATUS_UNSUPPORTED;
+      state.degraded = true;
+      if (state.snapshot !== null) {
+        state.stale = true;
+        state.staleReason = STALE_REASON_WATCHER_UNAVAILABLE;
+      }
+    }
+    this.#rootStates.set(canonicalRoot, state);
+    try {
+      this.#makeCacheRoom(state.cacheBytes, state);
+    } catch (error) {
+      this.#disposeRootState(state);
+      this.#rootStates.delete(canonicalRoot);
+      throw error;
+    }
+    return state;
+  }
+
+  #scheduleWatcherRefresh(state: RootRuntimeState): void {
+    if (
+      this.#closed ||
+      state.watcherStatus !== WATCHER_STATUS_ACTIVE ||
+      state.watchDebounceTimer !== null
+    ) {
+      return;
+    }
+    state.watchDebounceTimer = setTimeout(() => {
+      state.watchDebounceTimer = null;
+      if (this.#closed || this.#rootStates.get(state.canonicalRoot) !== state) {
+        return;
+      }
+      const signal = new AbortController().signal;
+      void this.#refreshRoot(state, signal).catch((error: unknown) => {
+        if (this.#closed || error instanceof FuzzyIndexBuildCancelledError) {
+          return;
+        }
+        state.stale = true;
+        state.degraded = true;
+        state.staleReason = errorMessage(error);
+        state.auditBackoffMs = Math.min(
+          MAX_FUZZY_AUDIT_BACKOFF_MS,
+          state.auditBackoffMs * 2,
+        );
+        state.nextAuditAtMs = this.#now() + state.auditBackoffMs;
+      });
+    }, FUZZY_WATCH_DEBOUNCE_MS);
+    state.watchDebounceTimer.unref?.();
+  }
+
+  #clearWatcherDebounce(state: RootRuntimeState): void {
+    if (state.watchDebounceTimer === null) return;
+    clearTimeout(state.watchDebounceTimer);
+    state.watchDebounceTimer = null;
+  }
+
+  #disposeRootState(state: RootRuntimeState): void {
+    this.#queryCandidateCache = null;
+    this.#clearWatcherDebounce(state);
+    state.watcher?.close();
+  }
+
+  #evictExpiredRootStates(nowMs: number): void {
+    for (const [canonicalRoot, state] of this.#rootStates) {
+      if (
+        state.activeSearches > 0 ||
+        state.activeBuilds > 0 ||
+        nowMs - state.lastAccessMs < this.#idleTtlMs
+      ) {
+        continue;
+      }
+      this.#disposeRootState(state);
+      this.#rootStates.delete(canonicalRoot);
+    }
+  }
+
+  #makeCacheRoom(
+    incomingBytes: number,
+    protectedState: RootRuntimeState,
+  ): void {
+    let projectedBytes =
+      cachedRootBytes(this.#rootStates) -
+      protectedState.cacheBytes +
+      incomingBytes;
+    if (projectedBytes <= this.#maximumCacheBytes) return;
+    for (const [canonicalRoot, state] of this.#rootStates) {
+      if (
+        state === protectedState ||
+        state.activeSearches > 0 ||
+        state.activeBuilds > 0
+      ) {
+        continue;
+      }
+      this.#disposeRootState(state);
+      this.#rootStates.delete(canonicalRoot);
+      projectedBytes -= state.cacheBytes;
+      if (projectedBytes <= this.#maximumCacheBytes) return;
+    }
+    throw new FuzzyFileSearchBoundaryError(
+      "CACHE_LIMIT",
+      `fuzzy-file cache requires ${projectedBytes} bytes; maximum is ${this.#maximumCacheBytes}`,
+    );
+  }
+
+  #evictRootStateForAdmission(): void {
+    if (this.#rootStates.size < this.#maximumRootStates) return;
+    for (const [canonicalRoot, state] of this.#rootStates) {
+      if (state.activeSearches > 0 || state.activeBuilds > 0) continue;
+      this.#disposeRootState(state);
+      this.#rootStates.delete(canonicalRoot);
+      return;
+    }
+    throw new Error(
+      `fuzzy-file active root-state limit of ${this.#maximumRootStates} is exhausted`,
+    );
+  }
+
+  async #refreshRoot(
+    state: RootRuntimeState,
+    signal: AbortSignal,
+  ): Promise<void> {
+    this.#clearWatcherDebounce(state);
+    let build = state.build;
+    if (build === null) {
+      const controller = new AbortController();
+      build = {
+        controller,
+        promise: Promise.resolve(),
+        waiters: 0,
+        settled: false,
+      };
+      state.build = build;
+      state.activeBuilds = 1;
+      this.#buildControllers.add(controller);
+      const ownedBuild = build;
+      build.promise = this.#scheduleBuild(
+        () => this.#runRefreshRoot(state, controller.signal),
+        controller.signal,
+      ).finally(() => {
+        ownedBuild.settled = true;
+        this.#activeBuildSettlements.delete(ownedBuild.promise);
+        this.#buildControllers.delete(controller);
+        if (state.build === ownedBuild) {
+          state.build = null;
+          state.activeBuilds = 0;
+        }
+      });
+      this.#activeBuildSettlements.add(build.promise);
+    }
+    build.waiters += 1;
+    try {
+      await waitForBuildOrAbort(build.promise, signal);
+    } finally {
+      build.waiters -= 1;
+      if (build.waiters === 0 && !build.settled) {
+        build.controller.abort("fuzzy-file build has no waiting request");
+      }
+    }
+  }
+
+  async #runRefreshRoot(
+    state: RootRuntimeState,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const buildStartedAtMs = this.#now();
+    for (
+      let attempt = 0;
+      attempt < MAX_SOURCE_CONVERGENCE_ATTEMPTS;
+      attempt += 1
+    ) {
+      const epochAtStart = state.changeEpoch;
+      const discovery = await this.#discover(state.canonicalRoot, signal);
+      if (signal.aborted) throw new FuzzyIndexBuildCancelledError();
+      if (state.changeEpoch !== epochAtStart) continue;
+      let snapshot: FuzzyIndexSnapshot | null;
+      try {
+        snapshot = await this.#persistentIndex().publish(
+          state.canonicalRoot,
+          discovery,
+          signal,
+          {
+            sourceBoundary: `${state.watcherStatus}:${epochAtStart}`,
+            isSourceBoundaryCurrent: () => state.changeEpoch === epochAtStart,
+          },
+        );
+      } catch (error) {
+        if (error instanceof FuzzyIndexSourceChangedError) continue;
+        throw error;
+      }
+      if (snapshot === null) {
+        throw new Error("fuzzy-file generation was not published");
+      }
+      const snapshotBytes = estimateSnapshotCacheBytes(snapshot);
+      this.#queryCandidateCache = null;
+      this.#makeCacheRoom(snapshotBytes, state);
+      state.snapshot = snapshot;
+      state.cacheBytes = snapshotBytes;
+      const watcherDegraded = state.watcherStatus !== WATCHER_STATUS_ACTIVE;
+      const directoryDegraded = snapshot.directoryCoverage !== "complete";
+      state.stale = watcherDegraded;
+      state.degraded = watcherDegraded || directoryDegraded;
+      state.staleReason = watcherDegraded
+        ? STALE_REASON_WATCHER_UNAVAILABLE
+        : directoryDegraded
+          ? DEGRADED_REASON_EMPTY_DIRECTORIES
+          : null;
+      state.lastAuditAtMs = this.#now();
+      state.auditBackoffMs = MIN_FUZZY_AUDIT_INTERVAL_MS;
+      const buildDurationMs = Math.max(0, this.#now() - buildStartedAtMs);
+      state.nextAuditAtMs =
+        this.#now() +
+        Math.max(
+          MIN_FUZZY_AUDIT_INTERVAL_MS,
+          buildDurationMs * FUZZY_AUDIT_BUILD_DURATION_MULTIPLIER,
+        );
+      return;
+    }
+    state.stale = true;
+    state.staleReason = STALE_REASON_BUILD_RACE;
+    state.auditBackoffMs = Math.min(
+      MAX_FUZZY_AUDIT_BACKOFF_MS,
+      state.auditBackoffMs * 2,
+    );
+    state.nextAuditAtMs = this.#now() + state.auditBackoffMs;
+    throw new FuzzyIndexSourceChangedError();
+  }
+
+  #scheduleBuild(run: () => Promise<void>, signal: AbortSignal): Promise<void> {
+    if (this.#activeBuildCount < MAX_FUZZY_CONCURRENT_BUILDS) {
+      return this.#runScheduledBuild(run);
+    }
+    if (this.#buildQueue.length >= MAX_FUZZY_BUILD_QUEUE) {
+      return Promise.reject(
+        new FuzzyFileSearchBoundaryError(
+          "BUILD_QUEUE_LIMIT",
+          `fuzzy-file build queue reached ${MAX_FUZZY_BUILD_QUEUE}`,
+        ),
+      );
+    }
+    return new Promise<void>((resolve, reject) => {
+      let queued: QueuedBuild;
+      const cancelQueued = (): void => {
+        const index = this.#buildQueue.indexOf(queued);
+        if (index >= 0) this.#buildQueue.splice(index, 1);
+        reject(new FuzzyIndexBuildCancelledError());
+      };
+      queued = {
+        signal,
+        run,
+        resolve,
+        reject,
+        removeAbortListener: () =>
+          signal.removeEventListener("abort", cancelQueued),
+      };
+      if (signal.aborted) {
+        cancelQueued();
+        return;
+      }
+      signal.addEventListener("abort", cancelQueued, { once: true });
+      this.#buildQueue.push(queued);
+    });
+  }
+
+  async #runScheduledBuild(run: () => Promise<void>): Promise<void> {
+    this.#activeBuildCount += 1;
+    try {
+      await run();
+    } finally {
+      this.#activeBuildCount -= 1;
+      this.#drainBuildQueue();
+    }
+  }
+
+  #drainBuildQueue(): void {
+    while (
+      this.#activeBuildCount < MAX_FUZZY_CONCURRENT_BUILDS &&
+      this.#buildQueue.length > 0
+    ) {
+      const queued = this.#buildQueue.shift()!;
+      queued.removeAbortListener();
+      if (queued.signal.aborted) {
+        queued.reject(new FuzzyIndexBuildCancelledError());
+        continue;
+      }
+      void this.#runScheduledBuild(queued.run).then(
+        queued.resolve,
+        queued.reject,
+      );
+    }
+  }
+
+  #persistentIndex(): PersistentFuzzyFileIndex {
+    if (this.#runSearch !== null) {
+      throw new Error(
+        "custom fuzzy-file runners do not own a persistent index",
+      );
+    }
+    this.#index ??= openPersistentFuzzyFileIndex();
+    return this.#index;
+  }
+
+  #freshnessForRoot(
+    root: ResolvedSearchRoot,
+    state: RootRuntimeState | undefined,
+  ): FuzzyFileIndexRootFreshness {
+    const snapshot = state?.snapshot ?? null;
+    return {
+      root: root.displayRoot,
+      canonicalRoot: root.canonicalRoot,
+      generationId: snapshot?.generationId ?? null,
+      builtAt:
+        snapshot === null ? null : new Date(snapshot.builtAtMs).toISOString(),
+      ageMs:
+        snapshot === null
+          ? null
+          : Math.max(0, this.#now() - snapshot.builtAtMs),
+      watcherStatus: state?.watcherStatus ?? WATCHER_STATUS_NOT_STARTED,
+      directoryCoverage: snapshot?.directoryCoverage ?? "complete",
+      lastAuditAt:
+        state?.lastAuditAtMs === null || state?.lastAuditAtMs === undefined
+          ? null
+          : new Date(state.lastAuditAtMs).toISOString(),
+      building: (state?.activeBuilds ?? 0) > 0,
+      stale: state?.stale ?? true,
+      degraded: state?.degraded ?? true,
+      truncated: snapshot?.truncated ?? false,
+      reason: state?.staleReason ?? null,
+    };
   }
 }
 
+/**
+ * Single-use compatibility helper. It always performs a current pinned-rg
+ * discovery; the daemon service above owns persistence across requests.
+ */
 export async function runFuzzyFileSearch(
   params: FuzzyFileSearchParams,
   signal: AbortSignal = new AbortController().signal,
 ): Promise<readonly FuzzyFileSearchResult[]> {
+  validateSearchParamsBeforeIo(params);
   if (params.query.length === 0 || params.roots.length === 0) return [];
-  const roots = await resolveSearchRoots(params.roots);
-  const entries = await collectSearchEntriesForRoots(roots, signal);
-  if (signal.aborted) return [];
-  return await rankSearchEntries(params.query, entries, signal);
-}
-
-async function collectSearchEntriesForRoots(
-  roots: readonly SearchRoot[],
-  signal: AbortSignal,
-): Promise<readonly SearchEntry[]> {
-  const entries: SearchEntry[] = [];
-  const seenPaths = new Set<string>();
+  const roots = await resolveSearchRoots(params.roots, params.roots);
+  const snapshots = new Map<string, FuzzyIndexSnapshot>();
+  let syntheticGeneration = 0;
   for (const root of roots) {
-    if (signal.aborted) break;
-    entries.push(...(await collectSearchEntries(root, signal, seenPaths)));
-  }
-  return entries;
-}
-
-async function rankSearchEntries(
-  query: string,
-  entries: readonly SearchEntry[],
-  signal: AbortSignal,
-): Promise<readonly FuzzyFileSearchResult[]> {
-  const matches: FuzzyFileSearchResult[] = [];
-  for (const [index, entry] of entries.entries()) {
     if (signal.aborted) return [];
-    if (index > 0 && index % MATCH_YIELD_INTERVAL === 0) {
-      await yieldToEventLoop();
-      if (signal.aborted) return [];
-    }
-    const match = bestFuzzyMatch(entry.relativePath, query);
-    if (match === null) continue;
-    matches.push({
-      root: entry.root,
-      path: entry.relativePath,
-      match_type: entry.match_type,
-      file_name: basename(entry.relativePath) || entry.relativePath,
-      score: match.score,
-      indices: match.indices,
+    const discovery = await discoverFuzzyFiles(root.canonicalRoot, signal);
+    syntheticGeneration += 1;
+    snapshots.set(root.canonicalRoot, {
+      rootKey: root.canonicalRoot,
+      canonicalRoot: root.canonicalRoot,
+      generationId: syntheticGeneration,
+      builtAtMs: Date.now(),
+      entryCount: discovery.entries.length,
+      pathBytes: discovery.entries.reduce(
+        (total, entry) => total + entry.pathBytes.byteLength,
+        0,
+      ),
+      digest: "single-use",
+      truncated: discovery.truncated,
+      directoryCoverage: discovery.directoryCoverage ?? "complete",
+      entries: discovery.entries,
     });
   }
-  if (signal.aborted) return [];
-  matches.sort(compareByScoreDescThenPathAsc);
-  return matches.slice(0, MATCH_LIMIT);
+  const collection = collectRootEntries(roots, snapshots);
+  const ranking = await rankSearchEntries(
+    params.query,
+    collection.candidates,
+    signal,
+    params.limit ?? DEFAULT_FUZZY_RESULTS,
+  );
+  return ranking.files;
 }
 
 async function resolveSearchRoots(
   roots: readonly string[],
-): Promise<readonly SearchRoot[]> {
-  const searchRoots: SearchRoot[] = [];
-  const seenAbsoluteRoots = new Set<string>();
-  for (const root of roots) {
-    const absoluteRoot = resolve(root);
-    if (seenAbsoluteRoots.has(absoluteRoot)) continue;
-    seenAbsoluteRoots.add(absoluteRoot);
-    searchRoots.push({
-      displayRoot: root,
-      absoluteRoot,
-      ignoreContext: await createIgnoreContext(absoluteRoot),
-    });
-  }
-  searchRoots.sort(
-    (left, right) =>
-      pathDepth(right.absoluteRoot) - pathDepth(left.absoluteRoot) ||
-      left.absoluteRoot.localeCompare(right.absoluteRoot),
+  allowedRoots: readonly string[],
+): Promise<readonly ResolvedSearchRoot[]> {
+  const canonicalAllowedRoots = await Promise.all(
+    allowedRoots.map(canonicalizeFuzzyIndexRoot),
   );
-  return searchRoots;
-}
-
-async function collectSearchEntries(
-  root: SearchRoot,
-  signal: AbortSignal,
-  seenPaths: Set<string>,
-): Promise<readonly SearchEntry[]> {
-  const entries: SearchEntry[] = [];
-  const seenDirectories = new Set<string>();
-  const stack: WalkFrame[] = [
-    {
-      currentPath: root.absoluteRoot,
-      ignoreMatchers: root.ignoreContext.ancestorMatchers,
-    },
-  ];
-  while (stack.length > 0) {
-    if (signal.aborted) break;
-    const frame = stack.pop()!;
-    await visitSearchPath({
-      root,
-      frame,
-      stack,
-      entries,
-      seenPaths,
-      seenDirectories,
-      signal,
-    });
-  }
-  return entries;
-}
-
-async function visitSearchPath(params: {
-  readonly root: SearchRoot;
-  readonly frame: WalkFrame;
-  readonly stack: WalkFrame[];
-  readonly entries: SearchEntry[];
-  readonly seenPaths: Set<string>;
-  readonly seenDirectories: Set<string>;
-  readonly signal: AbortSignal;
-}): Promise<void> {
-  if (params.signal.aborted) return;
-  const { currentPath, ignoreMatchers } = params.frame;
-  let stat;
-  try {
-    stat = await lstat(currentPath);
-  } catch {
-    return;
-  }
-  if (stat.isSymbolicLink()) {
-    try {
-      stat = await lstat(await realpath(currentPath));
-    } catch {
-      return;
+  const byCanonical = new Map<string, ResolvedSearchRoot>();
+  let canonicalRootBytes = 0;
+  for (const [rootOrder, root] of roots.entries()) {
+    const canonicalRoot = await canonicalizeFuzzyIndexRoot(root);
+    if (
+      !canonicalAllowedRoots.some((allowedRoot) =>
+        isWithinAllowedRoot(allowedRoot, canonicalRoot),
+      )
+    ) {
+      throw new FuzzyFileSearchBoundaryError(
+        "UNAUTHORIZED_ROOT",
+        `fuzzy-file root is outside the trusted workspace capability: ${root}`,
+      );
     }
-  }
-  if (!stat.isDirectory() && !stat.isFile()) return;
-  if (
-    currentPath !== params.root.absoluteRoot &&
-    SKIPPED_DIRECTORY_NAMES.has(basename(currentPath))
-  ) {
-    return;
-  }
-  if (isIgnored(ignoreMatchers, currentPath, stat.isDirectory())) {
-    return;
-  }
-  const realEntryPath = await resolveRealPath(currentPath);
-  if (params.seenPaths.has(realEntryPath)) return;
-  params.seenPaths.add(realEntryPath);
-  if (currentPath !== params.root.absoluteRoot) {
-    const relativePath = toPortablePath(
-      relative(params.root.absoluteRoot, currentPath),
-    );
-    if (relativePath.length > 0) {
-      params.entries.push({
-        root: params.root.displayRoot,
-        absolutePath: currentPath,
-        relativePath,
-        match_type: stat.isDirectory() ? "directory" : "file",
+    if (!byCanonical.has(canonicalRoot)) {
+      const rootBytes = Buffer.byteLength(canonicalRoot, "utf8");
+      if (rootBytes > MAX_FUZZY_FILE_ROOT_UTF8_BYTES) {
+        throw new FuzzyFileSearchBoundaryError(
+          "ROOT_PATH_LIMIT",
+          `canonical fuzzy-file root is ${rootBytes} UTF-8 bytes; maximum is ${MAX_FUZZY_FILE_ROOT_UTF8_BYTES}`,
+        );
+      }
+      canonicalRootBytes += rootBytes;
+      if (canonicalRootBytes > MAX_FUZZY_FILE_ROOTS_UTF8_BYTES) {
+        throw new FuzzyFileSearchBoundaryError(
+          "ROOT_BYTES_LIMIT",
+          `canonical fuzzy-file roots exceed ${MAX_FUZZY_FILE_ROOTS_UTF8_BYTES} UTF-8 bytes`,
+        );
+      }
+      if (byCanonical.size >= MAX_FUZZY_FILE_ROOTS) {
+        throw new FuzzyFileSearchBoundaryError(
+          "ROOT_COUNT_LIMIT",
+          `canonical fuzzy-file roots exceed ${MAX_FUZZY_FILE_ROOTS}`,
+        );
+      }
+      byCanonical.set(canonicalRoot, {
+        displayRoot: root,
+        canonicalRoot,
+        order: rootOrder,
       });
     }
   }
-  if (!stat.isDirectory()) return;
-  const realDirectory = realEntryPath;
-  if (params.seenDirectories.has(realDirectory)) return;
-  params.seenDirectories.add(realDirectory);
-  let children;
+  return [...byCanonical.values()].sort((left, right) => {
+    const depth =
+      pathDepth(right.canonicalRoot) - pathDepth(left.canonicalRoot);
+    return depth !== 0
+      ? depth
+      : comparePortablePaths(left.canonicalRoot, right.canonicalRoot);
+  });
+}
+
+function collectRootEntries(
+  roots: readonly ResolvedSearchRoot[],
+  snapshots: ReadonlyMap<string, FuzzyIndexSnapshot>,
+): {
+  readonly candidates: readonly SearchCandidate[];
+  readonly truncated: boolean;
+} {
+  const candidates: SearchCandidate[] = [];
+  const seenAbsoluteBytes = new Set<string>();
+  let candidateBytes = 0;
+  let truncated = false;
+  rootLoop: for (const root of roots) {
+    const snapshot = snapshots.get(root.canonicalRoot);
+    if (snapshot === undefined) continue;
+    for (const entry of snapshot.entries) {
+      const absoluteKey = fuzzyAbsolutePathKey(
+        root.canonicalRoot,
+        entry.pathBytes,
+      );
+      if (seenAbsoluteBytes.has(absoluteKey)) continue;
+      const nextBytes = Buffer.byteLength(entry.relativePath, "utf8");
+      if (
+        candidates.length >= MAX_FUZZY_CANDIDATES ||
+        candidateBytes + nextBytes > MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES
+      ) {
+        truncated = true;
+        break rootLoop;
+      }
+      seenAbsoluteBytes.add(absoluteKey);
+      candidateBytes += nextBytes;
+      candidates.push({ root, entry });
+    }
+  }
+  return { candidates, truncated };
+}
+
+function fuzzyQueryGenerationKey(
+  roots: readonly ResolvedSearchRoot[],
+  snapshots: ReadonlyMap<string, FuzzyIndexSnapshot>,
+): string {
+  return JSON.stringify(
+    roots.map((root) => {
+      const snapshot = snapshots.get(root.canonicalRoot);
+      return [
+        root.displayRoot,
+        root.canonicalRoot,
+        root.order,
+        snapshot?.rootKey ?? null,
+        snapshot?.generationId ?? null,
+      ];
+    }),
+  );
+}
+
+export function fuzzyAbsolutePathKey(
+  canonicalRoot: string,
+  relativePathBytes: Buffer,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const portableRoot =
+    platform === "win32" ? canonicalRoot.replace(/\\/gu, "/") : canonicalRoot;
+  return Buffer.concat([
+    Buffer.from(portableRoot, "utf8"),
+    Buffer.from("/", "utf8"),
+    relativePathBytes,
+  ]).toString("hex");
+}
+
+async function rankSearchEntries(
+  query: string,
+  candidates: readonly SearchCandidate[],
+  signal: AbortSignal,
+  limit: number,
+  totalCandidateCount: number = candidates.length,
+): Promise<{
+  readonly files: readonly FuzzyFileSearchResult[];
+  readonly matcher: FuzzyMatcherMetadata;
+  readonly matchedCandidates: readonly SearchCandidate[];
+}> {
+  const matcher = new BoundedFuzzyMatcher(query, { caseMode: "insensitive" });
+  const top: RankedEntry[] = [];
+  const matchedCandidates: SearchCandidate[] = [];
+  const queryCodePoints = Array.from(query).length;
+  const startedAt = performance.now();
+  let matrixCells = 0;
+  let codePointVisits = 0;
+  let evaluatedCandidates = 0;
+  let resourceLimited = false;
+  for (const [index, candidate] of candidates.entries()) {
+    if (signal.aborted) {
+      return {
+        files: [],
+        matcher: matcherMetadata(matcher, false, 0, totalCandidateCount),
+        matchedCandidates: [],
+      };
+    }
+    if (index > 0 && index % MATCH_YIELD_INTERVAL === 0) {
+      await yieldToEventLoop();
+      if (signal.aborted) {
+        return {
+          files: [],
+          matcher: matcherMetadata(matcher, false, 0, totalCandidateCount),
+          matchedCandidates: [],
+        };
+      }
+    }
+    const searchCandidate =
+      candidate.entry.searchCandidate ??
+      prepareFuzzyCandidate(candidate.entry.relativePath);
+    const candidateCodePoints = searchCandidate.codePoints.length;
+    const prefilterVisits = queryCodePoints + candidateCodePoints;
+    if (performance.now() - startedAt > MAX_FUZZY_QUERY_MS) {
+      resourceLimited = true;
+      break;
+    }
+    const candidateMatrixCells = queryCodePoints * candidateCodePoints;
+    const forceDegraded =
+      !Number.isSafeInteger(candidateMatrixCells) ||
+      matrixCells + candidateMatrixCells > MAX_FUZZY_QUERY_MATRIX_CELLS;
+    const matchingVisits = forceDegraded
+      ? prefilterVisits
+      : candidateMatrixCells;
+    const nextVisits = codePointVisits + prefilterVisits + matchingVisits;
+    if (
+      !Number.isSafeInteger(nextVisits) ||
+      nextVisits > MAX_FUZZY_QUERY_CODEPOINT_VISITS
+    ) {
+      resourceLimited = true;
+      break;
+    }
+    codePointVisits = nextVisits;
+    if (!forceDegraded) matrixCells += candidateMatrixCells;
+    const match = matcher.match(searchCandidate, {
+      forceDegraded,
+      includeIndices: true,
+      lengthBonus: false,
+      matchBasename: true,
+    });
+    evaluatedCandidates += 1;
+    if (match === null) continue;
+    matchedCandidates.push(candidate);
+    retainRankedEntry(
+      top,
+      {
+        entry: candidate.entry,
+        root: candidate.root,
+        score: match.score,
+        rankScore: fuzzyPathRankScore(
+          candidate.entry.relativePath,
+          match.score,
+        ),
+        indices: match.indices,
+      },
+      limit,
+    );
+  }
+  if (signal.aborted) {
+    return {
+      files: [],
+      matcher: matcherMetadata(matcher, false, 0, totalCandidateCount),
+      matchedCandidates: [],
+    };
+  }
+  const files = top
+    .sort(compareRankedEntries)
+    .map(({ entry, root, score, indices }) => {
+      return {
+        root: root.displayRoot,
+        path: entry.relativePath,
+        match_type: entry.matchType,
+        file_name: posix.basename(entry.relativePath) || entry.relativePath,
+        score,
+        indices,
+      };
+    });
+  return {
+    files,
+    matcher: matcherMetadata(
+      matcher,
+      resourceLimited,
+      evaluatedCandidates,
+      totalCandidateCount,
+    ),
+    matchedCandidates: Object.freeze(matchedCandidates),
+  };
+}
+
+type FuzzyMatcherMetadata = FuzzyFileMatcherMetadata;
+
+function matcherMetadata(
+  matcher: BoundedFuzzyMatcher,
+  resourceLimited: boolean,
+  evaluatedCandidates: number,
+  totalCandidates: number,
+): FuzzyMatcherMetadata {
+  return {
+    quality: matcher.usedDegradedFallback ? "degraded" : "optimal",
+    resourceLimited,
+    evaluatedCandidates,
+    totalCandidates,
+  };
+}
+
+export type FuzzyFileSearchBoundaryReason =
+  | "QUERY_LIMIT"
+  | "QUERY_ENCODING"
+  | "RAW_ROOT_COUNT_LIMIT"
+  | "UNAUTHORIZED_ROOT"
+  | "ROOT_PATH_LIMIT"
+  | "ROOT_BYTES_LIMIT"
+  | "ROOT_COUNT_LIMIT"
+  | "RESULT_LIMIT"
+  | "REFRESH_FLAG"
+  | "CACHE_LIMIT"
+  | "TRAVERSAL_LIMIT"
+  | "BUILD_QUEUE_LIMIT";
+
+export class FuzzyFileSearchBoundaryError extends Error {
+  constructor(
+    readonly reason: FuzzyFileSearchBoundaryReason,
+    message: string,
+  ) {
+    super(message);
+    this.name = "FuzzyFileSearchBoundaryError";
+  }
+}
+
+function validateSearchParamsBeforeIo(
+  params: FuzzyFileSearchParams,
+): asserts params is ValidatedFuzzyFileSearchParams {
   try {
-    children = await readdir(currentPath, { withFileTypes: true });
-  } catch {
+    if (params.query.length > 0) validateFuzzyQuery(params.query);
+  } catch (error) {
+    if (error instanceof FuzzyBoundaryError) {
+      throw new FuzzyFileSearchBoundaryError("QUERY_ENCODING", error.message);
+    }
+    throw error;
+  }
+  const queryCodePoints = Array.from(params.query).length;
+  if (queryCodePoints > MAX_FUZZY_QUERY_CODEPOINTS) {
+    throw new FuzzyFileSearchBoundaryError(
+      "QUERY_LIMIT",
+      `fuzzy-file query has ${queryCodePoints} code points; maximum is ${MAX_FUZZY_QUERY_CODEPOINTS}`,
+    );
+  }
+  if (params.roots.length > MAX_FUZZY_RAW_ROOTS) {
+    throw new FuzzyFileSearchBoundaryError(
+      "RAW_ROOT_COUNT_LIMIT",
+      `fuzzy-file request has ${params.roots.length} raw roots; maximum is ${MAX_FUZZY_RAW_ROOTS}`,
+    );
+  }
+  let rootBytes = 0;
+  for (const root of params.roots) {
+    if (root.trim().length === 0) {
+      throw new FuzzyFileSearchBoundaryError(
+        "ROOT_PATH_LIMIT",
+        "fuzzy-file roots must not be empty",
+      );
+    }
+    let bytes: number;
+    try {
+      bytes = validateFuzzyCandidate(root);
+    } catch (error) {
+      if (error instanceof FuzzyBoundaryError) {
+        throw new FuzzyFileSearchBoundaryError(
+          "ROOT_PATH_LIMIT",
+          error.message,
+        );
+      }
+      throw error;
+    }
+    if (bytes > MAX_FUZZY_FILE_ROOT_UTF8_BYTES) {
+      throw new FuzzyFileSearchBoundaryError(
+        "ROOT_PATH_LIMIT",
+        `fuzzy-file root is ${bytes} UTF-8 bytes; maximum is ${MAX_FUZZY_FILE_ROOT_UTF8_BYTES}`,
+      );
+    }
+    rootBytes += bytes;
+    if (rootBytes > MAX_FUZZY_FILE_ROOTS_UTF8_BYTES) {
+      throw new FuzzyFileSearchBoundaryError(
+        "ROOT_BYTES_LIMIT",
+        `raw fuzzy-file roots exceed ${MAX_FUZZY_FILE_ROOTS_UTF8_BYTES} UTF-8 bytes`,
+      );
+    }
+  }
+  if (params.refresh !== undefined && typeof params.refresh !== "boolean") {
+    throw new FuzzyFileSearchBoundaryError(
+      "REFRESH_FLAG",
+      "fuzzy-file refresh must be a boolean",
+    );
+  }
+  const limit = params.limit;
+  if (
+    limit !== undefined &&
+    (typeof limit !== "number" ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > MAX_FUZZY_RESULTS)
+  ) {
+    throw new FuzzyFileSearchBoundaryError(
+      "RESULT_LIMIT",
+      `fuzzy-file limit must be a safe integer from 1 to ${MAX_FUZZY_RESULTS}`,
+    );
+  }
+}
+
+function isWithinAllowedRoot(
+  allowedRoot: string,
+  candidateRoot: string,
+): boolean {
+  const child = relative(allowedRoot, candidateRoot);
+  return (
+    child.length === 0 ||
+    (child !== ".." &&
+      !child.startsWith("../") &&
+      !child.startsWith("..\\") &&
+      !isAbsolute(child))
+  );
+}
+
+function waitForBuildOrAbort(
+  build: Promise<void>,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted)
+    return Promise.reject(new FuzzyIndexBuildCancelledError());
+  return new Promise<void>((resolve, reject) => {
+    const abort = (): void => reject(new FuzzyIndexBuildCancelledError());
+    signal.addEventListener("abort", abort, { once: true });
+    void build.then(
+      () => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function retainRankedEntry(
+  top: RankedEntry[],
+  candidate: RankedEntry,
+  limit: number,
+): void {
+  if (top.length < limit) {
+    top.push(candidate);
+    bubbleWorstUp(top, top.length - 1);
     return;
   }
-  const childNames = new Set(children.map((child) => child.name));
-  const childIgnoreMatchers = [
-    ...ignoreMatchers,
-    ...(await loadDirectoryIgnoreMatchers(
-      params.root.ignoreContext,
-      currentPath,
-      childNames,
-    )),
-  ];
-  children.sort((left, right) => left.name.localeCompare(right.name));
-  for (const child of children.reverse()) {
-    if (params.signal.aborted) return;
-    params.stack.push({
-      ignoreMatchers: childIgnoreMatchers,
-      currentPath: resolve(currentPath, child.name),
-    });
+  if (compareRankedEntries(candidate, top[0]!) >= 0) return;
+  top[0] = candidate;
+  bubbleWorstDown(top, 0);
+}
+
+function bubbleWorstUp(heap: RankedEntry[], start: number): void {
+  let index = start;
+  while (index > 0) {
+    const parent = Math.floor((index - 1) / 2);
+    if (compareRankedEntries(heap[index]!, heap[parent]!) <= 0) return;
+    [heap[index], heap[parent]] = [heap[parent]!, heap[index]!];
+    index = parent;
   }
 }
 
-async function createIgnoreContext(absoluteRoot: string): Promise<IgnoreContext> {
-  const repoRoot = await findRepoRoot(absoluteRoot);
-  const matchers: IgnoreMatcher[] = [];
-  if (repoRoot !== null) {
-    matchers.push(...(await loadGitGlobalIgnoreMatchers(repoRoot)));
-    const excludeMatcher = await loadGitInfoExcludeMatcher(repoRoot);
-    if (excludeMatcher !== null) {
-      matchers.push(excludeMatcher);
-    }
-  }
-  for (const directory of pathAncestorsEndingAt(dirname(absoluteRoot))) {
-    const localIgnoreMatcher = await readIgnoreFile(
-      resolve(directory, ".ignore"),
-      directory,
-    );
-    if (localIgnoreMatcher !== null) {
-      matchers.push(localIgnoreMatcher);
-    }
-    if (repoRoot !== null && isWithinPath(repoRoot, directory)) {
-      const gitIgnoreMatcher = await readIgnoreFile(
-        resolve(directory, ".gitignore"),
-        directory,
-      );
-      if (gitIgnoreMatcher !== null) {
-        matchers.push(gitIgnoreMatcher);
-      }
-    }
-  }
-  return { repoRoot, ancestorMatchers: matchers };
-}
-
-async function findRepoRoot(startPath: string): Promise<string | null> {
-  let currentPath = resolve(startPath);
-  while (true) {
-    try {
-      const gitStat = await lstat(resolve(currentPath, ".git"));
-      if (gitStat.isDirectory() || gitStat.isFile()) return currentPath;
-    } catch {
-      // Keep walking upward until there is no parent.
-    }
-    const parentPath = dirname(currentPath);
-    if (parentPath === currentPath) return null;
-    currentPath = parentPath;
-  }
-}
-
-async function loadGitInfoExcludeMatcher(
-  repoRoot: string,
-): Promise<IgnoreMatcher | null> {
-  const gitDir = await resolveGitDir(repoRoot);
-  if (gitDir === null) return null;
-  return await readIgnoreFile(resolve(gitDir, "info", "exclude"), repoRoot);
-}
-
-async function resolveGitDir(repoRoot: string): Promise<string | null> {
-  const gitPath = resolve(repoRoot, ".git");
-  let gitStat;
-  try {
-    gitStat = await lstat(gitPath);
-  } catch {
-    return null;
-  }
-  if (gitStat.isDirectory()) return gitPath;
-  if (!gitStat.isFile()) return null;
-  let gitFileText;
-  try {
-    gitFileText = await readFile(gitPath, "utf8");
-  } catch {
-    return null;
-  }
-  const match = /^gitdir:\s*(.+)$/imu.exec(gitFileText);
-  if (match === null) return null;
-  const gitDirPath = match[1]!.trim();
-  return isAbsolute(gitDirPath) ? gitDirPath : resolve(repoRoot, gitDirPath);
-}
-
-async function loadGitGlobalIgnoreMatchers(
-  repoRoot: string,
-): Promise<readonly IgnoreMatcher[]> {
-  const matchers: IgnoreMatcher[] = [];
-  for (const ignoreFilePath of await gitGlobalIgnorePaths()) {
-    const matcher = await readIgnoreFile(ignoreFilePath, repoRoot);
-    if (matcher !== null) {
-      matchers.push(matcher);
-    }
-  }
-  return matchers;
-}
-
-async function gitGlobalIgnorePaths(): Promise<readonly string[]> {
-  const paths: string[] = [];
-  const configuredPath = await configuredGitGlobalIgnorePath();
-  if (configuredPath !== null) {
-    paths.push(configuredPath);
-  }
-  const xdgConfigHome = process.env.XDG_CONFIG_HOME;
-  const home = process.env.HOME;
-  if (xdgConfigHome !== undefined && xdgConfigHome.length > 0) {
-    paths.push(resolve(xdgConfigHome, "git", "ignore"));
-  } else if (home !== undefined && home.length > 0) {
-    paths.push(resolve(home, ".config", "git", "ignore"));
-  }
-  return [...new Set(paths)];
-}
-
-async function configuredGitGlobalIgnorePath(): Promise<string | null> {
-  const home = process.env.HOME;
-  if (home === undefined || home.length === 0) return null;
-  let gitconfigText;
-  try {
-    gitconfigText = await readFile(resolve(home, ".gitconfig"), "utf8");
-  } catch {
-    return null;
-  }
-  let inCoreSection = false;
-  for (const rawLine of gitconfigText.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line.length === 0 || line.startsWith("#") || line.startsWith(";")) {
-      continue;
-    }
-    const sectionMatch = /^\[([^\]]+)\]$/u.exec(line);
-    if (sectionMatch !== null) {
-      inCoreSection = sectionMatch[1]!.trim().toLowerCase() === "core";
-      continue;
-    }
-    if (!inCoreSection) continue;
-    const settingMatch = /^excludesfile\s*=\s*(.+)$/iu.exec(line);
-    if (settingMatch === null) continue;
-    return expandGitConfigPath(settingMatch[1]!.trim(), home);
-  }
-  return null;
-}
-
-function expandGitConfigPath(value: string, home: string): string {
-  const unquoted = value.replace(/^"(.*)"$/u, "$1");
-  if (unquoted === "~") return home;
-  if (unquoted.startsWith("~/")) return resolve(home, unquoted.slice(2));
-  if (isAbsolute(unquoted)) return unquoted;
-  return resolve(home, unquoted);
-}
-
-async function loadDirectoryIgnoreMatchers(
-  ignoreContext: IgnoreContext,
-  directory: string,
-  childNames: ReadonlySet<string>,
-): Promise<readonly IgnoreMatcher[]> {
-  const matchers: IgnoreMatcher[] = [];
-  if (childNames.has(".ignore")) {
-    const localIgnoreMatcher = await readIgnoreFile(
-      resolve(directory, ".ignore"),
-      directory,
-    );
-    if (localIgnoreMatcher !== null) {
-      matchers.push(localIgnoreMatcher);
-    }
-  }
-  if (
-    ignoreContext.repoRoot !== null &&
-    isWithinPath(ignoreContext.repoRoot, directory) &&
-    childNames.has(".gitignore")
-  ) {
-    const gitIgnoreMatcher = await readIgnoreFile(
-      resolve(directory, ".gitignore"),
-      directory,
-    );
-    if (gitIgnoreMatcher !== null) {
-      matchers.push(gitIgnoreMatcher);
-    }
-  }
-  return matchers;
-}
-
-async function readIgnoreFile(
-  ignoreFilePath: string,
-  basePath: string,
-): Promise<IgnoreMatcher | null> {
-  let ignoreText;
-  try {
-    ignoreText = await readFile(ignoreFilePath, "utf8");
-  } catch {
-    return null;
-  }
-  return {
-    basePath,
-    matcher: ignore().add(ignoreText.split(/\r?\n/)),
-  };
-}
-
-function isIgnored(
-  ignoreMatchers: readonly IgnoreMatcher[],
-  absolutePath: string,
-  isDirectory: boolean,
-): boolean {
-  let ignored = false;
-  for (const ignoreMatcher of ignoreMatchers) {
-    const relativePath = toPortablePath(
-      relative(ignoreMatcher.basePath, absolutePath),
-    );
-    if (!isRelativePathInsideBase(relativePath)) continue;
-    const gitignorePath = isDirectory ? `${relativePath}/` : relativePath;
-    const result = ignoreMatcher.matcher.test(gitignorePath);
-    if (result.ignored) ignored = true;
-    if (result.unignored) ignored = false;
-  }
-  return ignored;
-}
-
-async function resolveRealPath(path: string): Promise<string> {
-  try {
-    return await realpath(path);
-  } catch {
-    return path;
-  }
-}
-
-function pathDepth(path: string): number {
-  return toPortablePath(resolve(path)).split("/").filter(Boolean).length;
-}
-
-function pathAncestorsEndingAt(path: string): readonly string[] {
-  const ancestors: string[] = [];
-  let currentPath = resolve(path);
-  while (true) {
-    ancestors.push(currentPath);
-    const parentPath = dirname(currentPath);
-    if (parentPath === currentPath) break;
-    currentPath = parentPath;
-  }
-  ancestors.reverse();
-  return ancestors;
-}
-
-function isWithinPath(basePath: string, candidatePath: string): boolean {
-  const relativePath = toPortablePath(
-    relative(resolve(basePath), resolve(candidatePath)),
-  );
-  return relativePath.length === 0 || isRelativePathInsideBase(relativePath);
-}
-
-function isRelativePathInsideBase(relativePath: string): boolean {
-  return (
-    relativePath.length > 0 &&
-    relativePath !== ".." &&
-    !relativePath.startsWith("../") &&
-    !relativePath.startsWith("/")
-  );
-}
-
-function bestFuzzyMatch(relativePath: string, query: string): FuzzyMatch | null {
-  const pathMatch = nucleoPathMatch(relativePath, query);
-  const fileName = basename(relativePath) || relativePath;
-  const nameMatch = nucleoPathMatch(fileName, query);
-  if (nameMatch === null) return pathMatch;
-  const prefix = relativePath.slice(0, relativePath.length - fileName.length);
-  const offset = Array.from(prefix).length;
-  const adjustedNameMatch: FuzzyMatch = {
-    score: nameMatch.score,
-    indices: nameMatch.indices.map((index) => index + offset),
-  };
-  if (pathMatch === null) return adjustedNameMatch;
-  return adjustedNameMatch.score > pathMatch.score
-    ? adjustedNameMatch
-    : pathMatch;
-}
-
-function nucleoPathMatch(haystack: string, needle: string): FuzzyMatch | null {
-  if (needle.length === 0) {
-    return { indices: [], score: 0 };
-  }
-  const loweredHaystackText = haystack.toLowerCase();
-  const loweredNeedleText = needle.toLowerCase();
-  for (const char of new Set(Array.from(loweredNeedleText))) {
-    if (!loweredHaystackText.includes(char)) return null;
-  }
-  const haystackChars = Array.from(haystack);
-  const needleChars = Array.from(loweredNeedleText);
-  if (needleChars.length > haystackChars.length) return null;
-  const normalizedHaystack = haystackChars.map((char) => char.toLowerCase());
-  const charClasses = haystackChars.map(charClassFor);
-  const memo = new Map<string, { readonly score: number; readonly indices: number[] } | null>();
-
-  const bestTail = (
-    lastIndex: number,
-    needleIndex: number,
-    firstBonus: number,
-  ): { readonly score: number; readonly indices: number[] } | null => {
-    if (needleIndex >= needleChars.length) {
-      return { score: 0, indices: [] };
-    }
-    const key = `${lastIndex}:${needleIndex}:${firstBonus}`;
-    if (memo.has(key)) return memo.get(key) ?? null;
-    let best: { readonly score: number; readonly indices: number[] } | null =
-      null;
-    const remaining = needleChars.length - needleIndex - 1;
-    for (
-      let index = lastIndex + 1;
-      index < haystackChars.length - remaining;
-      index += 1
+function bubbleWorstDown(heap: RankedEntry[], start: number): void {
+  let index = start;
+  for (;;) {
+    const left = index * 2 + 1;
+    const right = left + 1;
+    let worst = index;
+    if (
+      left < heap.length &&
+      compareRankedEntries(heap[left]!, heap[worst]!) > 0
     ) {
-      if (normalizedHaystack[index] !== needleChars[needleIndex]) continue;
-      const gap = index - lastIndex - 1;
-      const penalty =
-        gap === 0 ? 0 : PENALTY_GAP_START + (gap - 1) * PENALTY_GAP_EXTENSION;
-      const previousClass =
-        gap === 0 ? charClasses[lastIndex]! : charClasses[index - 1]!;
-      const className = charClasses[index]!;
-      let bonus = bonusFor(previousClass, className);
-      let nextFirstBonus = firstBonus;
-      if (gap === 0) {
-        if (bonus >= BONUS_BOUNDARY && bonus > nextFirstBonus) {
-          nextFirstBonus = bonus;
-        }
-        bonus = Math.max(bonus, nextFirstBonus, BONUS_CONSECUTIVE);
-      } else {
-        nextFirstBonus = bonus;
-      }
-      const tail = bestTail(index, needleIndex + 1, nextFirstBonus);
-      if (tail === null) continue;
-      const score = SCORE_MATCH + bonus - penalty + tail.score;
-      if (best === null || score > best.score) {
-        best = { score, indices: [index, ...tail.indices] };
-      }
+      worst = left;
     }
-    memo.set(key, best);
-    return best;
-  };
-
-  let best: { readonly score: number; readonly indices: number[] } | null = null;
-  const remaining = needleChars.length - 1;
-  for (let index = 0; index < haystackChars.length - remaining; index += 1) {
-    if (normalizedHaystack[index] !== needleChars[0]) continue;
-    const previousClass =
-      index === 0 ? "delimiter" : charClasses[index - 1]!;
-    const className = charClasses[index]!;
-    const firstBonus = bonusFor(previousClass, className);
-    const tail = bestTail(index, 1, firstBonus);
-    if (tail === null) continue;
-    const score =
-      SCORE_MATCH +
-      firstBonus * BONUS_FIRST_CHAR_MULTIPLIER +
-      tail.score;
-    if (best === null || score > best.score) {
-      best = { score, indices: [index, ...tail.indices] };
+    if (
+      right < heap.length &&
+      compareRankedEntries(heap[right]!, heap[worst]!) > 0
+    ) {
+      worst = right;
     }
+    if (worst === index) return;
+    [heap[index], heap[worst]] = [heap[worst]!, heap[index]!];
+    index = worst;
   }
-  if (best === null) return null;
-  return {
-    indices: [...new Set(best.indices)].sort((left, right) => left - right),
-    score: best.score,
-  };
 }
 
-function bonusFor(prevClass: CharClass, className: CharClass): number {
-  if (isWordClass(className)) {
-    if (prevClass === "whitespace") return BONUS_BOUNDARY;
-    if (prevClass === "delimiter") return BONUS_BOUNDARY_DELIMITER;
-    if (prevClass === "nonWord") return BONUS_BOUNDARY;
-  }
-  if (
-    (prevClass === "lower" && className === "upper") ||
-    (prevClass !== "number" && className === "number")
-  ) {
-    return BONUS_CAMEL123;
-  }
-  if (className === "whitespace") return BONUS_BOUNDARY;
-  if (className === "nonWord") return BONUS_NON_WORD;
-  return 0;
-}
-
-function isWordClass(className: CharClass): boolean {
-  return (
-    className === "lower" ||
-    className === "upper" ||
-    className === "number"
-  );
-}
-
-function charClassFor(char: string): CharClass {
-  if (/^\s$/u.test(char)) return "whitespace";
-  if (char === "/" || char === "\\") return "delimiter";
-  if (/^[0-9]$/u.test(char)) return "number";
-  if (/^[a-z]$/u.test(char)) return "lower";
-  if (/^[A-Z]$/u.test(char)) return "upper";
-  if (/^\p{L}$/u.test(char)) {
-    return char === char.toUpperCase() && char !== char.toLowerCase()
-      ? "upper"
-      : "lower";
-  }
-  return "nonWord";
-}
-
-function compareByScoreDescThenPathAsc(
-  left: FuzzyFileSearchResult,
-  right: FuzzyFileSearchResult,
-): number {
+function compareRankedEntries(left: RankedEntry, right: RankedEntry): number {
+  const rankScore = right.rankScore - left.rankScore;
+  if (rankScore !== 0) return rankScore;
   const score = right.score - left.score;
   if (score !== 0) return score;
-  return left.path.localeCompare(right.path);
+  const path = comparePortablePaths(
+    left.entry.relativePath,
+    right.entry.relativePath,
+  );
+  if (path !== 0) return path;
+  const rootOrder = left.root.order - right.root.order;
+  if (rootOrder !== 0) return rootOrder;
+  return Buffer.compare(left.entry.pathBytes, right.entry.pathBytes);
 }
 
-function toPortablePath(value: string): string {
-  return sep === "/" ? value : value.split(sep).join("/");
+function watchFuzzyRoot(
+  canonicalRoot: string,
+  onChange: () => void,
+  onError: () => void,
+): FSWatcher | null {
+  try {
+    const watcher = watch(
+      canonicalRoot,
+      { recursive: true, persistent: false },
+      onChange,
+    );
+    watcher.on("error", onError);
+    return watcher;
+  } catch {
+    return null;
+  }
+}
+
+function pathDepth(value: string): number {
+  return value.replace(/\\/gu, "/").split("/").filter(Boolean).length;
 }
 
 function normalizedToken(value: string | null | undefined): string | null {
-  if (value === undefined || value === null) return null;
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? null : trimmed;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length === 0 ? null : normalized;
 }
 
 function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolveYield) => {
-    setImmediate(resolveYield);
-  });
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isRefreshableStaleReason(reason: string | null): boolean {
+  return (
+    reason === STALE_REASON_WATCHER_EVENT || reason === STALE_REASON_BUILD_RACE
+  );
+}
+
+function validateMaximumRootStates(value: number): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > MAX_FUZZY_FILE_ACTIVE_ROOT_STATES
+  ) {
+    throw new RangeError(
+      `maximumRootStates must be a safe integer in [1, ${MAX_FUZZY_FILE_ACTIVE_ROOT_STATES}]`,
+    );
+  }
+  return value;
+}
+
+function validatePositiveBoundedOption(
+  name: string,
+  value: number,
+  maximum: number,
+): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new RangeError(`${name} must be a safe integer in [1, ${maximum}]`);
+  }
+  return value;
+}
+
+function cachedRootBytes(
+  states: ReadonlyMap<string, RootRuntimeState>,
+): number {
+  let bytes = 0;
+  for (const state of states.values()) bytes += state.cacheBytes;
+  return bytes;
+}
+
+function estimateSnapshotCacheBytes(snapshot: FuzzyIndexSnapshot): number {
+  let bytes = 0;
+  for (const entry of snapshot.entries) {
+    const candidate =
+      entry.searchCandidate ?? prepareFuzzyCandidate(entry.relativePath);
+    bytes +=
+      entry.pathBytes.byteLength +
+      Buffer.byteLength(entry.relativePath, "utf8") +
+      Buffer.byteLength(candidate.text, "utf8") +
+      Buffer.byteLength(candidate.portableText, "utf8") +
+      candidate.codePoints.byteLength +
+      candidate.foldedCodePoints.byteLength +
+      candidate.normalizedCodePoints.byteLength +
+      candidate.foldedNormalizedCodePoints.byteLength +
+      candidate.utf16Offsets.byteLength +
+      candidate.boundaryBonuses.byteLength +
+      candidate.signature.byteLength +
+      candidate.foldedSignature.byteLength +
+      candidate.normalizedSignature.byteLength +
+      candidate.foldedNormalizedSignature.byteLength;
+    if (!Number.isSafeInteger(bytes) || bytes > MAX_FUZZY_CACHE_BYTES) {
+      return MAX_FUZZY_CACHE_BYTES + 1;
+    }
+  }
+  return bytes;
 }

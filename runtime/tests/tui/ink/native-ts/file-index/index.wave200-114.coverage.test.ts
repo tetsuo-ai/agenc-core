@@ -3,7 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { FileIndex } from "./index.js";
 
 describe("FileIndex wave200-114 coverage", () => {
-  test("keeps async indexing queryable while preserving top-k and top-level search semantics", async () => {
+  test("publishes async indexing atomically while preserving top-k and top-level search semantics", async () => {
     expect(new FileIndex().search("", 3)).toEqual([]);
 
     const asyncIndex = new FileIndex();
@@ -22,11 +22,8 @@ describe("FileIndex wave200-114 coverage", () => {
     try {
       const { done, queryable } = asyncIndex.loadFromFileListAsync(paths);
 
-      await queryable;
-
-      expect(asyncIndex.search("early", 5).map(result => result.path)).toContain(
-        "src/early-target.ts",
-      );
+      expect(queryable).toBe(done);
+      expect(asyncIndex.search("early", 5)).toEqual([]);
       expect(asyncIndex.search("late", 5)).toEqual([]);
 
       await done;
@@ -34,7 +31,7 @@ describe("FileIndex wave200-114 coverage", () => {
       nowSpy.mockRestore();
     }
 
-    expect(asyncIndex.search("late", 5).map(result => result.path)).toContain(
+    expect(asyncIndex.search("late", 5).map((result) => result.path)).toContain(
       "src/late-target.ts",
     );
 
@@ -47,7 +44,7 @@ describe("FileIndex wave200-114 coverage", () => {
       "ba.ts",
     ]);
 
-    expect(orderedIndex.search("ab", 2).map(result => result.path)).toEqual([
+    expect(orderedIndex.search("ab", 2).map((result) => result.path)).toEqual([
       "ab.ts",
       "axb.ts",
     ]);
@@ -72,11 +69,13 @@ describe("FileIndex wave200-114 coverage", () => {
       }),
     ]);
 
-    const topLevel = topLevelIndex.search("", 200).map(result => result.path);
-    expect(topLevel).toHaveLength(100);
+    const topLevel = topLevelIndex.search("", 200).map((result) => result.path);
+    expect(topLevel).toHaveLength(102);
     expect(topLevel[0]).toBe("aa00");
+    expect(topLevel).toContain("r098");
+    expect(topLevel).toContain("r099");
     expect(topLevel).toContain("zz00");
-    expect(topLevel).toContain("r097");
-    expect(topLevel).not.toContain("r098");
+    expect(topLevelIndex.search("", 100)).toHaveLength(100);
+    expect(topLevelIndex.search("", 1_001)).toEqual([]);
   });
 });

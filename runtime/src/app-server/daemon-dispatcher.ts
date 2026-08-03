@@ -18,8 +18,19 @@ import {
 } from "./session-lifecycle.js";
 import {
   AgenCFuzzyFileSearchService,
+  FuzzyFileSearchBoundaryError,
+  MAX_FUZZY_QUERY_CODEPOINTS,
+  MAX_FUZZY_RAW_ROOTS,
+  MAX_FUZZY_RESULTS,
+  MAX_FUZZY_FILE_ROOTS_UTF8_BYTES,
+  MAX_FUZZY_FILE_ROOT_UTF8_BYTES,
   type AgenCFuzzyFileSearch,
 } from "./fuzzy-file-search.js";
+import {
+  FuzzyBoundaryError,
+  validateFuzzyCandidate,
+  validateFuzzyQuery,
+} from "../search/fuzzy-match.js";
 import {
   AgenCCommandExecService,
   type AgenCCommandExec,
@@ -452,6 +463,8 @@ export interface AgenCDaemonDispatcherOptions {
   >;
   readonly createMessageId?: () => string;
   readonly fuzzyFileSearch?: AgenCFuzzyFileSearch;
+  /** Trusted workspace authority for fuzzy-file roots. Request params are never authority. */
+  readonly fuzzyAllowedRoots?: readonly string[];
   readonly commandExec?: AgenCCommandExec;
   /** Isolated contract-test seam; production must never provide this token. */
   readonly unadmittedCommandExecStartOverride?: typeof TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START;
@@ -545,6 +558,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     | undefined;
   readonly #createMessageId: () => string;
   readonly #fuzzyFileSearch: AgenCFuzzyFileSearch;
+  readonly #fuzzyAllowedRoots: readonly string[];
+  readonly #ownsFuzzyFileSearch: boolean;
   readonly #commandExec: AgenCCommandExec;
   readonly #allowUnadmittedCommandExecStart: boolean;
   readonly #authHandlers: AgenCDaemonAuthHandlers | undefined;
@@ -577,6 +592,10 @@ export class AgenCDaemonJsonRpcDispatcher {
       options.createMessageId ?? (() => `message_${Date.now().toString(36)}`);
     this.#fuzzyFileSearch =
       options.fuzzyFileSearch ?? new AgenCFuzzyFileSearchService();
+    this.#ownsFuzzyFileSearch = options.fuzzyFileSearch === undefined;
+    this.#fuzzyAllowedRoots = Object.freeze([
+      ...(options.fuzzyAllowedRoots ?? []),
+    ]);
     this.#commandExec = options.commandExec ?? new AgenCCommandExecService();
     this.#allowUnadmittedCommandExecStart =
       options.unadmittedCommandExecStartOverride ===
@@ -619,6 +638,10 @@ export class AgenCDaemonJsonRpcDispatcher {
     options: AgenCDaemonJsonRpcConnectionOptions = {},
   ): AgenCDaemonJsonRpcConnection {
     return new AgenCDaemonJsonRpcConnection(this, options);
+  }
+
+  async close(): Promise<void> {
+    if (this.#ownsFuzzyFileSearch) await this.#fuzzyFileSearch.close?.();
   }
 
   async dispatch(message: JsonObject): Promise<AgenCDaemonResponse> {
@@ -1218,7 +1241,11 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#fuzzyFileSearch.search(
             validateFuzzyFileSearchParams(params),
-            { cancellationScope: connection.cancellationScope, signal },
+            {
+              allowedRoots: this.#fuzzyAllowedRoots,
+              cancellationScope: connection.cancellationScope,
+              signal,
+            },
           ),
         );
       case "commandExec.start":
@@ -2957,7 +2984,8 @@ function validateFuzzyFileSearchParams(
     methodName: "fs.fuzzy_search",
     stringFields: ["query"],
     stringArrayFields: ["roots"],
-    valueFields: ["cancellationToken"],
+    numberFields: ["limit"],
+    valueFields: ["cancellationToken", "refresh"],
   });
   if (typeof validated.query !== "string") {
     throw invalidParams("fs.fuzzy_search requires query");
@@ -2979,6 +3007,22 @@ function validateFuzzyFileSearchParams(
       "fs.fuzzy_search param 'cancellationToken' must not be empty",
     );
   }
+  if (
+    validated.refresh !== undefined &&
+    typeof validated.refresh !== "boolean"
+  ) {
+    throw invalidParams("fs.fuzzy_search param 'refresh' must be a boolean");
+  }
+  if (
+    validated.limit !== undefined &&
+    (!Number.isSafeInteger(validated.limit) ||
+      (validated.limit as number) < 1 ||
+      (validated.limit as number) > MAX_FUZZY_RESULTS)
+  ) {
+    throw invalidParams(
+      `fs.fuzzy_search param 'limit' must be an integer from 1 to ${MAX_FUZZY_RESULTS}`,
+    );
+  }
   const roots = validated.roots;
   if (!Array.isArray(roots)) {
     throw invalidParams("fs.fuzzy_search requires roots");
@@ -2986,6 +3030,46 @@ function validateFuzzyFileSearchParams(
   if ((roots as readonly string[]).some((root) => root.trim().length === 0)) {
     throw invalidParams(
       "fs.fuzzy_search param 'roots' must not contain empty paths",
+    );
+  }
+  const typedRoots = roots as readonly string[];
+  if (typedRoots.length > MAX_FUZZY_RAW_ROOTS) {
+    throw invalidParams(
+      `fs.fuzzy_search accepts at most ${MAX_FUZZY_RAW_ROOTS} raw roots`,
+    );
+  }
+  let totalRootBytes = 0;
+  try {
+    if (validated.query.length > 0) {
+      validateFuzzyQuery(validated.query);
+      const queryCodePoints = Array.from(validated.query).length;
+      if (queryCodePoints > MAX_FUZZY_QUERY_CODEPOINTS) {
+        throw new FuzzyBoundaryError(
+          "QUERY_CODE_POINT_LIMIT",
+          `query has ${queryCodePoints} code points; maximum is ${MAX_FUZZY_QUERY_CODEPOINTS}`,
+        );
+      }
+    }
+    for (const root of typedRoots) {
+      validateFuzzyCandidate(root);
+      const rootBytes = Buffer.byteLength(root, "utf8");
+      if (rootBytes > MAX_FUZZY_FILE_ROOT_UTF8_BYTES) {
+        throw new FuzzyBoundaryError(
+          "CANDIDATE_BYTE_LIMIT",
+          `root is ${rootBytes} UTF-8 bytes; maximum is ${MAX_FUZZY_FILE_ROOT_UTF8_BYTES}`,
+        );
+      }
+      totalRootBytes += rootBytes;
+    }
+  } catch (error) {
+    if (error instanceof FuzzyBoundaryError) {
+      throw invalidParams(`fs.fuzzy_search ${error.message}`);
+    }
+    throw error;
+  }
+  if (totalRootBytes > MAX_FUZZY_FILE_ROOTS_UTF8_BYTES) {
+    throw invalidParams(
+      `fs.fuzzy_search roots exceed ${MAX_FUZZY_FILE_ROOTS_UTF8_BYTES} UTF-8 bytes`,
     );
   }
   return validated as FuzzyFileSearchParams;
@@ -4524,6 +4608,9 @@ function mapDispatchError(
       requestId: error.requestId,
       reason: error.reason,
     });
+  }
+  if (error instanceof FuzzyFileSearchBoundaryError) {
+    return errorResponse(id, -32602, error.message, { code: error.reason });
   }
   if (error instanceof AgenCDaemonAgentLifecycleError) {
     return errorResponse(id, -32602, error.message, { code: error.code });

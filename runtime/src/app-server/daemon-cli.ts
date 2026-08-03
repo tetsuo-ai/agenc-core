@@ -1785,6 +1785,7 @@ async function runAgenCDaemonForeground(
     agentManager,
     clientMultiplexer,
     sessionManager,
+    fuzzyAllowedRoots: [primaryCwd],
     commandExec,
     authBackend: reloadableAuthBackend,
     daemonControl: {
@@ -1983,6 +1984,9 @@ async function runAgenCDaemonForeground(
   });
   cleanup.register("daemon-thread-store", async () => {
     threadStore.close();
+  });
+  cleanup.register("daemon-fuzzy-file-index", async () => {
+    await dispatcher.close();
   });
   cleanup.register("daemon-connections", async () => {
     const activeConnections = [...connections.values()];
