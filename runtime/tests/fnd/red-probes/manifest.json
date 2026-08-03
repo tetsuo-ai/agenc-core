@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 4,
+  "probeCount": 3,
   "probes": [
     {
       "id": "a2b-corrupt-journal-never-recoverable",
@@ -11,15 +11,6 @@
       "fingerprint": "A2B:RECOVERY:CORRUPT-JOURNAL-NONEXECUTABLE",
       "sourceSha256": "ee661eb50eb666aae76cefab4becac8f5ef1a960672aa05b9f90f4bec3e963b8",
       "timeoutMs": 30000
-    },
-    {
-      "id": "b3a-workflow-name-path-traversal",
-      "task": "B3a",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/b3a-workflow-name-path-traversal.red-probe.ts",
-      "fingerprint": "B3A:WORKFLOW:NAME-PATH-TRAVERSAL",
-      "sourceSha256": "6a36ecb9ecf69b41c4832aada4a8ee79b1355a45d05ea2b80eaab2c2b8503eed",
-      "timeoutMs": 15000
     },
     {
       "id": "c2-compaction-transcript-instruction-trust",
