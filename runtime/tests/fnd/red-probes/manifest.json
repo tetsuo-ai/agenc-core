@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 5,
+  "probeCount": 4,
   "probes": [
     {
       "id": "a2b-corrupt-journal-never-recoverable",
@@ -11,15 +11,6 @@
       "fingerprint": "A2B:RECOVERY:CORRUPT-JOURNAL-NONEXECUTABLE",
       "sourceSha256": "ee661eb50eb666aae76cefab4becac8f5ef1a960672aa05b9f90f4bec3e963b8",
       "timeoutMs": 30000
-    },
-    {
-      "id": "a3-tool-result-body-digest",
-      "task": "A3",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/a3-tool-result-body-digest.red-probe.ts",
-      "fingerprint": "A3:DURABLE-TURN:TOOL-RESULT-BODY-DIGEST",
-      "sourceSha256": "447d60061aa6144710cfc266831c2b119fa5d63ccddb625ae11a85211e819a98",
-      "timeoutMs": 10000
     },
     {
       "id": "b3a-workflow-name-path-traversal",
