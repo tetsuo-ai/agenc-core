@@ -32,7 +32,10 @@ import {
   type ThreadId,
 } from "../agents/registry.js";
 import type { Event, EventMsg } from "./event-log.js";
-import { parseRolloutLine, type RolloutItem } from "./rollout-item.js";
+import {
+  parseRolloutLine,
+  type RolloutItem,
+} from "./rollout-item.js";
 import {
   getProjectDir,
   SessionStore,
@@ -62,12 +65,73 @@ import {
   EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
   type EffectNoEffectProof,
 } from "../contracts/run-contracts.js";
+import {
+  planLegacyDurableCheckpointUpgrade,
+  type DurableCheckpointUpgradeDeferral,
+  type DurableCheckpointUpgradeFailure,
+} from "./durable-checkpoint-upgrade.js";
+import { StateToolPairProjection } from "../state/tool-pair-projection.js";
+import { DURABLE_ROLLOUT_SCHEMA_V2 } from "./durable-checkpoint-reader.js";
+import {
+  StreamingToolPairValidator,
+  validateToolPairSequence,
+  type ToolPairMessage,
+  type ToolPairIntegrityFailure,
+  type ToolPairOperationalDeferral,
+  type ToolPairProjection,
+  type ToolPairValidationOutcome,
+} from "./tool-pair-validator.js";
+import { formatIdentityForLog } from "./tool-result-integrity.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
   /** Flush interval in ms. Default 100. */
   readonly flushIntervalMs?: number;
   /** Whether to auto-start the background flush scheduler. Default true. */
   readonly autoStartScheduler?: boolean;
+  /** Test-only crash seam immediately before the atomic v2 inode swap. */
+  readonly beforeCheckpointUpgradePublishForTestingOnly?: () => void;
+}
+
+export class DurableCheckpointUpgradeBlockedError extends Error {
+  constructor(
+    readonly runId: string,
+    readonly outcome:
+      | DurableCheckpointUpgradeFailure
+      | DurableCheckpointUpgradeDeferral
+      | ToolPairIntegrityFailure
+      | ToolPairOperationalDeferral,
+  ) {
+    super(
+      `durable checkpoint upgrade blocked for run ${formatIdentityForLog(runId)}: ${outcome.reason}. Resume remains disabled; preserve the rollout, then restore intact source bytes from backup or start a new session`,
+    );
+    this.name = "DurableCheckpointUpgradeBlockedError";
+  }
+}
+
+export interface DurableCheckpointProjectionContext {
+  readonly projection: ToolPairProjection;
+  readonly projectionId: string;
+  readonly sourceKey: string;
+  readonly expectedRunId: string;
+}
+
+export class ToolPairHistoryBlockedError extends Error {
+  constructor(
+    readonly purpose: string,
+    readonly outcome: Exclude<
+      ToolPairValidationOutcome,
+      { readonly status: "valid" }
+    >,
+  ) {
+    super(
+      `tool-pair history rejected during ${purpose}: ${
+        outcome.status === "dangling"
+          ? "tool calls remain unresolved"
+          : outcome.failure.reason
+      }`,
+    );
+    this.name = "ToolPairHistoryBlockedError";
+  }
 }
 
 export class TerminalRunEpochOpenError extends Error {
@@ -121,6 +185,27 @@ function rolloutContentContainsTerminal(
   return rolloutItemsContainTerminal(items, runId, epoch);
 }
 
+function checkpointProjectionIdentity(
+  rolloutPath: string,
+  purpose: string,
+): string {
+  const hash = createHash("sha256");
+  hash.update("agenc.checkpoint-projection.v1");
+  hash.update("\0");
+  hash.update(rolloutPath);
+  hash.update("\0");
+  hash.update(purpose);
+  return hash.digest("hex");
+}
+
+function* responseItemsForToolPairValidation(
+  items: Iterable<RolloutItem>,
+): Iterable<ToolPairMessage> {
+  for (const item of items) {
+    if (item.type === "response_item") yield item.payload;
+  }
+}
+
 export class RolloutStore {
   readonly store: SessionStore;
   private readonly scheduler: SessionStoreFlushScheduler;
@@ -132,6 +217,9 @@ export class RolloutStore {
   private readonly threadSpawnEdgeRepo: ThreadSpawnEdgeRepository;
   private readonly runDurabilityRepo: StateRunDurabilityRepository;
   private readonly retrySafeDeferredEffectSteps = new Set<string>();
+  private readonly beforeCheckpointUpgradePublishForTestingOnly?: () => void;
+  private liveToolPairProjection: ToolPairProjection | undefined;
+  private liveToolPairValidator: StreamingToolPairValidator | undefined;
   private openedAt: string | undefined;
   private openedEpoch: number | undefined;
 
@@ -154,6 +242,8 @@ export class RolloutStore {
     });
     this.threadSpawnEdgeRepo = new ThreadSpawnEdgeRepository(this.stateDriver);
     this.runDurabilityRepo = new StateRunDurabilityRepository(this.stateDriver);
+    this.beforeCheckpointUpgradePublishForTestingOnly =
+      opts.beforeCheckpointUpgradePublishForTestingOnly;
     this.loadThreadSpawnEdges();
   }
 
@@ -172,6 +262,8 @@ export class RolloutStore {
       }
 
       this.store.open(meta);
+      this.promoteDurableCheckpointSchema(meta);
+      this.rebuildLiveToolPairProjection();
       // Re-check under the canonical rollout lease. Retention can retire the
       // binding between the optimistic check above and lock acquisition; a
       // source carrying an inactive binding is historical and must never be
@@ -380,6 +472,17 @@ export class RolloutStore {
   }
 
   appendRollout(item: RolloutItem, opts: AppendOptions = {}): void {
+    if (item.type === "response_item") {
+      this.validateLiveResponseItem(item.payload);
+    } else if (item.type === "compacted") {
+      this.assertLiveToolPairBoundary("compaction append");
+      if (item.payload.replacementHistory !== undefined) {
+        this.assertValidToolPairHistory(
+          item.payload.replacementHistory,
+          "compaction append",
+        );
+      }
+    }
     this.store.appendRollout(item, opts);
   }
 
@@ -393,6 +496,177 @@ export class RolloutStore {
 
   get sessionId(): string {
     return this.store.sessionId;
+  }
+
+  /** Fresh exact projection namespace for raw-prefix validation. */
+  checkpointProjectionContext(purpose: string): DurableCheckpointProjectionContext {
+    return this.toolPairProjectionContext(purpose, true);
+  }
+
+  private toolPairProjectionContext(
+    purpose: string,
+    discardOnTerminal: boolean,
+  ): DurableCheckpointProjectionContext {
+    const identity = checkpointProjectionIdentity(this.rolloutPath, purpose);
+    return {
+      projection: new StateToolPairProjection(this.stateDriver, {
+        discardOnTerminal,
+      }),
+      projectionId: `checkpoint:${identity}`,
+      sourceKey: `rollout:${checkpointProjectionIdentity(this.rolloutPath, "source")}`,
+      expectedRunId: this.sessionId,
+    };
+  }
+
+  /** Validate a complete durable history at a semantic replacement boundary. */
+  assertValidToolPairHistory(
+    messages: Iterable<ToolPairMessage>,
+    purpose: string,
+  ): void {
+    const projectionContext = this.checkpointProjectionContext(
+      `history:${purpose}`,
+    );
+    const outcome = validateToolPairSequence(messages, projectionContext.projection, {
+      projectionId: projectionContext.projectionId,
+      sourceKey: projectionContext.sourceKey,
+      requireResultIntegrity: true,
+      expectedRunId: this.sessionId,
+    });
+    if (outcome.status !== "valid") {
+      throw new ToolPairHistoryBlockedError(purpose, outcome);
+    }
+  }
+
+  private promoteDurableCheckpointSchema(
+    meta: Parameters<SessionStore["open"]>[0],
+  ): void {
+    const items = this.store.readAll();
+    const projectionContext = this.checkpointProjectionContext("upgrade");
+    const outcome = planLegacyDurableCheckpointUpgrade({
+      items,
+      runId: meta.sessionId,
+      ...projectionContext,
+    });
+    if (outcome.status !== "planned") {
+      throw new DurableCheckpointUpgradeBlockedError(
+        meta.sessionId,
+        outcome.failure,
+      );
+    }
+    const { plan } = outcome;
+    if (!plan.changed && !plan.sessionMetaPromotionRequired) return;
+    this.assertUpgradeableToolPairSequence(
+      meta.sessionId,
+      responseItemsForToolPairValidation(plan.upgradedItems),
+      "canonical-response-stream",
+      true,
+    );
+    for (let itemIndex = 0; itemIndex < plan.upgradedItems.length; itemIndex += 1) {
+      const item = plan.upgradedItems[itemIndex];
+      if (
+        item?.type !== "compacted" ||
+        item.payload.replacementHistory === undefined
+      ) {
+        continue;
+      }
+      this.assertUpgradeableToolPairSequence(
+        meta.sessionId,
+        item.payload.replacementHistory,
+        `replacement-history:${itemIndex}`,
+        false,
+      );
+    }
+    const upgradedItems = plan.sessionMetaPromotionRequired
+      ? [
+          {
+            type: "session_meta" as const,
+            payload: {
+              ...meta,
+              rolloutSchemaVersion: DURABLE_ROLLOUT_SCHEMA_V2,
+            },
+          },
+          ...plan.upgradedItems,
+        ]
+      : plan.upgradedItems;
+    this.beforeCheckpointUpgradePublishForTestingOnly?.();
+    this.store.rewriteRolloutItemsAtomically(upgradedItems);
+  }
+
+  private assertUpgradeableToolPairSequence(
+    runId: string,
+    messages: Iterable<ToolPairMessage>,
+    purpose: string,
+    allowDanglingAtEnd: boolean,
+  ): void {
+    const context = this.checkpointProjectionContext(`upgrade-history:${purpose}`);
+    const outcome = validateToolPairSequence(messages, context.projection, {
+      projectionId: context.projectionId,
+      sourceKey: context.sourceKey,
+      requireResultIntegrity: true,
+      expectedRunId: runId,
+      allowDanglingAtEnd,
+    });
+    if (outcome.status === "invalid" || outcome.status === "deferred") {
+      throw new DurableCheckpointUpgradeBlockedError(runId, outcome.failure);
+    }
+  }
+
+  private rebuildLiveToolPairProjection(): void {
+    const context = this.toolPairProjectionContext("live-append", false);
+    let validator: StreamingToolPairValidator | undefined;
+    context.projection.runAtomically(() => {
+      validator = new StreamingToolPairValidator(context.projection, {
+        projectionId: context.projectionId,
+        sourceKey: context.sourceKey,
+        requireResultIntegrity: true,
+        expectedRunId: this.sessionId,
+      });
+      for (const item of this.store.readAll()) {
+        if (item.type !== "response_item") continue;
+        const outcome = validator.push(item.payload);
+        if (outcome !== undefined) {
+          throw new ToolPairHistoryBlockedError("live projection rebuild", outcome);
+        }
+      }
+      const outcome = validator.finish({
+        allowDanglingAtEnd: true,
+        persistSuccess: false,
+      });
+      if (outcome.status === "invalid" || outcome.status === "deferred") {
+        throw new ToolPairHistoryBlockedError("live projection rebuild", outcome);
+      }
+    });
+    if (validator === undefined) {
+      throw new Error("live tool-pair projection did not initialize");
+    }
+    this.liveToolPairProjection = context.projection;
+    this.liveToolPairValidator = validator;
+  }
+
+  private validateLiveResponseItem(message: ToolPairMessage): void {
+    const projection = this.liveToolPairProjection;
+    const validator = this.liveToolPairValidator;
+    if (projection === undefined || validator === undefined) {
+      throw new Error("live tool-pair projection is unavailable");
+    }
+    const outcome = projection.runAtomically(() => validator.push(message));
+    if (outcome !== undefined) {
+      throw new ToolPairHistoryBlockedError("live append", outcome);
+    }
+  }
+
+  private assertLiveToolPairBoundary(purpose: string): void {
+    const projection = this.liveToolPairProjection;
+    const validator = this.liveToolPairValidator;
+    if (projection === undefined || validator === undefined) {
+      throw new Error("live tool-pair projection is unavailable");
+    }
+    const outcome = projection.runAtomically(() =>
+      validator.finish({ persistSuccess: false }),
+    );
+    if (outcome.status !== "valid") {
+      throw new ToolPairHistoryBlockedError(purpose, outcome);
+    }
   }
 
   /** M3 pre-dispatch gate backed by the same project state database. */

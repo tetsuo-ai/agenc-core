@@ -85,6 +85,38 @@ describe("StateToolPairProjection", () => {
     ).toEqual({ status: "valid", call_count: 2 });
   });
 
+  it("discards private offline staging rows before validation commits", () => {
+    const stagingProjection = new StateToolPairProjection(driver, {
+      discardOnTerminal: true,
+    });
+    const outcome = validateToolPairSequence(
+      [
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "offline-call", name: "read" }],
+        },
+        { role: "tool", content: "ok", toolCallId: "offline-call" },
+      ],
+      stagingProjection,
+      {
+        projectionId: "offline-staging",
+        sourceKey: "/rollouts/offline.jsonl",
+      },
+    );
+
+    expect(outcome.status).toBe("valid");
+    expect(stagingProjection.find("offline-staging", "offline-call")).toBeUndefined();
+    expect(
+      driver
+        .prepareState<[string], { readonly found: number }>(
+          `SELECT 1 AS found FROM tool_pair_projection_runs
+           WHERE projection_id = ?`,
+        )
+        .get("offline-staging"),
+    ).toBeUndefined();
+  });
+
   it("distinguishes duplicate, orphan, unknown, and ordering failures", () => {
     expect(
       validate([

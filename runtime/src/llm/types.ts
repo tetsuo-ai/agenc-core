@@ -11,6 +11,7 @@ import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import { isRecord } from "../utils/record.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type { ProviderTokenCountCapability } from "./token-accounting.js";
+import type { ToolResultIntegrity } from "../session/tool-result-integrity.js";
 
 /**
  * Message role in a conversation
@@ -92,6 +93,11 @@ export interface LLMMessage {
         | "mcp_tool_not_shell_command"
         | "shell_workspace_write_policy";
     };
+    /**
+     * Durable tool-result identity. This is runtime-only state: provider wire
+     * preparation must remove it after local history transformations finish.
+     */
+    readonly toolResultIntegrity?: ToolResultIntegrity;
   };
   /** For assistant messages that request tool execution */
   toolCalls?: LLMToolCall[];

@@ -16,7 +16,7 @@ export const toolPairProjectionSchemaMigration: SqlMigration = {
 CREATE TABLE IF NOT EXISTS tool_pair_projection_runs (
   projection_id TEXT PRIMARY KEY,
   source_key TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('building', 'valid', 'invalid', 'deferred')),
+  status TEXT NOT NULL CHECK (status IN ('building', 'valid', 'dangling', 'invalid', 'deferred')),
   call_count INTEGER NOT NULL DEFAULT 0 CHECK (call_count >= 0),
   resolved_count INTEGER NOT NULL DEFAULT 0 CHECK (resolved_count >= 0),
   open_call_count INTEGER NOT NULL DEFAULT 0 CHECK (open_call_count >= 0),
@@ -30,8 +30,9 @@ CREATE TABLE IF NOT EXISTS tool_pair_projection_runs (
   CHECK (open_call_count = call_count - resolved_count),
   CHECK (maximum_open_call_count >= open_call_count),
   CHECK (status <> 'valid' OR open_call_count = 0),
+  CHECK (status <> 'dangling' OR open_call_count > 0),
   CHECK (
-    (status IN ('building', 'valid') AND failure_kind IS NULL AND failure_code IS NULL AND failure_index IS NULL AND failure_reason IS NULL)
+    (status IN ('building', 'valid', 'dangling') AND failure_kind IS NULL AND failure_code IS NULL AND failure_index IS NULL AND failure_reason IS NULL)
     OR
     (status = 'invalid' AND failure_kind = 'integrity_failure' AND failure_code IS NOT NULL AND failure_reason IS NOT NULL)
     OR

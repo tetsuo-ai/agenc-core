@@ -13,9 +13,12 @@ import {
 } from "../llm/content-conversion.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { CompactionResult, RuntimeMessage } from "../services/compact/types.js";
-import type { CompactedItem, ResponseItem } from "../session/rollout-item.js";
+import type { CompactedItem } from "../session/rollout-item.js";
 import type { Session } from "../session/session.js";
-import { llmMessageToResponseItem } from "../session/message-history-conversion.js";
+import {
+  llmMessageToReplacementResponseItem,
+  responseItemToLlmMessage,
+} from "../session/message-history-conversion.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { modelContextWindow } from "../session/turn-context.js";
 import {
@@ -676,6 +679,7 @@ interface AgenCMessage {
   readonly toolCallId?: string;
   readonly toolName?: string;
   readonly phase?: string;
+  readonly runtimeOnly?: LLMMessage["runtimeOnly"];
 }
 
 type AgenCRuntimeWireRole = NonNullable<RuntimeMessage["role"]>;
@@ -768,18 +772,19 @@ async function runManualCompact(params: {
     compactionResultWithSlashMessages,
     toolUseContext,
   );
-  const compacted = compactionResult.replacementHistory.map(cloneLLMMessage);
+  const compactedRollout = buildAgenCCompactedRolloutItem(compactionResult);
+  const rolloutStore = params.session.rolloutStore;
+  rolloutStore?.appendRollout(
+    { type: "compacted", payload: compactedRollout },
+    { durable: true },
+  );
+  const compacted = (compactedRollout.replacementHistory ?? []).map(
+    responseItemToLlmMessage,
+  );
   await params.session.state.with((sessionState) => {
     sessionState.history = compacted.map(cloneLLMMessage);
   });
   params.session.clearProviderResponseId();
-  params.session.rolloutStore?.appendRollout(
-    {
-      type: "compacted",
-      payload: buildAgenCCompactedRolloutItem(compactionResult),
-    },
-    { durable: true },
-  );
   return {
     displayText: typeof result.displayText === "string"
       ? result.displayText
@@ -1021,11 +1026,14 @@ function toAgenCMessage(message: LLMMessage): AgenCMessage {
     ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
+    ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+      ? {
+          runtimeOnly: {
+            toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+          },
+        }
+      : {}),
   };
-}
-
-function toResponseItem(message: LLMMessage): ResponseItem {
-  return llmMessageToResponseItem(message);
 }
 
 function buildCompactedRolloutPayload(params: {
@@ -1037,7 +1045,11 @@ function buildCompactedRolloutPayload(params: {
   return {
     message: params.message,
     ...(params.replacementHistory !== undefined
-      ? { replacementHistory: params.replacementHistory.map(toResponseItem) }
+      ? {
+          replacementHistory: params.replacementHistory.map((message) =>
+            llmMessageToReplacementResponseItem(message, "compacted"),
+          ),
+        }
       : {}),
     ...(params.preCompactTokens !== undefined
       ? { preCompactTokens: params.preCompactTokens }
@@ -1486,6 +1498,13 @@ function fromAgenCRuntimeMessage(
       ...(message.phase === "commentary" || message.phase === "final_answer"
         ? { phase: message.phase }
         : {}),
+      ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+        ? {
+            runtimeOnly: {
+              toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+            },
+          }
+        : {}),
     };
   }
   const role = normalizeRole(message.message?.role ?? message.type);
@@ -1493,6 +1512,29 @@ function fromAgenCRuntimeMessage(
   return {
     role,
     content: fromRuntimeMessageContent(readContent(message)),
+    ...(message.toolCalls !== undefined
+      ? {
+          toolCalls: message.toolCalls.map((call) => ({
+            id: call.id,
+            name: call.name,
+            arguments: call.arguments ?? "",
+          })),
+        }
+      : {}),
+    ...(message.toolCallId !== undefined
+      ? { toolCallId: message.toolCallId }
+      : {}),
+    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.phase === "commentary" || message.phase === "final_answer"
+      ? { phase: message.phase }
+      : {}),
+    ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+      ? {
+          runtimeOnly: {
+            toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+          },
+        }
+      : {}),
   };
 }
 
@@ -1534,6 +1576,9 @@ function cloneLLMMessage(message: LLMMessage): LLMMessage {
   return {
     ...message,
     content: cloneContent(message.content),
+    ...(message.runtimeOnly !== undefined
+      ? { runtimeOnly: { ...message.runtimeOnly } }
+      : {}),
   };
 }
 

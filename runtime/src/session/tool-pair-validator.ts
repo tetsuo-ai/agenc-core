@@ -43,6 +43,11 @@ export interface ToolPairProjectionSummary {
   readonly logicalIndexBytes: number;
 }
 
+export interface ToolPairDanglingUse {
+  readonly callId: string;
+  readonly toolName: string;
+}
+
 /**
  * Exact index used by the ordered scanner. The production implementation is
  * SQLite-backed; this interface keeps the session-layer state machine free of
@@ -67,6 +72,10 @@ export interface ToolPairProjection {
     readonly originalResultDigest?: string;
   }): "resolved" | "already_resolved" | "missing";
   complete(projectionId: string, summary: ToolPairProjectionSummary): void;
+  completeDangling(
+    projectionId: string,
+    summary: ToolPairProjectionSummary,
+  ): void;
   fail(
     projectionId: string,
     summary: ToolPairProjectionSummary,
@@ -117,6 +126,12 @@ export type ToolPairValidationOutcome =
       readonly summary: ToolPairProjectionSummary;
     }
   | {
+      /** Structurally valid prefix ending at an explicitly permitted call boundary. */
+      readonly status: "dangling";
+      readonly summary: ToolPairProjectionSummary;
+      readonly danglingToolUses: ReadonlyArray<ToolPairDanglingUse>;
+    }
+  | {
       readonly status: "invalid";
       readonly failure: ToolPairIntegrityFailure;
       readonly summary: ToolPairProjectionSummary;
@@ -134,6 +149,7 @@ interface ToolPairValidationLimits {
   readonly maxOpenToolCalls?: number;
   readonly maxToolCallIdBytes?: number;
   readonly maxIndexBytes?: number;
+  readonly allowDanglingAtEnd?: boolean;
 }
 
 export type ToolPairValidationOptions = ToolPairValidationLimits &
@@ -153,6 +169,410 @@ interface OpenToolCall {
   readonly assistantIndex: number;
 }
 
+type ToolPairFailureOutcome =
+  | { readonly status: "invalid"; readonly failure: ToolPairIntegrityFailure }
+  | {
+      readonly status: "deferred";
+      readonly failure: ToolPairOperationalDeferral;
+    };
+
+type ToolPairTerminalFailureOutcome = Extract<
+  ToolPairValidationOutcome,
+  { readonly status: "invalid" | "deferred" }
+>;
+
+interface FinishToolPairValidationOptions {
+  readonly allowDanglingAtEnd?: boolean;
+  readonly persistSuccess?: boolean;
+}
+
+/**
+ * Stateful ordered validator shared by offline scans and the live append path.
+ * Resolved IDs live only in the exact projection; the JS heap retains the
+ * bounded unresolved set and scalar counters.
+ */
+export class StreamingToolPairValidator {
+  private readonly limits: ReturnType<typeof resolveLimits>;
+  private readonly openCalls = new Map<string, OpenToolCall>();
+  private callCount = 0;
+  private resolvedCount = 0;
+  private maximumOpenCallCount = 0;
+  private logicalIndexBytes = 0;
+  private index = 0;
+  private terminalFailure: ToolPairTerminalFailureOutcome | undefined;
+
+  constructor(
+    private readonly projection: ToolPairProjection,
+    private readonly options: ToolPairValidationOptions,
+  ) {
+    this.limits = resolveLimits(options);
+    projection.reset({
+      projectionId: options.projectionId,
+      sourceKey: options.sourceKey,
+    });
+  }
+
+  push(message: ToolPairMessage): ToolPairTerminalFailureOutcome | undefined {
+    if (this.terminalFailure !== undefined) return this.terminalFailure;
+    if (
+      message.role === "assistant" &&
+      message.toolCalls !== undefined &&
+      message.toolCalls.length > 0
+    ) {
+      return this.pushAssistantToolCalls(message.toolCalls);
+    }
+    if (message.role === "tool") return this.pushToolResult(message);
+    if (this.openCalls.size > 0) {
+      return this.finishFailure(
+        invalid(
+          "tool_result_missing",
+          this.index,
+          `tool results must immediately follow their assistant calls; unresolved: ${summarizeOpenIds(this.openCalls)}`,
+        ),
+      );
+    }
+    this.index += 1;
+    return undefined;
+  }
+
+  finish(
+    options: FinishToolPairValidationOptions = {},
+  ): ToolPairValidationOutcome {
+    if (this.terminalFailure !== undefined) return this.terminalFailure;
+    const allowDanglingAtEnd =
+      options.allowDanglingAtEnd ??
+      this.options.allowDanglingAtEnd ??
+      false;
+    if (this.openCalls.size > 0) {
+      if (!allowDanglingAtEnd) {
+        return this.finishFailure(
+          invalid(
+            "tool_result_missing",
+            null,
+            `tool-pair stream ended with unresolved calls: ${summarizeOpenIds(this.openCalls)}`,
+          ),
+        );
+      }
+      const summary = this.summary();
+      if (options.persistSuccess !== false) {
+        this.projection.completeDangling(this.options.projectionId, summary);
+      }
+      return {
+        status: "dangling",
+        summary,
+        danglingToolUses: Array.from(
+          this.openCalls,
+          ([callId, call]) => ({ callId, toolName: call.toolName }),
+        ),
+      };
+    }
+    const summary = this.summary();
+    if (options.persistSuccess !== false) {
+      this.projection.complete(this.options.projectionId, summary);
+    }
+    return { status: "valid", summary };
+  }
+
+  summary(): ToolPairProjectionSummary {
+    return {
+      callCount: this.callCount,
+      resolvedCount: this.resolvedCount,
+      openCallCount: this.openCalls.size,
+      maximumOpenCallCount: this.maximumOpenCallCount,
+      logicalIndexBytes: this.logicalIndexBytes,
+    };
+  }
+
+  private pushAssistantToolCalls(
+    toolCalls: NonNullable<ToolPairMessage["toolCalls"]>,
+  ): ToolPairTerminalFailureOutcome | undefined {
+    if (this.openCalls.size > 0) {
+      return this.finishFailure(
+        invalid(
+          "assistant_tool_calls_before_results",
+          this.index,
+          `assistant tool calls started before resolving: ${summarizeOpenIds(this.openCalls)}`,
+        ),
+      );
+    }
+    if (toolCalls.length > this.limits.maxOpenToolCalls) {
+      return this.finishFailure(
+        deferred(
+          "tool_pair_open_call_limit",
+          this.index,
+          `assistant message opens ${toolCalls.length} tool calls; limit is ${this.limits.maxOpenToolCalls}`,
+        ),
+      );
+    }
+    for (const call of toolCalls) {
+      if (typeof call.id !== "string" || call.id.trim().length === 0) {
+        return this.finishFailure(
+          invalid(
+            "assistant_tool_call_id_missing",
+            this.index,
+            "assistant tool call has an empty identity",
+          ),
+        );
+      }
+      if (typeof call.name !== "string" || call.name.trim().length === 0) {
+        return this.finishFailure(
+          invalid(
+            "assistant_tool_call_name_missing",
+            this.index,
+            `assistant tool call ${formatIdentityForLog(call.id)} has an empty tool name`,
+          ),
+        );
+      }
+      const callIdBytes = Buffer.byteLength(call.id, "utf8");
+      if (callIdBytes > this.limits.maxToolCallIdBytes) {
+        return this.finishFailure(
+          deferred(
+            "tool_call_id_limit",
+            this.index,
+            `tool call identity is ${callIdBytes} UTF-8 bytes; limit is ${this.limits.maxToolCallIdBytes}`,
+          ),
+        );
+      }
+
+      // Exact duplicate lookup intentionally precedes the count limit.
+      if (
+        this.projection.find(this.options.projectionId, call.id) !== undefined
+      ) {
+        return this.finishFailure(
+          invalid(
+            "assistant_tool_call_id_duplicate",
+            this.index,
+            `assistant tool call repeats ${formatIdentityForLog(call.id)}`,
+          ),
+        );
+      }
+      if (this.callCount >= this.limits.maxToolCalls) {
+        return this.finishFailure(
+          deferred(
+            "tool_pair_call_limit",
+            this.index,
+            `tool-pair scan exceeds ${this.limits.maxToolCalls} distinct calls`,
+          ),
+        );
+      }
+      const addedIndexBytes =
+        callIdBytes + Buffer.byteLength(call.name, "utf8");
+      if (
+        this.logicalIndexBytes + addedIndexBytes >
+        this.limits.maxIndexBytes
+      ) {
+        return this.finishFailure(
+          deferred(
+            "tool_pair_index_byte_limit",
+            this.index,
+            `tool-pair projection exceeds ${this.limits.maxIndexBytes} logical UTF-8 bytes`,
+          ),
+        );
+      }
+      const inserted = this.projection.insertCall(this.options.projectionId, {
+        callId: call.id,
+        toolName: call.name,
+        assistantIndex: this.index,
+      });
+      if (!inserted) {
+        return this.finishFailure(
+          invalid(
+            "assistant_tool_call_id_duplicate",
+            this.index,
+            `assistant tool call repeats ${formatIdentityForLog(call.id)}`,
+          ),
+        );
+      }
+      this.openCalls.set(call.id, {
+        toolName: call.name,
+        assistantIndex: this.index,
+      });
+      this.callCount += 1;
+      this.logicalIndexBytes += addedIndexBytes;
+    }
+    this.maximumOpenCallCount = Math.max(
+      this.maximumOpenCallCount,
+      this.openCalls.size,
+    );
+    this.index += 1;
+    return undefined;
+  }
+
+  private pushToolResult(
+    message: ToolPairMessage,
+  ): ToolPairTerminalFailureOutcome | undefined {
+    if (
+      typeof message.toolCallId !== "string" ||
+      message.toolCallId.trim().length === 0
+    ) {
+      return this.finishFailure(
+        invalid(
+          "tool_result_id_missing",
+          this.index,
+          "tool result has an empty tool-call identity",
+        ),
+      );
+    }
+    const toolCallIdBytes = Buffer.byteLength(message.toolCallId, "utf8");
+    if (toolCallIdBytes > this.limits.maxToolCallIdBytes) {
+      return this.finishFailure(
+        deferred(
+          "tool_call_id_limit",
+          this.index,
+          `tool result identity is ${toolCallIdBytes} UTF-8 bytes; limit is ${this.limits.maxToolCallIdBytes}`,
+        ),
+      );
+    }
+    const openCall = this.openCalls.get(message.toolCallId);
+    if (openCall === undefined) {
+      const exact = this.projection.find(
+        this.options.projectionId,
+        message.toolCallId,
+      );
+      if (exact?.resultIndex !== undefined) {
+        return this.finishFailure(
+          invalid(
+            "tool_result_duplicate",
+            this.index,
+            `tool result repeats ${formatIdentityForLog(message.toolCallId)}`,
+          ),
+        );
+      }
+      return this.finishFailure(
+        invalid(
+          exact === undefined
+            ? this.callCount === 0
+              ? "tool_result_without_call"
+              : "tool_result_unknown_id"
+            : "tool_result_unknown_id",
+          this.index,
+          `tool result references unknown ${formatIdentityForLog(message.toolCallId)}`,
+        ),
+      );
+    }
+    if (
+      message.toolName !== undefined &&
+      message.toolName !== openCall.toolName
+    ) {
+      return this.finishFailure(
+        invalid(
+          "tool_result_name_mismatch",
+          this.index,
+          `tool result ${formatIdentityForLog(message.toolCallId)} names ${formatIdentityForLog(message.toolName)}, expected ${formatIdentityForLog(openCall.toolName)}`,
+        ),
+      );
+    }
+
+    const integrity = this.verifyResultIntegrity(message);
+    if (integrity.status !== "valid") return integrity.outcome;
+    const addedIndexBytes =
+      integrity.integrity === undefined
+        ? 0
+        : Buffer.byteLength(integrity.integrity.resultId, "utf8") +
+          Buffer.byteLength(integrity.integrity.original.digest, "utf8");
+    if (
+      this.logicalIndexBytes + addedIndexBytes >
+      this.limits.maxIndexBytes
+    ) {
+      return this.finishFailure(
+        deferred(
+          "tool_pair_index_byte_limit",
+          this.index,
+          `tool-pair projection exceeds ${this.limits.maxIndexBytes} logical UTF-8 bytes`,
+        ),
+      );
+    }
+    const resolution = this.projection.resolveCall({
+      projectionId: this.options.projectionId,
+      callId: message.toolCallId,
+      resultIndex: this.index,
+      ...(integrity.integrity === undefined
+        ? {}
+        : {
+            resultId: integrity.integrity.resultId,
+            originalResultDigest: integrity.integrity.original.digest,
+          }),
+    });
+    if (resolution !== "resolved") {
+      return this.finishFailure(
+        invalid(
+          resolution === "already_resolved"
+            ? "tool_result_duplicate"
+            : "tool_result_unknown_id",
+          this.index,
+          `tool result could not resolve ${formatIdentityForLog(message.toolCallId)}`,
+        ),
+      );
+    }
+    this.openCalls.delete(message.toolCallId);
+    this.resolvedCount += 1;
+    this.logicalIndexBytes += addedIndexBytes;
+    this.index += 1;
+    return undefined;
+  }
+
+  private verifyResultIntegrity(message: ToolPairMessage):
+    | { readonly status: "valid"; readonly integrity?: ToolResultIntegrity }
+    | {
+        readonly status: "invalid";
+        readonly outcome: ToolPairTerminalFailureOutcome;
+      } {
+    if (this.options.requireResultIntegrity !== true) {
+      return { status: "valid" };
+    }
+    const verified = verifyToolResultIntegrity({
+      integrity: message.toolResultIntegrity,
+      expectedRunId: this.options.expectedRunId,
+      toolCallId: message.toolCallId as string,
+      content: message.content,
+    });
+    if (verified.status === "invalid") {
+      return {
+        status: "invalid",
+        outcome: this.finishFailure({
+          status: "invalid",
+          failure: {
+            kind: "integrity_failure",
+            code: "tool_result_integrity_invalid",
+            index: this.index,
+            reason: verified.failure.reason,
+            cause: verified.failure,
+          },
+        }),
+      };
+    }
+    if (verified.status === "deferred") {
+      return {
+        status: "invalid",
+        outcome: this.finishFailure({
+          status: "deferred",
+          failure: {
+            kind: "operational_deferral",
+            code: "tool_result_integrity_deferred",
+            index: this.index,
+            reason: verified.failure.reason,
+            cause: verified.failure,
+          },
+        }),
+      };
+    }
+    return { status: "valid", integrity: verified.integrity };
+  }
+
+  private finishFailure(
+    outcome: ToolPairFailureOutcome,
+  ): ToolPairTerminalFailureOutcome {
+    const terminal = { ...outcome, summary: this.summary() };
+    this.projection.fail(
+      this.options.projectionId,
+      terminal.summary,
+      outcome.failure,
+    );
+    this.terminalFailure = terminal;
+    return terminal;
+  }
+}
+
 /**
  * Validate a message stream without retaining every historical ID in the JS
  * heap. Only the bounded open-call set is resident; exact duplicate identity
@@ -163,324 +583,15 @@ export function validateToolPairSequence(
   projection: ToolPairProjection,
   options: ToolPairValidationOptions,
 ): ToolPairValidationOutcome {
-  const limits = resolveLimits(options);
-  let latestSummary = emptySummary();
+  let validator: StreamingToolPairValidator | undefined;
   try {
     return projection.runAtomically(() => {
-      projection.reset({
-        projectionId: options.projectionId,
-        sourceKey: options.sourceKey,
-      });
-      const openCalls = new Map<string, OpenToolCall>();
-      let callCount = 0;
-      let resolvedCount = 0;
-      let maximumOpenCallCount = 0;
-      let logicalIndexBytes = 0;
-      let index = 0;
-
-      const summary = (): ToolPairProjectionSummary => ({
-        callCount,
-        resolvedCount,
-        openCallCount: openCalls.size,
-        maximumOpenCallCount,
-        logicalIndexBytes,
-      });
-      const finishFailure = (
-        outcome:
-          | {
-              readonly status: "invalid";
-              readonly failure: ToolPairIntegrityFailure;
-            }
-          | {
-              readonly status: "deferred";
-              readonly failure: ToolPairOperationalDeferral;
-            },
-      ): ToolPairValidationOutcome => {
-        latestSummary = summary();
-        projection.fail(options.projectionId, latestSummary, outcome.failure);
-        return { ...outcome, summary: latestSummary };
-      };
-
+      validator = new StreamingToolPairValidator(projection, options);
       for (const message of messages) {
-        if (
-          message.role === "assistant" &&
-          message.toolCalls !== undefined &&
-          message.toolCalls.length > 0
-        ) {
-          if (openCalls.size > 0) {
-            return finishFailure(
-              invalid(
-                "assistant_tool_calls_before_results",
-                index,
-                `assistant tool calls started before resolving: ${summarizeOpenIds(openCalls)}`,
-              ),
-            );
-          }
-          if (message.toolCalls.length > limits.maxOpenToolCalls) {
-            return finishFailure(
-              deferred(
-                "tool_pair_open_call_limit",
-                index,
-                `assistant message opens ${message.toolCalls.length} tool calls; limit is ${limits.maxOpenToolCalls}`,
-              ),
-            );
-          }
-          for (const call of message.toolCalls) {
-            if (typeof call.id !== "string" || call.id.trim().length === 0) {
-              return finishFailure(
-                invalid(
-                  "assistant_tool_call_id_missing",
-                  index,
-                  "assistant tool call has an empty identity",
-                ),
-              );
-            }
-            if (
-              typeof call.name !== "string" ||
-              call.name.trim().length === 0
-            ) {
-              return finishFailure(
-                invalid(
-                  "assistant_tool_call_name_missing",
-                  index,
-                  `assistant tool call ${formatIdentityForLog(call.id)} has an empty tool name`,
-                ),
-              );
-            }
-            const callIdBytes = Buffer.byteLength(call.id, "utf8");
-            if (callIdBytes > limits.maxToolCallIdBytes) {
-              return finishFailure(
-                deferred(
-                  "tool_call_id_limit",
-                  index,
-                  `tool call identity is ${callIdBytes} UTF-8 bytes; limit is ${limits.maxToolCallIdBytes}`,
-                ),
-              );
-            }
-
-            // Exact duplicate lookup intentionally precedes the count limit:
-            // after exactly one million distinct calls, replaying the first ID
-            // is still diagnosed as a duplicate rather than hidden by a limit.
-            if (projection.find(options.projectionId, call.id) !== undefined) {
-              return finishFailure(
-                invalid(
-                  "assistant_tool_call_id_duplicate",
-                  index,
-                  `assistant tool call repeats ${formatIdentityForLog(call.id)}`,
-                ),
-              );
-            }
-            if (callCount >= limits.maxToolCalls) {
-              return finishFailure(
-                deferred(
-                  "tool_pair_call_limit",
-                  index,
-                  `tool-pair scan exceeds ${limits.maxToolCalls} distinct calls`,
-                ),
-              );
-            }
-            const addedIndexBytes =
-              callIdBytes + Buffer.byteLength(call.name, "utf8");
-            if (logicalIndexBytes + addedIndexBytes > limits.maxIndexBytes) {
-              return finishFailure(
-                deferred(
-                  "tool_pair_index_byte_limit",
-                  index,
-                  `tool-pair projection exceeds ${limits.maxIndexBytes} logical UTF-8 bytes`,
-                ),
-              );
-            }
-            const inserted = projection.insertCall(options.projectionId, {
-              callId: call.id,
-              toolName: call.name,
-              assistantIndex: index,
-            });
-            if (!inserted) {
-              return finishFailure(
-                invalid(
-                  "assistant_tool_call_id_duplicate",
-                  index,
-                  `assistant tool call repeats ${formatIdentityForLog(call.id)}`,
-                ),
-              );
-            }
-            openCalls.set(call.id, {
-              toolName: call.name,
-              assistantIndex: index,
-            });
-            callCount += 1;
-            logicalIndexBytes += addedIndexBytes;
-          }
-          maximumOpenCallCount = Math.max(maximumOpenCallCount, openCalls.size);
-          index += 1;
-          continue;
-        }
-
-        if (message.role === "tool") {
-          if (
-            typeof message.toolCallId !== "string" ||
-            message.toolCallId.trim().length === 0
-          ) {
-            return finishFailure(
-              invalid(
-                "tool_result_id_missing",
-                index,
-                "tool result has an empty tool-call identity",
-              ),
-            );
-          }
-          const toolCallIdBytes = Buffer.byteLength(message.toolCallId, "utf8");
-          if (toolCallIdBytes > limits.maxToolCallIdBytes) {
-            return finishFailure(
-              deferred(
-                "tool_call_id_limit",
-                index,
-                `tool result identity is ${toolCallIdBytes} UTF-8 bytes; limit is ${limits.maxToolCallIdBytes}`,
-              ),
-            );
-          }
-          const openCall = openCalls.get(message.toolCallId);
-          if (openCall === undefined) {
-            const exact = projection.find(
-              options.projectionId,
-              message.toolCallId,
-            );
-            if (exact?.resultIndex !== undefined) {
-              return finishFailure(
-                invalid(
-                  "tool_result_duplicate",
-                  index,
-                  `tool result repeats ${formatIdentityForLog(message.toolCallId)}`,
-                ),
-              );
-            }
-            return finishFailure(
-              invalid(
-                exact === undefined
-                  ? callCount === 0
-                    ? "tool_result_without_call"
-                    : "tool_result_unknown_id"
-                  : "tool_result_unknown_id",
-                index,
-                `tool result references unknown ${formatIdentityForLog(message.toolCallId)}`,
-              ),
-            );
-          }
-          if (
-            message.toolName !== undefined &&
-            message.toolName !== openCall.toolName
-          ) {
-            return finishFailure(
-              invalid(
-                "tool_result_name_mismatch",
-                index,
-                `tool result ${formatIdentityForLog(message.toolCallId)} names ${formatIdentityForLog(message.toolName)}, expected ${formatIdentityForLog(openCall.toolName)}`,
-              ),
-            );
-          }
-
-          let integrity: ToolResultIntegrity | undefined;
-          if (options.requireResultIntegrity === true) {
-            const verified = verifyToolResultIntegrity({
-              integrity: message.toolResultIntegrity,
-              expectedRunId: options.expectedRunId,
-              toolCallId: message.toolCallId,
-              content: message.content,
-            });
-            if (verified.status === "invalid") {
-              return finishFailure({
-                status: "invalid",
-                failure: {
-                  kind: "integrity_failure",
-                  code: "tool_result_integrity_invalid",
-                  index,
-                  reason: verified.failure.reason,
-                  cause: verified.failure,
-                },
-              });
-            }
-            if (verified.status === "deferred") {
-              return finishFailure({
-                status: "deferred",
-                failure: {
-                  kind: "operational_deferral",
-                  code: "tool_result_integrity_deferred",
-                  index,
-                  reason: verified.failure.reason,
-                  cause: verified.failure,
-                },
-              });
-            }
-            integrity = verified.integrity;
-          }
-
-          const addedIndexBytes =
-            integrity === undefined
-              ? 0
-              : Buffer.byteLength(integrity.resultId, "utf8") +
-                Buffer.byteLength(integrity.original.digest, "utf8");
-          if (logicalIndexBytes + addedIndexBytes > limits.maxIndexBytes) {
-            return finishFailure(
-              deferred(
-                "tool_pair_index_byte_limit",
-                index,
-                `tool-pair projection exceeds ${limits.maxIndexBytes} logical UTF-8 bytes`,
-              ),
-            );
-          }
-          const resolution = projection.resolveCall({
-            projectionId: options.projectionId,
-            callId: message.toolCallId,
-            resultIndex: index,
-            ...(integrity === undefined
-              ? {}
-              : {
-                  resultId: integrity.resultId,
-                  originalResultDigest: integrity.original.digest,
-                }),
-          });
-          if (resolution !== "resolved") {
-            return finishFailure(
-              invalid(
-                resolution === "already_resolved"
-                  ? "tool_result_duplicate"
-                  : "tool_result_unknown_id",
-                index,
-                `tool result could not resolve ${formatIdentityForLog(message.toolCallId)}`,
-              ),
-            );
-          }
-          openCalls.delete(message.toolCallId);
-          resolvedCount += 1;
-          logicalIndexBytes += addedIndexBytes;
-          index += 1;
-          continue;
-        }
-
-        if (openCalls.size > 0) {
-          return finishFailure(
-            invalid(
-              "tool_result_missing",
-              index,
-              `tool results must immediately follow their assistant calls; unresolved: ${summarizeOpenIds(openCalls)}`,
-            ),
-          );
-        }
-        index += 1;
+        const failure = validator.push(message);
+        if (failure !== undefined) return failure;
       }
-
-      if (openCalls.size > 0) {
-        return finishFailure(
-          invalid(
-            "tool_result_missing",
-            null,
-            `tool-pair stream ended with unresolved calls: ${summarizeOpenIds(openCalls)}`,
-          ),
-        );
-      }
-      latestSummary = summary();
-      projection.complete(options.projectionId, latestSummary);
-      return { status: "valid", summary: latestSummary };
+      return validator.finish();
     });
   } catch (error) {
     return {
@@ -491,7 +602,7 @@ export function validateToolPairSequence(
         index: null,
         reason: projectionFailureReason(error),
       },
-      summary: latestSummary,
+      summary: validator?.summary() ?? emptySummary(),
     };
   }
 }

@@ -145,7 +145,12 @@ import { reserveRecoveryReentry } from "../recovery/fallback-ladder.js";
 import * as planModeHelpers from "./plan-mode.js";
 import type { CompactedItem, ResponseItem } from "./rollout-item.js";
 import type { IdleInputOwnership, Session } from "./session.js";
-import { llmMessageToResponseItem } from "./message-history-conversion.js";
+import {
+  llmMessageToCheckpointResponseItem,
+  llmMessageToDurableResponseItem,
+  llmMessageToReplacementResponseItem,
+  responseItemToLlmMessage,
+} from "./message-history-conversion.js";
 import {
   modelContextWindow,
   toTurnContextItem,
@@ -184,11 +189,15 @@ import {
   type TurnState,
 } from "./turn-state.js";
 import {
-  computePrefixHash,
   currentBuildId,
   resolveDurableTurnsConfig,
   sideEffectHaltMessage,
 } from "./durable-turns.js";
+import { computeCheckpointPrefixHashV2 } from "./durable-checkpoint-reader.js";
+import {
+  createToolResultIntegrity,
+  verifyToolResultIntegrity,
+} from "./tool-result-integrity.js";
 import {
   evaluateBehavioralBackstop,
   recordBehavioralStep,
@@ -343,6 +352,7 @@ interface AgenCMessage {
   readonly toolCallId?: string;
   readonly toolName?: string;
   readonly phase?: string;
+  readonly runtimeOnly?: LLMMessage["runtimeOnly"];
 }
 
 type AgenCRuntimeWireRole = NonNullable<RuntimeMessage["role"]>;
@@ -508,9 +518,9 @@ function buildAgenCCompactedRolloutItem(
 }
 
 function buildAgenCPostCompactMessages(
-  result: NonNullable<AgenCAutoCompactResult["compactionResult"]>,
+  result: CompactedItem,
 ): LLMMessage[] {
-  return result.replacementHistory.map((message) => ({ ...message }));
+  return (result.replacementHistory ?? []).map(responseItemToLlmMessage);
 }
 
 function toAgenCMessage(message: LLMMessage): AgenCMessage {
@@ -522,6 +532,13 @@ function toAgenCMessage(message: LLMMessage): AgenCMessage {
       : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
+    ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+      ? {
+          runtimeOnly: {
+            toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+          },
+        }
+      : {}),
   };
 }
 
@@ -534,7 +551,11 @@ function buildCompactedRolloutPayload(params: {
   return {
     message: params.message,
     ...(params.replacementHistory !== undefined
-      ? { replacementHistory: params.replacementHistory.map(toResponseItem) }
+      ? {
+          replacementHistory: params.replacementHistory.map((message) =>
+            llmMessageToReplacementResponseItem(message, "compacted"),
+          ),
+        }
       : {}),
     ...(params.preCompactTokens !== undefined
       ? { preCompactTokens: params.preCompactTokens }
@@ -892,6 +913,13 @@ function fromAgenCRuntimeMessage(
       ...(message.phase === "commentary" || message.phase === "final_answer"
         ? { phase: message.phase }
         : {}),
+      ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+        ? {
+            runtimeOnly: {
+              toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+            },
+          }
+        : {}),
     };
   }
   const role = normalizeRole(message.message?.role ?? message.type);
@@ -906,6 +934,20 @@ function fromAgenCRuntimeMessage(
             name: call.name,
             arguments: call.arguments ?? "",
           })),
+        }
+      : {}),
+    ...(message.toolCallId !== undefined
+      ? { toolCallId: message.toolCallId }
+      : {}),
+    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.phase === "commentary" || message.phase === "final_answer"
+      ? { phase: message.phase }
+      : {}),
+    ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+      ? {
+          runtimeOnly: {
+            toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+          },
         }
       : {}),
   };
@@ -1865,8 +1907,57 @@ function isAutoCompactEnabledForNotices(): boolean {
   return !TRUTHY_ENV.has(raw.trim().toLowerCase());
 }
 
-function toResponseItem(message: LLMMessage): ResponseItem {
-  return llmMessageToResponseItem(message);
+function sealToolResultMessage(
+  message: LLMMessage,
+  runId: string,
+): LLMMessage {
+  if (message.role !== "tool") {
+    if (message.runtimeOnly?.toolResultIntegrity !== undefined) {
+      throw new Error(
+        "tool-result integrity metadata is attached to a non-tool message",
+      );
+    }
+    return message;
+  }
+  const toolCallId = message.toolCallId;
+  if (toolCallId === undefined || toolCallId.trim().length === 0) {
+    throw new Error("durable tool result is missing its tool-call identity");
+  }
+  const existing = message.runtimeOnly?.toolResultIntegrity;
+  if (existing !== undefined) {
+    const verification = verifyToolResultIntegrity({
+      integrity: existing,
+      expectedRunId: runId,
+      toolCallId,
+      content: message.content,
+    });
+    if (verification.status !== "valid") {
+      throw new Error(
+        `durable tool-result integrity refused: ${verification.failure.reason}`,
+      );
+    }
+    return message;
+  }
+  return {
+    ...message,
+    runtimeOnly: {
+      ...message.runtimeOnly,
+      toolResultIntegrity: createToolResultIntegrity({
+        runId,
+        toolCallId,
+        content: message.content,
+      }),
+    },
+  };
+}
+
+function requireSealedToolResult(message: ResponseItem): void {
+  if (
+    message.role === "tool" &&
+    message.toolResultIntegrity === undefined
+  ) {
+    throw new Error("checkpoint v2 requires every tool result to be sealed");
+  }
 }
 
 function terminalToStopReason(
@@ -2129,6 +2220,7 @@ async function runAutoCompact(
         );
       }
       const cr = result.compactionResult;
+      const compactedRollout = buildAgenCCompactedRolloutItem(cr);
       // Honor the rollout-persistence suspension invariant. Every other
       // durable write in the turn engine is gated on this flag
       // (session.emit at session.ts, persistTurnRolloutBaseline /
@@ -2139,16 +2231,18 @@ async function runAutoCompact(
       // replacementHistory into the source session's durable rollout —
       // doing so makes the fork's summarized history the baseline on a
       // later --resume and silently destroys the user's real conversation.
-      if (cr && !session.isRolloutPersistenceSuspended?.()) {
-        session.rolloutStore?.appendRollout(
-          {
-            type: "compacted",
-            payload: buildAgenCCompactedRolloutItem(cr),
-          },
+      if (
+        cr &&
+        !session.isRolloutPersistenceSuspended?.() &&
+        session.rolloutStore !== null &&
+        session.rolloutStore !== undefined
+      ) {
+        session.rolloutStore.appendRollout(
+          { type: "compacted", payload: compactedRollout },
           { durable: true },
         );
       }
-      const compacted = buildAgenCPostCompactMessages(cr);
+      const compacted = buildAgenCPostCompactMessages(compactedRollout);
       const unsentImageTurn = shouldKeepUnsentImageTurn
         ? state.messages.at(-1)
         : undefined;
@@ -3883,12 +3977,40 @@ async function* runTurnKernelInner(
     if (state.messages.length < persistedMessageCount) {
       persistedMessageCount = state.messages.length;
     }
-    const nextItems = state.messages.slice(persistedMessageCount);
-    for (const message of nextItems) {
+    for (
+      let messageIndex = persistedMessageCount;
+      messageIndex < state.messages.length;
+      messageIndex += 1
+    ) {
+      const sourceMessage = state.messages[messageIndex];
+      if (sourceMessage === undefined) continue;
+      const message = sealToolResultMessage(
+        sourceMessage,
+        session.conversationId,
+      );
+      state.messages[messageIndex] = message;
       if (excludeFromDurableHistory(message)) continue;
+      const durableItem = llmMessageToDurableResponseItem(message);
+      if (
+        message.runtimeOnly?.toolResultIntegrity !== undefined &&
+        durableItem.toolResultIntegrity !== undefined
+      ) {
+        state.messages[messageIndex] = {
+          ...message,
+          runtimeOnly: {
+            ...message.runtimeOnly,
+            toolResultIntegrity: {
+              ...message.runtimeOnly.toolResultIntegrity,
+              persisted: durableItem.toolResultIntegrity.persisted,
+            },
+          },
+        };
+      } else {
+        state.messages[messageIndex] = message;
+      }
       session.rolloutStore.appendRollout({
         type: "response_item",
-        payload: toResponseItem(message),
+        payload: durableItem,
       });
     }
     persistedMessageCount = state.messages.length;
@@ -3989,14 +4111,18 @@ async function* runTurnKernelInner(
     // and any runtime-only messages, mirroring `syncSessionState`'s
     // `durableHistory`. `persistedMessageCount` is the LENGTH of that
     // projection (== reconstructed history length), NOT a `state.messages`
-    // index. The hash is bound/truncation-stable (tool-output bodies are
-    // excluded — see canonicalMessage), so in-memory bounding cannot make a
-    // resumed prefix spuriously mismatch.
+    // index. Tool-result entries contribute their authenticated persisted-body
+    // identity, so the hash still represents the exact durable body even after
+    // the corresponding in-memory content has been bounded.
     const durablePrefix = state.messages
       .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message))
-      .map((message) => toResponseItem(message));
-    const prefixHash = computePrefixHash(durablePrefix, durablePrefix.length);
+      .map((message) => llmMessageToCheckpointResponseItem(message));
+    for (const message of durablePrefix) requireSealedToolResult(message);
+    const prefixHash = computeCheckpointPrefixHashV2(
+      durablePrefix,
+      durablePrefix.length,
+    );
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
@@ -4008,6 +4134,8 @@ async function* runTurnKernelInner(
           checkpointSeq,
           persistedMessageCount: durablePrefix.length,
           prefixHash,
+          checkpointVersion: 2,
+          toolResultIntegrityVersion: 1,
           resumableState: toCheckpointSlice(state),
         },
       },

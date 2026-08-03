@@ -248,6 +248,51 @@ describe("durable checkpoint v2 reader", () => {
     });
   });
 
+  it("accepts dangling calls only at the post-assistant crash boundary", () => {
+    const messages: ResponseItem[] = [
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "pending-call", name: "FileRead", arguments: "{}" }],
+      },
+    ];
+    const checkpoint: TurnCheckpointV2Event = {
+      ...legacyCheckpoint(
+        computeCheckpointPrefixHashV2(messages, messages.length),
+      ),
+      boundary: "postAssistant",
+      persistedMessageCount: messages.length,
+      checkpointVersion: 2,
+      toolResultIntegrityVersion: 1,
+    };
+    expect(
+      validateCheckpointPrefixV2({
+        checkpoint,
+        messages,
+        projection,
+        projectionId: "post-assistant-dangling",
+        sourceKey: "post-assistant-dangling",
+      }),
+    ).toMatchObject({
+      status: "valid",
+      danglingToolCalls: 1,
+      danglingToolUses: [{ callId: "pending-call", toolName: "FileRead" }],
+    });
+
+    expect(
+      validateCheckpointPrefixV2({
+        checkpoint: { ...checkpoint, boundary: "iteration" },
+        messages,
+        projection,
+        projectionId: "iteration-dangling",
+        sourceKey: "iteration-dangling",
+      }),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "tool_result_missing" },
+    });
+  });
+
   it("rejects unversioned response and tool-call fields", () => {
     const upgraded = upgradedFixture(
       "legacy-v1-tool-result-a.jsonl",
@@ -391,8 +436,8 @@ describe("durable checkpoint v2 reader", () => {
 });
 
 describe("legacy durable checkpoint upgrade planner", () => {
-  it("keeps the live rollout writer on v1 until the A3b cutover", () => {
-    expect(ROLLOUT_SCHEMA_VERSION).toBe(1);
+  it("cuts the live rollout writer over to schema v2", () => {
+    expect(ROLLOUT_SCHEMA_VERSION).toBe(2);
   });
 
   it("makes equal-length fixture substitutions produce distinct v2 identities", () => {

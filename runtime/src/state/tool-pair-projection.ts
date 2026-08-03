@@ -21,7 +21,13 @@ interface ProjectionEntryRow {
 
 /** SQLite implementation of the rebuildable exact tool-pair projection. */
 export class StateToolPairProjection implements ToolPairProjection {
-  constructor(private readonly driver: StateSqliteDriver) {}
+  constructor(
+    private readonly driver: StateSqliteDriver,
+    private readonly options: {
+      /** Offline staging projections are deleted before their transaction commits. */
+      readonly discardOnTerminal?: boolean;
+    } = {},
+  ) {}
 
   runAtomically<T>(operation: () => T): T {
     return this.driver.transactionImmediate(operation);
@@ -124,6 +130,13 @@ export class StateToolPairProjection implements ToolPairProjection {
     this.updateTerminalStatus(projectionId, "valid", summary);
   }
 
+  completeDangling(
+    projectionId: string,
+    summary: ToolPairProjectionSummary,
+  ): void {
+    this.updateTerminalStatus(projectionId, "dangling", summary);
+  }
+
   fail(
     projectionId: string,
     summary: ToolPairProjectionSummary,
@@ -158,11 +171,12 @@ export class StateToolPairProjection implements ToolPairProjection {
     if (result.changes !== 1) {
       throw new Error(`tool-pair projection ${projectionId} is not building`);
     }
+    this.discardIfEphemeral(projectionId);
   }
 
   private updateTerminalStatus(
     projectionId: string,
-    status: "valid",
+    status: "valid" | "dangling",
     summary: ToolPairProjectionSummary,
   ): void {
     const result = this.driver
@@ -187,6 +201,16 @@ export class StateToolPairProjection implements ToolPairProjection {
     if (result.changes !== 1) {
       throw new Error(`tool-pair projection ${projectionId} is not building`);
     }
+    this.discardIfEphemeral(projectionId);
+  }
+
+  private discardIfEphemeral(projectionId: string): void {
+    if (this.options.discardOnTerminal !== true) return;
+    this.driver
+      .prepareState<[string]>(
+        "DELETE FROM tool_pair_projection_runs WHERE projection_id = ?",
+      )
+      .run(projectionId);
   }
 }
 

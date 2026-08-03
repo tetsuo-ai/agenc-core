@@ -378,6 +378,9 @@ export interface ResumableTurn {
   readonly buildId?: string;
   readonly buildMatches: boolean;
   readonly historyPrefixValid: boolean;
+  /** A3 raw-prefix gate evaluated before replay truncation. */
+  readonly checkpointIntegrityStatus: "valid" | "invalid" | "deferred";
+  readonly checkpointIntegrityReason?: string;
   readonly lastCheckpoint: {
     readonly iterationIndex: number;
     readonly checkpointSeq: number;

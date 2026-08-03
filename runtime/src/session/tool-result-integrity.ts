@@ -44,7 +44,11 @@ const enum CanonicalTag {
   ObjectKey = 0x07,
 }
 
-export type ToolResultRepresentation = "original" | "compacted" | "truncated";
+export type ToolResultRepresentation =
+  | "original"
+  | "redacted"
+  | "compacted"
+  | "truncated";
 
 export interface ToolResultBodyIdentity {
   readonly digest: string;
@@ -409,6 +413,7 @@ function isPersistedBodyIdentity(
   const representation = value.representation;
   return (
     representation === "original" ||
+    representation === "redacted" ||
     representation === "compacted" ||
     representation === "truncated"
   );

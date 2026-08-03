@@ -15,6 +15,7 @@ import {
 } from "./tool-result-integrity.js";
 import {
   validateToolPairSequence,
+  type ToolPairDanglingUse,
   type ToolPairIntegrityFailure,
   type ToolPairOperationalDeferral,
   type ToolPairProjection,
@@ -115,6 +116,8 @@ export type DurableCheckpointPrefixValidation =
       readonly status: "valid";
       readonly prefixHash: string;
       readonly toolPairs: ToolPairProjectionSummary;
+      readonly danglingToolCalls: number;
+      readonly danglingToolUses: ReadonlyArray<ToolPairDanglingUse>;
     }
   | {
       readonly status: "invalid";
@@ -362,9 +365,12 @@ export function validateCheckpointPrefixV2(params: {
       sourceKey: params.sourceKey,
       requireResultIntegrity: true,
       expectedRunId: params.expectedRunId,
+      allowDanglingAtEnd: params.checkpoint.boundary === "postAssistant",
     },
   );
-  if (toolPairs.status !== "valid") return toolPairs;
+  if (toolPairs.status === "invalid" || toolPairs.status === "deferred") {
+    return toolPairs;
+  }
 
   let prefixHash: string;
   try {
@@ -426,7 +432,15 @@ export function validateCheckpointPrefixV2(params: {
       },
     };
   }
-  return { status: "valid", prefixHash, toolPairs: toolPairs.summary };
+  return {
+    status: "valid",
+    prefixHash,
+    toolPairs: toolPairs.summary,
+    danglingToolCalls:
+      toolPairs.status === "dangling" ? toolPairs.summary.openCallCount : 0,
+    danglingToolUses:
+      toolPairs.status === "dangling" ? toolPairs.danglingToolUses : [],
+  };
 }
 
 function parseCheckpointBase(

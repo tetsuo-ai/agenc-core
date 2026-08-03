@@ -51,10 +51,11 @@ import type {
 /**
  * Incremented on any breaking change to the rollout JSONL format.
  * - v1: initial T6 shape (18 event variants, 6 rollout wrappers).
+ * - v2: exact tool-result seals and version-2 durable checkpoints.
  * On open, if rollout.schemaVersion > runtime.ROLLOUT_SCHEMA_VERSION,
  * hard-fail with migration message (I-49).
  */
-export const ROLLOUT_SCHEMA_VERSION = 1;
+export const ROLLOUT_SCHEMA_VERSION = 2;
 
 // ─────────────────────────────────────────────────────────────────────
 // Event envelope: { eventId, id, msg, seq }
@@ -199,7 +200,7 @@ export interface TurnAbortedEvent {
  * DERIVED budget, never a raw turn-start clock — restoring a stale clock
  * would silently corrupt budget accounting on resume.
  */
-export interface TurnCheckpointEvent {
+interface TurnCheckpointBase {
   readonly turnId: string;
   /** Monotonic per-turn iteration index this checkpoint closes. */
   readonly iterationIndex: number;
@@ -220,7 +221,7 @@ export interface TurnCheckpointEvent {
 }
 
 /** Existing checkpoint shape. A missing discriminator is legacy version 1. */
-export interface TurnCheckpointV1Event extends TurnCheckpointEvent {
+export interface TurnCheckpointV1Event extends TurnCheckpointBase {
   readonly checkpointVersion?: 1;
 }
 
@@ -228,10 +229,14 @@ export interface TurnCheckpointV1Event extends TurnCheckpointEvent {
  * A3 checkpoint shape whose prefix hash authenticates every persisted tool
  * result body through `ResponseItem.toolResultIntegrity`.
  */
-export interface TurnCheckpointV2Event extends TurnCheckpointEvent {
+export interface TurnCheckpointV2Event extends TurnCheckpointBase {
   readonly checkpointVersion: 2;
   readonly toolResultIntegrityVersion: 1;
 }
+
+export type TurnCheckpointEvent =
+  | TurnCheckpointV1Event
+  | TurnCheckpointV2Event;
 
 /**
  * Serialized, JSON-safe projection of the resumable `TurnState` counters.

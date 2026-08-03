@@ -51,9 +51,7 @@ import {
   DEFAULT_MAX_TOOL_RESULT_BYTES,
 } from "./_deps/tool-execution.js";
 import {
-  computePrefixHash,
   currentBuildId,
-  findDanglingToolUses,
   type ResumableTurn,
 } from "./durable-turns.js";
 import type {
@@ -67,6 +65,34 @@ import {
   startsWithPersonalitySpecOpenTag,
   type Personality,
 } from "../context/personality-spec-instructions.js";
+import {
+  readTurnCheckpoint,
+  validateCheckpointPrefixV2,
+} from "./durable-checkpoint-reader.js";
+import type {
+  ToolPairDanglingUse,
+  ToolPairProjection,
+} from "./tool-pair-validator.js";
+
+export interface RolloutCheckpointProjectionOptions {
+  readonly projection: ToolPairProjection;
+  readonly projectionId: string;
+  readonly sourceKey: string;
+  readonly expectedRunId: string;
+}
+
+export interface RolloutReconstructionOptions {
+  readonly indexSnapshot?: IndexSnapshot;
+  readonly checkpointProjection?: RolloutCheckpointProjectionOptions;
+}
+
+type RawCheckpointValidation =
+  | {
+      readonly status: "valid";
+      readonly danglingToolUses: ReadonlyArray<ToolPairDanglingUse>;
+    }
+  | { readonly status: "invalid"; readonly reason: string }
+  | { readonly status: "deferred"; readonly reason: string };
 
 /**
  * Verbatim port of agenc runtime `core/templates/compact/summary_prefix.md`
@@ -161,6 +187,60 @@ function emptySegment(): ActiveReplaySegment {
   return {
     countsAsUserTurn: false,
     referenceContextItem: { kind: "never_set" },
+  };
+}
+
+function turnCheckpointPayload(item: RolloutItem): unknown | undefined {
+  if (item.type !== "event_msg" || item.payload.msg.type !== "turn_checkpoint") {
+    return undefined;
+  }
+  return item.payload.msg.payload;
+}
+
+/** Authenticate canonical persisted bodies before replay applies truncation. */
+function validateRawCheckpointBeforeReplay(params: {
+  readonly payload: unknown;
+  readonly messages: ReadonlyArray<ResponseItem>;
+  readonly projection?: RolloutCheckpointProjectionOptions;
+}): RawCheckpointValidation {
+  let readable;
+  try {
+    readable = readTurnCheckpoint(params.payload);
+  } catch (error) {
+    return {
+      status: "invalid",
+      reason: error instanceof Error ? error.message : "checkpoint is malformed",
+    };
+  }
+  if (readable.version === 1) {
+    return {
+      status: "deferred",
+      reason: "legacy checkpoint requires an atomic schema-v2 upgrade",
+    };
+  }
+  if (params.projection === undefined) {
+    return {
+      status: "deferred",
+      reason: "exact tool-pair projection is unavailable",
+    };
+  }
+  const validation = validateCheckpointPrefixV2({
+    checkpoint: readable.checkpoint,
+    messages: params.messages,
+    projection: params.projection.projection,
+    projectionId: params.projection.projectionId,
+    sourceKey: params.projection.sourceKey,
+    expectedRunId: params.projection.expectedRunId,
+  });
+  if (validation.status === "valid") {
+    return {
+      status: "valid",
+      danglingToolUses: validation.danglingToolUses,
+    };
+  }
+  return {
+    status: validation.status,
+    reason: validation.failure.reason,
   };
 }
 
@@ -468,7 +548,7 @@ function finalizeActiveSegment(
 
 export function reconstructFromRollout(
   rolloutItems: ReadonlyArray<RolloutItem>,
-  opts: { readonly indexSnapshot?: IndexSnapshot } = {},
+  opts: RolloutReconstructionOptions = {},
 ): RolloutReconstruction {
   // I-25: consult the optional index.json snapshot. The reconstruction
   // itself still walks the rollout (rollout is truth per I-25), but a
@@ -485,6 +565,7 @@ export function reconstructFromRollout(
     pendingRollbackTurns: 0,
   };
   let rolloutSuffix: ReadonlyArray<RolloutItem> = rolloutItems;
+  let rolloutSuffixStartIndex = 0;
   let active: ActiveReplaySegment | null = null;
 
   // Track orphan turn ids for I-48. A TurnStarted with no matching
@@ -507,6 +588,7 @@ export function reconstructFromRollout(
         ) {
           active.baseReplacementHistory = item.payload.replacementHistory;
           rolloutSuffix = rolloutItems.slice(idx + 1);
+          rolloutSuffixStartIndex = idx + 1;
         }
         break;
       }
@@ -638,6 +720,51 @@ export function reconstructFromRollout(
     finalizeActiveSegment(active, pending);
   }
 
+  // Collect lifecycle/build metadata and only the highest checkpoint for each
+  // turn before replay. The reverse metadata scan may terminate early, and
+  // validating every superseded checkpoint would repeatedly rescan growing
+  // prefixes. Only an orphan's highest checkpoint can authorize execution.
+  const turnBuildIds = new Map<string, string | undefined>();
+  const highestCheckpointByTurn = new Map<
+    string,
+    { readonly checkpoint: TurnCheckpointEvent; readonly rolloutIndex: number }
+  >();
+  for (let rolloutIndex = 0; rolloutIndex < rolloutItems.length; rolloutIndex += 1) {
+    const item = rolloutItems[rolloutIndex];
+    if (item?.type !== "event_msg") continue;
+    const inner = item.payload.msg as { type?: string; payload?: unknown };
+    if (inner.type === "turn_started") {
+      const payload = inner.payload as { turnId?: string; buildId?: string };
+      if (typeof payload?.turnId === "string") {
+        seenStarted.add(payload.turnId);
+        turnBuildIds.set(payload.turnId, payload.buildId);
+      }
+      continue;
+    }
+    if (inner.type === "turn_complete" || inner.type === "turn_aborted") {
+      const payload = inner.payload as { turnId?: string };
+      if (typeof payload?.turnId === "string") {
+        seenTerminated.add(payload.turnId);
+      }
+      continue;
+    }
+    if (inner.type !== "turn_checkpoint") continue;
+    const checkpoint = inner.payload as TurnCheckpointEvent | undefined;
+    if (checkpoint === undefined || typeof checkpoint.turnId !== "string") {
+      continue;
+    }
+    const previous = highestCheckpointByTurn.get(checkpoint.turnId);
+    if (
+      previous === undefined ||
+      checkpoint.checkpointSeq > previous.checkpoint.checkpointSeq
+    ) {
+      highestCheckpointByTurn.set(checkpoint.turnId, {
+        checkpoint,
+        rolloutIndex,
+      });
+    }
+  }
+
   // Forward replay over the suffix using the reducer. We apply three
   // extra agenc runtime-parity steps inline so forward replay reproduces the
   // runtime state the writer saw at that seq:
@@ -654,6 +781,14 @@ export function reconstructFromRollout(
     rolledBackTurns: 0,
     lastSeq: 0,
   };
+  let rawState: ReducedSessionState = {
+    history: pending.baseReplacementHistory
+      ? [...pending.baseReplacementHistory]
+      : [],
+    rolledBackTurns: 0,
+    lastSeq: 0,
+  };
+  const rawCheckpointValidations = new Map<number, RawCheckpointValidation>();
   let reductionReport: ReductionReport = {
     unknownVariantCount: 0,
     unknownVariantSamples: [],
@@ -663,7 +798,10 @@ export function reconstructFromRollout(
   };
   let sawLegacyCompactionWithoutReplacement = false;
 
-  for (const item of rolloutSuffix) {
+  for (let suffixIndex = 0; suffixIndex < rolloutSuffix.length; suffixIndex += 1) {
+    const item = rolloutSuffix[suffixIndex];
+    if (item === undefined) continue;
+    const rolloutIndex = rolloutSuffixStartIndex + suffixIndex;
     // (b) Compatibility compaction: rebuild history in place via the inline
     // `buildCompactedHistory` helper instead of deferring to the
     // reducer (which would just clear the reference). This matches
@@ -676,8 +814,43 @@ export function reconstructFromRollout(
       const userMessages = collectUserMessages(state.history);
       const rebuilt = buildCompactedHistory(userMessages, item.payload.message);
       state = { ...state, history: rebuilt, lastCompaction: item.payload };
+      const rawUserMessages = collectUserMessages(rawState.history);
+      rawState = {
+        ...rawState,
+        history: buildCompactedHistory(rawUserMessages, item.payload.message),
+        lastCompaction: item.payload,
+      };
       reductionReport = mergeReport(reductionReport, { processed: 1 });
       continue;
+    }
+
+    const checkpointPayload = turnCheckpointPayload(item);
+    const checkpointTurnId =
+      checkpointPayload !== undefined &&
+      typeof checkpointPayload === "object" &&
+      checkpointPayload !== null &&
+      "turnId" in checkpointPayload &&
+      typeof checkpointPayload.turnId === "string"
+        ? checkpointPayload.turnId
+        : undefined;
+    const highestCheckpoint =
+      checkpointTurnId === undefined
+        ? undefined
+        : highestCheckpointByTurn.get(checkpointTurnId);
+    if (
+      checkpointPayload !== undefined &&
+      checkpointTurnId !== undefined &&
+      !seenTerminated.has(checkpointTurnId) &&
+      highestCheckpoint?.rolloutIndex === rolloutIndex
+    ) {
+      rawCheckpointValidations.set(
+        rolloutIndex,
+        validateRawCheckpointBeforeReplay({
+          payload: checkpointPayload,
+          messages: rawState.history,
+          projection: opts.checkpointProjection,
+        }),
+      );
     }
 
     // (a) Truncation policy: apply I-15 cap to response_item text
@@ -692,37 +865,13 @@ export function reconstructFromRollout(
 
     const step = reduce(state, toReduce);
     state = step.state;
+    rawState = reduce(rawState, item).state;
     reductionReport = mergeReport(reductionReport, step.report);
   }
   reductionReport = {
     ...reductionReport,
     processed: rolloutSuffix.length,
   };
-
-  // GOAL #4b Stage 1 — collect per-turn build pin + highest-seq durable
-  // checkpoint via a dedicated forward pass over ALL rollout items (the
-  // reverse scan above early-terminates, so it is NOT a reliable place to
-  // gather every checkpoint). A turn with NO checkpoint contributes nothing
-  // here → it falls back to EXACTLY today's process_killed path below.
-  const turnBuildIds = new Map<string, string | undefined>();
-  const highestCheckpointByTurn = new Map<string, TurnCheckpointEvent>();
-  for (const item of rolloutItems) {
-    if (item.type !== "event_msg") continue;
-    const inner = item.payload.msg as { type?: string; payload?: unknown };
-    if (inner.type === "turn_started") {
-      const p = inner.payload as { turnId?: string; buildId?: string };
-      if (typeof p?.turnId === "string") {
-        turnBuildIds.set(p.turnId, p.buildId);
-      }
-    } else if (inner.type === "turn_checkpoint") {
-      const p = inner.payload as TurnCheckpointEvent | undefined;
-      if (p === undefined || typeof p.turnId !== "string") continue;
-      const prev = highestCheckpointByTurn.get(p.turnId);
-      if (prev === undefined || p.checkpointSeq > prev.checkpointSeq) {
-        highestCheckpointByTurn.set(p.turnId, p);
-      }
-    }
-  }
 
   // I-48: orphan-TurnStarted recovery. For each started-but-not-terminated
   // turn, synthesize a TurnAborted{reason:'process_killed'} event so
@@ -742,25 +891,25 @@ export function reconstructFromRollout(
       // is still emitted, so an orphan with no checkpoint (or a failing
       // gate) is byte-identical to today; only the resume CONSUMER acts on
       // a descriptor whose gates pass.
-      const checkpoint = highestCheckpointByTurn.get(turnId);
-      if (checkpoint !== undefined) {
+      const checkpointRecord = highestCheckpointByTurn.get(turnId);
+      if (checkpointRecord !== undefined) {
+        const { checkpoint, rolloutIndex } = checkpointRecord;
         const buildId = turnBuildIds.get(turnId);
         const buildMatches = buildId === expectedBuildId;
-        const reconstructedPrefix = state.history.slice(
-          0,
-          checkpoint.persistedMessageCount,
-        );
-        const historyPrefixValid =
-          reconstructedPrefix.length === checkpoint.persistedMessageCount &&
-          computePrefixHash(
-            reconstructedPrefix,
-            checkpoint.persistedMessageCount,
-          ) === checkpoint.prefixHash;
+        const integrity = rawCheckpointValidations.get(rolloutIndex) ?? {
+          status: "deferred" as const,
+          reason: "checkpoint was outside the raw replay validation window",
+        };
+        const historyPrefixValid = integrity.status === "valid";
         resumableTurns.push({
           turnId,
           ...(buildId !== undefined ? { buildId } : {}),
           buildMatches,
           historyPrefixValid,
+          checkpointIntegrityStatus: integrity.status,
+          ...(integrity.status === "valid"
+            ? {}
+            : { checkpointIntegrityReason: integrity.reason }),
           lastCheckpoint: {
             iterationIndex: checkpoint.iterationIndex,
             checkpointSeq: checkpoint.checkpointSeq,
@@ -769,7 +918,8 @@ export function reconstructFromRollout(
             resumableState:
               checkpoint.resumableState as TurnCheckpointSliceLine,
           },
-          danglingToolUses: findDanglingToolUses(reconstructedPrefix),
+          danglingToolUses:
+            integrity.status === "valid" ? integrity.danglingToolUses : [],
         });
       }
       synthesized.push({

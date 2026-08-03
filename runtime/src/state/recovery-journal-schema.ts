@@ -146,7 +146,7 @@ const isToolCall = objectShape(
   { arguments: isString },
 );
 
-const isResponseItem = objectShape(
+const isResponseItemShape = objectShape(
   {
     role: oneOf("system", "developer", "user", "assistant", "tool"),
     content: isMessageContent,
@@ -155,11 +155,20 @@ const isResponseItem = objectShape(
     toolCalls: arrayOf(isToolCall),
     toolCallId: isString,
     toolName: isString,
+    // The recovery envelope is additive. The checkpoint-v2 reader validates
+    // the exact integrity shape, body digest, and owning run before replay.
+    toolResultIntegrity: isUnknown,
     id: isString,
     endTurn: isBoolean,
     phase: isString,
   },
 );
+
+type ResponseItemPayload = RolloutPayload<"response_item">;
+const isResponseItem: Validator<
+  ResponseItemPayload,
+  AllKeys<ResponseItemPayload>
+> = (value): value is ResponseItemPayload => isResponseItemShape(value);
 
 const isSessionAgentTask = objectShape({
   agentRuntimeId: isString,
@@ -536,6 +545,29 @@ const isReviewOutput = objectShape({
   overallConfidenceScore: isNumber,
 });
 
+const turnCheckpointRequiredFields = {
+  turnId: isString,
+  iterationIndex: isNonNegativeInteger,
+  boundary: oneOf("iteration", "postAssistant"),
+  checkpointSeq: isPositiveInteger,
+  persistedMessageCount: isNonNegativeInteger,
+  prefixHash: isString,
+  resumableState: isCheckpointSlice,
+} as const;
+
+const isTurnCheckpointShape = objectShape(turnCheckpointRequiredFields, {
+  // These fields are additive at the recovery-envelope layer. The durable
+  // checkpoint reader performs strict version dispatch and shape validation.
+  checkpointVersion: isUnknown,
+  toolResultIntegrityVersion: isUnknown,
+});
+
+type TurnCheckpointPayload = EventPayload<"turn_checkpoint">;
+const isTurnCheckpoint: Validator<
+  TurnCheckpointPayload,
+  AllKeys<TurnCheckpointPayload>
+> = (value): value is TurnCheckpointPayload => isTurnCheckpointShape(value);
+
 const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
   session_meta: objectShape(
     {
@@ -795,15 +827,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     },
   ),
   turn_aborted: objectShape({ reason: isString }, { turnId: isString }),
-  turn_checkpoint: objectShape({
-    turnId: isString,
-    iterationIndex: isNonNegativeInteger,
-    boundary: oneOf("iteration", "postAssistant"),
-    checkpointSeq: isPositiveInteger,
-    persistedMessageCount: isNonNegativeInteger,
-    prefixHash: isString,
-    resumableState: isCheckpointSlice,
-  }),
+  turn_checkpoint: isTurnCheckpoint,
   turn_resumed: objectShape(
     {
       turnId: isString,

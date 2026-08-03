@@ -10,6 +10,7 @@
 
 import type { LLMProvider, LLMTool, LLMToolChoice } from "../../llm/types.js";
 import type { Session } from "../../session/session.js";
+import type { ToolResultIntegrity } from "../../session/tool-result-integrity.js";
 
 export type RuntimeMessage = {
   readonly role?: "system" | "user" | "assistant" | "tool";
@@ -32,6 +33,9 @@ export type RuntimeMessage = {
   readonly uuid?: string;
   readonly timestamp?: string;
   readonly isMeta?: boolean;
+  readonly runtimeOnly?: {
+    readonly toolResultIntegrity?: ToolResultIntegrity;
+  };
 };
 
 export type CompactContext = {

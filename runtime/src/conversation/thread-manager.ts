@@ -44,6 +44,7 @@ import { AsyncLock } from "../utils/async-lock.js";
 import {
   reconstructFromRollout,
   type RolloutReconstruction,
+  type RolloutCheckpointProjectionOptions,
 } from "../session/rollout-reconstruction.js";
 import {
   classifyDanglingToolUses,
@@ -260,7 +261,10 @@ export class ConversationThreadManager extends ThreadManager {
       sourceRollout,
       snapshot ?? { kind: "interrupted" },
     );
-    const reconstruction = reconstructFromRollout(forkedRollout);
+    const checkpointProjection = checkpointProjectionFor(session, "fork");
+    const reconstruction = reconstructFromRollout(forkedRollout, {
+      ...(checkpointProjection === undefined ? {} : { checkpointProjection }),
+    });
     const threadId = this.nextForkThreadId(session.conversationId);
     const thread = new ForkedConversationThread({
       threadId,
@@ -328,10 +332,15 @@ export class ConversationThreadManager extends ThreadManager {
     rolloutItems: ReadonlyArray<RolloutItem>,
     opts: ConversationReplayOptions = {},
   ): Promise<ConversationReplayResult> {
+    const checkpointProjection = checkpointProjectionFor(
+      session,
+      "root-reconstruction",
+    );
     const reconstruction = reconstructFromRollout(rolloutItems, {
       ...(opts.indexSnapshot !== undefined
         ? { indexSnapshot: opts.indexSnapshot }
         : {}),
+      ...(checkpointProjection === undefined ? {} : { checkpointProjection }),
     });
     const appliedState = await applyRolloutReconstructionToSession(
       session,
@@ -376,10 +385,16 @@ export class ConversationThreadManager extends ThreadManager {
       throw new Error(`managed thread ${threadId} does not support replay`);
     }
 
+    const sourceSession = sourceSessionForManagedThread(thread);
+    const checkpointProjection =
+      sourceSession === undefined
+        ? undefined
+        : checkpointProjectionFor(sourceSession, "managed-reconstruction");
     const reconstruction = reconstructFromRollout(rolloutItems, {
       ...(opts.indexSnapshot !== undefined
         ? { indexSnapshot: opts.indexSnapshot }
         : {}),
+      ...(checkpointProjection === undefined ? {} : { checkpointProjection }),
     });
     thread.replaceConversationHistory(reconstruction.history);
     if (opts.emitSynthesized === true) {
@@ -679,6 +694,8 @@ export interface DurableResumeAttempt {
     | "no-checkpoint"
     | "build-mismatch"
     | "prefix-mismatch"
+    | "integrity-invalid"
+    | "integrity-deferred"
     | "lease-unavailable";
   /** Tool names the safe policy halted on (surfaced, not retried). */
   readonly halted?: ReadonlyArray<string>;
@@ -703,6 +720,15 @@ function selectResumableTurn(
   if (cfg.buildPinning && !turn.buildMatches) {
     return { turn, reason: "build-mismatch" };
   }
+  if (turn.checkpointIntegrityStatus !== "valid") {
+    return {
+      turn,
+      reason:
+        turn.checkpointIntegrityStatus === "invalid"
+          ? "integrity-invalid"
+          : "integrity-deferred",
+    };
+  }
   if (!turn.historyPrefixValid) {
     return { turn, reason: "prefix-mismatch" };
   }
@@ -714,9 +740,9 @@ function selectResumableTurn(
  * checkpoint instead of discarding it and starting fresh.
  *
  * Safety gates (ALL must hold; any failure → caller falls back to today's
- * fresh turn): config enables resume, the build pin matches (§3.6), the
- * content prefix hash matches (§5), and the single-writer resume lease is
- * acquired (§3.5). Dangling `tool_use` blocks are classified by the
+ * fresh turn): config enables resume, the build pin matches (§3.6), the raw
+ * persisted checkpoint passes the A3 integrity gate, and the single-writer
+ * resume lease is acquired (§3.5). Dangling `tool_use` blocks are classified by the
  * EXISTING `recoveryCategory` via `isResumeReplaySafe`: side-effecting /
  * interactive dangling tools HALT and surface (never auto-re-dispatch) —
  * the on-chain-safety property — while read-only ones re-run on the fresh
@@ -1052,6 +1078,24 @@ class ForkedConversationThread implements ManagedThread {
       listener(status);
     }
   }
+}
+
+function checkpointProjectionFor(
+  session: Session,
+  purpose: string,
+): RolloutCheckpointProjectionOptions | undefined {
+  const rolloutStore = session.rolloutStore as
+    | {
+        checkpointProjectionContext?: (
+          projectionPurpose: string,
+        ) => RolloutCheckpointProjectionOptions;
+      }
+    | null
+    | undefined;
+  if (typeof rolloutStore?.checkpointProjectionContext !== "function") {
+    return undefined;
+  }
+  return rolloutStore.checkpointProjectionContext(purpose);
 }
 
 function sourceSessionForManagedThread(thread: ManagedThread): Session | undefined {

@@ -46,16 +46,14 @@ export interface ResponseItem {
   }>;
   readonly toolCallId?: string;
   readonly toolName?: string;
+  /** Checkpoint-v2 identity for the exact durable tool-result body. */
+  readonly toolResultIntegrity?: ToolResultIntegrity;
   readonly id?: string;
   readonly endTurn?: boolean;
   readonly phase?: string;
 }
 
-/**
- * Checkpoint-v2 view of a response item. Keeping the dormant integrity field
- * out of the v1 `RolloutItem` contract lets the strict recovery reader retain
- * its exact legacy key witness until the writer cutover changes that schema.
- */
+/** Checkpoint-v2 reader view retained for narrow reader signatures. */
 export interface ToolResultIntegrityResponseItem extends ResponseItem {
   readonly toolResultIntegrity?: ToolResultIntegrity;
 }

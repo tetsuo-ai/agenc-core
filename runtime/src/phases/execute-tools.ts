@@ -92,22 +92,35 @@ import {
   validateEditorProposalResultForInteraction,
 } from "../session/editor-interaction.js";
 import { EDITOR_PROPOSAL_TOOL_NAME } from "../tools/system/editor-proposal.js";
+import { createToolResultIntegrity } from "../session/tool-result-integrity.js";
 
 function toolResultMessage(
+  runId: string,
   callId: string,
   toolName: string,
   result: ToolDispatchResult,
   untrustedKind: UntrustedToolResultKind,
 ): LLMMessage {
+  // Seal the exact model-facing body at the result boundary, before any
+  // budgeting, microcompaction, in-memory bounding, or durable serialization.
+  const content = modelFacingToolResultContent(toolName, result, untrustedKind);
   const message: LLMMessage = {
     role: "tool",
     toolCallId: callId,
     toolName,
-    content: modelFacingToolResultContent(toolName, result, untrustedKind),
+    content,
+    runtimeOnly: {
+      toolResultIntegrity: createToolResultIntegrity({
+        runId,
+        toolCallId: callId,
+        content,
+      }),
+    },
   };
   const failureKind = recoverableFailureKind(result.metadata);
   if (failureKind !== null) {
     message.runtimeOnly = {
+      ...message.runtimeOnly,
       recoverableToolFailure: {
         hiddenFromTranscript: true,
         kind: failureKind,
@@ -651,7 +664,13 @@ function recordCompletedToolCall(
     toolResultUserRecord(toolCall.id, toolCall.name, result, untrustedKind),
   );
   state.messages.push(
-    toolResultMessage(toolCall.id, toolCall.name, result, untrustedKind),
+    toolResultMessage(
+      session.conversationId,
+      toolCall.id,
+      toolCall.name,
+      result,
+      untrustedKind,
+    ),
   );
   return completed;
 }

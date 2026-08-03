@@ -59,6 +59,7 @@ import {
 } from "../utils/messageQueueManager.js";
 import type { QueuedCommand } from "../types/textInputTypes.js";
 import { setCommandLifecycleListener } from "../utils/commandLifecycle.js";
+import { createToolResultIntegrity } from "./tool-result-integrity.js";
 
 function enqueue(command: QueuedCommand): void {
   enqueueCommand({
@@ -7128,11 +7129,36 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       role: "assistant",
       content: "KEPT TAIL",
     };
+    const compactedToolIntegrity = createToolResultIntegrity({
+      runId: "conv-test",
+      toolCallId: "compacted-call",
+      content: "FULL TOOL RESULT",
+    });
+    const keptToolCall: LLMMessage = {
+      role: "assistant",
+      content: "",
+      toolCalls: [
+        { id: "compacted-call", name: "FileRead", arguments: "{}" },
+      ],
+    };
+    const keptCompactedToolResult: LLMMessage = {
+      role: "tool",
+      content: "[compacted tool result]",
+      toolCallId: "compacted-call",
+      toolName: "FileRead",
+      runtimeOnly: { toolResultIntegrity: compactedToolIntegrity },
+    };
     const fakeImpl: AutoCompactImpl = async () => ({
       wasCompacted: true,
       compactionResult: {
         message: "POST-COMPACT SUMMARY",
-        replacementHistory: [compactBoundary, compactSummary, keptTail],
+        replacementHistory: [
+          compactBoundary,
+          compactSummary,
+          keptTail,
+          keptToolCall,
+          keptCompactedToolResult,
+        ],
         preCompactTokens: 999,
         postCompactTokens: 100,
       },
@@ -7196,12 +7222,33 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       }),
       { durable: true },
     );
+    const compactedAppend = appendRollout.mock.calls.find(
+      (call) => call[0]?.type === "compacted",
+    )?.[0];
+    const persistedToolResult = compactedAppend?.payload?.replacementHistory?.find(
+      (message: { readonly role?: string; readonly toolCallId?: string }) =>
+        message.role === "tool" && message.toolCallId === "compacted-call",
+    );
+    expect(persistedToolResult?.toolResultIntegrity).toMatchObject({
+      original: compactedToolIntegrity.original,
+      persisted: { representation: "compacted" },
+    });
 
     expect(
       seenMessages.some(
         (m) => typeof m.content === "string" && m.content.includes("KEPT TAIL"),
       ),
     ).toBe(true);
+    expect(
+      seenMessages.find(
+        (message) =>
+          message.role === "tool" &&
+          message.toolCallId === "compacted-call",
+      )?.runtimeOnly?.toolResultIntegrity,
+    ).toMatchObject({
+      original: compactedToolIntegrity.original,
+      persisted: { representation: "compacted" },
+    });
     expect(seenSystemPrompt).toContain("POST-COMPACT SUMMARY");
     expect(seenSystemPrompt).toContain("<durable_system_history>");
     expect(seenSystemPrompt).toContain("untrusted historical context");
@@ -7533,6 +7580,8 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
       turnCount?: number;
       recoveryReentryCount?: number;
       taskBudgetRemaining?: number;
+      checkpointVersion?: number;
+      toolResultIntegrityVersion?: number;
     }> = [];
     const append = vi.fn((event: unknown) => {
       const ev = event as { msg?: { type?: string; payload?: unknown } };
@@ -7544,7 +7593,17 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
             taskBudgetRemaining?: number;
           };
         };
-        if (p.resumableState) observedCheckpoints.push(p.resumableState);
+        if (p.resumableState) {
+          observedCheckpoints.push({
+            ...p.resumableState,
+            checkpointVersion: (
+              ev.msg.payload as { checkpointVersion?: number }
+            ).checkpointVersion,
+            toolResultIntegrityVersion: (
+              ev.msg.payload as { toolResultIntegrityVersion?: number }
+            ).toolResultIntegrityVersion,
+          });
+        }
       }
     });
     // Provider drives one tool iteration (so a CB-Iteration checkpoint
@@ -7587,9 +7646,10 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
       dispatch: async () => ({ content: "ok", isError: false }),
     } as unknown as ToolRegistry;
     const { session, events } = mkSession({ provider, registry });
+    const appendRollout = vi.fn();
     session.rolloutStore = {
       append,
-      appendRollout: vi.fn(),
+      appendRollout,
       rolloutPath: "/tmp/does-not-matter.jsonl",
     } as unknown as Session["rolloutStore"];
 
@@ -7636,6 +7696,25 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     // Non-per-iteration counters hold their EXACT restored pre-crash values.
     expect(cp.recoveryReentryCount).toBe(3);
     expect(cp.taskBudgetRemaining).toBe(9999);
+    expect(cp.checkpointVersion).toBe(2);
+    expect(cp.toolResultIntegrityVersion).toBe(1);
+    expect(
+      appendRollout.mock.calls
+        .map((call) => call[0])
+        .find(
+          (item) =>
+            item?.type === "response_item" && item.payload?.role === "tool",
+        ),
+    ).toMatchObject({
+      payload: {
+        toolCallId: "k1",
+        toolResultIntegrity: {
+          version: 1,
+          runId: session.conversationId,
+          toolCallId: "k1",
+        },
+      },
+    });
   });
 
   test("idempotent re-run: a read-only dangling tool is paired and the resumed turn completes cleanly", async () => {

@@ -12,10 +12,62 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { reconstructFromRollout } from "./rollout-reconstruction.js";
 import type { RolloutItem, ResponseItem } from "./rollout-item.js";
-import {
-  computePrefixHash,
-  resetBuildIdForTestingOnly,
-} from "./durable-turns.js";
+import { resetBuildIdForTestingOnly } from "./durable-turns.js";
+import { computeCheckpointPrefixHashV2 } from "./durable-checkpoint-reader.js";
+import type {
+  ToolPairIntegrityFailure,
+  ToolPairOperationalDeferral,
+  ToolPairProjection,
+  ToolPairProjectionRecord,
+  ToolPairProjectionSummary,
+} from "./tool-pair-validator.js";
+
+class TestToolPairProjection implements ToolPairProjection {
+  private records = new Map<string, ToolPairProjectionRecord>();
+  runAtomically<T>(operation: () => T): T { return operation(); }
+  reset(): void { this.records.clear(); }
+  find(_projectionId: string, callId: string): ToolPairProjectionRecord | undefined {
+    return this.records.get(callId);
+  }
+  insertCall(_projectionId: string, record: ToolPairProjectionRecord): boolean {
+    if (this.records.has(record.callId)) return false;
+    this.records.set(record.callId, record);
+    return true;
+  }
+  resolveCall(params: {
+    readonly callId: string;
+    readonly resultIndex: number;
+    readonly resultId?: string;
+    readonly originalResultDigest?: string;
+  }): "resolved" | "already_resolved" | "missing" {
+    const record = this.records.get(params.callId);
+    if (record === undefined) return "missing";
+    if (record.resultIndex !== undefined) return "already_resolved";
+    this.records.set(params.callId, { ...record, ...params });
+    return "resolved";
+  }
+  complete(): void {}
+  completeDangling(): void {}
+  fail(
+    _projectionId: string,
+    _summary: ToolPairProjectionSummary,
+    _failure: ToolPairIntegrityFailure | ToolPairOperationalDeferral,
+  ): void {}
+}
+
+let projectionOrdinal = 0;
+
+function reconstruct(items: ReadonlyArray<RolloutItem>) {
+  projectionOrdinal += 1;
+  return reconstructFromRollout(items, {
+    checkpointProjection: {
+      projection: new TestToolPairProjection(),
+      projectionId: `test-projection-${projectionOrdinal}`,
+      sourceKey: `test-rollout-${projectionOrdinal}`,
+      expectedRunId: "test-run",
+    },
+  });
+}
 
 afterEach(() => {
   delete process.env.AGENC_BUILD_ID;
@@ -35,6 +87,7 @@ interface CheckpointArgs {
   readonly prefixHash?: string; // override to force a mismatch
   readonly iterationIndex?: number;
   readonly checkpointSeq?: number;
+  readonly boundary?: "iteration" | "postAssistant";
 }
 
 /** Build a started-but-not-terminated turn with a trailing checkpoint. */
@@ -68,11 +121,14 @@ function orphanWithCheckpoint(args: CheckpointArgs): RolloutItem[] {
         payload: {
           turnId: args.turnId,
           iterationIndex: args.iterationIndex ?? 1,
-          boundary: "iteration",
+          boundary: args.boundary ?? "iteration",
           checkpointSeq: args.checkpointSeq ?? 1,
           persistedMessageCount: args.prefix.length,
           prefixHash:
-            args.prefixHash ?? computePrefixHash(args.prefix, args.prefix.length),
+            args.prefixHash ??
+            computeCheckpointPrefixHashV2(args.prefix, args.prefix.length),
+          checkpointVersion: 2,
+          toolResultIntegrityVersion: 1,
           resumableState: {
             turnCount: 2,
             recoveryReentryCount: 1,
@@ -95,7 +151,7 @@ describe("reconstruction durable resume descriptors", () => {
       { role: "user", content: "do the thing" },
       { role: "assistant", content: "on it" },
     ];
-    const r = reconstructFromRollout(
+    const r = reconstruct(
       orphanWithCheckpoint({ turnId: "t1", buildId, prefix }),
     );
     expect(r.orphanedTurnIds).toContain("t1");
@@ -116,12 +172,12 @@ describe("reconstruction durable resume descriptors", () => {
   test("prefix-hash mismatch → historyPrefixValid=false (refuses silent resume)", () => {
     const buildId = pinBuild("build-A");
     const prefix: ResponseItem[] = [{ role: "user", content: "original" }];
-    const r = reconstructFromRollout(
+    const r = reconstruct(
       orphanWithCheckpoint({
         turnId: "t1",
         buildId,
         prefix,
-        prefixHash: "deadbeef-not-the-real-hash",
+        prefixHash: "d".repeat(64),
       }),
     );
     expect(r.resumableTurns).toHaveLength(1);
@@ -131,7 +187,7 @@ describe("reconstruction durable resume descriptors", () => {
   test("build-pin mismatch → buildMatches=false (refuses cross-build resume)", () => {
     pinBuild("build-CURRENT");
     const prefix: ResponseItem[] = [{ role: "user", content: "x" }];
-    const r = reconstructFromRollout(
+    const r = reconstruct(
       orphanWithCheckpoint({ turnId: "t1", buildId: "build-OLD", prefix }),
     );
     expect(r.resumableTurns).toHaveLength(1);
@@ -152,7 +208,7 @@ describe("reconstruction durable resume descriptors", () => {
       },
       { type: "response_item", payload: { role: "user", content: "mid-turn" } },
     ];
-    const r = reconstructFromRollout(items);
+    const r = reconstruct(items);
     expect(r.orphanedTurnIds).toContain("t-orphan");
     expect(r.resumableTurns).toHaveLength(0);
     const synthTypes = r.synthesizedEvents.map((ev) =>
@@ -172,8 +228,13 @@ describe("reconstruction durable resume descriptors", () => {
         toolCalls: [{ id: "danger-1", name: "send", arguments: "{}" }],
       },
     ];
-    const r = reconstructFromRollout(
-      orphanWithCheckpoint({ turnId: "t1", buildId, prefix }),
+    const r = reconstruct(
+      orphanWithCheckpoint({
+        turnId: "t1",
+        buildId,
+        prefix,
+        boundary: "postAssistant",
+      }),
     );
     expect(r.resumableTurns[0]!.danglingToolUses).toEqual([
       { callId: "danger-1", toolName: "send" },
@@ -210,7 +271,9 @@ describe("reconstruction durable resume descriptors", () => {
               boundary: "iteration",
               checkpointSeq: 1,
               persistedMessageCount: 1,
-              prefixHash: computePrefixHash(prefix1, 1),
+              prefixHash: computeCheckpointPrefixHashV2(prefix1, 1),
+              checkpointVersion: 2,
+              toolResultIntegrityVersion: 1,
               resumableState: {
                 turnCount: 2,
                 recoveryReentryCount: 0,
@@ -236,7 +299,9 @@ describe("reconstruction durable resume descriptors", () => {
               boundary: "iteration",
               checkpointSeq: 2,
               persistedMessageCount: 2,
-              prefixHash: computePrefixHash(prefix2, 2),
+              prefixHash: computeCheckpointPrefixHashV2(prefix2, 2),
+              checkpointVersion: 2,
+              toolResultIntegrityVersion: 1,
               resumableState: {
                 turnCount: 3,
                 recoveryReentryCount: 0,
@@ -249,7 +314,7 @@ describe("reconstruction durable resume descriptors", () => {
         },
       },
     ];
-    const r = reconstructFromRollout(items);
+    const r = reconstruct(items);
     expect(r.resumableTurns).toHaveLength(1);
     expect(r.resumableTurns[0]!.lastCheckpoint.checkpointSeq).toBe(2);
     expect(r.resumableTurns[0]!.lastCheckpoint.iterationIndex).toBe(2);

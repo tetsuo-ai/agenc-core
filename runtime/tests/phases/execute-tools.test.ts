@@ -51,6 +51,7 @@ import { SHARED_READ, ToolCallRuntime } from "../tools/concurrency.js";
 import { routerFromRegistry } from "../tools/router.js";
 import { readToolRuntimeContext } from "../tools/runtimes/context.js";
 import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
+import { verifyToolResultIntegrity } from "../session/tool-result-integrity.js";
 
 const UNTRUSTED_TOOL_RESULT_BOUNDARY =
   "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
@@ -361,6 +362,42 @@ function editorProposalArgs(): Record<string, unknown> {
 }
 
 describe("executeTools — T7 gap #109 pipeline", () => {
+  test("seals the exact tool-result body before later history transformations", async () => {
+    const tool: Tool = {
+      name: "IntegrityProbe",
+      description: "returns deterministic content",
+      inputSchema: { type: "object" },
+      isReadOnly: true,
+      execute: async () => ({ content: "integrity payload" }),
+    };
+    const session = mkSession({
+      log: new EventLog(),
+      registry: mkRegistry([tool]),
+    });
+    const state = mkState({
+      toolCalls: [{ id: "integrity-call", name: tool.name, arguments: "{}" }],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    const result = state.messages.find(
+      (message) => message.role === "tool" && message.toolCallId === "integrity-call",
+    );
+    expect(result?.runtimeOnly?.toolResultIntegrity).toMatchObject({
+      version: 1,
+      runId: "conv-1",
+      toolCallId: "integrity-call",
+      persisted: { representation: "original" },
+    });
+    expect(
+      verifyToolResultIntegrity({
+        integrity: result?.runtimeOnly?.toolResultIntegrity,
+        toolCallId: "integrity-call",
+        content: result?.content,
+      }),
+    ).toMatchObject({ status: "valid" });
+  });
+
   test("rejects oversized and ambiguously overlapping editor proposals before staging", () => {
     expect(
       validateEditorProposalPayload({

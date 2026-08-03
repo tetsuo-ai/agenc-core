@@ -141,8 +141,10 @@ import type { AppendOptions } from "./session-store.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import {
   cloneLlmMessage,
-  llmMessageToResponseItem,
+  llmMessageToReplacementResponseItem,
+  responseItemToLlmMessage,
 } from "./message-history-conversion.js";
+import type { ToolResultIntegrity } from "./tool-result-integrity.js";
 import {
   createHistoryReplacedEvent,
   type HistoryReplacedEvent,
@@ -1845,14 +1847,17 @@ function normalizeHistoryMessages(
   const normalized: LLMMessage[] = [];
   for (const item of history) {
     if (!item || typeof item !== "object") continue;
-    const candidate = item as Partial<LLMMessage> & {
+    const candidate = item as {
       role?: unknown;
       content?: unknown;
       phase?: unknown;
       toolCalls?: unknown;
       toolCallId?: unknown;
       toolName?: unknown;
-      runtimeOnly?: { userMessageId?: unknown };
+      runtimeOnly?: {
+        userMessageId?: unknown;
+        toolResultIntegrity?: ToolResultIntegrity;
+      };
     };
     if (
       candidate.role !== "system" &&
@@ -1882,14 +1887,22 @@ function normalizeHistoryMessages(
       ...(typeof candidate.toolName === "string"
         ? { toolName: candidate.toolName }
         : {}),
-      // Preserve ONLY the file-history join key from runtimeOnly —
-      // conversation rewind resolves the sidecar's barrier snapshot
-      // through it. The rest of the runtimeOnly bag stays dropped so
-      // normalized snapshots don't resurrect merge/durability flags.
-      ...(typeof candidate.runtimeOnly?.userMessageId === "string"
+      // Preserve the file-history join key and A3 durable tool-result seal.
+      // Other transient flags stay dropped so normalized snapshots cannot
+      // resurrect merge/exclusion semantics.
+      ...(typeof candidate.runtimeOnly?.userMessageId === "string" ||
+      candidate.runtimeOnly?.toolResultIntegrity !== undefined
         ? {
             runtimeOnly: {
-              userMessageId: candidate.runtimeOnly.userMessageId,
+              ...(typeof candidate.runtimeOnly?.userMessageId === "string"
+                ? { userMessageId: candidate.runtimeOnly.userMessageId }
+                : {}),
+              ...(candidate.runtimeOnly?.toolResultIntegrity !== undefined
+                ? {
+                    toolResultIntegrity:
+                      candidate.runtimeOnly.toolResultIntegrity,
+                  }
+                : {}),
             },
           }
         : {}),
@@ -2005,6 +2018,13 @@ function toCompactRuntimeMessages(
         : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase !== undefined ? { phase: message.phase } : {}),
+      ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+        ? {
+            runtimeOnly: {
+              toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+            },
+          }
+        : {}),
       ...(message.role === "tool" ? { isMeta: true } : {}),
     };
   });
@@ -2065,6 +2085,13 @@ function fromCompactRuntimeMessage(message: RuntimeMessage): LLMMessage | null {
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.phase === "commentary" || message.phase === "final_answer"
       ? { phase: message.phase }
+      : {}),
+    ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+      ? {
+          runtimeOnly: {
+            toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+          },
+        }
       : {}),
   };
 }
@@ -3774,14 +3801,15 @@ export class Session {
       const postCompactTokens =
         params.compactionResult.truePostCompactTokenCount ??
         params.compactionResult.postCompactTokenCount;
+      const replacementItems = params.replacementHistory.map((message) =>
+        llmMessageToReplacementResponseItem(message, "compacted"),
+      );
       params.rolloutStore.appendRollout(
         {
           type: "compacted",
           payload: {
             message: compactionMessage(params.compactionResult),
-            replacementHistory: params.replacementHistory.map(
-              llmMessageToResponseItem,
-            ),
+            replacementHistory: replacementItems,
             ...(params.compactionResult.preCompactTokenCount !== undefined
               ? {
                   preCompactTokens:
@@ -3794,7 +3822,7 @@ export class Session {
         { durable: true },
       );
       await this.state.with((sessionState) => {
-        sessionState.history = params.replacementHistory.map(cloneLlmMessage);
+        sessionState.history = replacementItems.map(responseItemToLlmMessage);
       });
       this.clearProviderResponseId();
     });
@@ -3825,20 +3853,21 @@ export class Session {
         );
         return;
       }
+      const replacementItems = params.replacementHistory.map((message) =>
+        llmMessageToReplacementResponseItem(message, "truncated"),
+      );
       params.rolloutStore.appendRollout(
         {
           type: "compacted",
           payload: {
             message: "Conversation rewound",
-            replacementHistory: params.replacementHistory.map(
-              llmMessageToResponseItem,
-            ),
+            replacementHistory: replacementItems,
           },
         },
         { durable: true },
       );
       await this.state.with((sessionState) => {
-        sessionState.history = params.replacementHistory.map(cloneLlmMessage);
+        sessionState.history = replacementItems.map(responseItemToLlmMessage);
       });
       this.clearProviderResponseId();
     });

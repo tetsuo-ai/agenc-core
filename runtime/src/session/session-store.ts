@@ -1565,13 +1565,50 @@ export class SessionStore {
       throw new Error("rewriteRolloutAtomically called on unopened store");
     }
     rewriteAtomically(this.rolloutPath, bytes);
-    // Reset the in-memory file size + offset index so subsequent
-    // appends know the new EOF. Offsets are rebuilt lazily as new
-    // events are appended; any caller doing a compaction rewrite is
-    // expected to also reset lastSeqWritten if needed.
+    // Refresh the in-memory EOF for subsequent appends. Callers using raw
+    // bytes own any semantic index changes; rewriteRolloutItemsAtomically()
+    // rebuilds offsets and sequence state from its typed item sequence.
     this.fileSize = typeof bytes === "string"
       ? Buffer.byteLength(bytes, "utf8")
       : bytes.byteLength;
+  }
+
+  /**
+   * Publish a complete canonical RolloutItem sequence in one inode swap and
+   * refresh the metadata cached by future tail re-appends. This is the only
+   * supported publication seam for the A3 legacy-to-v2 upgrade.
+   */
+  rewriteRolloutItemsAtomically(items: ReadonlyArray<RolloutItem>): void {
+    if (this.pending.length > 0) {
+      throw new Error("cannot atomically replace rollout with pending appends");
+    }
+    const lines = items.map(serializeRolloutItem);
+    const nextOffsetsBySeq = new Map<EventSeq, number>();
+    let nextLastSeq: EventSeq = 0;
+    let offset = 0;
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      const line = lines[index];
+      if (item === undefined || line === undefined) continue;
+      if (item.type === "event_msg" && item.payload.seq !== undefined) {
+        nextOffsetsBySeq.set(item.payload.seq, offset);
+        nextLastSeq = Math.max(nextLastSeq, item.payload.seq);
+      }
+      offset += Buffer.byteLength(line, "utf8");
+    }
+    const bytes = lines.join("");
+    this.rewriteRolloutAtomically(bytes);
+    this.offsetsBySeq.clear();
+    for (const [seq, byteOffset] of nextOffsetsBySeq) {
+      this.offsetsBySeq.set(seq, byteOffset);
+    }
+    this.boundIndexMap(this.offsetsBySeq);
+    this.lastSeqWritten = nextLastSeq;
+    let latestMeta: SessionMetaLine | undefined;
+    for (const item of items) {
+      if (item.type === "session_meta") latestMeta = item.payload;
+    }
+    this.lastSessionMeta = latestMeta ?? null;
   }
 
   /**

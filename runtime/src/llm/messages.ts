@@ -140,11 +140,23 @@ export function normalizeMessagesForAPI(
   // We mutate the final array in-place by replacing up to three
   // messages with copies that carry the tag. Providers that do not
   // support cache_control strip the tag silently.
-  return applyCacheControlBreakpoints(final, {
+  const cachePrepared = applyCacheControlBreakpoints(final, {
     ...(options?.skipCacheWrite !== undefined
       ? { skipCacheWrite: options.skipCacheWrite }
       : {}),
   });
+  return cachePrepared.map(stripDurableIntegrityForProvider);
+}
+
+/** Remove A3 integrity evidence at the final provider-wire boundary. */
+function stripDurableIntegrityForProvider(message: LLMMessage): LLMMessage {
+  if (message.runtimeOnly?.toolResultIntegrity === undefined) return message;
+  const { toolResultIntegrity: _integrity, ...retainedRuntimeOnly } =
+    message.runtimeOnly;
+  const { runtimeOnly: _runtimeOnly, ...providerMessage } = message;
+  return Object.keys(retainedRuntimeOnly).length === 0
+    ? providerMessage
+    : { ...providerMessage, runtimeOnly: retainedRuntimeOnly };
 }
 
 /**
