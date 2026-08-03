@@ -1,17 +1,8 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 3,
+  "probeCount": 2,
   "probes": [
-    {
-      "id": "a2b-corrupt-journal-never-recoverable",
-      "task": "A2b",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/a2b-corrupt-journal-never-recoverable.red-probe.ts",
-      "fingerprint": "A2B:RECOVERY:CORRUPT-JOURNAL-NONEXECUTABLE",
-      "sourceSha256": "ee661eb50eb666aae76cefab4becac8f5ef1a960672aa05b9f90f4bec3e963b8",
-      "timeoutMs": 30000
-    },
     {
       "id": "c2-compaction-transcript-instruction-trust",
       "task": "C2",

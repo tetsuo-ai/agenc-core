@@ -1,12 +1,24 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { recoverDaemonStateOnStartup } from "./recovery.js";
 import type { Event } from "../../src/session/event-log.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
+import { StateRecoveryIncidentRepository } from "../../src/state/recovery-incidents.js";
+import { StartupRecoveryBudget } from "../../src/state/recovery-cutover.js";
+import {
+  recoverCanonicalRunJournalForRun,
+} from "../../src/state/startup-run-journal-recovery.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
+import { openFndFixtureCatalog } from "../helpers/fnd-fixtures.js";
 
 let home = "";
 let cwd = "";
@@ -149,7 +161,7 @@ describe("recoverDaemonStateOnStartup", () => {
     const rolloutPath = writeRunJournal("run-legacy-db-first-cancel", [
       {
         id: "run-terminal:run-legacy-db-first-cancel:1",
-        seq: 3,
+        seq: 1,
         msg: {
           type: "run_terminal",
           payload: {
@@ -160,7 +172,7 @@ describe("recoverDaemonStateOnStartup", () => {
             stopReason: "operator",
             finalMessage: null,
             usage: null,
-            lastSequenceBeforeTerminal: 2,
+            lastSequenceBeforeTerminal: null,
             finishedAt: "2026-05-01T00:06:00.000Z",
           },
         },
@@ -179,11 +191,10 @@ describe("recoverDaemonStateOnStartup", () => {
         "run-legacy-db-first-cancel",
       ),
     ).toMatchObject({
-      eventId:
-        "legacy-event:3:run-terminal:run-legacy-db-first-cancel:1",
+      eventId: "legacy-event:1:run-terminal:run-legacy-db-first-cancel:1",
       status: "cancelled",
       stopReason: "operator",
-      lastSequence: 3,
+      lastSequence: 1,
     });
   });
 
@@ -412,13 +423,345 @@ describe("recoverDaemonStateOnStartup", () => {
     });
     bindRunJournal(
       "run-missing-journal",
-      join(driver.projectDir, "sessions", "run-missing-journal", "missing.jsonl"),
+      join(
+        driver.projectDir,
+        "sessions",
+        "run-missing-journal",
+        "missing.jsonl",
+      ),
     );
 
-    expect(() => recoverDaemonStateOnStartup(driver)).toThrow(
-      /canonical rollout source is missing/,
-    );
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(report.recoveryExclusions).toEqual([
+      expect.objectContaining({
+        runId: "run-missing-journal",
+        kind: "deferred",
+        reasonCode: "recovery_storage_unavailable",
+      }),
+    ]);
     expect(agentRunStatus("run-missing-journal")).toBe("running");
+  });
+
+  it("keeps an in-memory exclusion when operational evidence storage is unavailable", () => {
+    const runId = "run-recovery-storage-unavailable";
+    insertAgentRun({
+      id: runId,
+      objective: "never execute without durable recovery evidence",
+      status: "running",
+      currentSessionId: runId,
+    });
+    insertToolCall({
+      sessionId: runId,
+      toolCallId: "tool-storage-unavailable",
+      toolName: "FileRead",
+      args: { path: "evidence.txt" },
+      status: "running",
+      recoveryCategory: "idempotent",
+    });
+    bindRunJournal(
+      runId,
+      join(driver.projectDir, "sessions", runId, "missing.jsonl"),
+    );
+    driver.state.exec(`
+      CREATE TEMP TRIGGER refuse_recovery_deferred_insert
+      BEFORE INSERT ON run_recovery_deferred
+      BEGIN
+        SELECT RAISE(ABORT, 'recovery evidence storage unavailable');
+      END;
+    `);
+
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(report.recoveredToolCalls).toEqual([]);
+    expect(report.recoveryExclusions).toEqual([
+      expect.objectContaining({
+        runId,
+        kind: "storage_unavailable",
+        reasonCode: "recovery_storage_unavailable",
+      }),
+    ]);
+    expect(
+      new StateRecoveryIncidentRepository(driver).listDeferred().items,
+    ).toEqual([]);
+    expect(toolCallStatus(runId, "tool-storage-unavailable")).toBe("running");
+  });
+
+  it("quarantines the A2b malformed-interior fixture before any source in the run is projected", async () => {
+    const runId = "run-atomic-corrupt-journal";
+    insertAgentRun({
+      id: runId,
+      objective: "never execute a partially projected run",
+      status: "running",
+      currentSessionId: runId,
+    });
+    const validPath = writeRunJournal(runId, [
+      {
+        eventId: "valid-before-corruption",
+        id: "valid-before-corruption",
+        seq: 1,
+        msg: { type: "agent_message", payload: { message: "valid" } },
+      },
+    ]);
+    bindRunJournal(runId, validPath);
+    const corruptPath = join(
+      dirname(validPath),
+      `rollout-2026-05-01T00-01-00-000Z-${runId}.jsonl`,
+    );
+    const corrupt = await (
+      await openFndFixtureCatalog()
+    ).text("journal.malformed-interior.v1");
+    writeFileSync(corruptPath, corrupt, { mode: 0o600 });
+    bindRunJournal(runId, corruptPath);
+
+    const first = recoverDaemonStateOnStartup(driver);
+
+    expect(first.recoveredRuns).toEqual([]);
+    expect(first.recoveryExclusions).toEqual([
+      expect.objectContaining({
+        runId,
+        kind: "quarantine",
+        reasonCode: "malformed_json",
+        sourcePath: corruptPath,
+      }),
+    ]);
+    expect(projectedRolloutRows(validPath)).toBe(0);
+    expect(projectedRolloutRows(corruptPath)).toBe(0);
+
+    const second = recoverDaemonStateOnStartup(driver);
+    expect(second.recoveredRuns).toEqual([]);
+    expect(second.recoveryExclusions).toEqual([
+      expect.objectContaining({ runId, kind: "quarantine" }),
+    ]);
+    expect(
+      new StateRecoveryIncidentRepository(driver).listQuarantines().items,
+    ).toHaveLength(1);
+    expect(projectedRolloutRows(validPath)).toBe(0);
+  });
+
+  it("rolls back strict source rows when semantic run projection fails", () => {
+    const runId = "run-atomic-projection-failure";
+    insertAgentRun({
+      id: runId,
+      objective: "never retain a partial semantic projection",
+      status: "running",
+      currentSessionId: runId,
+    });
+    const sourcePath = writeRunJournal(runId, [
+      {
+        eventId: "effect-result-without-intent",
+        id: "effect-result-without-intent",
+        seq: 1,
+        msg: {
+          type: "effect_result",
+          payload: {
+            runId,
+            stepId: "tool:turn-1:missing-intent",
+            callId: "missing-intent",
+            toolName: "FileRead",
+            recoveryCategory: "idempotent",
+            idempotencyKey: "sha256:missing",
+            intentEventSeq: 1,
+            outcome: "committed",
+            resultDigest: "sha256:result",
+            recordedAt: "2026-05-01T00:05:01.000Z",
+          },
+        },
+      },
+    ]);
+    bindRunJournal(runId, sourcePath);
+
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(report.recoveryExclusions).toEqual([
+      expect.objectContaining({
+        runId,
+        kind: "deferred",
+        reasonCode: "projection_failure",
+      }),
+    ]);
+    expect(projectedRolloutRows(sourcePath)).toBe(0);
+    expect(
+      new StateRunDurabilityRepository(driver).getEffect(
+        runId,
+        "tool:turn-1:missing-intent",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("binds active quarantine, deferred, and permanent abandonment to every restored run", () => {
+    const repository = new StateRecoveryIncidentRepository(driver);
+    for (const runId of [
+      "run-excluded-abandoned",
+      "run-excluded-deferred",
+      "run-excluded-quarantine",
+    ]) {
+      insertAgentRun({
+        id: runId,
+        objective: "must remain non-executable",
+        status: "running",
+        currentSessionId: runId,
+      });
+      insertToolCall({
+        sessionId: runId,
+        toolCallId: `tool-${runId}`,
+        toolName: "FileRead",
+        args: { path: "evidence.txt" },
+        status: "running",
+        recoveryCategory: "idempotent",
+      });
+    }
+    const abandonedIncident = repository.recordQuarantine({
+      runId: "run-excluded-abandoned",
+      sourceKind: "run_journal",
+      sourcePath: join(driver.projectDir, "abandoned.jsonl"),
+      reasonCode: "malformed_json",
+      safeDetail: { message: "invalid" },
+      sourceSizeBytes: 1,
+      sourceMtimeMs: 1,
+      sourceSha256: "a".repeat(64),
+      detectedAtMs: 1,
+    });
+    repository.abandonQuarantine({
+      quarantineId: abandonedIncident.quarantineId,
+      expectedRunId: abandonedIncident.runId,
+      expectedSourceSha256: abandonedIncident.sourceSha256,
+      actor: "operator",
+      reason: "source intentionally retired",
+      abandonedAtMs: 2,
+    });
+    repository.recordDeferred({
+      runId: "run-excluded-deferred",
+      sourceKind: "run_journal",
+      sourcePath: join(driver.projectDir, "deferred.jsonl"),
+      reasonCode: "database_busy",
+      errorClass: "SQLITE_BUSY",
+      safeDetail: { message: "busy" },
+      failedAtMs: 1,
+      nextRetryMs: 2,
+    });
+    repository.recordQuarantine({
+      runId: "run-excluded-quarantine",
+      sourceKind: "run_journal",
+      sourcePath: join(driver.projectDir, "quarantine.jsonl"),
+      reasonCode: "identity_conflict",
+      safeDetail: { message: "conflict" },
+      sourceSizeBytes: 1,
+      sourceMtimeMs: 1,
+      sourceSha256: "b".repeat(64),
+      detectedAtMs: 1,
+    });
+
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(report.recoveredToolCalls).toEqual([]);
+    expect(report.recoveryExclusions.map(({ kind }) => kind)).toEqual([
+      "abandoned",
+      "deferred",
+      "quarantine",
+    ]);
+    for (const runId of [
+      "run-excluded-abandoned",
+      "run-excluded-deferred",
+      "run-excluded-quarantine",
+    ]) {
+      expect(toolCallStatus(runId, `tool-${runId}`)).toBe("running");
+      expect(recoverCanonicalRunJournalForRun(driver, runId)).toEqual(
+        expect.objectContaining({
+          filesScanned: 0,
+          eventsProjected: 0,
+          exclusion: expect.objectContaining({ runId }),
+        }),
+      );
+    }
+  });
+
+  it("shares the named aggregate startup byte ceiling across recovered runs", () => {
+    const paths: string[] = [];
+    for (const runId of ["run-budget-first", "run-budget-second"]) {
+      insertAgentRun({
+        id: runId,
+        objective: "bounded startup recovery",
+        status: "running",
+        currentSessionId: runId,
+      });
+      const path = writeRunJournal(runId, [
+        {
+          eventId: `message-${runId}`,
+          id: `message-${runId}`,
+          seq: 1,
+          msg: { type: "agent_message", payload: { message: runId } },
+        },
+      ]);
+      bindRunJournal(runId, path);
+      paths.push(path);
+    }
+    const startupBudget = new StartupRecoveryBudget({
+      maxReadBytes: statSync(paths[0]!).size * 2,
+      nowMilliseconds: () => 1,
+    });
+
+    expect(
+      recoverCanonicalRunJournalForRun(driver, "run-budget-first", {
+        strict: { startupBudget, nowMilliseconds: () => 1 },
+      }),
+    ).toMatchObject({ filesScanned: 1, eventsProjected: 0 });
+    expect(
+      recoverCanonicalRunJournalForRun(driver, "run-budget-second", {
+        strict: { startupBudget, nowMilliseconds: () => 1 },
+      }),
+    ).toMatchObject({
+      filesScanned: 0,
+      exclusion: {
+        runId: "run-budget-second",
+        kind: "deferred",
+        reasonCode: "startup_byte_budget",
+      },
+    });
+    expect(projectedRolloutRows(paths[1]!)).toBe(0);
+  });
+
+  it("persists the named aggregate startup time ceiling as operational evidence", () => {
+    const runId = "run-time-budget";
+    insertAgentRun({
+      id: runId,
+      objective: "bounded startup time",
+      status: "running",
+      currentSessionId: runId,
+    });
+    const sourcePath = writeRunJournal(runId, [
+      {
+        eventId: "time-budget-message",
+        id: "time-budget-message",
+        seq: 1,
+        msg: { type: "agent_message", payload: { message: "bounded" } },
+      },
+    ]);
+    bindRunJournal(runId, sourcePath);
+    let nowMilliseconds = 1;
+    const startupBudget = new StartupRecoveryBudget({
+      maxMilliseconds: 1,
+      nowMilliseconds: () => nowMilliseconds,
+    });
+    nowMilliseconds = 2;
+
+    expect(
+      recoverCanonicalRunJournalForRun(driver, runId, {
+        strict: { startupBudget, nowMilliseconds: () => nowMilliseconds },
+      }),
+    ).toMatchObject({
+      filesScanned: 0,
+      exclusion: {
+        runId,
+        kind: "deferred",
+        reasonCode: "startup_time_budget",
+      },
+    });
+    expect(projectedRolloutRows(sourcePath)).toBe(0);
   });
 
   it("fails closed when canonical event identities reuse one run sequence", () => {
@@ -468,9 +811,16 @@ describe("recoverDaemonStateOnStartup", () => {
     ]);
     bindRunJournal("run-sequence-conflict", rolloutPath);
 
-    expect(() => recoverDaemonStateOnStartup(driver)).toThrow(
-      /sequence is also claimed by event legacy-event:1:intent-sequence-one/,
-    );
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(report.recoveryExclusions).toEqual([
+      expect.objectContaining({
+        runId: "run-sequence-conflict",
+        kind: "quarantine",
+        reasonCode: "sequence_duplicate",
+      }),
+    ]);
     expect(agentRunStatus("run-sequence-conflict")).toBe("running");
   });
 
@@ -481,44 +831,48 @@ describe("recoverDaemonStateOnStartup", () => {
       status: "running",
       currentSessionId: "run-user-terminal-sequence-conflict",
     });
-    const rolloutPath = writeRunJournal(
-      "run-user-terminal-sequence-conflict",
-      [
-        {
-          eventId: "user-visible-event",
-          id: "user-visible-event",
-          seq: 1,
-          msg: {
-            type: "agent_message",
-            payload: { message: "unrelated output" },
+    const rolloutPath = writeRunJournal("run-user-terminal-sequence-conflict", [
+      {
+        eventId: "user-visible-event",
+        id: "user-visible-event",
+        seq: 1,
+        msg: {
+          type: "agent_message",
+          payload: { message: "unrelated output" },
+        },
+      },
+      {
+        eventId: "terminal-at-user-sequence",
+        id: "terminal-at-user-sequence",
+        seq: 1,
+        msg: {
+          type: "run_terminal",
+          payload: {
+            runId: "run-user-terminal-sequence-conflict",
+            epoch: 1,
+            status: "completed",
+            exitCode: 0,
+            stopReason: "completed",
+            finalMessage: "must not be selected",
+            usage: null,
+            lastSequenceBeforeTerminal: null,
+            finishedAt: "2026-05-01T00:05:00.000Z",
           },
         },
-        {
-          eventId: "terminal-at-user-sequence",
-          id: "terminal-at-user-sequence",
-          seq: 1,
-          msg: {
-            type: "run_terminal",
-            payload: {
-              runId: "run-user-terminal-sequence-conflict",
-              epoch: 1,
-              status: "completed",
-              exitCode: 0,
-              stopReason: "completed",
-              finalMessage: "must not be selected",
-              usage: null,
-              lastSequenceBeforeTerminal: null,
-              finishedAt: "2026-05-01T00:05:00.000Z",
-            },
-          },
-        },
-      ],
-    );
+      },
+    ]);
     bindRunJournal("run-user-terminal-sequence-conflict", rolloutPath);
 
-    expect(() => recoverDaemonStateOnStartup(driver)).toThrow(
-      /sequence is also claimed by event user-visible-event/,
-    );
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(report.recoveryExclusions).toEqual([
+      expect.objectContaining({
+        runId: "run-user-terminal-sequence-conflict",
+        kind: "quarantine",
+        reasonCode: "sequence_duplicate",
+      }),
+    ]);
     expect(agentRunStatus("run-user-terminal-sequence-conflict")).toBe(
       "running",
     );
@@ -563,9 +917,16 @@ describe("recoverDaemonStateOnStartup", () => {
     ]);
     bindRunJournal("run-cross-type-id-conflict", rolloutPath);
 
-    expect(() => recoverDaemonStateOnStartup(driver)).toThrow(
-      /event ID has conflicting content/,
-    );
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(report.recoveryExclusions).toEqual([
+      expect.objectContaining({
+        runId: "run-cross-type-id-conflict",
+        kind: "quarantine",
+        reasonCode: "identity_conflict",
+      }),
+    ]);
     expect(agentRunStatus("run-cross-type-id-conflict")).toBe("running");
   });
 
@@ -1012,6 +1373,16 @@ function agentRunStatus(runId: string): string | undefined {
     .get(runId)?.status;
 }
 
+function projectedRolloutRows(sourcePath: string): number {
+  return (
+    driver
+      .prepareState<[string], { readonly count: number }>(
+        "SELECT COUNT(*) AS count FROM thread_rollout_items WHERE source_path = ?",
+      )
+      .get(sourcePath)?.count ?? 0
+  );
+}
+
 function writeRunJournal(runId: string, events: readonly Event[]): string {
   const directory = join(driver.projectDir, "sessions", runId);
   mkdirSync(directory, { recursive: true });
@@ -1022,9 +1393,16 @@ function writeRunJournal(runId: string, events: readonly Event[]): string {
   writeFileSync(
     rolloutPath,
     events
-      .map((event) =>
-        serializeRolloutItem({ type: "event_msg", payload: event }),
-      )
+      .map((event) => {
+        const canonical =
+          event.seq !== undefined && event.eventId === undefined
+            ? {
+                ...event,
+                eventId: `legacy-event:${event.seq}:${event.id}`,
+              }
+            : event;
+        return serializeRolloutItem({ type: "event_msg", payload: canonical });
+      })
       .join(""),
     { mode: 0o600 },
   );

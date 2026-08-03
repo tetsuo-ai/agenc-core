@@ -220,6 +220,7 @@ import {
   parseAgenCStateCliArgs,
   runAgenCStateCli,
 } from "./state-cli.js";
+import { createRecoveryMutationAdapter } from "../state/recovery-mutations.js";
 import {
   formatAgenCTrajectoriesCliHelpText,
   parseAgenCTrajectoriesCliArgs,
@@ -5143,7 +5144,9 @@ export async function main(): Promise<number> {
   }
   const stateCommand = parseAgenCStateCliArgs(argv);
   if (stateCommand !== null) {
-    return runAgenCStateCli(stateCommand);
+    return runAgenCStateCli(stateCommand, {
+      recoveryMutations: createRecoveryMutationAdapter(),
+    });
   }
   const trajectoriesCommand = parseAgenCTrajectoriesCliArgs(argv);
   if (trajectoriesCommand !== null) {

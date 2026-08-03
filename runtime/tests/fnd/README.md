@@ -14,17 +14,16 @@ nonzero exit status and the exact registered defect fingerprint. Do not use
 `skip`, `todo`, `test.fails`, or an assertion whose success means the unsafe
 behavior remains present.
 
-After A1, A2a, A3, B1, B3a, C1, C3a, D1, D3, and E1a promotion, the P0
-inventory contains two task-owned defect probes plus the FND-001 harness
+After A1, A2a, A2b, A3, B1, B3a, C1, C3a, D1, D3, and E1a promotion, the P0
+inventory contains one task-owned defect probe plus the FND-001 harness
 self-test, so the exact green audit summary is
-`files=3 expected-red=3 assertions=3 skipped=0 todo=0`. Each
+`files=2 expected-red=2 assertions=2 skipped=0 todo=0`. The
 remaining task-owned
 probe calls a production seam without a provider, public network, or
 uncontained subprocess:
 
 | Task | Current defect frozen red                                                                        | Desired assertion                                                                                                              |
 | ---- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| A2b  | Startup returns a running agent whose bound canonical journal is corrupt.                        | The corrupt run is non-executable and absent from recovery results.                                                            |
 | C2   | The compaction policy tells the summarizer to obey instructions embedded in transcript context.  | Transcript instructions remain untrusted and cannot alter compaction policy.                                                   |
 
 Some production modules import repository-owned Markdown prompt assets. The
@@ -38,11 +37,12 @@ The FND-001 self-probe intentionally omits a required transition and proves the
 harness itself goes red; it does not claim a product defect remains and does not
 satisfy any task-owned P0 defect-probe gate.
 The A1 timeout/physical-settlement assertion, A2a canonical-journal integrity,
-A3 full-body tool-result digest, B1 prototype-header round trip, B3a confined
-workflow-name traversal, C1 message-frame floor, C3a admitted memory recall and
-lexical fallback, D1 pinned-ripgrep assertions, D3 byte-fidelity assertions,
-and E1a recovery line-limit assertion are now ordinary regression coverage.
-The two unresolved task-owned P0 probes remain registered alongside FND-001.
+A2b corrupt-journal exclusion, A3 full-body tool-result digest, B1
+prototype-header round trip, B3a confined workflow-name traversal, C1
+message-frame floor, C3a admitted memory recall and lexical fallback, D1
+pinned-ripgrep assertions, D3 byte-fidelity assertions, and E1a recovery
+line-limit assertion are now ordinary regression coverage. The one unresolved
+task-owned P0 probe remains registered alongside FND-001.
 When another product defect is fixed, promote its assertion into an ordinary
 test and verify that reversing the functional change in a disposable worktree
 makes that test fail.

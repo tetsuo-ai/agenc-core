@@ -19,6 +19,7 @@ import {
 import { recoverExecutionAdmissionCanonicalJournals } from "../../src/state/execution-admission-canonical-recovery.js";
 import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
+import { StateRecoveryIncidentRepository } from "../../src/state/recovery-incidents.js";
 import {
   openStateDatabases,
   type StateSqliteDriver,
@@ -151,6 +152,35 @@ describe("canonical execution-admission recovery", () => {
         )
         .get(sourcePath),
     ).toEqual({ event_id: admission.eventId });
+  });
+
+  it("does not mutate a canonical journal while its run is excluded", () => {
+    const sourcePath = bindRollout([]);
+    admissions.enqueue(request("model-excluded"));
+    new StateRecoveryIncidentRepository(driver).recordQuarantine({
+      runId: RUN_ID,
+      sourceKind: "run_journal",
+      sourcePath,
+      reasonCode: "malformed_json",
+      safeDetail: { message: "operator review required" },
+      sourceSizeBytes: 0,
+      sourceMtimeMs: 1,
+      sourceSha256: "c".repeat(64),
+      detectedAtMs: 1,
+    });
+
+    const result = recoverExecutionAdmissionCanonicalJournals(
+      driver,
+      admissions,
+    );
+
+    expect(result).toEqual({
+      runsScanned: 0,
+      sourcesScanned: 0,
+      admissionEventsScanned: 0,
+      admissionEventsAppended: 0,
+    });
+    expect(readEvents(sourcePath)).toEqual([]);
   });
 
   it("refuses conflicting canonical identity evidence", () => {

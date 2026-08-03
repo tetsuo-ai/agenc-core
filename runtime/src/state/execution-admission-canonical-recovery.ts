@@ -17,6 +17,7 @@ import {
 } from "./run-durability.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { StateThreadRepository } from "./threads.js";
+import { recoveryRunIsExecutableSql } from "./recovery-exclusions.js";
 
 const DEFAULT_MAX_RUNS = 4_096;
 const DEFAULT_MAX_EVENTS_PER_RUN = 100_000;
@@ -80,6 +81,7 @@ export function recoverExecutionAdmissionCanonicalJournals(
          SELECT 1 FROM run_journal_bindings AS binding
          WHERE binding.run_id = admission.run_id
        )
+       AND ${recoveryRunIsExecutableSql("admission.run_id")}
        ORDER BY admission.run_id ASC
        LIMIT 1`,
     )
@@ -95,6 +97,7 @@ export function recoverExecutionAdmissionCanonicalJournals(
        FROM execution_admission_journal AS admission
        JOIN run_journal_bindings AS binding
          ON binding.run_id = admission.run_id
+       WHERE ${recoveryRunIsExecutableSql("admission.run_id")}
        ORDER BY admission.run_id ASC
        LIMIT ?`,
     )

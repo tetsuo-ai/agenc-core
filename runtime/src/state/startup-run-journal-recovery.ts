@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 
 import type {
   EffectBoundary,
@@ -13,8 +13,25 @@ import type { JsonObject } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { asRecord } from "../utils/record.js";
 import { updateAgentRunStatus } from "./agent-runs.js";
-import { backfillRolloutFile } from "./backfill.js";
+import {
+  withPreparedPinnedRolloutRun,
+  type BackfillPinnedRolloutSource,
+} from "./backfill.js";
+import { RecoveryOperationalError } from "./recovery-contract.js";
+import { RecoveryDescriptorBudget } from "./recovery-file.js";
+import {
+  StartupRecoveryBudget,
+  persistRecoveryFailure,
+  persistStartupBudgetExclusion,
+  type RecoveryCutoverOptions,
+} from "./recovery-cutover.js";
+import {
+  getRecoveryRunExclusion,
+  recoveryRunIsExecutableSql,
+  type RecoveryRunExclusion,
+} from "./recovery-exclusions.js";
 import { StateRunDurabilityRepository } from "./run-durability.js";
+import type { RunJournalBinding } from "./run-durability.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { sqlPlaceholders } from "./sql.js";
 import { StateThreadRepository } from "./threads.js";
@@ -84,41 +101,61 @@ export interface StartupRunJournalRecoveryResult {
   readonly filesScanned: number;
   readonly eventsProjected: number;
   readonly terminalRunsSuppressed: number;
+  readonly exclusions: readonly RecoveryRunExclusion[];
 }
 
 export interface CanonicalRunJournalProjectionResult {
   readonly filesScanned: number;
   readonly eventsProjected: number;
   readonly terminalSuppressed: boolean;
+  readonly exclusion?: RecoveryRunExclusion;
 }
+
+type StrictRecoveryOptions = RecoveryCutoverOptions;
 
 /** Refresh and strictly project one run for an on-demand status/replay read. */
 export function recoverCanonicalRunJournalForRun(
   driver: StateSqliteDriver,
   runId: string,
-  options: { readonly maxRolloutFiles?: number } = {},
+  options: {
+    readonly maxRolloutFiles?: number;
+    readonly strict?: StrictRecoveryOptions;
+  } = {},
 ): CanonicalRunJournalProjectionResult {
+  const durableExclusion = getRecoveryRunExclusion(driver, runId);
+  if (durableExclusion !== undefined) {
+    return emptyProjectionResult(durableExclusion);
+  }
   const agentRun = driver
     .prepareState<[string], RecoverableRunRow>(
       `SELECT id, status, started_at, current_session_id
-       FROM agent_runs WHERE id = ? LIMIT 1`,
+       FROM agent_runs AS runs
+       WHERE id = ?
+         AND ${recoveryRunIsExecutableSql("runs.id")}
+       LIMIT 1`,
     )
     .get(runId);
   const run = agentRun ?? recoverableBoundRun(driver, runId);
   if (run === undefined) {
-    return { filesScanned: 0, eventsProjected: 0, terminalSuppressed: false };
+    return emptyProjectionResult();
   }
   const maxFiles = positiveBound(
     options.maxRolloutFiles ?? DEFAULT_MAX_ROLLOUT_FILES_PER_RUN,
     "maxRolloutFiles",
   );
   const threads = new StateThreadRepository(driver);
-  const paths = rolloutCandidates(driver, threads, run, maxFiles);
-  for (const rolloutPath of paths) {
-    backfillRolloutFile({ rolloutPath, threads });
+  const selection = selectRolloutCandidates(
+    driver,
+    threads,
+    run,
+    maxFiles,
+    options.strict,
+  );
+  if (selection.exclusion !== undefined) {
+    return emptyProjectionResult(selection.exclusion);
   }
-  const projected = projectRunEvents(driver, run, paths);
-  return { filesScanned: paths.length, ...projected };
+  const sources = selection.sources;
+  return recoverStrictRun(driver, threads, run, sources, options.strict);
 }
 
 /**
@@ -132,6 +169,7 @@ export function recoverPendingEffectReviewsOnStartup(
   options: {
     readonly maxRuns?: number;
     readonly maxRolloutFilesPerRun?: number;
+    readonly strict?: StrictRecoveryOptions;
   } = {},
 ): StartupRunJournalRecoveryResult {
   const maxRuns = positiveBound(
@@ -160,10 +198,16 @@ export function recoverPendingEffectReviewsOnStartup(
   let filesScanned = 0;
   let eventsProjected = 0;
   let terminalRunsSuppressed = 0;
+  const exclusions: RecoveryRunExclusion[] = [];
   for (const row of rows) {
     const projected = recoverCanonicalRunJournalForRun(driver, row.run_id, {
       maxRolloutFiles: maxFiles,
+      ...(options.strict !== undefined ? { strict: options.strict } : {}),
     });
+    if (projected.exclusion !== undefined) {
+      exclusions.push(projected.exclusion);
+      continue;
+    }
     if (projected.filesScanned === 0) {
       throw new Error(
         `run ${row.run_id} has a pending effect review without retained canonical journal evidence`,
@@ -178,6 +222,7 @@ export function recoverPendingEffectReviewsOnStartup(
     filesScanned,
     eventsProjected,
     terminalRunsSuppressed,
+    exclusions: Object.freeze(exclusions),
   };
 }
 
@@ -203,6 +248,7 @@ function recoverableBoundRun(
               ) AS session_id
        FROM run_lifecycle_epochs AS epoch
        WHERE epoch.run_id = ?
+         AND ${recoveryRunIsExecutableSql("epoch.run_id")}
          AND EXISTS (
            SELECT 1 FROM run_journal_bindings AS binding
            WHERE binding.run_id = epoch.run_id
@@ -240,6 +286,7 @@ export function recoverCanonicalRunJournalsOnStartup(
     readonly onlyMissingTerminalResults?: boolean;
     /** Restrict compatibility recovery to runs with an explicit M4 binding. */
     readonly requireJournalBinding?: boolean;
+    readonly strict?: StrictRecoveryOptions;
   },
 ): StartupRunJournalRecoveryResult {
   if (options.recoverableStatuses.length === 0) {
@@ -258,6 +305,7 @@ export function recoverCanonicalRunJournalsOnStartup(
       `SELECT id, status, started_at, current_session_id
        FROM agent_runs AS runs
        WHERE status IN (${sqlPlaceholders(options.recoverableStatuses.length)})
+       AND ${recoveryRunIsExecutableSql("runs.id")}
        ${
          options.onlyMissingTerminalResults === true
            ? `AND NOT EXISTS (
@@ -289,16 +337,45 @@ export function recoverCanonicalRunJournalsOnStartup(
   }
 
   const threads = new StateThreadRepository(driver);
+  const descriptorBudget =
+    options.strict?.descriptorBudget ?? new RecoveryDescriptorBudget();
+  const nowMilliseconds = options.strict?.nowMilliseconds ?? Date.now;
+  const startupBudget =
+    options.strict?.startupBudget ??
+    new StartupRecoveryBudget({ nowMilliseconds });
   let filesScanned = 0;
   let eventsProjected = 0;
   let terminalRunsSuppressed = 0;
+  const exclusions: RecoveryRunExclusion[] = [];
   for (const run of runs) {
-    const paths = rolloutCandidates(driver, threads, run, maxFiles);
-    for (const rolloutPath of paths) {
-      backfillRolloutFile({ rolloutPath, threads });
-      filesScanned += 1;
+    const durableExclusion = getRecoveryRunExclusion(driver, run.id);
+    if (durableExclusion !== undefined) {
+      exclusions.push(durableExclusion);
+      continue;
     }
-    const projected = projectRunEvents(driver, run, paths);
+    const selection = selectRolloutCandidates(driver, threads, run, maxFiles, {
+      ...options.strict,
+      descriptorBudget,
+      nowMilliseconds,
+      startupBudget,
+    });
+    if (selection.exclusion !== undefined) {
+      exclusions.push(selection.exclusion);
+      continue;
+    }
+    const sources = selection.sources;
+    if (sources.length === 0) continue;
+    const projected = recoverStrictRun(driver, threads, run, sources, {
+      ...options.strict,
+      descriptorBudget,
+      nowMilliseconds,
+      startupBudget,
+    });
+    if (projected.exclusion !== undefined) {
+      exclusions.push(projected.exclusion);
+      continue;
+    }
+    filesScanned += projected.filesScanned;
     eventsProjected += projected.eventsProjected;
     terminalRunsSuppressed += projected.terminalSuppressed ? 1 : 0;
   }
@@ -307,6 +384,7 @@ export function recoverCanonicalRunJournalsOnStartup(
     filesScanned,
     eventsProjected,
     terminalRunsSuppressed,
+    exclusions: Object.freeze(exclusions),
   };
 }
 
@@ -315,7 +393,7 @@ function rolloutCandidates(
   threads: StateThreadRepository,
   run: RecoverableRunRow,
   maxFiles: number,
-): readonly string[] {
+): readonly BackfillPinnedRolloutSource[] {
   const repository = new StateRunDurabilityRepository(driver);
   const known = new Set<string>();
   const bindings = repository.listJournalBindings(run.id);
@@ -329,19 +407,13 @@ function rolloutCandidates(
       binding.retiredThroughSequence !== undefined &&
       binding.firstAvailableSequence === undefined;
     if (fullyRetired) continue;
-    if (existsSync(binding.sourcePath)) {
-      known.add(binding.sourcePath);
-      continue;
-    }
-    throw new Error(
-      `run ${run.id} canonical rollout source is missing: ${binding.sourcePath}`,
-    );
+    known.add(binding.sourcePath);
   }
   if (bindings.length > 0) {
     if (known.size > maxFiles) {
-      throw tooManyRollouts(run.id, known.size, maxFiles);
+      throw tooManyRollouts(run.id, known, maxFiles);
     }
-    return sortedByMtime(known);
+    return sourcesFromBindings(bindings, [...known].sort(), run.id);
   }
   for (const threadId of runThreadIds(run)) {
     const indexed = threads.getThread(threadId);
@@ -356,9 +428,9 @@ function rolloutCandidates(
     }
   }
   if (known.size > maxFiles) {
-    throw tooManyRollouts(run.id, known.size, maxFiles);
+    throw tooManyRollouts(run.id, known, maxFiles);
   }
-  if (known.size > 0) return sortedByMtime(known);
+  if (known.size > 0) return fallbackSources(sortedByMtime(known), run.id);
 
   const discovered = new Set<string>();
   for (const threadId of runThreadIds(run)) {
@@ -372,12 +444,201 @@ function rolloutCandidates(
         if (!statSync(path).isFile()) continue;
         discovered.add(path);
         if (discovered.size > maxFiles) {
-          throw tooManyRollouts(run.id, discovered.size, maxFiles);
+          throw tooManyRollouts(run.id, discovered, maxFiles);
         }
       }
     }
   }
-  return sortedByMtime(discovered);
+  return fallbackSources(sortedByMtime(discovered), run.id);
+}
+
+function selectRolloutCandidates(
+  driver: StateSqliteDriver,
+  threads: StateThreadRepository,
+  run: RecoverableRunRow,
+  maxFiles: number,
+  strict: StrictRecoveryOptions = {},
+):
+  | {
+      readonly sources: readonly BackfillPinnedRolloutSource[];
+      readonly exclusion?: never;
+    }
+  | { readonly sources?: never; readonly exclusion: RecoveryRunExclusion } {
+  try {
+    return { sources: rolloutCandidates(driver, threads, run, maxFiles) };
+  } catch (error) {
+    const source =
+      error instanceof RolloutCandidateOperationalError
+        ? error.source
+        : defaultRecoverySource(driver, run);
+    const operational =
+      error instanceof RecoveryOperationalError
+        ? error
+        : new RecoveryOperationalError(
+            "recovery_storage_unavailable",
+            "canonical recovery source discovery failed",
+            error instanceof Error ? error.name : "RECOVERY_DISCOVERY",
+          );
+    return {
+      exclusion: persistRecoveryFailure(
+        driver,
+        run.id,
+        [source],
+        strict,
+        operational,
+      ),
+    };
+  }
+}
+
+function defaultRecoverySource(
+  driver: StateSqliteDriver,
+  run: RecoverableRunRow,
+): BackfillPinnedRolloutSource {
+  const sessionId = run.current_session_id ?? run.id;
+  return Object.freeze({
+    sessionId,
+    rolloutPath: join(
+      driver.projectDir,
+      "sessions",
+      sessionId,
+      "canonical-rollout-unavailable.jsonl",
+    ),
+    expectedRunId: run.id,
+  });
+}
+
+function sourcesFromBindings(
+  bindings: readonly RunJournalBinding[],
+  paths: readonly string[],
+  runId: string,
+): readonly BackfillPinnedRolloutSource[] {
+  return paths.map((rolloutPath) => {
+    const matches = bindings.filter(
+      (binding) => binding.sourcePath === rolloutPath,
+    );
+    const binding = matches[0]!;
+    return Object.freeze({
+      sessionId: binding.sessionId,
+      rolloutPath,
+      archived: rolloutPath.includes(`${sep}archived_sessions${sep}`),
+      expectedRunId: runId,
+    });
+  });
+}
+
+function fallbackSources(
+  paths: readonly string[],
+  runId: string,
+): readonly BackfillPinnedRolloutSource[] {
+  return paths.map((rolloutPath) =>
+    Object.freeze({
+      sessionId: basename(dirname(rolloutPath)),
+      rolloutPath,
+      archived: rolloutPath.includes(`${sep}archived_sessions${sep}`),
+      expectedRunId: runId,
+    }),
+  );
+}
+
+function recoverStrictRun(
+  driver: StateSqliteDriver,
+  threads: StateThreadRepository,
+  run: RecoverableRunRow,
+  sources: readonly BackfillPinnedRolloutSource[],
+  strict: StrictRecoveryOptions = {},
+): CanonicalRunJournalProjectionResult & { readonly readBytes: number } {
+  if (sources.length === 0) {
+    return { ...emptyProjectionResult(), readBytes: 0 };
+  }
+  const remaining = strict.startupBudget?.remaining();
+  if (
+    remaining !== undefined &&
+    (remaining.maxReadBytes <= 0 || remaining.maxMilliseconds <= 0)
+  ) {
+    return {
+      ...emptyProjectionResult(
+        persistStartupBudgetExclusion(
+          driver,
+          run.id,
+          sources[0]!,
+          remaining.maxReadBytes <= 0
+            ? "startup_byte_budget"
+            : "startup_time_budget",
+          (strict.nowMilliseconds ?? Date.now)(),
+        ),
+      ),
+      readBytes: 0,
+    };
+  }
+  const limits =
+    remaining === undefined
+      ? strict.limits
+      : {
+          ...strict.limits,
+          maxReadBytes: Math.min(
+            strict.limits?.maxReadBytes ?? remaining.maxReadBytes,
+            remaining.maxReadBytes,
+          ),
+          maxScanMilliseconds: Math.min(
+            strict.limits?.maxScanMilliseconds ?? remaining.maxMilliseconds,
+            remaining.maxMilliseconds,
+          ),
+        };
+  try {
+    const result = withPreparedPinnedRolloutRun(
+      {
+        projectDir: driver.projectDir,
+        sources,
+        threads,
+        ...(limits !== undefined ? { limits } : {}),
+        ...(strict.descriptorBudget !== undefined
+          ? { descriptorBudget: strict.descriptorBudget }
+          : {}),
+        ...(strict.nowMilliseconds !== undefined
+          ? { nowMilliseconds: strict.nowMilliseconds }
+          : {}),
+      },
+      (prepared) =>
+        driver.transactionImmediate(() => {
+          const projectedSources = prepared.projectAll();
+          const projected = projectRunEvents(
+            driver,
+            run,
+            prepared.sources.map(({ rolloutPath }) => rolloutPath),
+          );
+          prepared.assertPinned();
+          return {
+            filesScanned: prepared.sources.length,
+            ...projected,
+            readBytes: projectedSources.reduce(
+              (total, source) => total + source.proof.sourceByteLength * 2,
+              0,
+            ),
+          };
+        }),
+    );
+    strict.startupBudget?.consume(result.readBytes);
+    return result;
+  } catch (error) {
+    return {
+      ...emptyProjectionResult(
+        persistRecoveryFailure(driver, run.id, sources, strict, error),
+      ),
+      readBytes: 0,
+    };
+  }
+}
+
+function emptyProjectionResult(
+  exclusion?: RecoveryRunExclusion,
+): CanonicalRunJournalProjectionResult {
+  return {
+    filesScanned: 0,
+    eventsProjected: 0,
+    terminalSuppressed: false,
+    ...(exclusion !== undefined ? { exclusion } : {}),
+  };
 }
 
 function projectRunEvents(
@@ -1050,16 +1311,64 @@ function runThreadIds(run: RecoverableRunRow): readonly string[] {
 }
 
 function sortedByMtime(paths: ReadonlySet<string>): readonly string[] {
-  return [...paths].sort((left, right) => {
-    const time = statSync(left).mtimeMs - statSync(right).mtimeMs;
-    return time === 0 ? left.localeCompare(right) : time;
+  const entries = [...paths].map((sourcePath) => {
+    try {
+      return { sourcePath, mtimeMs: statSync(sourcePath).mtimeMs };
+    } catch (error) {
+      throw candidateStorageError(sourcePath, error);
+    }
   });
+  entries.sort((left, right) => {
+    const time = left.mtimeMs - right.mtimeMs;
+    return time === 0 ? left.sourcePath.localeCompare(right.sourcePath) : time;
+  });
+  return entries.map(({ sourcePath }) => sourcePath);
 }
 
-function tooManyRollouts(runId: string, count: number, max: number): Error {
-  return new Error(
-    `run ${runId} startup recovery discovered ${count} rollout files; bounded limit is ${max}`,
+function tooManyRollouts(
+  runId: string,
+  paths: ReadonlySet<string>,
+  max: number,
+): RolloutCandidateOperationalError {
+  const sourcePath = [...paths].sort()[0]!;
+  return new RolloutCandidateOperationalError(
+    {
+      sessionId: basename(dirname(sourcePath)),
+      rolloutPath: sourcePath,
+      expectedRunId: runId,
+    },
+    "concurrency_limit",
+    `run ${runId} startup recovery discovered ${paths.size} rollout files; bounded limit is ${max}`,
+    "RECOVERY_SOURCE_LIMIT",
   );
+}
+
+function candidateStorageError(
+  sourcePath: string,
+  error: unknown,
+): RolloutCandidateOperationalError {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return new RolloutCandidateOperationalError(
+    {
+      sessionId: basename(dirname(sourcePath)),
+      rolloutPath: sourcePath,
+    },
+    "recovery_storage_unavailable",
+    `canonical recovery source metadata is unavailable: ${sourcePath}`,
+    typeof code === "string" ? code : "RECOVERY_SOURCE_STAT",
+  );
+}
+
+class RolloutCandidateOperationalError extends RecoveryOperationalError {
+  constructor(
+    readonly source: BackfillPinnedRolloutSource,
+    reasonCode: ConstructorParameters<typeof RecoveryOperationalError>[0],
+    message: string,
+    errorClass: string,
+  ) {
+    super(reasonCode, message, errorClass);
+    this.name = "RolloutCandidateOperationalError";
+  }
 }
 
 function invalidEvent(
@@ -1175,5 +1484,6 @@ function emptyRecoveryResult(): StartupRunJournalRecoveryResult {
     filesScanned: 0,
     eventsProjected: 0,
     terminalRunsSuppressed: 0,
+    exclusions: Object.freeze([]),
   };
 }

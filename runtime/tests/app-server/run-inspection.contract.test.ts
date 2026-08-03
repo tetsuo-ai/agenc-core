@@ -16,6 +16,7 @@ import type { RuntimeAdmissionRequest } from "../../src/budget/admission-types.j
 import { upsertAgentRun } from "../../src/state/agent-runs.js";
 import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
+import { serializeRolloutItem } from "../../src/session/rollout-item.js";
 import {
   openStateDatabases,
   type StateDatabasePaths,
@@ -609,12 +610,12 @@ describe("durable run inspection", () => {
     const rolloutPath = join(sessionDir, "rollout-terminal.jsonl");
     writeFileSync(
       rolloutPath,
-      `${JSON.stringify({
+      serializeRolloutItem({
         type: "event_msg",
         payload: {
           eventId: "terminal-from-jsonl",
           id: "terminal-from-jsonl",
-          seq: 9,
+          seq: 1,
           msg: {
             type: "run_terminal",
             payload: {
@@ -630,12 +631,12 @@ describe("durable run inspection", () => {
                 totalTokens: 8,
                 costUsd: 0.001,
               },
-              lastSequenceBeforeTerminal: 8,
+              lastSequenceBeforeTerminal: null,
               finishedAt: "2026-07-18T12:05:00.000Z",
             },
           },
         },
-      })}\n`,
+      }),
       "utf8",
     );
 
@@ -646,14 +647,14 @@ describe("durable run inspection", () => {
       output: {
         available: true,
         finalMessage: "Recovered from the journal",
-        lastSequence: 9,
+        lastSequence: 1,
       },
     });
     expect(
       new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
         "run-complete",
       ),
-    ).toMatchObject({ eventId: "terminal-from-jsonl", lastSequence: 9 });
+    ).toMatchObject({ eventId: "terminal-from-jsonl", lastSequence: 1 });
   });
 
   it("exports bounded hashes and explicitly excludes workflow evidence", () => {

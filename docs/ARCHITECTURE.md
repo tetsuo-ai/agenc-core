@@ -206,9 +206,10 @@ existing incident or block; recurrence after resolution creates a linked new
 generation. Only old resolved history may be pruned. Active and abandoned
 evidence is never removed to make a run executable. Local `agenc state recovery
 … list/show` commands inspect redacted metadata even when the daemon cannot
-start. E1a provides an explicitly injected strict rescan/retry/abandon adapter,
-but the normal CLI deliberately does not install it until A2b makes every
-executable recovery selector consume these exclusions.
+start. The normal CLI installs the strict rescan/retry/abandon adapter.
+Startup, on-demand inspection, stale-tool restoration, final recoverable-run
+loading, and admission-journal convergence all consume the same active
+quarantine, active deferral, and permanent abandonment exclusion contract.
 
 `AGENC_HOME` is a single-host trust and locking boundary. It must live on a
 local filesystem with reliable SQLite OS locks and atomic same-filesystem

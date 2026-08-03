@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted; A2a contract implemented, E1a/A2b cutover pending |
+| Status | Implemented |
 | Audit snapshot | `d2b228e87ea63bd6a5d93e6f599f36bce88d672b` |
 | Audit date | 2026-07-31 |
 | Owners | Strict recovery contracts (A2a), bounded projection (E1a), and authoritative recovery cutover (A2b) |
@@ -93,8 +93,9 @@ both passes. Its first pass uses disk-backed exact identity claims; its second
 pass is anchored to the first digest and streams rows directly into the
 projection transaction. Per-source line/byte/event ceilings are integrity
 failures. Aggregate read/time and descriptor ceilings are operational blocks.
-The mutation adapter is available for explicit injection, but remains absent
-from normal CLI startup until A2b completes selector cutover.
+The normal CLI installs the mutation adapter. Startup, on-demand inspection,
+stale-tool restoration, final recoverable-run loading, and admission-journal
+convergence all consume the same durable exclusion predicate.
 
 ## Migration and rollout
 
@@ -104,10 +105,10 @@ diagnostics may run against copies, but production authority ultimately fails
 closed.
 
 The A2a landing installed the strict byte contract and durable evidence model;
-E1a adds bounded descriptor-pinned two-pass I/O and the opt-in mutation
-adapter. Tolerant non-authoritative indexing remains for compatibility.
-Operator mutation commands intentionally fail closed by default until A2b
-installs the adapter and exclusions together.
+E1a added bounded descriptor-pinned two-pass I/O. A2b made it authoritative,
+installed the operator adapter, and bound active quarantine, active deferral,
+and permanent abandonment to every executable recovery selector. Tolerant
+non-authoritative indexing remains for compatibility.
 
 ## Rollback
 

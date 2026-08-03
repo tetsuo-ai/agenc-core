@@ -2279,6 +2279,8 @@ function recoverAgenCDaemonStartupState(
   const recoveredRuns: RecoveredAgentRun[] = [];
   const recoveredToolCalls: RecoveredInFlightToolCall[] = [];
   const warnings: DaemonStartupRecoveryReport["warnings"][number][] = [];
+  const recoveryExclusions: DaemonStartupRecoveryReport["recoveryExclusions"][number][] =
+    [];
 
   for (const pathSet of paths) {
     const driver = openStateDatabasePaths(pathSet);
@@ -2291,6 +2293,7 @@ function recoverAgenCDaemonStartupState(
       recoveredRuns.push(...report.recoveredRuns);
       recoveredToolCalls.push(...report.recoveredToolCalls);
       warnings.push(...report.warnings);
+      recoveryExclusions.push(...report.recoveryExclusions);
     } finally {
       driver.close();
     }
@@ -2301,6 +2304,7 @@ function recoverAgenCDaemonStartupState(
     recoveredRuns,
     recoveredToolCalls,
     warnings,
+    recoveryExclusions,
   };
 }
 
@@ -3243,6 +3247,11 @@ function reportAgenCDaemonStartupRecovery(
   if (report.warnings.length > 0) {
     io.stderr.write(
       `agenc: daemon recovery emitted ${report.warnings.length} warning(s)\n`,
+    );
+  }
+  if (report.recoveryExclusions.length > 0) {
+    io.stderr.write(
+      `agenc: daemon recovery excluded ${report.recoveryExclusions.length} run(s) pending operator recovery action\n`,
     );
   }
 }

@@ -54,7 +54,7 @@ const EXPECTED_CRITICAL_PATH_ADRS = Object.freeze([
   {
     id: "CP-0002",
     file: "0002-strict-recovery-quarantine.md",
-    status: "Accepted; A2a contract implemented, E1a/A2b cutover pending",
+    status: "Implemented",
   },
   {
     id: "CP-0003",

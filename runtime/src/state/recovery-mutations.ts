@@ -43,8 +43,8 @@ export interface RecoveryMutationAdapterOptions {
 }
 
 /**
- * E1a's strict replay implementation. It remains opt-in until A2b wires every
- * executable selector to the quarantine/deferred/abandonment exclusions.
+ * E1a's strict replay implementation. A2b installs this adapter only after
+ * every executable selector has applied the durable recovery exclusions.
  */
 export function createRecoveryMutationAdapter(
   options: RecoveryMutationAdapterOptions = {},
