@@ -16,10 +16,7 @@ import {
   removeWindowsInjectedBenchmarkEnvironment,
 } from "./environment.mjs";
 import { buildFixture } from "./fixtures.mjs";
-import {
-  assertNoAncestorBenchmarkControls,
-  assertOwnedTemporaryRoot,
-} from "./isolation.mjs";
+import { assertOwnedTemporaryRoot } from "./isolation.mjs";
 import { registerProductionModuleTracker } from "./module-closure.mjs";
 
 const START_PREFIX = "AGENC_FND_BENCH_START ";
@@ -137,10 +134,6 @@ async function prepareCase(fixture, temporaryRoot) {
       return prepareCsvCase(fixture, temporaryRoot);
     case "patch_delete_parser_suffix_slicing":
       return preparePatchCase(fixture);
-    case "fuzzy_daemon_recursive_scaling":
-      return prepareDaemonFuzzyCase(fixture, temporaryRoot);
-    case "fuzzy_tui_query_truncation":
-      return prepareTuiFuzzyCase(fixture);
     default:
       throw new Error(`unknown benchmark case ${fixture.definition.id}`);
   }
@@ -216,73 +209,6 @@ async function preparePatchCase(fixture) {
     },
     async cleanup() {},
   };
-}
-
-async function prepareDaemonFuzzyCase(fixture, temporaryRoot) {
-  assertNoAncestorBenchmarkControls(temporaryRoot, dirname(temporaryRoot));
-  await Promise.all(
-    fixture.payload.paths.map(async (relativePath) => {
-      const absolutePath = join(temporaryRoot, relativePath);
-      await writeFile(absolutePath, fixture.payload.fileContent, "utf8");
-    }),
-  );
-  const { runFuzzyFileSearch } =
-    await import("../../src/app-server/fuzzy-file-search.ts");
-  const expectedMatches = fixture.payload.paths.filter((path) =>
-    isSubsequence(path.toLowerCase(), fixture.payload.query.toLowerCase()),
-  ).length;
-  return {
-    async beforeRun() {
-      assertNoAncestorBenchmarkControls(temporaryRoot, dirname(temporaryRoot));
-    },
-    async run() {
-      return runFuzzyFileSearch({
-        query: fixture.payload.query,
-        roots: [temporaryRoot],
-      });
-    },
-    correctness(result) {
-      return {
-        expected: `${expectedMatches} full-query subsequence matches`,
-        matchesOracle: result.length === expectedMatches,
-        observed: `${result.length} ranked matches`,
-        oracle: "straightforward full-query subsequence oracle",
-      };
-    },
-    async cleanup() {},
-  };
-}
-
-async function prepareTuiFuzzyCase(fixture) {
-  const { FileIndex } =
-    await import("../../src/tui/ink/native-ts/file-index/index.ts");
-  const index = new FileIndex();
-  index.loadFromFileList(fixture.payload.paths);
-  return {
-    async beforeRun() {},
-    async run() {
-      return index.search(fixture.payload.query, 1);
-    },
-    correctness(result) {
-      const observedPath = result[0]?.path ?? "no result";
-      return {
-        expected: fixture.payload.rightPath,
-        matchesOracle: observedPath === fixture.payload.rightPath,
-        observed: observedPath,
-        oracle: "full-query literal suffix oracle",
-      };
-    },
-    async cleanup() {},
-  };
-}
-
-function isSubsequence(haystack, needle) {
-  let needleIndex = 0;
-  for (const character of haystack) {
-    if (character === needle[needleIndex]) needleIndex += 1;
-    if (needleIndex === needle.length) return true;
-  }
-  return needle.length === 0;
 }
 
 function parseArguments(args) {

@@ -4,12 +4,15 @@ import { describe, expect, test } from "vitest";
 import {
   BoundedFuzzyMatcher,
   comparePortablePaths,
+  estimateFuzzyCandidateRetainedBytes,
   FuzzyBoundaryError,
+  FuzzyMatchWorkBudget,
   MAX_FUZZY_CANDIDATE_UTF8_BYTES,
   MAX_FUZZY_MATRIX_CELLS,
   MAX_FUZZY_QUERY_UTF8_BYTES,
   isNucleoOptimalMatrixEligible,
   isFuzzyQueryExtension,
+  prepareFuzzyCandidate,
   rankFuzzyCandidates,
   rankFuzzyCandidatesSync,
 } from "../../src/search/fuzzy-match.js";
@@ -60,6 +63,11 @@ describe("bounded fuzzy matcher", () => {
     expect(match?.indices.every((index) => index >= "long/path/".length)).toBe(
       true,
     );
+    expect(
+      new BoundedFuzzyMatcher("missing").match("long/path/file.ts", {
+        matchBasename: true,
+      }),
+    ).toBeNull();
   });
 
   test("reuses match sets only for normalization- and case-stable query extensions", () => {
@@ -194,6 +202,102 @@ describe("bounded fuzzy matcher", () => {
     expect(match).toMatchObject({ quality: "degraded" });
     expect(match?.indices).toHaveLength(320);
     expect(matcher.usedDegradedFallback).toBe(true);
+  });
+
+  test("rejects forged prepared-candidate bounds metadata", () => {
+    const prepared = prepareFuzzyCandidate("src/file.ts");
+    const forged = { ...prepared, utf8Bytes: 0 };
+
+    expect(() => new BoundedFuzzyMatcher("file").match(forged)).toThrow(
+      /byte metadata/u,
+    );
+    expect(() =>
+      rankFuzzyCandidatesSync("file", [forged], { limit: 1 }),
+    ).toThrow(/byte metadata/u);
+  });
+
+  test("packs prepared candidate payloads and accounts their retained objects", () => {
+    const prepared = prepareFuzzyCandidate("src/needle.ts");
+    const buffers = new Set([
+      prepared.codePoints.buffer,
+      prepared.foldedCodePoints.buffer,
+      prepared.normalizedCodePoints.buffer,
+      prepared.foldedNormalizedCodePoints.buffer,
+      prepared.utf16Offsets.buffer,
+      prepared.boundaryBonuses.buffer,
+      prepared.signature.buffer,
+      prepared.foldedSignature.buffer,
+      prepared.normalizedSignature.buffer,
+      prepared.foldedNormalizedSignature.buffer,
+    ]);
+
+    expect(buffers.size).toBe(1);
+    expect(estimateFuzzyCandidateRetainedBytes(prepared)).toBeGreaterThan(900);
+  });
+
+  test("charges the compact match window instead of a long path tail", () => {
+    const candidate = `${"x".repeat(20_000)}/needle.ts`;
+    const budget = new FuzzyMatchWorkBudget({
+      maximumMatrixCells: 100,
+      maximumCodePointVisits: 30_000,
+    });
+
+    expect(
+      new BoundedFuzzyMatcher("needle").match(candidate, {
+        workBudget: budget,
+      }),
+    ).toMatchObject({ quality: "optimal" });
+    expect(budget.matrixCells).toBe(36);
+    expect(budget.exhausted).toBe(false);
+  });
+
+  test("charges basename scoring to the same request budget", () => {
+    const fullOnly = new FuzzyMatchWorkBudget({
+      maximumMatrixCells: 1_000,
+      maximumCodePointVisits: 1_000,
+    });
+    const withBasename = new FuzzyMatchWorkBudget({
+      maximumMatrixCells: 1_000,
+      maximumCodePointVisits: 1_000,
+    });
+    const matcher = new BoundedFuzzyMatcher("needle");
+
+    expect(
+      matcher.match("deep/path/needle.ts", {
+        includeIndices: false,
+        workBudget: fullOnly,
+      }),
+    ).not.toBeNull();
+    expect(
+      matcher.match("deep/path/needle.ts", {
+        includeIndices: false,
+        matchBasename: true,
+        workBudget: withBasename,
+      }),
+    ).not.toBeNull();
+    expect(withBasename.matrixCells).toBeGreaterThan(fullOnly.matrixCells);
+    expect(withBasename.codePointVisits).toBeGreaterThan(
+      fullOnly.codePointVisits,
+    );
+  });
+
+  test("materializes indices only for the retained top-k", () => {
+    const candidates = Array.from(
+      { length: 100 },
+      (_, index) => `src/${index.toString().padStart(3, "0")}/needle.ts`,
+    );
+    const budget = new FuzzyMatchWorkBudget({
+      maximumMatrixCells: 10_000_000,
+      maximumCodePointVisits: 10_000_000,
+    });
+
+    expect(
+      rankFuzzyCandidatesSync("needle", candidates, {
+        limit: 3,
+        workBudget: budget,
+      }),
+    ).toHaveLength(3);
+    expect(budget.indexMaterializations).toBe(3);
   });
 
   test("reproduces every pinned Nucleo matrix eligibility boundary", () => {

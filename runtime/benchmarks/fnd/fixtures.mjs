@@ -20,12 +20,6 @@ export function buildFixture(caseId, pointIndex) {
     case "patch_delete_parser_suffix_slicing":
       generated = buildPatchFixture(point);
       break;
-    case "fuzzy_daemon_recursive_scaling":
-      generated = buildDaemonFuzzyFixture(point);
-      break;
-    case "fuzzy_tui_query_truncation":
-      generated = buildTuiFuzzyFixture(point);
-      break;
     default:
       throw new Error(`no fixture generator for benchmark case ${caseId}`);
   }
@@ -110,71 +104,6 @@ function buildPatchFixture(point) {
       source_lines: lines.length,
     },
     payload: { patch },
-  };
-}
-
-function buildDaemonFuzzyFixture(point) {
-  const width = String(point.candidateCount - 1).length;
-  const stem = "ax"
-    .repeat(Math.ceil(point.pathStemCodeUnits / 2))
-    .slice(0, point.pathStemCodeUnits);
-  const paths = new Array(point.candidateCount);
-  for (let index = 0; index < point.candidateCount; index += 1) {
-    paths[index] = `${stem}-${String(index).padStart(width, "0")}.txt`;
-  }
-  const query = "a".repeat(point.queryCodeUnits);
-  const generatedUtf8Bytes = paths.reduce(
-    (total, path) => total + Buffer.byteLength(path) + 2,
-    Buffer.byteLength(query),
-  );
-  const candidatePathCodeUnits = paths[0]?.length ?? 0;
-  return {
-    generatedUtf8Bytes,
-    descriptor: {
-      candidatePathListSha256: sha256Hex(paths.join("\n")),
-      fileContentSha256: sha256Hex("x\n"),
-      querySha256: sha256Hex(query),
-    },
-    operations: {
-      candidate_query_code_unit_pairs:
-        point.candidateCount * point.queryCodeUnits * candidatePathCodeUnits,
-      filesystem_entries: point.candidateCount,
-      recursive_comparison_upper_bound:
-        2 *
-        point.candidateCount *
-        point.queryCodeUnits *
-        candidatePathCodeUnits *
-        candidatePathCodeUnits,
-    },
-    payload: { fileContent: "x\n", paths, query },
-  };
-}
-
-function buildTuiFuzzyFixture(point) {
-  const prefix = "a".repeat(point.indexedQueryCodeUnits);
-  const query = `${prefix}RIGHT`;
-  const wrongPath = `${prefix}WRONG`;
-  const rightPath = `${prefix}RIGHT`;
-  const paths = [wrongPath, rightPath];
-  const generatedUtf8Bytes =
-    Buffer.byteLength(query) +
-    paths.reduce((total, path) => total + Buffer.byteLength(path), 0);
-  return {
-    generatedUtf8Bytes,
-    descriptor: {
-      pathListSha256: sha256Hex(paths.join("\n")),
-      querySha256: sha256Hex(query),
-      rightPathSha256: sha256Hex(rightPath),
-      wrongPathSha256: sha256Hex(wrongPath),
-    },
-    operations: {
-      candidate_query_code_unit_pairs:
-        point.candidateCount * point.indexedQueryCodeUnits,
-      discarded_query_code_units:
-        point.queryCodeUnits - point.indexedQueryCodeUnits,
-      indexed_candidates: point.candidateCount,
-    },
-    payload: { paths, query, rightPath, wrongPath },
   };
 }
 

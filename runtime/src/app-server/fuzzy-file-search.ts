@@ -4,10 +4,12 @@ import { watch, type FSWatcher } from "node:fs";
 import { isAbsolute, posix, relative } from "node:path";
 import {
   BoundedFuzzyMatcher,
+  FuzzyMatchWorkBudget,
   FuzzyBoundaryError,
   MAX_FUZZY_CANDIDATES,
   MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES,
   comparePortablePaths,
+  estimateFuzzyCandidateRetainedBytes,
   fuzzyPathRankScore,
   isFuzzyQueryExtension,
   prepareFuzzyCandidate,
@@ -24,15 +26,18 @@ import {
   FuzzyIndexSourceChangedError,
   openPersistentFuzzyFileIndex,
   type FuzzyFileDiscovery,
+  type FuzzyFileDiscoveryResult,
   type FuzzyIndexedEntry,
   type FuzzyIndexSnapshot,
   type PersistentFuzzyFileIndex,
 } from "./fuzzy-file-index.js";
 import type {
+  FuzzyFileIndexFreshness,
+  FuzzyFileIndexRootFreshness,
+  FuzzyFileMatcherMetadata,
   FuzzyFileSearchParams,
   FuzzyFileSearchResponse,
   FuzzyFileSearchResult,
-  JsonObject,
 } from "./protocol/index.js";
 
 export const DEFAULT_FUZZY_RESULTS = 50;
@@ -58,6 +63,10 @@ export const MAX_FUZZY_AUDIT_BACKOFF_MS = 3_600_000;
 const MATCH_YIELD_INTERVAL = 1_024;
 const FUZZY_AUDIT_BUILD_DURATION_MULTIPLIER = 10;
 const FUZZY_QUERY_CACHE_REFERENCE_BYTES = 16;
+const FUZZY_SNAPSHOT_RETAINED_OVERHEAD_BYTES = 256;
+const FUZZY_ENTRY_RETAINED_OVERHEAD_BYTES = 128;
+const FUZZY_BUFFER_RETAINED_OVERHEAD_BYTES = 96;
+const FUZZY_ARRAY_REFERENCE_BYTES = 8;
 const WATCHER_STATUS_ACTIVE = "active";
 const WATCHER_STATUS_UNSUPPORTED = "unsupported";
 const WATCHER_STATUS_FAILED = "failed";
@@ -68,48 +77,6 @@ const STALE_REASON_WATCHER_UNAVAILABLE = "watcher_unavailable";
 const STALE_REASON_BUILD_RACE = "changed_during_build";
 const DEGRADED_REASON_EMPTY_DIRECTORIES = "empty_directories_unavailable";
 const MAX_SOURCE_CONVERGENCE_ATTEMPTS = 3;
-
-// These additive response details remain internal until the protocol/SDK lane
-// publishes them. Keeping them local lets persistence land independently
-// without weakening the existing JSON-RPC boundary types.
-interface FuzzyFileIndexRootFreshness extends JsonObject {
-  readonly root: string;
-  readonly canonicalRoot: string;
-  readonly generationId: number | null;
-  readonly builtAt: string | null;
-  readonly ageMs: number | null;
-  readonly watcherStatus: "active" | "unsupported" | "failed" | "not_started";
-  readonly directoryCoverage: "complete" | "nonempty_only";
-  readonly lastAuditAt: string | null;
-  readonly building: boolean;
-  readonly stale: boolean;
-  readonly degraded: boolean;
-  readonly truncated: boolean;
-  readonly reason: string | null;
-}
-
-interface FuzzyFileIndexFreshness extends JsonObject {
-  readonly schemaVersion: number;
-  readonly stale: boolean;
-  readonly degraded: boolean;
-  readonly truncated: boolean;
-  readonly roots: readonly FuzzyFileIndexRootFreshness[];
-}
-
-interface FuzzyFileMatcherMetadata extends JsonObject {
-  readonly quality: "optimal" | "degraded";
-  readonly resourceLimited: boolean;
-  readonly evaluatedCandidates: number;
-  readonly totalCandidates: number;
-}
-
-interface FuzzyFileSearchExtensions {
-  readonly limit?: number;
-  readonly refresh?: boolean;
-}
-
-type ValidatedFuzzyFileSearchParams = FuzzyFileSearchParams &
-  FuzzyFileSearchExtensions;
 
 type FuzzyWatcherStatus = FuzzyFileIndexRootFreshness["watcherStatus"];
 
@@ -124,7 +91,6 @@ interface RankedEntry {
   readonly root: ResolvedSearchRoot;
   readonly score: number;
   readonly rankScore: number;
-  readonly indices: readonly number[];
 }
 
 interface SearchCandidate {
@@ -360,7 +326,7 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
   }
 
   async #searchPersistent(
-    params: ValidatedFuzzyFileSearchParams,
+    params: FuzzyFileSearchParams,
     signal: AbortSignal,
     allowedRoots: readonly string[] | undefined,
   ): Promise<FuzzyFileSearchResponse> {
@@ -694,6 +660,7 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
       const discovery = await this.#discover(state.canonicalRoot, signal);
       if (signal.aborted) throw new FuzzyIndexBuildCancelledError();
       if (state.changeEpoch !== epochAtStart) continue;
+      this.#makeCacheRoom(estimateDiscoveryCacheBytes(discovery), state);
       let snapshot: FuzzyIndexSnapshot | null;
       try {
         snapshot = await this.#persistentIndex().publish(
@@ -867,6 +834,12 @@ export async function runFuzzyFileSearch(
   for (const root of roots) {
     if (signal.aborted) return [];
     const discovery = await discoverFuzzyFiles(root.canonicalRoot, signal);
+    if (discovery.truncated) {
+      throw new FuzzyFileSearchBoundaryError(
+        "TRAVERSAL_LIMIT",
+        "fuzzy-file discovery reached a bound; refusing to search a prefix",
+      );
+    }
     syntheticGeneration += 1;
     snapshots.set(root.canonicalRoot, {
       rootKey: root.canonicalRoot,
@@ -1013,9 +986,10 @@ export function fuzzyAbsolutePathKey(
 ): string {
   const portableRoot =
     platform === "win32" ? canonicalRoot.replace(/\\/gu, "/") : canonicalRoot;
+  const separator = portableRoot.endsWith("/") ? "" : "/";
   return Buffer.concat([
     Buffer.from(portableRoot, "utf8"),
-    Buffer.from("/", "utf8"),
+    Buffer.from(separator, "utf8"),
     relativePathBytes,
   ]).toString("hex");
 }
@@ -1032,12 +1006,13 @@ async function rankSearchEntries(
   readonly matchedCandidates: readonly SearchCandidate[];
 }> {
   const matcher = new BoundedFuzzyMatcher(query, { caseMode: "insensitive" });
+  const workBudget = new FuzzyMatchWorkBudget({
+    maximumMatrixCells: MAX_FUZZY_QUERY_MATRIX_CELLS,
+    maximumCodePointVisits: MAX_FUZZY_QUERY_CODEPOINT_VISITS,
+  });
   const top: RankedEntry[] = [];
   const matchedCandidates: SearchCandidate[] = [];
-  const queryCodePoints = Array.from(query).length;
   const startedAt = performance.now();
-  let matrixCells = 0;
-  let codePointVisits = 0;
   let evaluatedCandidates = 0;
   let resourceLimited = false;
   for (const [index, candidate] of candidates.entries()) {
@@ -1061,35 +1036,20 @@ async function rankSearchEntries(
     const searchCandidate =
       candidate.entry.searchCandidate ??
       prepareFuzzyCandidate(candidate.entry.relativePath);
-    const candidateCodePoints = searchCandidate.codePoints.length;
-    const prefilterVisits = queryCodePoints + candidateCodePoints;
     if (performance.now() - startedAt > MAX_FUZZY_QUERY_MS) {
       resourceLimited = true;
       break;
     }
-    const candidateMatrixCells = queryCodePoints * candidateCodePoints;
-    const forceDegraded =
-      !Number.isSafeInteger(candidateMatrixCells) ||
-      matrixCells + candidateMatrixCells > MAX_FUZZY_QUERY_MATRIX_CELLS;
-    const matchingVisits = forceDegraded
-      ? prefilterVisits
-      : candidateMatrixCells;
-    const nextVisits = codePointVisits + prefilterVisits + matchingVisits;
-    if (
-      !Number.isSafeInteger(nextVisits) ||
-      nextVisits > MAX_FUZZY_QUERY_CODEPOINT_VISITS
-    ) {
+    const match = matcher.match(searchCandidate, {
+      includeIndices: false,
+      lengthBonus: false,
+      matchBasename: true,
+      workBudget,
+    });
+    if (workBudget.exhausted) {
       resourceLimited = true;
       break;
     }
-    codePointVisits = nextVisits;
-    if (!forceDegraded) matrixCells += candidateMatrixCells;
-    const match = matcher.match(searchCandidate, {
-      forceDegraded,
-      includeIndices: true,
-      lengthBonus: false,
-      matchBasename: true,
-    });
     evaluatedCandidates += 1;
     if (match === null) continue;
     matchedCandidates.push(candidate);
@@ -1103,7 +1063,6 @@ async function rankSearchEntries(
           candidate.entry.relativePath,
           match.score,
         ),
-        indices: match.indices,
       },
       limit,
     );
@@ -1115,18 +1074,39 @@ async function rankSearchEntries(
       matchedCandidates: [],
     };
   }
-  const files = top
-    .sort(compareRankedEntries)
-    .map(({ entry, root, score, indices }) => {
-      return {
-        root: root.displayRoot,
-        path: entry.relativePath,
-        match_type: entry.matchType,
-        file_name: posix.basename(entry.relativePath) || entry.relativePath,
-        score,
-        indices,
-      };
+  const files: FuzzyFileSearchResult[] = [];
+  for (const ranked of top.sort(compareRankedEntries)) {
+    if (performance.now() - startedAt > MAX_FUZZY_QUERY_MS) {
+      resourceLimited = true;
+      break;
+    }
+    const searchCandidate =
+      ranked.entry.searchCandidate ??
+      prepareFuzzyCandidate(ranked.entry.relativePath);
+    const match = matcher.match(searchCandidate, {
+      includeIndices: true,
+      lengthBonus: false,
+      matchBasename: true,
+      workBudget,
     });
+    if (workBudget.exhausted) {
+      resourceLimited = true;
+      break;
+    }
+    if (match === null || match.score !== ranked.score) {
+      resourceLimited = true;
+      break;
+    }
+    files.push({
+      root: ranked.root.displayRoot,
+      path: ranked.entry.relativePath,
+      match_type: ranked.entry.matchType,
+      file_name:
+        posix.basename(ranked.entry.relativePath) || ranked.entry.relativePath,
+      score: ranked.score,
+      indices: match.indices,
+    });
+  }
   return {
     files,
     matcher: matcherMetadata(
@@ -1179,9 +1159,7 @@ export class FuzzyFileSearchBoundaryError extends Error {
   }
 }
 
-function validateSearchParamsBeforeIo(
-  params: FuzzyFileSearchParams,
-): asserts params is ValidatedFuzzyFileSearchParams {
+function validateSearchParamsBeforeIo(params: FuzzyFileSearchParams): void {
   try {
     if (params.query.length > 0) validateFuzzyQuery(params.query);
   } catch (error) {
@@ -1433,25 +1411,34 @@ function cachedRootBytes(
 }
 
 function estimateSnapshotCacheBytes(snapshot: FuzzyIndexSnapshot): number {
-  let bytes = 0;
+  let bytes = FUZZY_SNAPSHOT_RETAINED_OVERHEAD_BYTES;
   for (const entry of snapshot.entries) {
     const candidate =
       entry.searchCandidate ?? prepareFuzzyCandidate(entry.relativePath);
     bytes +=
       entry.pathBytes.byteLength +
-      Buffer.byteLength(entry.relativePath, "utf8") +
-      Buffer.byteLength(candidate.text, "utf8") +
-      Buffer.byteLength(candidate.portableText, "utf8") +
-      candidate.codePoints.byteLength +
-      candidate.foldedCodePoints.byteLength +
-      candidate.normalizedCodePoints.byteLength +
-      candidate.foldedNormalizedCodePoints.byteLength +
-      candidate.utf16Offsets.byteLength +
-      candidate.boundaryBonuses.byteLength +
-      candidate.signature.byteLength +
-      candidate.foldedSignature.byteLength +
-      candidate.normalizedSignature.byteLength +
-      candidate.foldedNormalizedSignature.byteLength;
+      FUZZY_BUFFER_RETAINED_OVERHEAD_BYTES +
+      FUZZY_ENTRY_RETAINED_OVERHEAD_BYTES +
+      FUZZY_ARRAY_REFERENCE_BYTES +
+      estimateFuzzyCandidateRetainedBytes(candidate);
+    if (!Number.isSafeInteger(bytes) || bytes > MAX_FUZZY_CACHE_BYTES) {
+      return MAX_FUZZY_CACHE_BYTES + 1;
+    }
+  }
+  return bytes;
+}
+
+function estimateDiscoveryCacheBytes(
+  discovery: FuzzyFileDiscoveryResult,
+): number {
+  let bytes = FUZZY_SNAPSHOT_RETAINED_OVERHEAD_BYTES;
+  for (const entry of discovery.entries) {
+    bytes +=
+      entry.pathBytes.byteLength +
+      FUZZY_BUFFER_RETAINED_OVERHEAD_BYTES +
+      FUZZY_ENTRY_RETAINED_OVERHEAD_BYTES +
+      FUZZY_ARRAY_REFERENCE_BYTES +
+      estimateFuzzyCandidateRetainedBytes(entry.relativePath);
     if (!Number.isSafeInteger(bytes) || bytes > MAX_FUZZY_CACHE_BYTES) {
       return MAX_FUZZY_CACHE_BYTES + 1;
     }

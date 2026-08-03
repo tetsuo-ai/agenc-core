@@ -203,7 +203,7 @@ describe("FND benchmark baseline contract", () => {
     expect(() => validateBenchmarkReport(gated)).toThrow(/gateEnforced/u);
 
     const thresholded = structuredClone(readBaseline());
-    thresholded.cases[2].assessment.threshold = { elapsedMs: 2_500 };
+    thresholded.cases[0].assessment.threshold = { elapsedMs: 2_500 };
     expect(() => validateBenchmarkReport(thresholded)).toThrow(/threshold/u);
 
     for (const benchmarkCase of readBaseline().cases) {

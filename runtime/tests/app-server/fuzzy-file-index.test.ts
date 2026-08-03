@@ -7,17 +7,21 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   entriesFromRipgrepPaths,
+  canonicalizeFuzzyIndexRoot,
   discoverFuzzyFiles,
   FuzzyIndexBuildCancelledError,
   FuzzyIndexSchemaError,
   FuzzyIndexSourceChangedError,
+  FUZZY_FILE_INDEX_POLICY_ID,
   FUZZY_FILE_INDEX_SCHEMA_VERSION,
+  fuzzyIndexRootKey,
   MAX_FUZZY_INDEXED_ROOTS,
   openPersistentFuzzyFileIndex,
   PersistentFuzzyFileIndex,
   type FuzzyIndexedEntry,
 } from "../../src/app-server/fuzzy-file-index.js";
 import { gitExe } from "../../src/utils/git.js";
+import { MAX_FUZZY_CANDIDATE_UTF8_BYTES } from "../../src/search/fuzzy-match.js";
 
 const temporaryRoots: string[] = [];
 const execFileAsync = promisify(execFile);
@@ -31,6 +35,26 @@ afterEach(async () => {
 });
 
 describe("persistent fuzzy-file generations", () => {
+  test.skipIf(process.platform !== "linux")(
+    "preserves normalization-sensitive filesystem root identities",
+    async () => {
+      const allocation = await temporaryRoot("agenc-fuzzy-unicode-root-");
+      const nfcRoot = join(allocation, "\u00e9");
+      const nfdRoot = join(allocation, "e\u0301");
+      await Promise.all([mkdir(nfcRoot), mkdir(nfdRoot)]);
+
+      const canonicalNfcRoot = await canonicalizeFuzzyIndexRoot(nfcRoot);
+      const canonicalNfdRoot = await canonicalizeFuzzyIndexRoot(nfdRoot);
+
+      expect(canonicalNfcRoot).toBe(nfcRoot);
+      expect(canonicalNfdRoot).toBe(nfdRoot);
+      expect(canonicalNfdRoot).not.toBe(canonicalNfcRoot);
+      expect(fuzzyIndexRootKey(canonicalNfdRoot)).not.toBe(
+        fuzzyIndexRootKey(canonicalNfcRoot),
+      );
+    },
+  );
+
   test("publishes one complete immutable generation and recovers it after restart", async () => {
     const { databasePath } = await temporaryDatabase();
     const root = "/portable/project";
@@ -229,6 +253,61 @@ describe("persistent fuzzy-file generations", () => {
     writer.close();
   });
 
+  test("reaps staging generations after grace during later root admission", async () => {
+    const { databasePath } = await temporaryDatabase();
+    const initializer = new PersistentFuzzyFileIndex({ databasePath });
+    initializer.close();
+    const database = new Database(databasePath);
+    const insertRoot = database.prepare(
+      `INSERT INTO fuzzy_index_roots
+         (root_key, canonical_root, policy_id, current_generation_id,
+          last_access_at_ms)
+       VALUES (?, ?, ?, NULL, 0)`,
+    );
+    const insertGeneration = database.prepare(
+      `INSERT INTO fuzzy_index_generations
+         (root_key, state, started_at_ms, completed_at_ms, entry_count,
+          path_bytes, digest, truncated, source_boundary, directory_coverage,
+          inserted_count, inserted_path_bytes, heartbeat_at_ms, error_text)
+       VALUES (?, 'staging', 0, NULL, NULL, NULL, NULL, 0, 'test',
+               'nonempty_only', 0, 0, 0, '')`,
+    );
+    database.transaction(() => {
+      for (let index = 0; index < MAX_FUZZY_INDEXED_ROOTS; index += 1) {
+        const root = `/interrupted-${index}`;
+        const rootKey = fuzzyIndexRootKey(root);
+        insertRoot.run(rootKey, root, FUZZY_FILE_INDEX_POLICY_ID);
+        insertGeneration.run(rootKey);
+      }
+    })();
+    database.close();
+
+    let nowMs = 100_000;
+    const store = new PersistentFuzzyFileIndex({
+      databasePath,
+      now: () => nowMs,
+    });
+    nowMs = 300_001;
+    await expect(
+      store.publish(
+        "/replacement",
+        { entries: [entry("replacement.ts")], truncated: false },
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ entryCount: 1 });
+    store.close();
+
+    const inspection = new Database(databasePath, { readonly: true });
+    expect(
+      inspection
+        .prepare(
+          "SELECT count(*) AS count FROM fuzzy_index_generations WHERE state = 'staging'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    inspection.close();
+  });
+
   test("cancels between slices and rejects a changed source boundary without cutover", async () => {
     const { databasePath } = await temporaryDatabase();
     const root = "/portable/bounded-cancel";
@@ -290,6 +369,15 @@ describe("persistent fuzzy-file generations", () => {
     ).rejects.toThrow(/changed state before publication/u);
     tamper.close();
     expect(store.readCurrent(root)?.generationId).toBe(original?.generationId);
+    const inspection = new Database(databasePath, { readonly: true });
+    expect(
+      inspection
+        .prepare(
+          "SELECT count(*) AS count FROM fuzzy_index_generations WHERE state != 'complete'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    inspection.close();
     store.close();
   });
 
@@ -308,6 +396,29 @@ describe("persistent fuzzy-file generations", () => {
     database
       .prepare("UPDATE fuzzy_index_entries SET relative_path = ?")
       .run("tampered.ts");
+    database.close();
+
+    const reader = new PersistentFuzzyFileIndex({ databasePath });
+    expect(reader.readCurrent(root)).toBeNull();
+    expect(reader.readCurrent(root)).toBeNull();
+    reader.close();
+  });
+
+  test("invalidates an oversized persisted candidate before hydration", async () => {
+    const { databasePath } = await temporaryDatabase();
+    const root = "/portable/oversized-candidate";
+    const store = new PersistentFuzzyFileIndex({ databasePath });
+    await store.publish(
+      root,
+      { entries: [entry("authentic.ts")], truncated: false },
+      new AbortController().signal,
+    );
+    store.close();
+
+    const database = new Database(databasePath);
+    database
+      .prepare("UPDATE fuzzy_index_entries SET relative_path = ?")
+      .run("x".repeat(MAX_FUZZY_CANDIDATE_UTF8_BYTES + 1));
     database.close();
 
     const reader = new PersistentFuzzyFileIndex({ databasePath });
@@ -374,6 +485,41 @@ describe("persistent fuzzy-file generations", () => {
         .map((row) => (row as { readonly name: string }).name),
     ).toContain("last_access_at_ms");
     migratedDatabase.close();
+
+    const partial = await temporaryDatabase();
+    const partialDatabase = new Database(partial.databasePath);
+    partialDatabase.exec(`
+      CREATE TABLE fuzzy_index_roots (
+        root_key TEXT PRIMARY KEY,
+        canonical_root TEXT NOT NULL,
+        policy_id TEXT NOT NULL,
+        current_generation_id INTEGER,
+        last_access_at_ms INTEGER NOT NULL DEFAULT 0
+      ) STRICT;
+      PRAGMA user_version = 1;
+    `);
+    partialDatabase.close();
+
+    const resumed = new PersistentFuzzyFileIndex({
+      databasePath: partial.databasePath,
+    });
+    resumed.close();
+    const reopened = new PersistentFuzzyFileIndex({
+      databasePath: partial.databasePath,
+    });
+    reopened.close();
+    const resumedDatabase = new Database(partial.databasePath);
+    expect(resumedDatabase.pragma("user_version", { simple: true })).toBe(
+      FUZZY_FILE_INDEX_SCHEMA_VERSION,
+    );
+    expect(
+      resumedDatabase
+        .prepare(
+          "SELECT count(*) AS count FROM pragma_table_info('fuzzy_index_roots') WHERE name = 'last_access_at_ms'",
+        )
+        .get(),
+    ).toEqual({ count: 1 });
+    resumedDatabase.close();
   });
 
   test("bounds persistent roots with idle and least-recently-used eviction", async () => {
@@ -453,6 +599,31 @@ describe("persistent fuzzy-file generations", () => {
         }),
       ]),
     );
+  });
+
+  test("rejects Windows drive, drive-relative, and alternate-stream records", () => {
+    for (const path of [
+      String.raw`C:\outside.ts`,
+      "C:/outside.ts",
+      "C:outside.ts",
+      "inside.ts:stream",
+    ]) {
+      expect(() =>
+        entriesFromRipgrepPaths([Buffer.from(path)], "win32"),
+      ).toThrow(/outside the canonical root/u);
+    }
+  });
+
+  test("stops lazily on a separator-dense candidate at the byte boundary", () => {
+    const densePath = Buffer.from(
+      "a/".repeat(MAX_FUZZY_CANDIDATE_UTF8_BYTES / 2),
+    );
+
+    expect(densePath.byteLength).toBe(MAX_FUZZY_CANDIDATE_UTF8_BYTES);
+    expect(entriesFromRipgrepPaths([densePath], "linux")).toMatchObject({
+      entries: [],
+      truncated: true,
+    });
   });
 
   test("uses Git's tracked and standard-ignore byte surface and includes empty directories", async () => {
@@ -555,7 +726,30 @@ describe("persistent fuzzy-file generations", () => {
 
     expect(files).toEqual(expect.arrayContaining(["seed.txt", "visible.txt"]));
     expect(files).not.toContain("common-excluded.txt");
-    expect(result.directoryCoverage).toBe("complete");
+    expect(result.directoryCoverage).toBe("nonempty_only");
+  });
+
+  test("reports incomplete directory coverage after a tracked deletion", async () => {
+    const root = await temporaryRoot("agenc-fuzzy-deleted-directory-");
+    await runGit(root, ["init"]);
+    await runGit(root, ["config", "user.name", "AgenC Test"]);
+    await runGit(root, ["config", "user.email", "test@example.invalid"]);
+    await mkdir(join(root, "d"));
+    await writeFile(join(root, "d", "a"), "tracked\n");
+    await runGit(root, ["add", "d/a"]);
+    await runGit(root, ["commit", "-m", "seed tracked directory"]);
+    await unlink(join(root, "d", "a"));
+
+    const result = await discoverFuzzyFiles(
+      root,
+      new AbortController().signal,
+      { gitProgram: gitExe() },
+    );
+
+    expect(result.entries.map((value) => value.relativePath)).not.toContain(
+      "d",
+    );
+    expect(result.directoryCoverage).toBe("nonempty_only");
   });
 });
 

@@ -593,6 +593,8 @@ describe("AgenC daemon protocol surface", () => {
           query: "src",
           roots: ["/workspace"],
           cancellationToken: "search_1",
+          limit: 25,
+          refresh: true,
         },
       },
       {
@@ -758,6 +760,24 @@ describe("AgenC daemon protocol surface", () => {
         jsonrpc: JSON_RPC_VERSION,
         method: "agent.list",
         params: {},
+      }),
+    ).toBe(false);
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "oversized-fuzzy-limit",
+        method: "fs.fuzzy_search",
+        params: { query: "src", roots: ["/workspace"], limit: 1_001 },
+      }),
+    ).toBe(false);
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "invalid-fuzzy-refresh",
+        method: "fs.fuzzy_search",
+        params: { query: "src", roots: ["/workspace"], refresh: "yes" },
       }),
     ).toBe(false);
 

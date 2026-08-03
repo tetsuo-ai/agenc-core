@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -233,7 +233,7 @@ describe("AgenC daemon fuzzy file search", () => {
     });
   });
 
-  it("respects info/exclude when .git points at an external gitdir", async () => {
+  it("does not trust an external gitdir pointer in a non-Git root", async () => {
     await withTempTree(async (root) => {
       const repo = join(root, "repo");
       const gitDir = join(root, "gitdir");
@@ -251,7 +251,7 @@ describe("AgenC daemon fuzzy file search", () => {
         query: "excluded",
         roots: [repo],
       });
-      expect(excludedFiles.map((file) => file.path)).not.toContain(
+      expect(excludedFiles.map((file) => file.path)).toContain(
         "excluded-worktree.txt",
       );
 
@@ -441,6 +441,33 @@ describe("AgenC daemon fuzzy file search", () => {
       ),
     ).rejects.toMatchObject({ reason: "ROOT_COUNT_LIMIT" });
     expect(runSearch).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a requested symlink whose canonical target leaves the trusted root", async () => {
+    await withTempTree(async (root) => {
+      const allowedRoot = join(root, "allowed");
+      const outsideRoot = join(root, "outside");
+      const requestedRoot = join(allowedRoot, "escape");
+      await Promise.all([
+        mkdir(allowedRoot, { recursive: true }),
+        mkdir(outsideRoot, { recursive: true }),
+      ]);
+      await symlink(
+        outsideRoot,
+        requestedRoot,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      const runSearch = vi.fn(async () => []);
+      const service = new AgenCFuzzyFileSearchService({ runSearch });
+
+      await expect(
+        service.search(
+          { query: "needle", roots: [requestedRoot] },
+          { allowedRoots: [allowedRoot] },
+        ),
+      ).rejects.toMatchObject({ reason: "UNAUTHORIZED_ROOT" });
+      expect(runSearch).not.toHaveBeenCalled();
+    });
   });
 
   it("enforces direct-service query, encoding, raw-root, and result bounds before search", async () => {

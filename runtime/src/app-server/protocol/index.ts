@@ -1678,6 +1678,10 @@ export interface FuzzyFileSearchParams extends JsonObject {
   readonly query: string;
   readonly roots: readonly string[];
   readonly cancellationToken?: string | null;
+  /** Maximum number of results to return. The daemon accepts 1 through 1,000. */
+  readonly limit?: number;
+  /** Rebuild the persistent index before evaluating the query. */
+  readonly refresh?: boolean;
 }
 
 export interface CommandExecTerminalSize extends JsonObject {
@@ -3089,8 +3093,43 @@ export interface FuzzyFileSearchResult extends JsonObject {
   readonly indices?: readonly number[];
 }
 
+export interface FuzzyFileIndexRootFreshness extends JsonObject {
+  readonly root: string;
+  readonly canonicalRoot: string;
+  readonly generationId: number | null;
+  readonly builtAt: string | null;
+  readonly ageMs: number | null;
+  readonly watcherStatus: "active" | "unsupported" | "failed" | "not_started";
+  readonly directoryCoverage: "complete" | "nonempty_only";
+  readonly lastAuditAt: string | null;
+  readonly building: boolean;
+  readonly stale: boolean;
+  readonly degraded: boolean;
+  readonly truncated: boolean;
+  readonly reason: string | null;
+}
+
+export interface FuzzyFileIndexFreshness extends JsonObject {
+  readonly schemaVersion: number;
+  readonly stale: boolean;
+  readonly degraded: boolean;
+  readonly truncated: boolean;
+  readonly roots: readonly FuzzyFileIndexRootFreshness[];
+}
+
+export interface FuzzyFileMatcherMetadata extends JsonObject {
+  readonly quality: "optimal" | "degraded";
+  readonly resourceLimited: boolean;
+  readonly evaluatedCandidates: number;
+  readonly totalCandidates: number;
+}
+
 export interface FuzzyFileSearchResponse extends JsonObject {
   readonly files: readonly FuzzyFileSearchResult[];
+  /** Present for searches served by the persistent index. */
+  readonly freshness?: FuzzyFileIndexFreshness;
+  /** Present for searches served by the persistent index. */
+  readonly matcher?: FuzzyFileMatcherMetadata;
 }
 
 export interface HealthPingResult extends JsonObject {

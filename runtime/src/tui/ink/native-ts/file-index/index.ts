@@ -109,11 +109,13 @@ export class FileIndex {
     // Preserve asynchronous API semantics even for a tiny list: callers keep
     // the preceding generation for the remainder of their current turn.
     await yieldToEventLoop();
+    if (generationId !== this.requestedGeneration) return;
     const seen = new Set<string>();
     const paths: PreparedFuzzyCandidate[] = [];
     const budget = new FuzzyCandidateBudget();
     let chunkStartedAt = performance.now();
     for (const [index, path] of fileList.entries()) {
+      if (generationId !== this.requestedGeneration) return;
       if (path.length > 0 && !seen.has(path)) {
         const prepared = prepareFuzzyCandidate(path);
         budget.add(prepared);
@@ -125,6 +127,7 @@ export class FileIndex {
         performance.now() - chunkStartedAt > CHUNK_MS
       ) {
         await yieldToEventLoop();
+        if (generationId !== this.requestedGeneration) return;
         chunkStartedAt = performance.now();
       }
     }

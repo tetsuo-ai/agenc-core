@@ -162,9 +162,10 @@ workspace capability; request data is never treated as its own authorization.
 
 The additive `freshness` response reports each root's generation, age, watcher
 state, audit time, directory coverage, and stale/degraded/truncated flags.
-`directoryCoverage: "nonempty_only"` is explicit for a non-Git ripgrep
-generation because exact ignored empty-directory parity is unavailable; Git
-generations report `"complete"`. Callers must inspect these fields: watcher
+`directoryCoverage: "nonempty_only"` is explicit for both Git and non-Git
+generations: Git cannot represent a directory whose last tracked file was
+deleted, while ripgrep cannot provide exact ignored empty-directory parity.
+Callers must inspect these fields: watcher
 loss, a daemon restart gap, and incomplete directory coverage are never
 presented as proof of full freshness. Additive `matcher` metadata reports
 optimal versus full-query degraded matching, resource-limit truncation, and

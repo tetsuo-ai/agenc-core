@@ -47,6 +47,18 @@ describe("daemon persistent fuzzy-file search", () => {
     ).not.toBe(
       fuzzyAbsolutePathKey("/repo/literal", Buffer.from("file.ts"), "linux"),
     );
+    expect(
+      fuzzyAbsolutePathKey("/", Buffer.from("repo/file.ts"), "linux"),
+    ).toBe(fuzzyAbsolutePathKey("/repo", Buffer.from("file.ts"), "linux"));
+    expect(
+      fuzzyAbsolutePathKey("C:\\", Buffer.from("repo/file.ts"), "win32"),
+    ).toBe(
+      fuzzyAbsolutePathKey(
+        String.raw`C:\repo`,
+        Buffer.from("file.ts"),
+        "win32",
+      ),
+    );
   });
 
   test("uses a warm complete generation and atomically refreshes after a watcher event", async () => {
@@ -380,7 +392,7 @@ describe("daemon persistent fuzzy-file search", () => {
     const longPath = `${"a".repeat(100)}-needle.ts`;
     const service = new AgenCFuzzyFileSearchService({
       index,
-      maximumCacheBytes: 4_000,
+      maximumCacheBytes: 5_000,
       discover: async () => discovery([longPath]),
       watchRoot: () => {
         const watcher = { close: vi.fn() };
@@ -395,6 +407,42 @@ describe("daemon persistent fuzzy-file search", () => {
     expect(watchers).toHaveLength(2);
     expect(watchers[0]?.close).toHaveBeenCalledOnce();
     expect(watchers[1]?.close).not.toHaveBeenCalled();
+    await service.close();
+    index.close();
+  });
+
+  test("rejects an unservable generation before persistent cutover", async () => {
+    const index = await temporaryIndex();
+    const service = new AgenCFuzzyFileSearchService({
+      index,
+      maximumCacheBytes: 1_000,
+      discover: async () => discovery([`${"a".repeat(200)}-needle.ts`]),
+      watchRoot: () => null,
+    });
+
+    await expect(
+      service.search({ query: "needle", roots: ["/project"] }),
+    ).rejects.toMatchObject({ reason: "CACHE_LIMIT" });
+    expect(index.readCurrent("/project")).toBeNull();
+
+    await service.close();
+    index.close();
+  });
+
+  test("rejects many short candidates when retained object overhead exceeds cache", async () => {
+    const index = await temporaryIndex();
+    const service = new AgenCFuzzyFileSearchService({
+      index,
+      maximumCacheBytes: 2_500,
+      discover: async () => discovery(["a.ts", "b.ts"]),
+      watchRoot: () => null,
+    });
+
+    await expect(
+      service.search({ query: "a", roots: ["/short-paths"] }),
+    ).rejects.toMatchObject({ reason: "CACHE_LIMIT" });
+    expect(index.readCurrent("/short-paths")).toBeNull();
+
     await service.close();
     index.close();
   });

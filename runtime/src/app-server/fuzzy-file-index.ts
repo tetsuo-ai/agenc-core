@@ -8,13 +8,14 @@
 
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, renameSync } from "node:fs";
-import { readFile, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { realpath } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
 import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
 import { getAgenCConfigHomeDir } from "../utils/envUtils.js";
+import { gitExe } from "../utils/git.js";
 import { runSupervisedProcess } from "../utils/supervisedProcess.js";
 import {
   MAX_FUZZY_CANDIDATES,
@@ -22,9 +23,10 @@ import {
   MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES,
   comparePortablePaths,
   prepareFuzzyCandidate,
+  validateFuzzyCandidate,
   type PreparedFuzzyCandidate,
 } from "../search/fuzzy-match.js";
-import { PINNED_RIPGREP_PATH } from "../tools/system/pinned-ripgrep.js";
+import { selectPinnedRipgrepPath } from "../tools/system/pinned-ripgrep.js";
 import {
   assertGrepArgvWithinLimits,
   createRipgrepWireParser,
@@ -55,11 +57,13 @@ const CLEANUP_BATCH_GENERATIONS = 128;
 const HASH_LENGTH_PREFIX_BYTES = 8;
 const PATH_SEPARATOR_BYTE = 0x2f;
 const WINDOWS_PATH_SEPARATOR_BYTE = 0x5c;
+const WINDOWS_PATH_COLON_BYTE = 0x3a;
 const CURRENT_DIRECTORY_BYTE = 0x2e;
 const ENTRY_TYPE_FILE_TAG = "F";
 const ENTRY_TYPE_DIRECTORY_TAG = "D";
 const EMPTY_ERROR_TEXT = "";
-const GIT_EXECUTABLE_NAME = "git";
+const PINNED_RIPGREP_UNAVAILABLE_MESSAGE =
+  "pinned ripgrep file discovery is unavailable; run `agenc doctor`, then reinstall the same AgenC version";
 const RECOVERABLE_SQLITE_CORRUPTION_CODES = new Set([
   "SQLITE_CORRUPT",
   "SQLITE_NOTADB",
@@ -85,7 +89,7 @@ export interface FuzzyFileDiscoveryResult {
 export type FuzzyDirectoryCoverage = "complete" | "nonempty_only";
 
 export interface FuzzyFileDiscoveryOptions {
-  /** Test seam for a resolved executable; production lets the OS resolve Git. */
+  /** Test seam for a resolved executable; production uses the cached Git path. */
   readonly gitProgram?: string;
   /** Test seam for global/common-dir ignore fixtures. */
   readonly environment?: NodeJS.ProcessEnv;
@@ -134,6 +138,13 @@ interface EntryRow {
   readonly path_bytes: Buffer;
   readonly entry_type: FuzzyIndexedEntryType;
   readonly fingerprint: string;
+}
+
+interface GenerationEntryBoundsRow {
+  readonly entry_count: number;
+  readonly path_bytes: number;
+  readonly candidate_bytes: number;
+  readonly maximum_candidate_bytes: number;
 }
 
 export class FuzzyIndexBoundaryError extends Error {
@@ -192,7 +203,9 @@ export class PersistentFuzzyFileIndex {
       configureDatabase(this.#db);
       initializeSchema(this.#db);
       chmodSync(this.databasePath, INDEX_FILE_MODE);
-      this.#recoverInterruptedBuilds();
+      this.#db
+        .transaction(() => this.#reapExpiredStaging(this.#now()))
+        .immediate();
     } catch (error) {
       this.#db.close();
       throw error;
@@ -363,7 +376,7 @@ export class PersistentFuzzyFileIndex {
         entries,
       });
     } catch (error) {
-      this.#failGeneration(generationId, errorMessage(error));
+      this.#failGeneration(generationId, rootKey, errorMessage(error));
       throw error;
     }
   }
@@ -376,6 +389,7 @@ export class PersistentFuzzyFileIndex {
   ): number {
     const startedAtMs = this.#now();
     const transaction = this.#db.transaction(() => {
+      this.#reapExpiredStaging(startedAtMs);
       this.#evictExpiredRoots(rootKey, startedAtMs);
       const rootExists = this.#db
         .prepare<[string], { readonly present: number }>(
@@ -507,15 +521,33 @@ export class PersistentFuzzyFileIndex {
     readonly entries: FuzzyIndexedEntry[];
     readonly fingerprintsValid: boolean;
   } {
+    const bounds = this.#db
+      .prepare<[number], GenerationEntryBoundsRow>(
+        `SELECT count(*) AS entry_count,
+                coalesce(sum(length(path_bytes)), 0) AS path_bytes,
+                coalesce(sum(length(CAST(relative_path AS BLOB))), 0)
+                  AS candidate_bytes,
+                coalesce(max(length(CAST(relative_path AS BLOB))), 0)
+                  AS maximum_candidate_bytes
+           FROM fuzzy_index_entries
+          WHERE generation_id = ?`,
+      )
+      .get(generationId);
+    if (!generationEntryBoundsAreValid(bounds)) {
+      return { entries: [], fingerprintsValid: false };
+    }
+
     let fingerprintsValid = true;
-    const entries = this.#db
+    const entries: FuzzyIndexedEntry[] = [];
+    const rows = this.#db
       .prepare<[number], EntryRow>(
         `SELECT relative_path, path_bytes, entry_type, fingerprint
            FROM fuzzy_index_entries
           WHERE generation_id = ? ORDER BY ordinal`,
       )
-      .all(generationId)
-      .map((row) => {
+      .iterate(generationId);
+    try {
+      for (const row of rows) {
         const entry = Object.freeze({
           relativePath: row.relative_path,
           pathBytes: Buffer.from(row.path_bytes),
@@ -525,8 +557,11 @@ export class PersistentFuzzyFileIndex {
         if (row.fingerprint !== fingerprintEntry(entry, canonicalRoot)) {
           fingerprintsValid = false;
         }
-        return entry;
-      });
+        entries.push(entry);
+      }
+    } catch {
+      fingerprintsValid = false;
+    }
     return { entries, fingerprintsValid };
   }
 
@@ -554,7 +589,11 @@ export class PersistentFuzzyFileIndex {
       .immediate();
   }
 
-  #failGeneration(generationId: number, message: string): void {
+  #failGeneration(
+    generationId: number,
+    rootKey: string,
+    message: string,
+  ): void {
     this.#db
       .prepare<[number, string, number]>(
         `UPDATE fuzzy_index_generations
@@ -562,10 +601,11 @@ export class PersistentFuzzyFileIndex {
           WHERE id = ? AND state = 'staging'`,
       )
       .run(this.#now(), boundedErrorText(message), generationId);
+    this.#pruneRoot(rootKey);
   }
 
-  #recoverInterruptedBuilds(): void {
-    const expiredBeforeMs = this.#now() - INTERRUPTED_BUILD_HEARTBEAT_GRACE_MS;
+  #reapExpiredStaging(nowMs: number): void {
+    const expiredBeforeMs = nowMs - INTERRUPTED_BUILD_HEARTBEAT_GRACE_MS;
     this.#db
       .prepare<[number, number]>(
         `UPDATE fuzzy_index_generations
@@ -573,7 +613,7 @@ export class PersistentFuzzyFileIndex {
                 error_text = 'interrupted before publication'
           WHERE state = 'staging' AND heartbeat_at_ms <= ?`,
       )
-      .run(this.#now(), expiredBeforeMs);
+      .run(nowMs, expiredBeforeMs);
   }
 
   #touchRoot(rootKey: string): void {
@@ -692,9 +732,9 @@ export function openPersistentFuzzyFileIndex(
 export async function canonicalizeFuzzyIndexRoot(
   root: string,
 ): Promise<string> {
-  const absolute = resolve(root).normalize("NFC");
+  const absolute = resolve(root);
   try {
-    return (await realpath(absolute)).normalize("NFC");
+    return await realpath(absolute);
   } catch {
     return absolute;
   }
@@ -707,10 +747,7 @@ export function fuzzyIndexRootKey(canonicalRoot: string): string {
     hash,
     Buffer.from(String(FUZZY_FILE_INDEX_SCHEMA_VERSION), "utf8"),
   );
-  updateLengthPrefixed(
-    hash,
-    Buffer.from(canonicalRoot.normalize("NFC"), "utf8"),
-  );
+  updateLengthPrefixed(hash, Buffer.from(canonicalRoot, "utf8"));
   return hash.digest("hex");
 }
 
@@ -720,7 +757,7 @@ async function discoverFuzzyFilesWithGit(
   options: FuzzyFileDiscoveryOptions,
 ): Promise<FuzzyFileDiscoveryResult | null> {
   const deadline = performance.now() + MAX_FUZZY_INDEX_BUILD_MS;
-  const program = options.gitProgram ?? GIT_EXECUTABLE_NAME;
+  const program = options.gitProgram ?? gitExe();
   const environment = fuzzyGitEnvironment(options.environment ?? process.env);
   const probe = await runFuzzyGitCommand(
     program,
@@ -789,7 +826,10 @@ async function discoverFuzzyFilesWithGit(
     files,
     directories,
     process.platform,
-    "complete",
+    // Git cannot represent a now-empty directory whose last tracked file was
+    // deleted, so this surface is intentionally honest about partial empty-
+    // directory coverage even though it includes visible untracked empties.
+    "nonempty_only",
   );
 }
 
@@ -928,6 +968,10 @@ export async function discoverFuzzyFilesWithRipgrep(
   canonicalRoot: string,
   signal: AbortSignal,
 ): Promise<FuzzyFileDiscoveryResult> {
+  const ripgrepPath = selectPinnedRipgrepPath();
+  if (ripgrepPath === undefined) {
+    throw new FuzzyIndexBoundaryError(PINNED_RIPGREP_UNAVAILABLE_MESSAGE);
+  }
   const args: string[] = [
     "--no-config",
     "--files",
@@ -940,11 +984,7 @@ export async function discoverFuzzyFilesWithRipgrep(
     "--glob",
     "!.git/**",
   ];
-  const externalExclude = await externalGitInfoExclude(canonicalRoot);
-  if (externalExclude !== null) {
-    args.push("--ignore-file", externalExclude);
-  }
-  assertGrepArgvWithinLimits(PINNED_RIPGREP_PATH, args);
+  assertGrepArgvWithinLimits(ripgrepPath, args);
   const parser = createRipgrepWireParser("files_with_matches", {
     maxRecordBytes: MAX_FUZZY_CANDIDATE_UTF8_BYTES_WITH_HEADROOM,
     maxDecodedBytes:
@@ -953,7 +993,7 @@ export async function discoverFuzzyFilesWithRipgrep(
   });
   const result = await runSupervisedProcess(
     {
-      program: PINNED_RIPGREP_PATH,
+      program: ripgrepPath,
       args,
       cwd: canonicalRoot,
       env: scrubEnvForChildProcess(process.env),
@@ -1004,36 +1044,60 @@ function entriesFromDiscoveredPaths(
 ): FuzzyFileDiscoveryResult {
   const byBytes = new Map<string, FuzzyIndexedEntry>();
   const budget: DiscoveryBudget = { candidateBytes: 0 };
-  let truncated = false;
   for (const rawPath of rawDirectories) {
     const portableBytes = normalizeRawPath(rawPath, platform);
     if (portableBytes.byteLength === 0) continue;
-    assertSafeRelativeDiscoveryPath(portableBytes);
-    const prefixes = [...directoryPrefixes(portableBytes), portableBytes];
-    for (const prefix of prefixes) {
-      truncated =
-        addBoundedEntry(byBytes, budget, prefix, "directory") === false ||
-        truncated;
+    assertSafeRelativeDiscoveryPath(portableBytes, platform);
+    if (
+      byBytes.size === 0 &&
+      directoryPrefixBytesExceedBudget(
+        portableBytes,
+        MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES - budget.candidateBytes,
+      )
+    ) {
+      return finalizeDiscoveredEntries(byBytes, true, directoryCoverage);
+    }
+    for (const prefix of directoryPrefixes(portableBytes)) {
+      if (!addBoundedEntry(byBytes, budget, prefix, "directory")) {
+        return finalizeDiscoveredEntries(byBytes, true, directoryCoverage);
+      }
+    }
+    if (!addBoundedEntry(byBytes, budget, portableBytes, "directory")) {
+      return finalizeDiscoveredEntries(byBytes, true, directoryCoverage);
     }
   }
   for (const rawPath of rawFiles) {
     const portableBytes = normalizeRawPath(rawPath, platform);
     if (portableBytes.byteLength === 0) continue;
-    assertSafeRelativeDiscoveryPath(portableBytes);
+    assertSafeRelativeDiscoveryPath(portableBytes, platform);
+    if (
+      byBytes.size === 0 &&
+      directoryPrefixBytesExceedBudget(
+        portableBytes,
+        MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES - budget.candidateBytes,
+      )
+    ) {
+      return finalizeDiscoveredEntries(byBytes, true, directoryCoverage);
+    }
     const prefixes = directoryPrefixes(portableBytes);
     for (const prefix of prefixes) {
-      truncated =
-        addBoundedEntry(byBytes, budget, prefix, "directory") === false ||
-        truncated;
+      if (!addBoundedEntry(byBytes, budget, prefix, "directory")) {
+        return finalizeDiscoveredEntries(byBytes, true, directoryCoverage);
+      }
     }
-    truncated =
-      addBoundedEntry(byBytes, budget, portableBytes, "file") === false ||
-      truncated;
+    if (!addBoundedEntry(byBytes, budget, portableBytes, "file")) {
+      return finalizeDiscoveredEntries(byBytes, true, directoryCoverage);
+    }
   }
-  const entries = [...byBytes.values()]
-    .sort(compareIndexedEntries)
-    .slice(0, MAX_FUZZY_CANDIDATES);
-  if (byBytes.size > entries.length) truncated = true;
+  return finalizeDiscoveredEntries(byBytes, false, directoryCoverage);
+}
+
+function finalizeDiscoveredEntries(
+  byBytes: ReadonlyMap<string, FuzzyIndexedEntry>,
+  truncated: boolean,
+  directoryCoverage: FuzzyDirectoryCoverage,
+): FuzzyFileDiscoveryResult {
+  const entries = [...byBytes.values()].sort(compareIndexedEntries);
   return { entries: Object.freeze(entries), truncated, directoryCoverage };
 }
 
@@ -1059,34 +1123,40 @@ function configureDatabase(db: BetterSqlite3.Database): void {
 }
 
 function initializeSchema(db: BetterSqlite3.Database): void {
-  const version = db.pragma("user_version", { simple: true });
-  if (typeof version !== "number" || !Number.isSafeInteger(version)) {
-    throw new FuzzyIndexSchemaError(Number(version));
-  }
-  if (version < 0 || version > FUZZY_FILE_INDEX_SCHEMA_VERSION) {
-    throw new FuzzyIndexSchemaError(version);
-  }
-  if (version === 1) {
-    db.exec(
-      `ALTER TABLE fuzzy_index_roots
-         ADD COLUMN last_access_at_ms INTEGER NOT NULL DEFAULT 0`,
-    );
-    const generationsExist =
-      db
-        .prepare<[], { readonly present: number }>(
-          `SELECT 1 AS present FROM sqlite_master
-            WHERE type = 'table' AND name = 'fuzzy_index_generations'`,
-        )
-        .get() !== undefined;
-    if (generationsExist) {
-      db.exec(
-        `ALTER TABLE fuzzy_index_generations
-           ADD COLUMN directory_coverage TEXT NOT NULL DEFAULT 'complete'
-           CHECK (directory_coverage IN ('complete', 'nonempty_only'))`,
-      );
+  db.transaction(() => {
+    const version = db.pragma("user_version", { simple: true });
+    if (typeof version !== "number" || !Number.isSafeInteger(version)) {
+      throw new FuzzyIndexSchemaError(Number(version));
     }
-  }
-  db.exec(`
+    if (version < 0 || version > FUZZY_FILE_INDEX_SCHEMA_VERSION) {
+      throw new FuzzyIndexSchemaError(version);
+    }
+    if (version === 1) {
+      if (
+        databaseTableExists(db, "fuzzy_index_roots") &&
+        !databaseColumnExists(db, "fuzzy_index_roots", "last_access_at_ms")
+      ) {
+        db.exec(
+          `ALTER TABLE fuzzy_index_roots
+             ADD COLUMN last_access_at_ms INTEGER NOT NULL DEFAULT 0`,
+        );
+      }
+      if (
+        databaseTableExists(db, "fuzzy_index_generations") &&
+        !databaseColumnExists(
+          db,
+          "fuzzy_index_generations",
+          "directory_coverage",
+        )
+      ) {
+        db.exec(
+          `ALTER TABLE fuzzy_index_generations
+             ADD COLUMN directory_coverage TEXT NOT NULL DEFAULT 'nonempty_only'
+             CHECK (directory_coverage IN ('complete', 'nonempty_only'))`,
+        );
+      }
+    }
+    db.exec(`
     CREATE TABLE IF NOT EXISTS fuzzy_index_roots (
       root_key TEXT PRIMARY KEY,
       canonical_root TEXT NOT NULL,
@@ -1124,8 +1194,37 @@ function initializeSchema(db: BetterSqlite3.Database): void {
     ) STRICT;
     CREATE INDEX IF NOT EXISTS fuzzy_index_generations_root
       ON fuzzy_index_generations(root_key, id DESC);
-  `);
-  db.pragma(`user_version = ${FUZZY_FILE_INDEX_SCHEMA_VERSION}`);
+    `);
+    db.pragma(`user_version = ${FUZZY_FILE_INDEX_SCHEMA_VERSION}`);
+  }).immediate();
+}
+
+function databaseTableExists(
+  db: BetterSqlite3.Database,
+  tableName: string,
+): boolean {
+  return (
+    db
+      .prepare<[string], { readonly present: number }>(
+        `SELECT 1 AS present FROM sqlite_master
+          WHERE type = 'table' AND name = ?`,
+      )
+      .get(tableName) !== undefined
+  );
+}
+
+function databaseColumnExists(
+  db: BetterSqlite3.Database,
+  tableName: string,
+  columnName: string,
+): boolean {
+  return (
+    db
+      .prepare<[string, string], { readonly present: number }>(
+        `SELECT 1 AS present FROM pragma_table_info(?) WHERE name = ?`,
+      )
+      .get(tableName, columnName) !== undefined
+  );
 }
 
 function normalizeDiscoveredEntries(
@@ -1283,10 +1382,14 @@ function normalizeRawPath(path: Buffer, platform: NodeJS.Platform): Buffer {
   return normalized;
 }
 
-function assertSafeRelativeDiscoveryPath(path: Buffer): void {
+function assertSafeRelativeDiscoveryPath(
+  path: Buffer,
+  platform: NodeJS.Platform,
+): void {
   if (
     path[0] === PATH_SEPARATOR_BYTE ||
     path.includes(NUL_BYTE) ||
+    (platform === "win32" && path.includes(WINDOWS_PATH_COLON_BYTE)) ||
     path.equals(Buffer.from("..")) ||
     path.subarray(0, 3).equals(Buffer.from("../")) ||
     path.includes(Buffer.from("/../")) ||
@@ -1298,14 +1401,30 @@ function assertSafeRelativeDiscoveryPath(path: Buffer): void {
   }
 }
 
-function directoryPrefixes(path: Buffer): readonly Buffer[] {
-  const prefixes: Buffer[] = [];
+function* directoryPrefixes(path: Buffer): Generator<Buffer> {
   for (let index = 0; index < path.byteLength; index += 1) {
     if (path[index] === PATH_SEPARATOR_BYTE && index > 0) {
-      prefixes.push(Buffer.from(path.subarray(0, index)));
+      yield path.subarray(0, index);
     }
   }
-  return prefixes;
+}
+
+function directoryPrefixBytesExceedBudget(
+  path: Buffer,
+  availableBytes: number,
+): boolean {
+  let prefixBytes = 0;
+  for (let index = 1; index < path.byteLength; index += 1) {
+    if (path[index] !== PATH_SEPARATOR_BYTE) continue;
+    if (
+      !Number.isSafeInteger(prefixBytes + index) ||
+      prefixBytes + index > availableBytes
+    ) {
+      return true;
+    }
+    prefixBytes += index;
+  }
+  return false;
 }
 
 function isRawSeparator(byte: number, platform: NodeJS.Platform): boolean {
@@ -1325,9 +1444,8 @@ function addBoundedEntry(
   const key = pathBytes.toString("hex");
   if (entries.has(key)) return true;
   const relativePath = renderRipgrepPathBytes(pathBytes);
-  let searchCandidate: PreparedFuzzyCandidate;
   try {
-    searchCandidate = prepareFuzzyCandidate(relativePath);
+    validateFuzzyCandidate(relativePath);
   } catch {
     return false;
   }
@@ -1345,7 +1463,6 @@ function addBoundedEntry(
       relativePath,
       pathBytes: Buffer.from(pathBytes),
       matchType,
-      searchCandidate,
     }),
   );
   return true;
@@ -1406,6 +1523,26 @@ function validateDirectoryCoverage(
   return value;
 }
 
+function generationEntryBoundsAreValid(
+  bounds: GenerationEntryBoundsRow | undefined,
+): boolean {
+  return (
+    bounds !== undefined &&
+    Number.isSafeInteger(bounds.entry_count) &&
+    bounds.entry_count >= 0 &&
+    bounds.entry_count <= MAX_FUZZY_CANDIDATES &&
+    Number.isSafeInteger(bounds.path_bytes) &&
+    bounds.path_bytes >= 0 &&
+    bounds.path_bytes <= MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES &&
+    Number.isSafeInteger(bounds.candidate_bytes) &&
+    bounds.candidate_bytes >= 0 &&
+    bounds.candidate_bytes <= MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES &&
+    Number.isSafeInteger(bounds.maximum_candidate_bytes) &&
+    bounds.maximum_candidate_bytes >= 0 &&
+    bounds.maximum_candidate_bytes <= MAX_FUZZY_CANDIDATE_UTF8_BYTES
+  );
+}
+
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -1422,30 +1559,5 @@ function quarantineCorruptDatabase(databasePath: string): void {
   for (const suffix of ["", "-wal", "-shm"] as const) {
     const source = `${databasePath}${suffix}`;
     if (existsSync(source)) renameSync(source, `${quarantinePath}${suffix}`);
-  }
-}
-
-async function externalGitInfoExclude(
-  canonicalRoot: string,
-): Promise<string | null> {
-  const gitPath = join(canonicalRoot, ".git");
-  let contents: string;
-  try {
-    contents = await readFile(gitPath, "utf8");
-  } catch {
-    return null;
-  }
-  const match = /^gitdir:\s*(.+)$/imu.exec(contents);
-  if (match === null) return null;
-  const configuredPath = match[1]!.trim();
-  const gitDirectory = isAbsolute(configuredPath)
-    ? configuredPath
-    : resolve(canonicalRoot, configuredPath);
-  const excludePath = join(gitDirectory, "info", "exclude");
-  try {
-    await readFile(excludePath, "utf8");
-    return excludePath;
-  } catch {
-    return null;
   }
 }

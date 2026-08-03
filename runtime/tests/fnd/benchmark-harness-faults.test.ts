@@ -935,7 +935,7 @@ describe("FND benchmark harness fault contracts", () => {
         args: [
           CASE_WORKER_PATH,
           "--case",
-          "fuzzy_tui_query_truncation",
+          "patch_delete_parser_suffix_slicing",
           "--point",
           "0",
           "--temporary-root",

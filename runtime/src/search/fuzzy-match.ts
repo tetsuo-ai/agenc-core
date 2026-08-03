@@ -48,6 +48,20 @@ const NUCLEO_ASCII_CODE_POINT_BYTES = 1;
 const NUCLEO_UNICODE_CODE_POINT_BYTES = 4;
 const NUCLEO_ROW_OFFSET_BYTES = 2;
 const NUCLEO_LAYOUT_MAX_ALIGNMENT = 8;
+const PREPARED_FUZZY_CODE_POINT_ARRAY_COUNT = 5;
+const PREPARED_FUZZY_SIGNATURE_COUNT = 4;
+const PREPARED_FUZZY_TYPED_ARRAY_COUNT =
+  PREPARED_FUZZY_CODE_POINT_ARRAY_COUNT + PREPARED_FUZZY_SIGNATURE_COUNT + 1;
+// Admission reserves conservative 64-bit V8 object/view/header space in
+// addition to the exact packed backing-buffer and two-byte string payloads.
+// These values are deliberately upper estimates, not heap-size promises.
+const PREPARED_FUZZY_OBJECT_OVERHEAD_BYTES = 128;
+const PREPARED_FUZZY_ARRAY_BUFFER_OVERHEAD_BYTES = 64;
+const PREPARED_FUZZY_TYPED_ARRAY_OVERHEAD_BYTES = 64;
+const JAVASCRIPT_STRING_OVERHEAD_BYTES = 24;
+const JAVASCRIPT_CODE_UNIT_BYTES = 2;
+const trustedPreparedFuzzyCandidates = new WeakSet<object>();
+const FUZZY_WORK_BUDGET_EXHAUSTED = Symbol("fuzzy-work-budget-exhausted");
 
 // Every consecutive-run boundary bonus is one of these values. Keeping the
 // state explicit preserves the best future consecutive chain without the
@@ -92,6 +106,8 @@ export interface FuzzyMatchOptions {
   readonly matchBasename?: boolean;
   /** Internal request-budget switch; still matches the complete query. */
   readonly forceDegraded?: boolean;
+  /** Shared request budget; all full-path and basename work is charged here. */
+  readonly workBudget?: FuzzyMatchWorkBudget;
 }
 
 export interface FuzzyMatch {
@@ -101,6 +117,83 @@ export interface FuzzyMatch {
 }
 
 export type FuzzyMatchQuality = "optimal" | "degraded";
+
+export interface FuzzyMatchWorkBudgetOptions {
+  readonly maximumMatrixCells: number;
+  readonly maximumCodePointVisits: number;
+}
+
+/** Mutable request-wide meter shared by every candidate and top-k rematch. */
+export class FuzzyMatchWorkBudget {
+  readonly #maximumMatrixCells: number;
+  readonly #maximumCodePointVisits: number;
+  #matrixCells = 0;
+  #codePointVisits = 0;
+  #matrixLimited = false;
+  #exhausted = false;
+  #indexMaterializations = 0;
+
+  constructor(options: FuzzyMatchWorkBudgetOptions) {
+    this.#maximumMatrixCells = validateWorkLimit(
+      "maximumMatrixCells",
+      options.maximumMatrixCells,
+    );
+    this.#maximumCodePointVisits = validateWorkLimit(
+      "maximumCodePointVisits",
+      options.maximumCodePointVisits,
+    );
+  }
+
+  get matrixCells(): number {
+    return this.#matrixCells;
+  }
+
+  get codePointVisits(): number {
+    return this.#codePointVisits;
+  }
+
+  get matrixLimited(): boolean {
+    return this.#matrixLimited;
+  }
+
+  get exhausted(): boolean {
+    return this.#exhausted;
+  }
+
+  get indexMaterializations(): number {
+    return this.#indexMaterializations;
+  }
+
+  canConsumeCodePointVisits(count: number): boolean {
+    return boundedSumFits(
+      this.#codePointVisits,
+      count,
+      this.#maximumCodePointVisits,
+    );
+  }
+
+  tryConsumeCodePointVisits(count: number): boolean {
+    if (!this.canConsumeCodePointVisits(count)) {
+      this.#exhausted = true;
+      return false;
+    }
+    this.#codePointVisits += count;
+    return true;
+  }
+
+  tryConsumeMatrixCells(count: number): boolean {
+    if (!boundedSumFits(this.#matrixCells, count, this.#maximumMatrixCells)) {
+      this.#matrixLimited = true;
+      return false;
+    }
+    this.#matrixCells += count;
+    return true;
+  }
+
+  recordIndexMaterialization(): void {
+    this.#indexMaterializations += 1;
+  }
+}
 
 export interface FuzzyRankedCandidate extends FuzzyMatch {
   readonly candidate: string;
@@ -120,7 +213,7 @@ export class FuzzyCandidateBudget {
     const candidateBytes =
       typeof candidate === "string"
         ? validateFuzzyCandidate(candidate)
-        : candidate.utf8Bytes;
+        : validatePreparedFuzzyCandidate(candidate);
     if (
       !Number.isSafeInteger(this.#totalBytes + candidateBytes) ||
       this.#totalBytes + candidateBytes > MAX_FUZZY_TOTAL_CANDIDATE_UTF8_BYTES
@@ -197,6 +290,9 @@ interface FuzzyMatchWindow {
   readonly end: number;
 }
 
+type FuzzyMatchWindowResult =
+  FuzzyMatchWindow | null | typeof FUZZY_WORK_BUDGET_EXHAUSTED;
+
 interface HeapCandidate {
   readonly candidate: string;
   readonly score: number;
@@ -235,7 +331,7 @@ export class BoundedFuzzyMatcher {
     const preparedCandidate =
       typeof candidate === "string"
         ? prepareFuzzyCandidate(candidate)
-        : candidate;
+        : (validatePreparedFuzzyCandidate(candidate), candidate);
     const includeIndices = options.includeIndices ?? true;
     const includeLengthBonus = options.lengthBonus ?? true;
     const full = this.#matchPrepared(
@@ -247,8 +343,12 @@ export class BoundedFuzzyMatcher {
       includeIndices,
       includeLengthBonus,
       options.forceDegraded ?? false,
+      options.workBudget,
     );
-    if (options.matchBasename !== true) return full;
+    // A basename is a suffix of the full candidate, so it cannot turn a
+    // subsequence miss into a match. Avoid preparing that suffix for the
+    // dominant non-match population.
+    if (options.matchBasename !== true || full === null) return full;
 
     const fileName = portableBasename(preparedCandidate.portableText);
     if (fileName === preparedCandidate.portableText) return full;
@@ -261,6 +361,7 @@ export class BoundedFuzzyMatcher {
       includeIndices,
       includeLengthBonus,
       options.forceDegraded ?? false,
+      options.workBudget,
     );
     if (name === null) return full;
     const prefixUtf16Length =
@@ -279,6 +380,7 @@ export class BoundedFuzzyMatcher {
     includeIndices: boolean,
     includeLengthBonus: boolean,
     forceDegraded: boolean,
+    workBudget: FuzzyMatchWorkBudget | undefined,
   ): FuzzyMatch | null {
     const queryLength = this.#query.length;
     const candidateLength = candidate.length;
@@ -289,41 +391,46 @@ export class BoundedFuzzyMatcher {
     const window = findMatchWindow(
       this.#query.comparisonCodePoints,
       candidate.comparisonCodePoints,
+      workBudget,
     );
+    if (window === FUZZY_WORK_BUDGET_EXHAUSTED) return null;
     if (window === null) return null;
     const windowLength = window.end - window.start;
-    if (
-      forceDegraded ||
-      !isNucleoOptimalMatrixEligible({
-        ascii: this.#query.ascii && candidate.ascii,
-        haystackCodePoints: windowLength,
-        needleCodePoints: queryLength,
-      })
-    ) {
-      this.#usedDegradedFallback = true;
-      return greedyMatch(
-        this.#query,
-        candidate,
-        window,
-        includeIndices,
-        includeLengthBonus,
-      );
-    }
-
     const matrixCells = queryLength * windowLength;
     const traceBytes =
       matrixCells * RUN_BONUS_STATE_COUNT * Int32Array.BYTES_PER_ELEMENT;
-    if (includeIndices && traceBytes > MAX_FUZZY_TRACE_BYTES) {
+    const optimalEligible =
+      !forceDegraded &&
+      (!includeIndices || traceBytes <= MAX_FUZZY_TRACE_BYTES) &&
+      isNucleoOptimalMatrixEligible({
+        ascii: this.#query.ascii && candidate.ascii,
+        haystackCodePoints: windowLength,
+        needleCodePoints: queryLength,
+      });
+    const optimalBudgetAvailable =
+      optimalEligible &&
+      (workBudget === undefined ||
+        (workBudget.canConsumeCodePointVisits(matrixCells) &&
+          workBudget.tryConsumeMatrixCells(matrixCells)));
+    if (!optimalBudgetAvailable) {
+      const greedyVisits = windowLength + queryLength;
+      if (workBudget?.tryConsumeCodePointVisits(greedyVisits) === false) {
+        return null;
+      }
       this.#usedDegradedFallback = true;
-      return greedyMatch(
+      const match = greedyMatch(
         this.#query,
         candidate,
         window,
         includeIndices,
         includeLengthBonus,
       );
+      if (includeIndices) workBudget?.recordIndexMaterialization();
+      return match;
     }
-
+    if (workBudget?.tryConsumeCodePointVisits(matrixCells) === false) {
+      return null;
+    }
     const rowWidth = windowLength * RUN_BONUS_STATE_COUNT;
     const scoreScratch = this.#scoreScratch(rowWidth);
     let previousScores = scoreScratch.previous;
@@ -458,6 +565,7 @@ export class BoundedFuzzyMatcher {
     }
 
     const indices = new Array<number>(queryLength);
+    workBudget?.recordIndexMaterialization();
     let encoded = bestEncoded;
     for (let queryIndex = queryLength - 1; queryIndex >= 0; queryIndex -= 1) {
       const candidateIndex = Math.floor(encoded / RUN_BONUS_STATE_COUNT);
@@ -655,6 +763,26 @@ function validateFuzzyResultLimit(limit: number): void {
   }
 }
 
+function validateWorkLimit(name: string, value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${name} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
+function boundedSumFits(
+  current: number,
+  addition: number,
+  maximum: number,
+): boolean {
+  return (
+    Number.isSafeInteger(addition) &&
+    addition >= 0 &&
+    Number.isSafeInteger(current + addition) &&
+    current + addition <= maximum
+  );
+}
+
 function validateTextEncoding(value: string, label: string): void {
   if (typeof value !== "string")
     throw new TypeError(`${label} must be a string`);
@@ -702,12 +830,15 @@ export function prepareFuzzyCandidate(value: string): PreparedFuzzyCandidate {
   const utf8Bytes = validateFuzzyCandidate(value);
   const portableText = toPortablePath(value);
   const characters = Array.from(portableText);
-  const codePoints = new Uint32Array(characters.length);
-  const foldedCodePoints = new Uint32Array(characters.length);
-  const normalizedCodePoints = new Uint32Array(characters.length);
-  const foldedNormalizedCodePoints = new Uint32Array(characters.length);
-  const utf16Offsets = new Uint32Array(characters.length);
-  const boundaryBonuses = new Uint8Array(characters.length);
+  const storage = allocatePreparedFuzzyStorage(characters.length);
+  const {
+    codePoints,
+    foldedCodePoints,
+    normalizedCodePoints,
+    foldedNormalizedCodePoints,
+    utf16Offsets,
+    boundaryBonuses,
+  } = storage;
   let offset = 0;
   for (const [index, character] of characters.entries()) {
     const codePoint = character.codePointAt(0)!;
@@ -722,7 +853,7 @@ export function prepareFuzzyCandidate(value: string): PreparedFuzzyCandidate {
     boundaryBonuses[index] = bonusAt(characters, index);
     offset += character.length;
   }
-  return Object.freeze({
+  const prepared = Object.freeze({
     text: value,
     portableText,
     codePoints,
@@ -731,15 +862,241 @@ export function prepareFuzzyCandidate(value: string): PreparedFuzzyCandidate {
     foldedNormalizedCodePoints,
     utf16Offsets,
     boundaryBonuses,
-    signature: createFuzzySignature(codePoints),
-    foldedSignature: createFuzzySignature(foldedCodePoints),
-    normalizedSignature: createFuzzySignature(normalizedCodePoints),
-    foldedNormalizedSignature: createFuzzySignature(foldedNormalizedCodePoints),
+    signature: createFuzzySignature(codePoints, storage.signature),
+    foldedSignature: createFuzzySignature(
+      foldedCodePoints,
+      storage.foldedSignature,
+    ),
+    normalizedSignature: createFuzzySignature(
+      normalizedCodePoints,
+      storage.normalizedSignature,
+    ),
+    foldedNormalizedSignature: createFuzzySignature(
+      foldedNormalizedCodePoints,
+      storage.foldedNormalizedSignature,
+    ),
     utf8Bytes,
     ascii:
       portableText.length === characters.length &&
       /^[\x00-\x7f]*$/u.test(portableText),
   });
+  trustedPreparedFuzzyCandidates.add(prepared);
+  return prepared;
+}
+
+/** Bytes retained by the candidate's strings and typed-array payloads. */
+export function estimateFuzzyCandidateRetainedBytes(
+  candidate: string | PreparedFuzzyCandidate,
+): number {
+  if (typeof candidate !== "string") {
+    validatePreparedFuzzyCandidate(candidate);
+    const buffers = new Set<ArrayBufferLike>();
+    for (const array of preparedCandidateArrays(candidate)) {
+      buffers.add(array.buffer);
+    }
+    let payloadBytes = 0;
+    for (const buffer of buffers) payloadBytes += buffer.byteLength;
+    return (
+      estimateJavascriptStringRetainedBytes(candidate.text) +
+      estimateJavascriptStringRetainedBytes(candidate.portableText) +
+      payloadBytes +
+      buffers.size * PREPARED_FUZZY_ARRAY_BUFFER_OVERHEAD_BYTES +
+      PREPARED_FUZZY_TYPED_ARRAY_COUNT *
+        PREPARED_FUZZY_TYPED_ARRAY_OVERHEAD_BYTES +
+      PREPARED_FUZZY_OBJECT_OVERHEAD_BYTES
+    );
+  }
+
+  validateFuzzyCandidate(candidate);
+  const portableText = toPortablePath(candidate);
+  let codePointCount = 0;
+  for (const _character of portableText) codePointCount += 1;
+  return (
+    estimateJavascriptStringRetainedBytes(candidate) +
+    estimateJavascriptStringRetainedBytes(portableText) +
+    packedPreparedFuzzyPayloadBytes(codePointCount) +
+    PREPARED_FUZZY_ARRAY_BUFFER_OVERHEAD_BYTES +
+    PREPARED_FUZZY_TYPED_ARRAY_COUNT *
+      PREPARED_FUZZY_TYPED_ARRAY_OVERHEAD_BYTES +
+    PREPARED_FUZZY_OBJECT_OVERHEAD_BYTES
+  );
+}
+
+interface PreparedFuzzyStorage {
+  readonly codePoints: Uint32Array;
+  readonly foldedCodePoints: Uint32Array;
+  readonly normalizedCodePoints: Uint32Array;
+  readonly foldedNormalizedCodePoints: Uint32Array;
+  readonly utf16Offsets: Uint32Array;
+  readonly boundaryBonuses: Uint8Array;
+  readonly signature: Uint32Array;
+  readonly foldedSignature: Uint32Array;
+  readonly normalizedSignature: Uint32Array;
+  readonly foldedNormalizedSignature: Uint32Array;
+}
+
+function allocatePreparedFuzzyStorage(
+  codePointCount: number,
+): PreparedFuzzyStorage {
+  const codePointArrayBytes = codePointCount * Uint32Array.BYTES_PER_ELEMENT;
+  const boundaryOffset =
+    PREPARED_FUZZY_CODE_POINT_ARRAY_COUNT * codePointArrayBytes;
+  const signatureOffset = alignOffset(
+    boundaryOffset + codePointCount * Uint8Array.BYTES_PER_ELEMENT,
+    Uint32Array.BYTES_PER_ELEMENT,
+  );
+  const signatureBytes = FUZZY_SIGNATURE_WORDS * Uint32Array.BYTES_PER_ELEMENT;
+  const buffer = new ArrayBuffer(
+    signatureOffset + PREPARED_FUZZY_SIGNATURE_COUNT * signatureBytes,
+  );
+  let offset = 0;
+  const nextCodePointArray = (): Uint32Array => {
+    const array = new Uint32Array(buffer, offset, codePointCount);
+    offset += codePointArrayBytes;
+    return array;
+  };
+  const codePoints = nextCodePointArray();
+  const foldedCodePoints = nextCodePointArray();
+  const normalizedCodePoints = nextCodePointArray();
+  const foldedNormalizedCodePoints = nextCodePointArray();
+  const utf16Offsets = nextCodePointArray();
+  const boundaryBonuses = new Uint8Array(
+    buffer,
+    boundaryOffset,
+    codePointCount,
+  );
+  const signature = new Uint32Array(
+    buffer,
+    signatureOffset,
+    FUZZY_SIGNATURE_WORDS,
+  );
+  const foldedSignature = new Uint32Array(
+    buffer,
+    signatureOffset + signatureBytes,
+    FUZZY_SIGNATURE_WORDS,
+  );
+  const normalizedSignature = new Uint32Array(
+    buffer,
+    signatureOffset + signatureBytes * 2,
+    FUZZY_SIGNATURE_WORDS,
+  );
+  const foldedNormalizedSignature = new Uint32Array(
+    buffer,
+    signatureOffset + signatureBytes * 3,
+    FUZZY_SIGNATURE_WORDS,
+  );
+  return {
+    codePoints,
+    foldedCodePoints,
+    normalizedCodePoints,
+    foldedNormalizedCodePoints,
+    utf16Offsets,
+    boundaryBonuses,
+    signature,
+    foldedSignature,
+    normalizedSignature,
+    foldedNormalizedSignature,
+  };
+}
+
+function packedPreparedFuzzyPayloadBytes(codePointCount: number): number {
+  const codePointBytes =
+    codePointCount *
+    PREPARED_FUZZY_CODE_POINT_ARRAY_COUNT *
+    Uint32Array.BYTES_PER_ELEMENT;
+  const signatureOffset = alignOffset(
+    codePointBytes + codePointCount * Uint8Array.BYTES_PER_ELEMENT,
+    Uint32Array.BYTES_PER_ELEMENT,
+  );
+  return (
+    signatureOffset +
+    FUZZY_SIGNATURE_WORDS *
+      PREPARED_FUZZY_SIGNATURE_COUNT *
+      Uint32Array.BYTES_PER_ELEMENT
+  );
+}
+
+function preparedCandidateArrays(
+  candidate: PreparedFuzzyCandidate,
+): readonly (Uint32Array | Uint8Array)[] {
+  return [
+    candidate.codePoints,
+    candidate.foldedCodePoints,
+    candidate.normalizedCodePoints,
+    candidate.foldedNormalizedCodePoints,
+    candidate.utf16Offsets,
+    candidate.boundaryBonuses,
+    candidate.signature,
+    candidate.foldedSignature,
+    candidate.normalizedSignature,
+    candidate.foldedNormalizedSignature,
+  ];
+}
+
+function estimateJavascriptStringRetainedBytes(value: string): number {
+  return (
+    JAVASCRIPT_STRING_OVERHEAD_BYTES + value.length * JAVASCRIPT_CODE_UNIT_BYTES
+  );
+}
+
+function alignOffset(offset: number, alignment: number): number {
+  return offset + ((alignment - (offset % alignment)) % alignment);
+}
+
+function validatePreparedFuzzyCandidate(
+  candidate: PreparedFuzzyCandidate,
+): number {
+  if (trustedPreparedFuzzyCandidates.has(candidate)) return candidate.utf8Bytes;
+  const utf8Bytes = validateFuzzyCandidate(candidate.text);
+  if (candidate.utf8Bytes !== utf8Bytes) {
+    throw new TypeError(
+      "prepared fuzzy candidate byte metadata is inconsistent",
+    );
+  }
+  const portableText = toPortablePath(candidate.text);
+  if (candidate.portableText !== portableText) {
+    throw new TypeError(
+      "prepared fuzzy candidate path metadata is inconsistent",
+    );
+  }
+  const codePointCount = Array.from(portableText).length;
+  for (const array of [
+    candidate.codePoints,
+    candidate.foldedCodePoints,
+    candidate.normalizedCodePoints,
+    candidate.foldedNormalizedCodePoints,
+    candidate.utf16Offsets,
+  ]) {
+    if (!(array instanceof Uint32Array) || array.length !== codePointCount) {
+      throw new TypeError(
+        "prepared fuzzy candidate code-point metadata is inconsistent",
+      );
+    }
+  }
+  if (
+    !(candidate.boundaryBonuses instanceof Uint8Array) ||
+    candidate.boundaryBonuses.length !== codePointCount
+  ) {
+    throw new TypeError(
+      "prepared fuzzy candidate boundary metadata is inconsistent",
+    );
+  }
+  for (const signature of [
+    candidate.signature,
+    candidate.foldedSignature,
+    candidate.normalizedSignature,
+    candidate.foldedNormalizedSignature,
+  ]) {
+    if (
+      !(signature instanceof Uint32Array) ||
+      signature.length !== FUZZY_SIGNATURE_WORDS
+    ) {
+      throw new TypeError(
+        "prepared fuzzy candidate signature metadata is inconsistent",
+      );
+    }
+  }
+  return utf8Bytes;
 }
 
 function prepareQueryText(value: string, caseSensitive: boolean): PreparedText {
@@ -822,8 +1179,15 @@ function normalizeLatinCodePoint(character: string): number {
   return (normalized ?? character).codePointAt(0)!;
 }
 
-function createFuzzySignature(codePoints: Uint32Array): Uint32Array {
-  const signature = new Uint32Array(FUZZY_SIGNATURE_WORDS);
+function createFuzzySignature(
+  codePoints: Uint32Array,
+  destination?: Uint32Array,
+): Uint32Array {
+  const signature = destination ?? new Uint32Array(FUZZY_SIGNATURE_WORDS);
+  if (signature.length !== FUZZY_SIGNATURE_WORDS) {
+    throw new TypeError("fuzzy signature destination has an invalid length");
+  }
+  signature.fill(0);
   for (const codePoint of codePoints) {
     const bucket = codePoint & 0xff;
     const word = bucket >>> 5;
@@ -849,10 +1213,14 @@ function encodeCell(candidateIndex: number, state: number): number {
 function findMatchWindow(
   query: Uint32Array,
   candidate: Uint32Array,
-): FuzzyMatchWindow | null {
+  workBudget: FuzzyMatchWorkBudget | undefined,
+): FuzzyMatchWindowResult {
   const maximumStart = candidate.length - query.length;
   let start = -1;
   for (let index = 0; index <= maximumStart; index += 1) {
+    if (workBudget?.tryConsumeCodePointVisits(1) === false) {
+      return FUZZY_WORK_BUDGET_EXHAUSTED;
+    }
     if (candidate[index] === query[0]) {
       start = index;
       break;
@@ -865,6 +1233,9 @@ function findMatchWindow(
   while (queryIndex < query.length) {
     let found = -1;
     for (let index = greedyEnd; index < candidate.length; index += 1) {
+      if (workBudget?.tryConsumeCodePointVisits(1) === false) {
+        return FUZZY_WORK_BUDGET_EXHAUSTED;
+      }
       if (candidate[index] === query[queryIndex]) {
         found = index;
         break;
@@ -877,6 +1248,9 @@ function findMatchWindow(
 
   let end = greedyEnd;
   for (let index = candidate.length - 1; index >= greedyEnd; index -= 1) {
+    if (workBudget?.tryConsumeCodePointVisits(1) === false) {
+      return FUZZY_WORK_BUDGET_EXHAUSTED;
+    }
     if (candidate[index] === query[query.length - 1]) {
       end = index + 1;
       break;

@@ -271,6 +271,13 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 | health / daemon | `health.ping`, `health.ready`, `health.stats`, `daemon.reload` |
 | auth | `auth.login`, `auth.whoami`, `auth.logout` |
 
+`fs.fuzzy_search` accepts an optional `limit` from 1 through 1,000 and an
+optional `refresh` flag that waits for a verified replacement index
+generation. Persistent-index responses expose typed, additive `freshness` and
+`matcher` metadata alongside typed file results. Clients should use the
+metadata to distinguish an optimal fresh result from a stale, degraded, or
+resource-limited one; an older daemon may omit both additive fields.
+
 Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`) cover
 command-exec deltas, message chunks, tool/permission/elicitation requests,
 agent/session status, and realtime stream events.

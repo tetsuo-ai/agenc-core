@@ -128,6 +128,18 @@ describe("FileIndex", () => {
     expect(index.search("old", 5)).toEqual([]);
   });
 
+  test("stops a superseded async build before preparing stale candidates", async () => {
+    const index = new FileIndex();
+    const stale = index.loadFromFileListAsync(["\ud800"]);
+    const current = index.loadFromFileListAsync(["current.ts"]);
+
+    await expect(stale.done).resolves.toBeUndefined();
+    await expect(current.done).resolves.toBeUndefined();
+    expect(index.search("current", 1).map((result) => result.path)).toEqual([
+      "current.ts",
+    ]);
+  });
+
   test("requires every character after the former 64-character cutoff", () => {
     const index = new FileIndex();
     const prefix = "a".repeat(64);
