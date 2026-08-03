@@ -295,6 +295,55 @@ describe("AgenCCsvJobReviewStateService", () => {
     });
   });
 
+  it("fails closed when bounded legacy evidence has an unknown field", async () => {
+    const legacyResolution = createOperatorEffectReviewResolution({
+      disposition: "confirmed_no_effect",
+      actorId: "operator",
+      evidenceRef: "legacy://operator-evidence",
+      evidenceSha256: EVIDENCE_DIGEST,
+      reviewedAt: "2026-08-03T12:00:00.123Z",
+    });
+    const legacyEvidence = {
+      ...legacyResolution,
+      legacyMarker: "tampered",
+    };
+    const serializedEvidence = JSON.stringify(legacyEvidence);
+    expect(Buffer.byteLength(serializedEvidence, "utf8")).toBeLessThanOrEqual(
+      EFFECT_REVIEW_PAYLOAD_MAX_BYTES,
+    );
+    const driver = openStateDatabases({ cwd: workspace, agencHome });
+    try {
+      driver
+        .prepareState(
+          `UPDATE csv_agent_job_items
+           SET status = 'pending', review_status = 'resolved',
+               review_disposition = 'confirmed_no_effect',
+               review_domain_action = 'retry_new_attempt',
+               review_evidence_json = ?
+           WHERE job_id = 'job' AND item_id = 'item-0'`,
+        )
+        .run(serializedEvidence);
+    } finally {
+      driver.close();
+    }
+    const service = new AgenCCsvJobReviewStateService(repositories);
+
+    await expect(
+      service.resolve({
+        cwd: workspace,
+        jobId: "job",
+        itemId: "item-0",
+        disposition: "confirmed_no_effect",
+        evidenceRef: legacyResolution.evidenceRef,
+        evidenceSha256: EVIDENCE_DIGEST,
+        reviewer: "operator",
+        reason: "authoritative lookup found no effect",
+      }),
+    ).rejects.toMatchObject<AgenCCsvJobReviewError>({
+      code: "CSV_REVIEW_CONFLICT",
+    });
+  });
+
   it("derives the only valid retry and abandon actions from disposition", async () => {
     const service = new AgenCCsvJobReviewStateService(repositories);
     const retried = await service.resolve({

@@ -20,6 +20,7 @@ import {
   STATE_PRE_V15_BACKUP_FILENAME,
   STATE_PRE_V12_BACKUP_FILENAME,
   STATE_PRE_V17_BACKUP_FILENAME,
+  STATE_PRE_V19_BACKUP_FILENAME,
 } from "./sqlite-driver.js";
 import { STATE_DB_MIGRATIONS } from "./migrations/index.js";
 
@@ -473,4 +474,138 @@ describe("openStateDatabases", () => {
       backup.close();
     }
   });
+
+  it("backs up current-main state when migration 20 precedes missing migration 19", () => {
+    const paths = seedCurrentMainStateWithoutMigration19();
+
+    const upgraded = openStateDatabases({ cwd });
+    try {
+      expect(
+        upgraded
+          .prepareState<[number], { version: number }>(
+            "SELECT version FROM schema_migrations WHERE version = ?",
+          )
+          .get(19),
+      ).toEqual({ version: 19 });
+    } finally {
+      upgraded.close();
+    }
+
+    const backupPath = join(
+      paths.projectDir,
+      STATE_PRE_V19_BACKUP_FILENAME,
+    );
+    expect(existsSync(backupPath)).toBe(true);
+    const backup = new Database(backupPath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      expect(
+        backup
+          .prepare(
+            "SELECT version FROM schema_migrations WHERE version IN (19, 20) ORDER BY version",
+          )
+          .all(),
+      ).toEqual([{ version: 20 }]);
+      expect(
+        backup
+          .prepare("PRAGMA table_info(csv_agent_jobs)")
+          .all()
+          .some(
+            (column) => (column as { name?: unknown }).name === "import_state",
+          ),
+      ).toBe(false);
+      expect(
+        backup
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name = 'tool_pair_projection_runs'`,
+          )
+          .get(),
+      ).toEqual({ name: "tool_pair_projection_runs" });
+      expect(
+        backup
+          .prepare("SELECT instruction FROM csv_agent_jobs WHERE id = ?")
+          .get("pre-v19-job"),
+      ).toEqual({ instruction: "preserve pre-v19 state" });
+      expect(backup.prepare("PRAGMA integrity_check").get()).toEqual({
+        integrity_check: "ok",
+      });
+    } finally {
+      backup.close();
+    }
+  });
+
+  it("blocks migration 19 when its mandatory backup cannot be published", () => {
+    const paths = seedCurrentMainStateWithoutMigration19();
+    mkdirSync(join(paths.projectDir, STATE_PRE_V19_BACKUP_FILENAME));
+
+    expect(() => openStateDatabases({ cwd })).toThrow();
+
+    const unmigrated = new Database(paths.stateDbPath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      expect(
+        unmigrated
+          .prepare(
+            "SELECT version FROM schema_migrations WHERE version IN (19, 20) ORDER BY version",
+          )
+          .all(),
+      ).toEqual([{ version: 20 }]);
+      expect(
+        unmigrated
+          .prepare("PRAGMA table_info(csv_agent_jobs)")
+          .all()
+          .some(
+            (column) => (column as { name?: unknown }).name === "import_state",
+          ),
+      ).toBe(false);
+      expect(
+        unmigrated
+          .prepare("SELECT instruction FROM csv_agent_jobs WHERE id = ?")
+          .get("pre-v19-job"),
+      ).toEqual({ instruction: "preserve pre-v19 state" });
+    } finally {
+      unmigrated.close();
+    }
+  });
 });
+
+function seedCurrentMainStateWithoutMigration19(): ReturnType<
+  typeof resolveStateDatabasePaths
+> {
+  const paths = resolveStateDatabasePaths({ cwd });
+  mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
+  const raw = new Database(paths.stateDbPath);
+  try {
+    applyMigrations(
+      raw,
+      STATE_DB_MIGRATIONS.filter((migration) => migration.version !== 19),
+    );
+    raw
+      .prepare(
+        `INSERT INTO csv_agent_jobs (
+           id, name, status, instruction, input_headers_json, input_csv_path,
+           output_csv_path, auto_export, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "pre-v19-job",
+        "pre-v19 backup contract",
+        "pending",
+        "preserve pre-v19 state",
+        JSON.stringify(["value"]),
+        "/input.csv",
+        "/output.csv",
+        0,
+        1,
+        1,
+      );
+  } finally {
+    raw.close();
+  }
+  return paths;
+}

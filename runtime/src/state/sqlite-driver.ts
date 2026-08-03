@@ -253,8 +253,12 @@ function applyStateMigrations(
   db.exec("BEGIN IMMEDIATE");
   try {
     if (hasUserStateTables(db)) {
-      const maxApplied = maxAppliedMigrationVersion(db);
-      if (maxApplied < AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION) {
+      if (
+        !hasAppliedMigrationVersion(
+          db,
+          AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION,
+        )
+      ) {
         createPreMigrationStateBackupLocked(
           paths,
           STATE_PRE_V12_BACKUP_FILENAME,
@@ -262,7 +266,7 @@ function applyStateMigrations(
           "pre-v12",
         );
       }
-      if (maxApplied < RUN_DURABILITY_SCHEMA_VERSION) {
+      if (!hasAppliedMigrationVersion(db, RUN_DURABILITY_SCHEMA_VERSION)) {
         createPreMigrationStateBackupLocked(
           paths,
           STATE_PRE_V15_BACKUP_FILENAME,
@@ -270,7 +274,7 @@ function applyStateMigrations(
           "pre-v15",
         );
       }
-      if (maxApplied < EFFECT_EVIDENCE_V2_SCHEMA_VERSION) {
+      if (!hasAppliedMigrationVersion(db, EFFECT_EVIDENCE_V2_SCHEMA_VERSION)) {
         createPreMigrationStateBackupLocked(
           paths,
           STATE_PRE_V17_BACKUP_FILENAME,
@@ -278,7 +282,9 @@ function applyStateMigrations(
           "pre-v17",
         );
       }
-      if (maxApplied < CSV_JOB_IDENTITY_REPLAY_SCHEMA_VERSION) {
+      if (
+        !hasAppliedMigrationVersion(db, CSV_JOB_IDENTITY_REPLAY_SCHEMA_VERSION)
+      ) {
         createPreMigrationStateBackupLocked(
           paths,
           STATE_PRE_V19_BACKUP_FILENAME,
@@ -353,7 +359,10 @@ function hasUserStateTables(db: SqliteDatabase): boolean {
   return (row?.count ?? 0) > 0;
 }
 
-function maxAppliedMigrationVersion(db: SqliteDatabase): number {
+function hasAppliedMigrationVersion(
+  db: SqliteDatabase,
+  targetVersion: number,
+): boolean {
   const table = db
     .prepare<[], { name: string }>(
       `SELECT name
@@ -361,13 +370,13 @@ function maxAppliedMigrationVersion(db: SqliteDatabase): number {
        WHERE type = 'table' AND name = 'schema_migrations'`,
     )
     .get();
-  if (!table) return 0;
+  if (!table) return false;
   return (
     db
-      .prepare<[], { version: number | null }>(
-        "SELECT MAX(version) AS version FROM schema_migrations",
+      .prepare<[number], { present: number }>(
+        "SELECT 1 AS present FROM schema_migrations WHERE version = ?",
       )
-      .get()?.version ?? 0
+      .get(targetVersion) !== undefined
   );
 }
 
@@ -387,7 +396,7 @@ function validatePreMigrationStateBackup(
     ) {
       throw new Error(`state backup failed integrity check: ${path}`);
     }
-    if (maxAppliedMigrationVersion(backup) >= targetVersion) {
+    if (hasAppliedMigrationVersion(backup, targetVersion)) {
       throw new Error(`state backup is not a ${label} database: ${path}`);
     }
   } finally {

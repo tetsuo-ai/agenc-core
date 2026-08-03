@@ -64,8 +64,8 @@ export interface AgenCCsvJobReviewService {
 }
 
 /**
- * Workspace-scoped operator review service. Repository lifetime and
- * per-database serialization belong to the injected process authority.
+ * Workspace-scoped operator review service. Canonical repository lifetime and
+ * concurrent request leases belong to the injected process authority.
  */
 export class AgenCCsvJobReviewStateService implements AgenCCsvJobReviewService {
   constructor(private readonly repositories: CsvAgentJobsRepositoryProvider) {}
@@ -341,19 +341,37 @@ function sameResolution(
 ): boolean {
   const stored = item.reviewEvidence?.value;
   if (stored === undefined) return false;
-  const identityKeys = [
-    "version",
-    "kind",
-    "disposition",
-    "actorKind",
-    "actorId",
-    "evidenceKind",
-    "evidenceRef",
-    "evidenceSha256",
-    "workflowStatus",
-    "domainAction",
-  ] as const;
-  return identityKeys.every((key) => stored[key] === requested[key]);
+  let canonicalStored: EffectReviewResolution;
+  try {
+    canonicalStored = canonicalizeEffectReviewResolution(
+      stored as unknown as EffectReviewResolution,
+    );
+  } catch {
+    return false;
+  }
+  return sameCanonicalResolutionIdentity(canonicalStored, requested);
+}
+
+function sameCanonicalResolutionIdentity(
+  stored: EffectReviewResolution,
+  requested: EffectReviewResolution,
+): boolean {
+  const storedRecord = stored as unknown as Record<PropertyKey, unknown>;
+  const requestedRecord = requested as unknown as Record<PropertyKey, unknown>;
+  const storedKeys = Reflect.ownKeys(storedRecord).filter(
+    (key) => key !== "reviewedAt",
+  );
+  const requestedKeys = Reflect.ownKeys(requestedRecord).filter(
+    (key) => key !== "reviewedAt",
+  );
+  return (
+    storedKeys.length === requestedKeys.length &&
+    storedKeys.every(
+      (key) =>
+        requestedKeys.includes(key) &&
+        Object.is(storedRecord[key], requestedRecord[key]),
+    )
+  );
 }
 
 function createCanonicalResolution(
