@@ -13,7 +13,11 @@ import type {
   EffectReviewResolution,
 } from "../contracts/run-contracts.js";
 import { stableStringify } from "../utils/stableStringify.js";
-import { StateRunDurabilityRepository } from "./run-durability.js";
+import {
+  canonicalizeEffectReviewResolution,
+  StateRunDurabilityRepository,
+  type RunJournalBinding,
+} from "./run-durability.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { resolveUnknownOutcomeEffect } from "./unknown-outcome-gate.js";
 
@@ -37,15 +41,28 @@ export interface LiveEffectReviewJournal {
   project(event: Event): void;
 }
 
+type EffectReviewEvent = Event & {
+  readonly msg: Extract<
+    Event["msg"],
+    { readonly type: "effect_review_resolved" }
+  >;
+};
+
 export type ResolveDurableEffectReviewResult =
   | { readonly kind: "not_found" }
   | {
       readonly kind: "resolved" | "already_resolved";
-      readonly durable: boolean;
-      readonly runId?: string;
-      readonly stepId?: string;
-      readonly eventId?: string;
-      readonly sequence?: number;
+      readonly durable: false;
+      readonly resolution: EffectReviewResolution;
+    }
+  | {
+      readonly kind: "resolved" | "already_resolved";
+      readonly durable: true;
+      readonly runId: string;
+      readonly stepId: string;
+      readonly eventId: string;
+      readonly sequence: number;
+      readonly resolution: EffectReviewResolution;
     };
 
 class CanonicalReviewEvidenceNotFoundError extends Error {
@@ -102,6 +119,20 @@ export function resolveDurableEffectReview(
   driver: StateSqliteDriver,
   options: ResolveDurableEffectReviewOptions,
 ): ResolveDurableEffectReviewResult {
+  const canonicalOptions = {
+    sessionId: options.sessionId,
+    toolCallId: options.toolCallId,
+    resolution: canonicalizeEffectReviewResolution(options.resolution),
+  };
+  return driver.transactionImmediate(() =>
+    resolveDurableEffectReviewLocked(driver, canonicalOptions),
+  );
+}
+
+function resolveDurableEffectReviewLocked(
+  driver: StateSqliteDriver,
+  options: ResolveDurableEffectReviewOptions,
+): ResolveDurableEffectReviewResult {
   const repository = new StateRunDurabilityRepository(driver);
   const effect = repository.getEffectBySessionCall(
     options.sessionId,
@@ -110,7 +141,11 @@ export function resolveDurableEffectReview(
   if (effect === undefined) {
     return options.resolution.workflowStatus !== "pending" &&
       resolveUnknownOutcomeEffect(driver, options)
-      ? { kind: "resolved", durable: false }
+      ? {
+          kind: "resolved",
+          durable: false,
+          resolution: options.resolution,
+        }
       : { kind: "not_found" };
   }
   if (effect.outcome !== "unknown_outcome") return { kind: "not_found" };
@@ -144,18 +179,17 @@ export function resolveDurableEffectReview(
         right.boundAt.localeCompare(left.boundAt) ||
         right.sourcePath.localeCompare(left.sourcePath),
     );
-  const eventId = reviewEventId(effect, options.resolution);
+  const requestedEventId = reviewEventId(effect, options.resolution);
   let selectedSourcePath: string | undefined;
-  let evidence:
-    | ReturnType<typeof appendOrReadReviewEvent>
-    | undefined;
+  let evidence: ReturnType<typeof appendOrReadReviewEvent> | undefined;
   for (const binding of bindings) {
     try {
       evidence = appendOrReadReviewEvent({
         projectDir: driver.projectDir,
         sessionId: binding.sessionId,
         sourcePath: binding.sourcePath,
-        eventId,
+        binding,
+        eventId: requestedEventId,
         payload: {
           runId: effect.runId,
           stepId: effect.stepId,
@@ -184,7 +218,8 @@ export function resolveDurableEffectReview(
       `run ${effect.runId} has no retained canonical journal evidence for effect review`,
     );
   }
-  const priorResolved = effect.reviewStatus === "resolved";
+  const reviewWasTerminal =
+    effect.reviewStatus === "resolved" || effect.reviewStatus === "abandoned";
   driver.transactionImmediate(() => {
     repository.updateJournalBounds({
       sourcePath: selectedSourcePath,
@@ -196,7 +231,7 @@ export function resolveDurableEffectReview(
       runId: effect.runId,
       stepId: effect.stepId,
       resolution: evidence.payload.resolution,
-      eventId,
+      eventId: evidence.eventId,
       evidence: {
         callId: effect.callId,
         sequence: evidence.sequence,
@@ -208,12 +243,13 @@ export function resolveDurableEffectReview(
     }
   });
   return {
-    kind: priorResolved ? "already_resolved" : "resolved",
+    kind: reviewWasTerminal ? "already_resolved" : "resolved",
     durable: true,
     runId: effect.runId,
     stepId: effect.stepId,
-    eventId,
+    eventId: evidence.eventId,
     sequence: evidence.sequence,
+    resolution: evidence.payload.resolution,
   };
 }
 
@@ -228,15 +264,25 @@ export function resolveLiveDurableEffectReview(
   options: ResolveDurableEffectReviewOptions,
   journal: LiveEffectReviewJournal,
 ): ResolveDurableEffectReviewResult {
+  const resolution = canonicalizeEffectReviewResolution(options.resolution);
+  const canonicalOptions = {
+    sessionId: options.sessionId,
+    toolCallId: options.toolCallId,
+    resolution,
+  };
   const repository = new StateRunDurabilityRepository(driver);
   const effect = repository.getEffectBySessionCall(
-    options.sessionId,
-    options.toolCallId,
+    canonicalOptions.sessionId,
+    canonicalOptions.toolCallId,
   );
   if (effect === undefined) {
-    return options.resolution.workflowStatus !== "pending" &&
-      resolveUnknownOutcomeEffect(driver, options)
-      ? { kind: "resolved", durable: false }
+    return resolution.workflowStatus !== "pending" &&
+      resolveUnknownOutcomeEffect(driver, canonicalOptions)
+      ? {
+          kind: "resolved",
+          durable: false,
+          resolution,
+        }
       : { kind: "not_found" };
   }
   if (effect.outcome !== "unknown_outcome") return { kind: "not_found" };
@@ -245,24 +291,25 @@ export function resolveLiveDurableEffectReview(
   if (
     reviewWasTerminal &&
     effect.review !== undefined &&
-    reviewIdentity(effect.review) !== reviewIdentity(options.resolution)
+    reviewIdentity(effect.review) !== reviewIdentity(resolution)
   ) {
     throw new Error(
       `run ${effect.runId} step ${effect.stepId} already has a different review resolution`,
     );
   }
 
-  const eventId = reviewEventId(effect, options.resolution);
+  const requestedEventId = reviewEventId(effect, resolution);
   const expectedPayload = {
     runId: effect.runId,
     stepId: effect.stepId,
     callId: effect.callId,
-    resolution: options.resolution,
+    resolution,
   } as const;
   const events = journal
     .readAll()
-    .filter((item): item is Extract<RolloutItem, { readonly type: "event_msg" }> =>
-      item.type === "event_msg",
+    .filter(
+      (item): item is Extract<RolloutItem, { readonly type: "event_msg" }> =>
+        item.type === "event_msg",
     )
     .map((item) => item.payload);
   const unknownEvidence = events.filter(
@@ -287,30 +334,44 @@ export function resolveLiveDurableEffectReview(
     );
   }
 
-  const existing = events.find(
-    (event) => canonicalReviewEventId(event) === eventId,
+  const existing = findCanonicalTerminalReview(events, expectedPayload);
+  const matchingEventId = events.find(
+    (event) => canonicalReviewEventId(event) === requestedEventId,
   );
   let reviewEvent: Event;
-  if (existing === undefined) {
-    reviewEvent = journal.append(eventId, expectedPayload);
-  } else {
-    assertMatchingReviewEvent(existing, eventId, expectedPayload);
+  if (existing !== undefined) {
     reviewEvent = existing;
+  } else if (matchingEventId === undefined) {
+    reviewEvent = journal.append(requestedEventId, expectedPayload);
+  } else {
+    reviewEvent = matchingEventId;
   }
   if (!Number.isSafeInteger(reviewEvent.seq) || (reviewEvent.seq ?? 0) <= 0) {
-    throw new Error(`journal event id ${eventId} has no durable sequence`);
+    throw new Error(
+      `journal event id ${canonicalReviewEventId(reviewEvent)} has no durable sequence`,
+    );
   }
-  journal.project(reviewEvent);
-  if (options.resolution.workflowStatus !== "pending") {
-    resolveUnknownOutcomeEffect(driver, options);
+  const canonicalReviewResolution = assertMatchingReviewEvent(
+    reviewEvent,
+    canonicalReviewEventId(reviewEvent),
+    expectedPayload,
+  );
+  const canonicalReviewEvent = canonicalEffectReviewEvent(
+    reviewEvent,
+    canonicalReviewResolution,
+  );
+  journal.project(canonicalReviewEvent);
+  if (canonicalReviewResolution.workflowStatus !== "pending") {
+    resolveUnknownOutcomeEffect(driver, canonicalOptions);
   }
   return {
     kind: reviewWasTerminal ? "already_resolved" : "resolved",
     durable: true,
     runId: effect.runId,
     stepId: effect.stepId,
-    eventId,
-    sequence: reviewEvent.seq,
+    eventId: canonicalReviewEventId(reviewEvent),
+    sequence: reviewEvent.seq!,
+    resolution: canonicalReviewResolution,
   };
 }
 
@@ -334,7 +395,7 @@ function assertMatchingReviewEvent(
     readonly callId: string;
     readonly resolution: EffectReviewResolution;
   },
-): void {
+): EffectReviewResolution {
   if (
     event.msg.type !== "effect_review_resolved" ||
     !Number.isSafeInteger(event.seq) ||
@@ -343,38 +404,109 @@ function assertMatchingReviewEvent(
     throw new Error(`journal event id ${eventId} has conflicting content`);
   }
   const payload = event.msg.payload;
+  if (typeof payload.resolution === "string") {
+    throw new Error(
+      `journal event id ${eventId} contains legacy review evidence`,
+    );
+  }
+  const resolution = canonicalizeEffectReviewResolution(payload.resolution);
   if (
     payload.runId !== expected.runId ||
     payload.stepId !== expected.stepId ||
     payload.callId !== expected.callId ||
-    typeof payload.resolution === "string" ||
-    reviewIdentity(payload.resolution) !== reviewIdentity(expected.resolution)
+    reviewIdentity(resolution) !== reviewIdentity(expected.resolution)
   ) {
     throw new Error(`journal event id ${eventId} has conflicting content`);
   }
+  return resolution;
 }
 
-function appendOrReadReviewEvent(
-  options: {
-    readonly projectDir: string;
-    readonly sessionId: string;
-    readonly sourcePath: string;
-    readonly eventId: string;
-    readonly payload: {
-      readonly runId: string;
-      readonly stepId: string;
-      readonly callId: string;
-      readonly resolution: EffectReviewResolution;
-    };
-    readonly expectedUnknownEvidence: {
-      readonly eventId?: string;
-      readonly sequence?: number;
-    };
+function findCanonicalTerminalReview(
+  events: readonly Event[],
+  expected: {
+    readonly runId: string;
+    readonly stepId: string;
+    readonly callId: string;
+    readonly resolution: EffectReviewResolution;
   },
-): {
+): Event | undefined {
+  const matchingEffectIdentity = events.filter(
+    (event): event is EffectReviewEvent =>
+      event.msg.type === "effect_review_resolved" &&
+      event.msg.payload.runId === expected.runId &&
+      event.msg.payload.stepId === expected.stepId,
+  );
+  for (const event of matchingEffectIdentity) {
+    if (event.msg.payload.callId !== expected.callId) {
+      throw new Error(
+        `canonical effect review for ${expected.runId}/${expected.stepId} has conflicting call identity`,
+      );
+    }
+    if (typeof event.msg.payload.resolution === "string") {
+      throw new Error(
+        `canonical effect review for ${expected.runId}/${expected.stepId} contains legacy evidence`,
+      );
+    }
+  }
+  const terminal = matchingEffectIdentity.filter(
+    (event) =>
+      typeof event.msg.payload.resolution !== "string" &&
+      event.msg.payload.resolution.workflowStatus !== "pending",
+  );
+  if (terminal.length > 1) {
+    throw new Error(
+      `canonical journal has ${terminal.length} terminal effect reviews for ${expected.runId}/${expected.stepId}`,
+    );
+  }
+  return terminal[0];
+}
+
+function canonicalEffectReviewEvent(
+  event: Event,
+  resolution: EffectReviewResolution,
+): Event {
+  if (event.msg.type !== "effect_review_resolved") {
+    throw new Error(
+      `journal event id ${canonicalReviewEventId(event)} has conflicting content`,
+    );
+  }
+  return {
+    ...(event.eventId !== undefined ? { eventId: event.eventId } : {}),
+    id: event.id,
+    ...(event.seq !== undefined ? { seq: event.seq } : {}),
+    msg: {
+      type: "effect_review_resolved",
+      payload: {
+        runId: event.msg.payload.runId,
+        stepId: event.msg.payload.stepId,
+        callId: event.msg.payload.callId,
+        resolution,
+      },
+    },
+  };
+}
+
+function appendOrReadReviewEvent(options: {
+  readonly projectDir: string;
+  readonly sessionId: string;
+  readonly sourcePath: string;
+  readonly binding: RunJournalBinding;
+  readonly eventId: string;
+  readonly payload: {
+    readonly runId: string;
+    readonly stepId: string;
+    readonly callId: string;
+    readonly resolution: EffectReviewResolution;
+  };
+  readonly expectedUnknownEvidence: {
+    readonly eventId?: string;
+    readonly sequence?: number;
+  };
+}): {
   readonly sequence: number;
   readonly firstSequence: number;
   readonly lastSequence: number;
+  readonly eventId: string;
   readonly payload: typeof options.payload;
 } {
   return withPinnedOfflineRolloutLease(
@@ -424,37 +556,48 @@ function appendOrReadReviewEvent(
           `canonical unknown-outcome evidence has no sequenced journal boundary for ${options.payload.runId}/${options.payload.stepId}`,
         );
       }
+      assertJournalBindingMatchesScan(
+        options.binding,
+        firstSequence,
+        lastSequenceBeforeAppend,
+      );
+      const terminalReview = findCanonicalTerminalReview(
+        events,
+        options.payload,
+      );
+      if (terminalReview !== undefined) {
+        const terminalEventId = canonicalReviewEventId(terminalReview);
+        const terminalResolution = assertMatchingReviewEvent(
+          terminalReview,
+          terminalEventId,
+          options.payload,
+        );
+        // A prior attempt may have durably appended its terminal record before
+        // SQLite projection failed. Preserve that first exact resolution and
+        // timestamp; never append a second terminal event under a new id.
+        rollout.sync();
+        return {
+          sequence: terminalReview.seq!,
+          firstSequence,
+          lastSequence: lastSequenceBeforeAppend,
+          eventId: terminalEventId,
+          payload: {
+            runId: options.payload.runId,
+            stepId: options.payload.stepId,
+            callId: options.payload.callId,
+            resolution: terminalResolution,
+          },
+        };
+      }
       const existing = events.find(
         (event) => canonicalReviewEventId(event) === options.eventId,
       );
       if (existing !== undefined) {
-        if (
-          existing.msg.type !== "effect_review_resolved" ||
-          !Number.isSafeInteger(existing.seq) ||
-          (existing.seq ?? 0) <= 0
-        ) {
-          throw new Error(
-            `journal event id ${options.eventId} has conflicting content`,
-          );
-        }
-        const existingPayload = existing.msg.payload;
-        if (
-          existingPayload.runId !== options.payload.runId ||
-          existingPayload.stepId !== options.payload.stepId ||
-          existingPayload.callId !== options.payload.callId ||
-          typeof existingPayload.resolution === "string" ||
-          reviewIdentity(existingPayload.resolution) !==
-            reviewIdentity(options.payload.resolution)
-        ) {
-          throw new Error(
-            `journal event id ${options.eventId} has conflicting content`,
-          );
-        }
-        if (typeof existingPayload.resolution === "string") {
-          throw new Error(
-            `journal event id ${options.eventId} contains legacy review evidence`,
-          );
-        }
+        const existingResolution = assertMatchingReviewEvent(
+          existing,
+          options.eventId,
+          options.payload,
+        );
         // A prior attempt can have written the record before its fsync failed.
         // Re-sync the idempotent match before allowing SQLite to advance.
         rollout.sync();
@@ -462,14 +605,15 @@ function appendOrReadReviewEvent(
           sequence: existing.seq!,
           firstSequence,
           lastSequence: lastSequenceBeforeAppend,
+          eventId: options.eventId,
           // A repeated operator command naturally carries a later wall-clock
           // time. Preserve the first durable review timestamp while requiring
           // the reviewer, resolution, and effect identity to match exactly.
           payload: {
-            runId: existingPayload.runId,
-            stepId: existingPayload.stepId,
-            callId: existingPayload.callId,
-            resolution: existingPayload.resolution,
+            runId: options.payload.runId,
+            stepId: options.payload.stepId,
+            callId: options.payload.callId,
+            resolution: existingResolution,
           },
         };
       }
@@ -489,10 +633,45 @@ function appendOrReadReviewEvent(
           ? firstSequence
           : sequence,
         lastSequence: sequence,
+        eventId: options.eventId,
         payload: options.payload,
       };
     },
   );
+}
+
+function assertJournalBindingMatchesScan(
+  binding: RunJournalBinding,
+  firstSequence: number,
+  lastSequence: number,
+): void {
+  if (
+    binding.firstAvailableSequence !== undefined &&
+    firstSequence > binding.firstAvailableSequence
+  ) {
+    throw new Error(
+      "journal binding would silently advance past retained events",
+    );
+  }
+  if (
+    binding.lastSequence !== undefined &&
+    lastSequence < binding.lastSequence
+  ) {
+    throw new Error("journal binding would silently truncate retained events");
+  }
+  if (
+    binding.retiredThroughSequence !== undefined &&
+    binding.retiredThroughSequence >= firstSequence
+  ) {
+    throw new Error("journal binding retirement overlaps retained events");
+  }
+  if (
+    binding.firstAvailableSequence !== undefined &&
+    binding.lastSequence !== undefined &&
+    binding.lastSequence < binding.firstAvailableSequence
+  ) {
+    throw new Error("journal binding has invalid retained bounds");
+  }
 }
 
 function reviewIdentity(resolution: EffectReviewResolution): string {
@@ -525,7 +704,9 @@ function readValidatedEvents(raw: string): {
       // corruption), matching execution-admission-canonical-recovery.
       if (priors.includes(signature)) continue;
       if (!canonicalId.startsWith("legacy-unsequenced:")) {
-        throw new Error(`canonical journal event id ${canonicalId} is duplicated`);
+        throw new Error(
+          `canonical journal event id ${canonicalId} is duplicated`,
+        );
       }
       const disambiguated = `${canonicalId}~conflict-${priors.length}`;
       priors.push(signature);

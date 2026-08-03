@@ -5,6 +5,7 @@ import {
   getCsvValidationPoolMetrics,
   primeCsvOutputSchemaValidation,
   releaseCsvOutputSchemaValidation,
+  validateCsvResultForPersistence,
   validateCsvResultInWorkerPool,
 } from "./csv-schema.js";
 
@@ -121,6 +122,60 @@ describe("CSV output schema contract", () => {
       primeCsvOutputSchemaValidation("invalid-worker-schema", compiled),
     ).rejects.toThrow(/schema|enum|duplicate/iu);
     releaseCsvOutputSchemaValidation("invalid-worker-schema");
+  });
+
+  it("binds one-shot validation tokens to the exact job, item, and schema", async () => {
+    const compiled = compileCsvOutputSchema({
+      type: "object",
+      properties: { score: { type: "integer" } },
+      required: ["score"],
+      additionalProperties: false,
+    })!;
+    const result = canonicalizeCsvResult({ score: 7 });
+    const validated = await validateCsvResultForPersistence(
+      "token-job",
+      "row-a",
+      compiled,
+      result,
+    );
+    expect(typeof validated).not.toBe("string");
+    if (typeof validated === "string") throw new Error(validated);
+
+    expect(() =>
+      validated.consumeFor("token-job", "row-b", compiled.digest),
+    ).toThrow(/another job\/item\/schema/u);
+    expect(() =>
+      validated.consumeFor("token-job", "row-a", "different-schema"),
+    ).toThrow(/another job\/item\/schema/u);
+    expect(validated.consumeFor("token-job", "row-a", compiled.digest)).toBe(
+      result,
+    );
+    expect(() =>
+      validated.consumeFor("token-job", "row-a", compiled.digest),
+    ).toThrow(/already consumed/u);
+  });
+
+  it("keeps schema validation off the event loop", async () => {
+    const compiled = compileCsvOutputSchema({
+      type: "object",
+      properties: { score: { type: "integer" } },
+      required: ["score"],
+      additionalProperties: false,
+    })!;
+    let timerFired = false;
+    const validations = Array.from({ length: 64 }, (_, index) =>
+      validateCsvResultForPersistence(
+        "event-loop-job",
+        `row-${index}`,
+        compiled,
+        canonicalizeCsvResult({ score: index }),
+      ),
+    );
+    setTimeout(() => {
+      timerFired = true;
+    }, 0);
+    await expect(Promise.all(validations)).resolves.toHaveLength(64);
+    expect(timerFired).toBe(true);
   });
 });
 

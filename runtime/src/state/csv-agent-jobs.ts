@@ -57,6 +57,7 @@ import {
 import {
   canonicalizeCsvResult,
   compileCsvOutputSchema,
+  validateCsvResultForPersistence,
   type CanonicalCsvResult,
   type ValidatedCsvResult,
 } from "../agents/jobs/csv-schema.js";
@@ -420,6 +421,26 @@ interface ResultBlobRow {
   result_availability: string;
   result_size_bytes: number;
   result_digest: string | null;
+}
+
+interface CsvResultPersistenceAccounting {
+  readonly result_size_bytes: number;
+  readonly result_reserved_bytes: number;
+}
+
+interface ValidatedCsvResultPersistencePlan {
+  readonly canonical: CanonicalCsvResult;
+  readonly schemaDigest: string | undefined;
+  readonly previous: CsvResultPersistenceAccounting;
+}
+
+interface CsvJobItemStatusAccounting {
+  readonly pending_items: number;
+  readonly running_items: number;
+  readonly completed_items: number;
+  readonly failed_items: number;
+  readonly cancelled_items: number;
+  readonly unknown_outcome_items: number;
 }
 
 function decodeJob(row: JobRow): CsvAgentJob {
@@ -3386,6 +3407,52 @@ export class CsvAgentJobsRepository {
     }
   }
 
+  private assertResultReservationCanRelease(
+    jobId: string,
+    reservedBytes: number,
+  ): void {
+    if (reservedBytes === 0) return;
+    const job = this.getJob(jobId);
+    const quota = this.getQuota();
+    if (
+      job === null ||
+      job.resultReservedBytes < reservedBytes ||
+      quota.result_reserved_bytes < reservedBytes
+    ) {
+      throw new Error("CSV result reservation accounting is inconsistent");
+    }
+  }
+
+  private assertJobItemStatusAccountingConsistent(jobId: string): void {
+    const job = this.getJob(jobId);
+    if (job === null) throw new Error(`unknown CSV job ${jobId}`);
+    const actual = this.driver
+      .prepareState<[string], CsvJobItemStatusAccounting>(
+        `SELECT
+           SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_items,
+           SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_items,
+           SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_items,
+           SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_items,
+           SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_items,
+           SUM(CASE WHEN status = 'unknown_outcome' THEN 1 ELSE 0 END)
+             AS unknown_outcome_items
+         FROM csv_agent_job_items WHERE job_id = ?`,
+      )
+      .get(jobId);
+    if (
+      actual === undefined ||
+      actual.unknown_outcome_items < 1 ||
+      actual.pending_items !== job.pendingItems ||
+      actual.running_items !== job.runningItems ||
+      actual.completed_items !== job.completedItems ||
+      actual.failed_items !== job.failedItems ||
+      actual.cancelled_items !== job.cancelledItems ||
+      actual.unknown_outcome_items !== job.unknownOutcomeItems
+    ) {
+      throw new Error("CSV job item status accounting is inconsistent");
+    }
+  }
+
   markItemRunning(jobId: string, itemId: string): void {
     this.beginItemDispatch(jobId, itemId, {});
   }
@@ -3584,11 +3651,50 @@ export class CsvAgentJobsRepository {
     jobId: string,
     itemId: string,
     validated: ValidatedCsvResult,
+    expectedStatus: "running" | "unknown_outcome" = "running",
   ): void {
+    this.driver.transactionImmediate(() => {
+      const plan = this.preflightValidatedResultPersistence(
+        jobId,
+        itemId,
+        validated,
+        expectedStatus,
+      );
+      validated.consumeFor(jobId, itemId, plan.schemaDigest);
+      this.applyCanonicalResult(
+        jobId,
+        itemId,
+        plan.canonical,
+        plan.previous,
+        expectedStatus,
+      );
+    });
+  }
+
+  private preflightValidatedResultPersistence(
+    jobId: string,
+    itemId: string,
+    validated: ValidatedCsvResult,
+    expectedStatus: "running" | "unknown_outcome",
+  ): ValidatedCsvResultPersistencePlan {
     const job = this.getJob(jobId);
     if (job === null) throw new Error(`unknown CSV job ${jobId}`);
-    const canonical = validated.consumeFor(jobId, job.outputSchemaDigest);
-    this.persistCanonicalResult(jobId, itemId, canonical, false, "running");
+    const canonical = validated.assertFor(
+      jobId,
+      itemId,
+      job.outputSchemaDigest,
+    );
+    return {
+      canonical,
+      schemaDigest: job.outputSchemaDigest,
+      previous: this.assertCanonicalResultCanPersist(
+        jobId,
+        itemId,
+        canonical,
+        false,
+        expectedStatus,
+      ),
+    };
   }
 
   private persistCanonicalResult(
@@ -3599,130 +3705,169 @@ export class CsvAgentJobsRepository {
     expectedStatus: "running" | "unknown_outcome",
   ): void {
     this.driver.transactionImmediate(() => {
-      const job = this.getJob(jobId);
-      if (job === null) throw new Error(`unknown CSV job ${jobId}`);
-      if (canonical.bytes > job.maxResultBytes) {
-        throw new Error(
-          `CSV item result is ${canonical.bytes} bytes; limit is ${job.maxResultBytes}`,
-        );
-      }
-      if (validateSchema) {
-        const schemaViolation = compileCsvOutputSchema(
-          job.outputSchema,
-        )?.validate(canonical.value);
-        if (schemaViolation !== undefined && schemaViolation !== null) {
-          throw new Error(schemaViolation);
-        }
-      }
-      const previous = this.driver
-        .prepareState<
-          [string, string, "running" | "unknown_outcome"],
-          {
-            readonly result_size_bytes: number;
-            readonly result_reserved_bytes: number;
-          }
-        >(
-          `SELECT item.result_size_bytes, item.result_reserved_bytes
-           FROM csv_agent_job_items AS item
-           JOIN csv_agent_jobs AS job ON job.id = item.job_id
-           WHERE item.job_id = ? AND item.item_id = ?
-             AND item.status = ?
-             AND job.import_state = 'visible' AND job.retired_at IS NULL`,
-        )
-        .get(jobId, itemId, expectedStatus);
-      if (previous === undefined) {
-        throw new Error(`CSV item ${jobId}/${itemId} cannot be completed`);
-      }
-      const nextJobResultBytes =
-        job.resultBytes - previous.result_size_bytes + canonical.bytes;
-      if (nextJobResultBytes > job.maxResultBytesPerJob) {
-        throw new Error(
-          `CSV job result bytes would be ${nextJobResultBytes}; limit is ${job.maxResultBytesPerJob}`,
-        );
-      }
-      const quota = this.getQuota();
-      const nextGlobalResultBytes =
-        quota.result_blob_bytes +
-        quota.result_reserved_bytes -
-        previous.result_reserved_bytes -
-        previous.result_size_bytes +
-        canonical.bytes;
-      if (nextGlobalResultBytes > CSV_MAX_RESULT_BLOB_BYTES_GLOBAL) {
-        throw new CsvStorageQuotaError(
-          "result blob byte",
-          CSV_MAX_RESULT_BLOB_BYTES_GLOBAL,
-        );
-      }
-      const nextGlobalDurableBytes =
-        quota.durable_bytes +
-        quota.result_reserved_bytes -
-        previous.result_reserved_bytes -
-        previous.result_size_bytes +
-        canonical.bytes;
-      if (nextGlobalDurableBytes > CSV_MAX_DURABLE_BYTES) {
-        throw new CsvStorageQuotaError("durable byte", CSV_MAX_DURABLE_BYTES);
-      }
-      const now = nowSeconds();
-      const update = this.driver
-        .prepareState(
-          `UPDATE csv_agent_job_items SET
-             status = 'completed', dispatch_state = 'settled', result_json = ?,
-             result_digest = ?, result_availability = 'available',
-             result_size_bytes = ?, result_reserved_bytes = 0,
-             completed_at = ?, reported_at = ?,
-             updated_at = ?, last_error = NULL
-           WHERE job_id = ? AND item_id = ?
-             AND status = ?`,
-        )
-        .run(
-          canonical.json,
-          canonical.digest,
-          canonical.bytes,
-          now,
-          now,
-          now,
-          jobId,
-          itemId,
-          expectedStatus,
-        );
-      if (update.changes !== 1) {
-        throw new Error(`CSV item ${jobId}/${itemId} cannot be completed`);
-      }
-      const jobAccounting = this.driver
-        .prepareState(
-          `UPDATE csv_agent_jobs SET
-             result_reserved_bytes = result_reserved_bytes - ?,
-             durable_bytes = durable_bytes - ? + ?
-           WHERE id = ? AND result_reserved_bytes >= ?`,
-        )
-        .run(
-          previous.result_reserved_bytes,
-          previous.result_size_bytes,
-          canonical.bytes,
-          jobId,
-          previous.result_reserved_bytes,
-        );
-      const globalAccounting = this.driver
-        .prepareState(
-          `UPDATE csv_storage_quota SET
-             result_reserved_bytes = result_reserved_bytes - ?,
-             result_blob_bytes = result_blob_bytes - ? + ?,
-             durable_bytes = durable_bytes - ? + ?, updated_at = ?
-           WHERE singleton = 1 AND result_reserved_bytes >= ?`,
-        )
-        .run(
-          previous.result_reserved_bytes,
-          previous.result_size_bytes,
-          canonical.bytes,
-          previous.result_size_bytes,
-          canonical.bytes,
-          now,
-          previous.result_reserved_bytes,
-        );
-      if (jobAccounting.changes !== 1 || globalAccounting.changes !== 1) {
-        throw new Error("CSV result persistence accounting is inconsistent");
-      }
+      const previous = this.assertCanonicalResultCanPersist(
+        jobId,
+        itemId,
+        canonical,
+        validateSchema,
+        expectedStatus,
+      );
+      this.applyCanonicalResult(
+        jobId,
+        itemId,
+        canonical,
+        previous,
+        expectedStatus,
+      );
     });
+  }
+
+  private applyCanonicalResult(
+    jobId: string,
+    itemId: string,
+    canonical: CanonicalCsvResult,
+    previous: CsvResultPersistenceAccounting,
+    expectedStatus: "running" | "unknown_outcome",
+  ): void {
+    const now = nowSeconds();
+    const update = this.driver
+      .prepareState(
+        `UPDATE csv_agent_job_items SET
+           status = 'completed', dispatch_state = 'settled', result_json = ?,
+           result_digest = ?, result_availability = 'available',
+           result_size_bytes = ?, result_reserved_bytes = 0,
+           completed_at = ?, reported_at = ?,
+           updated_at = ?, last_error = NULL
+         WHERE job_id = ? AND item_id = ?
+           AND status = ?`,
+      )
+      .run(
+        canonical.json,
+        canonical.digest,
+        canonical.bytes,
+        now,
+        now,
+        now,
+        jobId,
+        itemId,
+        expectedStatus,
+      );
+    if (update.changes !== 1) {
+      throw new Error(`CSV item ${jobId}/${itemId} cannot be completed`);
+    }
+    const jobAccounting = this.driver
+      .prepareState(
+        `UPDATE csv_agent_jobs SET
+           result_reserved_bytes = result_reserved_bytes - ?,
+           durable_bytes = durable_bytes - ? + ?
+         WHERE id = ? AND result_reserved_bytes >= ?`,
+      )
+      .run(
+        previous.result_reserved_bytes,
+        previous.result_size_bytes,
+        canonical.bytes,
+        jobId,
+        previous.result_reserved_bytes,
+      );
+    const globalAccounting = this.driver
+      .prepareState(
+        `UPDATE csv_storage_quota SET
+           result_reserved_bytes = result_reserved_bytes - ?,
+           result_blob_bytes = result_blob_bytes - ? + ?,
+           durable_bytes = durable_bytes - ? + ?, updated_at = ?
+         WHERE singleton = 1 AND result_reserved_bytes >= ?`,
+      )
+      .run(
+        previous.result_reserved_bytes,
+        previous.result_size_bytes,
+        canonical.bytes,
+        previous.result_size_bytes,
+        canonical.bytes,
+        now,
+        previous.result_reserved_bytes,
+      );
+    if (jobAccounting.changes !== 1 || globalAccounting.changes !== 1) {
+      throw new Error("CSV result persistence accounting is inconsistent");
+    }
+  }
+
+  private assertCanonicalResultCanPersist(
+    jobId: string,
+    itemId: string,
+    canonical: CanonicalCsvResult,
+    validateSchema: boolean,
+    expectedStatus: "running" | "unknown_outcome",
+  ): CsvResultPersistenceAccounting {
+    const job = this.getJob(jobId);
+    if (job === null) throw new Error(`unknown CSV job ${jobId}`);
+    if (canonical.bytes > job.maxResultBytes) {
+      throw new Error(
+        `CSV item result is ${canonical.bytes} bytes; limit is ${job.maxResultBytes}`,
+      );
+    }
+    if (validateSchema) {
+      const schemaViolation = compileCsvOutputSchema(
+        job.outputSchema,
+      )?.validate(canonical.value);
+      if (schemaViolation !== undefined && schemaViolation !== null) {
+        throw new Error(schemaViolation);
+      }
+    }
+    const previous = this.driver
+      .prepareState<
+        [string, string, "running" | "unknown_outcome"],
+        {
+          readonly result_size_bytes: number;
+          readonly result_reserved_bytes: number;
+        }
+      >(
+        `SELECT item.result_size_bytes, item.result_reserved_bytes
+         FROM csv_agent_job_items AS item
+         JOIN csv_agent_jobs AS job ON job.id = item.job_id
+         WHERE item.job_id = ? AND item.item_id = ?
+           AND item.status = ?
+           AND job.import_state = 'visible' AND job.retired_at IS NULL`,
+      )
+      .get(jobId, itemId, expectedStatus);
+    if (previous === undefined) {
+      throw new Error(`CSV item ${jobId}/${itemId} cannot be completed`);
+    }
+    const nextJobResultBytes =
+      job.resultBytes - previous.result_size_bytes + canonical.bytes;
+    if (nextJobResultBytes > job.maxResultBytesPerJob) {
+      throw new Error(
+        `CSV job result bytes would be ${nextJobResultBytes}; limit is ${job.maxResultBytesPerJob}`,
+      );
+    }
+    const quota = this.getQuota();
+    if (
+      job.resultReservedBytes < previous.result_reserved_bytes ||
+      quota.result_reserved_bytes < previous.result_reserved_bytes
+    ) {
+      throw new Error("CSV result persistence accounting is inconsistent");
+    }
+    const nextGlobalResultBytes =
+      quota.result_blob_bytes +
+      quota.result_reserved_bytes -
+      previous.result_reserved_bytes -
+      previous.result_size_bytes +
+      canonical.bytes;
+    if (nextGlobalResultBytes > CSV_MAX_RESULT_BLOB_BYTES_GLOBAL) {
+      throw new CsvStorageQuotaError(
+        "result blob byte",
+        CSV_MAX_RESULT_BLOB_BYTES_GLOBAL,
+      );
+    }
+    const nextGlobalDurableBytes =
+      quota.durable_bytes +
+      quota.result_reserved_bytes -
+      previous.result_reserved_bytes -
+      previous.result_size_bytes +
+      canonical.bytes;
+    if (nextGlobalDurableBytes > CSV_MAX_DURABLE_BYTES) {
+      throw new CsvStorageQuotaError("durable byte", CSV_MAX_DURABLE_BYTES);
+    }
+    return previous;
   }
 
   markItemFailed(jobId: string, itemId: string, error: string): void {
@@ -3844,7 +3989,9 @@ export class CsvAgentJobsRepository {
     });
   }
 
-  resolveUnknownOutcome(resolution: CsvUnknownOutcomeResolution): void {
+  async resolveUnknownOutcome(
+    resolution: CsvUnknownOutcomeResolution,
+  ): Promise<void> {
     const valid =
       (resolution.disposition === "confirmed_committed" &&
         resolution.domainAction === "mark_completed") ||
@@ -3853,11 +4000,49 @@ export class CsvAgentJobsRepository {
       (resolution.disposition === "remains_unknown" &&
         resolution.domainAction === "abandon_item");
     if (!valid) throw new Error("invalid CSV review disposition/domain action");
+    if (
+      resolution.result !== undefined &&
+      !(
+        resolution.disposition === "confirmed_committed" &&
+        resolution.domainAction === "mark_completed"
+      )
+    ) {
+      throw new Error(
+        "CSV review result is only valid for confirmed committed completion",
+      );
+    }
     requireNonempty(resolution.actor.trim(), "CSV review actor");
     requireNonempty(resolution.reason.trim(), "CSV review reason");
+    const requestedEvidence = canonicalizeCsvResult(resolution.evidence);
+    const initialItem = this.getItem(resolution.jobId, resolution.itemId);
+    if (
+      initialItem === null ||
+      initialItem.status !== "unknown_outcome" ||
+      initialItem.reviewStatus !== "pending"
+    ) {
+      throw new Error(
+        `CSV item ${resolution.jobId}/${resolution.itemId} is not awaiting review`,
+      );
+    }
+    let validatedResult: ValidatedCsvResult | undefined;
+    if (resolution.result !== undefined) {
+      const job = this.getJob(resolution.jobId);
+      if (job === null) throw new Error(`unknown CSV job ${resolution.jobId}`);
+      const compiledSchema = compileCsvOutputSchema(job.outputSchema);
+      if (compiledSchema?.digest !== job.outputSchemaDigest) {
+        throw new Error("CSV output schema digest is inconsistent");
+      }
+      const canonicalResult = canonicalizeCsvResult(resolution.result);
+      const validation = await validateCsvResultForPersistence(
+        resolution.jobId,
+        resolution.itemId,
+        compiledSchema,
+        canonicalResult,
+      );
+      if (typeof validation === "string") throw new Error(validation);
+      validatedResult = validation;
+    }
     const now = nowSeconds();
-    const canonicalEvidence = canonicalizeCsvResult(resolution.evidence);
-    const evidenceJson = canonicalEvidence.json;
     this.driver.transactionImmediate(() => {
       const reviewedItem = this.getItem(resolution.jobId, resolution.itemId);
       if (
@@ -3869,21 +4054,55 @@ export class CsvAgentJobsRepository {
           `CSV item ${resolution.jobId}/${resolution.itemId} is not awaiting review`,
         );
       }
-      this.resolveCanonicalEffectReview(reviewedItem, resolution);
+      const resultPlan =
+        validatedResult === undefined
+          ? undefined
+          : this.preflightValidatedResultPersistence(
+              resolution.jobId,
+              resolution.itemId,
+              validatedResult,
+              "unknown_outcome",
+            );
       const reservation = this.itemResultReservation(
         resolution.jobId,
         resolution.itemId,
       );
+      if (resultPlan === undefined) {
+        this.assertResultReservationCanRelease(resolution.jobId, reservation);
+      }
+      if (resolution.domainAction !== "abandon_item") {
+        this.assertJobItemStatusAccountingConsistent(resolution.jobId);
+      }
+      const canonicalEffectReview = this.resolveCanonicalEffectReview(
+        reviewedItem,
+        resolution,
+      );
+      if (validatedResult !== undefined && resultPlan !== undefined) {
+        validatedResult.consumeFor(
+          resolution.jobId,
+          resolution.itemId,
+          resultPlan.schemaDigest,
+        );
+      }
+      const evidenceJson =
+        canonicalEffectReview === undefined
+          ? requestedEvidence.json
+          : canonicalizeCsvResult(
+              canonicalEffectReview as unknown as Record<string, unknown>,
+            ).json;
       let changes = 0;
       if (
         resolution.domainAction === "mark_completed" &&
         resolution.result !== undefined
       ) {
-        this.persistCanonicalResult(
+        if (resultPlan === undefined) {
+          throw new Error("CSV review result has no validation token");
+        }
+        this.applyCanonicalResult(
           resolution.jobId,
           resolution.itemId,
-          canonicalizeCsvResult(resolution.result),
-          true,
+          resultPlan.canonical,
+          resultPlan.previous,
           "unknown_outcome",
         );
         changes = this.driver
@@ -4015,12 +4234,12 @@ export class CsvAgentJobsRepository {
   private resolveCanonicalEffectReview(
     item: CsvAgentJobItem,
     resolution: CsvUnknownOutcomeResolution,
-  ): void {
+  ): EffectReviewResolution | undefined {
     if (item.effect === undefined) {
       if (resolution.effectReview !== undefined) {
         throw new Error("CSV review has no canonical effect identity");
       }
-      return;
+      return undefined;
     }
     const review = resolution.effectReview;
     if (review === undefined) {
@@ -4049,6 +4268,23 @@ export class CsvAgentJobsRepository {
     if (effect.outcome !== "unknown_outcome") {
       throw new Error("CSV review canonical effect is not an unknown outcome");
     }
+    const callMatches = effects
+      .listEffectsBySessionCall(effect.sessionId, effect.callId)
+      .filter(
+        (candidate) =>
+          candidate.outcome === "unknown_outcome" &&
+          candidate.reviewStatus === "pending",
+      );
+    if (
+      callMatches.length !== 1 ||
+      callMatches[0]?.runId !== item.effect.runId ||
+      callMatches[0]?.stepId !== item.effect.stepId ||
+      callMatches[0]?.epoch !== item.effect.epoch
+    ) {
+      throw new Error(
+        "CSV review canonical effect call identity is ambiguous or stale",
+      );
+    }
     const canonical = resolveDurableEffectReview(this.driver, {
       sessionId: effect.sessionId,
       toolCallId: effect.callId,
@@ -4062,6 +4298,10 @@ export class CsvAgentJobsRepository {
     ) {
       throw new Error("CSV review did not append canonical A1 effect evidence");
     }
+    if (canonical.resolution === undefined) {
+      throw new Error("CSV review canonical A1 resolution is missing");
+    }
+    return canonical.resolution;
   }
 
   getJobProgress(jobId: string): CsvAgentJobProgress {

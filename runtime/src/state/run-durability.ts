@@ -11,8 +11,14 @@ import type {
 import {
   EFFECT_EVIDENCE_FORMAT_VERSION,
   EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
+  EFFECT_REVIEW_ACTOR_KINDS,
+  EFFECT_REVIEW_DISPOSITIONS,
+  EFFECT_REVIEW_DOMAIN_ACTIONS,
+  EFFECT_REVIEW_EVIDENCE_KINDS,
+  EFFECT_REVIEW_WORKFLOW_STATUSES,
 } from "../contracts/run-contracts.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
+import { redactSecretsInValue } from "../secrets/sanitizer.js";
 import { stableStringify } from "../utils/stableStringify.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { assertRecoverySha256 } from "./recovery-contract.js";
@@ -30,6 +36,28 @@ export type RunDurabilityConflictCode =
   | "RUN_EFFECT_REVIEW_REQUIRED"
   | "RUN_EVENT_SEQUENCE_CONFLICT"
   | "RUN_JOURNAL_BINDING_CONFLICT";
+
+const EFFECT_REVIEW_ACTOR_ID_MAX_UTF8_BYTES = 512;
+const EFFECT_REVIEW_EVIDENCE_REF_MAX_UTF8_BYTES = 4_096;
+const EFFECT_REVIEW_REVIEWED_AT_MAX_UTF8_BYTES = 128;
+const EFFECT_REVIEW_PAYLOAD_MAX_UTF8_BYTES = 4_096;
+const EFFECT_REVIEW_REQUIRED_KEYS = [
+  "version",
+  "kind",
+  "disposition",
+  "actorKind",
+  "actorId",
+  "evidenceKind",
+  "evidenceRef",
+  "evidenceSha256",
+  "reviewedAt",
+  "workflowStatus",
+] as const;
+const EFFECT_REVIEW_ALLOWED_KEYS = new Set<PropertyKey>([
+  ...EFFECT_REVIEW_REQUIRED_KEYS,
+  "domainAction",
+]);
+const CANONICAL_EFFECT_REVIEW_RESOLUTIONS = new WeakSet<object>();
 
 export class RunDurabilityConflictError extends Error {
   constructor(
@@ -795,6 +823,7 @@ export class StateRunDurabilityRepository {
     readonly evidence?: unknown;
   }): DurableWriteOutcome<DurableRunEffect> {
     return this.driver.transactionImmediate(() => {
+      const resolution = canonicalizeEffectReviewResolution(params.resolution);
       const existing = this.getEffect(params.runId, params.stepId);
       if (existing === undefined) {
         throw conflict(
@@ -802,9 +831,8 @@ export class StateRunDurabilityRepository {
           `run ${params.runId} step ${params.stepId} has no durable effect`,
         );
       }
-      validateEffectReviewResolution(params.resolution);
       const reviewContent = stableStringify({
-        resolution: params.resolution,
+        resolution,
         eventId: params.eventId,
         evidence: params.evidence ?? null,
       });
@@ -819,7 +847,7 @@ export class StateRunDurabilityRepository {
         }
         if (
           existing.reviewStatus === "pending" &&
-          params.resolution.workflowStatus !== "pending"
+          resolution.workflowStatus !== "pending"
         ) {
           // A later authoritative/operator resolution may close a prior
           // remains-unknown system observation. The canonical journal retains
@@ -862,20 +890,20 @@ export class StateRunDurabilityRepository {
            WHERE run_id = ? AND step_id = ? AND review_status = 'pending'`,
         )
         .run(
-          params.resolution.workflowStatus,
-          required(params.resolution.reviewedAt, "reviewedAt"),
-          required(params.resolution.actorId, "actorId"),
-          params.resolution.disposition,
+          resolution.workflowStatus,
+          required(resolution.reviewedAt, "reviewedAt"),
+          required(resolution.actorId, "actorId"),
+          resolution.disposition,
           required(params.eventId, "eventId"),
           serializeOptionalJson(params.evidence),
-          params.resolution.version,
-          params.resolution.disposition,
-          params.resolution.actorKind,
-          params.resolution.actorId,
-          params.resolution.evidenceKind,
-          params.resolution.evidenceRef,
-          params.resolution.evidenceSha256,
-          params.resolution.domainAction ?? null,
+          resolution.version,
+          resolution.disposition,
+          resolution.actorKind,
+          resolution.actorId,
+          resolution.evidenceKind,
+          resolution.evidenceRef,
+          resolution.evidenceSha256,
+          resolution.domainAction ?? null,
           params.runId,
           params.stepId,
         );
@@ -1667,59 +1695,195 @@ function validateNoEffectEvidence(
   }
 }
 
-function validateEffectReviewResolution(
-  resolution: EffectReviewResolution,
-): void {
-  if (
-    resolution.version !== 1 ||
-    resolution.kind !== "effect_review_resolution"
-  ) {
+export function canonicalizeEffectReviewResolution(
+  input: EffectReviewResolution,
+): EffectReviewResolution {
+  if (input === null || typeof input !== "object") {
+    throw new TypeError("effect review resolution must be an object");
+  }
+  if (CANONICAL_EFFECT_REVIEW_RESOLUTIONS.has(input)) return input;
+  const ownKeys = Reflect.ownKeys(input);
+  for (const key of ownKeys) {
+    if (!EFFECT_REVIEW_ALLOWED_KEYS.has(key)) {
+      throw new TypeError("effect review resolution has unknown fields");
+    }
+  }
+  const values = Object.create(null) as Record<string, unknown>;
+  for (const key of EFFECT_REVIEW_REQUIRED_KEYS) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+    if (
+      descriptor === undefined ||
+      !descriptor.enumerable ||
+      !("value" in descriptor)
+    ) {
+      throw new TypeError(
+        `effect review resolution ${key} must be an enumerable data field`,
+      );
+    }
+    values[key] = descriptor.value;
+  }
+  const hasDomainAction = ownKeys.includes("domainAction");
+  if (hasDomainAction) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, "domainAction");
+    if (
+      descriptor === undefined ||
+      !descriptor.enumerable ||
+      !("value" in descriptor)
+    ) {
+      throw new TypeError(
+        "effect review resolution domainAction must be an enumerable data field",
+      );
+    }
+    values.domainAction = descriptor.value;
+  }
+  if (values.version !== 1 || values.kind !== "effect_review_resolution") {
     throw new TypeError("effect review resolution version/kind is invalid");
   }
-  required(resolution.actorId, "review.actorId");
-  required(resolution.evidenceRef, "review.evidenceRef");
-  required(resolution.reviewedAt, "review.reviewedAt");
-  if (!/^[0-9a-f]{64}$/u.test(resolution.evidenceSha256)) {
+  if (!EFFECT_REVIEW_DISPOSITIONS.includes(values.disposition as never)) {
+    throw new TypeError("effect review disposition is invalid");
+  }
+  if (!EFFECT_REVIEW_ACTOR_KINDS.includes(values.actorKind as never)) {
+    throw new TypeError("effect review actor kind is invalid");
+  }
+  if (!EFFECT_REVIEW_EVIDENCE_KINDS.includes(values.evidenceKind as never)) {
+    throw new TypeError("effect review evidence kind is invalid");
+  }
+  if (
+    !EFFECT_REVIEW_WORKFLOW_STATUSES.includes(values.workflowStatus as never)
+  ) {
+    throw new TypeError("effect review workflow status is invalid");
+  }
+  if (
+    hasDomainAction &&
+    !EFFECT_REVIEW_DOMAIN_ACTIONS.includes(values.domainAction as never)
+  ) {
+    throw new TypeError("effect review domain action is invalid");
+  }
+  boundedRequiredUtf8(
+    values.actorId,
+    "review.actorId",
+    EFFECT_REVIEW_ACTOR_ID_MAX_UTF8_BYTES,
+  );
+  boundedRequiredUtf8(
+    values.evidenceRef,
+    "review.evidenceRef",
+    EFFECT_REVIEW_EVIDENCE_REF_MAX_UTF8_BYTES,
+  );
+  boundedRequiredUtf8(
+    values.reviewedAt,
+    "review.reviewedAt",
+    EFFECT_REVIEW_REVIEWED_AT_MAX_UTF8_BYTES,
+  );
+  if (
+    typeof values.evidenceSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(values.evidenceSha256)
+  ) {
     throw new TypeError("review evidence digest must be lowercase sha256");
   }
   if (
-    resolution.actorKind === "system_settlement" &&
-    resolution.evidenceKind === "operator_evidence"
+    values.actorKind === "system_settlement" &&
+    values.evidenceKind === "operator_evidence"
   ) {
     throw new TypeError("system settlement cannot assert operator evidence");
   }
-  if (resolution.workflowStatus === "pending") {
-    if (
-      resolution.disposition !== "remains_unknown" ||
-      resolution.domainAction !== undefined
-    ) {
+  if (values.workflowStatus === "pending") {
+    if (values.disposition !== "remains_unknown" || hasDomainAction) {
       throw new TypeError(
         "pending effect review must remain unknown without a domain action",
       );
     }
-    return;
+  } else {
+    const isCommittedResolution =
+      values.workflowStatus === "resolved" &&
+      values.disposition === "confirmed_committed" &&
+      values.domainAction === "mark_completed";
+    const isNoEffectResolution =
+      values.workflowStatus === "resolved" &&
+      values.disposition === "confirmed_no_effect" &&
+      values.domainAction === "retry_new_attempt";
+    const isAbandonedResolution =
+      values.workflowStatus === "abandoned" &&
+      values.disposition === "remains_unknown" &&
+      values.domainAction === "abandon_item";
+    if (
+      !isCommittedResolution &&
+      !isNoEffectResolution &&
+      !isAbandonedResolution
+    ) {
+      throw new TypeError(
+        "terminal effect review disposition, workflow status, and domain action disagree",
+      );
+    }
   }
-  const isCommittedResolution =
-    resolution.workflowStatus === "resolved" &&
-    resolution.disposition === "confirmed_committed" &&
-    resolution.domainAction === "mark_completed";
-  const isNoEffectResolution =
-    resolution.workflowStatus === "resolved" &&
-    resolution.disposition === "confirmed_no_effect" &&
-    resolution.domainAction === "retry_new_attempt";
-  const isAbandonedResolution =
-    resolution.workflowStatus === "abandoned" &&
-    resolution.disposition === "remains_unknown" &&
-    resolution.domainAction === "abandon_item";
-  if (
-    !isCommittedResolution &&
-    !isNoEffectResolution &&
-    !isAbandonedResolution
-  ) {
+  const canonical = Object.create(null) as Record<string, unknown>;
+  for (const key of EFFECT_REVIEW_REQUIRED_KEYS) {
+    Object.defineProperty(canonical, key, {
+      value: values[key],
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
+  }
+  if (hasDomainAction) {
+    Object.defineProperty(canonical, "domainAction", {
+      value: values.domainAction,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
+  }
+  const canonicalJson = stableStringify(canonical);
+  const journalJson = stableStringify(redactSecretsInValue(canonical));
+  if (journalJson !== canonicalJson) {
     throw new TypeError(
-      "terminal effect review disposition, workflow status, and domain action disagree",
+      "effect review resolution contains content unsafe for canonical journaling",
     );
   }
+  if (
+    Buffer.byteLength(canonicalJson, "utf8") >
+    EFFECT_REVIEW_PAYLOAD_MAX_UTF8_BYTES
+  ) {
+    throw new TypeError("effect review resolution payload is too large");
+  }
+  Object.freeze(canonical);
+  CANONICAL_EFFECT_REVIEW_RESOLUTIONS.add(canonical);
+  return canonical as unknown as EffectReviewResolution;
+}
+
+function boundedRequiredUtf8(
+  value: unknown,
+  name: string,
+  maxBytes: number,
+): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new TypeError(`${name} must not be empty`);
+  }
+  if (!isWellFormedUtf16(value)) {
+    throw new TypeError(`${name} contains ill-formed UTF-16`);
+  }
+  if (Buffer.byteLength(value, "utf8") > maxBytes) {
+    throw new TypeError(`${name} exceeds ${maxBytes} UTF-8 bytes`);
+  }
+  return value;
+}
+
+function isWellFormedUtf16(value: string): boolean {
+  const highSurrogateStart = 0xd800;
+  const highSurrogateEnd = 0xdbff;
+  const lowSurrogateStart = 0xdc00;
+  const lowSurrogateEnd = 0xdfff;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= highSurrogateStart && codeUnit <= highSurrogateEnd) {
+      if (index + 1 >= value.length) return false;
+      const next = value.charCodeAt(index + 1);
+      if (next < lowSurrogateStart || next > lowSurrogateEnd) return false;
+      index += 1;
+    } else if (codeUnit >= lowSurrogateStart && codeUnit <= lowSurrogateEnd) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function terminalContent(result: RunTerminalResult): string {

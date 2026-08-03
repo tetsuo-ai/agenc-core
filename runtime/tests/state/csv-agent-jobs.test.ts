@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Event } from "../session/event-log.js";
+import { RolloutStore } from "../session/rollout-store.js";
 import {
   CSV_RECOVERY_CANDIDATE_PAGE_SIZE,
   CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_COARSE,
@@ -26,9 +28,17 @@ import {
   recoverCsvOutputIntents,
 } from "../agents/jobs/csv-output.js";
 import {
+  canonicalizeCsvResult,
+  compileCsvOutputSchema,
+  validateCsvResultForPersistence,
+} from "../agents/jobs/csv-schema.js";
+import {
+  CSV_MAX_DURABLE_BYTES,
   CSV_MAX_RESULT_BLOB_BYTES_GLOBAL,
   CSV_MAX_STAGING_ROWS_GLOBAL,
 } from "../contracts/csv-job-contract.js";
+import { createOperatorEffectReviewResolution } from "./effect-review.js";
+import { StateRunDurabilityRepository } from "./run-durability.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
 
 let home = "";
@@ -63,6 +73,178 @@ function deadOwnerProbe(currentPid: number): CsvProcessIdentityProbe {
       return { kind: "dead" };
     },
   };
+}
+
+function seedUnknownEffect(runId: string): {
+  readonly rolloutPath: string;
+  readonly effect: {
+    readonly runId: string;
+    readonly stepId: string;
+    readonly epoch: 1;
+  };
+} {
+  const createStore = (resume: boolean) =>
+    new RolloutStore({
+      cwd,
+      sessionId: runId,
+      agencVersion: "0.13.0",
+      autoStartScheduler: false,
+      ...(resume ? { resume: true } : {}),
+    });
+  const original = createStore(false);
+  original.open({
+    sessionId: runId,
+    timestamp: "2026-08-03T00:00:00.000Z",
+    cwd,
+    originator: "csv-review-test",
+    agencVersion: "0.13.0",
+  });
+  const intent: Event = {
+    eventId: `${runId}:intent`,
+    id: `${runId}:intent`,
+    seq: 1,
+    msg: {
+      type: "effect_intent",
+      payload: {
+        runId,
+        stepId: "tool:turn-1:call-1",
+        callId: "call-1",
+        toolName: "csv_worker",
+        recoveryCategory: "side-effecting",
+        intentDigest: `${runId}:intent-digest`,
+        attempt: 1,
+        recordedAt: "2026-08-03T00:00:00.000Z",
+      },
+    },
+  };
+  expect(original.append(intent, { durable: true })).toBe(true);
+  original.close();
+  const recovered = createStore(true);
+  recovered.open({
+    sessionId: runId,
+    timestamp: "2026-08-03T00:00:01.000Z",
+    cwd,
+    originator: "csv-review-test",
+    agencVersion: "0.13.0",
+  });
+  const rolloutPath = recovered.rolloutPath;
+  recovered.close();
+  return {
+    rolloutPath,
+    effect: { runId, stepId: "tool:turn-1:call-1", epoch: 1 },
+  };
+}
+
+function operatorCompletion(reviewedAt = "2026-08-03T00:01:00.000Z") {
+  return createOperatorEffectReviewResolution({
+    disposition: "confirmed_committed",
+    actorId: "test-operator",
+    evidenceRef: "ticket:csv-review",
+    evidenceSha256: "a".repeat(64),
+    reviewedAt,
+  });
+}
+
+function operatorRetry(reviewedAt = "2026-08-03T00:01:00.000Z") {
+  return createOperatorEffectReviewResolution({
+    disposition: "confirmed_no_effect",
+    actorId: "test-operator",
+    evidenceRef: "ticket:csv-review",
+    evidenceSha256: "a".repeat(64),
+    reviewedAt,
+  });
+}
+
+function operatorAbandon(reviewedAt = "2026-08-03T00:01:00.000Z") {
+  return createOperatorEffectReviewResolution({
+    disposition: "remains_unknown",
+    actorId: "test-operator",
+    evidenceRef: "ticket:csv-review",
+    evidenceSha256: "a".repeat(64),
+    reviewedAt,
+  });
+}
+
+function terminalReviewEventCount(rolloutPath: string): number {
+  return (
+    readFileSync(rolloutPath, "utf8").match(/"type":"effect_review_resolved"/g)
+      ?.length ?? 0
+  );
+}
+
+function seedAdditionalPendingEffect(options: {
+  readonly sessionId: string;
+  readonly runId: string;
+  readonly stepId: string;
+  readonly callId?: string;
+}): StateRunDurabilityRepository {
+  const runs = new StateRunDurabilityRepository(driver);
+  runs.ensureInitialEpoch({
+    runId: options.runId,
+    openedAt: "2026-08-03T00:00:00.000Z",
+    openedEventId: `${options.runId}:opened`,
+  });
+  runs.beginEffect({
+    runId: options.runId,
+    epoch: 1,
+    stepId: options.stepId,
+    sessionId: options.sessionId,
+    callId: options.callId ?? "call-1",
+    toolName: "csv_worker",
+    recoveryCategory: "side-effecting",
+    intentDigest: `${options.runId}:intent-digest`,
+    eventId: `${options.runId}:intent`,
+    eventSequence: 1,
+    intentAt: "2026-08-03T00:00:00.000Z",
+  });
+  runs.markEffectUnknown({
+    runId: options.runId,
+    stepId: options.stepId,
+    eventId: `${options.runId}:unknown`,
+    eventSequence: 2,
+    reason: "ambiguous",
+    observedAt: "2026-08-03T00:00:01.000Z",
+  });
+  return runs;
+}
+
+function prepareEffectBackedCsvReview(options: {
+  readonly jobId: string;
+  readonly runId: string;
+  readonly outputSchema?: Record<string, unknown>;
+  readonly maxResultBytes?: number;
+  readonly maxResultBytesPerJob?: number;
+}): ReturnType<typeof seedUnknownEffect> {
+  const seeded = seedUnknownEffect(options.runId);
+  repo.createJob(
+    {
+      id: options.jobId,
+      name: options.jobId,
+      instruction: "x",
+      autoExport: false,
+      inputHeaders: ["value"],
+      inputCsvPath: "/in",
+      outputCsvPath: "",
+      ...(options.outputSchema !== undefined
+        ? { outputSchema: options.outputSchema }
+        : {}),
+      ...(options.maxResultBytes !== undefined
+        ? { maxResultBytes: options.maxResultBytes }
+        : {}),
+      ...(options.maxResultBytesPerJob !== undefined
+        ? { maxResultBytesPerJob: options.maxResultBytesPerJob }
+        : {}),
+    },
+    [item("row-a", 0, { value: "input" })],
+  );
+  repo.markJobRunning(options.jobId);
+  repo.beginItemDispatch(options.jobId, "row-a", { effect: seeded.effect });
+  repo.acknowledgeItemDispatch(options.jobId, "row-a", {});
+  repo.markItemUnknownOutcome(options.jobId, "row-a", "ambiguous", {
+    kind: "idempotency_lookup",
+    reference: "lookup-1",
+  });
+  return seeded;
 }
 
 function seedExpiredStagedImport(
@@ -897,7 +1079,7 @@ describe("CsvAgentJobsRepository", () => {
     ).toBe(1);
   });
 
-  it("holds ambiguous outcomes for evidence-backed review and abandons terminally", () => {
+  it("holds ambiguous outcomes for evidence-backed review and abandons terminally", async () => {
     repo.createJob(
       {
         id: "review",
@@ -927,7 +1109,7 @@ describe("CsvAgentJobsRepository", () => {
       reviewStatus: "pending",
       reviewReason: "restart_dispatch_ambiguous",
     });
-    expect(() =>
+    await expect(
       repo.resolveUnknownOutcome({
         jobId: "review",
         itemId: "opaque",
@@ -950,8 +1132,8 @@ describe("CsvAgentJobsRepository", () => {
           domainAction: "abandon_item",
         },
       }),
-    ).toThrow(/no canonical effect identity/u);
-    repo.resolveUnknownOutcome({
+    ).rejects.toThrow(/no canonical effect identity/u);
+    await repo.resolveUnknownOutcome({
       jobId: "review",
       itemId: "opaque",
       disposition: "remains_unknown",
@@ -1020,7 +1202,7 @@ describe("CsvAgentJobsRepository", () => {
     expect(repo.refreshJobOutcome("terminal-precedence")).toBe("failed");
   });
 
-  it("refuses to advance a CSV review when its canonical effect is missing", () => {
+  it("refuses to advance a CSV review when its canonical effect is missing", async () => {
     repo.createJob(
       {
         id: "missing-effect",
@@ -1038,7 +1220,7 @@ describe("CsvAgentJobsRepository", () => {
     });
     repo.acknowledgeItemDispatch("missing-effect", "opaque", {});
     repo.markItemUnknownOutcome("missing-effect", "opaque", "ambiguous");
-    expect(() =>
+    await expect(
       repo.resolveUnknownOutcome({
         jobId: "missing-effect",
         itemId: "opaque",
@@ -1061,12 +1243,561 @@ describe("CsvAgentJobsRepository", () => {
           domainAction: "abandon_item",
         },
       }),
-    ).toThrow(/missing or stale/u);
+    ).rejects.toThrow(/missing or stale/u);
     expect(repo.getItem("missing-effect", "opaque")).toMatchObject({
       status: "unknown_outcome",
       reviewStatus: "pending",
     });
   });
+
+  it("persists one validated result with canonical review and separate lookup evidence", async () => {
+    const jobId = "canonical-review-result";
+    const seeded = prepareEffectBackedCsvReview({
+      jobId,
+      runId: "run-canonical-review-result",
+      outputSchema: {
+        type: "object",
+        properties: { value: { type: "string" } },
+        required: ["value"],
+        additionalProperties: false,
+      },
+    });
+    const effectReview = operatorCompletion();
+
+    await repo.resolveUnknownOutcome({
+      jobId,
+      itemId: "row-a",
+      disposition: "confirmed_committed",
+      domainAction: "mark_completed",
+      evidence: { reference: "requested-review" },
+      actor: "test-operator",
+      reason: "confirmed",
+      effectReview,
+      result: { value: "complete" },
+    });
+
+    expect(repo.getItem(jobId, "row-a")).toMatchObject({
+      status: "completed",
+      result: { value: "complete" },
+      reviewStatus: "resolved",
+      reviewEvidence: effectReview,
+      lookupEvidence: {
+        kind: "idempotency_lookup",
+        reference: "lookup-1",
+      },
+    });
+    expect(terminalReviewEventCount(seeded.rolloutPath)).toBe(1);
+    const history = driver
+      .prepareState<
+        [string, string],
+        { readonly review_status: string; readonly evidence_json: string }
+      >(
+        `SELECT review_status, evidence_json
+         FROM csv_agent_job_review_history
+         WHERE job_id = ? AND item_id = ? ORDER BY sequence ASC`,
+      )
+      .all(jobId, "row-a");
+    expect(history.map((row) => row.review_status)).toEqual([
+      "pending",
+      "resolved",
+    ]);
+    expect(JSON.parse(history[0]!.evidence_json)).toEqual({
+      kind: "idempotency_lookup",
+      reference: "lookup-1",
+    });
+    expect(JSON.parse(history[1]!.evidence_json)).toEqual(effectReview);
+  });
+
+  it("reuses the first canonical effect review after CSV projection failure", async () => {
+    const jobId = "review-projection-retry";
+    const seeded = prepareEffectBackedCsvReview({
+      jobId,
+      runId: "run-review-projection-retry",
+    });
+    const firstReview = operatorCompletion("2026-08-03T00:01:00.000Z");
+    driver
+      .prepareState(
+        `CREATE TRIGGER test_abort_csv_review_projection
+         BEFORE UPDATE ON csv_agent_job_items
+         WHEN OLD.review_status = 'pending' AND NEW.review_status = 'resolved'
+         BEGIN
+           SELECT RAISE(ABORT, 'simulated CSV review projection failure');
+         END`,
+      )
+      .run();
+    await expect(
+      repo.resolveUnknownOutcome({
+        jobId,
+        itemId: "row-a",
+        disposition: "confirmed_committed",
+        domainAction: "mark_completed",
+        evidence: { reference: "first-request" },
+        actor: "test-operator",
+        reason: "confirmed",
+        effectReview: firstReview,
+      }),
+    ).rejects.toThrow(/simulated CSV review projection failure/u);
+    expect(terminalReviewEventCount(seeded.rolloutPath)).toBe(1);
+    expect(repo.getItem(jobId, "row-a")).toMatchObject({
+      status: "unknown_outcome",
+      reviewStatus: "pending",
+    });
+    driver.prepareState("DROP TRIGGER test_abort_csv_review_projection").run();
+
+    await repo.resolveUnknownOutcome({
+      jobId,
+      itemId: "row-a",
+      disposition: "confirmed_committed",
+      domainAction: "mark_completed",
+      evidence: { reference: "second-request" },
+      actor: "test-operator",
+      reason: "confirmed",
+      effectReview: operatorCompletion("2026-08-03T00:02:00.000Z"),
+    });
+    expect(terminalReviewEventCount(seeded.rolloutPath)).toBe(1);
+    expect(repo.getItem(jobId, "row-a")).toMatchObject({
+      status: "completed",
+      resultAvailability: "unavailable_after_review",
+      reviewEvidence: firstReview,
+      lookupEvidence: {
+        kind: "idempotency_lookup",
+        reference: "lookup-1",
+      },
+    });
+    const resolvedEvidence = driver
+      .prepareState<[string, string], { readonly evidence_json: string }>(
+        `SELECT evidence_json FROM csv_agent_job_review_history
+         WHERE job_id = ? AND item_id = ? AND review_status = 'resolved'`,
+      )
+      .get(jobId, "row-a")!.evidence_json;
+    expect(JSON.parse(resolvedEvidence)).toEqual(firstReview);
+  });
+
+  it.each([
+    {
+      name: "retry",
+      disposition: "confirmed_no_effect" as const,
+      domainAction: "retry_new_attempt" as const,
+      reviewStatus: "resolved" as const,
+      firstReview: operatorRetry("2026-08-03T00:01:00.000Z"),
+      laterReview: operatorRetry("2026-08-03T00:02:00.000Z"),
+      expected: { status: "pending", reviewStatus: "resolved" },
+    },
+    {
+      name: "abandon",
+      disposition: "remains_unknown" as const,
+      domainAction: "abandon_item" as const,
+      reviewStatus: "abandoned" as const,
+      firstReview: operatorAbandon("2026-08-03T00:01:00.000Z"),
+      laterReview: operatorAbandon("2026-08-03T00:02:00.000Z"),
+      expected: { status: "unknown_outcome", reviewStatus: "abandoned" },
+    },
+  ])(
+    "reuses the first canonical $name review after projection failure",
+    async ({
+      name,
+      disposition,
+      domainAction,
+      reviewStatus,
+      firstReview,
+      laterReview,
+      expected,
+    }) => {
+      const jobId = `review-projection-${name}`;
+      const seeded = prepareEffectBackedCsvReview({
+        jobId,
+        runId: `run-review-projection-${name}`,
+      });
+      driver
+        .prepareState(
+          `CREATE TRIGGER test_abort_csv_${name}_projection
+           BEFORE UPDATE ON csv_agent_job_items
+           WHEN OLD.review_status = 'pending'
+             AND NEW.review_status = '${reviewStatus}'
+           BEGIN
+             SELECT RAISE(ABORT, 'simulated CSV ${name} projection failure');
+           END`,
+        )
+        .run();
+      await expect(
+        repo.resolveUnknownOutcome({
+          jobId,
+          itemId: "row-a",
+          disposition,
+          domainAction,
+          evidence: { reference: "first-request" },
+          actor: "test-operator",
+          reason: name,
+          effectReview: firstReview,
+        }),
+      ).rejects.toThrow(
+        new RegExp(`simulated CSV ${name} projection failure`, "u"),
+      );
+      expect(terminalReviewEventCount(seeded.rolloutPath)).toBe(1);
+      expect(repo.getItem(jobId, "row-a")).toMatchObject({
+        status: "unknown_outcome",
+        reviewStatus: "pending",
+      });
+      driver
+        .prepareState(`DROP TRIGGER test_abort_csv_${name}_projection`)
+        .run();
+
+      await repo.resolveUnknownOutcome({
+        jobId,
+        itemId: "row-a",
+        disposition,
+        domainAction,
+        evidence: { reference: "second-request" },
+        actor: "test-operator",
+        reason: name,
+        effectReview: laterReview,
+      });
+      expect(terminalReviewEventCount(seeded.rolloutPath)).toBe(1);
+      expect(repo.getItem(jobId, "row-a")).toMatchObject({
+        ...expected,
+        reviewEvidence: firstReview,
+        lookupEvidence: {
+          kind: "idempotency_lookup",
+          reference: "lookup-1",
+        },
+      });
+      const evidenceJson = driver
+        .prepareState<
+          [string, string, string],
+          { readonly evidence_json: string }
+        >(
+          `SELECT evidence_json FROM csv_agent_job_review_history
+           WHERE job_id = ? AND item_id = ? AND review_status = ?`,
+        )
+        .get(jobId, "row-a", reviewStatus)!.evidence_json;
+      expect(JSON.parse(evidenceJson)).toEqual(firstReview);
+    },
+  );
+
+  it("rejects ignored results and supports effectless result omission", async () => {
+    repo.createJob(
+      {
+        id: "effectless-result-contract",
+        name: "effectless-result-contract",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("row-a", 0, { value: "input" })],
+    );
+    repo.markItemRunning("effectless-result-contract", "row-a");
+    repo.markItemUnknownOutcome(
+      "effectless-result-contract",
+      "row-a",
+      "ambiguous",
+    );
+    await expect(
+      repo.resolveUnknownOutcome({
+        jobId: "effectless-result-contract",
+        itemId: "row-a",
+        disposition: "confirmed_no_effect",
+        domainAction: "retry_new_attempt",
+        evidence: { reference: "retry" },
+        actor: "test-operator",
+        reason: "retry",
+        result: { ignored: true },
+      }),
+    ).rejects.toThrow(/only valid for confirmed committed completion/u);
+    await repo.resolveUnknownOutcome({
+      jobId: "effectless-result-contract",
+      itemId: "row-a",
+      disposition: "confirmed_committed",
+      domainAction: "mark_completed",
+      evidence: { reference: "legacy-review" },
+      actor: "test-operator",
+      reason: "confirmed without recoverable result",
+    });
+    expect(repo.getItem("effectless-result-contract", "row-a")).toMatchObject({
+      status: "completed",
+      resultAvailability: "unavailable_after_review",
+      reviewEvidence: { reference: "legacy-review" },
+    });
+  });
+
+  it("rejects reservation corruption before appending a review", async () => {
+    const jobId = "review-accounting-corruption";
+    const seeded = prepareEffectBackedCsvReview({
+      jobId,
+      runId: "run-review-accounting-corruption",
+    });
+    driver
+      .prepareState(
+        "UPDATE csv_agent_jobs SET result_reserved_bytes = 0 WHERE id = ?",
+      )
+      .run(jobId);
+    const rolloutBefore = readFileSync(seeded.rolloutPath, "utf8");
+    await expect(
+      repo.resolveUnknownOutcome({
+        jobId,
+        itemId: "row-a",
+        disposition: "confirmed_committed",
+        domainAction: "mark_completed",
+        evidence: { reference: "review" },
+        actor: "test-operator",
+        reason: "confirmed",
+        effectReview: operatorCompletion(),
+      }),
+    ).rejects.toThrow(/reservation accounting is inconsistent/u);
+    expect(readFileSync(seeded.rolloutPath, "utf8")).toBe(rolloutBefore);
+    expect(terminalReviewEventCount(seeded.rolloutPath)).toBe(0);
+    expect(repo.getItem(jobId, "row-a")).toMatchObject({
+      status: "unknown_outcome",
+      reviewStatus: "pending",
+    });
+  });
+
+  it.each([
+    {
+      name: "result completion",
+      disposition: "confirmed_committed" as const,
+      domainAction: "mark_completed" as const,
+      effectReview: operatorCompletion(),
+      result: { value: "complete" },
+    },
+    {
+      name: "resultless completion",
+      disposition: "confirmed_committed" as const,
+      domainAction: "mark_completed" as const,
+      effectReview: operatorCompletion(),
+    },
+    {
+      name: "retry",
+      disposition: "confirmed_no_effect" as const,
+      domainAction: "retry_new_attempt" as const,
+      effectReview: operatorRetry(),
+    },
+  ])(
+    "rejects corrupt status counters before A1 for $name",
+    async ({ name, disposition, domainAction, effectReview, result }) => {
+      const jobId = `counter-${name.replaceAll(" ", "-")}`;
+      const seeded = prepareEffectBackedCsvReview({
+        jobId,
+        runId: `run-${jobId}`,
+      });
+      driver
+        .prepareState(
+          "UPDATE csv_agent_jobs SET unknown_outcome_items = 0 WHERE id = ?",
+        )
+        .run(jobId);
+      const itemBefore = repo.getItem(jobId, "row-a");
+      const jobBefore = repo.getJob(jobId);
+      const rolloutBefore = readFileSync(seeded.rolloutPath, "utf8");
+      const historyBefore = driver
+        .prepareState<[string, string], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_agent_job_review_history
+           WHERE job_id = ? AND item_id = ?`,
+        )
+        .get(jobId, "row-a")!.count;
+      await expect(
+        repo.resolveUnknownOutcome({
+          jobId,
+          itemId: "row-a",
+          disposition,
+          domainAction,
+          evidence: { reference: "review" },
+          actor: "test-operator",
+          reason: "confirmed",
+          effectReview,
+          ...(result !== undefined ? { result } : {}),
+        }),
+      ).rejects.toThrow(/status accounting is inconsistent/u);
+      expect(readFileSync(seeded.rolloutPath, "utf8")).toBe(rolloutBefore);
+      expect(repo.getItem(jobId, "row-a")).toEqual(itemBefore);
+      expect(repo.getJob(jobId)).toEqual(jobBefore);
+      expect(
+        driver
+          .prepareState<[string, string], { readonly count: number }>(
+            `SELECT COUNT(*) AS count FROM csv_agent_job_review_history
+             WHERE job_id = ? AND item_id = ?`,
+          )
+          .get(jobId, "row-a")!.count,
+      ).toBe(historyBefore);
+    },
+  );
+
+  it("allows resolved call history but rejects multiple pending call effects", async () => {
+    const allowedJob = "review-with-call-history";
+    const allowed = prepareEffectBackedCsvReview({
+      jobId: allowedJob,
+      runId: "run-review-with-call-history",
+    });
+    const historical = seedAdditionalPendingEffect({
+      sessionId: "run-review-with-call-history",
+      runId: "historical-call-attempt",
+      stepId: "tool:historical:call-1",
+    });
+    historical.resolveEffectReview({
+      runId: "historical-call-attempt",
+      stepId: "tool:historical:call-1",
+      resolution: operatorCompletion("2026-08-03T00:00:30.000Z"),
+      eventId: "historical-review",
+    });
+    await expect(
+      repo.resolveUnknownOutcome({
+        jobId: allowedJob,
+        itemId: "row-a",
+        disposition: "confirmed_committed",
+        domainAction: "mark_completed",
+        evidence: { reference: "review" },
+        actor: "test-operator",
+        reason: "confirmed",
+        effectReview: operatorCompletion(),
+      }),
+    ).resolves.toBeUndefined();
+    expect(terminalReviewEventCount(allowed.rolloutPath)).toBe(1);
+
+    const blockedJob = "review-with-two-pending-effects";
+    const blocked = prepareEffectBackedCsvReview({
+      jobId: blockedJob,
+      runId: "run-review-with-two-pending-effects",
+    });
+    seedAdditionalPendingEffect({
+      sessionId: "run-review-with-two-pending-effects",
+      runId: "competing-pending-attempt",
+      stepId: "tool:competing:call-1",
+    });
+    const rolloutBefore = readFileSync(blocked.rolloutPath, "utf8");
+    await expect(
+      repo.resolveUnknownOutcome({
+        jobId: blockedJob,
+        itemId: "row-a",
+        disposition: "confirmed_committed",
+        domainAction: "mark_completed",
+        evidence: { reference: "review" },
+        actor: "test-operator",
+        reason: "confirmed",
+        effectReview: operatorCompletion(),
+      }),
+    ).rejects.toThrow(/call identity is ambiguous or stale/u);
+    expect(readFileSync(blocked.rolloutPath, "utf8")).toBe(rolloutBefore);
+    expect(terminalReviewEventCount(blocked.rolloutPath)).toBe(0);
+  });
+
+  it.each([
+    {
+      name: "schema-invalid",
+      jobLimits: {},
+      result: { value: 42 },
+      error: /does not match/u,
+    },
+    {
+      name: "per-item-quota",
+      jobLimits: { maxResultBytes: 16 },
+      result: { value: "x".repeat(64) },
+      error: /limit is 16/u,
+    },
+    {
+      name: "per-job-quota",
+      jobLimits: { maxResultBytes: 1_024, maxResultBytesPerJob: 1_024 },
+      result: { value: "x".repeat(64) },
+      mutateQuota: (jobId: string) =>
+        driver
+          .prepareState(
+            "UPDATE csv_agent_jobs SET max_result_bytes_per_job = 16 WHERE id = ?",
+          )
+          .run(jobId),
+      error: /limit is 16/u,
+    },
+    {
+      name: "global-result-quota",
+      jobLimits: {},
+      result: { value: "valid" },
+      mutateQuota: (_jobId: string) =>
+        driver
+          .prepareState(
+            "UPDATE csv_storage_quota SET result_blob_bytes = ? WHERE singleton = 1",
+          )
+          .run(CSV_MAX_RESULT_BLOB_BYTES_GLOBAL),
+      error: /result blob byte quota/u,
+    },
+    {
+      name: "global-durable-quota",
+      jobLimits: {},
+      result: { value: "valid" },
+      mutateQuota: (_jobId: string) =>
+        driver
+          .prepareState(
+            "UPDATE csv_storage_quota SET durable_bytes = ? WHERE singleton = 1",
+          )
+          .run(CSV_MAX_DURABLE_BYTES),
+      error: /durable byte quota/u,
+    },
+  ])(
+    "rejects recovered $name results before A1 or CSV projection",
+    async ({ name, jobLimits, result, mutateQuota, error }) => {
+      const jobId = `review-${name}`;
+      const seeded = seedUnknownEffect(`run-${name}`);
+      repo.createJob(
+        {
+          id: jobId,
+          name: jobId,
+          instruction: "x",
+          autoExport: false,
+          inputHeaders: ["value"],
+          inputCsvPath: "/in",
+          outputCsvPath: "",
+          outputSchema: {
+            type: "object",
+            properties: { value: { type: "string" } },
+            required: ["value"],
+            additionalProperties: false,
+          },
+          ...jobLimits,
+        },
+        [item("row-a", 0, { value: "input" })],
+      );
+      repo.markJobRunning(jobId);
+      repo.beginItemDispatch(jobId, "row-a", { effect: seeded.effect });
+      repo.acknowledgeItemDispatch(jobId, "row-a", {});
+      repo.markItemUnknownOutcome(jobId, "row-a", "ambiguous", {
+        kind: "idempotency_lookup",
+        reference: "lookup-1",
+      });
+      mutateQuota?.(jobId);
+
+      const itemBefore = repo.getItem(jobId, "row-a");
+      const jobBefore = repo.getJob(jobId);
+      const rolloutBefore = readFileSync(seeded.rolloutPath, "utf8");
+      const historyBefore = driver
+        .prepareState<[string, string], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_agent_job_review_history
+           WHERE job_id = ? AND item_id = ?`,
+        )
+        .get(jobId, "row-a")!.count;
+      await expect(
+        repo.resolveUnknownOutcome({
+          jobId,
+          itemId: "row-a",
+          disposition: "confirmed_committed",
+          domainAction: "mark_completed",
+          evidence: { reference: "requested-review" },
+          actor: "test-operator",
+          reason: "confirmed",
+          effectReview: operatorCompletion(),
+          result,
+        }),
+      ).rejects.toThrow(error);
+      expect(repo.getItem(jobId, "row-a")).toEqual(itemBefore);
+      expect(repo.getJob(jobId)).toEqual(jobBefore);
+      expect(readFileSync(seeded.rolloutPath, "utf8")).toBe(rolloutBefore);
+      expect(terminalReviewEventCount(seeded.rolloutPath)).toBe(0);
+      expect(
+        driver
+          .prepareState<[string, string], { readonly count: number }>(
+            `SELECT COUNT(*) AS count FROM csv_agent_job_review_history
+             WHERE job_id = ? AND item_id = ?`,
+          )
+          .get(jobId, "row-a")!.count,
+      ).toBe(historyBefore);
+    },
+  );
 
   it("rejects result blobs beyond the persisted per-item quota", () => {
     repo.createJob(
@@ -1089,6 +1820,70 @@ describe("CsvAgentJobsRepository", () => {
       }),
     ).toThrow(/limit is 16/);
     expect(repo.getItem("bounded-result", "opaque")?.status).toBe("running");
+  });
+
+  it("does not consume a validation token when accounting preflight fails", async () => {
+    const schema = {
+      type: "object",
+      properties: { value: { type: "string" } },
+      required: ["value"],
+      additionalProperties: false,
+    } as const;
+    repo.createJob(
+      {
+        id: "preflight-token-retry",
+        name: "preflight-token-retry",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+        outputSchema: schema,
+      },
+      [item("row-a", 0, { value: "input" })],
+    );
+    repo.markItemRunning("preflight-token-retry", "row-a");
+    const validated = await validateCsvResultForPersistence(
+      "preflight-token-retry",
+      "row-a",
+      compileCsvOutputSchema(schema),
+      canonicalizeCsvResult({ value: "complete" }),
+    );
+    expect(typeof validated).not.toBe("string");
+    if (typeof validated === "string") throw new Error(validated);
+    const originalResultBytes = driver
+      .prepareState<[], { readonly result_blob_bytes: number }>(
+        "SELECT result_blob_bytes FROM csv_storage_quota WHERE singleton = 1",
+      )
+      .get()!.result_blob_bytes;
+    driver
+      .prepareState(
+        "UPDATE csv_storage_quota SET result_blob_bytes = ? WHERE singleton = 1",
+      )
+      .run(CSV_MAX_RESULT_BLOB_BYTES_GLOBAL);
+    expect(() =>
+      repo.markItemCompletedValidated(
+        "preflight-token-retry",
+        "row-a",
+        validated,
+      ),
+    ).toThrow(/result blob byte quota/u);
+    driver
+      .prepareState(
+        "UPDATE csv_storage_quota SET result_blob_bytes = ? WHERE singleton = 1",
+      )
+      .run(originalResultBytes);
+    expect(() =>
+      repo.markItemCompletedValidated(
+        "preflight-token-retry",
+        "row-a",
+        validated,
+      ),
+    ).not.toThrow();
+    expect(repo.getItem("preflight-token-retry", "row-a")).toMatchObject({
+      status: "completed",
+      result: { value: "complete" },
+    });
   });
 
   it("applies typed staging and result reservations without leaking quota", () => {

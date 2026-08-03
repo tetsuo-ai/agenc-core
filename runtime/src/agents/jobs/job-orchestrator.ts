@@ -1531,7 +1531,7 @@ async function reconcileRestartedItem(
       reason,
       lookup.evidence,
     );
-    opts.repository.resolveUnknownOutcome({
+    await opts.repository.resolveUnknownOutcome({
       jobId: stored.jobId,
       itemId: stored.itemId,
       disposition: "confirmed_committed",
@@ -1706,6 +1706,7 @@ export async function recordAgentJobResultAsync(
   try {
     validated = await validateCsvResultForPersistence(
       args.jobId,
+      args.itemId,
       state.config.compiledOutputSchema,
       canonical,
     );

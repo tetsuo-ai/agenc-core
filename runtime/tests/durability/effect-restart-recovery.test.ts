@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runAgenCStateCli } from "../../src/bin/state-cli.js";
 import { admissionRecordKey } from "../../src/budget/admission-types.js";
 import type { RuntimeAdmissionRequest } from "../../src/budget/admission-types.js";
+import type { EffectReviewResolution } from "../../src/contracts/run-contracts.js";
 import type { Event } from "../../src/session/event-log.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
@@ -35,14 +36,117 @@ const OPENED_AT = "2026-07-18T00:00:00.000Z";
 const REVIEW_SHA256 = "b".repeat(64);
 const created: string[] = [];
 
-function operatorReview(reviewedAt: string, actorId = "operator-test") {
+function operatorReview(
+  reviewedAt: string,
+  actorId = "operator-test",
+  evidenceRef = `operator-observation:${actorId}`,
+) {
   return createOperatorEffectReviewResolution({
     disposition: "confirmed_committed",
     actorId,
-    evidenceRef: `operator-observation:${actorId}`,
+    evidenceRef,
     evidenceSha256: REVIEW_SHA256,
     reviewedAt,
   });
+}
+
+function abandonedReview(reviewedAt: string): EffectReviewResolution {
+  return createOperatorEffectReviewResolution({
+    disposition: "remains_unknown",
+    actorId: "operator-test",
+    evidenceRef: "operator-observation:operator-test",
+    evidenceSha256: REVIEW_SHA256,
+    reviewedAt,
+  });
+}
+
+function malformedReviews(
+  valid: EffectReviewResolution,
+): EffectReviewResolution[] {
+  const nonEnumerableRequired = { ...valid } as Record<string, unknown>;
+  Object.defineProperty(nonEnumerableRequired, "actorId", {
+    value: valid.actorId,
+    enumerable: false,
+    configurable: true,
+  });
+  const nonEnumerableExtra = { ...valid } as Record<string, unknown>;
+  Object.defineProperty(nonEnumerableExtra, "unexpected", {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
+  const changingGetter = { ...valid } as Record<string, unknown>;
+  let getterRead = 0;
+  Object.defineProperty(changingGetter, "reviewedAt", {
+    enumerable: true,
+    configurable: true,
+    get: () =>
+      getterRead++ === 0
+        ? "2026-07-18T00:01:00.000Z"
+        : "2026-07-18T00:02:00.000Z",
+  });
+  const hiddenToJson = { ...valid } as Record<string, unknown>;
+  Object.defineProperty(hiddenToJson, "toJSON", {
+    value: () => ({ forged: true }),
+    enumerable: false,
+    configurable: true,
+  });
+  return [
+    { ...valid, version: 2 },
+    { ...valid, kind: "wrong_kind" },
+    { ...valid, evidenceSha256: "not-a-sha256" },
+    { ...valid, actorKind: "wrong_actor_kind" },
+    { ...valid, evidenceKind: "wrong_evidence_kind" },
+    {
+      ...valid,
+      actorKind: "system_settlement",
+      evidenceKind: "operator_evidence",
+    },
+    {
+      ...valid,
+      disposition: "remains_unknown",
+      workflowStatus: "resolved",
+      domainAction: "abandon_item",
+    },
+    { ...valid, actorId: "a".repeat(513) },
+    { ...valid, actorId: "a".repeat(400), evidenceRef: "e".repeat(3_900) },
+    { ...valid, actorId: `sk-${"a".repeat(20)}` },
+    { ...valid, evidenceRef: `sk-${"a".repeat(20)}` },
+    { ...valid, evidenceRef: "ill-formed-\ud800" },
+    { ...valid, unexpected: true },
+    nonEnumerableRequired,
+    nonEnumerableExtra,
+    changingGetter,
+    hiddenToJson,
+  ] as unknown as EffectReviewResolution[];
+}
+
+function changingReviewProxy(valid: EffectReviewResolution): {
+  readonly resolution: EffectReviewResolution;
+  readonly reviewedAtDescriptorReads: () => number;
+} {
+  let descriptorReads = 0;
+  const resolution = new Proxy(
+    { ...valid },
+    {
+      getOwnPropertyDescriptor(target, key) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+        if (key !== "reviewedAt" || descriptor === undefined) return descriptor;
+        descriptorReads += 1;
+        return {
+          ...descriptor,
+          value:
+            descriptorReads === 1
+              ? "2026-07-18T00:01:00.000Z"
+              : "2026-07-18T00:02:00.000Z",
+        };
+      },
+    },
+  );
+  return {
+    resolution,
+    reviewedAtDescriptorReads: () => descriptorReads,
+  };
 }
 
 function operatorReviewEventId(runId: string): string {
@@ -518,16 +622,19 @@ describe("M4 effect restart recovery", () => {
     const paths = resolveStateDatabasePaths({ cwd });
     const driver = openStateDatabasePaths(paths);
     try {
+      const firstResolution = operatorReview("2026-07-18T00:01:00.000Z");
       expect(
         resolveDurableEffectReview(driver, {
           sessionId: runId,
           toolCallId: "call-1",
-          resolution: operatorReview("2026-07-18T00:01:00.000Z"),
+          resolution: firstResolution,
         }),
       ).toMatchObject({
         kind: "resolved",
         durable: true,
+        eventId: operatorReviewEventId(runId),
         sequence: 3,
+        resolution: firstResolution,
       });
       expect(
         new StateRunDurabilityRepository(driver).getEffect(
@@ -549,7 +656,9 @@ describe("M4 effect restart recovery", () => {
       ).toMatchObject({
         kind: "already_resolved",
         durable: true,
+        eventId: operatorReviewEventId(runId),
         sequence: 3,
+        resolution: firstResolution,
       });
       expect(() =>
         resolveDurableEffectReview(driver, {
@@ -589,6 +698,344 @@ describe("M4 effect restart recovery", () => {
       ]);
     } finally {
       replayed.close();
+    }
+  });
+
+  it("replays an abandoned review with its first exact resolution", () => {
+    const cwd = workspace();
+    const runId = "run-abandoned-review";
+    const original = store(cwd, runId);
+    original.append(intent(runId, "side-effecting"), { durable: true });
+    original.close();
+    const recovered = store(cwd, runId, true);
+    recovered.close();
+
+    const paths = resolveStateDatabasePaths({ cwd });
+    const driver = openStateDatabasePaths(paths);
+    const firstResolution = abandonedReview("2026-07-18T00:01:00.000Z");
+    try {
+      expect(
+        resolveDurableEffectReview(driver, {
+          sessionId: runId,
+          toolCallId: "call-1",
+          resolution: firstResolution,
+        }),
+      ).toMatchObject({ kind: "resolved", resolution: firstResolution });
+      expect(
+        resolveDurableEffectReview(driver, {
+          sessionId: runId,
+          toolCallId: "call-1",
+          resolution: abandonedReview("2026-07-18T00:02:00.000Z"),
+        }),
+      ).toMatchObject({
+        kind: "already_resolved",
+        resolution: firstResolution,
+      });
+      expect(
+        new StateRunDurabilityRepository(driver).getEffect(
+          runId,
+          "tool:turn-1:call-1",
+        )?.review,
+      ).toEqual(firstResolution);
+    } finally {
+      driver.close();
+      created.push(paths.projectDir);
+    }
+  });
+
+  it("rejects malformed reviews before changing canonical journal bytes", () => {
+    const cwd = workspace();
+    const runId = "run-malformed-review";
+    const original = store(cwd, runId);
+    original.append(intent(runId, "side-effecting"), { durable: true });
+    original.close();
+    const recovered = store(cwd, runId, true);
+    const rolloutPath = recovered.rolloutPath;
+    recovered.close();
+
+    const paths = resolveStateDatabasePaths({ cwd });
+    const driver = openStateDatabasePaths(paths);
+    const valid = operatorReview("2026-07-18T00:01:00.000Z");
+    const malformed = malformedReviews(valid);
+    try {
+      const before = readFileSync(rolloutPath, "utf8");
+      for (const resolution of malformed) {
+        expect(() =>
+          resolveDurableEffectReview(driver, {
+            sessionId: runId,
+            toolCallId: "call-1",
+            resolution,
+          }),
+        ).toThrow();
+        expect(readFileSync(rolloutPath, "utf8")).toBe(before);
+      }
+      expect(
+        new StateRunDurabilityRepository(driver).getEffect(
+          runId,
+          "tool:turn-1:call-1",
+        ),
+      ).toMatchObject({ reviewStatus: "pending" });
+    } finally {
+      driver.close();
+      created.push(paths.projectDir);
+    }
+  });
+
+  it("rejects malformed live reviews before append or projection", () => {
+    const cwd = workspace();
+    const runId = "run-malformed-live-review";
+    const original = store(cwd, runId);
+    original.append(intent(runId, "side-effecting"), { durable: true });
+    original.close();
+    const live = store(cwd, runId, true);
+    const paths = resolveStateDatabasePaths({ cwd });
+    const driver = openStateDatabasePaths(paths);
+    let appendCalls = 0;
+    let projectCalls = 0;
+    const journal = {
+      readAll: () => live.readAll(),
+      append: (): Event => {
+        appendCalls += 1;
+        throw new Error("malformed review reached append");
+      },
+      project: (): void => {
+        projectCalls += 1;
+      },
+    };
+    try {
+      const before = readFileSync(live.rolloutPath, "utf8");
+      for (const resolution of malformedReviews(
+        operatorReview("2026-07-18T00:01:00.000Z"),
+      )) {
+        expect(() =>
+          resolveLiveDurableEffectReview(
+            driver,
+            { sessionId: runId, toolCallId: "call-1", resolution },
+            journal,
+          ),
+        ).toThrow();
+        expect(readFileSync(live.rolloutPath, "utf8")).toBe(before);
+      }
+      expect(appendCalls).toBe(0);
+      expect(projectCalls).toBe(0);
+    } finally {
+      driver.close();
+      live.close();
+      created.push(paths.projectDir);
+    }
+  });
+
+  it("uses one inert canonical clone for offline append and projection", () => {
+    const cwd = workspace();
+    const runId = "run-changing-offline-review";
+    const original = store(cwd, runId);
+    original.append(intent(runId, "side-effecting"), { durable: true });
+    original.close();
+    const recovered = store(cwd, runId, true);
+    const rolloutPath = recovered.rolloutPath;
+    recovered.close();
+    const changing = changingReviewProxy(
+      operatorReview("2026-07-18T00:00:30.000Z"),
+    );
+
+    const paths = resolveStateDatabasePaths({ cwd });
+    const driver = openStateDatabasePaths(paths);
+    try {
+      expect(
+        resolveDurableEffectReview(driver, {
+          sessionId: runId,
+          toolCallId: "call-1",
+          resolution: changing.resolution,
+        }),
+      ).toMatchObject({
+        kind: "resolved",
+        resolution: { reviewedAt: "2026-07-18T00:01:00.000Z" },
+      });
+      expect(changing.reviewedAtDescriptorReads()).toBe(1);
+      expect(readFileSync(rolloutPath, "utf8")).toContain(
+        '"reviewedAt":"2026-07-18T00:01:00.000Z"',
+      );
+      expect(readFileSync(rolloutPath, "utf8")).not.toContain(
+        '"reviewedAt":"2026-07-18T00:02:00.000Z"',
+      );
+      expect(
+        new StateRunDurabilityRepository(driver).getEffect(
+          runId,
+          "tool:turn-1:call-1",
+        )?.review,
+      ).toMatchObject({ reviewedAt: "2026-07-18T00:01:00.000Z" });
+    } finally {
+      driver.close();
+      created.push(paths.projectDir);
+    }
+  });
+
+  it("uses one inert canonical clone for live append and projection", () => {
+    const cwd = workspace();
+    const runId = "run-changing-live-review";
+    const original = store(cwd, runId);
+    original.append(intent(runId, "side-effecting"), { durable: true });
+    original.close();
+    const live = store(cwd, runId, true);
+    const changing = changingReviewProxy(
+      operatorReview("2026-07-18T00:00:30.000Z"),
+    );
+    const paths = resolveStateDatabasePaths({ cwd });
+    const driver = openStateDatabasePaths(paths);
+    const journal = {
+      readAll: () => live.readAll(),
+      append: (
+        eventId: string,
+        payload: Extract<
+          Event["msg"],
+          { readonly type: "effect_review_resolved" }
+        >["payload"],
+      ): Event => {
+        const event: Event = {
+          eventId,
+          id: eventId,
+          seq: 3,
+          msg: { type: "effect_review_resolved", payload },
+        };
+        expect(live.append(event, { durable: true })).toBe(true);
+        return event;
+      },
+      project: (event: Event): void => live.recordEffectEvent(event),
+    };
+    try {
+      expect(
+        resolveLiveDurableEffectReview(
+          driver,
+          {
+            sessionId: runId,
+            toolCallId: "call-1",
+            resolution: changing.resolution,
+          },
+          journal,
+        ),
+      ).toMatchObject({
+        kind: "resolved",
+        resolution: { reviewedAt: "2026-07-18T00:01:00.000Z" },
+      });
+      expect(changing.reviewedAtDescriptorReads()).toBe(1);
+      expect(
+        new StateRunDurabilityRepository(driver).getEffect(
+          runId,
+          "tool:turn-1:call-1",
+        )?.review,
+      ).toMatchObject({ reviewedAt: "2026-07-18T00:01:00.000Z" });
+    } finally {
+      driver.close();
+      live.close();
+      created.push(paths.projectDir);
+    }
+  });
+
+  it("rejects a terminal review with a conflicting durable call identity", () => {
+    const cwd = workspace();
+    const runId = "run-wrong-call-review";
+    const original = store(cwd, runId);
+    original.append(intent(runId, "side-effecting"), { durable: true });
+    original.close();
+    const recovered = store(cwd, runId, true);
+    const rolloutPath = recovered.rolloutPath;
+    recovered.close();
+    appendFileSync(
+      rolloutPath,
+      serializeRolloutItem({
+        type: "event_msg",
+        payload: {
+          eventId: "wrong-call-terminal-review",
+          id: "wrong-call-terminal-review",
+          seq: 3,
+          msg: {
+            type: "effect_review_resolved",
+            payload: {
+              runId,
+              stepId: "tool:turn-1:call-1",
+              callId: "different-call",
+              resolution: operatorReview("2026-07-18T00:01:00.000Z"),
+            },
+          },
+        },
+      }),
+    );
+
+    const paths = resolveStateDatabasePaths({ cwd });
+    const driver = openStateDatabasePaths(paths);
+    try {
+      const before = readFileSync(rolloutPath, "utf8");
+      expect(() =>
+        resolveDurableEffectReview(driver, {
+          sessionId: runId,
+          toolCallId: "call-1",
+          resolution: operatorReview("2026-07-18T00:02:00.000Z"),
+        }),
+      ).toThrow(/conflicting call identity/u);
+      expect(readFileSync(rolloutPath, "utf8")).toBe(before);
+      expect(
+        new StateRunDurabilityRepository(driver).getEffect(
+          runId,
+          "tool:turn-1:call-1",
+        ),
+      ).toMatchObject({ reviewStatus: "pending" });
+    } finally {
+      driver.close();
+      created.push(paths.projectDir);
+    }
+  });
+
+  it("rejects multiple terminal reviews for one durable effect", () => {
+    const cwd = workspace();
+    const runId = "run-multiple-terminal-reviews";
+    const original = store(cwd, runId);
+    original.append(intent(runId, "side-effecting"), { durable: true });
+    original.close();
+    const recovered = store(cwd, runId, true);
+    const rolloutPath = recovered.rolloutPath;
+    recovered.close();
+    const resolution = operatorReview("2026-07-18T00:01:00.000Z");
+    for (const [eventId, sequence] of [
+      ["first-terminal-review", 3],
+      ["second-terminal-review", 4],
+    ] as const) {
+      appendFileSync(
+        rolloutPath,
+        serializeRolloutItem({
+          type: "event_msg",
+          payload: {
+            eventId,
+            id: eventId,
+            seq: sequence,
+            msg: {
+              type: "effect_review_resolved",
+              payload: {
+                runId,
+                stepId: "tool:turn-1:call-1",
+                callId: "call-1",
+                resolution,
+              },
+            },
+          },
+        }),
+      );
+    }
+
+    const paths = resolveStateDatabasePaths({ cwd });
+    const driver = openStateDatabasePaths(paths);
+    try {
+      const before = readFileSync(rolloutPath, "utf8");
+      expect(() =>
+        resolveDurableEffectReview(driver, {
+          sessionId: runId,
+          toolCallId: "call-1",
+          resolution,
+        }),
+      ).toThrow(/2 terminal effect reviews/u);
+      expect(readFileSync(rolloutPath, "utf8")).toBe(before);
+    } finally {
+      driver.close();
+      created.push(paths.projectDir);
     }
   });
 
@@ -648,10 +1095,26 @@ describe("M4 effect restart recovery", () => {
       expect(
         resolveLiveDurableEffectReview(
           driver,
-          { sessionId: runId, toolCallId: "call-1", resolution },
+          {
+            sessionId: runId,
+            toolCallId: "call-1",
+            resolution: operatorReview("2026-07-18T00:01:30.000Z"),
+          },
           journal,
         ),
-      ).toMatchObject({ kind: "resolved", durable: true, sequence: 3 });
+      ).toMatchObject({
+        kind: "resolved",
+        durable: true,
+        eventId: operatorReviewEventId(runId),
+        sequence: 3,
+        resolution,
+      });
+      expect(
+        new StateRunDurabilityRepository(driver).getEffect(
+          runId,
+          "tool:turn-1:call-1",
+        )?.review,
+      ).toEqual(resolution);
       expect(
         live
           .readAll()
@@ -717,6 +1180,79 @@ describe("M4 effect restart recovery", () => {
     }
   });
 
+  it.each([
+    ["first", /silently advance past retained events/u],
+    ["last", /silently truncate retained events/u],
+    ["retired", /retirement overlaps retained events/u],
+  ] as const)(
+    "rejects stale %s journal bounds before appending review evidence",
+    (bound, error) => {
+      const cwd = workspace();
+      const runId = `run-stale-${bound}-review-bound`;
+      const original = store(cwd, runId);
+      original.append(intent(runId, "side-effecting"), { durable: true });
+      original.close();
+      const recovered = store(cwd, runId, true);
+      const rolloutPath = recovered.rolloutPath;
+      recovered.close();
+
+      const paths = resolveStateDatabasePaths({ cwd });
+      const driver = openStateDatabasePaths(paths);
+      try {
+        if (bound === "first") {
+          driver
+            .prepareState(
+              `UPDATE run_journal_bindings
+               SET first_available_sequence = 1, last_sequence = 2
+               WHERE source_path = ?`,
+            )
+            .run(rolloutPath);
+          const retained = readFileSync(rolloutPath, "utf8")
+            .split("\n")
+            .filter((line) => !line.includes('"type":"effect_intent"'))
+            .join("\n");
+          writeFileSync(rolloutPath, retained);
+        } else if (bound === "last") {
+          driver
+            .prepareState(
+              `UPDATE run_journal_bindings
+               SET first_available_sequence = 1, last_sequence = 3
+               WHERE source_path = ?`,
+            )
+            .run(rolloutPath);
+        } else {
+          driver
+            .prepareState(
+              `UPDATE run_journal_bindings
+               SET first_available_sequence = 2, last_sequence = 2,
+                   retired_through_sequence = 1, gap_reason = 'retention',
+                   gap_observed_at = '2026-07-18T00:00:30.000Z'
+               WHERE source_path = ?`,
+            )
+            .run(rolloutPath);
+        }
+        const before = readFileSync(rolloutPath, "utf8");
+        expect(() =>
+          resolveDurableEffectReview(driver, {
+            sessionId: runId,
+            toolCallId: "call-1",
+            resolution: operatorReview("2026-07-18T00:01:00.000Z"),
+          }),
+        ).toThrow(error);
+        expect(readFileSync(rolloutPath, "utf8")).toBe(before);
+        expect(
+          new StateRunDurabilityRepository(driver).getEffect(
+            runId,
+            "tool:turn-1:call-1",
+          ),
+        ).toMatchObject({ reviewStatus: "pending" });
+      } finally {
+        driver.close();
+        created.push(paths.projectDir);
+      }
+    },
+  );
+
   it("reprojects a post-terminal review after failure between journal fsync and both SQLite gates", () => {
     const cwd = workspace();
     const runId = "run-review-projection-crash";
@@ -756,6 +1292,7 @@ describe("M4 effect restart recovery", () => {
     let driver = openStateDatabasePaths(paths);
     try {
       const runs = new StateRunDurabilityRepository(driver);
+      const firstResolution = operatorReview("2026-07-18T00:01:00.000Z");
       runs.recordTerminalResult({
         epoch: 1,
         eventId: terminalEventId,
@@ -785,7 +1322,7 @@ describe("M4 effect restart recovery", () => {
         resolveDurableEffectReview(driver, {
           sessionId: runId,
           toolCallId: "call-1",
-          resolution: operatorReview("2026-07-18T00:01:00.000Z"),
+          resolution: firstResolution,
         }),
       ).toThrow(/simulated crash before legacy gate projection/);
       // The canonical append survives, while the outer SQLite transaction
@@ -805,6 +1342,27 @@ describe("M4 effect restart recovery", () => {
       driver
         .prepareState("DROP TRIGGER test_abort_legacy_review_projection")
         .run();
+      expect(
+        resolveDurableEffectReview(driver, {
+          sessionId: runId,
+          toolCallId: "call-1",
+          resolution: operatorReview("2026-07-18T00:01:30.000Z"),
+        }),
+      ).toMatchObject({
+        kind: "resolved",
+        durable: true,
+        eventId: operatorReviewEventId(runId),
+        sequence: 4,
+        resolution: firstResolution,
+      });
+      expect(runs.getEffect(runId, "tool:turn-1:call-1")?.review).toEqual(
+        firstResolution,
+      );
+      expect(
+        readFileSync(rolloutPath, "utf8").match(
+          /"type":"effect_review_resolved"/g,
+        ),
+      ).toHaveLength(1);
     } finally {
       driver.close();
     }

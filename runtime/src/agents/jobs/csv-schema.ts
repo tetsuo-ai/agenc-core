@@ -112,6 +112,7 @@ export class ValidatedCsvResult {
   constructor(
     secret: symbol,
     private readonly jobId: string,
+    private readonly itemId: string,
     private readonly schemaDigest: string | undefined,
     private readonly canonical: CanonicalCsvResult,
   ) {
@@ -122,17 +123,34 @@ export class ValidatedCsvResult {
 
   consumeFor(
     expectedJobId: string,
+    expectedItemId: string,
+    expectedSchemaDigest: string | undefined,
+  ): CanonicalCsvResult {
+    const canonical = this.assertFor(
+      expectedJobId,
+      expectedItemId,
+      expectedSchemaDigest,
+    );
+    this.consumed = true;
+    return canonical;
+  }
+
+  assertFor(
+    expectedJobId: string,
+    expectedItemId: string,
     expectedSchemaDigest: string | undefined,
   ): CanonicalCsvResult {
     if (this.consumed)
       throw new Error("validated CSV result was already consumed");
     if (
       this.jobId !== expectedJobId ||
+      this.itemId !== expectedItemId ||
       this.schemaDigest !== expectedSchemaDigest
     ) {
-      throw new Error("validated CSV result is bound to another job/schema");
+      throw new Error(
+        "validated CSV result is bound to another job/item/schema",
+      );
     }
-    this.consumed = true;
     return this.canonical;
   }
 }
@@ -227,6 +245,7 @@ export async function validateCsvResultInWorkerPool(
 
 export async function validateCsvResultForPersistence(
   jobId: string,
+  itemId: string,
   schema: CompiledCsvOutputSchema | undefined,
   result: CanonicalCsvResult,
 ): Promise<ValidatedCsvResult | string> {
@@ -236,6 +255,7 @@ export async function validateCsvResultForPersistence(
     new ValidatedCsvResult(
       VALIDATED_CSV_RESULT_SECRET,
       jobId,
+      itemId,
       schema?.digest,
       result,
     )
