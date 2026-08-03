@@ -37,6 +37,7 @@ import {
   type ProviderTokenCountCapability,
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
+import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
 
 export interface GeminiProviderConfig extends OpenAIProviderConfig {
   readonly cachedContent?: string;
@@ -500,6 +501,7 @@ function buildGeminiRequest(args: {
   readonly tools: readonly LLMTool[];
   readonly options?: LLMChatOptions;
 }): Record<string, unknown> {
+  validateAgentInvocationMessageSequence(args.messages);
   const contents = buildGeminiContents([
     ...(args.options?.systemPrompt
       ? [{ role: "system" as const, content: args.options.systemPrompt }]

@@ -12,7 +12,11 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  CSV_RECOVERY_CANDIDATE_PAGE_SIZE,
+  CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_COARSE,
   CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_UNPROVEN,
+  CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE,
+  CSV_RECOVERY_MAX_PROCESS_PROBES_PER_PASS,
   createCsvProcessIdentityProbe,
   CsvAgentJobsRepository,
   type CsvProcessIdentityProbe,
@@ -61,6 +65,36 @@ function deadOwnerProbe(currentPid: number): CsvProcessIdentityProbe {
   };
 }
 
+function seedExpiredStagedImport(
+  id: string,
+  ownerProcessStart: string | null,
+): void {
+  driver
+    .prepareState(
+      `INSERT INTO csv_agent_jobs (
+         id, name, status, instruction, input_headers_json, input_csv_path,
+         output_csv_path, auto_export, import_id, import_state,
+         import_lease_owner, import_lease_expires_at, import_owner_pid,
+         import_owner_boot_id, import_owner_process_start,
+         import_lease_generation, execution_gate,
+         requested_max_concurrency, identity_format_version, input_bytes,
+         max_items, max_result_bytes, max_result_bytes_per_job,
+         created_at, updated_at
+       ) VALUES (
+         ?, ?, 'pending', 'x', '["id"]', '/in', '', 0, ?, 'staging',
+         'old-owner', 1, 4242, NULL, ?, 'old-generation', 'ready',
+         16, 1, 0, 10, 1024, 4096, 1, 1
+       )`,
+    )
+    .run(id, id, `${id}-import`, ownerProcessStart);
+  driver
+    .prepareState(
+      `UPDATE csv_storage_quota SET active_imports = active_imports + 1
+       WHERE singleton = 1`,
+    )
+    .run();
+}
+
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "agenc-csv-jobs-home-"));
   cwd = mkdtempSync(join(tmpdir(), "agenc-csv-jobs-cwd-"));
@@ -81,24 +115,33 @@ afterEach(() => {
 
 describe("CsvAgentJobsRepository", () => {
   it.each(["darwin", "win32"] as const)(
-    "uses an authoritative OS liveness probe on %s without /proc metadata",
-    (platform) => {
+    "binds %s process liveness to an exact OS start token",
+    async (platform) => {
       const missing = Object.assign(new Error("missing process"), {
         code: "ESRCH",
       });
-      const probe = createCsvProcessIdentityProbe({
+      const probe = await createCsvProcessIdentityProbe({
         platform,
         pid: 41,
         signalProcess(pid) {
           if (pid === 41) return;
           throw missing;
         },
+        inspectProcessStart(_platform, targetPid) {
+          return `${platform}-start-${targetPid}`;
+        },
       });
 
-      expect(probe.current).toEqual({ pid: 41 });
-      expect(probe.inspect(42)).toEqual({ kind: "dead" });
+      expect(probe.current).toEqual({
+        pid: 41,
+        processStart:
+          platform === "darwin"
+            ? `darwin-lstart-seconds:${platform}-start-41`
+            : `win32-creation-time:${platform}-start-41`,
+      });
+      await expect(probe.inspect(42)).resolves.toEqual({ kind: "dead" });
 
-      const denied = createCsvProcessIdentityProbe({
+      const denied = await createCsvProcessIdentityProbe({
         platform,
         pid: 41,
         signalProcess(targetPid) {
@@ -107,20 +150,215 @@ describe("CsvAgentJobsRepository", () => {
             code: "EPERM",
           });
         },
+        inspectProcessStart(_platform, targetPid) {
+          return `${platform}-start-${targetPid}`;
+        },
       });
-      expect(denied.inspect(42)).toEqual({ kind: "alive" });
+      await expect(denied.inspect(42)).resolves.toEqual({
+        kind: "alive",
+        processStart:
+          platform === "darwin"
+            ? `darwin-lstart-seconds:${platform}-start-42`
+            : `win32-creation-time:${platform}-start-42`,
+      });
 
-      const unavailable = createCsvProcessIdentityProbe({
+      const unavailable = await createCsvProcessIdentityProbe({
         platform,
         pid: 41,
         signalProcess(targetPid) {
           if (targetPid === 41) return;
           throw Object.assign(new Error("probe unavailable"), { code: "EIO" });
         },
+        inspectProcessStart() {
+          return undefined;
+        },
       });
-      expect(unavailable.inspect(42)).toEqual({ kind: "unknown" });
+      await expect(unavailable.inspect(42)).resolves.toEqual({
+        kind: "unknown",
+      });
     },
   );
+
+  it.each(["darwin", "win32"] as const)(
+    "detects PID reuse and fails permission-limited %s identity checks closed",
+    async (platform) => {
+      const reused = await createCsvProcessIdentityProbe({
+        platform,
+        pid: 41,
+        signalProcess() {},
+        inspectProcessStart(_platform, targetPid) {
+          return targetPid === 41 ? "current-generation" : "reused-generation";
+        },
+      });
+      await expect(reused.inspect(42)).resolves.toEqual({
+        kind: "alive",
+        processStart:
+          platform === "darwin"
+            ? "darwin-lstart-seconds:reused-generation"
+            : "win32-creation-time:reused-generation",
+      });
+
+      const permissionLimited = await createCsvProcessIdentityProbe({
+        platform,
+        pid: 41,
+        signalProcess(targetPid) {
+          if (targetPid === 41) return;
+          throw Object.assign(new Error("permission denied"), {
+            code: "EPERM",
+          });
+        },
+        inspectProcessStart(_platform, targetPid) {
+          return targetPid === 41 ? "current-generation" : undefined;
+        },
+      });
+      await expect(permissionLimited.inspect(42)).resolves.toEqual({
+        kind: "unknown",
+      });
+    },
+  );
+
+  it("defers a same-second macOS start token as a typed coarse identity", async () => {
+    seedExpiredStagedImport("darwin-same-second", "same-second-start");
+    const probe = await createCsvProcessIdentityProbe({
+      platform: "darwin",
+      pid: 41,
+      signalProcess() {},
+      inspectProcessStart(_platform, targetPid) {
+        return targetPid === 41 ? "current-start" : "same-second-start";
+      },
+    });
+
+    await CsvAgentJobsRepository.open(driver, { processIdentityProbe: probe });
+
+    expect(
+      driver
+        .prepareState<
+          [string],
+          { readonly import_state: string; readonly last_error: string | null }
+        >("SELECT import_state, last_error FROM csv_agent_jobs WHERE id = ?")
+        .get("darwin-same-second"),
+    ).toEqual({
+      import_state: "staging",
+      last_error: CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_COARSE,
+    });
+  });
+
+  it("bounds unavailable import probes and advances a fair recovery cursor", async () => {
+    const candidateCount = CSV_RECOVERY_CANDIDATE_PAGE_SIZE + 5;
+    for (let index = 0; index < candidateCount; index += 1) {
+      seedExpiredStagedImport(
+        `bounded-import-${String(index).padStart(2, "0")}`,
+        "old-start",
+      );
+    }
+    let inspectCalls = 0;
+    const unavailableProbe: CsvProcessIdentityProbe = {
+      current: { pid: 41, processStart: "current-start" },
+      inspect() {
+        inspectCalls += 1;
+        return { kind: "unknown" };
+      },
+    };
+
+    const recovering = new CsvAgentJobsRepository(driver, {
+      processIdentityProbe: unavailableProbe,
+    });
+    const recovery = recovering.recoverAbandonedImports();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(inspectCalls).toBeLessThanOrEqual(
+      CSV_RECOVERY_MAX_PROCESS_PROBES_PER_PASS,
+    );
+    await recovery;
+
+    expect(
+      driver
+        .prepareState<[string, string], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_agent_jobs
+           WHERE id LIKE ? AND last_error = ?`,
+        )
+        .get(
+          "bounded-import-%",
+          CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE,
+        )?.count,
+    ).toBe(candidateCount);
+  });
+
+  it("continues bounded import slices until a later proven-dead owner is reached", async () => {
+    const candidateCount = CSV_RECOVERY_CANDIDATE_PAGE_SIZE + 5;
+    const finalId = `continued-import-${String(candidateCount - 1).padStart(2, "0")}`;
+    for (let index = 0; index < candidateCount; index += 1) {
+      seedExpiredStagedImport(
+        `continued-import-${String(index).padStart(2, "0")}`,
+        "old-start",
+      );
+    }
+    driver
+      .prepareState(
+        "UPDATE csv_agent_jobs SET import_owner_pid = 5252 WHERE id = ?",
+      )
+      .run(finalId);
+    let inspectCalls = 0;
+    const mixedProbe: CsvProcessIdentityProbe = {
+      current: { pid: 41, processStart: "current-start" },
+      inspect(pid) {
+        inspectCalls += 1;
+        return pid === 5252 ? { kind: "dead" } : { kind: "unknown" };
+      },
+    };
+
+    const recovering = new CsvAgentJobsRepository(driver, {
+      processIdentityProbe: mixedProbe,
+    });
+    const recovery = recovering.recoverAbandonedImports();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(inspectCalls).toBeLessThanOrEqual(
+      CSV_RECOVERY_MAX_PROCESS_PROBES_PER_PASS,
+    );
+    await recovery;
+    expect(
+      driver
+        .prepareState<[string], { readonly id: string }>(
+          "SELECT id FROM csv_agent_jobs WHERE id = ?",
+        )
+        .get(finalId),
+    ).toBeUndefined();
+  });
+
+  it("rechecks cancellation after an import owner probe ignores its signal", async () => {
+    seedExpiredStagedImport("aborted-import-probe", "old-start");
+    const controller = new AbortController();
+    const reason = new Error("import recovery cancelled during owner probe");
+    const ignoringProbe: CsvProcessIdentityProbe = {
+      current: { pid: 41, processStart: "current-start" },
+      inspect() {
+        controller.abort(reason);
+        return { kind: "dead" };
+      },
+    };
+    const recovering = new CsvAgentJobsRepository(driver, {
+      processIdentityProbe: ignoringProbe,
+    });
+
+    await expect(
+      recovering.recoverAbandonedImports({ signal: controller.signal }),
+    ).rejects.toBe(reason);
+
+    expect(
+      driver
+        .prepareState<
+          [string],
+          { readonly import_state: string; readonly last_error: string | null }
+        >(`SELECT import_state, last_error FROM csv_agent_jobs WHERE id = ?`)
+        .get("aborted-import-probe"),
+    ).toEqual({ import_state: "staging", last_error: null });
+    expect(
+      driver
+        .prepareState<[], { readonly active_imports: number }>(
+          `SELECT active_imports FROM csv_storage_quota WHERE singleton = 1`,
+        )
+        .get()?.active_imports,
+    ).toBe(1);
+  });
 
   it("createJob inserts a job with pending status and seeds items", () => {
     const job = repo.createJob(
@@ -906,7 +1144,7 @@ describe("CsvAgentJobsRepository", () => {
     expect(() => repo.markItemRunning("result-reservation", "b")).not.toThrow();
   });
 
-  it("reclaims crashed import quota without Linux boot/start metadata", () => {
+  it("reclaims crashed import quota without Linux boot/start metadata", async () => {
     driver
       .prepareState(
         `INSERT INTO csv_agent_jobs (
@@ -933,7 +1171,7 @@ describe("CsvAgentJobsRepository", () => {
       )
       .run();
 
-    const recovered = new CsvAgentJobsRepository(driver, {
+    const recovered = await CsvAgentJobsRepository.open(driver, {
       processIdentityProbe: deadOwnerProbe(41),
     });
     expect(recovered.listJobs()).toEqual([]);
@@ -946,7 +1184,7 @@ describe("CsvAgentJobsRepository", () => {
     ).toBe(0);
   });
 
-  it("defers an expired lease when PID reuse prevents exact owner proof", () => {
+  it("defers an expired lease when PID reuse prevents exact owner proof", async () => {
     driver
       .prepareState(
         `INSERT INTO csv_agent_jobs (
@@ -979,7 +1217,7 @@ describe("CsvAgentJobsRepository", () => {
       },
     };
 
-    new CsvAgentJobsRepository(driver, {
+    await CsvAgentJobsRepository.open(driver, {
       processIdentityProbe: reusedPidProbe,
     });
     expect(
@@ -1004,6 +1242,80 @@ describe("CsvAgentJobsRepository", () => {
         .get()?.active_imports,
     ).toBe(1);
   });
+
+  it.each(["darwin", "win32"] as const)(
+    "reclaims an expired import after exact %s PID-generation mismatch",
+    async (platform) => {
+      seedExpiredStagedImport(`${platform}-reused-generation`, "old-start");
+      const exactProbe = await createCsvProcessIdentityProbe({
+        platform,
+        pid: 41,
+        signalProcess() {},
+        inspectProcessStart(_platform, targetPid) {
+          return targetPid === 41 ? "current-start" : "new-start";
+        },
+      });
+
+      await CsvAgentJobsRepository.open(driver, {
+        processIdentityProbe: exactProbe,
+      });
+
+      expect(
+        driver
+          .prepareState<[], { readonly active_imports: number }>(
+            "SELECT active_imports FROM csv_storage_quota WHERE singleton = 1",
+          )
+          .get()?.active_imports,
+      ).toBe(0);
+      expect(
+        driver
+          .prepareState<[string], { readonly import_state: string }>(
+            "SELECT import_state FROM csv_agent_jobs WHERE id = ?",
+          )
+          .get(`${platform}-reused-generation`),
+      ).toBeUndefined();
+    },
+  );
+
+  it.each(["darwin", "win32"] as const)(
+    "defers %s recovery when permissions hide the exact process generation",
+    async (platform) => {
+      const id = `${platform}-permission-limited`;
+      seedExpiredStagedImport(id, "old-start");
+      const permissionLimitedProbe = await createCsvProcessIdentityProbe({
+        platform,
+        pid: 41,
+        signalProcess(targetPid) {
+          if (targetPid === 41) return;
+          throw Object.assign(new Error("permission denied"), {
+            code: "EPERM",
+          });
+        },
+        inspectProcessStart(_platform, targetPid) {
+          return targetPid === 41 ? "current-start" : undefined;
+        },
+      });
+
+      await CsvAgentJobsRepository.open(driver, {
+        processIdentityProbe: permissionLimitedProbe,
+      });
+
+      expect(
+        driver
+          .prepareState<
+            [string],
+            {
+              readonly import_state: string;
+              readonly last_error: string | null;
+            }
+          >("SELECT import_state, last_error FROM csv_agent_jobs WHERE id = ?")
+          .get(id),
+      ).toEqual({
+        import_state: "staging",
+        last_error: CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE,
+      });
+    },
+  );
 
   it("rotates an exclusive import recovery generation against a stale second daemon", () => {
     const first = new CsvAgentJobsRepository(driver, {
@@ -1154,7 +1466,155 @@ describe("CsvAgentJobsRepository", () => {
     ).toEqual({ output_staging_files: 0, output_staging_bytes: 0 });
   });
 
-  it("recovers only an importer whose exact OS owner is proven dead", () => {
+  it("bounds unavailable output probes and pages fairly across intents", async () => {
+    repo.createJob(
+      {
+        id: "bounded-output-job",
+        name: "bounded-output-job",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("bounded-output-item", 0, { value: "one" })],
+    );
+    const candidateCount = CSV_RECOVERY_CANDIDATE_PAGE_SIZE + 5;
+    const insertIntent = driver.prepareState(
+      `INSERT INTO csv_output_intents (
+         intent_id, job_id, root_path, target_path, temporary_path,
+         temporary_dev, temporary_ino, reserved_bytes, state,
+         recovery_prior_state, owner_generation, owner_pid,
+         owner_boot_id, owner_process_start, created_at, updated_at
+       ) VALUES (?, 'bounded-output-job', ?, ?, ?, '1', '1', 1, 'writing',
+         NULL, ?, 4242, NULL, 'old-start', 1, 1)`,
+    );
+    for (let index = 0; index < candidateCount; index += 1) {
+      const suffix = String(index).padStart(2, "0");
+      insertIntent.run(
+        `bounded-output-${suffix}`,
+        cwd,
+        join(cwd, `bounded-output-${suffix}.csv`),
+        join(cwd, `.bounded-output-${suffix}.tmp`),
+        `bounded-output-generation-${suffix}`,
+      );
+    }
+    let inspectCalls = 0;
+    const unavailableProbe: CsvProcessIdentityProbe = {
+      current: { pid: 41, processStart: "current-start" },
+      inspect() {
+        inspectCalls += 1;
+        return { kind: "unknown" };
+      },
+    };
+    const recovering = new CsvAgentJobsRepository(driver, {
+      processIdentityProbe: unavailableProbe,
+    });
+
+    const recovery = recoverCsvOutputIntents(
+      createCsvOutputRootCapability(cwd),
+      recovering,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(inspectCalls).toBeLessThanOrEqual(
+      CSV_RECOVERY_MAX_PROCESS_PROBES_PER_PASS,
+    );
+    await expect(recovery).resolves.toEqual({ recovered: 0, deferred: 0 });
+
+    expect(
+      driver
+        .prepareState<[string], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_output_intents
+           WHERE intent_id LIKE 'bounded-output-%' AND last_error = ?`,
+        )
+        .get(CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE)?.count,
+    ).toBe(candidateCount);
+  });
+
+  it("drains more than one output recovery page in one startup call", async () => {
+    repo.createJob(
+      {
+        id: "paged-output-job",
+        name: "paged-output-job",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("paged-output-item", 0, { value: "one" })],
+    );
+    const candidateCount = CSV_RECOVERY_CANDIDATE_PAGE_SIZE + 5;
+    const insertIntent = driver.prepareState(
+      `INSERT INTO csv_output_intents (
+         intent_id, job_id, root_path, target_path, temporary_path,
+         temporary_dev, temporary_ino, reserved_bytes, state,
+         recovery_prior_state, owner_generation, owner_pid,
+         owner_boot_id, owner_process_start, created_at, updated_at
+       ) VALUES (?, 'paged-output-job', ?, ?, ?, ?, ?, 1, 'abandoned',
+         NULL, ?, 4242, NULL, NULL, 1, 1)`,
+    );
+    for (let index = 0; index < candidateCount; index += 1) {
+      const suffix = String(index).padStart(2, "0");
+      const temporaryPath = join(cwd, `.paged-output-${suffix}.agenc-csv.tmp`);
+      await writeFile(temporaryPath, "x", { mode: 0o600 });
+      const stats = await lstat(temporaryPath, { bigint: true });
+      insertIntent.run(
+        `paged-output-${suffix}`,
+        cwd,
+        join(cwd, `paged-output-${suffix}.csv`),
+        temporaryPath,
+        stats.dev.toString(),
+        stats.ino.toString(),
+        `paged-output-generation-${suffix}`,
+      );
+    }
+    driver
+      .prepareState(
+        `UPDATE csv_storage_quota SET output_staging_files = ?,
+           output_staging_bytes = ? WHERE singleton = 1`,
+      )
+      .run(candidateCount, candidateCount);
+    const recovering = new CsvAgentJobsRepository(driver, {
+      processIdentityProbe: deadOwnerProbe(61),
+    });
+
+    const recoveryResult = await recoverCsvOutputIntents(
+      createCsvOutputRootCapability(cwd),
+      recovering,
+    );
+    expect(
+      driver
+        .prepareState<[], { readonly last_error: string | null }>(
+          "SELECT DISTINCT last_error FROM csv_output_intents WHERE intent_id LIKE 'paged-output-%'",
+        )
+        .all(),
+    ).toEqual([]);
+    expect(recoveryResult).toEqual({ recovered: candidateCount, deferred: 0 });
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          "SELECT COUNT(*) AS count FROM csv_output_intents WHERE intent_id LIKE 'paged-output-%'",
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      driver
+        .prepareState<
+          [],
+          {
+            readonly output_staging_files: number;
+            readonly output_staging_bytes: number;
+          }
+        >(
+          `SELECT output_staging_files, output_staging_bytes
+           FROM csv_storage_quota WHERE singleton = 1`,
+        )
+        .get(),
+    ).toEqual({ output_staging_files: 0, output_staging_bytes: 0 });
+  });
+
+  it("recovers only an importer whose exact OS owner is proven dead", async () => {
     if (process.platform !== "linux") return;
     const bootId = readFileSync(
       "/proc/sys/kernel/random/boot_id",
@@ -1186,7 +1646,7 @@ describe("CsvAgentJobsRepository", () => {
       )
       .run();
 
-    const recovered = new CsvAgentJobsRepository(driver);
+    const recovered = await CsvAgentJobsRepository.open(driver);
     expect(recovered.listJobs()).toEqual([]);
     expect(
       driver

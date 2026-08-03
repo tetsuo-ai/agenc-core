@@ -5,7 +5,10 @@
  * `0ca43335375beec6e58711b797d5b0c4bb5019b8`.
  */
 
-import { createUserMessage } from "./compact.js";
+import {
+  createUserMessage,
+  moveSplitBeforeAgentInvocation,
+} from "./compact.js";
 import { getCompactUserSummaryMessage } from "./prompt.js";
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { isRecord } from "../../utils/record.js";
@@ -26,7 +29,10 @@ export function calculateMessagesToKeepIndex(
   messages: readonly RuntimeMessage[],
   keepCount = 4,
 ): number {
-  return Math.max(0, messages.length - Math.max(0, keepCount));
+  return moveSplitBeforeAgentInvocation(
+    messages,
+    Math.max(0, messages.length - Math.max(0, keepCount)),
+  );
 }
 
 export function preserveToolPairsFromIndex(
@@ -36,15 +42,18 @@ export function preserveToolPairsFromIndex(
   const clamped = Math.max(0, Math.min(messages.length, keepIndex));
   const kept = messages.slice(clamped);
   const requiredToolUseIds = collectToolResultIds(kept);
-  if (requiredToolUseIds.size === 0) return kept;
-
   let start = clamped;
-  for (let index = clamped - 1; index >= 0; index -= 1) {
-    if (messageHasToolUse(messages[index], requiredToolUseIds)) {
-      start = index;
+  if (requiredToolUseIds.size > 0) {
+    for (let index = clamped - 1; index >= 0; index -= 1) {
+      if (messageHasToolUse(messages[index], requiredToolUseIds)) {
+        start = index;
+      }
     }
   }
-  return messages.slice(start);
+  return messages.filter(
+    (message, index) =>
+      index >= start || message.runtimeOnly?.agentInvocation !== undefined,
+  );
 }
 
 export async function trySessionMemoryCompaction(

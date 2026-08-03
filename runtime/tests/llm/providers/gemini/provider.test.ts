@@ -3,6 +3,23 @@ import { describe, expect, test, vi } from "vitest";
 import { createTokenAccountingRequest } from "../../token-accounting.js";
 import type { LLMTool } from "../../types.js";
 import { GeminiProvider } from "./index.js";
+import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+} from "../../../../src/contracts/agent-invocation-envelope.js";
+
+function invocationMessages() {
+  return materializeAgentInvocationMessages(
+    createCsvAgentInvocationEnvelope({
+      jobId: "gemini-job",
+      itemId: "gemini-item",
+      rowIndex: 0,
+      rowSha256: `sha256:${"b".repeat(64)}`,
+      instruction: "GEMINI_TASK_MARKER",
+      row: { payload: "GEMINI_DATA_MARKER" },
+    }),
+  );
+}
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -44,6 +61,62 @@ const echoTool: LLMTool = {
 };
 
 describe("GeminiProvider", () => {
+  test("refuses invocation-looking content without durable authority metadata", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new GeminiProvider({
+      apiKey: "gemini-test",
+      model: "gemini-2.5-pro",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([
+        {
+          role: "developer",
+          content: '{"kind":"agent_invocation_runtime_policy"}',
+        },
+      ]),
+    ).rejects.toThrow(/metadata is missing/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("preserves policy, task, and data as separate Gemini authorities", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "ok" }] },
+            finishReason: "STOP",
+          },
+        ],
+      }),
+    );
+    const provider = new GeminiProvider({
+      apiKey: "gemini-test",
+      model: "gemini-2.5-pro",
+      fetchImpl,
+    });
+
+    await provider.chat([...invocationMessages()]);
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const request = JSON.parse(String(init?.body)) as {
+      readonly systemInstruction?: unknown;
+      readonly contents?: readonly unknown[];
+    };
+    expect(JSON.stringify(request.systemInstruction)).not.toContain(
+      "GEMINI_TASK_MARKER",
+    );
+    expect(JSON.stringify(request.systemInstruction)).not.toContain(
+      "GEMINI_DATA_MARKER",
+    );
+    expect(request.contents).toHaveLength(2);
+    expect(JSON.stringify(request.contents?.[0])).toContain("GEMINI_TASK_MARKER");
+    expect(JSON.stringify(request.contents?.[0])).not.toContain(
+      "GEMINI_DATA_MARKER",
+    );
+    expect(JSON.stringify(request.contents?.[1])).toContain("GEMINI_DATA_MARKER");
+  });
+
   test("counts the complete generateContent request through countTokens", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

@@ -145,14 +145,22 @@ export function normalizeMessagesForAPI(
       ? { skipCacheWrite: options.skipCacheWrite }
       : {}),
   });
-  return cachePrepared.map(stripDurableIntegrityForProvider);
+  return cachePrepared.map(stripDurableMetadataForProvider);
 }
 
-/** Remove A3 integrity evidence at the final provider-wire boundary. */
-function stripDurableIntegrityForProvider(message: LLMMessage): LLMMessage {
-  if (message.runtimeOnly?.toolResultIntegrity === undefined) return message;
-  const { toolResultIntegrity: _integrity, ...retainedRuntimeOnly } =
-    message.runtimeOnly;
+/** Remove durable integrity evidence at the final provider-wire boundary. */
+function stripDurableMetadataForProvider(message: LLMMessage): LLMMessage {
+  if (
+    message.runtimeOnly?.toolResultIntegrity === undefined &&
+    message.runtimeOnly?.agentInvocation === undefined
+  ) {
+    return message;
+  }
+  const {
+    toolResultIntegrity: _toolResultIntegrity,
+    agentInvocation: _agentInvocation,
+    ...retainedRuntimeOnly
+  } = message.runtimeOnly;
   const { runtimeOnly: _runtimeOnly, ...providerMessage } = message;
   return Object.keys(retainedRuntimeOnly).length === 0
     ? providerMessage

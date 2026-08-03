@@ -11,6 +11,7 @@
 import type { LLMProvider, LLMTool, LLMToolChoice } from "../../llm/types.js";
 import type { Session } from "../../session/session.js";
 import type { ToolResultIntegrity } from "../../session/tool-result-integrity.js";
+import type { AgentInvocationChannelMetadata } from "../../contracts/agent-invocation-envelope.js";
 
 export type RuntimeMessage = {
   readonly role?: "system" | "user" | "assistant" | "tool";
@@ -35,6 +36,8 @@ export type RuntimeMessage = {
   readonly isMeta?: boolean;
   readonly runtimeOnly?: {
     readonly toolResultIntegrity?: ToolResultIntegrity;
+    readonly agentInvocation?: AgentInvocationChannelMetadata;
+    readonly mergeBoundary?: "user_context";
   };
 };
 

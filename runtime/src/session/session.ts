@@ -52,6 +52,10 @@ import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { LLMProvider } from "../llm/types.js";
 import {
+  validateAgentInvocationMessageSequence,
+  type AgentInvocationChannelMetadata,
+} from "../contracts/agent-invocation-envelope.js";
+import {
   buildPostCompactMessages,
   partialCompactConversationAsync,
 } from "../services/compact/compact.js";
@@ -1857,6 +1861,7 @@ function normalizeHistoryMessages(
       runtimeOnly?: {
         userMessageId?: unknown;
         toolResultIntegrity?: ToolResultIntegrity;
+        agentInvocation?: AgentInvocationChannelMetadata;
       };
     };
     if (
@@ -1887,11 +1892,12 @@ function normalizeHistoryMessages(
       ...(typeof candidate.toolName === "string"
         ? { toolName: candidate.toolName }
         : {}),
-      // Preserve the file-history join key and A3 durable tool-result seal.
-      // Other transient flags stay dropped so normalized snapshots cannot
-      // resurrect merge/exclusion semantics.
+      // Preserve the file-history join key and durable integrity metadata.
+      // The invocation merge boundary is derived from authenticated channel
+      // metadata instead of accepting a transient serialized flag.
       ...(typeof candidate.runtimeOnly?.userMessageId === "string" ||
-      candidate.runtimeOnly?.toolResultIntegrity !== undefined
+      candidate.runtimeOnly?.toolResultIntegrity !== undefined ||
+      candidate.runtimeOnly?.agentInvocation !== undefined
         ? {
             runtimeOnly: {
               ...(typeof candidate.runtimeOnly?.userMessageId === "string"
@@ -1903,11 +1909,18 @@ function normalizeHistoryMessages(
                       candidate.runtimeOnly.toolResultIntegrity,
                   }
                 : {}),
+              ...(candidate.runtimeOnly?.agentInvocation !== undefined
+                ? {
+                    agentInvocation: candidate.runtimeOnly.agentInvocation,
+                    mergeBoundary: "user_context" as const,
+                  }
+                : {}),
             },
           }
         : {}),
     });
   }
+  validateAgentInvocationMessageSequence(normalized);
   return normalized;
 }
 
@@ -1951,6 +1964,15 @@ function lastTextBlock(content: LLMMessage["content"]): string {
 
 function isSelectableHistoryUserMessage(message: LLMMessage): boolean {
   if (message.role !== "user") return false;
+  const invocationChannel = message.runtimeOnly?.agentInvocation;
+  if (invocationChannel !== undefined) {
+    // The three authenticated user-role records are one logical invocation,
+    // not three independently rewindable prompts.  Expose one ordinal at the
+    // final channel, after the complete group has been seen and validated.
+    return (
+      invocationChannel.channelIndex === invocationChannel.channelCount - 1
+    );
+  }
   if (isCompactBoundaryMessage(message)) return false;
   if (isCompactSummaryMessage(message)) return false;
   const messageText = lastTextBlock(message.content);
@@ -1984,13 +2006,19 @@ function activeHistoryIndexForOrdinal(
   ordinal: number,
 ): number | null {
   if (!Number.isInteger(ordinal) || ordinal < 0) return null;
+  validateAgentInvocationMessageSequence(activeHistory);
   let seen = 0;
   for (let index = 0; index < activeHistory.length; index += 1) {
     const message = activeHistory[index];
     if (message === undefined || !isSelectableHistoryUserMessage(message)) {
       continue;
     }
-    if (seen === ordinal) return index;
+    if (seen === ordinal) {
+      const invocationChannel = message.runtimeOnly?.agentInvocation;
+      return invocationChannel === undefined
+        ? index
+        : index - invocationChannel.channelIndex;
+    }
     seen += 1;
   }
   return null;
@@ -2018,10 +2046,22 @@ function toCompactRuntimeMessages(
         : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase !== undefined ? { phase: message.phase } : {}),
-      ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+      ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
+      message.runtimeOnly?.agentInvocation !== undefined
         ? {
             runtimeOnly: {
-              toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+              ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+                ? {
+                    toolResultIntegrity:
+                      message.runtimeOnly.toolResultIntegrity,
+                  }
+                : {}),
+              ...(message.runtimeOnly?.agentInvocation !== undefined
+                ? {
+                    agentInvocation: message.runtimeOnly.agentInvocation,
+                    mergeBoundary: "user_context" as const,
+                  }
+                : {}),
             },
           }
         : {}),
@@ -2054,9 +2094,11 @@ function toCompactRuntimeContent(content: LLMMessage["content"]): unknown {
 function fromCompactRuntimeMessages(
   messages: readonly RuntimeMessage[],
 ): LLMMessage[] {
-  return messages
+  const converted = messages
     .map(fromCompactRuntimeMessage)
     .filter((message): message is LLMMessage => message !== null);
+  validateAgentInvocationMessageSequence(converted);
+  return converted;
 }
 
 function fromCompactRuntimeMessage(message: RuntimeMessage): LLMMessage | null {
@@ -2086,10 +2128,21 @@ function fromCompactRuntimeMessage(message: RuntimeMessage): LLMMessage | null {
     ...(message.phase === "commentary" || message.phase === "final_answer"
       ? { phase: message.phase }
       : {}),
-    ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+    ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
+    message.runtimeOnly?.agentInvocation !== undefined
       ? {
           runtimeOnly: {
-            toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+            ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+              ? {
+                  toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+                }
+              : {}),
+            ...(message.runtimeOnly?.agentInvocation !== undefined
+              ? {
+                  agentInvocation: message.runtimeOnly.agentInvocation,
+                  mergeBoundary: "user_context" as const,
+                }
+              : {}),
           },
         }
       : {}),

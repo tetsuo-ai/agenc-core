@@ -85,6 +85,7 @@ import type {
 } from "../services/compact/types.js";
 import { getAutoCompactThreshold } from "../services/compact/autoCompact.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
+import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 import {
   applyToolResultBudget,
   resolveToolResultBudgetChars,
@@ -224,6 +225,11 @@ export interface RunTurnOptions {
   /** Compatibility-only escape hatch for a caller that already assembled the full base. */
   readonly systemPromptReplacesBase?: boolean;
   readonly history?: readonly LLMMessage[];
+  /** Whether caller-supplied history already exists in this rollout store. */
+  readonly initialHistoryPersistence?:
+    "already_persisted" | "persist_before_turn";
+  /** Authenticated durable metadata for the current seed user message. */
+  readonly seedUserMessageRuntimeOnly?: LLMMessage["runtimeOnly"];
   readonly signal?: AbortSignal;
   readonly querySource?: string;
   readonly skipCacheWrite?: boolean;
@@ -517,9 +523,7 @@ function buildAgenCCompactedRolloutItem(
   });
 }
 
-function buildAgenCPostCompactMessages(
-  result: CompactedItem,
-): LLMMessage[] {
+function buildAgenCPostCompactMessages(result: CompactedItem): LLMMessage[] {
   return (result.replacementHistory ?? []).map(responseItemToLlmMessage);
 }
 
@@ -532,10 +536,21 @@ function toAgenCMessage(message: LLMMessage): AgenCMessage {
       : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
-    ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+    ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
+    message.runtimeOnly?.agentInvocation !== undefined
       ? {
           runtimeOnly: {
-            toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+            ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+              ? {
+                  toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+                }
+              : {}),
+            ...(message.runtimeOnly?.agentInvocation !== undefined
+              ? {
+                  agentInvocation: message.runtimeOnly.agentInvocation,
+                  mergeBoundary: "user_context" as const,
+                }
+              : {}),
           },
         }
       : {}),
@@ -870,9 +885,11 @@ function toAgenCRuntimeWireRole(
 function fromAgenCRuntimeMessages(
   messages: readonly AgenCRuntimeMessage[],
 ): LLMMessage[] {
-  return messages
+  const converted = messages
     .map(fromAgenCRuntimeMessage)
     .filter((message): message is LLMMessage => message !== null);
+  validateAgentInvocationMessageSequence(converted);
+  return converted;
 }
 
 function fromAgenCRuntimeMessage(
@@ -913,10 +930,22 @@ function fromAgenCRuntimeMessage(
       ...(message.phase === "commentary" || message.phase === "final_answer"
         ? { phase: message.phase }
         : {}),
-      ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+      ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
+      message.runtimeOnly?.agentInvocation !== undefined
         ? {
             runtimeOnly: {
-              toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+              ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+                ? {
+                    toolResultIntegrity:
+                      message.runtimeOnly.toolResultIntegrity,
+                  }
+                : {}),
+              ...(message.runtimeOnly?.agentInvocation !== undefined
+                ? {
+                    agentInvocation: message.runtimeOnly.agentInvocation,
+                    mergeBoundary: "user_context" as const,
+                  }
+                : {}),
             },
           }
         : {}),
@@ -943,10 +972,21 @@ function fromAgenCRuntimeMessage(
     ...(message.phase === "commentary" || message.phase === "final_answer"
       ? { phase: message.phase }
       : {}),
-    ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+    ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
+    message.runtimeOnly?.agentInvocation !== undefined
       ? {
           runtimeOnly: {
-            toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+            ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+              ? {
+                  toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+                }
+              : {}),
+            ...(message.runtimeOnly?.agentInvocation !== undefined
+              ? {
+                  agentInvocation: message.runtimeOnly.agentInvocation,
+                  mergeBoundary: "user_context" as const,
+                }
+              : {}),
           },
         }
       : {}),
@@ -1627,7 +1667,13 @@ function buildSeedMessages(
     ? { role: "system", content: opts.systemPrompt }
     : undefined;
   const prior: LLMMessage[] = [...(opts.history ?? [])];
-  const user: LLMMessage = { role: "user", content: userContent };
+  const user: LLMMessage = {
+    role: "user",
+    content: userContent,
+    ...(opts.seedUserMessageRuntimeOnly !== undefined
+      ? { runtimeOnly: { ...opts.seedUserMessageRuntimeOnly } }
+      : {}),
+  };
   return { system, prior, user };
 }
 
@@ -1907,10 +1953,7 @@ function isAutoCompactEnabledForNotices(): boolean {
   return !TRUTHY_ENV.has(raw.trim().toLowerCase());
 }
 
-function sealToolResultMessage(
-  message: LLMMessage,
-  runId: string,
-): LLMMessage {
+function sealToolResultMessage(message: LLMMessage, runId: string): LLMMessage {
   if (message.role !== "tool") {
     if (message.runtimeOnly?.toolResultIntegrity !== undefined) {
       throw new Error(
@@ -1952,10 +1995,7 @@ function sealToolResultMessage(
 }
 
 function requireSealedToolResult(message: ResponseItem): void {
-  if (
-    message.role === "tool" &&
-    message.toolResultIntegrity === undefined
-  ) {
+  if (message.role === "tool" && message.toolResultIntegrity === undefined) {
     throw new Error("checkpoint v2 requires every tool result to be sealed");
   }
 }
@@ -2488,9 +2528,8 @@ function getActiveContextTokenUsage(
   if (state === undefined) {
     return getTotalTokenUsage(session);
   }
-  const messages = state.messagesForQuery.length > 0
-    ? state.messagesForQuery
-    : state.messages;
+  const messages =
+    state.messagesForQuery.length > 0 ? state.messagesForQuery : state.messages;
   if (messages.length === 0) return getTotalTokenUsage(session);
   // Pre-sampling compaction runs before query preparation, so
   // `messagesForQuery` may still be empty. Build a read-only projection with
@@ -2498,9 +2537,10 @@ function getActiveContextTokenUsage(
   // provider dispatch. This keeps durable system history, current
   // instructions, deferred-tool filtering, tool choice, context limits, and
   // output reservations aligned with the request admission will authorize.
-  const accountingState = state.messagesForQuery.length > 0
-    ? state
-    : { ...state, messagesForQuery: [...messages] };
+  const accountingState =
+    state.messagesForQuery.length > 0
+      ? state
+      : { ...state, messagesForQuery: [...messages] };
   const request = buildSamplingRequestContract(accountingState, session, ctx);
   return estimateMessagesTokens(toAgenCRuntimeMessages(request.input), {
     provider: ctx.provider ?? session.services.provider,
@@ -3926,7 +3966,10 @@ async function* runTurnKernelInner(
       : {}),
   });
   const turnQuerySource = sessionQuerySourceForTurn(session, opts.querySource);
-  let persistedMessageCount = priorExisting.length;
+  let persistedMessageCount =
+    opts.initialHistoryPersistence === "persist_before_turn"
+      ? 0
+      : priorExisting.length;
   // GOAL #4b Stage 1 — resume-continuation. On resume the reconstructed
   // prefix arrives via `opts.history` (→ `priorFull`); we drop the synthetic
   // seed `user` that `buildInitialTurnState` appended (the real user message
@@ -4224,6 +4267,19 @@ async function* runTurnKernelInner(
     });
   }
   persistNewResponseItems();
+  if (opts.initialHistoryPersistence === "persist_before_turn") {
+    if (rolloutPersistenceSuspended() || session.rolloutStore === null) {
+      throw new Error(
+        "initial invocation history requires an available durable rollout",
+      );
+    }
+    // A managed child may execute tools immediately after its first provider
+    // response.  Its authenticated policy/task/data seed therefore has to be
+    // physically committed before compaction or provider dispatch can produce
+    // any effect.  appendRollout alone only reaches the recorder's write
+    // buffer; flushDurable is the fsync barrier that makes crash recovery safe.
+    session.rolloutStore.flushDurable();
+  }
 
   // agenc runtime: run_pre_sampling_compact before any phase runs. Returns
   // whether compaction happened; if yes and we had a prewarmed
@@ -5116,6 +5172,8 @@ export function runTurn(
         ctx?: TurnContext;
         systemPrompt?: string;
         history?: readonly LLMMessage[];
+        initialHistoryPersistence?: RunTurnOptions["initialHistoryPersistence"];
+        seedUserMessageRuntimeOnly?: LLMMessage["runtimeOnly"];
         signal?: AbortSignal;
         querySource?: string;
         displayUserMessage?: string | null;
@@ -5131,6 +5189,8 @@ export function runTurn(
       ctx,
       systemPrompt: opts.systemPrompt,
       history: opts.history,
+      initialHistoryPersistence: opts.initialHistoryPersistence,
+      seedUserMessageRuntimeOnly: opts.seedUserMessageRuntimeOnly,
       signal: opts.signal,
       querySource: opts.querySource,
       displayUserMessage: opts.displayUserMessage,

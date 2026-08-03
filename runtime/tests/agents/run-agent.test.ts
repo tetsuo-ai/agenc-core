@@ -63,6 +63,11 @@ import {
   disposeSandboxExecutionBroker,
   isSandboxExecutionBrokerDisposed,
 } from "../sandbox/execution-lifecycle.js";
+import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+  validateAgentInvocationMessageSequence,
+} from "../contracts/agent-invocation-envelope.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp");
 import {
@@ -72,6 +77,9 @@ import {
   type SessionServices,
 } from "../session/session.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import { SessionStore } from "../session/session-store.js";
+import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
+import type { ResponseItem } from "../session/rollout-item.js";
 import type {
   Config,
   ManagedFeatures,
@@ -736,7 +744,8 @@ describe("runAgent", () => {
         }),
       );
 
-      expect(result.outcome).toBe("completed");
+      expect(result.error).toBeUndefined();
+      expect(result).toMatchObject({ outcome: "completed" });
       expect(observedChildManager).toBeDefined();
       expect(observedChildManager).not.toBe(parentManager);
       expect(openedUris).toEqual([
@@ -924,7 +933,7 @@ describe("runAgent", () => {
         }),
       );
 
-      expect(result.outcome).toBe("completed");
+      expect(result).toMatchObject({ outcome: "completed" });
       expect(refreshFromConfig).not.toHaveBeenCalled();
       expect(childServices?.mcpManager).not.toBe(parentMcpManager);
       expect(childServices?.mcpManager.getConnectedServers?.()).toEqual([]);
@@ -1075,6 +1084,164 @@ describe("runAgent", () => {
     });
     // Initial messages + assistant reply message.
     expect(events.filter((e) => e.kind === "message")).toHaveLength(3);
+  });
+
+  it("carries all three invocation authorities through the child run seed", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-invocation-run-"));
+    const provider = makeProvider([{ content: "done" }]);
+    const session = makeStubSession({
+      services: { provider },
+      config: { ...mkConfig(), cwd: workspace },
+      sessionConfiguration: mkSessionConfiguration({ cwd: workspace }),
+    });
+    const parentRollout = new RolloutStore({
+      cwd: workspace,
+      sessionId: session.conversationId,
+      agencVersion: "0.2.0",
+    });
+    parentRollout.open({
+      sessionId: session.conversationId,
+      timestamp: new Date().toISOString(),
+      cwd: workspace,
+      originator: "invocation-seed-test",
+      agencVersion: "0.2.0",
+      model: "fake-model",
+      modelProvider: "fake",
+    });
+    session.mountRolloutStore(parentRollout);
+    try {
+      const { live } = await spawnLive(session);
+      const initialMessages = materializeAgentInvocationMessages(
+        createCsvAgentInvocationEnvelope({
+          jobId: "run-job",
+          itemId: "run-item",
+          rowIndex: 0,
+          rowSha256: `sha256:${"9".repeat(64)}`,
+          instruction: "RUN_TASK_MARKER",
+          row: { payload: "RUN_DATA_MARKER" },
+        }),
+      );
+
+      const { result } = await collectRun(
+        runAgent({
+          live,
+          parent: session,
+          initialMessages,
+          taskPrompt: "CSV job item run-item",
+        }),
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result).toMatchObject({ outcome: "completed" });
+      const [passedMessages] = (provider.chatStream as ReturnType<typeof vi.fn>)
+        .mock.calls[0]! as [LLMMessage[]];
+      expect(() =>
+        validateAgentInvocationMessageSequence(passedMessages),
+      ).not.toThrow();
+      expect(
+        passedMessages.map(
+          (message) => message.runtimeOnly?.agentInvocation?.authority,
+        ),
+      ).toEqual(["runtime_policy", "task_instructions", "untrusted_data"]);
+    } finally {
+      await session.shutdown();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("fsyncs and reopens the complete invocation seed before provider failure", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-invocation-crash-"));
+    const flushDurable = vi.spyOn(RolloutStore.prototype, "flushDurable");
+    let live: Awaited<ReturnType<typeof spawnLive>>["live"];
+    let durableAtDispatch: LLMMessage[] = [];
+    const provider = makeProvider([]);
+    provider.chatStream = vi.fn(async () => {
+      const rolloutPath = live.rolloutPath;
+      if (rolloutPath === undefined) {
+        throw new Error(
+          "child rollout was not mounted before provider dispatch",
+        );
+      }
+      durableAtDispatch = readFileSync(rolloutPath, "utf8")
+        .trim()
+        .split("\n")
+        .map(
+          (line) =>
+            JSON.parse(line) as { type: string; payload?: ResponseItem },
+        )
+        .filter((item) => item.type === "response_item")
+        .map((item) => responseItemToLlmMessage(item.payload!));
+      throw new Error("injected crash before provider effects");
+    });
+    const session = makeStubSession({
+      services: { provider },
+      config: { ...mkConfig(), cwd: workspace },
+      sessionConfiguration: mkSessionConfiguration({ cwd: workspace }),
+    });
+    const parentRollout = new RolloutStore({
+      cwd: workspace,
+      sessionId: session.conversationId,
+      agencVersion: "0.2.0",
+    });
+    parentRollout.open({
+      sessionId: session.conversationId,
+      timestamp: new Date().toISOString(),
+      cwd: workspace,
+      originator: "invocation-crash-test",
+      agencVersion: "0.2.0",
+      model: "fake-model",
+      modelProvider: "fake",
+    });
+    session.mountRolloutStore(parentRollout);
+
+    try {
+      ({ live } = await spawnLive(session));
+      const initialMessages = materializeAgentInvocationMessages(
+        createCsvAgentInvocationEnvelope({
+          jobId: "crash-job",
+          itemId: "crash-item",
+          rowIndex: 0,
+          rowSha256: `sha256:${"8".repeat(64)}`,
+          instruction: "CRASH_TASK_MARKER",
+          row: { payload: "CRASH_DATA_MARKER" },
+        }),
+      );
+
+      const { result } = await collectRun(
+        runAgent({
+          live,
+          parent: session,
+          initialMessages,
+          taskPrompt: "CSV job item crash-item",
+        }),
+      );
+
+      expect(result.outcome).toBe("errored");
+      expect(flushDurable.mock.calls.length).toBeGreaterThan(0);
+      expect(() =>
+        validateAgentInvocationMessageSequence(durableAtDispatch),
+      ).not.toThrow();
+      expect(durableAtDispatch).toHaveLength(3);
+
+      const reopened = new SessionStore({
+        cwd: workspace,
+        sessionId: live.agentId,
+        agencVersion: "0.2.0",
+        resume: true,
+      });
+      const reopenedMessages = reopened
+        .readAll()
+        .filter((item) => item.type === "response_item")
+        .map((item) => responseItemToLlmMessage(item.payload));
+      expect(() =>
+        validateAgentInvocationMessageSequence(reopenedMessages),
+      ).not.toThrow();
+      expect(reopenedMessages).toHaveLength(3);
+    } finally {
+      flushDurable.mockRestore();
+      await session.shutdown();
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it("resolves project instructions from the child workspace exactly once", async () => {
@@ -1237,13 +1404,13 @@ describe("runAgent", () => {
       outputTokens: 19,
       totalTokens: 100,
     });
-    expect(
-      events.find((event) => event.kind === "usage_update"),
-    ).toMatchObject({
-      inputTokens: 81,
-      outputTokens: 19,
-      totalTokens: 100,
-    });
+    expect(events.find((event) => event.kind === "usage_update")).toMatchObject(
+      {
+        inputTokens: 81,
+        outputTokens: 19,
+        totalTokens: 100,
+      },
+    );
   });
 
   it("ignores array-shaped parent services when resolving the provider", async () => {

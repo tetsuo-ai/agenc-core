@@ -16,6 +16,7 @@ import type {
 import { normalizeMessagesForAPI } from "../messages.js";
 import { validateToolCall, validateToolCallDetailed } from "../types.js";
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
+import { validateAgentInvocationMessageSequence } from "../../contracts/agent-invocation-envelope.js";
 
 function readContentPartRecord(part: unknown): Record<string, unknown> | null {
   return part && typeof part === "object" && !Array.isArray(part)
@@ -619,6 +620,7 @@ export function prepareMessagesForWire(
   messages: readonly LLMMessage[],
   options?: LLMChatOptions,
 ): readonly LLMMessage[] {
+  validateAgentInvocationMessageSequence(messages);
   return normalizeMessagesForAPI(messages, {
     ...(options?.skipCacheWrite !== undefined
       ? { skipCacheWrite: options.skipCacheWrite }

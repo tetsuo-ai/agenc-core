@@ -17,6 +17,7 @@
 import type { Event, EventMsg, SessionMetaLine } from "./event-log.js";
 import type { SessionAgentTask } from "./agent-task-lifecycle.js";
 import type { ToolResultIntegrity } from "./tool-result-integrity.js";
+import type { AgentInvocationChannelMetadata } from "../contracts/agent-invocation-envelope.js";
 import { redactSecretsInValue } from "../secrets/index.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -48,6 +49,8 @@ export interface ResponseItem {
   readonly toolName?: string;
   /** Checkpoint-v2 identity for the exact durable tool-result body. */
   readonly toolResultIntegrity?: ToolResultIntegrity;
+  /** Durable authority/channel identity for a versioned agent invocation. */
+  readonly agentInvocation?: AgentInvocationChannelMetadata;
   readonly id?: string;
   readonly endTurn?: boolean;
   readonly phase?: string;

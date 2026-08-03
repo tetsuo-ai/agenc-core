@@ -14,6 +14,7 @@ import {
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { CompactionResult, RuntimeMessage } from "../services/compact/types.js";
 import type { CompactedItem } from "../session/rollout-item.js";
+import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 import type { Session } from "../session/session.js";
 import {
   llmMessageToReplacementResponseItem,
@@ -1026,10 +1027,21 @@ function toAgenCMessage(message: LLMMessage): AgenCMessage {
     ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
-    ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+    ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
+    message.runtimeOnly?.agentInvocation !== undefined
       ? {
           runtimeOnly: {
-            toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+            ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+              ? {
+                  toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+                }
+              : {}),
+            ...(message.runtimeOnly?.agentInvocation !== undefined
+              ? {
+                  agentInvocation: message.runtimeOnly.agentInvocation,
+                  mergeBoundary: "user_context" as const,
+                }
+              : {}),
           },
         }
       : {}),
@@ -1480,9 +1492,11 @@ function toAgenCRuntimeWireRole(role: LLMMessage["role"]): AgenCRuntimeWireRole 
 function fromAgenCRuntimeMessages(
   messages: readonly AgenCRuntimeMessage[],
 ): LLMMessage[] {
-  return messages
+  const converted = messages
     .map(fromAgenCRuntimeMessage)
     .filter((message): message is LLMMessage => message !== null);
+  validateAgentInvocationMessageSequence(converted);
+  return converted;
 }
 
 function fromAgenCRuntimeMessage(
@@ -1498,10 +1512,22 @@ function fromAgenCRuntimeMessage(
       ...(message.phase === "commentary" || message.phase === "final_answer"
         ? { phase: message.phase }
         : {}),
-      ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+      ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
+      message.runtimeOnly?.agentInvocation !== undefined
         ? {
             runtimeOnly: {
-              toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+              ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+                ? {
+                    toolResultIntegrity:
+                      message.runtimeOnly.toolResultIntegrity,
+                  }
+                : {}),
+              ...(message.runtimeOnly?.agentInvocation !== undefined
+                ? {
+                    agentInvocation: message.runtimeOnly.agentInvocation,
+                    mergeBoundary: "user_context" as const,
+                  }
+                : {}),
             },
           }
         : {}),
@@ -1528,10 +1554,21 @@ function fromAgenCRuntimeMessage(
     ...(message.phase === "commentary" || message.phase === "final_answer"
       ? { phase: message.phase }
       : {}),
-    ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+    ...(message.runtimeOnly?.toolResultIntegrity !== undefined ||
+    message.runtimeOnly?.agentInvocation !== undefined
       ? {
           runtimeOnly: {
-            toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+            ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+              ? {
+                  toolResultIntegrity: message.runtimeOnly.toolResultIntegrity,
+                }
+              : {}),
+            ...(message.runtimeOnly?.agentInvocation !== undefined
+              ? {
+                  agentInvocation: message.runtimeOnly.agentInvocation,
+                  mergeBoundary: "user_context" as const,
+                }
+              : {}),
           },
         }
       : {}),

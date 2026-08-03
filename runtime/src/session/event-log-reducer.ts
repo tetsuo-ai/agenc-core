@@ -17,11 +17,7 @@
  * @module
  */
 
-import type {
-  EventLog,
-  EventSeq,
-  TurnContextItem,
-} from "./event-log.js";
+import type { EventLog, EventSeq, TurnContextItem } from "./event-log.js";
 import { emitError, emitWarning } from "./event-log.js";
 import type {
   CompactedItem,
@@ -29,6 +25,7 @@ import type {
   RolloutItem,
 } from "./rollout-item.js";
 import { isKnownRolloutType } from "./rollout-item.js";
+import { agentInvocationGroupStartIndex } from "../contracts/agent-invocation-envelope.js";
 import {
   isUserTurnBoundary,
   hasNonContextualDeveloperMessageContent,
@@ -83,7 +80,10 @@ export interface ReductionReport {
   /** Count of seq-gap violations (I-27). */
   readonly seqGapCount: number;
   /** First seq-gap encountered (useful for reporting). */
-  readonly firstSeqGap?: { readonly expected: EventSeq; readonly actual: EventSeq };
+  readonly firstSeqGap?: {
+    readonly expected: EventSeq;
+    readonly actual: EventSeq;
+  };
   /** Lines that failed to parse and were skipped. */
   readonly malformedLineCount: number;
   /** Total rollout items successfully processed. */
@@ -166,7 +166,11 @@ export function reduce(
       // compaction message for any downstream rebuild logic.
       const next =
         item.payload.replacementHistory !== undefined
-          ? { ...state, history: [...item.payload.replacementHistory], lastCompaction: item.payload }
+          ? {
+              ...state,
+              history: [...item.payload.replacementHistory],
+              lastCompaction: item.payload,
+            }
           : { ...state, lastCompaction: item.payload };
       return { state: next, report: {} };
     }
@@ -214,17 +218,23 @@ export function reduce(
       // Handle structural events that affect the reduced state.
       switch (innerType) {
         case "turn_context":
-          nextState.lastTurnContext = (inner as unknown as { payload: TurnContextItem }).payload;
+          nextState.lastTurnContext = (
+            inner as unknown as { payload: TurnContextItem }
+          ).payload;
           break;
         case "context_compacted": {
-          const payload = (inner as unknown as { payload: { summary?: string } }).payload;
+          const payload = (
+            inner as unknown as { payload: { summary?: string } }
+          ).payload;
           if (payload?.summary) {
             nextState.lastCompaction = { message: payload.summary };
           }
           break;
         }
         case "thread_rolled_back": {
-          const payload = (inner as unknown as { payload: { numTurns: number } }).payload;
+          const payload = (
+            inner as unknown as { payload: { numTurns: number } }
+          ).payload;
           nextState.rolledBackTurns += payload?.numTurns ?? 0;
           // Drop the last N user-turn boundaries from history.
           const trimmed = dropLastNUserTurns(
@@ -283,7 +293,9 @@ function dropLastNUserTurns(
   const userPositions: number[] = [];
   for (let i = 0; i < history.length; i += 1) {
     const item = history[i];
-    if (item && isUserTurnBoundary(item)) userPositions.push(i);
+    if (item && isUserTurnBoundary(item)) {
+      userPositions.push(agentInvocationGroupStartIndex(item, i));
+    }
   }
   if (userPositions.length === 0) {
     return { history: [...history], clearedTurnContext: false };
@@ -329,9 +341,10 @@ function dropLastNUserTurns(
  * Fold a full rollout sequence into a final `ReducedSessionState`
  * plus diagnostic `ReductionReport`. Pure function.
  */
-export function reduceAll(
-  items: ReadonlyArray<RolloutItem>,
-): { state: ReducedSessionState; report: ReductionReport } {
+export function reduceAll(items: ReadonlyArray<RolloutItem>): {
+  state: ReducedSessionState;
+  report: ReductionReport;
+} {
   let state = emptyReducedState();
   let report = emptyReport();
   for (const item of items) {

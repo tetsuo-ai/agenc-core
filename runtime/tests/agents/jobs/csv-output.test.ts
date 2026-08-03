@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import {
   link,
+  lstat,
   mkdtemp,
   readFile,
   readdir,
@@ -11,11 +12,13 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CsvOutputRootCapability,
   createCsvOutputRootCapability,
+  recoverCsvOutputIntents,
   writeCsvOutput,
+  type CsvOutputIntentStore,
 } from "./csv-output.js";
 
 let root: string;
@@ -160,5 +163,81 @@ describe("writeCsvOutput", () => {
     await expect(readFile(target, "utf8")).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("stops a multi-page recovery at the probe abort reason", async () => {
+    const controller = new AbortController();
+    const abortReason = new Error("recovery probe aborted");
+    const claim = vi.fn(async () => {
+      controller.abort(abortReason);
+      return { intents: [], hasMore: true };
+    });
+    const intentStore: CsvOutputIntentStore = {
+      beginCsvOutputIntent: vi.fn(),
+      markCsvOutputIntentFlushed: vi.fn(),
+      markCsvOutputIntentPublished: vi.fn(),
+      completeCsvOutputIntent: vi.fn(),
+      abandonCsvOutputIntent: vi.fn(),
+      claimCsvOutputRecoveryIntents: claim,
+      finishCsvOutputIntentRecovery: vi.fn(),
+      deferCsvOutputIntentRecovery: vi.fn(),
+    };
+
+    await expect(
+      recoverCsvOutputIntents(
+        createCsvOutputRootCapability(root),
+        intentStore,
+        { signal: controller.signal },
+      ),
+    ).rejects.toBe(abortReason);
+    expect(claim).toHaveBeenCalledOnce();
+  });
+
+  it("does not finish an intent aborted during final-page filesystem I/O", async () => {
+    const controller = new AbortController();
+    const abortReason = new Error("final page filesystem abort");
+    const temporaryPath = join(root, ".final-abort.agenc-csv.tmp");
+    await writeFile(temporaryPath, "partial", { mode: 0o600 });
+    const stats = await lstat(temporaryPath, { bigint: true });
+    const finish = vi.fn();
+    const defer = vi.fn();
+    const intent = {
+      intentId: "final-abort-intent",
+      ownerGeneration: "final-abort-generation",
+      priorState: "abandoned" as const,
+      targetPath: join(root, "final-abort.csv"),
+      get temporaryPath(): string {
+        controller.abort(abortReason);
+        return temporaryPath;
+      },
+      temporaryDev: stats.dev.toString(),
+      temporaryIno: stats.ino.toString(),
+    };
+    const claim = vi.fn(async () => ({
+      intents: [intent],
+      hasMore: false,
+    }));
+    const intentStore: CsvOutputIntentStore = {
+      beginCsvOutputIntent: vi.fn(),
+      markCsvOutputIntentFlushed: vi.fn(),
+      markCsvOutputIntentPublished: vi.fn(),
+      completeCsvOutputIntent: vi.fn(),
+      abandonCsvOutputIntent: vi.fn(),
+      claimCsvOutputRecoveryIntents: claim,
+      finishCsvOutputIntentRecovery: finish,
+      deferCsvOutputIntentRecovery: defer,
+    };
+
+    await expect(
+      recoverCsvOutputIntents(
+        createCsvOutputRootCapability(root),
+        intentStore,
+        { signal: controller.signal },
+      ),
+    ).rejects.toBe(abortReason);
+    expect(claim).toHaveBeenCalledOnce();
+    expect(finish).not.toHaveBeenCalled();
+    expect(defer).not.toHaveBeenCalled();
+    await expect(readFile(temporaryPath, "utf8")).resolves.toBe("partial");
   });
 });

@@ -5,6 +5,7 @@ import type { SessionSubmitOptions } from "../session/autonomous-mode.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import { parseRolloutLine } from "../session/rollout-item.js";
 import { responseItemToLlmMessage as responseItemToLlmHistoryMessage } from "../session/message-history-conversion.js";
+import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 import { threadConfigSnapshot } from "../session/turn-context.js";
 import {
   isMailboxSendAccepted,
@@ -209,10 +210,12 @@ export class AgenCThread implements ManagedThread {
 
   replaceConversationHistory(history: ReadonlyArray<ResponseItem>): void {
     if (!this.live) return;
+    const messages = history.map(responseItemToLlmHistoryMessage);
+    validateAgentInvocationMessageSequence(messages);
     this.live.messages.splice(
       0,
       this.live.messages.length,
-      ...history.map(responseItemToLlmHistoryMessage),
+      ...messages,
     );
   }
 

@@ -1520,17 +1520,125 @@ function callIdFromArgs(args: Record<string, unknown>, prefix: string): string {
   return stringValue(args.__callId) ?? `${prefix}-${randomUUID()}`;
 }
 
-const csvAgentJobsRepoCache: Map<string, CsvAgentJobsRepository> = new Map();
+interface CsvAgentJobsRepositoryCacheEntry {
+  readonly controller: AbortController;
+  readonly driver: ReturnType<typeof openStateDatabases>;
+  readonly promise: Promise<CsvAgentJobsRepository>;
+  waiters: number;
+  state: "pending" | "fulfilled" | "rejected";
+}
 
-function getCsvAgentJobsRepository(
+const csvAgentJobsRepoCache = new Map<
+  string,
+  CsvAgentJobsRepositoryCacheEntry
+>();
+
+function createCsvAgentJobsRepositoryCacheEntry(
   workspaceRoot: string,
-): CsvAgentJobsRepository {
-  const cached = csvAgentJobsRepoCache.get(workspaceRoot);
-  if (cached) return cached;
+): CsvAgentJobsRepositoryCacheEntry {
+  const controller = new AbortController();
   const driver = openStateDatabases({ cwd: workspaceRoot });
-  const repo = new CsvAgentJobsRepository(driver);
-  csvAgentJobsRepoCache.set(workspaceRoot, repo);
-  return repo;
+  let entry: CsvAgentJobsRepositoryCacheEntry;
+  const promise = CsvAgentJobsRepository.open(driver, {
+    signal: controller.signal,
+  }).then(
+    (repository) => {
+      entry.state = "fulfilled";
+      return repository;
+    },
+    (error: unknown) => {
+      entry.state = "rejected";
+      if (csvAgentJobsRepoCache.get(workspaceRoot) === entry) {
+        csvAgentJobsRepoCache.delete(workspaceRoot);
+      }
+      driver.close();
+      throw error;
+    },
+  );
+  entry = {
+    controller,
+    driver,
+    promise,
+    waiters: 0,
+    state: "pending",
+  };
+  return entry;
+}
+
+async function waitForCsvAgentJobsRepository(
+  entry: CsvAgentJobsRepositoryCacheEntry,
+  signal?: AbortSignal,
+): Promise<CsvAgentJobsRepository> {
+  if (signal === undefined) return await entry.promise;
+  signal.throwIfAborted();
+  return await new Promise<CsvAgentJobsRepository>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason ?? new Error("CSV repository open aborted"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    entry.promise.then(
+      (repository) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(repository);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function getCsvAgentJobsRepository(
+  workspaceRoot: string,
+  signal?: AbortSignal,
+): Promise<CsvAgentJobsRepository> {
+  signal?.throwIfAborted();
+  let entry = csvAgentJobsRepoCache.get(workspaceRoot);
+  if (entry === undefined) {
+    entry = createCsvAgentJobsRepositoryCacheEntry(workspaceRoot);
+    csvAgentJobsRepoCache.set(workspaceRoot, entry);
+  }
+  entry.waiters += 1;
+  try {
+    return await waitForCsvAgentJobsRepository(entry, signal);
+  } finally {
+    entry.waiters -= 1;
+    if (
+      entry.state === "pending" &&
+      entry.waiters === 0 &&
+      signal?.aborted === true
+    ) {
+      if (csvAgentJobsRepoCache.get(workspaceRoot) === entry) {
+        csvAgentJobsRepoCache.delete(workspaceRoot);
+      }
+      entry.controller.abort(
+        signal.reason ?? new Error("CSV repository open aborted"),
+      );
+    }
+  }
+}
+
+export async function __getCsvAgentJobsRepositoryForTests(
+  workspaceRoot: string,
+  signal?: AbortSignal,
+): Promise<CsvAgentJobsRepository> {
+  return await getCsvAgentJobsRepository(workspaceRoot, signal);
+}
+
+export async function __disposeCsvAgentJobsRepositoriesForTests(): Promise<void> {
+  const entries = [...csvAgentJobsRepoCache.values()];
+  csvAgentJobsRepoCache.clear();
+  await Promise.all(
+    entries.map(async (entry) => {
+      if (entry.state === "pending") {
+        entry.controller.abort(new Error("CSV repository test disposal"));
+      }
+      await entry.promise.catch(() => undefined);
+      entry.driver.close();
+    }),
+  );
 }
 
 function currentAgentContext(
@@ -1769,9 +1877,8 @@ function createMultiAgentV2RuntimeTools(
       },
     };
 
-    const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
-    const callId = callIdFromArgs(args, "agent_job");
     const signal = abortSignalFromArgs(args);
+    const callId = callIdFromArgs(args, "agent_job");
     // Mirror agenc `notify_background_event(turn, "agent_job_progress:{json}")`
     // (agent_jobs.rs:172-174) by emitting a `tool_progress` event whose
     // chunk is the agenc line verbatim. Operators wired to the AgenC
@@ -1804,6 +1911,10 @@ function createMultiAgentV2RuntimeTools(
     };
 
     try {
+      const repository = await getCsvAgentJobsRepository(
+        opts.workspaceRoot,
+        signal,
+      );
       const result = await runAgentsOnCsv({
         csvPath,
         inputRootCapability: createCsvInputRootCapability(opts.workspaceRoot),
@@ -1986,7 +2097,11 @@ function createMultiAgentV2RuntimeTools(
     }
     const limit = optionalPositiveIntegerArg(args, "limit");
     if (isToolResult(limit)) return limit;
-    const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
+    const signal = abortSignalFromArgs(args);
+    const repository = await getCsvAgentJobsRepository(
+      opts.workspaceRoot,
+      signal,
+    );
     const summary = repository.getSummary(jobId);
     if (summary === null) {
       return json({ error: `unknown job_id: ${jobId}` }, true);
@@ -2090,7 +2205,11 @@ function createMultiAgentV2RuntimeTools(
     if (isToolResult(maxBytes)) return maxBytes;
     const jobId = stringValue(args.job_id)!;
     const itemId = stringValue(args.item_id)!;
-    const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
+    const signal = abortSignalFromArgs(args);
+    const repository = await getCsvAgentJobsRepository(
+      opts.workspaceRoot,
+      signal,
+    );
     let chunk: ReturnType<CsvAgentJobsRepository["readResultBlob"]>;
     try {
       chunk = repository.readResultBlob({
@@ -3816,11 +3935,16 @@ export async function resumeInterruptedAgentJobs(opts: {
   readonly signal?: AbortSignal;
 }): Promise<number> {
   opts.signal?.throwIfAborted();
-  const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
+  const repository = await getCsvAgentJobsRepository(
+    opts.workspaceRoot,
+    opts.signal,
+  );
   const outputRootCapability = createCsvOutputRootCapability(
     opts.workspaceRoot,
   );
-  await recoverCsvOutputIntents(outputRootCapability, repository);
+  await recoverCsvOutputIntents(outputRootCapability, repository, {
+    signal: opts.signal,
+  });
   if (
     repository.listJobs({ status: "running" }).length === 0 &&
     repository.listJobs({ status: "pending" }).length === 0

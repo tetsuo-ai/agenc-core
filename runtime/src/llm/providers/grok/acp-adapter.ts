@@ -34,9 +34,8 @@ import {
   SandboxExecutionError,
   type SandboxExecutionBrokerLike,
 } from "../../../sandbox/execution-broker.js";
-import {
-  registerSandboxExecutionLifecycleParticipant,
-} from "../../../sandbox/execution-lifecycle.js";
+import { registerSandboxExecutionLifecycleParticipant } from "../../../sandbox/execution-lifecycle.js";
+import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
 import { LLMProviderError } from "../../errors.js";
 import type {
   LLMChatOptions,
@@ -51,8 +50,9 @@ import type {
 export const GROK_COMPOSER_MODEL_PREFIX = "grok-composer";
 
 export function isGrokComposerModel(model: string | undefined): boolean {
-  return model?.trim().toLowerCase().startsWith(GROK_COMPOSER_MODEL_PREFIX) ??
-    false;
+  return (
+    model?.trim().toLowerCase().startsWith(GROK_COMPOSER_MODEL_PREFIX) ?? false
+  );
 }
 
 export interface GrokAcpProviderConfig {
@@ -90,6 +90,17 @@ export function flattenMessagesForAcp(
   messages: readonly LLMMessage[],
   systemPrompt?: string,
 ): string {
+  validateAgentInvocationMessageSequence(messages);
+  if (
+    messages.some(
+      (message) => message.runtimeOnly?.agentInvocation !== undefined,
+    )
+  ) {
+    throw new LLMProviderError(
+      "grok",
+      "ACP transport cannot preserve authenticated agent invocation authorities",
+    );
+  }
   const sections: string[] = [];
   if (systemPrompt?.trim()) {
     sections.push(systemPrompt.trim());
@@ -164,7 +175,7 @@ export class GrokAcpProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
-    const response = await this.run(messages, options, chunk => {
+    const response = await this.run(messages, options, (chunk) => {
       onChunk({ content: chunk, done: false });
     });
     onChunk({ content: "", done: true });
@@ -193,9 +204,7 @@ export class GrokAcpProvider implements LLMProvider {
   }
 
   forkForSession(options: LLMProviderSessionForkOptions): GrokAcpProvider {
-    if (
-      resolve(options.cwd) !== resolve(options.sandboxExecutionBroker.cwd)
-    ) {
+    if (resolve(options.cwd) !== resolve(options.sandboxExecutionBroker.cwd)) {
       throw new LLMProviderError(
         this.name,
         "child provider cwd does not match its sandbox authority",
@@ -238,16 +247,19 @@ export class GrokAcpProvider implements LLMProvider {
   ): Promise<LLMResponse> {
     const model = options?.model?.trim() || this.config.model;
     try {
+      // Validate and reject unsupported authority-preserving invocations before
+      // starting an ACP subprocess or session. Flattening three user-role
+      // channels into one prompt would erase the authenticated authority split.
+      const prompt = flattenMessagesForAcp(messages, options?.systemPrompt);
       const client = await this.ensureReady();
       const session = await client.newSession();
       const wantsSwitch =
         model !== session.currentModelId &&
         (session.availableModels.length === 0 ||
-          session.availableModels.some(entry => entry.modelId === model));
+          session.availableModels.some((entry) => entry.modelId === model));
       if (wantsSwitch) {
         await client.setSessionModel(session.sessionId, model);
       }
-      const prompt = flattenMessagesForAcp(messages, options?.systemPrompt);
       const result = await client.prompt({
         sessionId: session.sessionId,
         text: prompt,
@@ -326,9 +338,7 @@ export class GrokAcpProvider implements LLMProvider {
       // authority and is updated atomically by workspace transitions.
       cwd: broker?.cwd ?? "",
       env,
-      ...(broker !== undefined
-        ? { sandboxExecutionBroker: broker }
-        : {}),
+      ...(broker !== undefined ? { sandboxExecutionBroker: broker } : {}),
       clientInfo: { name: "agenc", version: "0" },
       onPermissionRequest: resolvePermissionHandler(env),
       ...(this.config.timeoutMs !== undefined
@@ -412,11 +422,11 @@ export class GrokAcpProvider implements LLMProvider {
     if (error instanceof LLMProviderError) return error;
     if (error instanceof XaiAcpError) {
       const hint =
-        error.code === 'spawn_failed'
-          ? ' Composer models need the Grok Build CLI on PATH with a completed `grok` login.'
-          : error.code === 'agent_error'
-          ? ' Check `grok` login state (cached_token auth) or XAI_API_KEY.'
-          : '';
+        error.code === "spawn_failed"
+          ? " Composer models need the Grok Build CLI on PATH with a completed `grok` login."
+          : error.code === "agent_error"
+            ? " Check `grok` login state (cached_token auth) or XAI_API_KEY."
+            : "";
       return new LLMProviderError(this.name, `${error.message}${hint}`);
     }
     return new LLMProviderError(

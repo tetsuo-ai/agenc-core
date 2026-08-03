@@ -1,4 +1,5 @@
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import { redactSecretsInValue } from "../secrets/index.js";
 import type { ResponseItem } from "./rollout-item.js";
 import {
@@ -15,6 +16,7 @@ type RolloutContentPart = Extract<
 >[number];
 
 export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
+  assertLlmAgentInvocationMessage(message);
   return {
     role: message.role,
     content: cloneContent(message.content),
@@ -27,11 +29,16 @@ export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
           })),
         }
       : {}),
-    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolCallId !== undefined
+      ? { toolCallId: message.toolCallId }
+      : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
     ...(message.runtimeOnly?.toolResultIntegrity !== undefined
       ? { toolResultIntegrity: message.runtimeOnly.toolResultIntegrity }
+      : {}),
+    ...(message.runtimeOnly?.agentInvocation !== undefined
+      ? { agentInvocation: message.runtimeOnly.agentInvocation }
       : {}),
   };
 }
@@ -78,7 +85,7 @@ export function llmMessageToReplacementResponseItem(
 }
 
 export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
-  return {
+  const message: LLMMessage = {
     role: item.role,
     content: cloneContent(item.content),
     ...(item.toolCalls !== undefined
@@ -95,10 +102,25 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
       : {}),
     ...(item.toolCallId !== undefined ? { toolCallId: item.toolCallId } : {}),
     ...(item.toolName !== undefined ? { toolName: item.toolName } : {}),
-    ...(item.toolResultIntegrity !== undefined
-      ? { runtimeOnly: { toolResultIntegrity: item.toolResultIntegrity } }
+    ...(item.toolResultIntegrity !== undefined ||
+    item.agentInvocation !== undefined
+      ? {
+          runtimeOnly: {
+            ...(item.toolResultIntegrity !== undefined
+              ? { toolResultIntegrity: item.toolResultIntegrity }
+              : {}),
+            ...(item.agentInvocation !== undefined
+              ? {
+                  agentInvocation: item.agentInvocation,
+                  mergeBoundary: "user_context" as const,
+                }
+              : {}),
+          },
+        }
       : {}),
   };
+  assertLlmAgentInvocationMessage(message);
+  return message;
 }
 
 export function cloneLlmMessage(message: LLMMessage): LLMMessage {
@@ -114,6 +136,11 @@ export function cloneLlmMessage(message: LLMMessage): LLMMessage {
   };
 }
 
+function assertLlmAgentInvocationMessage(message: LLMMessage): void {
+  if (message.runtimeOnly?.agentInvocation === undefined) return;
+  assertAgentInvocationChannelMessage(message);
+}
+
 function replacementIntegrity(
   message: LLMMessage,
   representation: Exclude<ToolResultRepresentation, "original">,
@@ -121,7 +148,9 @@ function replacementIntegrity(
   const integrity = message.runtimeOnly?.toolResultIntegrity;
   if (integrity === undefined) return undefined;
   if (message.role !== "tool" || message.toolCallId === undefined) {
-    throw new Error("tool-result integrity metadata is attached to a non-tool message");
+    throw new Error(
+      "tool-result integrity metadata is attached to a non-tool message",
+    );
   }
   const verification = verifyToolResultIntegrity({
     integrity,
@@ -140,7 +169,9 @@ function replacementIntegrity(
       message.content,
     );
   }
-  throw new Error(`cannot persist transformed tool result: ${verification.failure.reason}`);
+  throw new Error(
+    `cannot persist transformed tool result: ${verification.failure.reason}`,
+  );
 }
 
 function currentIntegrity(
@@ -150,7 +181,9 @@ function currentIntegrity(
   const integrity = message.runtimeOnly?.toolResultIntegrity;
   if (integrity === undefined) return undefined;
   if (message.role !== "tool" || message.toolCallId === undefined) {
-    throw new Error("tool-result integrity metadata is attached to a non-tool message");
+    throw new Error(
+      "tool-result integrity metadata is attached to a non-tool message",
+    );
   }
   const verification = verifyToolResultIntegrity({
     integrity,
@@ -175,7 +208,25 @@ function redactResponseItemForPersistence(
   bodyMode: "authenticate" | "preserve",
 ): ResponseItem {
   const { toolResultIntegrity: _omittedIntegrity, ...unsealedItem } = item;
-  const redacted = redactSecretsInValue(unsealedItem) as ResponseItem;
+  const redacted =
+    unsealedItem.agentInvocation === undefined
+      ? (redactSecretsInValue(unsealedItem) as ResponseItem)
+      : (() => {
+          const {
+            content,
+            agentInvocation,
+            ...untrustedUnauthenticatedFields
+          } = unsealedItem;
+          return {
+            ...(redactSecretsInValue(untrustedUnauthenticatedFields) as Omit<
+              ResponseItem,
+              "content" | "agentInvocation"
+            >),
+            content,
+            agentInvocation,
+          } as ResponseItem;
+        })();
+  assertResponseAgentInvocationItem(redacted);
   if (integrity === undefined) return redacted;
   if (redacted.role !== "tool" || redacted.toolCallId === undefined) {
     throw new Error("redaction removed a durable tool-result identity");
@@ -210,6 +261,15 @@ function redactResponseItemForPersistence(
     }
   }
   return { ...redacted, toolResultIntegrity: durableIntegrity };
+}
+
+function assertResponseAgentInvocationItem(item: ResponseItem): void {
+  if (item.agentInvocation === undefined) return;
+  assertAgentInvocationChannelMessage({
+    role: item.role,
+    content: item.content,
+    runtimeOnly: { agentInvocation: item.agentInvocation },
+  });
 }
 
 function rebindRedactedIdentity(

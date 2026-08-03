@@ -7,6 +7,11 @@ import {
 } from "./event-log-reducer.js";
 import { EventLog } from "./event-log.js";
 import type { RolloutItem } from "./rollout-item.js";
+import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+} from "../contracts/agent-invocation-envelope.js";
+import { llmMessageToResponseItem } from "./message-history-conversion.js";
 
 describe("event-log-reducer (I-26 + I-27)", () => {
   test("reduces response_item into history", () => {
@@ -95,7 +100,9 @@ describe("event-log-reducer (I-26 + I-27)", () => {
   test("reduceAllWithEmit emits I-26 warning + I-27 error events", () => {
     const log = new EventLog();
     const seen: string[] = [];
-    log.subscribe((e) => seen.push(`${e.msg.type}:${(e.msg.payload as { cause?: string }).cause}`));
+    log.subscribe((e) =>
+      seen.push(`${e.msg.type}:${(e.msg.payload as { cause?: string }).cause}`),
+    );
     reduceAllWithEmit(
       [
         {
@@ -155,6 +162,50 @@ describe("event-log-reducer (I-26 + I-27)", () => {
     // u2 + a2 dropped; u1 + a1 remain.
     expect(state.history).toHaveLength(2);
     expect(state.history[0]?.content).toBe("u1");
+  });
+
+  test("thread rollback removes an invocation at its channel-zero boundary", () => {
+    const invocation = materializeAgentInvocationMessages(
+      createCsvAgentInvocationEnvelope({
+        jobId: "rollback-job",
+        itemId: "rollback-item",
+        rowIndex: 0,
+        rowSha256: `sha256:${"d".repeat(64)}`,
+        instruction: "classify",
+        row: { value: "untrusted" },
+      }),
+    ).map(llmMessageToResponseItem);
+    const { state } = reduceAll([
+      {
+        type: "response_item",
+        payload: { role: "user", content: "surviving prompt" },
+      },
+      {
+        type: "response_item",
+        payload: { role: "assistant", content: "surviving answer" },
+      },
+      ...invocation.map((payload) => ({
+        type: "response_item" as const,
+        payload,
+      })),
+      {
+        type: "response_item",
+        payload: { role: "assistant", content: "discarded answer" },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          id: "invocation-rollback",
+          seq: 1,
+          msg: { type: "thread_rolled_back", payload: { numTurns: 1 } },
+        },
+      },
+    ]);
+
+    expect(state.history).toEqual([
+      { role: "user", content: "surviving prompt" },
+      { role: "assistant", content: "surviving answer" },
+    ]);
   });
 
   test("persisted plan-mode events are replay-tolerated but do not mutate history", () => {

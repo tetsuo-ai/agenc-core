@@ -12,6 +12,33 @@ import {
 } from "./compact.js";
 import type { CompactionResult, RuntimeMessage } from "./types.js";
 import type { Session } from "../../session/session.js";
+import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+} from "../../../src/contracts/agent-invocation-envelope.js";
+
+function invocationRuntimeMessages(): RuntimeMessage[] {
+  return materializeAgentInvocationMessages(
+    createCsvAgentInvocationEnvelope({
+      jobId: "compact-job",
+      itemId: "compact-item",
+      rowIndex: 0,
+      rowSha256: `sha256:${"8".repeat(64)}`,
+      instruction: "COMPACT_TASK_MARKER",
+      row: { payload: "COMPACT_DATA_MARKER" },
+    }),
+  ).map((message) => {
+    const role = message.role === "developer" ? "system" : message.role;
+    return {
+      role,
+      originalRole: message.role,
+      type: role,
+      content: message.content,
+      message: { role, content: message.content },
+      runtimeOnly: message.runtimeOnly,
+    };
+  });
+}
 
 describe("compact service", () => {
   test("builds post-compact history in deterministic order", () => {
@@ -23,8 +50,9 @@ describe("compact service", () => {
       hookResults: [message("hook")],
     };
 
-    expect(buildPostCompactMessages(result).map((entry) => entry.content))
-      .toEqual(["boundary", "summary", "kept", "attachment", "hook"]);
+    expect(
+      buildPostCompactMessages(result).map((entry) => entry.content),
+    ).toEqual(["boundary", "summary", "kept", "attachment", "hook"]);
   });
 
   test("manual compact returns a replacement result without provider deps", async () => {
@@ -45,13 +73,43 @@ describe("compact service", () => {
 
     expect(result.type).toBe("compact");
     expect(result.displayText).toBe("Conversation compacted");
-    expect(result.compactionResult.summaryMessages[0]?.content)
-      .toContain("Inspect src/a.ts");
-    expect(result.compactionResult.messagesToKeep?.at(-1)?.content)
-      .toBe("Pending: run tests");
+    expect(result.compactionResult.summaryMessages[0]?.content).toContain(
+      "Inspect src/a.ts",
+    );
+    expect(result.compactionResult.messagesToKeep?.at(-1)?.content).toBe(
+      "Pending: run tests",
+    );
     expect(cleanup.clearReadFileState).toHaveBeenCalledOnce();
     expect(cleanup.clearProviderResponseId).toHaveBeenCalledOnce();
     expect(cleanup.resetMicrocompactState).toHaveBeenCalledOnce();
+  });
+
+  test("preserves authenticated invocation channels outside the summary", async () => {
+    const invocation = invocationRuntimeMessages();
+    const result = await compactConversation(
+      [
+        ...invocation,
+        ...Array.from({ length: 12 }, (_, index) =>
+          message(`ordinary-${index}`, index % 2 === 0 ? "assistant" : "user"),
+        ),
+      ],
+      { options: { contextWindowTokens: 200 } },
+    );
+
+    const keptInvocation = (result.messagesToKeep ?? []).filter(
+      (entry) => entry.runtimeOnly?.agentInvocation !== undefined,
+    );
+    expect(
+      keptInvocation.map(
+        (entry) => entry.runtimeOnly?.agentInvocation?.channelIndex,
+      ),
+    ).toEqual([0, 1, 2]);
+    expect(String(result.summaryMessages[0]?.content)).not.toContain(
+      "COMPACT_TASK_MARKER",
+    );
+    expect(String(result.summaryMessages[0]?.content)).not.toContain(
+      "COMPACT_DATA_MARKER",
+    );
   });
 
   test("manual compact emits one ordered progress lifecycle and clears status on cleanup failure", async () => {
@@ -92,16 +150,21 @@ describe("compact service", () => {
       messages: [message("history"), message("tail", "assistant")],
       deps: {
         createAttachments: () => [message("attachment")],
-        createHookResults: (summary) => [message(`hook:${summary.slice(0, 7)}`)],
+        createHookResults: (summary) => [
+          message(`hook:${summary.slice(0, 7)}`),
+        ],
       },
     });
 
-    expect(result.compactionResult.attachments.map((entry) => entry.content))
-      .toEqual(["attachment"]);
-    expect(result.compactionResult.hookResults[0]?.content)
-      .toContain("hook:");
-    expect(buildPostCompactMessages(result.compactionResult).map((entry) => entry.content))
-      .toContain("attachment");
+    expect(
+      result.compactionResult.attachments.map((entry) => entry.content),
+    ).toEqual(["attachment"]);
+    expect(result.compactionResult.hookResults[0]?.content).toContain("hook:");
+    expect(
+      buildPostCompactMessages(result.compactionResult).map(
+        (entry) => entry.content,
+      ),
+    ).toContain("attachment");
   });
 
   test("map-reduce summarizes an over-budget transcript in bounded chunks and strips image blocks", async () => {
@@ -158,8 +221,9 @@ describe("compact service", () => {
     }
     // Image blocks are still stripped to "[image]" — the marker survives into
     // at least one chunk rather than being dropped.
-    expect(transcripts.some((transcript) => transcript.includes("[image]")))
-      .toBe(true);
+    expect(
+      transcripts.some((transcript) => transcript.includes("[image]")),
+    ).toBe(true);
     const summaryContent = result.compactionResult.summaryMessages[0]?.content;
     expect(summaryContent).toContain(
       "This session is being continued from a previous conversation",
@@ -200,7 +264,10 @@ describe("compact service", () => {
       messages: [
         message([
           { type: "text", text: "summarize older image" },
-          { type: "image", source: { type: "url", url: "file:///tmp/old.png" } },
+          {
+            type: "image",
+            source: { type: "url", url: "file:///tmp/old.png" },
+          },
         ]),
         message("middle-1", "assistant"),
         message("middle-2"),
@@ -210,8 +277,9 @@ describe("compact service", () => {
     });
 
     expect(seen.some((payload) => payload.includes("[image]"))).toBe(true);
-    expect(result.compactionResult.messagesToKeep?.at(-1)?.content)
-      .toEqual(keptContent);
+    expect(result.compactionResult.messagesToKeep?.at(-1)?.content).toEqual(
+      keptContent,
+    );
   });
 
   test("provider-backed compaction fails closed without an admission session", async () => {
@@ -230,17 +298,37 @@ describe("compact service", () => {
   });
 
   test("preserves prefix and suffix ordering for partial compact projections", () => {
-    const messages = ["a", "b", "c", "d", "e"].map((content) => message(content));
+    const messages = ["a", "b", "c", "d", "e"].map((content) =>
+      message(content),
+    );
 
-    expect(partialCompactConversation(messages, {
-      keepPrefixCount: 2,
-      keepSuffixCount: 2,
-    }).map((entry) => entry.content)).toEqual(["a", "b", "d", "e"]);
+    expect(
+      partialCompactConversation(messages, {
+        keepPrefixCount: 2,
+        keepSuffixCount: 2,
+      }).map((entry) => entry.content),
+    ).toEqual(["a", "b", "d", "e"]);
 
-    expect(partialCompactConversation(messages, {
-      keepPrefixCount: 4,
-      keepSuffixCount: 4,
-    }).map((entry) => entry.content)).toEqual(["a", "b", "c", "d", "e"]);
+    expect(
+      partialCompactConversation(messages, {
+        keepPrefixCount: 4,
+        keepSuffixCount: 4,
+      }).map((entry) => entry.content),
+    ).toEqual(["a", "b", "c", "d", "e"]);
+  });
+
+  test("never drops invocation channels from a partial compact projection", () => {
+    const invocation = invocationRuntimeMessages();
+    const projected = partialCompactConversation(
+      [message("prefix"), ...invocation, message("suffix")],
+      { keepPrefixCount: 1, keepSuffixCount: 1 },
+    );
+
+    expect(projected.map((entry) => entry.content)).toEqual([
+      "prefix",
+      ...invocation.map((entry) => entry.content),
+      "suffix",
+    ]);
   });
 
   test("async partial compact summarizes from the selected message after kept prefix", async () => {
@@ -258,13 +346,45 @@ describe("compact service", () => {
       { direction: "from" },
     );
 
-    expect(buildPostCompactMessages(result).map((entry) => entry.content))
-      .toEqual([
-        expect.stringContaining("<compact>"),
-        "keep",
-        expect.stringContaining("recent summary"),
-      ]);
-    expect(provider.chat.mock.calls[0]?.[0][0].content).toContain("summarize me");
+    expect(
+      buildPostCompactMessages(result).map((entry) => entry.content),
+    ).toEqual([
+      expect.stringContaining("<compact>"),
+      "keep",
+      expect.stringContaining("recent summary"),
+    ]);
+    expect(provider.chat.mock.calls[0]?.[0][0].content).toContain(
+      "summarize me",
+    );
+  });
+
+  test("async partial compact moves a split to preserve an invocation group", async () => {
+    const provider = {
+      name: "test",
+      chat: vi.fn(async () => ({ content: "tail summary" })),
+    };
+    const invocation = invocationRuntimeMessages();
+    const result = await partialCompactConversationAsync(
+      [message("prefix"), ...invocation, message("tail", "assistant")],
+      2,
+      {
+        provider: provider as never,
+        admissionSession: admissionSessionFor(provider),
+      },
+      { direction: "from" },
+    );
+
+    expect(
+      (result.messagesToKeep ?? [])
+        .filter((entry) => entry.runtimeOnly?.agentInvocation !== undefined)
+        .map((entry) => entry.runtimeOnly?.agentInvocation?.channelIndex),
+    ).toEqual([0, 1, 2]);
+    expect(provider.chat.mock.calls[0]?.[0][0].content).not.toContain(
+      "COMPACT_TASK_MARKER",
+    );
+    expect(provider.chat.mock.calls[0]?.[0][0].content).not.toContain(
+      "COMPACT_DATA_MARKER",
+    );
   });
 
   test("async partial compact preserves media in kept prefix", async () => {
@@ -296,7 +416,9 @@ describe("compact service", () => {
     );
 
     expect(result.messagesToKeep?.[0]?.content).toEqual(keptContent);
-    expect(provider.chat.mock.calls[0]?.[0][0].content).toContain("summarize me");
+    expect(provider.chat.mock.calls[0]?.[0][0].content).toContain(
+      "summarize me",
+    );
   });
 
   test("async partial compact summarizes up to selected message before kept suffix", async () => {
@@ -314,13 +436,14 @@ describe("compact service", () => {
       { direction: "up_to", feedback: "keep constraints" },
     );
 
-    expect(buildPostCompactMessages(result).map((entry) => entry.content))
-      .toEqual([
-        expect.stringContaining("<compact>"),
-        expect.stringContaining("prefix summary"),
-        "selected",
-        "tail",
-      ]);
+    expect(
+      buildPostCompactMessages(result).map((entry) => entry.content),
+    ).toEqual([
+      expect.stringContaining("<compact>"),
+      expect.stringContaining("prefix summary"),
+      "selected",
+      "tail",
+    ]);
     expect(provider.chat.mock.calls[0]?.[0][0].content).toContain("older");
     expect(provider.chat.mock.calls[0]?.[0][0].content).toContain(
       "Additional Instructions:\nkeep constraints",
@@ -340,13 +463,14 @@ describe("compact service", () => {
     );
 
     expect(provider.chat).not.toHaveBeenCalled();
-    expect(buildPostCompactMessages(result).map((entry) => entry.content))
-      .toEqual([
-        expect.stringContaining("<compact>"),
-        expect.stringContaining("No earlier messages to summarize."),
-        "selected",
-        "tail",
-      ]);
+    expect(
+      buildPostCompactMessages(result).map((entry) => entry.content),
+    ).toEqual([
+      expect.stringContaining("<compact>"),
+      expect.stringContaining("No earlier messages to summarize."),
+      "selected",
+      "tail",
+    ]);
   });
 
   test("async partial compact rejects an aborted signal", async () => {
@@ -537,7 +661,10 @@ function admissionSessionFor(provider: unknown): Session {
   } as unknown as Session;
 }
 
-function toolResultMessage(toolCallId: string, content: string): RuntimeMessage {
+function toolResultMessage(
+  toolCallId: string,
+  content: string,
+): RuntimeMessage {
   return {
     role: "tool",
     type: "tool",

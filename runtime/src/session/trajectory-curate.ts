@@ -58,6 +58,10 @@ import {
   type RolloutItem,
 } from "./rollout-item.js";
 import { isUserTurnBoundary } from "./rollout-reconstruction.js";
+import {
+  agentInvocationGroupEndIndex,
+  agentInvocationGroupStartIndex,
+} from "../contracts/agent-invocation-envelope.js";
 import { TRAJECTORY_EXPORT_SCHEMA_VERSION } from "./trajectory-export.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -331,13 +335,11 @@ export function toChatMessage(item: ResponseItem): CuratedChatMessage {
     content: responseItemText(item.content),
     ...(item.toolCalls !== undefined && item.toolCalls.length > 0
       ? {
-          tool_calls: item.toolCalls.map(
-            (call): CuratedChatToolCall => ({
-              id: call.id,
-              type: "function",
-              function: { name: call.name, arguments: call.arguments ?? "" },
-            }),
-          ),
+          tool_calls: item.toolCalls.map((call): CuratedChatToolCall => ({
+            id: call.id,
+            type: "function",
+            function: { name: call.name, arguments: call.arguments ?? "" },
+          })),
         }
       : {}),
     ...(item.toolCallId !== undefined ? { tool_call_id: item.toolCallId } : {}),
@@ -406,7 +408,9 @@ function firstUserBoundaryIndex(
 ): number {
   for (let i = from; i < history.length; i += 1) {
     const item = history[i];
-    if (item && isUserTurnBoundary(item)) return i;
+    if (item && isUserTurnBoundary(item)) {
+      return agentInvocationGroupStartIndex(item, i);
+    }
   }
   return -1;
 }
@@ -420,7 +424,12 @@ function continuationAfter(
   promptIndex: number,
 ): ResponseItem[] {
   const out: ResponseItem[] = [];
-  for (let i = promptIndex + 1; i < history.length; i += 1) {
+  const prompt = history[promptIndex];
+  const continuationStart =
+    prompt === undefined
+      ? promptIndex + 1
+      : agentInvocationGroupEndIndex(prompt, promptIndex) + 1;
+  for (let i = continuationStart; i < history.length; i += 1) {
     const item = history[i];
     if (!item) continue;
     if (isUserTurnBoundary(item)) break;

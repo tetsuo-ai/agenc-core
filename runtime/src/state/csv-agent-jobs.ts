@@ -5,6 +5,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   CSV_AGENT_JOB_ITEM_STATUSES,
@@ -953,6 +954,8 @@ interface StagedImportRecoveryRow {
   readonly import_lease_expires_at: number;
   readonly total_items: number;
   readonly staging_bytes: number;
+  readonly created_at: number;
+  readonly recovery_rank: number;
 }
 
 interface CsvImportRecoveryClaim {
@@ -974,6 +977,8 @@ interface CsvOutputIntentRecoveryRow {
   readonly owner_pid: number;
   readonly owner_boot_id: string | null;
   readonly owner_process_start: string | null;
+  readonly created_at: number;
+  readonly recovery_rank: number;
 }
 
 export class CsvStorageQuotaError extends Error {
@@ -1006,14 +1011,39 @@ export type CsvProcessObservation =
 
 export interface CsvProcessIdentityProbe {
   readonly current: CsvProcessIdentity;
-  inspect(pid: number): CsvProcessObservation;
+  inspect(
+    pid: number,
+    signal?: AbortSignal,
+  ): CsvProcessObservation | Promise<CsvProcessObservation>;
 }
 
-interface CsvProcessIdentityProbeOptions {
+const CSV_PROCESS_START_QUERY_TIMEOUT_MS = 2_000;
+const CSV_PROCESS_START_QUERY_MAX_BUFFER_BYTES = 64 * 1_024;
+export const CSV_RECOVERY_MAX_PROCESS_PROBES_PER_PASS = 8;
+export const CSV_RECOVERY_PROCESS_PROBE_BUDGET_MS = 2_500;
+export const CSV_RECOVERY_CANDIDATE_PAGE_SIZE = 16;
+const MACOS_PROCESS_QUERY_EXECUTABLE = "/bin/ps";
+const WINDOWS_PROCESS_QUERY_EXECUTABLE = "powershell.exe";
+const MACOS_PROCESS_START_PREFIX = "darwin-lstart-seconds:";
+const WINDOWS_PROCESS_START_PREFIX = "win32-creation-time:";
+
+type CsvProcessStartInspector = (
+  platform: NodeJS.Platform,
+  pid: number,
+  signal?: AbortSignal,
+) => string | null | undefined | Promise<string | null | undefined>;
+
+export interface CsvProcessIdentityProbeOptions {
   readonly platform?: NodeJS.Platform;
   readonly pid?: number;
   readonly readTextFile?: (path: string) => string;
   readonly signalProcess?: (pid: number) => void;
+  readonly signal?: AbortSignal;
+  /**
+   * Returns a stable OS process-start token, null when the PID disappeared,
+   * or undefined when the platform query cannot establish identity.
+   */
+  readonly inspectProcessStart?: CsvProcessStartInspector;
 }
 
 function signalObservation(
@@ -1056,9 +1086,110 @@ function linuxProcessObservation(
   }
 }
 
-export function createCsvProcessIdentityProbe(
+async function execProcessIdentityQuery(
+  executable: string,
+  args: readonly string[],
+  options: {
+    readonly signal?: AbortSignal;
+    readonly windowsHide?: boolean;
+  },
+): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    execFile(
+      executable,
+      [...args],
+      {
+        encoding: "utf8",
+        timeout: CSV_PROCESS_START_QUERY_TIMEOUT_MS,
+        maxBuffer: CSV_PROCESS_START_QUERY_MAX_BUFFER_BYTES,
+        windowsHide: options.windowsHide,
+        signal: options.signal,
+      },
+      (error, stdout) => {
+        if (error !== null) {
+          reject(error);
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
+}
+
+async function defaultProcessStartInspector(
+  platform: NodeJS.Platform,
+  pid: number,
+  signal?: AbortSignal,
+): Promise<string | null | undefined> {
+  const pidText = String(pid);
+  try {
+    if (platform === "darwin") {
+      const output = (
+        await execProcessIdentityQuery(
+          MACOS_PROCESS_QUERY_EXECUTABLE,
+          ["-o", "lstart=", "-p", pidText],
+          { signal },
+        )
+      ).trim();
+      return output.length > 0 ? output : null;
+    }
+    if (platform === "win32") {
+      const script = [
+        `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pidText}' -ErrorAction Stop`,
+        "if ($null -eq $process) { exit 3 }",
+        "[Console]::Out.Write($process.CreationDate.ToUniversalTime().ToString('O'))",
+      ].join("; ");
+      const output = (
+        await execProcessIdentityQuery(
+          WINDOWS_PROCESS_QUERY_EXECUTABLE,
+          ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+          { signal, windowsHide: true },
+        )
+      ).trim();
+      return output.length > 0 ? output : null;
+    }
+  } catch {
+    if (signal?.aborted === true) throw signal.reason;
+    return undefined;
+  }
+  return undefined;
+}
+
+async function portableProcessObservation(
+  platform: NodeJS.Platform,
+  pid: number,
+  signalProcess: (pid: number) => void,
+  inspectProcessStart: CsvProcessStartInspector,
+  signal?: AbortSignal,
+): Promise<CsvProcessObservation> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return { kind: "unknown" };
+  const liveness = signalObservation(pid, signalProcess);
+  if (liveness.kind !== "alive") return liveness;
+  signal?.throwIfAborted();
+  const processStart = await inspectProcessStart(platform, pid, signal);
+  if (typeof processStart === "string" && processStart.length > 0) {
+    return {
+      kind: "alive",
+      processStart:
+        platform === "darwin"
+          ? `${MACOS_PROCESS_START_PREFIX}${processStart}`
+          : platform === "win32"
+            ? `${WINDOWS_PROCESS_START_PREFIX}${processStart}`
+            : processStart,
+    };
+  }
+  if (processStart === null) {
+    const secondObservation = signalObservation(pid, signalProcess);
+    return secondObservation.kind === "dead"
+      ? secondObservation
+      : { kind: "unknown" };
+  }
+  return { kind: "unknown" };
+}
+
+export async function createCsvProcessIdentityProbe(
   options: CsvProcessIdentityProbeOptions = {},
-): CsvProcessIdentityProbe {
+): Promise<CsvProcessIdentityProbe> {
   const platform = options.platform ?? process.platform;
   const pid = options.pid ?? process.pid;
   const readTextFile =
@@ -1066,6 +1197,8 @@ export function createCsvProcessIdentityProbe(
   const signalProcess =
     options.signalProcess ??
     ((targetPid: number) => process.kill(targetPid, 0));
+  const inspectProcessStart =
+    options.inspectProcessStart ?? defaultProcessStartInspector;
   let bootId: string | undefined;
   if (platform === "linux") {
     try {
@@ -1077,7 +1210,13 @@ export function createCsvProcessIdentityProbe(
   const currentObservation =
     platform === "linux"
       ? linuxProcessObservation(pid, readTextFile, signalProcess)
-      : signalObservation(pid, signalProcess);
+      : await portableProcessObservation(
+          platform,
+          pid,
+          signalProcess,
+          inspectProcessStart,
+          options.signal,
+        );
   const current: CsvProcessIdentity = {
     pid,
     ...(bootId !== undefined && bootId.length > 0 ? { bootId } : {}),
@@ -1088,10 +1227,16 @@ export function createCsvProcessIdentityProbe(
   };
   return {
     current,
-    inspect(targetPid) {
+    inspect(targetPid, signal) {
       return platform === "linux"
         ? linuxProcessObservation(targetPid, readTextFile, signalProcess)
-        : signalObservation(targetPid, signalProcess);
+        : portableProcessObservation(
+            platform,
+            targetPid,
+            signalProcess,
+            inspectProcessStart,
+            signal,
+          );
     },
   };
 }
@@ -1100,21 +1245,88 @@ export interface CsvAgentJobsRepositoryOptions {
   readonly processIdentityProbe?: CsvProcessIdentityProbe;
 }
 
+export interface CsvAgentJobsRepositoryOpenOptions extends CsvAgentJobsRepositoryOptions {
+  readonly signal?: AbortSignal;
+}
+
 export const CSV_RECOVERY_DEFERRED_OWNER_ALIVE =
   "CSV_RECOVERY_DEFERRED_OWNER_ALIVE" as const;
 export const CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_UNPROVEN =
   "CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_UNPROVEN" as const;
 export const CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE =
   "CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE" as const;
+export const CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_COARSE =
+  "CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_COARSE" as const;
 
 type CsvRecoveryDeferralCode =
   | typeof CSV_RECOVERY_DEFERRED_OWNER_ALIVE
   | typeof CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_UNPROVEN
-  | typeof CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE;
+  | typeof CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE
+  | typeof CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_COARSE;
 
 type CsvOwnerDeathProof =
   | { readonly kind: "proven_dead" }
   | { readonly kind: "deferred"; readonly code: CsvRecoveryDeferralCode };
+
+interface CsvRecoveryProbeBudget {
+  readonly startedAt: number;
+  probes: number;
+}
+
+function createRecoveryProbeBudget(): CsvRecoveryProbeBudget {
+  return { startedAt: Date.now(), probes: 0 };
+}
+
+function reserveRecoveryProcessProbe(budget: CsvRecoveryProbeBudget): boolean {
+  if (budget.probes >= CSV_RECOVERY_MAX_PROCESS_PROBES_PER_PASS) return false;
+  const elapsed = Date.now() - budget.startedAt;
+  // A fresh synchronous OS query may consume its entire per-query timeout.
+  // Do not start one unless the aggregate pass still has that much headroom.
+  if (
+    elapsed + CSV_PROCESS_START_QUERY_TIMEOUT_MS >
+    CSV_RECOVERY_PROCESS_PROBE_BUDGET_MS
+  ) {
+    return false;
+  }
+  budget.probes += 1;
+  return true;
+}
+
+function processStartTokensMatch(recorded: string, observed: string): boolean {
+  if (recorded === observed) return true;
+  if (observed.startsWith(MACOS_PROCESS_START_PREFIX)) {
+    return recorded === observed.slice(MACOS_PROCESS_START_PREFIX.length);
+  }
+  if (recorded.startsWith(MACOS_PROCESS_START_PREFIX)) {
+    return observed === recorded.slice(MACOS_PROCESS_START_PREFIX.length);
+  }
+  if (observed.startsWith(WINDOWS_PROCESS_START_PREFIX)) {
+    return recorded === observed.slice(WINDOWS_PROCESS_START_PREFIX.length);
+  }
+  if (recorded.startsWith(WINDOWS_PROCESS_START_PREFIX)) {
+    return observed === recorded.slice(WINDOWS_PROCESS_START_PREFIX.length);
+  }
+  return false;
+}
+
+function isCoarseProcessStartToken(token: string): boolean {
+  return token.startsWith(MACOS_PROCESS_START_PREFIX);
+}
+
+async function yieldRecoverySlice(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearImmediate(handle);
+      reject(signal?.reason ?? new Error("CSV recovery aborted"));
+    };
+    const handle = setImmediate(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    });
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 function serializeCsvRow(
   row: Readonly<Record<string, unknown>>,
@@ -1165,16 +1377,47 @@ function assertQuota(
 export class CsvAgentJobsRepository {
   private readonly processIdentityProbe: CsvProcessIdentityProbe;
   private readonly ownerIdentity: CsvProcessIdentity;
+  private importRecoveryCursor:
+    | {
+        readonly recoveryRank: number;
+        readonly createdAt: number;
+        readonly importId: string;
+      }
+    | undefined;
+  private readonly outputRecoveryCursors = new Map<
+    string,
+    {
+      readonly recoveryRank: number;
+      readonly createdAt: number;
+      readonly intentId: string;
+    }
+  >();
 
   constructor(
     private readonly driver: StateSqliteDriver,
     options: CsvAgentJobsRepositoryOptions = {},
   ) {
-    this.processIdentityProbe =
-      options.processIdentityProbe ?? createCsvProcessIdentityProbe();
+    this.processIdentityProbe = options.processIdentityProbe ?? {
+      current: { pid: process.pid },
+      inspect: async () => ({ kind: "unknown" }),
+    };
     this.ownerIdentity = this.processIdentityProbe.current;
-    this.recoverAbandonedImports();
     this.resumeInterruptedJobGarbageCollection();
+  }
+
+  static async open(
+    driver: StateSqliteDriver,
+    options: CsvAgentJobsRepositoryOpenOptions = {},
+  ): Promise<CsvAgentJobsRepository> {
+    options.signal?.throwIfAborted();
+    const processIdentityProbe =
+      options.processIdentityProbe ??
+      (await createCsvProcessIdentityProbe({ signal: options.signal }));
+    const repository = new CsvAgentJobsRepository(driver, {
+      processIdentityProbe,
+    });
+    await repository.recoverAbandonedImports({ signal: options.signal });
+    return repository;
   }
 
   private getQuota(): CsvStorageQuotaRow {
@@ -1631,32 +1874,92 @@ export class CsvAgentJobsRepository {
     return row;
   }
 
-  recoverAbandonedImports(): number {
+  async recoverAbandonedImports(
+    options: {
+      readonly signal?: AbortSignal;
+    } = {},
+  ): Promise<number> {
+    let recovered = 0;
+    do {
+      options.signal?.throwIfAborted();
+      recovered += await this.recoverAbandonedImportSlice(options.signal);
+      if (this.importRecoveryCursor !== undefined) {
+        await yieldRecoverySlice(options.signal);
+      }
+    } while (this.importRecoveryCursor !== undefined);
+    return recovered;
+  }
+
+  private async recoverAbandonedImportSlice(
+    signal?: AbortSignal,
+  ): Promise<number> {
+    const cursor = this.importRecoveryCursor;
     const candidates = this.driver
-      .prepareState<[number], StagedImportRecoveryRow>(
+      .prepareState<
+        [number, number | null, number, number, number, number, string, number],
+        StagedImportRecoveryRow
+      >(
         `SELECT id, import_id, import_lease_owner, import_lease_generation,
                 import_owner_pid, import_owner_boot_id,
                 import_owner_process_start, import_lease_expires_at,
-                total_items, staging_bytes
+                total_items, staging_bytes, created_at,
+                CASE WHEN last_error IS NULL THEN 0 ELSE 1 END AS recovery_rank
          FROM csv_agent_jobs
          WHERE import_state IN ('staging', 'recovering')
            AND import_lease_owner IS NOT NULL
            AND import_lease_generation IS NOT NULL
            AND import_owner_pid IS NOT NULL
            AND import_lease_expires_at <= ?
-         ORDER BY created_at ASC, import_id ASC`,
+           AND (
+             ? IS NULL OR
+             CASE WHEN last_error IS NULL THEN 0 ELSE 1 END > ? OR
+             (
+               CASE WHEN last_error IS NULL THEN 0 ELSE 1 END = ? AND
+               (created_at > ? OR (created_at = ? AND import_id > ?))
+             )
+           )
+         ORDER BY recovery_rank ASC, created_at ASC, import_id ASC LIMIT ?`,
       )
-      .all(nowSeconds());
+      .all(
+        nowSeconds(),
+        cursor?.recoveryRank ?? null,
+        cursor?.recoveryRank ?? 0,
+        cursor?.recoveryRank ?? 0,
+        cursor?.createdAt ?? 0,
+        cursor?.createdAt ?? 0,
+        cursor?.importId ?? "",
+        CSV_RECOVERY_CANDIDATE_PAGE_SIZE,
+      );
+    const probeBudget = createRecoveryProbeBudget();
     let recovered = 0;
+    let consumedPage = true;
     for (const candidate of candidates) {
       if (LIVE_CSV_IMPORT_GENERATIONS.has(candidate.import_lease_generation)) {
+        this.importRecoveryCursor = {
+          recoveryRank: candidate.recovery_rank,
+          createdAt: candidate.created_at,
+          importId: candidate.import_id,
+        };
         continue;
       }
-      const ownerProof = this.recordedOwnerDeathProof({
-        pid: candidate.import_owner_pid,
-        bootId: candidate.import_owner_boot_id,
-        processStart: candidate.import_owner_process_start,
-      });
+      if (!reserveRecoveryProcessProbe(probeBudget)) {
+        consumedPage = false;
+        break;
+      }
+      const ownerProof = await this.recordedOwnerDeathProof(
+        {
+          pid: candidate.import_owner_pid,
+          bootId: candidate.import_owner_boot_id,
+          processStart: candidate.import_owner_process_start,
+        },
+        signal,
+      );
+      signal?.throwIfAborted();
+      this.importRecoveryCursor = {
+        recoveryRank: candidate.recovery_rank,
+        createdAt: candidate.created_at,
+        importId: candidate.import_id,
+      };
       if (ownerProof.kind === "deferred") {
         this.recordImportRecoveryDeferral(candidate, ownerProof.code);
         continue;
@@ -1671,6 +1974,9 @@ export class CsvAgentJobsRepository {
       LIVE_CSV_IMPORT_GENERATIONS.delete(candidate.import_lease_generation);
       this.cleanupAbortedImport(candidate.id, candidate.import_id);
       recovered += 1;
+    }
+    if (consumedPage && candidates.length < CSV_RECOVERY_CANDIDATE_PAGE_SIZE) {
+      this.importRecoveryCursor = undefined;
     }
     return recovered;
   }
@@ -2464,39 +2770,91 @@ export class CsvAgentJobsRepository {
     }
   }
 
-  claimCsvOutputRecoveryIntents(input: {
+  async claimCsvOutputRecoveryIntents(input: {
     readonly rootPath: string;
     readonly limit: number;
-  }): ReadonlyArray<CsvOutputRecoveryIntent> {
+    readonly signal?: AbortSignal;
+  }): Promise<{
+    readonly intents: ReadonlyArray<CsvOutputRecoveryIntent>;
+    readonly hasMore: boolean;
+  }> {
     if (!Number.isSafeInteger(input.limit) || input.limit <= 0) {
       throw new Error("CSV output recovery limit must be a positive integer");
     }
+    const cursor = this.outputRecoveryCursors.get(input.rootPath);
     const candidates = this.driver
-      .prepareState<[string, number], CsvOutputIntentRecoveryRow>(
+      .prepareState<
+        [string, number | null, number, number, number, number, string, number],
+        CsvOutputIntentRecoveryRow
+      >(
         `SELECT intent_id, target_path, temporary_path, temporary_dev,
                 temporary_ino, state, recovery_prior_state,
                 owner_generation, owner_pid,
-                owner_boot_id, owner_process_start
+                owner_boot_id, owner_process_start, created_at,
+                CASE WHEN last_error IS NULL THEN 0 ELSE 1 END AS recovery_rank
          FROM csv_output_intents
          WHERE root_path = ?
            AND state IN ('writing', 'flushed', 'published', 'abandoned', 'recovering')
-         ORDER BY created_at ASC, intent_id ASC LIMIT ?`,
+           AND (
+             ? IS NULL OR
+             CASE WHEN last_error IS NULL THEN 0 ELSE 1 END > ? OR
+             (
+               CASE WHEN last_error IS NULL THEN 0 ELSE 1 END = ? AND
+               (created_at > ? OR (created_at = ? AND intent_id > ?))
+             )
+           )
+         ORDER BY recovery_rank ASC, created_at ASC, intent_id ASC LIMIT ?`,
       )
-      .all(input.rootPath, CSV_MAX_OUTPUT_STAGING_FILES_GLOBAL);
+      .all(
+        input.rootPath,
+        cursor?.recoveryRank ?? null,
+        cursor?.recoveryRank ?? 0,
+        cursor?.recoveryRank ?? 0,
+        cursor?.createdAt ?? 0,
+        cursor?.createdAt ?? 0,
+        cursor?.intentId ?? "",
+        CSV_RECOVERY_CANDIDATE_PAGE_SIZE,
+      );
+    const probeBudget = createRecoveryProbeBudget();
     const claimed: CsvOutputRecoveryIntent[] = [];
+    let consumedPage = true;
     for (const candidate of candidates) {
-      if (claimed.length >= input.limit) break;
+      if (claimed.length >= input.limit) {
+        consumedPage = false;
+        break;
+      }
       if (LIVE_CSV_OUTPUT_GENERATIONS.has(candidate.owner_generation)) {
+        this.outputRecoveryCursors.set(input.rootPath, {
+          recoveryRank: candidate.recovery_rank,
+          createdAt: candidate.created_at,
+          intentId: candidate.intent_id,
+        });
         continue;
+      }
+      if (
+        candidate.state !== "abandoned" &&
+        !reserveRecoveryProcessProbe(probeBudget)
+      ) {
+        consumedPage = false;
+        break;
       }
       const ownerProof =
         candidate.state === "abandoned"
           ? ({ kind: "proven_dead" } as const)
-          : this.recordedOwnerDeathProof({
-              pid: candidate.owner_pid,
-              bootId: candidate.owner_boot_id,
-              processStart: candidate.owner_process_start,
-            });
+          : await this.recordedOwnerDeathProof(
+              {
+                pid: candidate.owner_pid,
+                bootId: candidate.owner_boot_id,
+                processStart: candidate.owner_process_start,
+              },
+              input.signal,
+            );
+      input.signal?.throwIfAborted();
+      this.outputRecoveryCursors.set(input.rootPath, {
+        recoveryRank: candidate.recovery_rank,
+        createdAt: candidate.created_at,
+        intentId: candidate.intent_id,
+      });
       if (ownerProof.kind === "deferred") {
         this.recordOutputRecoveryDeferral(candidate, ownerProof.code);
         continue;
@@ -2541,7 +2899,13 @@ export class CsvAgentJobsRepository {
         temporaryIno: candidate.temporary_ino,
       });
     }
-    return claimed;
+    if (consumedPage && candidates.length < CSV_RECOVERY_CANDIDATE_PAGE_SIZE) {
+      this.outputRecoveryCursors.delete(input.rootPath);
+    }
+    return {
+      intents: claimed,
+      hasMore: this.outputRecoveryCursors.has(input.rootPath),
+    };
   }
 
   finishCsvOutputIntentRecovery(input: {
@@ -2681,11 +3045,14 @@ export class CsvAgentJobsRepository {
       );
   }
 
-  private recordedOwnerDeathProof(owner: {
-    readonly pid: number;
-    readonly bootId: string | null;
-    readonly processStart: string | null;
-  }): CsvOwnerDeathProof {
+  private async recordedOwnerDeathProof(
+    owner: {
+      readonly pid: number;
+      readonly bootId: string | null;
+      readonly processStart: string | null;
+    },
+    signal?: AbortSignal,
+  ): Promise<CsvOwnerDeathProof> {
     if (owner.pid === this.ownerIdentity.pid) return { kind: "proven_dead" };
     if (
       owner.bootId !== null &&
@@ -2694,7 +3061,9 @@ export class CsvAgentJobsRepository {
     ) {
       return { kind: "proven_dead" };
     }
-    const observed = this.processIdentityProbe.inspect(owner.pid);
+    signal?.throwIfAborted();
+    const observed = await this.processIdentityProbe.inspect(owner.pid, signal);
+    signal?.throwIfAborted();
     if (observed.kind === "dead") return { kind: "proven_dead" };
     if (observed.kind === "unknown") {
       return {
@@ -2702,17 +3071,25 @@ export class CsvAgentJobsRepository {
         code: CSV_RECOVERY_DEFERRED_PROCESS_PROBE_UNAVAILABLE,
       };
     }
-    if (
-      owner.processStart !== null &&
-      observed.processStart !== undefined &&
-      owner.processStart !== observed.processStart
-    ) {
-      return { kind: "proven_dead" };
-    }
     if (owner.processStart === null || observed.processStart === undefined) {
       return {
         kind: "deferred",
         code: CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_UNPROVEN,
+      };
+    }
+    if (!processStartTokensMatch(owner.processStart, observed.processStart)) {
+      return { kind: "proven_dead" };
+    }
+    if (
+      isCoarseProcessStartToken(owner.processStart) ||
+      isCoarseProcessStartToken(observed.processStart)
+    ) {
+      // `ps lstart` is only second-resolution on macOS. Equal tokens cannot
+      // distinguish the original owner from a PID reused within that second,
+      // so recovery remains fenced instead of treating the identity as exact.
+      return {
+        kind: "deferred",
+        code: CSV_RECOVERY_DEFERRED_PROCESS_IDENTITY_COARSE,
       };
     }
     return { kind: "deferred", code: CSV_RECOVERY_DEFERRED_OWNER_ALIVE };

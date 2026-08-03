@@ -28,6 +28,11 @@ import {
 } from "../../src/session/rollout-item.js";
 import { createToolResultIntegrity } from "../../src/session/tool-result-integrity.js";
 import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+} from "../../src/contracts/agent-invocation-envelope.js";
+import { llmMessageToResponseItem } from "../../src/session/message-history-conversion.js";
+import {
   openStateDatabases,
   type StateSqliteDriver,
 } from "../../src/state/sqlite-driver.js";
@@ -243,6 +248,70 @@ describe("durable checkpoint v2 reader", () => {
         sourceKey: "fixture-malformed-response",
       }),
     ).toMatchObject({
+      status: "invalid",
+      failure: { code: "checkpoint_response_shape_invalid" },
+    });
+  });
+
+  it("authenticates three authority channels and fails closed across resume mutations", () => {
+    const envelope = createCsvAgentInvocationEnvelope({
+      jobId: "checkpoint-job",
+      itemId: "checkpoint-item",
+      rowIndex: 3,
+      rowSha256: `sha256:${"b".repeat(64)}`,
+      instruction: "Classify the exact row.",
+      row: { payload: "untrusted" },
+    });
+    const history = materializeAgentInvocationMessages(envelope).map(
+      llmMessageToResponseItem,
+    );
+    expect(
+      history.every((item) => isCanonicalRolloutPayload("response_item", item)),
+    ).toBe(true);
+    const checkpoint = checkpointForHistory(history);
+    const validate = (messages: readonly ResponseItem[], projectionId: string) =>
+      validateCheckpointPrefixV2({
+        checkpoint,
+        expectedRunId: "checkpoint-authority-run",
+        messages,
+        projection,
+        projectionId,
+        sourceKey: projectionId,
+      });
+
+    expect(validate(history, "authority-valid")).toMatchObject({
+      status: "valid",
+    });
+
+    const unsupportedReader = structuredClone(history);
+    const unsupportedMetadata = unsupportedReader[0]!
+      .agentInvocation as unknown as Record<string, unknown>;
+    unsupportedMetadata.minimumReaderVersion = 2;
+    expect(validate(unsupportedReader, "authority-future-reader")).toMatchObject({
+      status: "invalid",
+      failure: { code: "checkpoint_response_shape_invalid" },
+    });
+
+    const incomplete = structuredClone(history);
+    incomplete[1] = { role: "user", content: "ordinary history" };
+    expect(validate(incomplete, "authority-incomplete")).toMatchObject({
+      status: "invalid",
+      failure: { code: "agent_invocation_integrity_failure" },
+    });
+
+    const metadataStripped = structuredClone(history);
+    delete (metadataStripped[2] as { agentInvocation?: unknown }).agentInvocation;
+    expect(validate(metadataStripped, "authority-metadata-stripped")).toMatchObject({
+      status: "invalid",
+      failure: { code: "agent_invocation_integrity_failure" },
+    });
+
+    const contentBitFlip = structuredClone(history);
+    contentBitFlip[2] = {
+      ...contentBitFlip[2]!,
+      content: `${String(contentBitFlip[2]!.content)} `,
+    };
+    expect(validate(contentBitFlip, "authority-content-bit-flip")).toMatchObject({
       status: "invalid",
       failure: { code: "checkpoint_response_shape_invalid" },
     });

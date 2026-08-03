@@ -199,14 +199,31 @@ async function compactConversationImpl(
   // adjustment the kept suffix is provider-invalid (every openai-
   // compatible endpoint 400s on an orphaned tool message).
   const candidateSplit = Math.max(0, summaryInputMessages.length - keepCount);
-  const splitIndex = resolveAtomicSliceIndex(
+  const toolPairSafeSplitIndex = resolveAtomicSliceIndex(
     summaryInputMessages,
     candidateSplit,
   );
-  const messagesToSummarize = summaryInputMessages.slice(0, splitIndex);
-  const messagesToKeep = messages.slice(splitIndex);
+  const splitIndex = moveSplitBeforeAgentInvocation(
+    summaryInputMessages,
+    toolPairSafeSplitIndex,
+  );
+  const messagesToSummarize = summaryInputMessages
+    .slice(0, splitIndex)
+    .filter((message) => !isAgentInvocationMessage(message));
+  const protectedInvocationMessages = messages
+    .slice(0, splitIndex)
+    .filter(isAgentInvocationMessage);
+  const messagesToKeep = [
+    ...protectedInvocationMessages,
+    ...messages.slice(splitIndex),
+  ];
+  const compactableSummaryInput = summaryInputMessages.filter(
+    (message) => !isAgentInvocationMessage(message),
+  );
   const summary = await summarizeMessages(
-    messagesToSummarize.length > 0 ? messagesToSummarize : summaryInputMessages,
+    messagesToSummarize.length > 0
+      ? messagesToSummarize
+      : compactableSummaryInput,
     context,
     customInstructions,
   );
@@ -258,11 +275,21 @@ export function partialCompactConversation(
     readonly keepSuffixCount?: number;
   } = {},
 ): RuntimeMessage[] {
-  const keepPrefixCount = Math.max(0, options.keepPrefixCount ?? 0);
+  const keepPrefixCount = moveSplitBeforeAgentInvocation(
+    messages,
+    Math.max(0, options.keepPrefixCount ?? 0),
+  );
   const keepSuffixCount = Math.max(0, options.keepSuffixCount ?? 0);
-  const prefix = messages.slice(0, keepPrefixCount);
-  const suffixStart = Math.max(keepPrefixCount, messages.length - keepSuffixCount);
-  return [...prefix, ...messages.slice(suffixStart)];
+  const suffixStart = moveSplitBeforeAgentInvocation(
+    messages,
+    Math.max(keepPrefixCount, messages.length - keepSuffixCount),
+  );
+  return messages.filter(
+    (message, index) =>
+      index < keepPrefixCount ||
+      index >= suffixStart ||
+      isAgentInvocationMessage(message),
+  );
 }
 
 export async function partialCompactConversationAsync(
@@ -284,14 +311,30 @@ export async function partialCompactConversationAsync(
     summaryInputMessages,
     context,
   );
-  const messagesToSummarize =
+  const selectedBoundary =
     options.direction === "up_to"
-      ? summaryInputMessages.slice(0, selectedIndex)
-      : summaryInputMessages.slice(selectedIndex);
+      ? moveSplitBeforeAgentInvocation(messages, selectedIndex)
+      : moveSplitAfterAgentInvocation(messages, selectedIndex);
+  const candidateMessagesToSummarize =
+    options.direction === "up_to"
+      ? summaryInputMessages.slice(0, selectedBoundary)
+      : summaryInputMessages.slice(selectedBoundary);
+  const messagesToSummarize = candidateMessagesToSummarize.filter(
+    (message) => !isAgentInvocationMessage(message),
+  );
+  const protectedInvocationMessages = (
+    options.direction === "up_to"
+      ? messages.slice(0, selectedBoundary)
+      : messages.slice(selectedBoundary)
+  ).filter(isAgentInvocationMessage);
+  const ordinarilyKeptMessages =
+    options.direction === "up_to"
+      ? messages.slice(selectedBoundary)
+      : messages.slice(0, selectedBoundary);
   const messagesToKeep =
     options.direction === "up_to"
-      ? messages.slice(selectedIndex)
-      : messages.slice(0, selectedIndex);
+      ? [...protectedInvocationMessages, ...ordinarilyKeptMessages]
+      : [...ordinarilyKeptMessages, ...protectedInvocationMessages];
   const hasMessagesToSummarize = messagesToSummarize.length > 0;
   const summary = hasMessagesToSummarize
     ? await summarizeMessagesWithPrompt(
@@ -608,6 +651,35 @@ function stripImagesFromMessages(
       },
     };
   });
+}
+
+function isAgentInvocationMessage(message: RuntimeMessage): boolean {
+  return message.runtimeOnly?.agentInvocation !== undefined;
+}
+
+/** Move a raw split to the beginning of a three-channel invocation group. */
+export function moveSplitBeforeAgentInvocation(
+  messages: readonly RuntimeMessage[],
+  splitIndex: number,
+): number {
+  const clamped = Math.max(0, Math.min(messages.length, splitIndex));
+  const channel = messages[clamped]?.runtimeOnly?.agentInvocation;
+  if (channel === undefined || channel.channelIndex === 0) return clamped;
+  return Math.max(0, clamped - channel.channelIndex);
+}
+
+/** Move a raw split to immediately after a three-channel invocation group. */
+export function moveSplitAfterAgentInvocation(
+  messages: readonly RuntimeMessage[],
+  splitIndex: number,
+): number {
+  const clamped = Math.max(0, Math.min(messages.length, splitIndex));
+  const channel = messages[clamped]?.runtimeOnly?.agentInvocation;
+  if (channel === undefined) return clamped;
+  return Math.min(
+    messages.length,
+    clamped + channel.channelCount - channel.channelIndex,
+  );
 }
 
 function stripMediaContent(content: unknown): unknown {

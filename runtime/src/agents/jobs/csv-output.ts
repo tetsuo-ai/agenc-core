@@ -64,7 +64,11 @@ export interface CsvOutputIntentStore {
   claimCsvOutputRecoveryIntents(input: {
     readonly rootPath: string;
     readonly limit: number;
-  }): ReadonlyArray<CsvOutputRecoveryIntent>;
+    readonly signal?: AbortSignal;
+  }): Promise<{
+    readonly intents: ReadonlyArray<CsvOutputRecoveryIntent>;
+    readonly hasMore: boolean;
+  }>;
   finishCsvOutputIntentRecovery(input: {
     readonly intentId: string;
     readonly ownerGeneration: string;
@@ -187,7 +191,9 @@ export async function writeCsvOutput(
   }
 
   if (options.intentStore !== undefined) {
-    await recoverCsvOutputIntents(options.capability, options.intentStore);
+    await recoverCsvOutputIntents(options.capability, options.intentStore, {
+      signal: options.signal,
+    });
   }
 
   const target = resolveOutputTarget(options);
@@ -362,91 +368,131 @@ export async function writeCsvOutput(
 export async function recoverCsvOutputIntents(
   capability: CsvOutputRootCapability,
   intentStore: CsvOutputIntentStore,
+  options: { readonly signal?: AbortSignal } = {},
 ): Promise<{ readonly recovered: number; readonly deferred: number }> {
   capability.assertRootIdentity();
-  const intents = intentStore.claimCsvOutputRecoveryIntents({
-    rootPath: capability.canonicalRoot,
-    limit: CSV_OUTPUT_RECOVERY_PAGE_FILES,
-  });
   let recovered = 0;
   let deferred = 0;
-  for (const intent of intents) {
-    try {
-      const expected = parseRecordedIdentity(intent);
-      assertRecoveryPaths(capability, intent);
-      const temporary = await lstatIfPresent(intent.temporaryPath);
-      const target = await lstatIfPresent(intent.targetPath);
+  let hasMore: boolean;
+  do {
+    options.signal?.throwIfAborted();
+    const page = await intentStore.claimCsvOutputRecoveryIntents({
+      rootPath: capability.canonicalRoot,
+      limit: CSV_OUTPUT_RECOVERY_PAGE_FILES,
+      signal: options.signal,
+    });
+    options.signal?.throwIfAborted();
+    hasMore = page.hasMore;
+    for (const intent of page.intents) {
+      options.signal?.throwIfAborted();
+      try {
+        const expected = parseRecordedIdentity(intent);
+        assertRecoveryPaths(capability, intent);
+        const temporary = await lstatIfPresent(intent.temporaryPath);
+        options.signal?.throwIfAborted();
+        const target = await lstatIfPresent(intent.targetPath);
+        options.signal?.throwIfAborted();
 
-      if (temporary !== undefined) {
-        if (
-          temporary.isSymbolicLink() ||
-          !temporary.isFile() ||
-          !sameIdentity(temporary, expected)
-        ) {
-          throw new Error("recorded CSV temporary identity changed");
-        }
-        if (target !== undefined && sameIdentity(target, expected)) {
+        if (temporary !== undefined) {
           if (
-            target.isSymbolicLink() ||
-            !target.isFile() ||
-            temporary.nlink !== 2n ||
-            target.nlink !== 2n
+            temporary.isSymbolicLink() ||
+            !temporary.isFile() ||
+            !sameIdentity(temporary, expected)
           ) {
-            throw new Error("published CSV recovery link state is invalid");
+            throw new Error("recorded CSV temporary identity changed");
           }
-          await unlinkExactTemporary(intent.temporaryPath, expected, 2n);
-          await syncDirectory(dirname(intent.targetPath));
+          if (target !== undefined && sameIdentity(target, expected)) {
+            if (
+              target.isSymbolicLink() ||
+              !target.isFile() ||
+              temporary.nlink !== 2n ||
+              target.nlink !== 2n
+            ) {
+              throw new Error("published CSV recovery link state is invalid");
+            }
+            await unlinkExactTemporary(intent.temporaryPath, expected, 2n);
+            options.signal?.throwIfAborted();
+            await syncDirectory(dirname(intent.targetPath));
+            options.signal?.throwIfAborted();
+            const artifact = await inspectRecoveredArtifact(
+              intent.targetPath,
+              expected,
+            );
+            options.signal?.throwIfAborted();
+            intentStore.finishCsvOutputIntentRecovery({
+              intentId: intent.intentId,
+              ownerGeneration: intent.ownerGeneration,
+              artifact,
+            });
+          } else {
+            if (intent.priorState === "published") {
+              throw new Error(
+                "published CSV target changed while its recorded temporary remained",
+              );
+            }
+            if (temporary.nlink !== 1n) {
+              throw new Error(
+                "recorded CSV temporary has unexpected hard links",
+              );
+            }
+            await unlinkExactTemporary(intent.temporaryPath, expected);
+            options.signal?.throwIfAborted();
+            await syncDirectory(dirname(intent.temporaryPath));
+            options.signal?.throwIfAborted();
+            intentStore.finishCsvOutputIntentRecovery({
+              intentId: intent.intentId,
+              ownerGeneration: intent.ownerGeneration,
+            });
+          }
+        } else if (target !== undefined && sameIdentity(target, expected)) {
           const artifact = await inspectRecoveredArtifact(
             intent.targetPath,
             expected,
           );
+          options.signal?.throwIfAborted();
           intentStore.finishCsvOutputIntentRecovery({
             intentId: intent.intentId,
             ownerGeneration: intent.ownerGeneration,
             artifact,
           });
         } else {
-          if (intent.priorState === "published") {
-            throw new Error(
-              "published CSV target changed while its recorded temporary remained",
-            );
-          }
-          if (temporary.nlink !== 1n) {
-            throw new Error("recorded CSV temporary has unexpected hard links");
-          }
-          await unlinkExactTemporary(intent.temporaryPath, expected);
-          await syncDirectory(dirname(intent.temporaryPath));
-          intentStore.finishCsvOutputIntentRecovery({
-            intentId: intent.intentId,
-            ownerGeneration: intent.ownerGeneration,
-          });
+          throw new Error(
+            `recorded ${intent.priorState} CSV output inode disappeared or changed before recovery`,
+          );
         }
-      } else if (target !== undefined && sameIdentity(target, expected)) {
-        const artifact = await inspectRecoveredArtifact(
-          intent.targetPath,
-          expected,
-        );
-        intentStore.finishCsvOutputIntentRecovery({
+        recovered += 1;
+      } catch (error) {
+        if (options.signal?.aborted === true) {
+          throw options.signal.reason ?? error;
+        }
+        intentStore.deferCsvOutputIntentRecovery({
           intentId: intent.intentId,
           ownerGeneration: intent.ownerGeneration,
-          artifact,
+          reason: boundedRecoveryDiagnostic(error),
         });
-      } else {
-        throw new Error(
-          `recorded ${intent.priorState} CSV output inode disappeared or changed before recovery`,
-        );
+        deferred += 1;
       }
-      recovered += 1;
-    } catch (error) {
-      intentStore.deferCsvOutputIntentRecovery({
-        intentId: intent.intentId,
-        ownerGeneration: intent.ownerGeneration,
-        reason: boundedRecoveryDiagnostic(error),
-      });
-      deferred += 1;
+      options.signal?.throwIfAborted();
     }
-  }
+    if (hasMore) await yieldOutputRecoverySlice(options.signal);
+  } while (hasMore);
+  options.signal?.throwIfAborted();
   return { recovered, deferred };
+}
+
+async function yieldOutputRecoverySlice(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearImmediate(handle);
+      reject(signal?.reason ?? new Error("CSV output recovery aborted"));
+    };
+    const handle = setImmediate(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    });
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function parseRecordedIdentity(intent: CsvOutputRecoveryIntent): FileIdentity {

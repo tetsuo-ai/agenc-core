@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { LLMMessage } from "../llm/types.js";
 import { buildCacheSafeParams, forkSubagent } from "./fork-context.js";
 import type { Session } from "../session/session.js";
-import { createCsvAgentInvocationEnvelope } from "../contracts/agent-invocation-envelope.js";
+import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+} from "../contracts/agent-invocation-envelope.js";
 
 function stubSession(
   rolloutStore: {
@@ -172,6 +175,120 @@ describe("forkSubagent", () => {
     // Should include last two user-turn boundaries (turns 2 + 3) = 4 + directive.
     expect(res.messages.length).toBe(5);
     expect((res.messages[0] as LLMMessage).content).toBe("turn 2 user");
+  });
+
+  it("treats a durable three-channel invocation as one atomic fork turn", async () => {
+    const envelope = createCsvAgentInvocationEnvelope({
+      jobId: "fork-job",
+      itemId: "fork-item",
+      rowIndex: 0,
+      rowSha256: `sha256:${"d".repeat(64)}`,
+      instruction: "Classify this row.",
+      row: { payload: "untrusted" },
+    });
+    const invocation = materializeAgentInvocationMessages(envelope);
+    const res = await forkSubagent({
+      parent: stubSession(),
+      parentMessages: [
+        { role: "user", content: "older turn" },
+        { role: "assistant", content: "older answer" },
+        ...invocation,
+        { role: "assistant", content: "job answer" },
+      ],
+      mode: { kind: "last_n_turns", n: 1 },
+      taskPrompt: "next task",
+    });
+
+    expect(
+      res.messages
+        .slice(0, 3)
+        .map((message) => message.runtimeOnly?.agentInvocation?.channelIndex),
+    ).toEqual([0, 1, 2]);
+    expect(res.messages[3]?.content).toBe("job answer");
+  });
+
+  it("fails closed when rollout history loses invocation metadata", async () => {
+    const invocation = materializeAgentInvocationMessages(
+      createCsvAgentInvocationEnvelope({
+        jobId: "fork-corrupt-job",
+        itemId: "fork-corrupt-item",
+        rowIndex: 0,
+        rowSha256: `sha256:${"f".repeat(64)}`,
+        instruction: "Classify this row.",
+        row: { payload: "untrusted" },
+      }),
+    );
+    const rollout = invocation.map((message, index) => ({
+      type: "response_item" as const,
+      payload: {
+        role: message.role,
+        content: message.content,
+        ...(index !== 2
+          ? { agentInvocation: message.runtimeOnly!.agentInvocation }
+          : {}),
+      },
+    }));
+
+    await expect(
+      forkSubagent({
+        parent: stubSession({
+          flushDurable: vi.fn(),
+          readAll: () => rollout,
+        }),
+        parentMessages: history,
+        mode: { kind: "full_history" },
+        taskPrompt: "next task",
+      }),
+    ).rejects.toThrow(/metadata is missing/u);
+  });
+
+  it("keeps a rollout-backed invocation atomic for last_n_turns", async () => {
+    const invocation = materializeAgentInvocationMessages(
+      createCsvAgentInvocationEnvelope({
+        jobId: "rollout-last-job",
+        itemId: "rollout-last-item",
+        rowIndex: 0,
+        rowSha256: `sha256:${"6".repeat(64)}`,
+        instruction: "Classify this row.",
+        row: { payload: "untrusted" },
+      }),
+    );
+    const rollout = [
+      {
+        type: "response_item" as const,
+        payload: { role: "user" as const, content: "older turn" },
+      },
+      {
+        type: "response_item" as const,
+        payload: { role: "assistant" as const, content: "older answer" },
+      },
+      ...invocation.map((message) => ({
+        type: "response_item" as const,
+        payload: {
+          role: message.role,
+          content: message.content,
+          agentInvocation: message.runtimeOnly!.agentInvocation,
+        },
+      })),
+      {
+        type: "response_item" as const,
+        payload: { role: "assistant" as const, content: "job answer" },
+      },
+    ];
+
+    const res = await forkSubagent({
+      parent: stubSession({ flushDurable: vi.fn(), readAll: () => rollout }),
+      parentMessages: history,
+      mode: { kind: "last_n_turns", n: 1 },
+      taskPrompt: "next task",
+    });
+
+    expect(
+      res.messages
+        .slice(0, 3)
+        .map((message) => message.runtimeOnly?.agentInvocation?.channelIndex),
+    ).toEqual([0, 1, 2]);
+    expect(res.messages[3]?.content).toBe("job answer");
   });
 
   it("mode=undefined yields directive-only context (reference Option::None)", async () => {

@@ -26,6 +26,35 @@ function invocationMessages(): ReadonlyArray<LLMMessage> {
 }
 
 describe("agent invocation provider wire separation", () => {
+  it("fails every shared wire family closed on an incomplete authority group", () => {
+    const incomplete = invocationMessages().slice(0, 2);
+    expect(() =>
+      buildOpenAIResponsesRequest({
+        model: "gpt-5",
+        messages: incomplete,
+        tools: [],
+      }),
+    ).toThrow(/sequence is incomplete/u);
+    expect(() =>
+      buildAnthropicMessagesRequest({
+        model: "claude-sonnet-4.5",
+        messages: incomplete,
+        tools: [],
+        maxTokens: 4_096,
+      }),
+    ).toThrow(/sequence is incomplete/u);
+    expect(() =>
+      buildChatCompletionsRequest({
+        model: "qwen-local",
+        messages: incomplete,
+        tools: [],
+      }),
+    ).toThrow(/sequence is incomplete/u);
+    expect(() => buildXaiResponsesInputItems(incomplete)).toThrow(
+      /sequence is incomplete/u,
+    );
+  });
+
   it("keeps untrusted CSV data out of OpenAI Responses instructions", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-5",

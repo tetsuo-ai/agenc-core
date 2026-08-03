@@ -67,6 +67,10 @@ import {
 } from "../llm/provider.js";
 import type { AuthBackend } from "../auth/backend.js";
 import { clearSession } from "../commands/clear.js";
+import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+} from "../contracts/agent-invocation-envelope.js";
 
 (globalThis as Record<string, unknown>).MACRO ??= {
   VERSION: "test-version",
@@ -1994,6 +1998,49 @@ describe("Session.rewindConversationToMessage", () => {
         content:
           "This session is being continued from a previous conversation that ran out of context. Summary.",
       },
+    ]);
+  });
+
+  it("treats an invocation envelope as one rewind boundary at channel zero", async () => {
+    const appendRollout = vi.fn();
+    const session = buildSession();
+    session.rolloutStore = {
+      isDegraded: false,
+      appendRollout,
+    } as unknown as Session["rolloutStore"];
+    const invocation = materializeAgentInvocationMessages(
+      createCsvAgentInvocationEnvelope({
+        jobId: "rewind-job",
+        itemId: "rewind-item",
+        rowIndex: 0,
+        rowSha256: `sha256:${"a".repeat(64)}`,
+        instruction: "classify the row",
+        row: { value: "untrusted" },
+      }),
+    );
+    await session.state.with((state) => {
+      state.history = [
+        { role: "user", content: "first prompt" },
+        { role: "assistant", content: "first answer" },
+        ...invocation,
+        { role: "assistant", content: "discarded answer" },
+      ];
+    });
+
+    const result = await session.rewindConversationToMessage({
+      messageOrdinal: 1,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(session.snapshotHistoryMessages()).toEqual([
+      { role: "user", content: "first prompt" },
+      { role: "assistant", content: "first answer" },
+    ]);
+    const replacement =
+      appendRollout.mock.calls[0]?.[0]?.payload?.replacementHistory;
+    expect(replacement).toEqual([
+      { role: "user", content: "first prompt" },
+      { role: "assistant", content: "first answer" },
     ]);
   });
 });

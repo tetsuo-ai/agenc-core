@@ -23,6 +23,7 @@ import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import {
   assertAgentInvocationEnvelope,
   materializeAgentInvocationMessages,
+  validateAgentInvocationMessageSequence,
   type AgentInvocationEnvelope,
 } from "../contracts/agent-invocation-envelope.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
@@ -31,6 +32,7 @@ import {
   filterForkedRolloutItems,
   truncateRolloutToLastNForkTurns,
 } from "./thread-rollout-truncation.js";
+import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fork modes
@@ -66,11 +68,24 @@ function lastNUserTurns(
   n: number,
 ): LLMMessage[] {
   if (n <= 0) return [];
+  validateAgentInvocationMessageSequence(messages);
   // Walk backwards; each user message begins a turn.
   let userCount = 0;
   let sliceIndex = 0;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.role === "user") {
+    const message = messages[i];
+    const invocation = message?.runtimeOnly?.agentInvocation;
+    if (invocation !== undefined) {
+      if (invocation.channelIndex !== 2) continue;
+      userCount += 1;
+      if (userCount === n) {
+        sliceIndex = i - 2;
+        break;
+      }
+      i -= 2;
+      continue;
+    }
+    if (message?.role === "user") {
       userCount += 1;
       if (userCount === n) {
         sliceIndex = i;
@@ -160,15 +175,7 @@ function responseItemToForkMessage(item: ResponseItem): LLMMessage | null {
     if (item.phase === "commentary") return null;
     if (item.toolCallId || item.toolName) return null;
   }
-  return {
-    role: item.role,
-    content: (typeof item.content === "string"
-      ? item.content
-      : item.content.map((part) => ({ ...part }))) as LLMMessage["content"],
-    ...(item.phase === "commentary" || item.phase === "final_answer"
-      ? { phase: item.phase }
-      : {}),
-  };
+  return responseItemToLlmMessage(item);
 }
 
 function responseItemsToForkMessages(
@@ -272,16 +279,17 @@ export async function forkSubagent(
   }
 
   const parentMessages = rolloutBackedParentMessages(input);
+  validateAgentInvocationMessageSequence(parentMessages);
 
   switch (input.mode.kind) {
     case "full_history":
-      return {
+      return validatedForkResult({
         messages: [...parentMessages, ...directiveMessages],
         directivePrompt,
-      };
+      });
 
     case "last_n_turns":
-      return {
+      return validatedForkResult({
         messages: [
           ...(input.parent.rolloutStore
             ? parentMessages
@@ -289,8 +297,13 @@ export async function forkSubagent(
           ...directiveMessages,
         ],
         directivePrompt,
-      };
+      });
   }
+}
+
+function validatedForkResult(result: ForkContextResult): ForkContextResult {
+  validateAgentInvocationMessageSequence(result.messages);
+  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────

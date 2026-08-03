@@ -29,6 +29,7 @@ import type {
   LLMTool,
   LLMUsage,
 } from "../llm/types.js";
+import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 import type {
   CacheSafeParams,
   REPLHookContext,
@@ -1160,10 +1161,7 @@ function taskReceiptWorktreeJson(evidence: WorktreeTurnEvidence): {
 }
 
 type ParentNotificationDisposition =
-  | "delivered"
-  | "queued"
-  | "duplicate"
-  | "rejected";
+  "delivered" | "queued" | "duplicate" | "rejected";
 
 function sendSubagentNotificationToParent(params: {
   readonly live: LiveAgent;
@@ -1276,14 +1274,14 @@ function parentMailboxDeliveryAccepted(result: unknown): boolean {
 export const MAX_PARENT_NOTIFICATION_OUTBOX_DEPTH = 1_024;
 export const MAX_PARENT_NOTIFICATION_OUTBOX_BYTES = 16 * 1_024 * 1_024;
 const PARENT_NOTIFICATION_RETRY_MS = 50;
-let parentNotificationOutboxDepthLimit =
-  MAX_PARENT_NOTIFICATION_OUTBOX_DEPTH;
+let parentNotificationOutboxDepthLimit = MAX_PARENT_NOTIFICATION_OUTBOX_DEPTH;
 let parentNotificationOutboxByteLimit = MAX_PARENT_NOTIFICATION_OUTBOX_BYTES;
 
 /** @internal Test-only limit override for deterministic saturation coverage. */
-export function setParentNotificationOutboxLimitsForTesting(
-  limits?: { readonly depth: number; readonly bytes: number },
-): void {
+export function setParentNotificationOutboxLimitsForTesting(limits?: {
+  readonly depth: number;
+  readonly bytes: number;
+}): void {
   parentNotificationOutboxDepthLimit =
     limits?.depth ?? MAX_PARENT_NOTIFICATION_OUTBOX_DEPTH;
   parentNotificationOutboxByteLimit =
@@ -1438,10 +1436,7 @@ function scheduleParentNotificationRetry(
         requestParentFollowupTurn(pending.params);
       }
     } finally {
-      if (
-        outbox.queue.length > 0 &&
-        !parent.abortController.signal.aborted
-      ) {
+      if (outbox.queue.length > 0 && !parent.abortController.signal.aborted) {
         scheduleParentNotificationRetry(parent, outbox);
       }
     }
@@ -2638,9 +2633,19 @@ function buildChildModelInfo(
 function splitInitialMessages(
   initialMessages: ReadonlyArray<LLMMessage>,
   fallbackUserMessage: string,
-): { history: LLMMessage[]; userMessage: string } {
+): {
+  history: LLMMessage[];
+  userMessage: string;
+  userMessageRuntimeOnly?: LLMMessage["runtimeOnly"];
+  requiresInitialHistoryDurability: boolean;
+} {
+  validateAgentInvocationMessageSequence(initialMessages);
   if (initialMessages.length === 0) {
-    return { history: [], userMessage: fallbackUserMessage };
+    return {
+      history: [],
+      userMessage: fallbackUserMessage,
+      requiresInitialHistoryDurability: false,
+    };
   }
 
   const history = initialMessages
@@ -2648,12 +2653,26 @@ function splitInitialMessages(
     .map((message) => ({ ...message }));
   const last = initialMessages[initialMessages.length - 1];
   if (last?.role === "user" && typeof last.content === "string") {
-    return { history, userMessage: last.content };
+    return {
+      history,
+      userMessage: last.content,
+      ...(last.runtimeOnly?.agentInvocation !== undefined
+        ? {
+            userMessageRuntimeOnly: {
+              agentInvocation: last.runtimeOnly.agentInvocation,
+              mergeBoundary: "user_context" as const,
+            },
+          }
+        : {}),
+      requiresInitialHistoryDurability:
+        last.runtimeOnly?.agentInvocation !== undefined,
+    };
   }
 
   return {
     history: initialMessages.map((message) => ({ ...message })),
     userMessage: fallbackUserMessage,
+    requiresInitialHistoryDurability: false,
   };
 }
 
@@ -3416,10 +3435,12 @@ export async function* runAgent(
       childAuthority,
       terminalResultForPendingWorker,
     );
-    const { history, userMessage } = splitInitialMessages(
-      params.initialMessages,
-      params.taskPrompt,
-    );
+    const {
+      history,
+      userMessage,
+      userMessageRuntimeOnly,
+      requiresInitialHistoryDurability,
+    } = splitInitialMessages(params.initialMessages, params.taskPrompt);
     const activeChildSession = childSession;
     let sawTokenCountThisTurn = false;
     unsubscribeChildUsage = activeChildSession.eventLog.subscribe((event) => {
@@ -3548,6 +3569,12 @@ export async function* runAgent(
           return activeTurnContext;
         })(),
         ...(firstTurn ? { history } : {}),
+        ...(firstTurn && requiresInitialHistoryDurability
+          ? { initialHistoryPersistence: "persist_before_turn" as const }
+          : {}),
+        ...(firstTurn && userMessageRuntimeOnly !== undefined
+          ? { seedUserMessageRuntimeOnly: userMessageRuntimeOnly }
+          : {}),
         ...(live.role.config.systemPrompt
           ? {
               systemPrompt: live.role.config.systemPrompt,

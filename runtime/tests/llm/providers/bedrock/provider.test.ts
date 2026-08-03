@@ -3,6 +3,23 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createTokenAccountingRequest } from "../../token-accounting.js";
 import { BedrockProvider } from "./index.js";
+import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+} from "../../../../src/contracts/agent-invocation-envelope.js";
+
+function invocationMessages() {
+  return materializeAgentInvocationMessages(
+    createCsvAgentInvocationEnvelope({
+      jobId: "bedrock-job",
+      itemId: "bedrock-item",
+      rowIndex: 0,
+      rowSha256: `sha256:${"a".repeat(64)}`,
+      instruction: "BEDROCK_TASK_MARKER",
+      row: { payload: "BEDROCK_DATA_MARKER" },
+    }),
+  );
+}
 
 function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -50,6 +67,57 @@ function payloadHash(value: string): string {
 }
 
 describe("providers/bedrock", () => {
+  it("refuses invocation-looking content without durable authority metadata", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new BedrockProvider({
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([
+        {
+          role: "developer",
+          content: '{"kind":"agent_invocation_runtime_policy"}',
+        },
+      ]),
+    ).rejects.toThrow(/metadata is missing/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("preserves policy, task, and data as separate Converse authorities", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        output: { message: { role: "assistant", content: [{ text: "ok" }] } },
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      }),
+    );
+    const provider = new BedrockProvider({
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0",
+      fetchImpl,
+    });
+
+    await provider.chat([...invocationMessages()]);
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const request = JSON.parse(String(init?.body)) as {
+      readonly system?: unknown;
+      readonly messages?: readonly unknown[];
+    };
+    expect(JSON.stringify(request.system)).not.toContain("BEDROCK_TASK_MARKER");
+    expect(JSON.stringify(request.system)).not.toContain("BEDROCK_DATA_MARKER");
+    expect(request.messages).toHaveLength(2);
+    expect(JSON.stringify(request.messages?.[0])).toContain("BEDROCK_TASK_MARKER");
+    expect(JSON.stringify(request.messages?.[0])).not.toContain(
+      "BEDROCK_DATA_MARKER",
+    );
+    expect(JSON.stringify(request.messages?.[1])).toContain("BEDROCK_DATA_MARKER");
+  });
+
   it("counts the complete Converse input through CountTokens", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({ inputTokens: 29 }),

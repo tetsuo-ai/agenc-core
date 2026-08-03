@@ -4,10 +4,7 @@ import {
   reconstructFromRollout,
 } from "./rollout-reconstruction.js";
 import { DEFAULT_MAX_TOOL_RESULT_BYTES } from "../tools/execution.js";
-import {
-  parseRolloutLine,
-  type RolloutItem,
-} from "./rollout-item.js";
+import { parseRolloutLine, type RolloutItem } from "./rollout-item.js";
 import type { IndexSnapshot } from "./session-store.js";
 import {
   REALTIME_CONVERSATION_CLOSE_TAG,
@@ -17,6 +14,11 @@ import {
   PERSONALITY_SPEC_END_MARKER,
   PERSONALITY_SPEC_START_MARKER,
 } from "../context/personality-spec-instructions.js";
+import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+} from "../contracts/agent-invocation-envelope.js";
+import { llmMessageToResponseItem } from "./message-history-conversion.js";
 
 describe("rollout-reconstruction", () => {
   test("replays response_items into history", () => {
@@ -70,7 +72,10 @@ describe("rollout-reconstruction", () => {
 
   test("replays the full persisted compacted replacement history, including boundary and preserved tail", () => {
     const items: RolloutItem[] = [
-      { type: "response_item", payload: { role: "user", content: "discard me" } },
+      {
+        type: "response_item",
+        payload: { role: "user", content: "discard me" },
+      },
       {
         type: "compacted",
         payload: {
@@ -82,7 +87,10 @@ describe("rollout-reconstruction", () => {
           ],
         },
       },
-      { type: "response_item", payload: { role: "assistant", content: "after compact" } },
+      {
+        type: "response_item",
+        payload: { role: "assistant", content: "after compact" },
+      },
     ];
 
     const r = reconstructFromRollout(items);
@@ -96,7 +104,10 @@ describe("rollout-reconstruction", () => {
 
   test("newest surviving replacementHistory wins and only the suffix replays", () => {
     const items: RolloutItem[] = [
-      { type: "response_item", payload: { role: "user", content: "discard me" } },
+      {
+        type: "response_item",
+        payload: { role: "user", content: "discard me" },
+      },
       {
         type: "compacted",
         payload: {
@@ -115,7 +126,10 @@ describe("rollout-reconstruction", () => {
           replacementHistory: [{ role: "user", content: "new baseline" }],
         },
       },
-      { type: "response_item", payload: { role: "assistant", content: "kept tail" } },
+      {
+        type: "response_item",
+        payload: { role: "assistant", content: "kept tail" },
+      },
     ];
 
     const r = reconstructFromRollout(items);
@@ -406,12 +420,18 @@ describe("rollout-reconstruction", () => {
 
   test("legacy compacted (no replacementHistory) rebuilds history via buildCompactedHistory", () => {
     const items: RolloutItem[] = [
-      { type: "response_item", payload: { role: "user", content: "first ask" } },
+      {
+        type: "response_item",
+        payload: { role: "user", content: "first ask" },
+      },
       {
         type: "response_item",
         payload: { role: "assistant", content: "first answer" },
       },
-      { type: "response_item", payload: { role: "user", content: "second ask" } },
+      {
+        type: "response_item",
+        payload: { role: "user", content: "second ask" },
+      },
       // Legacy compaction: message only, no replacementHistory.
       { type: "compacted", payload: { message: "summary blob" } },
     ];
@@ -532,6 +552,50 @@ describe("rollout-reconstruction", () => {
     expect(r.state.history.length).toBeLessThanOrEqual(2);
   });
 
+  test("forward replay never leaves a partial invocation after rollback", () => {
+    const invocation = materializeAgentInvocationMessages(
+      createCsvAgentInvocationEnvelope({
+        jobId: "replay-rollback-job",
+        itemId: "replay-rollback-item",
+        rowIndex: 0,
+        rowSha256: `sha256:${"e".repeat(64)}`,
+        instruction: "classify",
+        row: { value: "untrusted" },
+      }),
+    ).map(llmMessageToResponseItem);
+    const items: RolloutItem[] = [
+      {
+        type: "response_item",
+        payload: { role: "user", content: "surviving prompt" },
+      },
+      {
+        type: "response_item",
+        payload: { role: "assistant", content: "surviving answer" },
+      },
+      ...invocation.map((payload) => ({
+        type: "response_item" as const,
+        payload,
+      })),
+      {
+        type: "response_item",
+        payload: { role: "assistant", content: "discarded answer" },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          id: "invocation-replay-rollback",
+          seq: 1,
+          msg: { type: "thread_rolled_back", payload: { numTurns: 1 } },
+        },
+      },
+    ];
+
+    expect(reconstructFromRollout(items).state.history).toEqual([
+      { role: "user", content: "surviving prompt" },
+      { role: "assistant", content: "surviving answer" },
+    ]);
+  });
+
   /**
    * Port of agenc runtime
    * `reconstruct_history_rollback_counts_inter_agent_assistant_turns`
@@ -645,8 +709,14 @@ describe("rollout-reconstruction", () => {
       "# AGENC.md instructions for project\nsome body\n</INSTRUCTIONS>";
     const fakeOpenOnly = "# AGENC.md instructions for project\nsome body"; // no close → real user turn
     const items: RolloutItem[] = [
-      { type: "response_item", payload: { role: "user", content: agencMdBody } },
-      { type: "response_item", payload: { role: "user", content: fakeOpenOnly } },
+      {
+        type: "response_item",
+        payload: { role: "user", content: agencMdBody },
+      },
+      {
+        type: "response_item",
+        payload: { role: "user", content: fakeOpenOnly },
+      },
       {
         type: "event_msg",
         payload: {
@@ -678,7 +748,10 @@ describe("rollout-reconstruction", () => {
     const items: RolloutItem[] = [
       { type: "response_item", payload: { role: "user", content: "real ask" } },
       // A previous compaction summary now sitting in history:
-      { type: "response_item", payload: { role: "user", content: priorSummary } },
+      {
+        type: "response_item",
+        payload: { role: "user", content: priorSummary },
+      },
       // Legacy compaction (no replacement history):
       { type: "compacted", payload: { message: "new summary blob" } },
     ];

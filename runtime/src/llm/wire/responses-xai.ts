@@ -20,6 +20,7 @@ import {
 } from "../structured-output.js";
 import { documentFallbackText, readDocumentPayload } from "./shared.js";
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
+import { validateAgentInvocationMessageSequence } from "../../contracts/agent-invocation-envelope.js";
 export { toXaiResponsesTools } from "./tools.js";
 
 export const XAI_ENCRYPTED_REASONING_INCLUDE =
@@ -84,6 +85,7 @@ export function resolveXaiResponsesToolChoice(
 export function buildXaiResponsesInputItems(
   messages: readonly LLMMessage[],
 ): XaiResponsesInputBuildResult {
+  validateAgentInvocationMessageSequence(messages);
   const mapped: Record<string, unknown>[] = [];
   const pendingImages: Array<{
     type: "image_url";

@@ -36,6 +36,7 @@ import { resolveContextWindowProfile } from "../../_deps/context-window.js";
 import { withOllamaHealthSidecar } from "./health.js";
 import { isRecord } from "../../../utils/record.js";
 import { coerceUsage } from "../../wire/shared.js";
+import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
 
 const DEFAULT_HOST = "http://localhost:11434";
 const DEFAULT_MODEL = "llama3.3";
@@ -796,6 +797,7 @@ export class OllamaProvider implements LLMProvider {
     options?: LLMChatOptions,
     toolSelection?: ToolSelectionDiagnostics,
   ): Record<string, unknown> {
+    validateAgentInvocationMessageSequence(messages);
     const requestMessages =
       options?.systemPrompt?.trim()
         ? [{ role: "system" as const, content: options.systemPrompt.trim() }, ...messages]

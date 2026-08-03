@@ -34,6 +34,7 @@ import {
   type ProviderTokenCountCapability,
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
+import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
 
 const DEFAULT_REGION = "us-east-1";
 const BEDROCK_SERVICE = "bedrock";
@@ -445,6 +446,7 @@ function buildRequest(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
 ): BedrockRequest {
+  validateAgentInvocationMessageSequence(messages);
   const built = buildMessages(messages);
   const systemPrompt = firstNonEmpty(options?.systemPrompt, config.systemPrompt);
   const system = [

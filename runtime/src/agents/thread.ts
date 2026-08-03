@@ -30,6 +30,7 @@ import {
 import type { RunAgentProgressEvent, RunAgentResult } from "./run-agent.js";
 import type { AgentPath } from "./registry.js";
 import { runAgentProgressEventToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
+import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 
 export type MemoryEntry = AgentMemoryEntry;
 
@@ -106,6 +107,7 @@ export class AgentThread {
   private summaryCacheSafeParamsValue: CacheSafeParams | null = null;
 
   constructor(opts: AgentThreadOpts, wiring: AgentThreadWiring = {}) {
+    validateAgentInvocationMessageSequence(opts.initialMessages);
     this.liveHandle = opts.live;
     this.initialMessages = opts.initialMessages;
     if (opts.forkMode !== undefined) this.forkMode = opts.forkMode;

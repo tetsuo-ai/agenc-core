@@ -2,6 +2,23 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { OllamaProvider } from "./adapter.js";
 import { withOllamaHealthSidecar } from "./health.js";
+import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+} from "../../../../src/contracts/agent-invocation-envelope.js";
+
+function invocationMessages() {
+  return materializeAgentInvocationMessages(
+    createCsvAgentInvocationEnvelope({
+      jobId: "ollama-job",
+      itemId: "ollama-item",
+      rowIndex: 0,
+      rowSha256: `sha256:${"c".repeat(64)}`,
+      instruction: "OLLAMA_TASK_MARKER",
+      row: { payload: "OLLAMA_DATA_MARKER" },
+    }),
+  );
+}
 
 function setClient(
   provider: OllamaProvider,
@@ -69,6 +86,37 @@ afterEach(() => {
 });
 
 describe("providers/ollama entrypoint", () => {
+  test("refuses invocation-looking content without durable authority metadata", () => {
+    const provider = new OllamaProvider({ model: "llama3.3" });
+
+    expect(() =>
+      (provider as any).buildParams([
+        {
+          role: "developer",
+          content: '{"kind":"agent_invocation_runtime_policy"}',
+        },
+      ]),
+    ).toThrow(/metadata is missing/u);
+  });
+
+  test("preserves policy, task, and data as separate Ollama authorities", () => {
+    const provider = new OllamaProvider({ model: "llama3.3" });
+    const params = (provider as any).buildParams([...invocationMessages()]) as {
+      readonly messages: readonly Record<string, unknown>[];
+    };
+
+    expect(params.messages.map((message) => message.role)).toEqual([
+      "system",
+      "user",
+      "user",
+    ]);
+    expect(JSON.stringify(params.messages[0])).not.toContain("OLLAMA_TASK_MARKER");
+    expect(JSON.stringify(params.messages[0])).not.toContain("OLLAMA_DATA_MARKER");
+    expect(JSON.stringify(params.messages[1])).toContain("OLLAMA_TASK_MARKER");
+    expect(JSON.stringify(params.messages[1])).not.toContain("OLLAMA_DATA_MARKER");
+    expect(JSON.stringify(params.messages[2])).toContain("OLLAMA_DATA_MARKER");
+  });
+
   test("exports the canonical Ollama provider class", () => {
     const provider = new OllamaProvider({
       model: "llama3.3",

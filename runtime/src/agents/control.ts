@@ -34,6 +34,7 @@
 
 import { emitError, emitWarning } from "../session/event-log.js";
 import type { LLMMessage, LLMUsage } from "../llm/types.js";
+import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import type { ThreadSpawnEdgeStatus } from "../session/rollout-store.js";
 import type { Session } from "../session/session.js";
 import type { SessionSubmitOptions } from "../session/autonomous-mode.js";
@@ -2306,6 +2307,11 @@ export class AgentControl {
   ): void {
     const agent = this.live.get(threadId);
     if (!agent || messages.length === 0) return;
+    for (const message of messages) {
+      if (message.runtimeOnly?.agentInvocation !== undefined) {
+        assertAgentInvocationChannelMessage(message);
+      }
+    }
     agent.messages.push(...messages.map((message) => ({ ...message })));
   }
 

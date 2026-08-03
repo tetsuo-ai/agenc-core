@@ -365,7 +365,8 @@ export class TokenAccountingService {
     });
     let provider = result.provider;
     let model = result.model;
-    let metricContentTypes: readonly TokenAccountingContentType[] = contentTypes;
+    let metricContentTypes: readonly TokenAccountingContentType[] =
+      contentTypes;
     if (
       !this.#metrics.has(key) &&
       this.#metrics.size >= TOKEN_ACCOUNTING_METRICS_MAX_PARTITIONS
@@ -381,8 +382,7 @@ export class TokenAccountingService {
       });
       if (!this.#metrics.has(key)) {
         const oldestKey = this.#metrics.keys().next().value as
-          | string
-          | undefined;
+          string | undefined;
         if (oldestKey !== undefined) this.#metrics.delete(oldestKey);
       }
     }
@@ -549,7 +549,10 @@ export class TokenAccountingService {
     );
   }
 
-  #canAllocateWaiter(flightWaiters: number, flightWaiterBytes: number): boolean {
+  #canAllocateWaiter(
+    flightWaiters: number,
+    flightWaiterBytes: number,
+  ): boolean {
     return (
       flightWaiters < this.#maxWaitersPerFlight &&
       this.#waiters < this.#maxWaitersGlobal &&
@@ -650,7 +653,12 @@ export function createTokenAccountingRequest(
     // Model identifiers are opaque and may be case-sensitive at custom/local
     // endpoints. Trim them, but never case-fold cache or wire identity.
     model: normalizeOpaqueIdentityPart(input.model, "unknown"),
-    messages: prepareMessagesForWire(input.messages, input.options),
+    // Preserve authenticated runtime metadata until the service takes its
+    // immutable snapshot. prepareAccountingRequest performs the one wire
+    // projection used for hashing/provider counting; projecting here as well
+    // would strip invocation metadata and make the second validation mistake
+    // the authenticated channel JSON for an unbound payload.
+    messages: input.messages,
     options: input.options,
     ...(input.providerNativeTools !== undefined
       ? { providerNativeTools: input.providerNativeTools }
@@ -832,9 +840,12 @@ function snapshotAccountingRequest(
   });
   return Object.freeze({
     ...request,
-    messages: canonicalSnapshot(
-      prepareMessagesForWire(request.messages, snapshotOptions),
-    ),
+    // Keep authenticated runtime metadata in the immutable snapshot. Each
+    // consumer (cache identity and provider-native counter) performs its own
+    // single wire projection from this source; a pre-projected snapshot is not
+    // safely projectable again because authority metadata is intentionally
+    // stripped at the external boundary.
+    messages: canonicalSnapshot(request.messages),
     options: snapshotOptions,
     ...(request.providerNativeTools !== undefined
       ? {
@@ -919,9 +930,7 @@ function conservativeFallbackResult(
     request.provider,
     request.options.promptCacheKey,
   );
-  const promptBytes = normalizedUtf8UpperBound(
-    stableStringify(promptIdentity),
-  );
+  const promptBytes = normalizedUtf8UpperBound(stableStringify(promptIdentity));
   const frameTokens =
     TOKEN_ACCOUNTING_REQUEST_FRAME_TOKENS +
     request.messages.length * TOKEN_ACCOUNTING_MESSAGE_FRAME_TOKENS +
@@ -1000,10 +1009,7 @@ function resultFromNativeCount(
     native.confidence === "high"
       ? safetyMarginForTokens(native.inputTokens)
       : 0;
-  const inputTokens = safeTokenSum(
-    native.inputTokens,
-    safetyMarginTokens,
-  );
+  const inputTokens = safeTokenSum(native.inputTokens, safetyMarginTokens);
   return {
     inputTokens,
     reservedOutputTokens: fallback.reservedOutputTokens,
@@ -1034,9 +1040,7 @@ function resultFromNativeCount(
 function inspectRequestContent(
   messages: readonly LLMMessage[],
   tools: readonly LLMTool[] | undefined,
-  providerNativeTools:
-    | readonly Readonly<Record<string, unknown>>[]
-    | undefined,
+  providerNativeTools: readonly Readonly<Record<string, unknown>>[] | undefined,
   provider: string,
   promptCacheKey: string | undefined,
 ): {
@@ -1060,10 +1064,7 @@ function inspectRequestContent(
     uncertainComponents.add("provider_cached_content");
   }
 
-  if (
-    (tools?.length ?? 0) > 0 ||
-    (providerNativeTools?.length ?? 0) > 0
-  ) {
+  if ((tools?.length ?? 0) > 0 || (providerNativeTools?.length ?? 0) > 0) {
     contentTypes.add("tool_schema");
   }
   for (const [toolIndex, tool] of (providerNativeTools ?? []).entries()) {
@@ -1311,9 +1312,7 @@ function normalizeEndpointPath(pathname: string): string {
   // reverse proxy. Preserve them so two distinct endpoints can never share a
   // token-count cache entry; only a trailing slash is canonicalized.
   const trimmed = pathname.replace(/\/+$/u, "");
-  return trimmed.length > 0
-    ? trimmed
-    : TOKEN_ACCOUNTING_DEFAULT_ENDPOINT_PATH;
+  return trimmed.length > 0 ? trimmed : TOKEN_ACCOUNTING_DEFAULT_ENDPOINT_PATH;
 }
 
 function isInlineDataUrl(value: string): boolean {

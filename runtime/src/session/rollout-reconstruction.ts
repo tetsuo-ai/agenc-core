@@ -40,6 +40,7 @@ import type {
   RolloutItem,
   TurnContextItem,
 } from "./rollout-item.js";
+import { isAgentInvocationTurnBoundary } from "../contracts/agent-invocation-envelope.js";
 import {
   reduce,
   type ReducedSessionState,
@@ -50,17 +51,12 @@ import {
   capToolResult,
   DEFAULT_MAX_TOOL_RESULT_BYTES,
 } from "./_deps/tool-execution.js";
-import {
-  currentBuildId,
-  type ResumableTurn,
-} from "./durable-turns.js";
+import { currentBuildId, type ResumableTurn } from "./durable-turns.js";
 import type {
   TurnCheckpointEvent,
   TurnCheckpointSliceLine,
 } from "./event-log.js";
-import {
-  startsWithRealtimeConversationOpenTag,
-} from "../conversation/realtime/instructions/markers.js";
+import { startsWithRealtimeConversationOpenTag } from "../conversation/realtime/instructions/markers.js";
 import {
   startsWithPersonalitySpecOpenTag,
   type Personality,
@@ -191,7 +187,10 @@ function emptySegment(): ActiveReplaySegment {
 }
 
 function turnCheckpointPayload(item: RolloutItem): unknown | undefined {
-  if (item.type !== "event_msg" || item.payload.msg.type !== "turn_checkpoint") {
+  if (
+    item.type !== "event_msg" ||
+    item.payload.msg.type !== "turn_checkpoint"
+  ) {
     return undefined;
   }
   return item.payload.msg.payload;
@@ -209,7 +208,8 @@ function validateRawCheckpointBeforeReplay(params: {
   } catch (error) {
     return {
       status: "invalid",
-      reason: error instanceof Error ? error.message : "checkpoint is malformed",
+      reason:
+        error instanceof Error ? error.message : "checkpoint is malformed",
     };
   }
   if (readable.version === 1) {
@@ -325,7 +325,10 @@ const CONTEXTUAL_USER_FRAGMENTS: ReadonlyArray<ContextualFragmentDef> = [
  * trailing whitespace). Case-insensitive per agenc runtime's
  * `eq_ignore_ascii_case`.
  */
-function fragmentMatchesText(text: string, def: ContextualFragmentDef): boolean {
+function fragmentMatchesText(
+  text: string,
+  def: ContextualFragmentDef,
+): boolean {
   const trimmedStart = text.trimStart();
   const startCandidate = trimmedStart.slice(0, def.startMarker.length);
   const startsWith =
@@ -334,12 +337,16 @@ function fragmentMatchesText(text: string, def: ContextualFragmentDef): boolean 
   if (!startsWith) return false;
   const trimmedEnd = trimmedStart.trimEnd();
   if (trimmedEnd.length < def.endMarker.length) return false;
-  const endCandidate = trimmedEnd.slice(trimmedEnd.length - def.endMarker.length);
+  const endCandidate = trimmedEnd.slice(
+    trimmedEnd.length - def.endMarker.length,
+  );
   return endCandidate.toLowerCase() === def.endMarker.toLowerCase();
 }
 
 function isContextualUserText(text: string): boolean {
-  return CONTEXTUAL_USER_FRAGMENTS.some((def) => fragmentMatchesText(text, def));
+  return CONTEXTUAL_USER_FRAGMENTS.some((def) =>
+    fragmentMatchesText(text, def),
+  );
 }
 
 /**
@@ -361,9 +368,7 @@ export function isContextualUserMessageContent(
  * payloads so it matches the permissive `ResponseItem.content` shape.
  * Mirrors agenc runtime `is_contextual_user_message_content` (event_mapping.rs:35).
  */
-function isContextualUserContent(
-  content: ResponseItem["content"],
-): boolean {
+function isContextualUserContent(content: ResponseItem["content"]): boolean {
   if (typeof content === "string") {
     return isContextualUserText(content);
   }
@@ -388,9 +393,7 @@ function isContextualDeveloperText(text: string): boolean {
   );
 }
 
-function isTextLikeDeveloperFragment(
-  fragment: ResponseContentPart,
-): boolean {
+function isTextLikeDeveloperFragment(fragment: ResponseContentPart): boolean {
   return (
     (fragment.type === "text" ||
       fragment.type === "input_text" ||
@@ -399,9 +402,7 @@ function isTextLikeDeveloperFragment(
   );
 }
 
-function isContextualDeveloperFragment(
-  fragment: ResponseContentPart,
-): boolean {
+function isContextualDeveloperFragment(fragment: ResponseContentPart): boolean {
   return (
     isTextLikeDeveloperFragment(fragment) &&
     isContextualDeveloperText(fragment.text as string)
@@ -490,7 +491,10 @@ export function isUserTurnBoundary(item: ResponseItem): boolean {
     return false;
   }
   if (item.role === "user") {
-    return !isContextualUserContent(item.content);
+    return (
+      !isContextualUserContent(item.content) &&
+      isAgentInvocationTurnBoundary(item)
+    );
   }
   if (item.role === "assistant") {
     return isInterAgentInstructionContent(item.content);
@@ -559,7 +563,8 @@ export function reconstructFromRollout(
     ? computeSnapshotStale(rolloutItems, opts.indexSnapshot)
     : false;
   const pending = {
-    baseReplacementHistory: undefined as ReadonlyArray<ResponseItem> | undefined,
+    baseReplacementHistory: undefined as
+      ReadonlyArray<ResponseItem> | undefined,
     previousTurnSettings: undefined as PreviousTurnSettings | undefined,
     referenceContextItem: { kind: "never_set" } as TurnReferenceContextItem,
     pendingRollbackTurns: 0,
@@ -637,7 +642,10 @@ export function reconstructFromRollout(
           };
           active.previousTurnSettings = next;
           if (active.referenceContextItem.kind === "never_set") {
-            active.referenceContextItem = { kind: "latest", item: item.payload };
+            active.referenceContextItem = {
+              kind: "latest",
+              item: item.payload,
+            };
           }
         }
         break;
@@ -655,20 +663,26 @@ export function reconstructFromRollout(
         const innerType = (inner as { type?: string }).type;
         switch (innerType) {
           case "thread_rolled_back": {
-            const payload = (inner as unknown as { payload: { numTurns: number } }).payload;
+            const payload = (
+              inner as unknown as { payload: { numTurns: number } }
+            ).payload;
             pending.pendingRollbackTurns += payload?.numTurns ?? 0;
             break;
           }
           case "turn_complete": {
             if (!active) active = emptySegment();
-            const payload = (inner as unknown as { payload: { turnId: string } }).payload;
+            const payload = (
+              inner as unknown as { payload: { turnId: string } }
+            ).payload;
             if (active.turnId === undefined) active.turnId = payload.turnId;
             seenTerminated.add(payload.turnId);
             break;
           }
           case "turn_aborted": {
             if (!active) active = emptySegment();
-            const payload = (inner as unknown as { payload: { turnId?: string } }).payload;
+            const payload = (
+              inner as unknown as { payload: { turnId?: string } }
+            ).payload;
             if (active.turnId === undefined && payload.turnId) {
               active.turnId = payload.turnId;
             }
@@ -681,12 +695,11 @@ export function reconstructFromRollout(
             break;
           }
           case "turn_started": {
-            const payload = (inner as unknown as { payload: { turnId: string } }).payload;
+            const payload = (
+              inner as unknown as { payload: { turnId: string } }
+            ).payload;
             seenStarted.add(payload.turnId);
-            if (
-              active &&
-              turnIdsCompatible(active.turnId, payload.turnId)
-            ) {
+            if (active && turnIdsCompatible(active.turnId, payload.turnId)) {
               // Finalize the segment — TurnStarted is the oldest
               // boundary of this reverse-scan segment.
               finalizeActiveSegment(active, pending);
@@ -729,7 +742,11 @@ export function reconstructFromRollout(
     string,
     { readonly checkpoint: TurnCheckpointEvent; readonly rolloutIndex: number }
   >();
-  for (let rolloutIndex = 0; rolloutIndex < rolloutItems.length; rolloutIndex += 1) {
+  for (
+    let rolloutIndex = 0;
+    rolloutIndex < rolloutItems.length;
+    rolloutIndex += 1
+  ) {
     const item = rolloutItems[rolloutIndex];
     if (item?.type !== "event_msg") continue;
     const inner = item.payload.msg as { type?: string; payload?: unknown };
@@ -798,7 +815,11 @@ export function reconstructFromRollout(
   };
   let sawLegacyCompactionWithoutReplacement = false;
 
-  for (let suffixIndex = 0; suffixIndex < rolloutSuffix.length; suffixIndex += 1) {
+  for (
+    let suffixIndex = 0;
+    suffixIndex < rolloutSuffix.length;
+    suffixIndex += 1
+  ) {
     const item = rolloutSuffix[suffixIndex];
     if (item === undefined) continue;
     const rolloutIndex = rolloutSuffixStartIndex + suffixIndex;
@@ -1002,12 +1023,14 @@ export function reconstructFromRollout(
   };
 
   if (pending.previousTurnSettings !== undefined) {
-    (result as { previousTurnSettings?: PreviousTurnSettings }).previousTurnSettings =
-      pending.previousTurnSettings;
+    (
+      result as { previousTurnSettings?: PreviousTurnSettings }
+    ).previousTurnSettings = pending.previousTurnSettings;
   }
   if (referenceContextItem !== undefined) {
-    (result as { referenceContextItem?: TurnContextItem }).referenceContextItem =
-      referenceContextItem;
+    (
+      result as { referenceContextItem?: TurnContextItem }
+    ).referenceContextItem = referenceContextItem;
   }
   return result;
 }
@@ -1142,9 +1165,7 @@ function applyReplayTruncation(item: ResponseItem): ResponseItem {
  * user-role (the isUserTurnBoundary assistant branch is intentionally
  * NOT hit because we also check role directly first).
  */
-function collectUserMessages(
-  history: ReadonlyArray<ResponseItem>,
-): string[] {
+function collectUserMessages(history: ReadonlyArray<ResponseItem>): string[] {
   const out: string[] = [];
   for (const item of history) {
     if (item.role !== "user") continue;
@@ -1210,7 +1231,8 @@ export function buildCompactedHistory(
   for (const msg of selected) {
     out.push({ role: "user", content: msg });
   }
-  const summary = summaryText.length > 0 ? summaryText : "(no summary available)";
+  const summary =
+    summaryText.length > 0 ? summaryText : "(no summary available)";
   out.push({ role: "user", content: summary });
   return out;
 }

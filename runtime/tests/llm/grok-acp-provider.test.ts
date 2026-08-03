@@ -13,10 +13,11 @@ const { terminationSeam } = vi.hoisted(() => ({
   },
 }))
 
-vi.mock('../../src/utils/supervisedProcess.js', async importOriginal => {
-  const actual = await importOriginal<
-    typeof import('../../src/utils/supervisedProcess.js')
-  >()
+vi.mock('../../src/utils/supervisedProcess.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('../../src/utils/supervisedProcess.js')
+    >()
   return {
     ...actual,
     terminateProcessTreeAndWait: async (
@@ -44,6 +45,10 @@ import {
 import type { LLMMessage } from '../../src/llm/types.ts'
 import { transitionSandboxExecutionBroker } from '../../src/sandbox/execution-lifecycle.ts'
 import { explicitDangerBroker } from '../helpers/explicit-danger-boundary.ts'
+import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+} from '../../src/contracts/agent-invocation-envelope.ts'
 
 const FIXTURE = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -131,9 +136,52 @@ describe('message flattening', () => {
     expect(flattened).toContain('look at this')
     expect(flattened).toContain('[image_url]')
   })
+
+  test('refuses to flatten authenticated invocation authorities', () => {
+    const messages = materializeAgentInvocationMessages(
+      createCsvAgentInvocationEnvelope({
+        jobId: 'acp-job',
+        itemId: 'acp-item',
+        rowIndex: 0,
+        rowSha256: `sha256:${'b'.repeat(64)}`,
+        instruction: 'classify the input',
+        row: { value: 'untrusted' },
+      }),
+    )
+
+    expect(() => flattenMessagesForAcp(messages)).toThrow(
+      'ACP transport cannot preserve authenticated agent invocation authorities',
+    )
+  })
 })
 
 describe('GrokAcpProvider end to end (fake agent)', () => {
+  test('rejects a managed invocation before starting the ACP transport', async () => {
+    const provider = new GrokAcpProvider({
+      model: 'grok-composer-2.5-fast',
+      binaryPath: '/definitely/not/a/grok/binary',
+      sandboxExecutionBroker: explicitDangerBroker,
+    })
+    const messages = materializeAgentInvocationMessages(
+      createCsvAgentInvocationEnvelope({
+        jobId: 'managed-acp-job',
+        itemId: 'managed-acp-item',
+        rowIndex: 1,
+        rowSha256: `sha256:${'c'.repeat(64)}`,
+        instruction: 'run the managed task',
+        row: { value: 'untrusted' },
+      }),
+    )
+
+    try {
+      await expect(provider.chat(messages)).rejects.toThrow(
+        'ACP transport cannot preserve authenticated agent invocation authorities',
+      )
+    } finally {
+      await provider.dispose()
+    }
+  })
+
   test('close drains a replacement client created during an earlier disposal', async () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
@@ -141,7 +189,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       sandboxExecutionBroker: explicitDangerBroker,
     })
     let releaseFirst!: () => void
-    const firstClosed = new Promise<void>(resolve => {
+    const firstClosed = new Promise<void>((resolve) => {
       releaseFirst = resolve
     })
     const first = { dispose: vi.fn(() => firstClosed) }
@@ -205,12 +253,15 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       const chunks: Array<{ content: string; done: boolean }> = []
       const response = await provider.chatStream(
         [{ role: 'user', content: 'hi' }],
-        chunk => chunks.push({ content: chunk.content, done: chunk.done }),
+        (chunk) => chunks.push({ content: chunk.content, done: chunk.done }),
       )
       expect(response.content).toBe('[grok-composer-2.5-fast] Hello world')
       expect(chunks.at(-1)).toEqual({ content: '', done: true })
       expect(
-        chunks.filter(chunk => !chunk.done).map(chunk => chunk.content).join(''),
+        chunks
+          .filter((chunk) => !chunk.done)
+          .map((chunk) => chunk.content)
+          .join(''),
       ).toBe(response.content)
     } finally {
       await provider.dispose()
@@ -259,11 +310,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
     const initialCwd = join(root, 'initial')
     const rebasedCwd = join(root, 'rebased')
     const staleCwd = join(root, 'stale-config')
-    await Promise.all([
-      mkdir(initialCwd),
-      mkdir(rebasedCwd),
-      mkdir(staleCwd),
-    ])
+    await Promise.all([mkdir(initialCwd), mkdir(rebasedCwd), mkdir(staleCwd)])
     const broker = explicitDangerBroker.forkForCwd(initialCwd)
     const prepareSpawn = vi.spyOn(broker, 'prepareSpawn')
     const provider = new GrokAcpProvider({

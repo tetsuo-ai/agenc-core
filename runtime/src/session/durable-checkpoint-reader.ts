@@ -5,6 +5,10 @@ import type {
 } from "./event-log.js";
 import type { ToolResultIntegrityResponseItem } from "./rollout-item.js";
 import {
+  assertAgentInvocationChannelMessage,
+  validateAgentInvocationMessageSequence,
+} from "../contracts/agent-invocation-envelope.js";
+import {
   CanonicalSha256Writer,
   TOOL_RESULT_DIGEST_PREFIX,
   ToolResultCanonicalizationError,
@@ -52,6 +56,7 @@ const CHECKPOINT_SLICE_KEYS = Object.freeze([
   "turnCount",
 ]);
 const RESPONSE_ITEM_KEYS = Object.freeze([
+  "agentInvocation",
   "content",
   "endTurn",
   "id",
@@ -95,6 +100,7 @@ export interface DurableCheckpointPrefixFailure {
     | "checkpoint_prefix_missing"
     | "checkpoint_prefix_digest_mismatch"
     | "misplaced_tool_result_integrity"
+    | "agent_invocation_integrity_failure"
     | "checkpoint_response_shape_invalid"
     | "checkpoint_prefix_body_invalid";
   readonly index: number | null;
@@ -202,6 +208,7 @@ export function computeCheckpointPrefixHashV2(
   if (!Number.isSafeInteger(count) || count < 0 || count > messages.length) {
     throw new Error("checkpoint prefix count is outside the available history");
   }
+  validateAgentInvocationResponseSequence(messages.slice(0, count));
   const writer = new CanonicalSha256Writer(CHECKPOINT_PREFIX_DIGEST_DOMAIN);
   writer.writeCount("message-count", count);
   for (let index = 0; index < count; index += 1) {
@@ -271,6 +278,44 @@ export function computeCheckpointPrefixHashV2(
       writer.writeCount(
         "tool-result-persisted-byte-length",
         integrity.persisted.byteLength,
+      );
+    }
+
+    const agentInvocation = message.agentInvocation;
+    if (agentInvocation !== undefined) {
+      writer.writeCount("agent-invocation-version", agentInvocation.version);
+      writer.writeString("agent-invocation-kind", agentInvocation.kind);
+      writer.writeString(
+        "agent-invocation-id",
+        agentInvocation.invocationId,
+      );
+      writer.writeCount(
+        "agent-invocation-minimum-reader-version",
+        agentInvocation.minimumReaderVersion,
+      );
+      writer.writeString(
+        "agent-invocation-envelope-digest",
+        agentInvocation.envelopeDigest,
+      );
+      writer.writeString(
+        "agent-invocation-authority",
+        agentInvocation.authority,
+      );
+      writer.writeCount(
+        "agent-invocation-channel-index",
+        agentInvocation.channelIndex,
+      );
+      writer.writeCount(
+        "agent-invocation-channel-count",
+        agentInvocation.channelCount,
+      );
+      writer.writeString(
+        "agent-invocation-content-digest",
+        agentInvocation.contentSha256,
+      );
+      writer.writeCount(
+        "agent-invocation-content-byte-length",
+        agentInvocation.contentByteLength,
       );
     }
   }
@@ -355,6 +400,25 @@ export function validateCheckpointPrefixV2(params: {
         },
       };
     }
+  }
+
+  try {
+    validateAgentInvocationResponseSequence(
+      [...prefixMessages(params.messages, count)],
+    );
+  } catch (error) {
+    if (error instanceof DurableCheckpointReadError) {
+      return {
+        status: "invalid",
+        failure: {
+          kind: "integrity_failure",
+          code: "agent_invocation_integrity_failure",
+          index: null,
+          reason: error.message,
+        },
+      };
+    }
+    throw error;
   }
 
   const toolPairs = validateToolPairSequence(
@@ -550,6 +614,41 @@ function assertResponseItemShape(
       `checkpoint response item ${index} has invalid tool-result integrity metadata`,
     );
   }
+  if (item.agentInvocation !== undefined) {
+    try {
+      assertAgentInvocationChannelMessage({
+        role: item.role,
+        content: item.content,
+        runtimeOnly: { agentInvocation: item.agentInvocation },
+      });
+    } catch (error) {
+      throw malformed(
+        `checkpoint response item ${index} has invalid agent invocation metadata: ${errorMessage(error)}`,
+      );
+    }
+  }
+}
+
+function validateAgentInvocationResponseSequence(
+  items: readonly ToolResultIntegrityResponseItem[],
+): void {
+  try {
+    validateAgentInvocationMessageSequence(
+      items.map((item) => ({
+        role: item.role,
+        content: item.content,
+        ...(item.agentInvocation !== undefined
+          ? { runtimeOnly: { agentInvocation: item.agentInvocation } }
+          : {}),
+      })),
+    );
+  } catch (error) {
+    throw malformed(`agent invocation sequence is invalid: ${errorMessage(error)}`);
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function parseCheckpointSlice(value: unknown): TurnCheckpointSliceLine {

@@ -158,6 +158,9 @@ const isResponseItemShape = objectShape(
     // The recovery envelope is additive. The checkpoint-v2 reader validates
     // the exact integrity shape, body digest, and owning run before replay.
     toolResultIntegrity: isUnknown,
+    // The strict checkpoint reader authenticates the three-channel sequence,
+    // reader version, envelope digest, and per-channel content identity.
+    agentInvocation: isUnknown,
     id: isString,
     endTurn: isBoolean,
     phase: isString,

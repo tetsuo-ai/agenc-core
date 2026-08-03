@@ -6,9 +6,7 @@ import {
   createTokenAccountingRequest,
   estimateTokenAccountingRequest,
 } from "../../llm/token-accounting.js";
-import {
-  getAPIContextManagement,
-} from "./apiMicrocompact.js";
+import { getAPIContextManagement } from "./apiMicrocompact.js";
 import {
   createCachedMicrocompactState,
   getCachedMicrocompactState,
@@ -42,6 +40,33 @@ import {
   getTimeBasedMicrocompactClearAfterMs,
 } from "./timeBasedMCConfig.js";
 import type { CompactContext, RuntimeMessage } from "./types.js";
+import {
+  createCsvAgentInvocationEnvelope,
+  materializeAgentInvocationMessages,
+} from "../../contracts/agent-invocation-envelope.js";
+
+function invocationRuntimeMessages(): RuntimeMessage[] {
+  return materializeAgentInvocationMessages(
+    createCsvAgentInvocationEnvelope({
+      jobId: "session-memory-job",
+      itemId: "session-memory-item",
+      rowIndex: 0,
+      rowSha256: `sha256:${"7".repeat(64)}`,
+      instruction: "SESSION_MEMORY_TASK_MARKER",
+      row: { payload: "SESSION_MEMORY_DATA_MARKER" },
+    }),
+  ).map((message) => {
+    const role = message.role === "developer" ? "system" : message.role;
+    return {
+      role,
+      originalRole: message.role,
+      type: role,
+      content: message.content,
+      message: { role, content: message.content },
+      runtimeOnly: message.runtimeOnly,
+    };
+  });
+}
 
 describe("compact supporting surfaces", () => {
   test("uses the complete inference component set for compaction estimates", () => {
@@ -127,17 +152,24 @@ describe("compact supporting surfaces", () => {
       clearToolResults: false,
       clearToolUses: false,
     });
-    expect(getAPIContextManagement({
-      clearToolResults: true,
-      clearToolUses: true,
-    })).toEqual({
+    expect(
+      getAPIContextManagement({
+        clearToolResults: true,
+        clearToolUses: true,
+      }),
+    ).toEqual({
       clearThinking: false,
       clearToolResults: true,
       clearToolUses: true,
     });
-    expect(getAPIContextManagement({}, {
-      AGENC_MICROCOMPACT_CLEAR_TOOL_RESULTS: "1",
-    })).toEqual({
+    expect(
+      getAPIContextManagement(
+        {},
+        {
+          AGENC_MICROCOMPACT_CLEAR_TOOL_RESULTS: "1",
+        },
+      ),
+    ).toEqual({
       clearThinking: false,
       clearToolResults: true,
       clearToolUses: false,
@@ -152,32 +184,45 @@ describe("compact supporting surfaces", () => {
     expect(getCachedMicrocompactState()).toEqual(disabledState);
     expect(resetCachedMicrocompactState()).toBeUndefined();
     await expect(maybeRunCachedMicrocompact()).resolves.toBeNull();
-    expect(existsSync(fileURLToPath(sourceUrl("services/compact/cachedMCConfig.ts"))))
-      .toBe(false);
+    expect(
+      existsSync(
+        fileURLToPath(sourceUrl("services/compact/cachedMCConfig.ts")),
+      ),
+    ).toBe(false);
   });
 
   test("formats compact summaries without analysis blocks", () => {
-    expect(stripAnalysisTags("before <analysis>private</analysis> after"))
-      .toBe("before  after");
-    expect(stripAnalysisTags([
-      "keep",
-      "<analysis>private one</analysis>",
-      "middle",
-      "<analysis>private two</analysis>",
-      "after",
-    ].join("\n"))).toBe("keep\n\nmiddle\n\nafter");
-    expect(formatCompactSummary("<analysis>private</analysis>use this"))
-      .toBe("use this");
-    expect(formatCompactSummary([
-      "<analysis>private</analysis>",
-      "<analysis>more private</analysis>",
-      "<summary>",
+    expect(stripAnalysisTags("before <analysis>private</analysis> after")).toBe(
+      "before  after",
+    );
+    expect(
+      stripAnalysisTags(
+        [
+          "keep",
+          "<analysis>private one</analysis>",
+          "middle",
+          "<analysis>private two</analysis>",
+          "after",
+        ].join("\n"),
+      ),
+    ).toBe("keep\n\nmiddle\n\nafter");
+    expect(formatCompactSummary("<analysis>private</analysis>use this")).toBe(
       "use this",
-      "",
-      "",
-      "next",
-      "</summary>",
-    ].join("\n"))).toBe("Summary:\nuse this\n\nnext");
+    );
+    expect(
+      formatCompactSummary(
+        [
+          "<analysis>private</analysis>",
+          "<analysis>more private</analysis>",
+          "<summary>",
+          "use this",
+          "",
+          "",
+          "next",
+          "</summary>",
+        ].join("\n"),
+      ),
+    ).toBe("Summary:\nuse this\n\nnext");
   });
 
   test("preserves $-sequences in the summary body verbatim", () => {
@@ -197,7 +242,9 @@ describe("compact supporting surfaces", () => {
     expect(prompt).toMatch(/^CRITICAL: Respond with TEXT ONLY/u);
     expect(prompt).toContain("Do NOT use Read, Bash, Grep, Glob, Edit, Write");
     expect(prompt).toContain("Primary Request and Intent");
-    expect(prompt).toContain("Additional Instructions:\nFocus on runtime files.");
+    expect(prompt).toContain(
+      "Additional Instructions:\nFocus on runtime files.",
+    );
     expect(prompt).toMatch(
       /Tool calls will be rejected and you will fail the task\.$/u,
     );
@@ -232,17 +279,23 @@ describe("compact supporting surfaces", () => {
 
     const directContinuation = getCompactUserSummaryMessage("done", true);
     expect(directContinuation).toContain("without asking the user");
-    expect(directContinuation).toContain("Resume directly - do not acknowledge");
+    expect(directContinuation).toContain(
+      "Resume directly - do not acknowledge",
+    );
   });
 
   test("keeps session-memory compact behind AgenC switches", async () => {
-    expect(shouldUseSessionMemoryCompaction({
-      AGENC_ENABLE_SESSION_MEMORY_COMPACT: "1",
-    })).toBe(true);
-    expect(shouldUseSessionMemoryCompaction({
-      AGENC_ENABLE_SESSION_MEMORY_COMPACT: "1",
-      AGENC_DISABLE_SESSION_MEMORY_COMPACT: "true",
-    })).toBe(false);
+    expect(
+      shouldUseSessionMemoryCompaction({
+        AGENC_ENABLE_SESSION_MEMORY_COMPACT: "1",
+      }),
+    ).toBe(true);
+    expect(
+      shouldUseSessionMemoryCompaction({
+        AGENC_ENABLE_SESSION_MEMORY_COMPACT: "1",
+        AGENC_DISABLE_SESSION_MEMORY_COMPACT: "true",
+      }),
+    ).toBe(false);
 
     const messages = [
       message("a"),
@@ -263,8 +316,9 @@ describe("compact supporting surfaces", () => {
       message("d"),
     ] satisfies RuntimeMessage[];
     expect(calculateMessagesToKeepIndex(messages, 2)).toBe(2);
-    expect(preserveToolPairsFromIndex(messages, 2).map((entry) => entry.content))
-      .toEqual(["", "tool output", "d"]);
+    expect(
+      preserveToolPairsFromIndex(messages, 2).map((entry) => entry.content),
+    ).toEqual(["", "tool output", "d"]);
     await expect(trySessionMemoryCompaction()).resolves.toBeNull();
 
     const savedSwitch = process.env.AGENC_ENABLE_SESSION_MEMORY_COMPACT;
@@ -279,10 +333,50 @@ describe("compact supporting surfaces", () => {
       });
 
       expect(result?.summaryMessages[0]?.content).toContain("memory summary");
-      expect(result?.messagesToKeep?.map((entry) => entry.content))
-        .toEqual(["a", "", "tool output", "d"]);
-      expect(result?.userDisplayMessage)
-        .toBe("Conversation compacted with session memory");
+      expect(result?.messagesToKeep?.map((entry) => entry.content)).toEqual([
+        "a",
+        "",
+        "tool output",
+        "d",
+      ]);
+      expect(result?.userDisplayMessage).toBe(
+        "Conversation compacted with session memory",
+      );
+    } finally {
+      if (savedSwitch === undefined) {
+        delete process.env.AGENC_ENABLE_SESSION_MEMORY_COMPACT;
+      } else {
+        process.env.AGENC_ENABLE_SESSION_MEMORY_COMPACT = savedSwitch;
+      }
+    }
+  });
+
+  test("session-memory compaction retains every invocation authority channel", async () => {
+    const savedSwitch = process.env.AGENC_ENABLE_SESSION_MEMORY_COMPACT;
+    process.env.AGENC_ENABLE_SESSION_MEMORY_COMPACT = "1";
+    try {
+      const invocation = invocationRuntimeMessages();
+      const result = await trySessionMemoryCompaction(
+        [
+          ...invocation,
+          ...Array.from({ length: 6 }, (_, index) =>
+            message(`ordinary-${index}`),
+          ),
+        ],
+        {
+          deps: {
+            sessionMemory: {
+              getContent: () => "memory summary",
+            },
+          },
+        },
+      );
+
+      expect(
+        (result?.messagesToKeep ?? [])
+          .filter((entry) => entry.runtimeOnly?.agentInvocation !== undefined)
+          .map((entry) => entry.runtimeOnly?.agentInvocation?.channelIndex),
+      ).toEqual([0, 1, 2]);
     } finally {
       if (savedSwitch === undefined) {
         delete process.env.AGENC_ENABLE_SESSION_MEMORY_COMPACT;
@@ -348,23 +442,27 @@ describe("compact supporting surfaces", () => {
       resetMicrocompactState: vi.fn(),
     };
     runPostCompactCleanup(cleanup);
-    expect(Object.values(cleanup).every((fn) => fn.mock.calls.length === 1))
-      .toBe(true);
+    expect(
+      Object.values(cleanup).every((fn) => fn.mock.calls.length === 1),
+    ).toBe(true);
   });
 
   test("keeps conservative time and snip compact fallbacks", () => {
     expect(getTimeBasedMicrocompactClearAfterMs({})).toBe(
       DEFAULT_MICROCOMPACT_CLEAR_AFTER_MS,
     );
-    expect(getTimeBasedMicrocompactClearAfterMs({
-      AGENC_MICROCOMPACT_CLEAR_AFTER_MS: "1200",
-    })).toBe(1_200);
+    expect(
+      getTimeBasedMicrocompactClearAfterMs({
+        AGENC_MICROCOMPACT_CLEAR_AFTER_MS: "1200",
+      }),
+    ).toBe(1_200);
 
     const messages = [message("unchanged")];
     expect(snipCompact(messages)).toEqual({ messages, tokensFreed: 0 });
 
     const longMessages = ["prefix", "middle", "suffix"].map((content) =>
-      message(content.repeat(10_000)));
+      message(content.repeat(10_000)),
+    );
     const result = snipCompact(longMessages, {
       targetTokenCount: 10,
       keepPrefixCount: 1,

@@ -17,8 +17,15 @@ import type { Session } from "../session/session.js";
 import { backgroundTaskLifecycle, isBackgroundTask } from "../tasks/index.js";
 import {
   createModelFacingTools,
+  __disposeCsvAgentJobsRepositoriesForTests,
+  __getCsvAgentJobsRepositoryForTests,
   __setLiveWebFetchDnsAllLookupForTests,
 } from "./model-facing-tools.js";
+import { CSV_RECOVERY_CANDIDATE_PAGE_SIZE } from "../state/csv-agent-jobs.js";
+import {
+  openStateDatabases,
+  type StateSqliteDriver,
+} from "../state/sqlite-driver.js";
 import { collectSkillsSnapshot } from "../commands/skills.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
@@ -91,6 +98,39 @@ function fakeMcpManager() {
       bytesReturned: 13,
     }),
   };
+}
+
+function seedExpiredCsvImports(
+  driver: StateSqliteDriver,
+  prefix: string,
+  count: number,
+): void {
+  const insert = driver.prepareState(
+    `INSERT INTO csv_agent_jobs (
+       id, name, status, instruction, input_headers_json, input_csv_path,
+       output_csv_path, auto_export, import_id, import_state,
+       import_lease_owner, import_lease_expires_at, import_owner_pid,
+       import_owner_boot_id, import_owner_process_start,
+       import_lease_generation, execution_gate,
+       requested_max_concurrency, identity_format_version, input_bytes,
+       max_items, max_result_bytes, max_result_bytes_per_job,
+       created_at, updated_at
+     ) VALUES (
+       ?, ?, 'pending', 'x', '["id"]', '/in', '', 0, ?, 'staging',
+       'old-owner', 1, 2147000000, NULL, 'old-start', ?, 'ready',
+       16, 1, 0, 10, 1024, 4096, 1, 1
+     )`,
+  );
+  for (let index = 0; index < count; index += 1) {
+    const id = `${prefix}-${String(index).padStart(2, "0")}`;
+    insert.run(id, id, `${id}-import`, `${id}-generation`);
+  }
+  driver
+    .prepareState(
+      `UPDATE csv_storage_quota SET active_imports = active_imports + ?
+       WHERE singleton = 1`,
+    )
+    .run(count);
 }
 
 function fakeSession(cwd = process.cwd()): Session {
@@ -362,6 +402,7 @@ describe("model-facing tools", () => {
 
   afterEach(async () => {
     __setLiveWebFetchDnsAllLookupForTests(undefined);
+    await __disposeCsvAgentJobsRepositoriesForTests();
     await shutdownLspServerManager();
     _resetLspManagerForTesting();
     _resetAgentRolesForTesting();
@@ -985,6 +1026,103 @@ describe("model-facing tools", () => {
       expect(JSON.parse(result.content).error).toBe("CSV request cancelled");
       expect(delegateMock).not.toHaveBeenCalled();
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let one aborted caller poison shared CSV repository startup", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-csv-shared-open-"));
+    await mkdir(join(root, ".git"));
+    const seedDriver = openStateDatabases({ cwd: root });
+    const candidateCount = CSV_RECOVERY_CANDIDATE_PAGE_SIZE + 5;
+    try {
+      seedExpiredCsvImports(seedDriver, "shared-open", candidateCount);
+    } finally {
+      seedDriver.close();
+    }
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const reason = new Error("first CSV repository caller cancelled");
+    try {
+      const first = __getCsvAgentJobsRepositoryForTests(
+        root,
+        firstController.signal,
+      );
+      const second = __getCsvAgentJobsRepositoryForTests(
+        root,
+        secondController.signal,
+      );
+      setImmediate(() => firstController.abort(reason));
+
+      await expect(first).rejects.toBe(reason);
+      await expect(second).resolves.toBeDefined();
+
+      const checkingDriver = openStateDatabases({ cwd: root });
+      try {
+        expect(
+          checkingDriver
+            .prepareState<[], { readonly count: number }>(
+              `SELECT COUNT(*) AS count FROM csv_agent_jobs
+               WHERE import_state IN ('staging', 'recovering')`,
+            )
+            .get()?.count,
+        ).toBe(0);
+      } finally {
+        checkingDriver.close();
+      }
+    } finally {
+      await __disposeCsvAgentJobsRepositoriesForTests();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stops CSV repository startup recovery when its sole caller aborts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-csv-sole-open-"));
+    await mkdir(join(root, ".git"));
+    const seedDriver = openStateDatabases({ cwd: root });
+    const candidateCount = CSV_RECOVERY_CANDIDATE_PAGE_SIZE + 5;
+    try {
+      seedExpiredCsvImports(seedDriver, "sole-open", candidateCount);
+    } finally {
+      seedDriver.close();
+    }
+    const controller = new AbortController();
+    const reason = new Error("sole CSV repository caller cancelled");
+    try {
+      const opening = __getCsvAgentJobsRepositoryForTests(
+        root,
+        controller.signal,
+      );
+      setImmediate(() => controller.abort(reason));
+
+      await expect(opening).rejects.toBe(reason);
+      const countRemainingImports = (): number => {
+        const checkingDriver = openStateDatabases({ cwd: root });
+        try {
+          return (
+            checkingDriver
+              .prepareState<[], { readonly count: number }>(
+                `SELECT COUNT(*) AS count FROM csv_agent_jobs
+                 WHERE import_state IN ('staging', 'recovering')`,
+              )
+              .get()?.count ?? 0
+          );
+        } finally {
+          checkingDriver.close();
+        }
+      };
+      const countAfterAbort = countRemainingImports();
+      expect(countAfterAbort).toBeGreaterThan(0);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(countRemainingImports()).toBe(countAfterAbort);
+
+      await expect(
+        __getCsvAgentJobsRepositoryForTests(root),
+      ).resolves.toBeDefined();
+      expect(countRemainingImports()).toBe(0);
+    } finally {
+      await __disposeCsvAgentJobsRepositoriesForTests();
       await rm(root, { recursive: true, force: true });
     }
   });

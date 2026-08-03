@@ -12,6 +12,7 @@ import { isRecord } from "../utils/record.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type { ProviderTokenCountCapability } from "./token-accounting.js";
 import type { ToolResultIntegrity } from "../session/tool-result-integrity.js";
+import type { AgentInvocationChannelMetadata } from "../contracts/agent-invocation-envelope.js";
 
 /**
  * Message role in a conversation
@@ -98,6 +99,8 @@ export interface LLMMessage {
      * preparation must remove it after local history transformations finish.
      */
     readonly toolResultIntegrity?: ToolResultIntegrity;
+    /** Durable authority/channel identity for versioned agent invocation input. */
+    readonly agentInvocation?: AgentInvocationChannelMetadata;
   };
   /** For assistant messages that request tool execution */
   toolCalls?: LLMToolCall[];

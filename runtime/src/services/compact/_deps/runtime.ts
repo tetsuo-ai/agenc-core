@@ -16,6 +16,7 @@ import {
 } from "../../../llm/token-accounting.js";
 import { readProviderFactoryOptions } from "../../../llm/provider.js";
 import type { LLMMessage } from "../../../llm/types.js";
+import { fromRuntimeMessageContent } from "../../../llm/content-conversion.js";
 import {
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW,
   getOpenAICompatibleContextWindow,
@@ -164,7 +165,9 @@ function toAccountingMessage(message: RuntimeMessage): LLMMessage {
     message.message?.role === "tool"
       ? message.message.role
       : "user");
-  const content = message.message?.content ?? message.content ?? "";
+  const content = fromRuntimeMessageContent(
+    message.message?.content ?? message.content ?? "",
+  );
   return {
     role,
     content: content as LLMMessage["content"],
@@ -180,6 +183,9 @@ function toAccountingMessage(message: RuntimeMessage): LLMMessage {
             arguments: call.arguments ?? "{}",
           })),
         }
+      : {}),
+    ...(message.runtimeOnly !== undefined
+      ? { runtimeOnly: { ...message.runtimeOnly } }
       : {}),
   };
 }

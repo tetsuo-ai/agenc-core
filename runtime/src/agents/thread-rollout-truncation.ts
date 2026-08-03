@@ -1,4 +1,8 @@
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
+import {
+  agentInvocationGroupStartIndex,
+  isAgentInvocationTurnBoundary,
+} from "../contracts/agent-invocation-envelope.js";
 
 export type ForkSnapshot =
   | { readonly kind: "truncate_before_nth_user_message"; readonly n: number }
@@ -16,7 +20,7 @@ export function userMessagePositionsInRollout(
   const userPositions: number[] = [];
   items.forEach((item, idx) => {
     if (rolloutItemIsUserTurnBoundary(item)) {
-      userPositions.push(idx);
+      userPositions.push(invocationGroupStart(item, idx));
       return;
     }
     const rollbackTurns = threadRollbackCount(item);
@@ -35,13 +39,13 @@ export function forkTurnPositionsInRollout(
   items.forEach((item, idx) => {
     if (item.type === "response_item") {
       if (isUserTurnBoundary(item.payload)) {
-        rollbackTurnPositions.push(idx);
+        rollbackTurnPositions.push(invocationGroupStart(item, idx));
       }
       if (
         isRealUserMessageBoundary(item.payload) ||
         isTriggerTurnBoundary(item.payload)
       ) {
-        forkTurnPositions.push(idx);
+        forkTurnPositions.push(invocationGroupStart(item, idx));
       }
       return;
     }
@@ -228,7 +232,15 @@ function isUserTurnBoundary(item: ResponseItem): boolean {
 }
 
 function isRealUserMessageBoundary(item: ResponseItem): boolean {
-  return item.role === "user" && !isContextualUserContent(item.content);
+  if (item.role !== "user" || isContextualUserContent(item.content)) {
+    return false;
+  }
+  return isAgentInvocationTurnBoundary(item);
+}
+
+function invocationGroupStart(item: RolloutItem, index: number): number {
+  if (item.type !== "response_item") return index;
+  return agentInvocationGroupStartIndex(item.payload, index);
 }
 
 function isTriggerTurnBoundary(item: ResponseItem): boolean {
@@ -236,7 +248,10 @@ function isTriggerTurnBoundary(item: ResponseItem): boolean {
   const text = contentText(item.content);
   if (text === undefined) return false;
   try {
-    const parsed = JSON.parse(text) as { triggerTurn?: unknown; trigger_turn?: unknown };
+    const parsed = JSON.parse(text) as {
+      triggerTurn?: unknown;
+      trigger_turn?: unknown;
+    };
     return parsed.triggerTurn === true || parsed.trigger_turn === true;
   } catch {
     return false;
@@ -254,7 +269,8 @@ function isContextualUserContent(content: ResponseItem["content"]): boolean {
   if (text === undefined) return false;
   const trimmed = text.trim();
   return (
-    (trimmed.startsWith("<turn_aborted>") && trimmed.endsWith("</turn_aborted>")) ||
+    (trimmed.startsWith("<turn_aborted>") &&
+      trimmed.endsWith("</turn_aborted>")) ||
     (trimmed.startsWith("<subagent_notification>") &&
       trimmed.endsWith("</subagent_notification>")) ||
     (trimmed.startsWith("<environment_context>") &&
