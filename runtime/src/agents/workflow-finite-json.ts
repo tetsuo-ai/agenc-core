@@ -471,7 +471,7 @@ function assertWellFormedUnicode(value: string, label: string, kind: string): vo
     const codeUnit = value.charCodeAt(index);
     if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
       const next = value.charCodeAt(index + 1);
-      if (next < 0xdc00 || next > 0xdfff) {
+      if (!Number.isInteger(next) || next < 0xdc00 || next > 0xdfff) {
         throw validationError("JSON_UNICODE", label, `${kind} contains a lone high surrogate`);
       }
       index += 1;

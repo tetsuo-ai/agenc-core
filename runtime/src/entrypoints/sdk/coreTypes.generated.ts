@@ -2147,7 +2147,7 @@ export type WorkflowHandoffOwner = {
 export type WorkflowHandoffArtifact = {
   format_version: 1
   kind: "workflow_handoff"
-  minimum_reader_runtime: "0.13.0"
+  compatibility_epoch: "workflow_handoff.v1/state-schema.22"
   artifact_id: string
   owner: WorkflowHandoffOwner
   digest: `sha256:${string}`

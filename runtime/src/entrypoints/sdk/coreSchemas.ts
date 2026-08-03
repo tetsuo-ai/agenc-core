@@ -1914,12 +1914,22 @@ const FastModeStateSchema = lazySchema(() =>
 // Durable Workflow Handoff Types
 // ============================================================================
 
+const WorkflowHandoffOwnerFieldSchema = lazySchema(() =>
+  z.string().min(1).refine(
+    (value) =>
+      !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(
+        value,
+      ) && new TextEncoder().encode(value).byteLength <= 1_024,
+    'workflow handoff owner field exceeds 1024 UTF-8 bytes or contains invalid Unicode',
+  ),
+)
+
 export const WorkflowHandoffOwnerSchema = lazySchema(() =>
   z
     .object({
-      run_id: z.string().min(1),
-      workflow_id: z.string().min(1),
-      producer_step_id: z.string().min(1),
+      run_id: WorkflowHandoffOwnerFieldSchema(),
+      workflow_id: WorkflowHandoffOwnerFieldSchema(),
+      producer_step_id: WorkflowHandoffOwnerFieldSchema(),
     })
     .strict(),
 )
@@ -1929,7 +1939,7 @@ export const WorkflowHandoffArtifactSchema = lazySchema(() =>
     .object({
       format_version: z.literal(1),
       kind: z.literal('workflow_handoff'),
-      minimum_reader_runtime: z.literal('0.13.0'),
+      compatibility_epoch: z.literal('workflow_handoff.v1/state-schema.22'),
       artifact_id: z.string().regex(/^wh_[0-9a-f]{48}$/u),
       owner: WorkflowHandoffOwnerSchema(),
       digest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
@@ -1940,11 +1950,45 @@ export const WorkflowHandoffArtifactSchema = lazySchema(() =>
       storage_ref: z
         .string()
         .regex(/^workflow-handoff:wh_[0-9a-f]{48}$/u),
-      created_at_ms: z.number().int().min(0),
-      committed_at_ms: z.number().int().min(0),
-      commit_sequence: z.number().int().min(1),
-      preview: z.string(),
+      created_at_ms: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+      committed_at_ms: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+      commit_sequence: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+      preview: z.string().refine(
+        (value) =>
+          !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(
+            value,
+          ) && new TextEncoder().encode(value).byteLength <= 2_048,
+        'workflow handoff preview exceeds 2048 UTF-8 bytes or contains invalid Unicode',
+      ),
       preview_truncated: z.boolean(),
     })
-    .strict(),
+    .strict()
+    .superRefine((artifact, context) => {
+      const previewBytes = new TextEncoder().encode(artifact.preview).byteLength
+      if (artifact.storage_ref !== `workflow-handoff:${artifact.artifact_id}`) {
+        context.addIssue({
+          code: 'custom',
+          path: ['storage_ref'],
+          message: 'workflow handoff storage reference does not match its artifact ID',
+        })
+      }
+      if (artifact.committed_at_ms < artifact.created_at_ms) {
+        context.addIssue({
+          code: 'custom',
+          path: ['committed_at_ms'],
+          message: 'workflow handoff commit time precedes its creation time',
+        })
+      }
+      if (
+        previewBytes > artifact.byte_length ||
+        (!artifact.preview_truncated && previewBytes !== artifact.byte_length) ||
+        (artifact.preview_truncated && previewBytes >= artifact.byte_length)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['preview'],
+          message: 'workflow handoff preview length is inconsistent with artifact bytes',
+        })
+      }
+    }),
 )

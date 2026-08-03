@@ -15,7 +15,7 @@ CREATE TABLE workflow_handoff_artifacts (
   artifact_id TEXT PRIMARY KEY,
   format_version INTEGER NOT NULL,
   kind TEXT NOT NULL,
-  minimum_reader_runtime TEXT NOT NULL,
+  compatibility_epoch TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
   run_id TEXT NOT NULL,
   workflow_id TEXT NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE workflow_handoff_artifacts (
   CHECK (substr(artifact_id, 4) NOT GLOB '*[^0-9a-f]*'),
   CHECK (format_version = 1),
   CHECK (kind = 'workflow_handoff'),
-  CHECK (minimum_reader_runtime = '0.13.0'),
+  CHECK (compatibility_epoch = 'workflow_handoff.v1/state-schema.22'),
   CHECK (length(idempotency_key) > 0
     AND length(CAST(idempotency_key AS BLOB)) <= 1024),
   CHECK (length(run_id) > 0 AND length(CAST(run_id AS BLOB)) <= 1024),
@@ -108,6 +108,52 @@ CREATE TABLE workflow_handoff_sequence (
 INSERT INTO workflow_handoff_sequence(singleton, next_commit_sequence)
 VALUES (1, 1);
 
+CREATE TABLE workflow_handoff_quota_global (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  artifact_count INTEGER NOT NULL CHECK (artifact_count >= 0),
+  artifact_bytes INTEGER NOT NULL CHECK (artifact_bytes >= 0)
+);
+INSERT INTO workflow_handoff_quota_global(
+  singleton, artifact_count, artifact_bytes
+) VALUES (1, 0, 0);
+
+CREATE TABLE workflow_handoff_quota_runs (
+  run_id TEXT PRIMARY KEY,
+  artifact_count INTEGER NOT NULL CHECK (artifact_count > 0),
+  artifact_bytes INTEGER NOT NULL CHECK (artifact_bytes >= 0),
+  CHECK (length(run_id) > 0 AND length(CAST(run_id AS BLOB)) <= 1024)
+);
+
+CREATE TRIGGER workflow_handoff_quota_after_insert
+AFTER INSERT ON workflow_handoff_artifacts
+BEGIN
+  UPDATE workflow_handoff_quota_global
+  SET artifact_count = artifact_count + 1,
+      artifact_bytes = artifact_bytes + NEW.byte_length
+  WHERE singleton = 1;
+  INSERT INTO workflow_handoff_quota_runs (
+    run_id, artifact_count, artifact_bytes
+  ) VALUES (NEW.run_id, 1, NEW.byte_length)
+  ON CONFLICT(run_id) DO UPDATE SET
+    artifact_count = artifact_count + 1,
+    artifact_bytes = artifact_bytes + NEW.byte_length;
+END;
+
+CREATE TRIGGER workflow_handoff_quota_after_delete
+AFTER DELETE ON workflow_handoff_artifacts
+BEGIN
+  UPDATE workflow_handoff_quota_global
+  SET artifact_count = artifact_count - 1,
+      artifact_bytes = artifact_bytes - OLD.byte_length
+  WHERE singleton = 1;
+  DELETE FROM workflow_handoff_quota_runs
+  WHERE run_id = OLD.run_id AND artifact_count = 1;
+  UPDATE workflow_handoff_quota_runs
+  SET artifact_count = artifact_count - 1,
+      artifact_bytes = artifact_bytes - OLD.byte_length
+  WHERE run_id = OLD.run_id AND artifact_count > 1;
+END;
+
 CREATE TABLE workflow_handoff_cursors (
   cursor_name TEXT PRIMARY KEY,
   sort_ms INTEGER NOT NULL CHECK (sort_ms >= 0),
@@ -121,7 +167,7 @@ BEFORE UPDATE ON workflow_handoff_artifacts
 WHEN OLD.artifact_id IS NOT NEW.artifact_id
   OR OLD.format_version IS NOT NEW.format_version
   OR OLD.kind IS NOT NEW.kind
-  OR OLD.minimum_reader_runtime IS NOT NEW.minimum_reader_runtime
+  OR OLD.compatibility_epoch IS NOT NEW.compatibility_epoch
   OR OLD.idempotency_key IS NOT NEW.idempotency_key
   OR OLD.run_id IS NOT NEW.run_id
   OR OLD.workflow_id IS NOT NEW.workflow_id

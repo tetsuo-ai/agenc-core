@@ -121,12 +121,13 @@ function seedIntents(options: {
     ]
   >(
     `INSERT INTO workflow_handoff_artifacts (
-       artifact_id, format_version, kind, minimum_reader_runtime,
+       artifact_id, format_version, kind, compatibility_epoch,
        idempotency_key, run_id, workflow_id, producer_step_id, digest,
        byte_length, token_count, storage_ref, status, preview,
        preview_truncated, created_at_ms, last_access_at_ms, unreferenced_at_ms
      ) VALUES (
-       ?, 1, 'workflow_handoff', '0.13.0', ?, ?, 'workflow', 'step',
+       ?, 1, 'workflow_handoff', 'workflow_handoff.v1/state-schema.22',
+       ?, ?, 'workflow', 'step',
        'sha256:0000000000000000000000000000000000000000000000000000000000000000',
        ?, 0, ?, 'intent', '', ?, ?, ?, ?
      )`,
@@ -236,6 +237,41 @@ describe("workflow handoff publication and integrity", () => {
         artifactStore.publish({ ...options, bytes: Buffer.from("different") }),
       "WORKFLOW_HANDOFF_CONFLICT",
     );
+  });
+
+  it("length-prefixes identity components so embedded NUL tuples cannot collide", async () => {
+    const artifactStore = store();
+    const left = await publish(artifactStore, "e", "left", {
+      run_id: "a",
+      workflow_id: "b\u0000c",
+      producer_step_id: "d",
+    });
+    const right = await publish(artifactStore, "e", "right", {
+      run_id: "a\u0000b",
+      workflow_id: "c",
+      producer_step_id: "d",
+    });
+
+    expect(left.artifact_id).not.toBe(right.artifact_id);
+    await expect(artifactStore.read(left.artifact_id)).resolves.toMatchObject({
+      artifact: { owner: { run_id: "a", workflow_id: "b\u0000c" } },
+    });
+    await expect(artifactStore.read(right.artifact_id)).resolves.toMatchObject({
+      artifact: { owner: { run_id: "a\u0000b", workflow_id: "c" } },
+    });
+  });
+
+  it("samples commit time after artifact installation completes", async () => {
+    const artifactStore = store({
+      afterArtifactInstalled() {
+        now = 2_000_000;
+      },
+    });
+
+    const artifact = await publish(artifactStore, "delayed-install");
+
+    expect(artifact.created_at_ms).toBe(1_000_000);
+    expect(artifact.committed_at_ms).toBe(2_000_000);
   });
 
   it("fails closed for corrupt bytes, mode changes, and unknown kinds", async () => {
@@ -404,10 +440,48 @@ describe("workflow handoff reachability, cleanup, quotas, and operator output", 
     now += 1_000;
     expect(await artifactStore.cleanupExpired()).toMatchObject({ inspected: 0 });
     expect(artifactStore.inspectForOperator(artifact.artifact_id).reference_count).toBe(1);
-    expect(artifactStore.release(artifact.artifact_id, "consumer-step")).toBe(true);
+    expect(
+      artifactStore.release(
+        artifact.artifact_id,
+        "consumer-step",
+        "consumer-run",
+      ),
+    ).toBe(true);
     expect(await artifactStore.cleanupExpired()).toMatchObject({ inspected: 0 });
     now += 101;
     expect(await artifactStore.cleanupExpired()).toMatchObject({ removed: 1 });
+  });
+
+  it("binds release to the stored consumer and survives clock rollback", async () => {
+    const artifactStore = store();
+    const artifact = await publish(artifactStore, "bound-release");
+    now = 2_000_000;
+    artifactStore.retain(artifact.artifact_id, "consumer-step", "consumer-run");
+
+    expect(() =>
+      artifactStore.release(
+        artifact.artifact_id,
+        "consumer-step",
+        "other-run",
+      ),
+    ).toThrowError(
+      expect.objectContaining({ code: "WORKFLOW_HANDOFF_OWNER_MISMATCH" }),
+    );
+    expect(artifactStore.inspectForOperator(artifact.artifact_id).reference_count).toBe(1);
+
+    now = 500_000;
+    expect(
+      artifactStore.release(
+        artifact.artifact_id,
+        "consumer-step",
+        "consumer-run",
+      ),
+    ).toBe(true);
+    expect(artifactStore.inspectForOperator(artifact.artifact_id)).toMatchObject({
+      last_access_at_ms: 2_000_000,
+      unreferenced_at_ms: 2_000_000,
+      reference_count: 0,
+    });
   });
 
   it("makes cleanup reservation win atomically over a racing retain", async () => {
@@ -504,6 +578,32 @@ describe("workflow handoff reachability, cleanup, quotas, and operator output", 
         }),
       "WORKFLOW_HANDOFF_QUOTA",
     );
+    expect(
+      driver
+        .prepareState<[], { readonly artifact_count: number }>(
+          `SELECT artifact_count FROM workflow_handoff_quota_global
+           WHERE singleton = 1`,
+        )
+        .get()?.artifact_count,
+    ).toBe(MAX_WORKFLOW_ARTIFACTS_GLOBAL);
+    const plans = [
+      ...driver
+        .prepareState<[], { readonly detail: string }>(
+          `EXPLAIN QUERY PLAN
+           SELECT artifact_count, artifact_bytes
+           FROM workflow_handoff_quota_global WHERE singleton = 1`,
+        )
+        .all(),
+      ...driver
+        .prepareState<[string], { readonly detail: string }>(
+          `EXPLAIN QUERY PLAN
+           SELECT artifact_count, artifact_bytes
+           FROM workflow_handoff_quota_runs WHERE run_id = ?`,
+        )
+        .all("count-run-1"),
+    ];
+    expect(plans).toHaveLength(2);
+    expect(plans.every((plan) => !plan.detail.includes("SCAN"))).toBe(true);
   });
 
   it("pages content-free operator metadata without reading output bytes", async () => {

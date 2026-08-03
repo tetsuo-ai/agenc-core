@@ -1,7 +1,7 @@
 /** Crash-safe, quota-governed storage for workflow handoff bytes. */
 
 import { execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, type Hash } from "node:crypto";
 import {
   chmodSync,
   constants as fsConstants,
@@ -39,15 +39,15 @@ import {
   WORKFLOW_ARTIFACT_RETENTION_MS,
   WORKFLOW_HANDOFF_ARTIFACT_FORMAT_VERSION,
   WORKFLOW_HANDOFF_ARTIFACT_KIND,
+  WORKFLOW_HANDOFF_COMPATIBILITY_EPOCH,
   WORKFLOW_HANDOFF_ENCODING,
   WORKFLOW_HANDOFF_MEDIA_TYPE,
-  WORKFLOW_HANDOFF_MINIMUM_READER_RUNTIME,
   validateWorkflowHandoffArtifactValue,
   type WorkflowHandoffArtifact,
   type WorkflowHandoffOwner,
 } from "./workflow-handoff-schema.js";
 
-const ARTIFACT_ID_DIGEST_DOMAIN = "agenc.workflow-handoff.artifact-id.v1\0";
+const ARTIFACT_ID_DIGEST_DOMAIN = "agenc.workflow-handoff.artifact-id.v2\0";
 const ARTIFACT_CONTENT_DIGEST_DOMAIN = "";
 const ARTIFACT_FILE_SUFFIX = ".handoff";
 const ARTIFACT_FILE_MODE = 0o600;
@@ -128,7 +128,7 @@ interface WorkflowHandoffRow {
   readonly artifact_id: string;
   readonly format_version: number;
   readonly kind: string;
-  readonly minimum_reader_runtime: string;
+  readonly compatibility_epoch: string;
   readonly idempotency_key: string;
   readonly run_id: string;
   readonly workflow_id: string;
@@ -213,7 +213,7 @@ export interface WorkflowHandoffOperatorEntry {
   readonly artifact_id: string;
   readonly format_version: number;
   readonly kind: string;
-  readonly minimum_reader_runtime: string;
+  readonly compatibility_epoch: string;
   readonly owner: WorkflowHandoffOwner;
   readonly digest: string;
   readonly byte_length: number;
@@ -359,7 +359,9 @@ export class WorkflowHandoffArtifactStore {
       });
     }
     await this.#hooks.afterArtifactInstalled?.(artifactId);
-    return metadataFromRow(this.#commitIntent(artifactId, now));
+    return metadataFromRow(
+      this.#commitIntent(artifactId, currentTime(this.#now)),
+    );
   }
 
   async read(
@@ -469,22 +471,53 @@ export class WorkflowHandoffArtifactStore {
     });
   }
 
-  release(artifactIdOrReference: string, referenceId: string): boolean {
+  release(
+    artifactIdOrReference: string,
+    referenceId: string,
+    consumerRunId: string,
+  ): boolean {
     const artifactId = parseArtifactIdentity(artifactIdOrReference);
     const reference = validateBoundedString(
       referenceId,
       "workflow handoff reference ID",
       MAX_REFERENCE_FIELD_UTF8_BYTES,
     );
+    const consumer = validateBoundedString(
+      consumerRunId,
+      "workflow handoff consumer run ID",
+      MAX_WORKFLOW_ARTIFACT_OWNER_FIELD_UTF8_BYTES,
+    );
     const now = currentTime(this.#now);
     return this.#driver.transactionImmediate(() => {
-      const removed = this.#driver
-        .prepareState<[string, string]>(
-          `DELETE FROM workflow_handoff_references
+      const existing = this.#driver
+        .prepareState<
+          [string, string],
+          { readonly consumer_run_id: string }
+        >(
+          `SELECT consumer_run_id
+           FROM workflow_handoff_references
            WHERE artifact_id = ? AND reference_id = ?`,
         )
-        .run(artifactId, reference).changes;
-      if (removed === 0) return false;
+        .get(artifactId, reference);
+      if (existing === undefined) return false;
+      if (existing.consumer_run_id !== consumer) {
+        throw storeError(
+          "WORKFLOW_HANDOFF_OWNER_MISMATCH",
+          `workflow handoff reference ${reference} does not belong to consumer ${consumer}`,
+        );
+      }
+      const removed = this.#driver
+        .prepareState<[string, string, string]>(
+          `DELETE FROM workflow_handoff_references
+           WHERE artifact_id = ? AND reference_id = ? AND consumer_run_id = ?`,
+        )
+        .run(artifactId, reference, consumer).changes;
+      if (removed !== 1) {
+        throw storeError(
+          "WORKFLOW_HANDOFF_CONFLICT",
+          `workflow handoff reference ${reference} changed during release`,
+        );
+      }
       const remaining = this.#driver
         .prepareState<[string], { readonly count: number }>(
           `SELECT COUNT(*) AS count
@@ -496,7 +529,7 @@ export class WorkflowHandoffArtifactStore {
         this.#driver
           .prepareState<[number, string]>(
             `UPDATE workflow_handoff_artifacts
-             SET unreferenced_at_ms = ?
+             SET unreferenced_at_ms = MAX(created_at_ms, last_access_at_ms, ?)
              WHERE artifact_id = ? AND status = 'committed'`,
           )
           .run(now, artifactId);
@@ -767,8 +800,8 @@ export class WorkflowHandoffArtifactStore {
         assertSameIntent(existing, desired);
         return existing;
       }
-      const runQuota = this.#quota("WHERE run_id = ?", [desired.owner.run_id]);
-      const globalQuota = this.#quota("", []);
+      const runQuota = this.#runQuota(desired.owner.run_id);
+      const globalQuota = this.#globalQuota();
       assertQuotaAvailable(
         runQuota,
         desired.byteLength,
@@ -807,7 +840,7 @@ export class WorkflowHandoffArtifactStore {
           ]
         >(
           `INSERT INTO workflow_handoff_artifacts (
-             artifact_id, format_version, kind, minimum_reader_runtime,
+             artifact_id, format_version, kind, compatibility_epoch,
              idempotency_key, run_id, workflow_id, producer_step_id, digest,
              byte_length, token_count, storage_ref, status, preview,
              preview_truncated, created_at_ms, last_access_at_ms,
@@ -818,7 +851,7 @@ export class WorkflowHandoffArtifactStore {
           desired.artifactId,
           WORKFLOW_HANDOFF_ARTIFACT_FORMAT_VERSION,
           WORKFLOW_HANDOFF_ARTIFACT_KIND,
-          WORKFLOW_HANDOFF_MINIMUM_READER_RUNTIME,
+          WORKFLOW_HANDOFF_COMPATIBILITY_EPOCH,
           desired.idempotencyKey,
           desired.owner.run_id,
           desired.owner.workflow_id,
@@ -845,14 +878,31 @@ export class WorkflowHandoffArtifactStore {
     });
   }
 
-  #quota(where: string, params: readonly string[]): QuotaRow {
-    return this.#driver
-      .prepareState<string[], QuotaRow>(
-        `SELECT COUNT(*) AS artifact_count,
-                COALESCE(SUM(byte_length), 0) AS artifact_bytes
-         FROM workflow_handoff_artifacts ${where}`,
+  #runQuota(runId: string): QuotaRow {
+    return (
+      this.#driver
+        .prepareState<[string], QuotaRow>(
+          `SELECT artifact_count, artifact_bytes
+           FROM workflow_handoff_quota_runs WHERE run_id = ?`,
+        )
+        .get(runId) ?? { artifact_count: 0, artifact_bytes: 0 }
+    );
+  }
+
+  #globalQuota(): QuotaRow {
+    const quota = this.#driver
+      .prepareState<[], QuotaRow>(
+        `SELECT artifact_count, artifact_bytes
+         FROM workflow_handoff_quota_global WHERE singleton = 1`,
       )
-      .get(...params) ?? { artifact_count: 0, artifact_bytes: 0 };
+      .get();
+    if (quota === undefined) {
+      throw storeError(
+        "WORKFLOW_HANDOFF_CORRUPT",
+        "workflow handoff global quota ledger is missing",
+      );
+    }
+    return quota;
   }
 
   #commitIntent(artifactId: string, now: number): WorkflowHandoffRow {
@@ -890,7 +940,11 @@ export class WorkflowHandoffArtifactStore {
            WHERE singleton = 1`,
         )
         .run();
-      const committedAt = Math.max(row.created_at_ms, now);
+      const committedAt = Math.max(
+        row.created_at_ms,
+        row.last_access_at_ms,
+        now,
+      );
       const updated = this.#driver
         .prepareState<[number, number, number, number, string]>(
           `UPDATE workflow_handoff_artifacts
@@ -1325,18 +1379,26 @@ function artifactIdFor(
   owner: WorkflowHandoffOwner,
   idempotencyKey: string,
 ): string {
-  const hash = createHash("sha256")
-    .update(ARTIFACT_ID_DIGEST_DOMAIN, "utf8")
-    .update(owner.run_id, "utf8")
-    .update("\0")
-    .update(owner.workflow_id, "utf8")
-    .update("\0")
-    .update(owner.producer_step_id, "utf8")
-    .update("\0")
-    .update(idempotencyKey, "utf8")
-    .digest("hex")
-    .slice(0, 48);
-  return `wh_${hash}`;
+  const digest = createHash("sha256").update(
+    ARTIFACT_ID_DIGEST_DOMAIN,
+    "utf8",
+  );
+  for (const component of [
+    owner.run_id,
+    owner.workflow_id,
+    owner.producer_step_id,
+    idempotencyKey,
+  ]) {
+    updateLengthPrefixedUtf8(digest, component);
+  }
+  return `wh_${digest.digest("hex").slice(0, 48)}`;
+}
+
+function updateLengthPrefixedUtf8(hash: Hash, value: string): void {
+  const bytes = Buffer.from(value, "utf8");
+  const length = Buffer.allocUnsafe(4);
+  length.writeUInt32BE(bytes.byteLength, 0);
+  hash.update(length).update(bytes);
 }
 
 function contentDigest(bytes: Uint8Array): string {
@@ -1395,7 +1457,7 @@ function metadataFromRow(row: WorkflowHandoffRow): WorkflowHandoffArtifact {
   return validateWorkflowHandoffArtifactValue({
     format_version: row.format_version,
     kind: row.kind,
-    minimum_reader_runtime: row.minimum_reader_runtime,
+    compatibility_epoch: row.compatibility_epoch,
     artifact_id: row.artifact_id,
     owner: rowOwner(row),
     digest: row.digest,
@@ -1426,7 +1488,7 @@ function operatorEntry(
     artifact_id: row.artifact_id,
     format_version: row.format_version,
     kind: row.kind,
-    minimum_reader_runtime: row.minimum_reader_runtime,
+    compatibility_epoch: row.compatibility_epoch,
     owner: rowOwner(row),
     digest: row.digest,
     byte_length: row.byte_length,
@@ -1498,6 +1560,17 @@ function assertQuotaAvailable(
   maximumBytes: number,
   label: string,
 ): void {
+  if (
+    !Number.isSafeInteger(used.artifact_count) ||
+    used.artifact_count < 0 ||
+    !Number.isSafeInteger(used.artifact_bytes) ||
+    used.artifact_bytes < 0
+  ) {
+    throw storeError(
+      "WORKFLOW_HANDOFF_CORRUPT",
+      `${label} workflow handoff quota ledger is invalid`,
+    );
+  }
   if (
     used.artifact_count >= maximumCount ||
     used.artifact_bytes > maximumBytes - requestedBytes

@@ -156,6 +156,14 @@ describe("state migration registry", () => {
           )
           .get(),
       ).toEqual({ version: 22, name: "workflow_handoff_artifacts" });
+      const artifactColumns = db
+        .prepare<[], { readonly name: string }>(
+          "PRAGMA table_info(workflow_handoff_artifacts)",
+        )
+        .all()
+        .map((row) => row.name);
+      expect(artifactColumns).toContain("compatibility_epoch");
+      expect(artifactColumns).not.toContain("minimum_reader_runtime");
       expect(
         db
           .prepare<[], { readonly name: string }>(
@@ -168,6 +176,8 @@ describe("state migration registry", () => {
       ).toEqual([
         "workflow_handoff_artifacts",
         "workflow_handoff_cursors",
+        "workflow_handoff_quota_global",
+        "workflow_handoff_quota_runs",
         "workflow_handoff_references",
         "workflow_handoff_sequence",
       ]);
@@ -175,14 +185,15 @@ describe("state migration registry", () => {
         db
           .prepare(
             `INSERT INTO workflow_handoff_artifacts (
-               artifact_id, format_version, kind, minimum_reader_runtime,
+               artifact_id, format_version, kind, compatibility_epoch,
                idempotency_key, run_id, workflow_id, producer_step_id,
                digest, byte_length, token_count, storage_ref, status, preview,
                preview_truncated, created_at_ms, last_access_at_ms,
                unreferenced_at_ms
              ) VALUES (
                'wh_000000000000000000000000000000000000000000000001', 1,
-               'future_kind', '0.13.0', 'key', 'run', 'workflow', 'step',
+               'future_kind', 'workflow_handoff.v1/state-schema.22',
+               'key', 'run', 'workflow', 'step',
                'sha256:0000000000000000000000000000000000000000000000000000000000000000',
                0, 0,
                'workflow-handoff:wh_000000000000000000000000000000000000000000000001',

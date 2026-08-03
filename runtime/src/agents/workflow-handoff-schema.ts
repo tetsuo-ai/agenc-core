@@ -6,7 +6,8 @@ import { cloneFiniteJsonValue } from "./workflow-finite-json.js";
 
 export const WORKFLOW_HANDOFF_ARTIFACT_FORMAT_VERSION = 1;
 export const WORKFLOW_HANDOFF_ARTIFACT_KIND = "workflow_handoff";
-export const WORKFLOW_HANDOFF_MINIMUM_READER_RUNTIME = "0.13.0";
+export const WORKFLOW_HANDOFF_COMPATIBILITY_EPOCH =
+  "workflow_handoff.v1/state-schema.22";
 export const WORKFLOW_HANDOFF_MEDIA_TYPE = "text/plain";
 export const WORKFLOW_HANDOFF_ENCODING = "utf-8";
 export const LEGACY_TOOL_RESULT_ARTIFACT_KIND = "tool-result";
@@ -35,6 +36,15 @@ const ARTIFACT_DIGEST_PATTERN = "^sha256:[0-9a-f]{64}$";
 const ARTIFACT_REFERENCE_PATTERN = "^workflow-handoff:wh_[0-9a-f]{48}$";
 const MAX_ARTIFACT_SCHEMA_ERRORS = 12;
 
+export const WORKFLOW_HANDOFF_POST_VALIDATION_CONSTRAINTS = Object.freeze({
+  ownerFieldMaxUtf8Bytes: MAX_WORKFLOW_ARTIFACT_OWNER_FIELD_UTF8_BYTES,
+  previewMaxUtf8Bytes: MAX_WORKFLOW_STEP_PREVIEW_BYTES,
+  requireWellFormedUnicode: true,
+  storageRefMustMatchArtifactId: true,
+  committedAtMustNotPrecedeCreatedAt: true,
+  previewBytesMustMatchByteLengthAndTruncation: true,
+});
+
 export interface WorkflowHandoffOwner {
   readonly run_id: string;
   readonly workflow_id: string;
@@ -44,7 +54,7 @@ export interface WorkflowHandoffOwner {
 export interface WorkflowHandoffArtifact {
   readonly format_version: 1;
   readonly kind: "workflow_handoff";
-  readonly minimum_reader_runtime: string;
+  readonly compatibility_epoch: "workflow_handoff.v1/state-schema.22";
   readonly artifact_id: string;
   readonly owner: WorkflowHandoffOwner;
   readonly digest: `sha256:${string}`;
@@ -62,12 +72,13 @@ export interface WorkflowHandoffArtifact {
 
 export const WORKFLOW_HANDOFF_ARTIFACT_SCHEMA = Object.freeze({
   $id: "agenc.workflow-handoff-artifact.v1",
+  "x-agenc-post-validation": WORKFLOW_HANDOFF_POST_VALIDATION_CONSTRAINTS,
   type: "object",
   properties: {
     format_version: { const: WORKFLOW_HANDOFF_ARTIFACT_FORMAT_VERSION },
     kind: { const: WORKFLOW_HANDOFF_ARTIFACT_KIND },
-    minimum_reader_runtime: {
-      const: WORKFLOW_HANDOFF_MINIMUM_READER_RUNTIME,
+    compatibility_epoch: {
+      const: WORKFLOW_HANDOFF_COMPATIBILITY_EPOCH,
     },
     artifact_id: { type: "string", pattern: ARTIFACT_ID_PATTERN },
     owner: {
@@ -94,16 +105,28 @@ export const WORKFLOW_HANDOFF_ARTIFACT_SCHEMA = Object.freeze({
     media_type: { const: WORKFLOW_HANDOFF_MEDIA_TYPE },
     encoding: { const: WORKFLOW_HANDOFF_ENCODING },
     storage_ref: { type: "string", pattern: ARTIFACT_REFERENCE_PATTERN },
-    created_at_ms: { type: "integer", minimum: 0 },
-    committed_at_ms: { type: "integer", minimum: 0 },
-    commit_sequence: { type: "integer", minimum: 1 },
+    created_at_ms: {
+      type: "integer",
+      minimum: 0,
+      maximum: Number.MAX_SAFE_INTEGER,
+    },
+    committed_at_ms: {
+      type: "integer",
+      minimum: 0,
+      maximum: Number.MAX_SAFE_INTEGER,
+    },
+    commit_sequence: {
+      type: "integer",
+      minimum: 1,
+      maximum: Number.MAX_SAFE_INTEGER,
+    },
     preview: { type: "string" },
     preview_truncated: { type: "boolean" },
   },
   required: [
     "format_version",
     "kind",
-    "minimum_reader_runtime",
+    "compatibility_epoch",
     "artifact_id",
     "owner",
     "digest",
@@ -121,7 +144,22 @@ export const WORKFLOW_HANDOFF_ARTIFACT_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
-const artifactValidator = new Ajv({ allErrors: true, strict: true }).compile(
+const artifactAjv = new Ajv({ allErrors: true, strict: true });
+artifactAjv.addKeyword({
+  keyword: "x-agenc-post-validation",
+  schemaType: "object",
+  type: "object",
+  errors: false,
+  validate: (_schema: unknown, value: unknown) => {
+    try {
+      assertArtifactRelationships(value as WorkflowHandoffArtifact);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+});
+const artifactValidator = artifactAjv.compile(
   WORKFLOW_HANDOFF_ARTIFACT_SCHEMA,
 ) as ValidateFunction<WorkflowHandoffArtifact>;
 

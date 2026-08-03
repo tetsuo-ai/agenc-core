@@ -6,7 +6,7 @@
 | Audit snapshot | `d2b228e87ea63bd6a5d93e6f599f36bce88d672b` |
 | Audit date | 2026-07-31 |
 | Owners | Workflow artifact contract (B3a), then bounded scheduler consumption (B3b) |
-| Compatibility | Additive artifact kind; old readers and garbage collectors fail closed and preserve unknown bytes |
+| Compatibility | Exact `workflow_handoff.v1/state-schema.22` epoch; old readers and garbage collectors fail closed and preserve unknown bytes |
 
 ## Context
 
@@ -28,7 +28,8 @@ is insufficient.
 The strict artifact record binds:
 
 - artifact format version and `workflow_handoff` kind;
-- runtime-owned artifact ID and minimum reader version;
+- runtime-owned artifact ID and exact `workflow_handoff.v1/state-schema.22`
+  compatibility epoch;
 - owning run/workflow and producer step identities;
 - exact encoded byte length, media/encoding contract, and SHA-256;
 - creation/commit sequence and retention state; and
@@ -40,7 +41,8 @@ trusted `0700` user-private root, `0600` files, and no-follow/descriptor
 containment checks appropriate to the platform, with equivalent per-user,
 non-inheriting access controls on Windows.
 
-Publication reserves artifact count and bytes transactionally before file
+Publication checks transactionally maintained per-run and global count/byte
+ledgers in O(1), then reserves the artifact before file
 creation, creates a stable idempotent intent, writes and flushes the exact bytes,
 atomically installs the final file, flushes its directory where supported, then
 commits metadata. Readers verify kind, ownership, length, and digest before use.
@@ -97,11 +99,14 @@ handoff and advertise the new result unions and limits.
 
 ## Rollback
 
-Rollback disables new workflow scheduling and artifact creation while the
-minimum compatible reader continues inspection and cleanup. It preserves all
-committed handoffs and child effect evidence until reachability proves them
-unreferenced. It MUST NOT expose an unknown kind to old garbage collection or
-flatten artifact content back into prompts.
+Rollback disables new workflow scheduling and artifact creation while a reader
+that explicitly implements the `workflow_handoff.v1/state-schema.22` epoch
+continues inspection and cleanup. This contract intentionally does not claim
+that runtime `0.13.0`, or any other speculative release version, is compatible.
+The public and persisted record carry the exact epoch, not a minimum-runtime
+semver. Rollback preserves all committed handoffs and child effect evidence
+until reachability proves them unreferenced. It MUST NOT expose an unknown kind
+to old garbage collection or flatten artifact content back into prompts.
 
 ## Alternatives rejected
 
@@ -142,7 +147,9 @@ root/file identity and ACLs around each operation. Operator list and inspect
 methods return identity, ownership, digest, quota, reachability, and lifecycle
 metadata only; they never read artifact output or expose previews.
 
-Migration 022 is additive. Its table accepts only `workflow_handoff`; the
+Migration 022 is additive. Its table accepts only `workflow_handoff` records
+with the exact `workflow_handoff.v1/state-schema.22` compatibility epoch and
+maintains per-run and global quota aggregates with insert/delete triggers; the
 explicit artifact-kind gate continues to recognize the legacy `tool-result`
 kind and throws on unknown kinds with an instruction to preserve bytes.
 

@@ -30,6 +30,10 @@ export const MAX_WORKFLOW_SEARCH_ROOTS = 2;
 
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
 const PATH_SEPARATOR_PATTERN = /[\\/]/u;
+const WINDOWS_FORBIDDEN_CHARACTER_PATTERN = /[<>:"|?*]/u;
+const WINDOWS_RESERVED_BASENAME_PATTERN =
+  /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
+const WINDOWS_TRAILING_DOT_OR_SPACE_PATTERN = /[. ]$/u;
 
 export interface ValidatedWorkflowName {
   readonly name: string;
@@ -106,11 +110,14 @@ export function validateWorkflowName(
     isAbsolute(name) ||
     win32.isAbsolute(name) ||
     PATH_SEPARATOR_PATTERN.test(name) ||
-    CONTROL_CHARACTER_PATTERN.test(name)
+    CONTROL_CHARACTER_PATTERN.test(name) ||
+    WINDOWS_FORBIDDEN_CHARACTER_PATTERN.test(name) ||
+    WINDOWS_TRAILING_DOT_OR_SPACE_PATTERN.test(name) ||
+    WINDOWS_RESERVED_BASENAME_PATTERN.test(name)
   ) {
     throw pathError(
       "WORKFLOW_NAME",
-      "workflow name must be one non-control, non-absolute basename",
+      "workflow name must be one portable, non-control, non-absolute basename",
     );
   }
   if (!isWellFormedUnicode(name)) {

@@ -77,6 +77,7 @@ async function main() {
     "export const WorkflowHandoffOwnerSchema",
     "export const WorkflowHandoffArtifactSchema",
     "kind: z.literal('workflow_handoff')",
+    "compatibility_epoch: z.literal('workflow_handoff.v1/state-schema.22')",
     "byte_length: z.number().int().min(0).max(16_777_216)",
     "token_count: z.number().int().min(0).max(131_072)",
   ]) {
@@ -90,6 +91,7 @@ async function main() {
     "export type WorkflowHandoffOwner",
     "export type WorkflowHandoffArtifact",
     'kind: "workflow_handoff"',
+    'compatibility_epoch: "workflow_handoff.v1/state-schema.22"',
     'digest: `sha256:${string}`',
   ]) {
     expectCondition(

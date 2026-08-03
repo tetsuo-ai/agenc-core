@@ -230,8 +230,35 @@ describe("workflow manifest schema and loader", () => {
   });
 
   it("rejects traversal, normalization ambiguity, and component plus one", () => {
-    for (const name of ["../escape", "..\\escape", ".", "e\u0301", "bad\u0000name"]) {
+    for (const name of [
+      "../escape",
+      "..\\escape",
+      ".",
+      "e\u0301",
+      "bad\u0000name",
+      "stream:name",
+      "bad<name",
+      "bad>name",
+      'bad"name',
+      "bad|name",
+      "bad?name",
+      "bad*name",
+      "trailing.",
+      "trailing ",
+      "CON",
+      "con.txt",
+      "PrN.workflow",
+      "AUX",
+      "nul.json",
+      "COM1",
+      "com9.log",
+      "LPT1",
+      "lpt9.txt",
+    ]) {
       expect(() => validateWorkflowName(name)).toThrow(WorkflowManifestPathError);
+    }
+    for (const name of ["console", "com0", "lpt0"]) {
+      expect(() => validateWorkflowName(name)).not.toThrow();
     }
     expect(() => validateWorkflowName("a".repeat(MAX_WORKFLOW_NAME_CODEPOINTS))).not.toThrow();
     expect(() => validateWorkflowName("a".repeat(MAX_WORKFLOW_NAME_CODEPOINTS + 1))).toThrow(
