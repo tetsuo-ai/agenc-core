@@ -15,6 +15,7 @@ import {
   CSV_MAX_DURABLE_BYTES,
   CSV_MAX_DURABLE_ITEMS,
   CSV_MAX_DURABLE_JOBS,
+  CSV_MAX_FIELD_BYTES,
   CSV_DEFAULT_ITEM_PAGE_SIZE,
   CSV_DEFAULT_MAX_CONCURRENCY,
   CSV_IMPORT_LEASE_SECONDS,
@@ -324,6 +325,64 @@ export interface CsvUnknownOutcomeResolution {
   readonly result?: Record<string, unknown>;
 }
 
+export interface CsvResolveUnknownOutcomeOptions {
+  /** Request-local cancellation only; this value is never persisted. */
+  readonly signal?: AbortSignal;
+}
+
+export const CSV_REVIEW_SOURCE_ID_PROJECTION_BYTES = 1_024;
+export const CSV_REVIEW_REASON_PROJECTION_BYTES = 4_096;
+export const CSV_REVIEW_EVIDENCE_PROJECTION_BYTES = 4_096;
+export const CSV_REVIEW_IDENTIFIER_PROJECTION_BYTES = 1_024;
+export const CSV_REVIEW_SOURCE_DIGEST_PAGE_BYTES = CSV_MAX_FIELD_BYTES;
+
+export interface CsvReviewJsonProjection {
+  /** Exact UTF-8 byte length of the stored JSON. */
+  readonly bytes: number;
+  /** SHA-256 of the complete stored JSON, never a truncated prefix. */
+  readonly sha256: string;
+  readonly truncated: boolean;
+  /** Present only when the complete stored JSON fit within the projection. */
+  readonly value?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Review-only projection for operator list/show/replay paths. It deliberately
+ * excludes both the imported row and the result blob.
+ */
+export interface CsvAgentJobReviewProjection {
+  readonly jobId: string;
+  readonly itemId: string;
+  readonly rowIndex: number;
+  readonly sourceId?: string;
+  readonly sourceIdBytes?: number;
+  readonly sourceIdTruncated?: boolean;
+  readonly sourceIdDigest?: string;
+  readonly status: CsvAgentJobItemStatus;
+  readonly attemptCount: number;
+  readonly resultAvailability: CsvResultAvailability;
+  readonly resultSizeBytes: number;
+  readonly resultDigest?: string;
+  readonly reviewStatus?: CsvReviewStatus;
+  readonly reviewReason?: string;
+  readonly reviewReasonBytes?: number;
+  readonly reviewReasonTruncated?: boolean;
+  readonly reviewDisposition?: CsvReviewDisposition;
+  readonly reviewDomainAction?: CsvReviewDomainAction;
+  readonly reviewEvidence?: CsvReviewJsonProjection;
+  readonly effect?: CsvJobEffectReference;
+  readonly lookupEvidence?: CsvReviewJsonProjection;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly completedAt?: number;
+}
+
+export interface CsvAgentJobReviewProjectionPage {
+  readonly contractVersion: typeof CSV_JOB_CONTRACT_VERSION;
+  readonly reviews: ReadonlyArray<CsvAgentJobReviewProjection>;
+  readonly nextCursor?: CsvJobItemCursor;
+}
+
 interface JobRow {
   id: string;
   name: string;
@@ -414,6 +473,46 @@ interface ItemRow {
   completed_at: number | null;
   reported_at: number | null;
 }
+
+interface ReviewProjectionRow {
+  job_id_prefix: Uint8Array;
+  job_id_bytes: number;
+  item_id_prefix: Uint8Array;
+  item_id_bytes: number;
+  row_index: number;
+  source_id_prefix: Uint8Array | null;
+  source_id_bytes: number | null;
+  status: string;
+  attempt_count: number;
+  result_availability: string;
+  result_size_bytes: number;
+  result_digest: string | null;
+  review_status: CsvReviewStatus | null;
+  review_reason_prefix: Uint8Array | null;
+  review_reason_bytes: number | null;
+  review_disposition: CsvReviewDisposition | null;
+  review_domain_action: CsvReviewDomainAction | null;
+  review_evidence_json: Uint8Array | null;
+  review_evidence_bytes: number | null;
+  effect_run_id_prefix: Uint8Array | null;
+  effect_run_id_bytes: number | null;
+  effect_step_id_prefix: Uint8Array | null;
+  effect_step_id_bytes: number | null;
+  effect_epoch: number | null;
+  lookup_evidence_json: Uint8Array | null;
+  lookup_evidence_bytes: number | null;
+  created_at: number;
+  updated_at: number;
+  completed_at: number | null;
+}
+
+type ReviewListProjectionRow = Omit<
+  ReviewProjectionRow,
+  | "review_evidence_json"
+  | "review_evidence_bytes"
+  | "lookup_evidence_json"
+  | "lookup_evidence_bytes"
+>;
 
 interface ResultBlobRow {
   item_id: string;
@@ -740,6 +839,336 @@ function truncateUtf8(value: string, maxBytes: number): Utf8Projection {
 }
 
 const CSV_ITEM_TEXT_PROJECTION_BYTES = 1_024;
+
+interface BoundedTextProjection {
+  readonly value: string;
+  readonly bytes: number;
+  readonly truncated: boolean;
+}
+
+function assertProjectionBytes(
+  value: number | null,
+  label: string,
+): number | undefined {
+  if (value === null) return undefined;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} has an invalid stored byte length`);
+  }
+  return value;
+}
+
+function decodeCompleteUtf8(bytes: Uint8Array, label: string): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(`${label} contains invalid UTF-8`);
+  }
+}
+
+function decodeTruncatedUtf8(
+  bytes: Uint8Array,
+  maxBytes: number,
+  label: string,
+): string {
+  let end = Math.min(bytes.byteLength, maxBytes);
+  while (end > 0) {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(
+        bytes.subarray(0, end),
+      );
+    } catch {
+      end -= 1;
+    }
+  }
+  if (bytes.byteLength > 0) {
+    throw new Error(`${label} has no valid UTF-8 projection prefix`);
+  }
+  return "";
+}
+
+function projectBoundedText(
+  prefix: Uint8Array | null,
+  storedBytes: number | null,
+  maxBytes: number,
+  label: string,
+): BoundedTextProjection | undefined {
+  const bytes = assertProjectionBytes(storedBytes, label);
+  if (prefix === null || bytes === undefined) {
+    if (prefix !== null || bytes !== undefined) {
+      throw new Error(`${label} projection metadata is inconsistent`);
+    }
+    return undefined;
+  }
+  const expectedPrefixBytes = Math.min(bytes, maxBytes + 1);
+  if (prefix.byteLength !== expectedPrefixBytes) {
+    throw new Error(`${label} projection prefix has an invalid byte length`);
+  }
+  const truncated = bytes > maxBytes;
+  return {
+    value: truncated
+      ? decodeTruncatedUtf8(prefix, maxBytes, label)
+      : decodeCompleteUtf8(prefix, label),
+    bytes,
+    truncated,
+  };
+}
+
+function projectIdentifier(
+  prefix: Uint8Array | null,
+  storedBytes: number | null,
+  label: string,
+  required: boolean,
+): string | undefined {
+  const projected = projectBoundedText(
+    prefix,
+    storedBytes,
+    CSV_REVIEW_IDENTIFIER_PROJECTION_BYTES,
+    label,
+  );
+  if (projected === undefined) {
+    if (required) throw new Error(`${label} is missing`);
+    return undefined;
+  }
+  if (projected.truncated) {
+    throw new Error(
+      `${label} exceeds ${CSV_REVIEW_IDENTIFIER_PROJECTION_BYTES} UTF-8 bytes`,
+    );
+  }
+  if (projected.value.trim().length === 0) {
+    throw new Error(`${label} must be non-empty`);
+  }
+  return projected.value;
+}
+
+function projectBoundedJson(
+  storedJson: Uint8Array | null,
+  storedBytes: number | null,
+  label: string,
+): CsvReviewJsonProjection | undefined {
+  const bytes = assertProjectionBytes(storedBytes, label);
+  if (bytes !== undefined && bytes > CSV_MAX_RESULT_BYTES) {
+    throw new Error(
+      `${label} exceeds the ${CSV_MAX_RESULT_BYTES} byte storage bound`,
+    );
+  }
+  if (storedJson === null || bytes === undefined) {
+    if (storedJson !== null || bytes !== undefined) {
+      throw new Error(`${label} projection metadata is inconsistent`);
+    }
+    return undefined;
+  }
+  if (storedJson.byteLength !== bytes) {
+    throw new Error(`${label} projection has an invalid byte length`);
+  }
+  const sha256 = createHash("sha256").update(storedJson).digest("hex");
+  if (bytes > CSV_REVIEW_EVIDENCE_PROJECTION_BYTES) {
+    return { bytes, sha256, truncated: true };
+  }
+  const json = decodeCompleteUtf8(storedJson, label);
+  const value = JSON.parse(json) as unknown;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must contain a JSON object`);
+  }
+  return {
+    bytes,
+    sha256,
+    truncated: false,
+    value: value as Readonly<Record<string, unknown>>,
+  };
+}
+
+function projectReviewRow(
+  row: ReviewProjectionRow,
+  digestSourceId: (jobId: string, itemId: string, bytes: number) => string,
+): CsvAgentJobReviewProjection {
+  const jobId = projectIdentifier(
+    row.job_id_prefix,
+    row.job_id_bytes,
+    "CSV review job id",
+    true,
+  )!;
+  const itemId = projectIdentifier(
+    row.item_id_prefix,
+    row.item_id_bytes,
+    "CSV review item id",
+    true,
+  )!;
+  const source = projectBoundedText(
+    row.source_id_prefix,
+    row.source_id_bytes,
+    CSV_REVIEW_SOURCE_ID_PROJECTION_BYTES,
+    "CSV review source id",
+  );
+  const reason = projectBoundedText(
+    row.review_reason_prefix,
+    row.review_reason_bytes,
+    CSV_REVIEW_REASON_PROJECTION_BYTES,
+    "CSV review reason",
+  );
+  const reviewEvidence = projectBoundedJson(
+    row.review_evidence_json,
+    row.review_evidence_bytes,
+    "CSV review evidence",
+  );
+  const lookupEvidence = projectBoundedJson(
+    row.lookup_evidence_json,
+    row.lookup_evidence_bytes,
+    "CSV review lookup evidence",
+  );
+  if (source !== undefined && source.bytes > CSV_MAX_FIELD_BYTES) {
+    throw new Error(
+      `CSV review source id exceeds the ${CSV_MAX_FIELD_BYTES} byte storage bound`,
+    );
+  }
+  const sourceIdDigest =
+    source?.truncated === true
+      ? digestSourceId(jobId, itemId, source.bytes)
+      : undefined;
+  if (sourceIdDigest !== undefined) {
+    assertSha256(sourceIdDigest, "CSV review source id digest");
+  }
+  const effectRunId = projectIdentifier(
+    row.effect_run_id_prefix,
+    row.effect_run_id_bytes,
+    "CSV review effect run id",
+    false,
+  );
+  const effectStepId = projectIdentifier(
+    row.effect_step_id_prefix,
+    row.effect_step_id_bytes,
+    "CSV review effect step id",
+    false,
+  );
+  const effectPresent =
+    effectRunId !== undefined ||
+    effectStepId !== undefined ||
+    row.effect_epoch !== null;
+  if (
+    effectPresent &&
+    (effectRunId === undefined ||
+      effectStepId === undefined ||
+      row.effect_epoch === null ||
+      !Number.isSafeInteger(row.effect_epoch) ||
+      row.effect_epoch <= 0)
+  ) {
+    throw new Error("CSV review effect identity is incomplete");
+  }
+  const effect =
+    effectRunId !== undefined &&
+    effectStepId !== undefined &&
+    row.effect_epoch !== null
+      ? {
+          runId: effectRunId,
+          stepId: effectStepId,
+          epoch: row.effect_epoch,
+        }
+      : undefined;
+  return {
+    jobId,
+    itemId,
+    rowIndex: row.row_index,
+    ...(source !== undefined
+      ? {
+          sourceId: source.value,
+          sourceIdBytes: source.bytes,
+          ...(source.truncated
+            ? { sourceIdTruncated: true, sourceIdDigest }
+            : {}),
+        }
+      : {}),
+    status: parseItemStatus(row.status),
+    attemptCount: row.attempt_count,
+    resultAvailability: parseResultAvailability(row.result_availability),
+    resultSizeBytes: row.result_size_bytes,
+    ...(row.result_digest !== null ? { resultDigest: row.result_digest } : {}),
+    ...(row.review_status !== null ? { reviewStatus: row.review_status } : {}),
+    ...(reason !== undefined
+      ? {
+          reviewReason: reason.value,
+          reviewReasonBytes: reason.bytes,
+          ...(reason.truncated ? { reviewReasonTruncated: true } : {}),
+        }
+      : {}),
+    ...(row.review_disposition !== null
+      ? { reviewDisposition: row.review_disposition }
+      : {}),
+    ...(row.review_domain_action !== null
+      ? { reviewDomainAction: row.review_domain_action }
+      : {}),
+    ...(reviewEvidence !== undefined ? { reviewEvidence } : {}),
+    ...(effect !== undefined ? { effect } : {}),
+    ...(lookupEvidence !== undefined ? { lookupEvidence } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ...(row.completed_at !== null ? { completedAt: row.completed_at } : {}),
+  };
+}
+
+function projectReviewListRow(
+  row: ReviewListProjectionRow,
+  digestSourceId: (jobId: string, itemId: string, bytes: number) => string,
+): CsvAgentJobReviewProjection {
+  return projectReviewRow(
+    {
+      ...row,
+      review_evidence_json: null,
+      review_evidence_bytes: null,
+      lookup_evidence_json: null,
+      lookup_evidence_bytes: null,
+    },
+    digestSourceId,
+  );
+}
+
+const CSV_REVIEW_BASE_PROJECTION_COLUMNS = `
+  substr(CAST(item.job_id AS BLOB), 1,
+         ${CSV_REVIEW_IDENTIFIER_PROJECTION_BYTES + 1}) AS job_id_prefix,
+  length(CAST(item.job_id AS BLOB)) AS job_id_bytes,
+  substr(CAST(item.item_id AS BLOB), 1,
+         ${CSV_REVIEW_IDENTIFIER_PROJECTION_BYTES + 1}) AS item_id_prefix,
+  length(CAST(item.item_id AS BLOB)) AS item_id_bytes,
+  item.row_index,
+  CASE WHEN item.source_id IS NULL THEN NULL
+       ELSE substr(CAST(item.source_id AS BLOB), 1,
+                   ${CSV_REVIEW_SOURCE_ID_PROJECTION_BYTES + 1})
+  END AS source_id_prefix,
+  length(CAST(item.source_id AS BLOB)) AS source_id_bytes,
+  item.status, item.attempt_count, item.result_availability,
+  item.result_size_bytes, item.result_digest, item.review_status,
+  CASE WHEN item.review_reason IS NULL THEN NULL
+       ELSE substr(CAST(item.review_reason AS BLOB), 1,
+                   ${CSV_REVIEW_REASON_PROJECTION_BYTES + 1})
+  END AS review_reason_prefix,
+  length(CAST(item.review_reason AS BLOB)) AS review_reason_bytes,
+  item.review_disposition, item.review_domain_action,
+  CASE WHEN item.effect_run_id IS NULL THEN NULL
+       ELSE substr(CAST(item.effect_run_id AS BLOB), 1,
+                   ${CSV_REVIEW_IDENTIFIER_PROJECTION_BYTES + 1})
+  END AS effect_run_id_prefix,
+  length(CAST(item.effect_run_id AS BLOB)) AS effect_run_id_bytes,
+  CASE WHEN item.effect_step_id IS NULL THEN NULL
+       ELSE substr(CAST(item.effect_step_id AS BLOB), 1,
+                   ${CSV_REVIEW_IDENTIFIER_PROJECTION_BYTES + 1})
+  END AS effect_step_id_prefix,
+  length(CAST(item.effect_step_id AS BLOB)) AS effect_step_id_bytes,
+  item.effect_epoch,
+  item.created_at, item.updated_at, item.completed_at`;
+
+const CSV_REVIEW_DETAIL_EVIDENCE_COLUMNS = `
+  CASE WHEN item.review_evidence_json IS NULL THEN NULL
+       WHEN length(CAST(item.review_evidence_json AS BLOB)) <=
+            ${CSV_MAX_RESULT_BYTES}
+       THEN CAST(item.review_evidence_json AS BLOB)
+       ELSE NULL
+  END AS review_evidence_json,
+  length(CAST(item.review_evidence_json AS BLOB)) AS review_evidence_bytes,
+  CASE WHEN item.lookup_evidence_json IS NULL THEN NULL
+       WHEN length(CAST(item.lookup_evidence_json AS BLOB)) <=
+            ${CSV_MAX_RESULT_BYTES}
+       THEN CAST(item.lookup_evidence_json AS BLOB)
+       ELSE NULL
+  END AS lookup_evidence_json,
+  length(CAST(item.lookup_evidence_json AS BLOB)) AS lookup_evidence_bytes`;
 
 function projectItemSummary(
   row: Pick<
@@ -1264,6 +1693,8 @@ export async function createCsvProcessIdentityProbe(
 
 export interface CsvAgentJobsRepositoryOptions {
   readonly processIdentityProbe?: CsvProcessIdentityProbe;
+  /** Pause-only seam after real canonical validation; cannot replace a token. */
+  readonly pauseAfterResultValidation?: () => Promise<void>;
 }
 
 export interface CsvAgentJobsRepositoryOpenOptions extends CsvAgentJobsRepositoryOptions {
@@ -1398,6 +1829,8 @@ function assertQuota(
 export class CsvAgentJobsRepository {
   private readonly processIdentityProbe: CsvProcessIdentityProbe;
   private readonly ownerIdentity: CsvProcessIdentity;
+  private readonly pauseAfterResultValidation:
+    CsvAgentJobsRepositoryOptions["pauseAfterResultValidation"] | undefined;
   private importRecoveryCursor:
     | {
         readonly recoveryRank: number;
@@ -1422,6 +1855,7 @@ export class CsvAgentJobsRepository {
       current: { pid: process.pid },
       inspect: async () => ({ kind: "unknown" }),
     };
+    this.pauseAfterResultValidation = options.pauseAfterResultValidation;
     this.ownerIdentity = this.processIdentityProbe.current;
     this.resumeInterruptedJobGarbageCollection();
   }
@@ -1436,6 +1870,11 @@ export class CsvAgentJobsRepository {
       (await createCsvProcessIdentityProbe({ signal: options.signal }));
     const repository = new CsvAgentJobsRepository(driver, {
       processIdentityProbe,
+      ...(options.pauseAfterResultValidation !== undefined
+        ? {
+            pauseAfterResultValidation: options.pauseAfterResultValidation,
+          }
+        : {}),
     });
     await repository.recoverAbandonedImports({ signal: options.signal });
     return repository;
@@ -3128,6 +3567,206 @@ export class CsvAgentJobsRepository {
     return row === undefined ? null : decodeItem(row);
   }
 
+  /**
+   * Read one bounded operator-review projection without touching imported-row
+   * or result-blob columns. A visible non-review item is returned with no
+   * reviewStatus so the public boundary can distinguish it from a missing row.
+   */
+  getReviewProjection(
+    jobId: string,
+    itemId: string,
+  ): CsvAgentJobReviewProjection | null {
+    return this.driver.transaction(() => {
+      const row = this.driver
+        .prepareState<[string, string], ReviewProjectionRow>(
+          `SELECT ${CSV_REVIEW_BASE_PROJECTION_COLUMNS},
+                  ${CSV_REVIEW_DETAIL_EVIDENCE_COLUMNS}
+           FROM csv_agent_job_items AS item
+           JOIN csv_agent_jobs AS job ON job.id = item.job_id
+           WHERE item.job_id = ? AND item.item_id = ?
+             AND job.import_state = 'visible' AND job.retired_at IS NULL`,
+        )
+        .get(jobId, itemId);
+      return row === undefined
+        ? null
+        : projectReviewRow(row, (projectedJobId, projectedItemId, bytes) =>
+            this.digestReviewSourceId(projectedJobId, projectedItemId, bytes),
+          );
+    });
+  }
+
+  /**
+   * Keyset-page the rows that remain unknown outcomes. Every selected payload
+   * column is capped in SQLite before it crosses into JavaScript.
+   */
+  listReviewProjectionsPage(opts: {
+    readonly jobId: string;
+    readonly cursor?: CsvJobItemCursor;
+    readonly limit?: number;
+  }): CsvAgentJobReviewProjectionPage {
+    return this.driver.transaction(() =>
+      this.listReviewProjectionsPageInSnapshot(opts),
+    );
+  }
+
+  private listReviewProjectionsPageInSnapshot(opts: {
+    readonly jobId: string;
+    readonly cursor?: CsvJobItemCursor;
+    readonly limit?: number;
+  }): CsvAgentJobReviewProjectionPage {
+    const limit = normalizePageLimit(opts.limit);
+    const status = "unknown_outcome" as const;
+    const cursor =
+      opts.cursor === undefined
+        ? undefined
+        : decodeCsvJobItemCursor(opts.cursor, opts.jobId, status);
+    if (cursor !== undefined) {
+      const boundary = this.driver
+        .prepareState<[string, number, string], { readonly present: number }>(
+          `SELECT 1 AS present
+           FROM csv_agent_job_items AS item
+           JOIN csv_agent_jobs AS job ON job.id = item.job_id
+           WHERE item.job_id = ? AND item.row_index = ? AND item.item_id = ?
+             AND item.status = 'unknown_outcome'
+             AND item.review_status IS NOT NULL
+             AND job.import_state = 'visible' AND job.retired_at IS NULL`,
+        )
+        .get(opts.jobId, cursor.rowIndex, cursor.itemId);
+      if (boundary === undefined) {
+        throw new Error("invalid or stale CSV item page cursor");
+      }
+    }
+    const cursorPredicate =
+      cursor === undefined
+        ? ""
+        : `AND (item.row_index > ? OR
+                    (item.row_index = ? AND item.item_id > ?))`;
+    const binds: unknown[] = [opts.jobId];
+    if (cursor !== undefined) {
+      binds.push(cursor.rowIndex, cursor.rowIndex, cursor.itemId);
+    }
+    binds.push(limit + 1);
+    const rows = this.driver
+      .prepareState<unknown[], ReviewListProjectionRow>(
+        `SELECT ${CSV_REVIEW_BASE_PROJECTION_COLUMNS}
+         FROM csv_agent_job_items AS item
+         JOIN csv_agent_jobs AS job ON job.id = item.job_id
+         WHERE item.job_id = ? AND item.status = 'unknown_outcome'
+           AND item.review_status IS NOT NULL
+           AND job.import_state = 'visible' AND job.retired_at IS NULL
+           ${cursorPredicate}
+         ORDER BY item.row_index ASC, item.item_id ASC LIMIT ?`,
+      )
+      .all(...binds);
+    const reviews: CsvAgentJobReviewProjection[] = [];
+    let pageBytes = Buffer.byteLength(
+      JSON.stringify({
+        contractVersion: CSV_JOB_CONTRACT_VERSION,
+        reviews: [],
+      }),
+      "utf8",
+    );
+    let sourceDigestBytes = 0;
+    for (const row of rows.slice(0, limit)) {
+      const rowSourceBytes = row.source_id_bytes ?? 0;
+      if (
+        rowSourceBytes > CSV_REVIEW_SOURCE_ID_PROJECTION_BYTES &&
+        reviews.length > 0 &&
+        sourceDigestBytes + rowSourceBytes > CSV_REVIEW_SOURCE_DIGEST_PAGE_BYTES
+      ) {
+        break;
+      }
+      if (rowSourceBytes > CSV_REVIEW_SOURCE_ID_PROJECTION_BYTES) {
+        sourceDigestBytes += rowSourceBytes;
+      }
+      const review = projectReviewListRow(
+        row,
+        (projectedJobId, projectedItemId, bytes) =>
+          this.digestReviewSourceId(projectedJobId, projectedItemId, bytes),
+      );
+      const reviewBytes = Buffer.byteLength(JSON.stringify(review), "utf8") + 1;
+      if (reviewBytes > CSV_MAX_ITEM_PROJECTION_BYTES) {
+        throw new Error(
+          `CSV review item projection is ${reviewBytes} bytes; limit is ${CSV_MAX_ITEM_PROJECTION_BYTES}`,
+        );
+      }
+      if (pageBytes + reviewBytes > CSV_MAX_ITEM_PAGE_BYTES) {
+        if (reviews.length === 0) {
+          throw new Error(
+            `CSV review page cannot admit its first ${reviewBytes} byte item`,
+          );
+        }
+        break;
+      }
+      reviews.push(review);
+      pageBytes += reviewBytes;
+    }
+    const hasMore = rows.length > reviews.length;
+    const lastReview = reviews.at(-1);
+    return {
+      contractVersion: CSV_JOB_CONTRACT_VERSION,
+      reviews,
+      ...(hasMore && lastReview !== undefined
+        ? {
+            nextCursor: encodeCsvJobItemCursor({
+              jobId: opts.jobId,
+              status,
+              rowIndex: lastReview.rowIndex,
+              itemId: lastReview.itemId,
+            }),
+          }
+        : {}),
+    };
+  }
+
+  private digestReviewSourceId(
+    jobId: string,
+    itemId: string,
+    expectedBytes: number,
+  ): string {
+    if (
+      !Number.isSafeInteger(expectedBytes) ||
+      expectedBytes <= CSV_REVIEW_SOURCE_ID_PROJECTION_BYTES ||
+      expectedBytes > CSV_MAX_FIELD_BYTES
+    ) {
+      throw new Error("CSV review source id digest length is invalid");
+    }
+    const digest = createHash("sha256");
+    const readChunk = this.driver.prepareState<
+      [number, number, string, string],
+      {
+        readonly source_id_chunk: Uint8Array | null;
+        readonly source_id_bytes: number | null;
+      }
+    >(
+      `SELECT substr(CAST(item.source_id AS BLOB), ?, ?)
+                AS source_id_chunk,
+              length(CAST(item.source_id AS BLOB)) AS source_id_bytes
+       FROM csv_agent_job_items AS item
+       JOIN csv_agent_jobs AS job ON job.id = item.job_id
+       WHERE item.job_id = ? AND item.item_id = ?
+         AND job.import_state = 'visible' AND job.retired_at IS NULL`,
+    );
+    for (let offset = 0; offset < expectedBytes;) {
+      const chunkBytes = Math.min(
+        CSV_RESULT_BLOB_CHUNK_BYTES,
+        expectedBytes - offset,
+      );
+      const row = readChunk.get(offset + 1, chunkBytes, jobId, itemId);
+      if (
+        row?.source_id_chunk === null ||
+        row?.source_id_chunk === undefined ||
+        row.source_id_bytes !== expectedBytes ||
+        row.source_id_chunk.byteLength !== chunkBytes
+      ) {
+        throw new Error("CSV review source id changed during projection");
+      }
+      digest.update(row.source_id_chunk);
+      offset += chunkBytes;
+    }
+    return digest.digest("hex");
+  }
+
   listItems(opts: {
     readonly jobId: string;
     readonly status?: CsvAgentJobItemStatus;
@@ -3991,7 +4630,9 @@ export class CsvAgentJobsRepository {
 
   async resolveUnknownOutcome(
     resolution: CsvUnknownOutcomeResolution,
+    options: CsvResolveUnknownOutcomeOptions = {},
   ): Promise<void> {
+    options.signal?.throwIfAborted();
     const valid =
       (resolution.disposition === "confirmed_committed" &&
         resolution.domainAction === "mark_completed") ||
@@ -4039,8 +4680,16 @@ export class CsvAgentJobsRepository {
         compiledSchema,
         canonicalResult,
       );
+      // Reject cancellation observed while the real validator was pending.
+      options.signal?.throwIfAborted();
       if (typeof validation === "string") throw new Error(validation);
       validatedResult = validation;
+      if (this.pauseAfterResultValidation !== undefined) {
+        await this.pauseAfterResultValidation();
+      }
+      // Nothing asynchronous follows this fence. Cancellation during either
+      // validation phase therefore cannot reach A1 or SQLite projection.
+      options.signal?.throwIfAborted();
     }
     const now = nowSeconds();
     this.driver.transactionImmediate(() => {
