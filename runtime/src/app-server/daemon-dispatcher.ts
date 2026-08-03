@@ -46,7 +46,6 @@ import {
 } from "./run-inspection.js";
 import {
   AgenCCsvJobReviewError,
-  AgenCCsvJobReviewStateService,
   type AgenCCsvJobReviewService,
 } from "./csv-job-review.js";
 import type { AuthBackend, AuthDaemonSocketIdentity } from "../auth/backend.js";
@@ -240,7 +239,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly realtime: AgenCRealtimeRpcHandlers;
   readonly runInspection: AgenCDaemonDispatcherOptions["runInspection"];
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
-  readonly csvJobReview: AgenCCsvJobReviewService;
+  readonly csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly codePrediction: AgenCDaemonDispatcherOptions["codePrediction"];
 }
 
@@ -563,7 +562,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       >
     | undefined;
   readonly #workflow: AgenCDaemonWorkflowStartService | undefined;
-  readonly #csvJobReview: AgenCCsvJobReviewService;
+  readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly #codePrediction:
     Pick<CodePredictionService, "complete" | "cancel" | "feedback"> | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
@@ -590,8 +589,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#realtime = options.realtime ?? new AgenCRealtimeRpcService();
     this.#runInspection = options.runInspection;
     this.#workflow = options.workflow;
-    this.#csvJobReview =
-      options.csvJobReview ?? new AgenCCsvJobReviewStateService();
+    this.#csvJobReview = options.csvJobReview;
     this.#codePrediction = options.codePrediction;
     this.#authHandlers =
       options.authBackend !== undefined
@@ -829,20 +827,40 @@ export class AgenCDaemonJsonRpcDispatcher {
           await this.#workflow.startRun(validateRunStartParams(params)),
         );
       case "csvJob.review.list":
+        if (this.#csvJobReview === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
         return successResponse(
           id,
-          await this.#csvJobReview.list(validateCsvJobReviewListParams(params)),
+          await this.#csvJobReview.list(
+            validateCsvJobReviewListParams(params),
+            {
+              signal,
+            },
+          ),
         );
       case "csvJob.review.show":
+        if (this.#csvJobReview === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
         return successResponse(
           id,
-          await this.#csvJobReview.show(validateCsvJobReviewShowParams(params)),
+          await this.#csvJobReview.show(
+            validateCsvJobReviewShowParams(params),
+            {
+              signal,
+            },
+          ),
         );
       case "csvJob.review.resolve":
+        if (this.#csvJobReview === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
         return successResponse(
           id,
           await this.#csvJobReview.resolve(
             validateCsvJobReviewResolveParams(params),
+            { signal },
           ),
         );
       case "session.create":
@@ -1809,6 +1827,9 @@ function methodSupportsRequestCancellation(
   return (
     method === "fs.fuzzy_search" ||
     method === "commandExec.start" ||
+    method === "csvJob.review.list" ||
+    method === "csvJob.review.show" ||
+    method === "csvJob.review.resolve" ||
     method === "session.partialCompactFromMessage" ||
     method === "session.rewindConversationToMessage" ||
     method === "workspace.editor.predict" ||

@@ -114,6 +114,10 @@ import {
 import { fetchStartupInternalEvents } from "./startup-internal-events.js";
 import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import {
+  CsvAgentJobsRepositoryAuthority,
+  type CsvAgentJobsRepositoryProvider,
+} from "../app-server/csv-agent-jobs-authority.js";
+import {
   resolveAdmissionConcurrencyLimits,
   resolveExecutionAdmissionBudgetPolicy,
 } from "../budget/admission-config.js";
@@ -838,6 +842,8 @@ export interface BootstrapLocalRuntimeSessionOptions {
   readonly requireSandboxReadyAtStartup?: boolean;
   /** Shared daemon authority. Omit only for an independently owned session. */
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
+  /** Shared daemon authority. Omit only for an independently owned session. */
+  readonly csvAgentJobsRepositories?: CsvAgentJobsRepositoryProvider;
   /**
    * Treat this session as unattended work for execution-admission budget
    * policy without enabling autonomous keepalive ticks. Daemon-owned
@@ -1162,6 +1168,12 @@ export async function bootstrapLocalRuntimeSession(
   const coordinatorModeEnabled = isCoordinatorModeEnabled(
     startup.config.coordinator_mode,
   );
+  const ownedCsvAgentJobsRepositories =
+    options.csvAgentJobsRepositories === undefined
+      ? new CsvAgentJobsRepositoryAuthority({ agencHome })
+      : null;
+  const csvAgentJobsRepositories =
+    options.csvAgentJobsRepositories ?? ownedCsvAgentJobsRepositories!;
   const baseToolsConfig =
     options.toolRegistryOptions?.toolsConfig ?? startup.config.tools_config;
   const registry = buildBootstrapToolRegistry({
@@ -1169,6 +1181,7 @@ export async function bootstrapLocalRuntimeSession(
     agencHome,
     mcpManager,
     getSession: () => sessionRef,
+    csvAgentJobsRepositories,
     emitWarning: emitProviderWarning,
     toolRegistryOptions: {
       ...(options.toolRegistryOptions ?? {}),
@@ -1491,6 +1504,13 @@ export async function bootstrapLocalRuntimeSession(
       if (ownedExecutionAdmissionKernel !== null) {
         try {
           ownedExecutionAdmissionKernel.close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (ownedCsvAgentJobsRepositories !== null) {
+        try {
+          await ownedCsvAgentJobsRepositories.close();
         } catch (error) {
           errors.push(error);
         }
@@ -1888,6 +1908,7 @@ export async function bootstrapLocalRuntimeSession(
               await resumeInterruptedAgentJobs({
                 session: s,
                 workspaceRoot,
+                csvAgentJobsRepositories,
                 signal: startupSignal,
               });
             } catch {

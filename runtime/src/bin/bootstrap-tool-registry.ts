@@ -7,12 +7,14 @@ import {
 } from "../tool-registry.js";
 import { buildWorkflowToolController } from "./workflow-controller.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
+import type { CsvAgentJobsRepositoryProvider } from "../app-server/csv-agent-jobs-authority.js";
 
 export interface BootstrapToolRegistryOptions {
   readonly workspaceRoot: string;
   readonly agencHome?: string;
   readonly mcpManager: MCPManager;
   readonly getSession: () => Session | null;
+  readonly csvAgentJobsRepositories: CsvAgentJobsRepositoryProvider;
   readonly emitWarning: (warning: {
     readonly cause: string;
     readonly message: string;
@@ -32,6 +34,7 @@ export function buildBootstrapToolRegistry(
       ? { agencHome: options.agencHome }
       : {}),
     getSession: options.getSession,
+    csvAgentJobsRepositories: options.csvAgentJobsRepositories,
     ...(options.toolRegistryOptions?.unifiedExecManager !== undefined
       ? { unifiedExecManager: options.toolRegistryOptions.unifiedExecManager }
       : {}),

@@ -7,7 +7,7 @@ import {
   type CsvAgentJobSummary,
 } from "../state/csv-agent-jobs.js";
 import { createOperatorEffectReviewResolution } from "../state/effect-review.js";
-import { openStateDatabases } from "../state/sqlite-driver.js";
+import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import {
   requireAbsoluteWorkspaceCwd,
   WorkspaceCwdError,
@@ -52,114 +52,150 @@ export class AgenCCsvJobReviewError extends Error {
 }
 
 export interface AgenCCsvJobReviewService {
-  list(params: CsvJobReviewListParams): Promise<CsvJobReviewListResult>;
-  show(params: CsvJobReviewShowParams): Promise<CsvJobReviewShowResult>;
-  resolve(params: CsvJobReviewResolveParams): Promise<CsvJobReviewResolveResult>;
+  list(
+    params: CsvJobReviewListParams,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<CsvJobReviewListResult>;
+  show(
+    params: CsvJobReviewShowParams,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<CsvJobReviewShowResult>;
+  resolve(
+    params: CsvJobReviewResolveParams,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<CsvJobReviewResolveResult>;
 }
 
 /**
- * Workspace-scoped operator review service. Each call opens and closes the
- * durable state database so results never depend on daemon-process memory.
+ * Workspace-scoped operator review service. Repository lifetime and
+ * per-database serialization belong to the injected process authority.
  */
-export class AgenCCsvJobReviewStateService
-  implements AgenCCsvJobReviewService
-{
-  async list(params: CsvJobReviewListParams): Promise<CsvJobReviewListResult> {
+export class AgenCCsvJobReviewStateService implements AgenCCsvJobReviewService {
+  constructor(private readonly repositories: CsvAgentJobsRepositoryProvider) {}
+
+  async list(
+    params: CsvJobReviewListParams,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<CsvJobReviewListResult> {
     validateWorkspaceAndIdentifiers(params.cwd, params.jobId);
-    return withRepository(params.cwd, (repository) => {
-      const job = requireJob(repository, params.jobId);
-      const page = repository.listItemsPage({
-        jobId: params.jobId,
-        status: "unknown_outcome",
-        ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
-        ...(params.limit !== undefined ? { limit: params.limit } : {}),
-      });
-      return {
-        contractVersion: CSV_REVIEW_CONTRACT_VERSION,
-        job: projectJobSummary(job),
-        reviews: page.items as unknown as readonly CsvJobReviewItemSummary[],
-        ...(page.nextCursor !== undefined
-          ? { nextCursor: page.nextCursor }
-          : {}),
-      };
-    });
+    return this.repositories.withRepository(
+      params.cwd,
+      (repository, signal) => {
+        signal.throwIfAborted();
+        const job = requireJob(repository, params.jobId);
+        const page = repository.listItemsPage({
+          jobId: params.jobId,
+          status: "unknown_outcome",
+          ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+          ...(params.limit !== undefined ? { limit: params.limit } : {}),
+        });
+        return {
+          contractVersion: CSV_REVIEW_CONTRACT_VERSION,
+          job: projectJobSummary(job),
+          reviews: page.items as unknown as readonly CsvJobReviewItemSummary[],
+          ...(page.nextCursor !== undefined
+            ? { nextCursor: page.nextCursor }
+            : {}),
+        };
+      },
+      options,
+    );
   }
 
-  async show(params: CsvJobReviewShowParams): Promise<CsvJobReviewShowResult> {
+  async show(
+    params: CsvJobReviewShowParams,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<CsvJobReviewShowResult> {
     validateWorkspaceAndIdentifiers(params.cwd, params.jobId, params.itemId);
-    return withRepository(params.cwd, (repository) => ({
-      contractVersion: CSV_REVIEW_CONTRACT_VERSION,
-      review: projectReviewDetail(
-        requireReviewItem(repository, params.jobId, params.itemId),
-      ),
-    }));
+    return this.repositories.withRepository(
+      params.cwd,
+      (repository, signal) => {
+        signal.throwIfAborted();
+        return {
+          contractVersion: CSV_REVIEW_CONTRACT_VERSION,
+          review: projectReviewDetail(
+            requireReviewItem(repository, params.jobId, params.itemId),
+          ),
+        };
+      },
+      options,
+    );
   }
 
   async resolve(
     params: CsvJobReviewResolveParams,
+    options: { readonly signal?: AbortSignal } = {},
   ): Promise<CsvJobReviewResolveResult> {
     validateResolutionParams(params);
-    return withRepository(params.cwd, (repository) => {
-      const item = requireReviewItem(repository, params.jobId, params.itemId);
-      const resolution = createOperatorEffectReviewResolution({
-        disposition: params.disposition,
-        actorId: params.reviewer,
-        evidenceRef: params.evidenceRef,
-        evidenceSha256: params.evidenceSha256,
-        reviewedAt: new Date().toISOString(),
-      });
-      const requestedResult =
-        params.result === undefined
-          ? undefined
-          : canonicalizeCsvResult(params.result);
-
-      if (params.disposition !== "confirmed_committed" && requestedResult) {
-        throw new AgenCCsvJobReviewError(
-          "CSV_REVIEW_INVALID",
-          "a CSV review result is valid only for confirmed_committed",
-        );
-      }
-      if (item.reviewStatus !== "pending") {
-        return replayOrConflict(item, resolution, requestedResult);
-      }
-
-      try {
-        repository.resolveUnknownOutcome({
-          jobId: params.jobId,
-          itemId: params.itemId,
-          disposition: resolution.disposition,
-          domainAction: requireDomainAction(resolution),
-          evidence: resolution as unknown as Record<string, unknown>,
-          actor: params.reviewer,
-          reason: params.reason,
-          ...(item.effect !== undefined ? { effectReview: resolution } : {}),
-          ...(requestedResult !== undefined
-            ? { result: requestedResult.value }
-            : {}),
+    return this.repositories.withRepository(
+      params.cwd,
+      async (repository, signal) => {
+        signal.throwIfAborted();
+        const item = requireReviewItem(repository, params.jobId, params.itemId);
+        const resolution = createOperatorEffectReviewResolution({
+          disposition: params.disposition,
+          actorId: params.reviewer,
+          evidenceRef: params.evidenceRef,
+          evidenceSha256: params.evidenceSha256,
+          reviewedAt: new Date().toISOString(),
         });
-      } catch (error) {
-        const current = repository.getItem(params.jobId, params.itemId);
-        if (current !== null && current.reviewStatus !== "pending") {
-          return replayOrConflict(current, resolution, requestedResult);
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        throw new AgenCCsvJobReviewError(
-          isCanonicalResolutionConflict(message)
-            ? "CSV_REVIEW_CONFLICT"
-            : "CSV_REVIEW_INVALID",
-          message,
-        );
-      }
+        const requestedResult =
+          params.result === undefined
+            ? undefined
+            : canonicalizeCsvResult(params.result);
 
-      return {
-        contractVersion: CSV_REVIEW_CONTRACT_VERSION,
-        outcome: "resolved",
-        review: projectReviewDetail(
-          requireReviewItem(repository, params.jobId, params.itemId),
-        ),
-        job: projectJobSummary(requireJob(repository, params.jobId)),
-      };
-    });
+        if (params.disposition !== "confirmed_committed" && requestedResult) {
+          throw new AgenCCsvJobReviewError(
+            "CSV_REVIEW_INVALID",
+            "a CSV review result is valid only for confirmed_committed",
+          );
+        }
+        if (item.reviewStatus !== "pending") {
+          return replayOrConflict(item, resolution, requestedResult);
+        }
+
+        try {
+          signal.throwIfAborted();
+          await repository.resolveUnknownOutcome({
+            jobId: params.jobId,
+            itemId: params.itemId,
+            disposition: resolution.disposition,
+            domainAction: requireDomainAction(resolution),
+            evidence: resolution as unknown as Record<string, unknown>,
+            actor: params.reviewer,
+            reason: params.reason,
+            ...(item.effect !== undefined ? { effectReview: resolution } : {}),
+            ...(requestedResult !== undefined
+              ? { result: requestedResult.value }
+              : {}),
+          });
+        } catch (error) {
+          if (signal.aborted) throw signal.reason;
+          const current = repository.getItem(params.jobId, params.itemId);
+          if (current !== null && current.reviewStatus !== "pending") {
+            return replayOrConflict(current, resolution, requestedResult);
+          }
+          const message =
+            error instanceof Error ? error.message : String(error);
+          throw new AgenCCsvJobReviewError(
+            isCanonicalResolutionConflict(message)
+              ? "CSV_REVIEW_CONFLICT"
+              : "CSV_REVIEW_INVALID",
+            message,
+          );
+        }
+
+        return {
+          contractVersion: CSV_REVIEW_CONTRACT_VERSION,
+          outcome: "resolved",
+          review: projectReviewDetail(
+            requireReviewItem(repository, params.jobId, params.itemId),
+          ),
+          job: projectJobSummary(requireJob(repository, params.jobId)),
+        };
+      },
+      options,
+    );
   }
 }
 
@@ -236,18 +272,6 @@ function isCanonicalResolutionConflict(message: string): boolean {
     message.includes("disagrees with canonical A1") ||
     message.includes("canonical effect identity is missing or stale")
   );
-}
-
-function withRepository<Result>(
-  cwd: string,
-  operation: (repository: CsvAgentJobsRepository) => Result,
-): Result {
-  const driver = openStateDatabases({ cwd });
-  try {
-    return operation(new CsvAgentJobsRepository(driver));
-  } finally {
-    driver.close();
-  }
 }
 
 function requireJob(
@@ -397,7 +421,9 @@ function projectReviewDetail(item: CsvAgentJobItem): CsvJobReviewDetail {
       : {}),
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
-    ...(item.completedAt !== undefined ? { completedAt: item.completedAt } : {}),
+    ...(item.completedAt !== undefined
+      ? { completedAt: item.completedAt }
+      : {}),
   };
 }
 

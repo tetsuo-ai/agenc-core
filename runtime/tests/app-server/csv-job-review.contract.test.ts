@@ -13,7 +13,9 @@ import {
   AgenCCsvJobReviewStateService,
 } from "../../src/app-server/csv-job-review.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
+import { CsvAgentJobsRepositoryAuthority } from "../../src/app-server/csv-agent-jobs-authority.js";
 import { AgenCInProcessDaemonTransport } from "../../src/app-server/transport/in-process.js";
+import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
 import { CsvAgentJobsRepository } from "../../src/state/csv-agent-jobs.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 
@@ -22,6 +24,7 @@ const EVIDENCE_DIGEST = "a".repeat(64);
 let agencHome = "";
 let originalAgencHome: string | undefined;
 let workspace = "";
+let repositories: CsvAgentJobsRepositoryAuthority;
 
 beforeEach(() => {
   agencHome = mkdtempSync(join(tmpdir(), "agenc-csv-review-home-"));
@@ -30,9 +33,12 @@ beforeEach(() => {
   originalAgencHome = process.env.AGENC_HOME;
   process.env.AGENC_HOME = agencHome;
   seedUnknownOutcomes();
+  repositories = new CsvAgentJobsRepositoryAuthority({ agencHome });
+  process.env.AGENC_HOME = join(agencHome, "ambient-decoy");
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await repositories.close();
   if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = originalAgencHome;
   rmSync(agencHome, { recursive: true, force: true });
@@ -41,8 +47,12 @@ afterEach(() => {
 
 describe("AgenCCsvJobReviewStateService", () => {
   it("pages bounded unknown outcomes and reads one review", async () => {
-    const service = new AgenCCsvJobReviewStateService();
-    const first = await service.list({ cwd: workspace, jobId: "job", limit: 1 });
+    const service = new AgenCCsvJobReviewStateService(repositories);
+    const first = await service.list({
+      cwd: workspace,
+      jobId: "job",
+      limit: 1,
+    });
 
     expect(first.reviews).toHaveLength(1);
     expect(first.reviews[0]).toMatchObject({
@@ -86,7 +96,7 @@ describe("AgenCCsvJobReviewStateService", () => {
       reason: "provider receipt proves the operation committed",
       result: { receipt: "provider-123" },
     };
-    const firstService = new AgenCCsvJobReviewStateService();
+    const firstService = new AgenCCsvJobReviewStateService(repositories);
     const first = await firstService.resolve(request);
 
     expect(first.outcome).toBe("resolved");
@@ -113,7 +123,7 @@ describe("AgenCCsvJobReviewStateService", () => {
       },
     });
 
-    const restartedService = new AgenCCsvJobReviewStateService();
+    const restartedService = new AgenCCsvJobReviewStateService(repositories);
     const replay = await restartedService.resolve(request);
     expect(replay.outcome).toBe("already_resolved");
 
@@ -128,7 +138,7 @@ describe("AgenCCsvJobReviewStateService", () => {
   });
 
   it("derives the only valid retry and abandon actions from disposition", async () => {
-    const service = new AgenCCsvJobReviewStateService();
+    const service = new AgenCCsvJobReviewStateService(repositories);
     const retried = await service.resolve({
       cwd: workspace,
       jobId: "job",
@@ -168,7 +178,7 @@ describe("AgenCCsvJobReviewStateService", () => {
   });
 
   it("rejects malformed or unbounded operator evidence at the service boundary", async () => {
-    const service = new AgenCCsvJobReviewStateService();
+    const service = new AgenCCsvJobReviewStateService(repositories);
     const base = {
       cwd: workspace,
       jobId: "job",
@@ -191,6 +201,7 @@ describe("AgenCCsvJobReviewStateService", () => {
   it("connects the SDK through the real dispatcher and durable service", async () => {
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
+      csvJobReview: new AgenCCsvJobReviewStateService(repositories),
     });
     const transport = new AgenCInProcessDaemonTransport({ dispatcher });
     const client = createAgencClient({
@@ -233,6 +244,20 @@ describe("AgenCCsvJobReviewStateService", () => {
       ).resolves.toMatchObject({
         review: { itemId: "item-0", reviewStatus: "resolved" },
       });
+
+      const tool = createModelFacingTools({
+        workspaceRoot: workspace,
+        agencHome,
+        csvAgentJobsRepositories: repositories,
+        getSession: () => null,
+      }).find((candidate) => candidate.name === "show_csv_job_review");
+      expect(tool).toBeDefined();
+      const shownByTool = JSON.parse(
+        (await tool!.execute({ job_id: "job", item_id: "item-0" })).content,
+      );
+      expect(shownByTool).toMatchObject({
+        review: { itemId: "item-0", reviewStatus: "resolved" },
+      });
     } finally {
       await client.close();
     }
@@ -240,7 +265,7 @@ describe("AgenCCsvJobReviewStateService", () => {
 });
 
 function seedUnknownOutcomes(): void {
-  const driver = openStateDatabases({ cwd: workspace });
+  const driver = openStateDatabases({ cwd: workspace, agencHome });
   try {
     const repository = new CsvAgentJobsRepository(driver);
     repository.createJob(

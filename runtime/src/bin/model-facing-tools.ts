@@ -73,9 +73,12 @@ import {
   createCsvOutputRootCapability,
   recoverCsvOutputIntents,
 } from "../agents/jobs/csv-output.js";
-import { CsvAgentJobsRepository } from "../state/csv-agent-jobs.js";
-import { openStateDatabases } from "../state/sqlite-driver.js";
+import {
+  CsvAgentJobsRepository,
+  type CsvAgentJobItemSummary,
+} from "../state/csv-agent-jobs.js";
 import { AgenCCsvJobReviewStateService } from "../app-server/csv-job-review.js";
+import type { CsvAgentJobsRepositoryProvider } from "../app-server/csv-agent-jobs-authority.js";
 import type { JsonObject } from "../app-server/protocol/index.js";
 import {
   CSV_MAX_ITEM_PAGE_SIZE,
@@ -131,6 +134,8 @@ export interface ModelFacingToolOptions {
   }) => void;
   readonly env?: NodeJS.ProcessEnv;
   readonly providerFactory?: typeof createProvider;
+  /** Shared lifecycle-owned CSV repository authority. CSV use fails closed when omitted. */
+  readonly csvAgentJobsRepositories?: CsvAgentJobsRepositoryProvider;
   /**
    * Session-configured structured-output JSON schema. When present, the
    * StructuredOutput tool is registered schema-bound and non-deferred so
@@ -1522,127 +1527,6 @@ function callIdFromArgs(args: Record<string, unknown>, prefix: string): string {
   return stringValue(args.__callId) ?? `${prefix}-${randomUUID()}`;
 }
 
-interface CsvAgentJobsRepositoryCacheEntry {
-  readonly controller: AbortController;
-  readonly driver: ReturnType<typeof openStateDatabases>;
-  readonly promise: Promise<CsvAgentJobsRepository>;
-  waiters: number;
-  state: "pending" | "fulfilled" | "rejected";
-}
-
-const csvAgentJobsRepoCache = new Map<
-  string,
-  CsvAgentJobsRepositoryCacheEntry
->();
-
-function createCsvAgentJobsRepositoryCacheEntry(
-  workspaceRoot: string,
-): CsvAgentJobsRepositoryCacheEntry {
-  const controller = new AbortController();
-  const driver = openStateDatabases({ cwd: workspaceRoot });
-  let entry: CsvAgentJobsRepositoryCacheEntry;
-  const promise = CsvAgentJobsRepository.open(driver, {
-    signal: controller.signal,
-  }).then(
-    (repository) => {
-      entry.state = "fulfilled";
-      return repository;
-    },
-    (error: unknown) => {
-      entry.state = "rejected";
-      if (csvAgentJobsRepoCache.get(workspaceRoot) === entry) {
-        csvAgentJobsRepoCache.delete(workspaceRoot);
-      }
-      driver.close();
-      throw error;
-    },
-  );
-  entry = {
-    controller,
-    driver,
-    promise,
-    waiters: 0,
-    state: "pending",
-  };
-  return entry;
-}
-
-async function waitForCsvAgentJobsRepository(
-  entry: CsvAgentJobsRepositoryCacheEntry,
-  signal?: AbortSignal,
-): Promise<CsvAgentJobsRepository> {
-  if (signal === undefined) return await entry.promise;
-  signal.throwIfAborted();
-  return await new Promise<CsvAgentJobsRepository>((resolve, reject) => {
-    const onAbort = (): void => {
-      signal.removeEventListener("abort", onAbort);
-      reject(signal.reason ?? new Error("CSV repository open aborted"));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    entry.promise.then(
-      (repository) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(repository);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
-
-async function getCsvAgentJobsRepository(
-  workspaceRoot: string,
-  signal?: AbortSignal,
-): Promise<CsvAgentJobsRepository> {
-  signal?.throwIfAborted();
-  let entry = csvAgentJobsRepoCache.get(workspaceRoot);
-  if (entry === undefined) {
-    entry = createCsvAgentJobsRepositoryCacheEntry(workspaceRoot);
-    csvAgentJobsRepoCache.set(workspaceRoot, entry);
-  }
-  entry.waiters += 1;
-  try {
-    return await waitForCsvAgentJobsRepository(entry, signal);
-  } finally {
-    entry.waiters -= 1;
-    if (
-      entry.state === "pending" &&
-      entry.waiters === 0 &&
-      signal?.aborted === true
-    ) {
-      if (csvAgentJobsRepoCache.get(workspaceRoot) === entry) {
-        csvAgentJobsRepoCache.delete(workspaceRoot);
-      }
-      entry.controller.abort(
-        signal.reason ?? new Error("CSV repository open aborted"),
-      );
-    }
-  }
-}
-
-export async function __getCsvAgentJobsRepositoryForTests(
-  workspaceRoot: string,
-  signal?: AbortSignal,
-): Promise<CsvAgentJobsRepository> {
-  return await getCsvAgentJobsRepository(workspaceRoot, signal);
-}
-
-export async function __disposeCsvAgentJobsRepositoriesForTests(): Promise<void> {
-  const entries = [...csvAgentJobsRepoCache.values()];
-  csvAgentJobsRepoCache.clear();
-  await Promise.all(
-    entries.map(async (entry) => {
-      if (entry.state === "pending") {
-        entry.controller.abort(new Error("CSV repository test disposal"));
-      }
-      await entry.promise.catch(() => undefined);
-      entry.driver.close();
-    }),
-  );
-}
-
 function currentAgentContext(
   session: Session,
   args: Record<string, unknown>,
@@ -1682,6 +1566,8 @@ function getSessionOrError(opts: ModelFacingToolOptions): Session | ToolResult {
 function createMultiAgentV2RuntimeTools(
   opts: ModelFacingToolOptions,
 ): readonly Tool[] {
+  const csvAgentJobsRepositories =
+    opts.csvAgentJobsRepositories ?? UNCONFIGURED_CSV_AGENT_JOBS_REPOSITORIES;
   const roleWorkspace = createAgentRoleWorkspace(opts.workspaceRoot);
   loadMarkdownAgentRoles(roleWorkspace);
 
@@ -1879,8 +1765,8 @@ function createMultiAgentV2RuntimeTools(
       },
     };
 
-    const signal = abortSignalFromArgs(args);
     const callId = callIdFromArgs(args, "agent_job");
+    const signal = abortSignalFromArgs(args);
     // Mirror agenc `notify_background_event(turn, "agent_job_progress:{json}")`
     // (agent_jobs.rs:172-174) by emitting a `tool_progress` event whose
     // chunk is the agenc line verbatim. Operators wired to the AgenC
@@ -1913,31 +1799,36 @@ function createMultiAgentV2RuntimeTools(
     };
 
     try {
-      const repository = await getCsvAgentJobsRepository(
+      const result = await csvAgentJobsRepositories.withRepository(
         opts.workspaceRoot,
-        signal,
+        (repository, repositorySignal) =>
+          runAgentsOnCsv({
+            csvPath,
+            inputRootCapability: createCsvInputRootCapability(
+              opts.workspaceRoot,
+            ),
+            instruction,
+            ...(idColumn !== undefined ? { idColumn } : {}),
+            ...(outputCsvPath !== undefined ? { outputCsvPath } : {}),
+            outputRootCapability: createCsvOutputRootCapability(
+              opts.workspaceRoot,
+            ),
+            ...(outputMode !== undefined
+              ? {
+                  outputMode: outputMode as
+                    "replace_existing_regular" | "create_new",
+                }
+              : {}),
+            ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
+            ...(maxRuntimeSeconds !== undefined ? { maxRuntimeSeconds } : {}),
+            ...(outputSchema !== undefined ? { outputSchema } : {}),
+            spawn,
+            repository,
+            progressEmitter,
+            signal: repositorySignal,
+          }),
+        { ...(signal !== undefined ? { signal } : {}) },
       );
-      const result = await runAgentsOnCsv({
-        csvPath,
-        inputRootCapability: createCsvInputRootCapability(opts.workspaceRoot),
-        instruction,
-        ...(idColumn !== undefined ? { idColumn } : {}),
-        ...(outputCsvPath !== undefined ? { outputCsvPath } : {}),
-        outputRootCapability: createCsvOutputRootCapability(opts.workspaceRoot),
-        ...(outputMode !== undefined
-          ? {
-              outputMode: outputMode as
-                "replace_existing_regular" | "create_new",
-            }
-          : {}),
-        ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
-        ...(maxRuntimeSeconds !== undefined ? { maxRuntimeSeconds } : {}),
-        ...(outputSchema !== undefined ? { outputSchema } : {}),
-        spawn,
-        repository,
-        progressEmitter,
-        ...(signal !== undefined ? { signal } : {}),
-      });
       return json({
         contract_version: result.contractVersion,
         job_id: result.jobId,
@@ -2100,97 +1991,56 @@ function createMultiAgentV2RuntimeTools(
     const limit = optionalPositiveIntegerArg(args, "limit");
     if (isToolResult(limit)) return limit;
     const signal = abortSignalFromArgs(args);
-    const repository = await getCsvAgentJobsRepository(
-      opts.workspaceRoot,
-      signal,
-    );
-    const summary = repository.getSummary(jobId);
-    if (summary === null) {
-      return json({ error: `unknown job_id: ${jobId}` }, true);
-    }
-    let page: ReturnType<CsvAgentJobsRepository["listItemsPage"]>;
     try {
-      page = repository.listItemsPage({
-        jobId,
-        ...(status !== undefined
-          ? {
-              status: status as
-                | "pending"
-                | "running"
-                | "completed"
-                | "failed"
-                | "cancelled"
-                | "unknown_outcome",
-            }
-          : {}),
-        ...(cursor !== undefined ? { cursor } : {}),
-        ...(limit !== undefined ? { limit } : {}),
-      });
+      return await csvAgentJobsRepositories.withRepository(
+        opts.workspaceRoot,
+        (repository) => {
+          const summary = repository.getSummary(jobId);
+          if (summary === null) {
+            return json({ error: `unknown job_id: ${jobId}` }, true);
+          }
+          const page = repository.listItemsPage({
+            jobId,
+            ...(status !== undefined
+              ? {
+                  status: status as
+                    | "pending"
+                    | "running"
+                    | "completed"
+                    | "failed"
+                    | "cancelled"
+                    | "unknown_outcome",
+                }
+              : {}),
+            ...(cursor !== undefined ? { cursor } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+          });
+          return json({
+            contract_version: summary.contractVersion,
+            job_id: jobId,
+            summary: {
+              status: summary.status,
+              total_items: summary.totalItems,
+              pending_items: summary.pendingItems,
+              running_items: summary.runningItems,
+              completed_items: summary.completedItems,
+              failed_items: summary.failedItems,
+              cancelled_items: summary.cancelledItems,
+              unknown_outcome_items: summary.unknownOutcomeItems,
+              review_pending_items: summary.reviewPendingItems,
+              result_bytes: summary.resultBytes,
+            },
+            items: page.items.map(projectCsvJobItem),
+            ...(page.nextCursor !== undefined
+              ? { next_cursor: page.nextCursor }
+              : {}),
+          });
+        },
+        { ...(signal !== undefined ? { signal } : {}) },
+      );
     } catch (error) {
       return json({ error: errorMessage(error) }, true);
     }
-    return json({
-      contract_version: summary.contractVersion,
-      job_id: jobId,
-      summary: {
-        status: summary.status,
-        total_items: summary.totalItems,
-        pending_items: summary.pendingItems,
-        running_items: summary.runningItems,
-        completed_items: summary.completedItems,
-        failed_items: summary.failedItems,
-        cancelled_items: summary.cancelledItems,
-        unknown_outcome_items: summary.unknownOutcomeItems,
-        review_pending_items: summary.reviewPendingItems,
-        result_bytes: summary.resultBytes,
-      },
-      items: page.items.map((item) => ({
-        item_id: item.itemId,
-        row_index: item.rowIndex,
-        ...(item.sourceId !== undefined ? { source_id: item.sourceId } : {}),
-        ...(item.sourceIdTruncated === true
-          ? {
-              source_id_truncated: true,
-              source_id_digest: item.sourceIdDigest,
-            }
-          : {}),
-        status: item.status,
-        attempt_count: item.attemptCount,
-        result_availability: item.resultAvailability,
-        result_size_bytes: item.resultSizeBytes,
-        ...(item.resultDigest !== undefined
-          ? { result_digest: item.resultDigest }
-          : {}),
-        ...(item.resultPreviewJson !== undefined
-          ? {
-              result_preview_json: item.resultPreviewJson,
-              result_preview_truncated: item.resultPreviewTruncated === true,
-            }
-          : {}),
-        ...(item.lastError !== undefined
-          ? {
-              last_error: item.lastError,
-              ...(item.lastErrorTruncated === true
-                ? { last_error_truncated: true }
-                : {}),
-            }
-          : {}),
-        ...(item.reviewStatus !== undefined
-          ? { review_status: item.reviewStatus }
-          : {}),
-        ...(item.reviewReason !== undefined
-          ? {
-              review_reason: item.reviewReason,
-              ...(item.reviewReasonTruncated === true
-                ? { review_reason_truncated: true }
-                : {}),
-            }
-          : {}),
-      })),
-      ...(page.nextCursor !== undefined
-        ? { next_cursor: page.nextCursor }
-        : {}),
-    });
   };
 
   const readCsvAgentJobResult = async (
@@ -2208,40 +2058,46 @@ function createMultiAgentV2RuntimeTools(
     const jobId = stringValue(args.job_id)!;
     const itemId = stringValue(args.item_id)!;
     const signal = abortSignalFromArgs(args);
-    const repository = await getCsvAgentJobsRepository(
-      opts.workspaceRoot,
-      signal,
-    );
-    let chunk: ReturnType<CsvAgentJobsRepository["readResultBlob"]>;
     try {
-      chunk = repository.readResultBlob({
-        jobId,
-        itemId,
-        ...(byteOffset !== undefined ? { byteOffset } : {}),
-        ...(maxBytes !== undefined ? { maxBytes } : {}),
-      });
+      return await csvAgentJobsRepositories.withRepository(
+        opts.workspaceRoot,
+        (repository) => {
+          const chunk = repository.readResultBlob({
+            jobId,
+            itemId,
+            ...(byteOffset !== undefined ? { byteOffset } : {}),
+            ...(maxBytes !== undefined ? { maxBytes } : {}),
+          });
+          if (chunk === null) {
+            return json(
+              { error: `unknown CSV job item: ${jobId}/${itemId}` },
+              true,
+            );
+          }
+          return json({
+            contract_version: chunk.contractVersion,
+            job_id: jobId,
+            item_id: chunk.itemId,
+            result_availability: chunk.availability,
+            total_bytes: chunk.totalBytes,
+            ...(chunk.digest !== undefined ? { digest: chunk.digest } : {}),
+            byte_offset: chunk.byteOffset,
+            data_base64: chunk.dataBase64,
+            ...(chunk.nextByteOffset !== undefined
+              ? { next_byte_offset: chunk.nextByteOffset }
+              : {}),
+          });
+        },
+        { ...(signal !== undefined ? { signal } : {}) },
+      );
     } catch (error) {
       return json({ error: errorMessage(error) }, true);
     }
-    if (chunk === null) {
-      return json({ error: `unknown CSV job item: ${jobId}/${itemId}` }, true);
-    }
-    return json({
-      contract_version: chunk.contractVersion,
-      job_id: jobId,
-      item_id: chunk.itemId,
-      result_availability: chunk.availability,
-      total_bytes: chunk.totalBytes,
-      ...(chunk.digest !== undefined ? { digest: chunk.digest } : {}),
-      byte_offset: chunk.byteOffset,
-      data_base64: chunk.dataBase64,
-      ...(chunk.nextByteOffset !== undefined
-        ? { next_byte_offset: chunk.nextByteOffset }
-        : {}),
-    });
   };
 
-  const csvJobReviewService = new AgenCCsvJobReviewStateService();
+  const csvJobReviewService = new AgenCCsvJobReviewStateService(
+    csvAgentJobsRepositories,
+  );
 
   const listCsvJobReviews = async (
     args: Record<string, unknown>,
@@ -2257,13 +2113,17 @@ function createMultiAgentV2RuntimeTools(
     }
     const limit = optionalPositiveIntegerArg(args, "limit");
     if (isToolResult(limit)) return limit;
+    const signal = abortSignalFromArgs(args);
     try {
-      const result = await csvJobReviewService.list({
-        cwd: opts.workspaceRoot,
-        jobId: stringValue(args.job_id)!,
-        ...(cursor !== undefined ? { cursor } : {}),
-        ...(limit !== undefined ? { limit } : {}),
-      });
+      const result = await csvJobReviewService.list(
+        {
+          cwd: opts.workspaceRoot,
+          jobId: stringValue(args.job_id)!,
+          ...(cursor !== undefined ? { cursor } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+        },
+        { ...(signal !== undefined ? { signal } : {}) },
+      );
       return json(result);
     } catch (error) {
       return json({ error: errorMessage(error) }, true);
@@ -2278,13 +2138,17 @@ function createMultiAgentV2RuntimeTools(
       required: ["job_id", "item_id"],
     });
     if (strict) return strict;
+    const signal = abortSignalFromArgs(args);
     try {
       return json(
-        await csvJobReviewService.show({
-          cwd: opts.workspaceRoot,
-          jobId: stringValue(args.job_id)!,
-          itemId: stringValue(args.item_id)!,
-        }),
+        await csvJobReviewService.show(
+          {
+            cwd: opts.workspaceRoot,
+            jobId: stringValue(args.job_id)!,
+            itemId: stringValue(args.item_id)!,
+          },
+          { ...(signal !== undefined ? { signal } : {}) },
+        ),
       );
     } catch (error) {
       return json({ error: errorMessage(error) }, true);
@@ -2342,21 +2206,25 @@ function createMultiAgentV2RuntimeTools(
         true,
       );
     }
+    const signal = abortSignalFromArgs(args);
     try {
       return json(
-        await csvJobReviewService.resolve({
-          cwd: opts.workspaceRoot,
-          jobId: stringValue(args.job_id)!,
-          itemId: stringValue(args.item_id)!,
-          disposition,
-          evidenceRef: stringValue(args.evidence_ref)!,
-          evidenceSha256: stringValue(args.evidence_sha256)!,
-          reviewer: stringValue(args.reviewer)!,
-          reason: stringValue(args.reason)!,
-          ...(args.result !== undefined
-            ? { result: args.result as JsonObject }
-            : {}),
-        }),
+        await csvJobReviewService.resolve(
+          {
+            cwd: opts.workspaceRoot,
+            jobId: stringValue(args.job_id)!,
+            itemId: stringValue(args.item_id)!,
+            disposition,
+            evidenceRef: stringValue(args.evidence_ref)!,
+            evidenceSha256: stringValue(args.evidence_sha256)!,
+            reviewer: stringValue(args.reviewer)!,
+            reason: stringValue(args.reason)!,
+            ...(args.result !== undefined
+              ? { result: args.result as JsonObject }
+              : {}),
+          },
+          { ...(signal !== undefined ? { signal } : {}) },
+        ),
       );
     } catch (error) {
       return json({ error: errorMessage(error) }, true);
@@ -2612,6 +2480,63 @@ function createMultiAgentV2RuntimeTools(
       execute: resolveCsvJobReview,
     },
   ];
+}
+
+const UNCONFIGURED_CSV_AGENT_JOBS_REPOSITORIES: CsvAgentJobsRepositoryProvider =
+  {
+    async withRepository<Result>(): Promise<Result> {
+      throw new Error(
+        "CSV agent job tools require a lifecycle-owned repository authority",
+      );
+    },
+  };
+
+function projectCsvJobItem(
+  item: CsvAgentJobItemSummary,
+): Record<string, unknown> {
+  return {
+    item_id: item.itemId,
+    row_index: item.rowIndex,
+    ...(item.sourceId !== undefined ? { source_id: item.sourceId } : {}),
+    ...(item.sourceIdTruncated === true
+      ? {
+          source_id_truncated: true,
+          source_id_digest: item.sourceIdDigest,
+        }
+      : {}),
+    status: item.status,
+    attempt_count: item.attemptCount,
+    result_availability: item.resultAvailability,
+    result_size_bytes: item.resultSizeBytes,
+    ...(item.resultDigest !== undefined
+      ? { result_digest: item.resultDigest }
+      : {}),
+    ...(item.resultPreviewJson !== undefined
+      ? {
+          result_preview_json: item.resultPreviewJson,
+          result_preview_truncated: item.resultPreviewTruncated === true,
+        }
+      : {}),
+    ...(item.lastError !== undefined
+      ? {
+          last_error: item.lastError,
+          ...(item.lastErrorTruncated === true
+            ? { last_error_truncated: true }
+            : {}),
+        }
+      : {}),
+    ...(item.reviewStatus !== undefined
+      ? { review_status: item.reviewStatus }
+      : {}),
+    ...(item.reviewReason !== undefined
+      ? {
+          review_reason: item.reviewReason,
+          ...(item.reviewReasonTruncated === true
+            ? { review_reason_truncated: true }
+            : {}),
+        }
+      : {}),
+  };
 }
 
 function createMcpResourceTools(opts: ModelFacingToolOptions): readonly Tool[] {
@@ -4147,13 +4072,30 @@ function validateCron(schedule: string): boolean {
 export async function resumeInterruptedAgentJobs(opts: {
   readonly session: Session;
   readonly workspaceRoot: string;
+  readonly csvAgentJobsRepositories: CsvAgentJobsRepositoryProvider;
+  readonly signal?: AbortSignal;
+}): Promise<number> {
+  return opts.csvAgentJobsRepositories.withRepository(
+    opts.workspaceRoot,
+    (repository, signal) =>
+      resumeInterruptedAgentJobsWithRepository({
+        session: opts.session,
+        workspaceRoot: opts.workspaceRoot,
+        repository,
+        signal,
+      }),
+    { ...(opts.signal !== undefined ? { signal: opts.signal } : {}) },
+  );
+}
+
+async function resumeInterruptedAgentJobsWithRepository(opts: {
+  readonly session: Session;
+  readonly workspaceRoot: string;
+  readonly repository: CsvAgentJobsRepository;
   readonly signal?: AbortSignal;
 }): Promise<number> {
   opts.signal?.throwIfAborted();
-  const repository = await getCsvAgentJobsRepository(
-    opts.workspaceRoot,
-    opts.signal,
-  );
+  const repository = opts.repository;
   const outputRootCapability = createCsvOutputRootCapability(
     opts.workspaceRoot,
   );

@@ -140,6 +140,7 @@ import {
 } from "./provider-key-vending.js";
 import { isRecord } from "../utils/record.js";
 import type { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import {
   EVENT_GAP_EVENT,
   type RunTerminalResult,
@@ -729,6 +730,7 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly authBackend?: AuthBackend;
   readonly agentBudget?: AgentBudgetConfig;
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
+  readonly csvAgentJobsRepositories?: CsvAgentJobsRepositoryProvider;
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
@@ -761,6 +763,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   #agentBudget: AgentBudgetConfig | undefined;
   readonly #env: NodeJS.ProcessEnv | undefined;
   readonly #executionAdmissionKernel: ExecutionAdmissionKernel | undefined;
+  readonly #csvAgentJobsRepositories:
+    CsvAgentJobsRepositoryProvider | undefined;
   /**
    * Compatibility-only monitor for injected test bootstraps. Production
    * sessions enforce `[agent.budget]` inside execution admission, so running
@@ -799,6 +803,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     this.updateAuthBackend(options.authBackend);
     this.#agentBudget = options.agentBudget;
     this.#executionAdmissionKernel = options.executionAdmissionKernel;
+    this.#csvAgentJobsRepositories = options.csvAgentJobsRepositories;
     this.#legacyAgentBudgetMonitorEnabled =
       options.bootstrap !== undefined &&
       options.executionAdmissionKernel === undefined;
@@ -884,6 +889,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
       ...(this.#executionAdmissionKernel !== undefined
         ? { executionAdmissionKernel: this.#executionAdmissionKernel }
+        : {}),
+      ...(this.#csvAgentJobsRepositories !== undefined
+        ? { csvAgentJobsRepositories: this.#csvAgentJobsRepositories }
         : {}),
     });
     const uninstallApprovalBridge = this.#installDaemonApprovalBridge(
@@ -1141,6 +1149,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
         ...(this.#executionAdmissionKernel !== undefined
           ? { executionAdmissionKernel: this.#executionAdmissionKernel }
+          : {}),
+        ...(this.#csvAgentJobsRepositories !== undefined
+          ? { csvAgentJobsRepositories: this.#csvAgentJobsRepositories }
           : {}),
       });
       uninstallApprovalBridge = this.#installDaemonApprovalBridge(

@@ -23,6 +23,7 @@ import {
 } from "../permissions/types.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { requestApproval } from "../tools/orchestrator.js";
+import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 
 const backgroundAgentRunnerSourcePath = new URL(
   "../../src/app-server/background-agent-runner.ts",
@@ -186,6 +187,7 @@ function makeTopLevelRunner(opts: {
   readonly now?: () => string;
   readonly agentBudget?: AgentBudgetConfig;
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
+  readonly csvAgentJobsRepositories?: CsvAgentJobsRepositoryProvider;
   readonly rolloutItems?: unknown[];
   readonly onActiveAgentTerminated?: ReturnType<typeof vi.fn>;
   readonly totalTokenUsage?: () => {
@@ -331,6 +333,9 @@ function makeTopLevelRunner(opts: {
       : {}),
     ...(opts.executionAdmissionKernel !== undefined
       ? { executionAdmissionKernel: opts.executionAdmissionKernel }
+      : {}),
+    ...(opts.csvAgentJobsRepositories !== undefined
+      ? { csvAgentJobsRepositories: opts.csvAgentJobsRepositories }
       : {}),
     now: opts.now ?? (() => "2026-05-09T00:00:00.000Z"),
     ...(opts.onActiveAgentTerminated !== undefined
@@ -1393,6 +1398,9 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it("starts agent.create through the managed-thread path and keeps it alive", async () => {
+    const csvAgentJobsRepositories = {
+      withRepository: vi.fn(),
+    } as unknown as CsvAgentJobsRepositoryProvider;
     const {
       runner,
       bootstrap,
@@ -1403,6 +1411,7 @@ describe("AgenC delegate background-agent runner", () => {
       conversationId: "parent-session",
       argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js"],
       env: { AGENC_HOME: "/tmp/agenc-home" },
+      csvAgentJobsRepositories,
       now: () => "2026-05-01T12:00:00.500Z",
     });
 
@@ -1427,6 +1436,7 @@ describe("AgenC delegate background-agent runner", () => {
       argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--model", "grok-4"],
       cwd: "/workspace",
       executionAdmissionAutonomous: true,
+      csvAgentJobsRepositories,
     });
     expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
     expect(permissionUpdates[0]).toMatchObject({

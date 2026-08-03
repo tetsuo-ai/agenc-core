@@ -50,6 +50,10 @@ import {
 import type { LSPServerInstance } from "../services/lsp/LSPServerInstance.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import {
+  CsvAgentJobsRepositoryAuthority,
+  type CsvAgentJobsRepositoryProvider,
+} from "../app-server/csv-agent-jobs-authority.js";
+import {
   clearSessionReadState,
   getSessionReadSnapshot,
   SESSION_ID_ARG,
@@ -63,6 +67,11 @@ import {
 } from "../agents/role.js";
 
 const DEFAULT_ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
+const UNUSED_CSV_AGENT_JOBS_REPOSITORIES: CsvAgentJobsRepositoryProvider = {
+  async withRepository<Result>(): Promise<Result> {
+    throw new Error("CSV repositories are not used by this test");
+  },
+};
 
 const { delegateMock } = vi.hoisted(() => ({
   delegateMock: vi.fn(),
@@ -413,6 +422,7 @@ describe("model-facing tools", () => {
       workspaceRoot: process.cwd(),
       agencHome: join(tmpdir(), "agenc-tools-test"),
       mcpManager: fakeMcpManager() as never,
+      csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES,
       getSession: () => null,
       emitWarning: () => {},
     });
@@ -602,6 +612,7 @@ describe("model-facing tools", () => {
       workspaceRoot: process.cwd(),
       agencHome: join(tmpdir(), "agenc-tools-test"),
       mcpManager: fakeMcpManager() as never,
+      csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES,
       getSession: () => null,
       emitWarning: () => {},
     });
@@ -628,6 +639,7 @@ describe("model-facing tools", () => {
       workspaceRoot: process.cwd(),
       agencHome: join(tmpdir(), "agenc-tools-test"),
       mcpManager: fakeMcpManager() as never,
+      csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES,
       getSession: () => null,
       emitWarning: () => {},
       toolRegistryOptions: {
@@ -676,6 +688,7 @@ describe("model-facing tools", () => {
       workspaceRoot: process.cwd(),
       agencHome: join(tmpdir(), "agenc-tools-test"),
       mcpManager: fakeMcpManager() as never,
+      csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES,
       getSession: () => null,
       emitWarning: () => {},
     });
@@ -759,8 +772,97 @@ describe("model-facing tools", () => {
     });
   });
 
+  it("fails CSV repository use closed when no lifecycle owner is injected", async () => {
+    const inspect = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+    }).find((tool) => tool.name === "inspect_csv_agent_job")!;
+
+    const result = await inspect.execute({ job_id: "job" });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toMatch(
+      /require a lifecycle-owned repository authority/u,
+    );
+  });
+
+  it("routes every CSV read tool through the shared abortable authority", async () => {
+    const observedSignals: AbortSignal[] = [];
+    const csvAgentJobsRepositories = {
+      withRepository: vi.fn(
+        async (
+          _cwd: string,
+          _operation: unknown,
+          options?: { readonly signal?: AbortSignal },
+        ) => {
+          const observedSignal = options?.signal;
+          if (observedSignal !== undefined) {
+            observedSignals.push(observedSignal);
+          }
+          await new Promise<void>((resolve) => {
+            if (observedSignal?.aborted === true) {
+              resolve();
+              return;
+            }
+            observedSignal?.addEventListener("abort", () => resolve(), {
+              once: true,
+            });
+          });
+          observedSignal?.throwIfAborted();
+        },
+      ),
+    } as unknown as CsvAgentJobsRepositoryProvider;
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      csvAgentJobsRepositories,
+      getSession: () => null,
+    });
+    const cases = [
+      {
+        name: "inspect_csv_agent_job",
+        args: { job_id: "job" },
+      },
+      {
+        name: "read_csv_agent_job_result",
+        args: { job_id: "job", item_id: "item" },
+      },
+      {
+        name: "show_csv_job_review",
+        args: { job_id: "job", item_id: "item" },
+      },
+    ] as const;
+    for (const [index, testCase] of cases.entries()) {
+      const controller = new AbortController();
+      const args: Record<string, unknown> = { ...testCase.args };
+      Object.defineProperty(args, "__abortSignal", {
+        enumerable: false,
+        value: controller.signal,
+      });
+      const running = tools
+        .find((tool) => tool.name === testCase.name)!
+        .execute(args);
+      await vi.waitFor(() =>
+        expect(csvAgentJobsRepositories.withRepository).toHaveBeenCalledTimes(
+          index + 1,
+        ),
+      );
+
+      controller.abort(new Error(`CSV read ${index} cancelled`));
+
+      const result = await running;
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toBe(
+        `CSV read ${index} cancelled`,
+      );
+      expect(observedSignals[index]?.aborted).toBe(true);
+    }
+  });
+
   it("uses max_workers as the CSV agent concurrency alias", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-csv-alias-"));
+    const csvAgentJobsRepositories = new CsvAgentJobsRepositoryAuthority({
+      agencHome: join(root, "agenc-home"),
+    });
     let session: Session | undefined;
     try {
       const csvPath = join(root, "input.csv");
@@ -775,6 +877,7 @@ describe("model-facing tools", () => {
       });
       const tools = createModelFacingTools({
         workspaceRoot: root,
+        csvAgentJobsRepositories,
         getSession: () => session,
       });
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
@@ -922,6 +1025,7 @@ describe("model-facing tools", () => {
       ).toMatchObject({ worker: expect.any(String) });
     } finally {
       if (session !== undefined) _clearAgentControlCacheForTesting(session);
+      await csvAgentJobsRepositories.close();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -974,11 +1078,15 @@ describe("model-facing tools", () => {
   it("rejects CSV input paths outside the authenticated workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-csv-workspace-"));
     const outside = await mkdtemp(join(tmpdir(), "agenc-csv-outside-"));
+    const csvAgentJobsRepositories = new CsvAgentJobsRepositoryAuthority({
+      agencHome: join(root, "agenc-home"),
+    });
     try {
       const outsideCsv = join(outside, "outside.csv");
       await writeFile(outsideCsv, "id\nsecret\n", "utf8");
       const tools = createModelFacingTools({
         workspaceRoot: root,
+        csvAgentJobsRepositories,
         getSession: () => fakeSession(root),
       });
       const spawn = tools.find((tool) => tool.name === "spawn_agents_on_csv")!;
@@ -993,6 +1101,7 @@ describe("model-facing tools", () => {
       );
       expect(delegateMock).not.toHaveBeenCalled();
     } finally {
+      await csvAgentJobsRepositories.close();
       await rm(root, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });
     }
@@ -1003,12 +1112,16 @@ describe("model-facing tools", () => {
     async () => {
       const root = await mkdtemp(join(tmpdir(), "agenc-csv-workspace-"));
       const outside = await mkdtemp(join(tmpdir(), "agenc-csv-outside-"));
+      const csvAgentJobsRepositories = new CsvAgentJobsRepositoryAuthority({
+        agencHome: join(root, "agenc-home"),
+      });
       try {
         const outsideCsv = join(outside, "outside.csv");
         await writeFile(outsideCsv, "id\nsecret\n", "utf8");
         await symlink(outsideCsv, join(root, "linked.csv"), "file");
         const tools = createModelFacingTools({
           workspaceRoot: root,
+          csvAgentJobsRepositories,
           getSession: () => fakeSession(root),
         });
         const spawn = tools.find(
@@ -1025,6 +1138,7 @@ describe("model-facing tools", () => {
         );
         expect(delegateMock).not.toHaveBeenCalled();
       } finally {
+        await csvAgentJobsRepositories.close();
         await rm(root, { recursive: true, force: true });
         await rm(outside, { recursive: true, force: true });
       }
@@ -1033,10 +1147,14 @@ describe("model-facing tools", () => {
 
   it("propagates the hidden CSV tool abort signal before import", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-csv-abort-"));
+    const csvAgentJobsRepositories = new CsvAgentJobsRepositoryAuthority({
+      agencHome: join(root, "agenc-home"),
+    });
     try {
       await writeFile(join(root, "input.csv"), "id\nrow1\n", "utf8");
       const tools = createModelFacingTools({
         workspaceRoot: root,
+        csvAgentJobsRepositories,
         getSession: () => fakeSession(root),
       });
       const spawn = tools.find((tool) => tool.name === "spawn_agents_on_csv")!;
@@ -1056,6 +1174,7 @@ describe("model-facing tools", () => {
       expect(JSON.parse(result.content).error).toBe("CSV request cancelled");
       expect(delegateMock).not.toHaveBeenCalled();
     } finally {
+      await csvAgentJobsRepositories.close();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -5365,6 +5484,7 @@ describe("model-facing tools", () => {
       const registry = buildBootstrapToolRegistry({
         workspaceRoot: workspace,
         mcpManager: fakeMcpManager() as never,
+        csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES,
         getSession: () => null,
         emitWarning: () => {},
         toolRegistryOptions: { requireAdmission: false },
@@ -5404,6 +5524,7 @@ describe("model-facing tools", () => {
       const registry = buildBootstrapToolRegistry({
         workspaceRoot: workspace,
         mcpManager: fakeMcpManager() as never,
+        csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES,
         getSession: () => null,
         emitWarning: () => {},
         toolRegistryOptions: { requireAdmission: false },

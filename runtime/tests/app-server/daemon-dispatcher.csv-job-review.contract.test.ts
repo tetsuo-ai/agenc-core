@@ -110,9 +110,126 @@ describe("CSV job review daemon dispatch", () => {
 
     expect(service.list).toHaveBeenCalledWith(
       expect.objectContaining({ cwd: process.cwd(), jobId: "job", limit: 25 }),
+      { signal: expect.any(AbortSignal) },
     );
-    expect(service.show).toHaveBeenCalledOnce();
-    expect(service.resolve).toHaveBeenCalledOnce();
+    expect(service.show).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: process.cwd(),
+        jobId: "job",
+        itemId: "item",
+      }),
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(service.resolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: process.cwd(),
+        jobId: "job",
+        itemId: "item",
+      }),
+      { signal: expect.any(AbortSignal) },
+    );
+  });
+
+  it("does not silently create or advertise a review service", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+    });
+    const connection = dispatcher.createConnection();
+    const initialized = await connection.dispatch(
+      request("initialize", "initialize", {
+        protocol: { version: "1.0.0" },
+      }),
+    );
+
+    expect(initialized).toMatchObject({
+      result: {
+        capabilities: {
+          [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: {
+            "csvJob.review.list": false,
+            "csvJob.review.show": false,
+            "csvJob.review.resolve": false,
+          },
+        },
+      },
+    });
+    await expect(
+      connection.dispatch(
+        request("list", "csvJob.review.list", {
+          cwd: process.cwd(),
+          jobId: "job",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      error: { code: -32601 },
+    });
+  });
+
+  it("propagates request.cancel into an in-flight resolution", async () => {
+    let observedSignal: AbortSignal | undefined;
+    let startedResolve: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+    let committed = false;
+    const service: AgenCCsvJobReviewService = {
+      list: vi.fn(),
+      show: vi.fn(),
+      resolve: vi.fn(async (_params, options) => {
+        observedSignal = options?.signal;
+        startedResolve?.();
+        await new Promise<void>((resolve) => {
+          if (options?.signal?.aborted === true) {
+            resolve();
+            return;
+          }
+          options?.signal?.addEventListener("abort", () => resolve(), {
+            once: true,
+          });
+        });
+        options?.signal?.throwIfAborted();
+        committed = true;
+        return {
+          contractVersion: 1,
+          outcome: "resolved",
+          review: REVIEW_DETAIL,
+        };
+      }),
+    };
+    const { connection } = await initializedConnection(service);
+    const resolution = connection.dispatch(
+      request("resolve", "csvJob.review.resolve", {
+        cwd: process.cwd(),
+        jobId: "job",
+        itemId: "item",
+        disposition: "confirmed_no_effect",
+        evidenceRef: "lookup://operation-key",
+        evidenceSha256: "a".repeat(64),
+        reviewer: "operator",
+        reason: "authoritative lookup found no effect",
+      }),
+    );
+    await started;
+
+    await expect(
+      connection.dispatch(
+        request("cancel", "request.cancel", {
+          requestId: "resolve",
+          reason: "operator cancelled",
+        }),
+      ),
+    ).resolves.toMatchObject({ result: { cancelled: true } });
+    expect(observedSignal?.aborted).toBe(true);
+    await expect(resolution).resolves.toMatchObject({
+      error: {
+        code: -32000,
+        data: {
+          code: "REQUEST_CANCELLED",
+          requestId: "resolve",
+          reason: "operator cancelled",
+        },
+      },
+    });
+    expect(committed).toBe(false);
   });
 
   it("rejects malformed evidence before service invocation", async () => {

@@ -37,6 +37,8 @@ import {
 } from "./background-agent-runner.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCCommandExecService } from "./command-exec.js";
+import { CsvAgentJobsRepositoryAuthority } from "./csv-agent-jobs-authority.js";
+import { AgenCCsvJobReviewStateService } from "./csv-job-review.js";
 import { resolveDefaultLinuxSandboxExecutable } from "../sandbox/execution-broker.js";
 import {
   readDistVersion,
@@ -1422,6 +1424,12 @@ async function runAgenCDaemonForeground(
     allowGpu: activeConfig.sandbox?.allow_gpu === true,
   });
   const cleanup = new AgenCCleanupRegistry();
+  const csvAgentJobsRepositories = new CsvAgentJobsRepositoryAuthority({
+    agencHome: authStartup.daemonHome,
+  });
+  cleanup.register("daemon-csv-agent-jobs", () =>
+    csvAgentJobsRepositories.close(),
+  );
   let executionAdmissionKernel: ExecutionAdmissionKernel;
   try {
     executionAdmissionKernel = new ExecutionAdmissionKernel({
@@ -1478,6 +1486,7 @@ async function runAgenCDaemonForeground(
       env: host.env,
       argv: [host.execPath, host.entrypointPath, "--autonomous"],
       executionAdmissionKernel,
+      csvAgentJobsRepositories,
       ...createAgenCDaemonDelegateRunnerRuntimeConfig(
         host,
         activeConfig,
@@ -1792,6 +1801,7 @@ async function runAgenCDaemonForeground(
       agencHome: authStartup.daemonHome,
     }),
     workflow: workflowStartService,
+    csvJobReview: new AgenCCsvJobReviewStateService(csvAgentJobsRepositories),
     ...(codePrediction !== undefined ? { codePrediction } : {}),
     initializeAuthenticator: (params) =>
       cookieAuthenticator.authenticateInitializeParams(params),
