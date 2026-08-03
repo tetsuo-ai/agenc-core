@@ -24,10 +24,19 @@ cold queries alternate non-extension queries; warm queries time true extensions
 after an untimed base query. Stable query samples
 must not call discovery, and the first service load must hydrate the exact
 published generation with zero discovery calls. Invalidation latency begins at
-one healthy watcher event and ends only after exactly one discovery publishes
-the next generation. Polls must first observe only the prior generation with no
-sentinel; the first newer response must be the immediately following generation
-and contain the exact sentinel once.
+one healthy watcher event and freezes at the first service response for the next
+generation, which must result from exactly one discovery. Polls must first
+observe only the prior generation with no sentinel; the first newer response
+must be the immediately following generation.
+An unrestricted service response must contain the sentinel exactly once. A
+truthfully resource-limited response may omit ranked files only when matcher
+metadata reports the limit and aggregate freshness reports truncation. In both
+cases, a direct `readCurrent` oracle must then bind the same N+1 persisted
+generation, the complete entry count, and exactly one sentinel. Benchmark-only
+oracle hydration, lookup, and collection are excluded from invalidation latency
+and reported separately as `persistedOracleElapsedMs`. The report keeps service
+and persisted counts separate and records the compact entry-store bytes beside
+the unchanged production cache ceiling.
 
 The runner requires Node 26.5.0 and npm 11.17.0. Corpus-v1 digests and logical
 byte totals are frozen in the report contract for every quick and full size;
@@ -52,6 +61,8 @@ fabricates unavailable latency or memory metrics; unavailable fields are
 nonzero, preserving resource-failure evidence. Full acceptance nevertheless
 requires every planned point to contain build, query, RSS, and index-byte
 measurements, and requires every daemon point to prove the atomic watcher
-invalidation. Matcher points must complete. Daemon query timing may truthfully
-report `QUERY_RESOURCE_LIMIT` after those measurements; a missing cutover is
+invalidation through its persisted-store oracle. Matcher points and the 10,000
+path daemon point must complete. The 100,000 and 1,000,000 path daemon points may
+truthfully report `QUERY_RESOURCE_LIMIT` after all measurements and exact N+1
+evidence are present; `failed`, `timed_out`, missing, or partial evidence is
 never accepted.

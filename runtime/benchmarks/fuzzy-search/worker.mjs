@@ -109,8 +109,11 @@ async function runEndToEnd(options) {
     import("../../src/app-server/fuzzy-file-search.ts"),
     import("../../src/app-server/fuzzy-file-index.ts"),
   ]);
-  const { AgenCFuzzyFileSearchService, FuzzyFileSearchBoundaryError } =
-    searchModule;
+  const {
+    AgenCFuzzyFileSearchService,
+    FuzzyFileSearchBoundaryError,
+    MAX_FUZZY_CACHE_BYTES,
+  } = searchModule;
   const { createFuzzyFileDiscoveryResult, PersistentFuzzyFileIndex } =
     indexModule;
   const baselineRssBytes = process.memoryUsage().rss;
@@ -238,34 +241,49 @@ async function runEndToEnd(options) {
       watcherEvents += 1;
       watcherChange();
       const observed = await waitForInvalidation({
+        expectedEntryCount: options.size,
+        index,
         initialGeneration,
+        maximumCacheBytes: MAX_FUZZY_CACHE_BYTES,
         path: invalidatedPath,
         root: temporaryRoot,
         service,
+        startedAt: invalidationStartedAt,
         timeoutMs: options.invalidationTimeoutMs,
       });
       invalidation = Object.freeze({
         discoveryCalls,
-        elapsedMs: performance.now() - invalidationStartedAt,
-        finalSentinelCount: observed.finalSentinelCount,
+        elapsedMs: observed.serviceCutoverElapsedMs,
         generationAfter: observed.generationId,
         generationBefore: initialGeneration,
+        maximumCacheBytes: MAX_FUZZY_CACHE_BYTES,
         path: invalidatedPath,
+        persistedEntryCount: observed.persistedEntryCount,
+        persistedEntryStoreRetainedBytes:
+          observed.persistedEntryStoreRetainedBytes,
+        persistedGenerationId: observed.persistedGenerationId,
+        persistedOracleElapsedMs: observed.persistedOracleElapsedMs,
+        persistedSentinelCount: observed.persistedSentinelCount,
         pollIntervalMs: INVALIDATION_POLL_INTERVAL_MS,
         priorGenerationObservations: observed.priorGenerationObservations,
-        priorSentinelCount: observed.priorSentinelCount,
-        sentinelVisible: observed.sentinelVisible,
+        priorServiceSentinelCount: observed.priorServiceSentinelCount,
+        serviceEvaluatedCandidates: observed.serviceEvaluatedCandidates,
+        serviceFinalSentinelCount: observed.serviceFinalSentinelCount,
+        serviceResourceLimited: observed.serviceResourceLimited,
+        serviceTotalCandidates: observed.serviceTotalCandidates,
+        serviceTruncated: observed.serviceTruncated,
       });
       if (discoveryCalls !== 1) {
         throw new Error(
           `watcher invalidation invoked discovery ${discoveryCalls} times, expected exactly once`,
         );
       }
+      if (observed.serviceResourceLimited) resourceLimitedQueries += 1;
       if (resourceLimitedQueries > 0) {
         pointStatus = "resource_limited";
         pointError = Object.freeze({
           code: "QUERY_RESOURCE_LIMIT",
-          message: `${resourceLimitedQueries} timed queries reached a production resource limit`,
+          message: `${resourceLimitedQueries} measured or invalidation queries reached a production resource limit`,
         });
       }
       finalLogicalPathBytes = fuzzyBenchmarkFinalPathBytes(
@@ -351,12 +369,12 @@ async function waitForInvalidation(options) {
     );
     const freshness = response.freshness?.roots[0];
     const generationId = freshness?.generationId ?? null;
-    const sentinelCount = response.files.filter(
+    const serviceSentinelCount = response.files.filter(
       (file) => file.path === options.path,
     ).length;
     if (generationId === options.initialGeneration) {
       priorGenerationObservations += 1;
-      if (sentinelCount !== 0) {
+      if (serviceSentinelCount !== 0) {
         throw new Error(
           "the prior generation exposed the invalidation sentinel",
         );
@@ -372,17 +390,80 @@ async function waitForInvalidation(options) {
           "invalidation cut over before observing the prior generation",
         );
       }
-      if (sentinelCount !== 1) {
+      const matcher = response.matcher;
+      if (matcher === undefined) {
+        throw new Error("the final generation omitted matcher metadata");
+      }
+      const serviceResourceLimited = matcher.resourceLimited === true;
+      const serviceTruncated = response.freshness?.truncated === true;
+      if (serviceResourceLimited !== serviceTruncated) {
         throw new Error(
-          `the final generation exposed ${sentinelCount} exact sentinels, expected one`,
+          "the final service response did not expose its query limit as truncation",
         );
       }
+      if (!serviceResourceLimited && serviceSentinelCount !== 1) {
+        throw new Error(
+          `the unrestricted final service response exposed ${serviceSentinelCount} exact sentinels, expected one`,
+        );
+      }
+      if (serviceSentinelCount > 1) {
+        throw new Error(
+          "the final service response exposed duplicate invalidation sentinels",
+        );
+      }
+      const serviceCutoverElapsedMs = performance.now() - options.startedAt;
+      const persistedOracleStartedAt = performance.now();
+      let persistedSnapshot = await options.index.readCurrent(options.root);
+      if (persistedSnapshot === null) {
+        throw new Error("the persisted final generation was unavailable");
+      }
+      const persistedGenerationId = persistedSnapshot.generationId;
+      if (persistedGenerationId !== generationId) {
+        throw new Error(
+          `persisted generation ${persistedGenerationId} did not match service generation ${generationId}`,
+        );
+      }
+      if (persistedSnapshot.entryCount !== options.expectedEntryCount) {
+        throw new Error(
+          `persisted generation contained ${persistedSnapshot.entryCount} entries, expected ${options.expectedEntryCount}`,
+        );
+      }
+      const persistedSentinelCount = countExactStoredPath(
+        persistedSnapshot.entryStore,
+        options.path,
+      );
+      if (persistedSentinelCount !== 1) {
+        throw new Error(
+          `persisted generation contained ${persistedSentinelCount} exact sentinels, expected one`,
+        );
+      }
+      const persistedEntryCount = persistedSnapshot.entryCount;
+      const persistedEntryStoreRetainedBytes =
+        persistedSnapshot.entryStore.retainedBytes;
+      if (persistedEntryStoreRetainedBytes > options.maximumCacheBytes) {
+        throw new Error(
+          "persisted entry store exceeded the production cache ceiling",
+        );
+      }
+      persistedSnapshot = null;
+      globalThis.gc?.();
+      const persistedOracleElapsedMs =
+        performance.now() - persistedOracleStartedAt;
       return {
-        finalSentinelCount: sentinelCount,
         generationId,
+        persistedEntryCount,
+        persistedEntryStoreRetainedBytes,
+        persistedGenerationId,
+        persistedOracleElapsedMs,
+        persistedSentinelCount,
         priorGenerationObservations,
-        priorSentinelCount: 0,
-        sentinelVisible: true,
+        priorServiceSentinelCount: 0,
+        serviceEvaluatedCandidates: matcher.evaluatedCandidates,
+        serviceFinalSentinelCount: serviceSentinelCount,
+        serviceResourceLimited,
+        serviceCutoverElapsedMs,
+        serviceTotalCandidates: matcher.totalCandidates,
+        serviceTruncated,
       };
     }
     await new Promise((resolve) =>
@@ -392,6 +473,27 @@ async function waitForInvalidation(options) {
   throw new Error(
     `fuzzy benchmark invalidation exceeded ${options.timeoutMs}ms`,
   );
+}
+
+function countExactStoredPath(entryStore, path) {
+  const target = Buffer.from(path, "utf8");
+  let lower = 0;
+  let upper = entryStore.entryCount;
+  while (lower < upper) {
+    const middle = lower + Math.floor((upper - lower) / 2);
+    const order = Buffer.compare(entryStore.pathBytesAt(middle), target);
+    if (order < 0) lower = middle + 1;
+    else upper = middle;
+  }
+  if (lower >= entryStore.entryCount) return 0;
+  if (Buffer.compare(entryStore.pathBytesAt(lower), target) !== 0) return 0;
+  if (
+    lower + 1 < entryStore.entryCount &&
+    Buffer.compare(entryStore.pathBytesAt(lower + 1), target) === 0
+  ) {
+    return 2;
+  }
+  return 1;
 }
 
 function search(service, root, query) {

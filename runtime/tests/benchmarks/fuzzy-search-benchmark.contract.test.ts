@@ -6,6 +6,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   assertFuzzyBenchmarkAcceptance,
+  FUZZY_BENCHMARK_MAXIMUM_CACHE_BYTES,
   FUZZY_BENCHMARK_SCHEMA_VERSION,
   FUZZY_BENCHMARK_SUITE_ID,
   summarizeFuzzySamples,
@@ -148,10 +149,26 @@ describe("D2 fuzzy benchmark contract", () => {
         invalidation.priorGenerationObservations = 0;
       },
       (invalidation: any) => {
-        invalidation.priorSentinelCount = 1;
+        invalidation.priorServiceSentinelCount = 1;
       },
       (invalidation: any) => {
-        invalidation.finalSentinelCount = 2;
+        invalidation.serviceFinalSentinelCount = 2;
+      },
+      (invalidation: any) => {
+        invalidation.persistedSentinelCount = 0;
+      },
+      (invalidation: any) => {
+        invalidation.persistedGenerationId += 1;
+      },
+      (invalidation: any) => {
+        invalidation.persistedEntryCount -= 1;
+      },
+      (invalidation: any) => {
+        invalidation.persistedEntryStoreRetainedBytes =
+          invalidation.maximumCacheBytes + 1;
+      },
+      (invalidation: any) => {
+        invalidation.persistedOracleElapsedMs = -1;
       },
     ];
     for (const mutate of mutations) {
@@ -225,6 +242,49 @@ describe("D2 fuzzy benchmark contract", () => {
       assertFuzzyBenchmarkAcceptance(measuredQueryLimit),
     ).not.toThrow();
 
+    const limitedInvalidationQuery = structuredClone(report);
+    const limitedInvalidationMillion = limitedInvalidationQuery.points.find(
+      (candidate: any) =>
+        candidate.mode === "end_to_end" && candidate.corpus.size === 1_000_000,
+    );
+    limitedInvalidationMillion.status = "resource_limited";
+    limitedInvalidationMillion.error = {
+      code: "QUERY_RESOURCE_LIMIT",
+      message: "synthetic bounded invalidation query",
+    };
+    limitedInvalidationMillion.invalidation.serviceEvaluatedCandidates = 700_000;
+    limitedInvalidationMillion.invalidation.serviceFinalSentinelCount = 0;
+    limitedInvalidationMillion.invalidation.serviceResourceLimited = true;
+    limitedInvalidationMillion.invalidation.serviceTruncated = true;
+    limitedInvalidationMillion.telemetry.resourceLimitedQueries = 1;
+    expect(() =>
+      assertFuzzyBenchmarkAcceptance(limitedInvalidationQuery),
+    ).not.toThrow();
+
+    const unreportedInvalidationLimit = structuredClone(
+      limitedInvalidationQuery,
+    );
+    const unreportedInvalidationMillion =
+      unreportedInvalidationLimit.points.find(
+        (candidate: any) =>
+          candidate.mode === "end_to_end" &&
+          candidate.corpus.size === 1_000_000,
+      );
+    unreportedInvalidationMillion.invalidation.serviceTruncated = false;
+    expect(() =>
+      assertFuzzyBenchmarkAcceptance(unreportedInvalidationLimit),
+    ).toThrow(/query limit must be reported as truncation/u);
+
+    const missingPersistedSentinel = structuredClone(limitedInvalidationQuery);
+    const missingPersistedMillion = missingPersistedSentinel.points.find(
+      (candidate: any) =>
+        candidate.mode === "end_to_end" && candidate.corpus.size === 1_000_000,
+    );
+    missingPersistedMillion.invalidation.persistedSentinelCount = 0;
+    expect(() =>
+      assertFuzzyBenchmarkAcceptance(missingPersistedSentinel),
+    ).toThrow(/persisted final generation/u);
+
     const zeroDatabaseBytes = structuredClone(measuredQueryLimit);
     const zeroDatabaseMillion = zeroDatabaseBytes.points.find(
       (candidate: any) =>
@@ -244,6 +304,21 @@ describe("D2 fuzzy benchmark contract", () => {
     falseQueryLimitMillion.telemetry.resourceLimitedQueries = 0;
     expect(() => assertFuzzyBenchmarkAcceptance(falseQueryLimit)).toThrow(
       /positive safe integer/u,
+    );
+
+    const limitedTenThousand = structuredClone(report);
+    const limitedSmallPoint = limitedTenThousand.points.find(
+      (candidate: any) =>
+        candidate.mode === "end_to_end" && candidate.corpus.size === 10_000,
+    );
+    limitedSmallPoint.status = "resource_limited";
+    limitedSmallPoint.error = {
+      code: "QUERY_RESOURCE_LIMIT",
+      message: "synthetic small query limit",
+    };
+    limitedSmallPoint.telemetry.resourceLimitedQueries = 1;
+    expect(() => assertFuzzyBenchmarkAcceptance(limitedTenThousand)).toThrow(
+      /must complete at 10000/u,
     );
 
     const failedSmallerPoint = structuredClone(report);
@@ -400,12 +475,21 @@ function point(mode: string, size: number, sampleCount: number): any {
             generationAfter: 2,
             generationBefore: 1,
             discoveryCalls: 1,
-            finalSentinelCount: 1,
+            maximumCacheBytes: FUZZY_BENCHMARK_MAXIMUM_CACHE_BYTES,
             path: invalidationPath,
+            persistedEntryCount: size,
+            persistedEntryStoreRetainedBytes: 1,
+            persistedGenerationId: 2,
+            persistedOracleElapsedMs: 1,
+            persistedSentinelCount: 1,
             pollIntervalMs: 25,
             priorGenerationObservations: 1,
-            priorSentinelCount: 0,
-            sentinelVisible: true,
+            priorServiceSentinelCount: 0,
+            serviceEvaluatedCandidates: size,
+            serviceFinalSentinelCount: 1,
+            serviceResourceLimited: false,
+            serviceTotalCandidates: size,
+            serviceTruncated: false,
           }
         : null,
     memory: {

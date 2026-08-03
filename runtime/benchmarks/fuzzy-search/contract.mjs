@@ -8,8 +8,10 @@ export const FUZZY_BENCHMARK_MODES = Object.freeze([
 ]);
 export const FULL_QUERY_SAMPLE_COUNT = 20;
 export const QUICK_QUERY_SAMPLE_COUNT = 3;
+export const FUZZY_BENCHMARK_MAXIMUM_CACHE_BYTES = 536_870_912;
 
 const MILLION_ENTRY_ACCEPTANCE_SIZE = 1_000_000;
+const MINIMUM_RESOURCE_LIMITED_ACCEPTANCE_SIZE = 100_000;
 const CORPUS_GENERATOR_VERSION = "agenc-d2-fuzzy-corpus-v1";
 const FIRST_CORPUS_PATH = "src/d2alpha/d2alpha-exact-0000.ts";
 const EXPECTED_CORPUS_DESCRIPTORS = Object.freeze({
@@ -152,9 +154,6 @@ export function validateFuzzyBenchmarkPoint(point) {
       point.invalidation.pollIntervalMs,
       "point.invalidation.pollIntervalMs",
     );
-    if (point.invalidation.sentinelVisible !== true) {
-      throw new TypeError("invalidation must observe the changed sentinel");
-    }
     if (point.invalidation.discoveryCalls !== 1) {
       throw new TypeError("invalidation must perform exactly one discovery");
     }
@@ -162,12 +161,111 @@ export function validateFuzzyBenchmarkPoint(point) {
       point.invalidation.priorGenerationObservations,
       "point.invalidation.priorGenerationObservations",
     );
-    if (point.invalidation.priorSentinelCount !== 0) {
+    if (point.invalidation.priorServiceSentinelCount !== 0) {
       throw new TypeError("the prior generation must not expose the sentinel");
     }
-    if (point.invalidation.finalSentinelCount !== 1) {
+    if (
+      point.invalidation.persistedGenerationId !==
+      point.invalidation.generationAfter
+    ) {
       throw new TypeError(
-        "the final generation must expose the sentinel exactly once",
+        "the persisted generation must match the service cutover generation",
+      );
+    }
+    if (point.invalidation.persistedSentinelCount !== 1) {
+      throw new TypeError(
+        "the persisted final generation must contain the sentinel exactly once",
+      );
+    }
+    if (point.invalidation.persistedEntryCount !== point.corpus.size) {
+      throw new TypeError(
+        "the persisted final generation must contain the complete corpus",
+      );
+    }
+    positiveSafeInteger(
+      point.invalidation.persistedEntryStoreRetainedBytes,
+      "point.invalidation.persistedEntryStoreRetainedBytes",
+    );
+    finiteNonnegative(point.invalidation.persistedOracleElapsedMs);
+    if (
+      point.invalidation.maximumCacheBytes !==
+      FUZZY_BENCHMARK_MAXIMUM_CACHE_BYTES
+    ) {
+      throw new TypeError(
+        "invalidation must report the production fuzzy cache ceiling",
+      );
+    }
+    if (
+      point.invalidation.persistedEntryStoreRetainedBytes >
+      point.invalidation.maximumCacheBytes
+    ) {
+      throw new TypeError(
+        "persisted final entry store exceeds the production cache ceiling",
+      );
+    }
+    nonnegativeSafeInteger(
+      point.invalidation.serviceFinalSentinelCount,
+      "point.invalidation.serviceFinalSentinelCount",
+    );
+    if (point.invalidation.serviceFinalSentinelCount > 1) {
+      throw new TypeError(
+        "the final service response cannot contain duplicate sentinels",
+      );
+    }
+    nonnegativeSafeInteger(
+      point.invalidation.serviceEvaluatedCandidates,
+      "point.invalidation.serviceEvaluatedCandidates",
+    );
+    positiveSafeInteger(
+      point.invalidation.serviceTotalCandidates,
+      "point.invalidation.serviceTotalCandidates",
+    );
+    if (point.invalidation.serviceTotalCandidates !== point.corpus.size) {
+      throw new TypeError(
+        "the final service response must bind the complete corpus size",
+      );
+    }
+    if (
+      point.invalidation.serviceEvaluatedCandidates >
+      point.invalidation.serviceTotalCandidates
+    ) {
+      throw new TypeError(
+        "the final service response evaluated too many candidates",
+      );
+    }
+    if (typeof point.invalidation.serviceResourceLimited !== "boolean") {
+      throw new TypeError(
+        "point.invalidation.serviceResourceLimited must be boolean",
+      );
+    }
+    if (typeof point.invalidation.serviceTruncated !== "boolean") {
+      throw new TypeError(
+        "point.invalidation.serviceTruncated must be boolean",
+      );
+    }
+    if (
+      point.invalidation.serviceResourceLimited !==
+      point.invalidation.serviceTruncated
+    ) {
+      throw new TypeError(
+        "a final service query limit must be reported as truncation",
+      );
+    }
+    if (
+      !point.invalidation.serviceResourceLimited &&
+      point.invalidation.serviceFinalSentinelCount !== 1
+    ) {
+      throw new TypeError(
+        "an unrestricted final service response must expose the sentinel exactly once",
+      );
+    }
+    if (
+      !point.invalidation.serviceResourceLimited &&
+      point.invalidation.serviceEvaluatedCandidates !==
+        point.invalidation.serviceTotalCandidates
+    ) {
+      throw new TypeError(
+        "an unrestricted final service response must evaluate the complete corpus",
       );
     }
     const expectedInvalidationPath = expectedInvalidationPathForSize(
@@ -193,6 +291,18 @@ export function validateFuzzyBenchmarkPoint(point) {
     if (point.telemetry.watcherEvents !== 1) {
       throw new TypeError(
         "invalidation must begin from exactly one watcher event",
+      );
+    }
+    nonnegativeSafeInteger(
+      point.telemetry.resourceLimitedQueries,
+      "point.telemetry.resourceLimitedQueries",
+    );
+    if (
+      point.invalidation.serviceResourceLimited &&
+      point.telemetry.resourceLimitedQueries === 0
+    ) {
+      throw new TypeError(
+        "a limited invalidation query must increment resourceLimitedQueries",
       );
     }
   }
@@ -355,6 +465,14 @@ export function assertFuzzyBenchmarkAcceptance(report) {
     ) {
       throw new TypeError(
         `end-to-end acceptance at ${point.corpus.size} permits only completed queries or a measured query resource limit`,
+      );
+    }
+    if (
+      point.corpus.size < MINIMUM_RESOURCE_LIMITED_ACCEPTANCE_SIZE &&
+      point.status !== "completed"
+    ) {
+      throw new TypeError(
+        `full end-to-end acceptance must complete at ${point.corpus.size}`,
       );
     }
     if (point.status === "resource_limited") {
