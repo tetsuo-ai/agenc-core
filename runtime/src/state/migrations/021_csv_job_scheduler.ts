@@ -1,6 +1,9 @@
 import type { SqlMigration } from "./types.js";
 import type { SqliteDatabase } from "../sqlite-driver.js";
-import { MAX_RECOVERED_CSV_JOBS } from "../../contracts/csv-job-contract.js";
+import {
+  MAX_CSV_AUTOMATIC_FULL_RECONCILIATIONS_PER_JOB_LIFECYCLE,
+  MAX_RECOVERED_CSV_JOBS,
+} from "../../contracts/csv-job-contract.js";
 
 export const CSV_JOB_SCHEDULER_SCHEMA_VERSION = 21;
 
@@ -48,7 +51,8 @@ ALTER TABLE csv_agent_jobs ADD COLUMN created_at_ms
   INTEGER NOT NULL DEFAULT 0 CHECK (created_at_ms >= 0);
 ALTER TABLE csv_agent_jobs ADD COLUMN automatic_full_reconciliations
   INTEGER NOT NULL DEFAULT 0 CHECK (
-    automatic_full_reconciliations BETWEEN 0 AND 2
+    automatic_full_reconciliations BETWEEN 0 AND
+      ${MAX_CSV_AUTOMATIC_FULL_RECONCILIATIONS_PER_JOB_LIFECYCLE}
   );
 ALTER TABLE csv_agent_jobs ADD COLUMN counter_integrity_state
   TEXT NOT NULL DEFAULT 'unchecked' CHECK (counter_integrity_state IN (
@@ -175,6 +179,13 @@ CREATE TABLE csv_job_supervisor_state (
   supervisor_epoch INTEGER NOT NULL CHECK (supervisor_epoch > 0),
   job_cursor_created_at_ms INTEGER CHECK (job_cursor_created_at_ms >= 0),
   job_cursor_job_id TEXT,
+  cleanup_cursor_queue_sequence INTEGER CHECK (
+    cleanup_cursor_queue_sequence > 0
+  ),
+  cleanup_cursor_job_id TEXT,
+  cleanup_scan_complete INTEGER NOT NULL CHECK (
+    cleanup_scan_complete IN (0, 1)
+  ),
   next_queue_sequence INTEGER NOT NULL CHECK (next_queue_sequence > 0),
   registered_jobs INTEGER NOT NULL CHECK (
     registered_jobs BETWEEN 0 AND ${MAX_RECOVERED_CSV_JOBS}
@@ -190,16 +201,24 @@ CREATE TABLE csv_job_supervisor_state (
     (job_cursor_created_at_ms IS NOT NULL
       AND job_cursor_job_id IS NOT NULL
       AND length(job_cursor_job_id) > 0)
+  ),
+  CHECK (
+    (cleanup_cursor_queue_sequence IS NULL AND cleanup_cursor_job_id IS NULL)
+    OR
+    (cleanup_cursor_queue_sequence IS NOT NULL
+      AND cleanup_cursor_job_id IS NOT NULL
+      AND length(cleanup_cursor_job_id) > 0)
   )
 );
 
 INSERT INTO csv_job_supervisor_state (
   singleton, supervisor_epoch, job_cursor_created_at_ms, job_cursor_job_id,
+  cleanup_cursor_queue_sequence, cleanup_cursor_job_id, cleanup_scan_complete,
   next_queue_sequence, registered_jobs, epoch_scan_complete,
   background_scan_required,
   updated_at_ms
 ) VALUES (
-  1, 1, NULL, NULL, 1, 0, 0, 0,
+  1, 1, NULL, NULL, NULL, NULL, 0, 1, 0, 0, 0,
   CAST(strftime('%s', 'now') AS INTEGER) * 1000
 );
 
@@ -234,6 +253,10 @@ CREATE INDEX idx_csv_job_supervisor_registration_queue
   ON csv_job_supervisor_registrations(
     substate, queue_sequence ASC, job_id ASC
   );
+
+CREATE INDEX idx_csv_job_supervisor_registration_physical_keyset
+  ON csv_job_supervisor_registrations(queue_sequence ASC, job_id ASC)
+  WHERE substate IN ('recovery_queued', 'registered', 'rotating');
 CREATE INDEX idx_csv_job_supervisor_registration_epoch
   ON csv_job_supervisor_registrations(
     supervisor_epoch, substate, queue_sequence ASC

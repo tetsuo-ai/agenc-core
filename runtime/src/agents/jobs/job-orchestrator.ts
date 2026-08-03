@@ -19,9 +19,11 @@ import {
   CSV_MAX_JOB_SUMMARY_BYTES,
   CSV_WORKER_RETIRE_TIMEOUT_MS,
   MAX_CSV_ACTIVE_WORKERS,
+  MAX_CSV_JOB_REGISTRATION_HOLD_MS,
   MAX_CSV_READY_ROWS_GLOBAL,
   MAX_CSV_READY_ROWS_PER_JOB,
   MAX_CSV_SUPERVISOR_STARTUP_MS,
+  MAX_RECOVERED_CSV_JOBS,
   type CsvAgentJobItemStatus,
   type CsvJobEffectReference,
   type CsvJobItemCursor,
@@ -252,6 +254,8 @@ interface JobRuntimeState {
   readonly progressCounters: RuntimeProgressCounters;
   readonly signal?: AbortSignal;
   readonly preservePendingOnStop: boolean;
+  counterAnomalyReconciled: boolean;
+  fatalError?: unknown;
   stopRequested: boolean;
 }
 
@@ -268,6 +272,24 @@ interface RuntimeProgressCounters {
   cancelledItems: number;
   unknownOutcomeItems: number;
   reviewPendingItems: number;
+}
+
+const RUNTIME_PROGRESS_COUNTER_KEYS = [
+  "totalItems",
+  "pendingItems",
+  "runningItems",
+  "completedItems",
+  "failedItems",
+  "cancelledItems",
+  "unknownOutcomeItems",
+  "reviewPendingItems",
+] as const satisfies ReadonlyArray<keyof RuntimeProgressCounters>;
+
+class CsvRuntimeCounterIntegrityError extends Error {
+  constructor() {
+    super("CSV in-memory counter integrity violation");
+    this.name = "CsvRuntimeCounterIntegrityError";
+  }
 }
 
 /**
@@ -509,6 +531,26 @@ function transitionRuntimeItemStatus(
   assertRuntimeProgressCounters(state.progressCounters);
 }
 
+function assertRuntimeItemTransition(
+  state: JobRuntimeState,
+  item: JobItemRecord,
+  status: JobItemStatus,
+  reviewPending = false,
+): void {
+  const projected = { ...state.progressCounters };
+  const previous = item.status;
+  if (previous !== status) {
+    adjustStatusCounter(projected, previous, -1);
+    adjustStatusCounter(projected, status, 1);
+  }
+  const previousReviewPending =
+    previous === "unknown_outcome" && item.reviewReason !== undefined;
+  if (previousReviewPending !== reviewPending) {
+    projected.reviewPendingItems += reviewPending ? 1 : -1;
+  }
+  assertRuntimeProgressCounters(projected);
+}
+
 function assertRuntimeProgressCounters(
   counters: RuntimeProgressCounters,
 ): void {
@@ -525,7 +567,43 @@ function assertRuntimeProgressCounters(
     statusTotal !== counters.totalItems ||
     counters.reviewPendingItems > counters.unknownOutcomeItems
   ) {
-    throw new Error("CSV in-memory counter integrity violation");
+    throw new CsvRuntimeCounterIntegrityError();
+  }
+}
+
+function reconcileRuntimeCounterAnomalyOnce(
+  state: JobRuntimeState,
+  error: unknown,
+): void {
+  if (
+    !(error instanceof CsvRuntimeCounterIntegrityError) ||
+    state.counterAnomalyReconciled
+  ) {
+    return;
+  }
+  state.counterAnomalyReconciled = true;
+  state.repository?.reconcileJobCounters(state.config.jobId, "anomaly");
+}
+
+function publishRuntimeFatalError(
+  state: JobRuntimeState,
+  error: unknown,
+): void {
+  reconcileRuntimeCounterAnomalyOnce(state, error);
+  state.fatalError ??= error;
+  for (const waiter of state.pending.values()) waiter.resolve();
+  state.pending.clear();
+}
+
+function assertRuntimeCountersMatchDurable(state: JobRuntimeState): void {
+  const durable = state.repository?.getJobProgress(state.config.jobId);
+  if (durable === undefined) return;
+  if (
+    RUNTIME_PROGRESS_COUNTER_KEYS.some(
+      (key) => durable[key] !== state.progressCounters[key],
+    )
+  ) {
+    throw new CsvRuntimeCounterIntegrityError();
   }
 }
 
@@ -848,7 +926,10 @@ export async function runAgentsOnCsv(
             attemptCount: 0,
             resultAvailability: "not_produced",
           };
-          items.set(identity.itemId, item);
+          if (opts.repository === undefined) {
+            items.set(identity.itemId, item);
+            return;
+          }
           if (importHandle === undefined) return;
           importBatch.push({
             itemId: item.itemId,
@@ -901,12 +982,21 @@ export async function runAgentsOnCsv(
     ...(opts.repository !== undefined ? { repository: opts.repository } : {}),
     ...(opts.threadOps !== undefined ? { threadOps: opts.threadOps } : {}),
     progress: new JobProgressEmitterImpl(opts.progressEmitter),
-    progressCounters: createRuntimeProgressCounters(items.values()),
+    progressCounters:
+      opts.repository === undefined
+        ? createRuntimeProgressCounters(items.values())
+        : createRuntimeProgressCountersFromJob(
+            opts.repository.getJob(jobId) ??
+              (() => {
+                throw new Error(`CSV job ${jobId} disappeared after import`);
+              })(),
+          ),
     ...(opts.idempotencyProfile !== undefined
       ? { idempotencyProfile: opts.idempotencyProfile }
       : {}),
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     preservePendingOnStop: false,
+    counterAnomalyReconciled: false,
     stopRequested: false,
   };
   jobs.set(jobId, state);
@@ -922,7 +1012,13 @@ export async function runAgentsOnCsv(
             opts.outputMode,
             inputHeaders,
             jobId,
-            items.values(),
+            opts.repository === undefined
+              ? items.values()
+              : iteratePersistedJobItems(
+                  opts.repository,
+                  jobId,
+                  opts.instruction,
+                ),
             opts.signal,
             opts.repository,
           )
@@ -985,6 +1081,51 @@ function operationKeyForItem(
   return derived;
 }
 
+function* iteratePersistedJobItems(
+  repository: CsvAgentJobsRepository,
+  jobId: JobId,
+  instruction: string,
+): IterableIterator<JobItemRecord> {
+  for (const stored of repository.iterateItemsForScheduler(
+    jobId,
+    CSV_RECOVERY_PAGE_ROWS,
+  )) {
+    yield itemFromStored(instruction, stored, stored.row as CsvRow);
+  }
+}
+
+function cancelPendingItems(state: JobRuntimeState, reason: string): void {
+  const repository = state.repository;
+  if (repository === undefined) {
+    for (const item of state.items.values()) {
+      if (item.status !== "pending") continue;
+      transitionRuntimeItemStatus(state, item, "cancelled");
+      item.completedAt = new Date();
+    }
+    return;
+  }
+
+  let cursor: CsvAgentJobItemSchedulerCursor | undefined;
+  do {
+    const page = repository.listItemsForScheduler({
+      jobId: state.config.jobId,
+      status: "pending",
+      limit: CSV_RECOVERY_PAGE_ROWS,
+      ...(cursor !== undefined ? { cursor } : {}),
+    });
+    for (const item of page.items) {
+      repository.markItemCancelled(state.config.jobId, item.itemId, reason);
+      const resident = state.items.get(item.itemId);
+      if (resident !== undefined) {
+        resident.status = "cancelled";
+        resident.completedAt = new Date();
+      }
+    }
+    cursor = page.nextCursor;
+  } while (cursor !== undefined);
+  synchronizeRuntimeProgressCounters(state);
+}
+
 async function processItems(
   state: JobRuntimeState,
   spawn: AgentJobSpawn,
@@ -996,7 +1137,34 @@ async function processItems(
   for (const item of state.items.values()) {
     if (item.status === "pending") queue.enqueue(item.itemId);
   }
-  const inflight = new Set<Promise<ProcessItemOutcome>>();
+  let persistedCursor: CsvAgentJobItemSchedulerCursor | undefined;
+  let persistedScanDone = state.repository === undefined;
+  const refillPersistedItems = (): void => {
+    if (state.repository === undefined || persistedScanDone) return;
+    const room = MAX_CSV_READY_ROWS_PER_JOB - queue.size - inflight.size;
+    if (room <= 0) return;
+    const page = state.repository.listItemsForScheduler({
+      jobId: state.config.jobId,
+      status: "pending",
+      limit: Math.min(CSV_RECOVERY_PAGE_ROWS, room),
+      ...(persistedCursor !== undefined ? { cursor: persistedCursor } : {}),
+    });
+    for (const stored of page.items) {
+      const item = itemFromStored(
+        state.config.instruction,
+        stored,
+        stored.row as CsvRow,
+      );
+      state.items.set(item.itemId, item);
+      queue.enqueue(item.itemId);
+    }
+    persistedCursor = page.nextCursor;
+    persistedScanDone = page.nextCursor === undefined;
+  };
+  const inflight = new Map<
+    ItemId,
+    Promise<ProcessItemOutcome & { readonly itemId: ItemId }>
+  >();
   let cancelIssued = false;
   const onAbort = (): void => {
     state.stopRequested = true;
@@ -1004,7 +1172,11 @@ async function processItems(
   };
   state.signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    while (queue.size > 0 || inflight.size > 0) {
+    while (!persistedScanDone || queue.size > 0 || inflight.size > 0) {
+      if (state.fatalError !== undefined) throw state.fatalError;
+      if (queue.size <= CSV_READY_REFILL_LOW_WATERMARK) {
+        refillPersistedItems();
+      }
       if (!state.stopRequested && state.repository !== undefined) {
         if (
           state.repository.getJob(state.config.jobId)?.status === "cancelled"
@@ -1024,17 +1196,20 @@ async function processItems(
       ) {
         const itemId = queue.dequeue();
         if (itemId === undefined) break;
-        const promise = runOneItem(state, spawn, itemId);
-        inflight.add(promise);
-        void promise.then(
-          () => inflight.delete(promise),
-          () => inflight.delete(promise),
-        );
+        const promise = runOneItem(state, spawn, itemId).then((outcome) => ({
+          ...outcome,
+          itemId,
+        }));
+        inflight.set(itemId, promise);
       }
       if (inflight.size === 0) break;
-      const completed = await Promise.race(inflight);
-      if (completed.retryItemId !== undefined)
+      const completed = await Promise.race(inflight.values());
+      inflight.delete(completed.itemId);
+      if (completed.retryItemId !== undefined) {
         queue.enqueueFront(completed.retryItemId);
+      } else if (state.repository !== undefined) {
+        state.items.delete(completed.itemId);
+      }
       state.progress.maybeEmit(
         state.config.jobId,
         computeProgressSnapshot(state),
@@ -1042,19 +1217,14 @@ async function processItems(
       );
     }
     if (state.stopRequested && !state.preservePendingOnStop) {
-      for (const item of state.items.values()) {
-        if (item.status !== "pending") continue;
-        transitionRuntimeItemStatus(state, item, "cancelled");
-        item.completedAt = new Date();
-        state.repository?.markItemCancelled(
-          state.config.jobId,
-          item.itemId,
-          "CSV job cancelled before dispatch",
-        );
-      }
+      cancelPendingItems(state, "CSV job cancelled before dispatch");
     }
   } catch (error) {
+    reconcileRuntimeCounterAnomalyOnce(state, error);
     state.stopRequested = true;
+    const counterIntegrityFailure =
+      error instanceof CsvRuntimeCounterIntegrityError ||
+      state.fatalError === error;
     const cleanupFailures: unknown[] = [];
     if (!cancelIssued) {
       cancelIssued = true;
@@ -1065,21 +1235,16 @@ async function processItems(
       }
     }
     for (const waiter of state.pending.values()) waiter.resolve();
-    const remaining = await Promise.allSettled([...inflight]);
+    const remaining = await Promise.allSettled(inflight.values());
     for (const outcome of remaining) {
       if (outcome.status === "rejected" && outcome.reason !== error) {
         cleanupFailures.push(outcome.reason);
       }
     }
-    for (const item of state.items.values()) {
-      if (item.status !== "pending") continue;
-      if (state.preservePendingOnStop) continue;
-      transitionRuntimeItemStatus(state, item, "cancelled");
-      item.completedAt = new Date();
+    if (!state.preservePendingOnStop && !counterIntegrityFailure) {
       try {
-        state.repository?.markItemCancelled(
-          state.config.jobId,
-          item.itemId,
+        cancelPendingItems(
+          state,
           "CSV job stopped after a worker lifecycle failure",
         );
       } catch (projectionError) {
@@ -1201,7 +1366,12 @@ async function runOneItem(
     if (outcome.kind === "capacity_unavailable") {
       capacityPermit?.cancel();
       transitionRuntimeItemStatus(state, item, "pending");
-      state.repository?.markItemPending(state.config.jobId, itemId);
+      state.repository?.markItemPending(
+        state.config.jobId,
+        itemId,
+        undefined,
+        supervisorClaim,
+      );
       await delay(
         outcome.retryAfterMs ?? CSV_CAPACITY_RETRY_DELAY_MS,
         state.signal,
@@ -1268,6 +1438,7 @@ async function runOneItem(
         racers.push(outcome.threadFinished.then(() => "finished" as const));
       }
       const event = await Promise.race(racers);
+      if (state.fatalError !== undefined) throw state.fatalError;
       if (
         event === "finished" &&
         (item.status as JobItemStatus) === "running"
@@ -1348,6 +1519,12 @@ async function runOneItem(
       item.error = reason;
       item.completedAt = new Date();
       state.repository?.markItemFailed(state.config.jobId, itemId, reason);
+    }
+    if (
+      error instanceof CsvRuntimeCounterIntegrityError ||
+      state.fatalError === error
+    ) {
+      throw error;
     }
     return {};
   } finally {
@@ -1452,6 +1629,9 @@ async function writeOutputCsv(
 
 interface RecoveredJobRuntime {
   registration: CsvJobSupervisorRegistration;
+  registrationHeld: boolean;
+  rotationDue: boolean;
+  holdWakeTimer?: ReturnType<typeof setTimeout>;
   readonly ready: CsvJobCompactingQueue<ItemId>;
   readonly readyIds: Set<ItemId>;
   readonly recoveryRows: CsvJobCompactingQueue<CsvAgentJobItem>;
@@ -1463,6 +1643,16 @@ interface RecoveredJobRuntime {
   queuedForRound: boolean;
   job?: CsvAgentJob;
   state?: JobRuntimeState;
+}
+
+interface CsvWorkerSettlementWaiter {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+}
+
+interface CsvSupervisorFatalFailure {
+  readonly error: unknown;
+  readonly runtime?: RecoveredJobRuntime;
 }
 
 export interface CsvJobRecoverySupervisorOpts extends ResumeAgentJobsOpts {
@@ -1478,6 +1668,8 @@ export class CsvJobRecoverySupervisor {
   private readonly controller = new AbortController();
   private readonly active = new Map<JobId, RecoveredJobRuntime>();
   private readonly round = new CsvJobCompactingQueue<JobId>();
+  private readonly globalCapacityWaiters = new CsvJobCompactingQueue<JobId>();
+  private readonly globalCapacityWaiterIds = new Set<JobId>();
   private readonly ownedWorkers = new Set<Promise<void>>();
   private readonly results: RunAgentsOnCsvResult[] = [];
   private readonly startupPromise: Promise<number>;
@@ -1487,9 +1679,13 @@ export class CsvJobRecoverySupervisor {
   private terminalObservationPromise: Promise<void> | undefined;
   private readyRowsGlobal = 0;
   private activeWorkers = 0;
+  private registeredRuntimeCountValue = 0;
   private startedJobs = 0;
   private startupSettled = false;
-  private fatalError: unknown;
+  private fatalFailure: CsvSupervisorFatalFailure | undefined;
+  private workerSettlementWaiter: CsvWorkerSettlementWaiter | undefined;
+  private supervisorWakeWaiter: CsvWorkerSettlementWaiter | undefined;
+  private supervisorStarted = false;
   private parentAbortListener: (() => void) | undefined;
 
   constructor(private readonly opts: CsvJobRecoverySupervisorOpts) {
@@ -1499,8 +1695,17 @@ export class CsvJobRecoverySupervisor {
     });
   }
 
+  get activeRuntimeCount(): number {
+    return this.active.size;
+  }
+
+  get registeredRuntimeCount(): number {
+    return this.registeredRuntimeCountValue;
+  }
+
   async start(): Promise<number> {
     if (this.completionPromise === undefined) {
+      this.supervisorStarted = true;
       this.opts.repository.claimSupervisorOwnership();
       const parentSignal = this.opts.signal;
       if (parentSignal !== undefined) {
@@ -1543,7 +1748,8 @@ export class CsvJobRecoverySupervisor {
     try {
       await this.reconstructFirstPage();
       while (!this.controller.signal.aborted) {
-        if (this.fatalError !== undefined) throw this.fatalError;
+        this.throwFatalFailureIfPresent();
+        this.advanceRegistrationCleanup();
 
         await this.extendDurableRegistrationQueue(foregroundDeadline);
         this.registerQueuedJobs();
@@ -1553,14 +1759,19 @@ export class CsvJobRecoverySupervisor {
           const runtime = this.active.get(jobId);
           if (runtime !== undefined) {
             runtime.queuedForRound = false;
-            await this.stepJob(runtime);
+            try {
+              await this.stepJob(runtime);
+            } catch (error) {
+              this.reconcileCounterAnomalyOnce(runtime, error);
+              throw error;
+            }
             this.enqueueForRoundIfRunnable(runtime);
           }
           continue;
         }
 
         if (this.ownedWorkers.size > 0) {
-          await Promise.race(this.ownedWorkers);
+          await this.waitForWorkerSettlementOrShutdown();
           continue;
         }
 
@@ -1573,14 +1784,17 @@ export class CsvJobRecoverySupervisor {
           CSV_RECOVERY_JOB_PAGE_SIZE,
         );
         if (this.registerQueuedJobs() > 0) continue;
+        if (!this.opts.repository.getSupervisorState().cleanupScanComplete) {
+          continue;
+        }
         if (this.opts.repository.beginNextSupervisorEpochIfNeeded()) continue;
         break;
       }
-      if (this.fatalError !== undefined) throw this.fatalError;
+      this.throwFatalFailureIfPresent();
       this.settleStartupSuccess();
       return [...this.results];
     } catch (error) {
-      this.fatalError = error;
+      this.fatalFailure ??= { error };
       this.settleStartupFailure(error);
       this.opts.onError?.(error);
       throw error;
@@ -1624,6 +1838,13 @@ export class CsvJobRecoverySupervisor {
     this.settleStartupSuccess();
   }
 
+  private advanceRegistrationCleanup(): void {
+    if (this.opts.repository.getSupervisorState().cleanupScanComplete) return;
+    this.opts.repository.sweepNextInvalidSupervisorRegistrationPage(
+      CSV_RECOVERY_JOB_PAGE_SIZE,
+    );
+  }
+
   private async extendDurableRegistrationQueue(
     foregroundDeadline: number,
   ): Promise<void> {
@@ -1637,16 +1858,26 @@ export class CsvJobRecoverySupervisor {
 
   private registerQueuedJobs(): number {
     let registered = 0;
-    while (registered < CSV_RECOVERY_JOB_PAGE_SIZE) {
+    while (
+      registered < CSV_RECOVERY_JOB_PAGE_SIZE &&
+      this.registeredRuntimeCountValue < MAX_RECOVERED_CSV_JOBS
+    ) {
       const registration = this.opts.repository.registerNextSupervisorJob();
       if (registration === null) break;
       const existing = this.active.get(registration.jobId);
       if (existing !== undefined) {
         existing.registration = registration;
+        if (!existing.registrationHeld) {
+          existing.registrationHeld = true;
+          this.registeredRuntimeCountValue += 1;
+          this.scheduleRegistrationHoldWake(existing);
+        }
         this.enqueueForRoundIfRunnable(existing);
       } else {
         const runtime: RecoveredJobRuntime = {
           registration,
+          registrationHeld: true,
+          rotationDue: false,
           ready: new CsvJobCompactingQueue<ItemId>(),
           readyIds: new Set<ItemId>(),
           recoveryRows: new CsvJobCompactingQueue<CsvAgentJobItem>(),
@@ -1657,6 +1888,8 @@ export class CsvJobRecoverySupervisor {
           queuedForRound: false,
         };
         this.active.set(registration.jobId, runtime);
+        this.registeredRuntimeCountValue += 1;
+        this.scheduleRegistrationHoldWake(runtime);
         this.enqueueForRoundIfRunnable(runtime);
         this.startedJobs += 1;
       }
@@ -1716,6 +1949,7 @@ export class CsvJobRecoverySupervisor {
       progressCounters: createRuntimeProgressCountersFromJob(job),
       signal: this.controller.signal,
       preservePendingOnStop: true,
+      counterAnomalyReconciled: false,
       stopRequested: false,
     };
     if (jobs.has(job.id)) {
@@ -1739,8 +1973,10 @@ export class CsvJobRecoverySupervisor {
     if (!this.registrationIsCurrent(runtime)) return;
 
     const claim = this.claimFor(runtime);
+    runtime.rotationDue = false;
     if (this.opts.repository.rotateSupervisorRegistration(claim, false)) {
-      this.spillReadyRows(runtime);
+      this.releaseRegistrationWindow(runtime);
+      this.suspendRuntime(runtime);
       return;
     }
 
@@ -1761,7 +1997,8 @@ export class CsvJobRecoverySupervisor {
       }
       if (current.pendingItems > 0) {
         if (this.opts.repository.rotateSupervisorRegistration(claim, true)) {
-          this.spillReadyRows(runtime);
+          this.releaseRegistrationWindow(runtime);
+          this.suspendRuntime(runtime);
         }
         return;
       }
@@ -1776,9 +2013,6 @@ export class CsvJobRecoverySupervisor {
       runtime.inflight.size >= state.config.maxConcurrency ||
       this.activeWorkers >= MAX_CSV_ACTIVE_WORKERS
     ) {
-      if (this.round.size === 0 && this.ownedWorkers.size > 0) {
-        await Promise.race(this.ownedWorkers);
-      }
       return;
     }
     await this.admitOneReadyItem(runtime);
@@ -1899,7 +2133,8 @@ export class CsvJobRecoverySupervisor {
     }
     this.launchOwnedWorker(runtime, itemId, capacity, claim);
     if (this.opts.repository.rotateSupervisorRegistration(claim, false)) {
-      this.spillReadyRows(runtime);
+      this.releaseRegistrationWindow(runtime);
+      this.suspendRuntime(runtime);
     }
   }
 
@@ -1940,16 +2175,25 @@ export class CsvJobRecoverySupervisor {
         );
       } catch (error) {
         if (!this.controller.signal.aborted) {
-          this.fatalError = error;
+          reconcileRuntimeCounterAnomalyOnce(runtime.state!, error);
+          this.fatalFailure = { error, runtime };
           this.controller.abort(error);
         }
       } finally {
         runtime.inflight.delete(owned);
         this.ownedWorkers.delete(owned);
         this.activeWorkers -= 1;
+        this.notifyWorkerSettlement();
         if (runtime.finalized && runtime.inflight.size === 0) {
           this.releaseRuntime(runtime);
+        } else if (
+          runtime.inflight.size === 0 &&
+          !this.registrationIsCurrent(runtime)
+        ) {
+          this.completeRotationAndRelease(runtime);
         }
+        this.wakeNextGlobalCapacityWaiter();
+        this.enqueueForRoundIfRunnable(runtime);
       }
     })();
     runtime.inflight.add(owned);
@@ -2000,6 +2244,21 @@ export class CsvJobRecoverySupervisor {
     this.finishRegistration(runtime);
   }
 
+  private reconcileCounterAnomalyOnce(
+    runtime: RecoveredJobRuntime,
+    error: unknown,
+  ): void {
+    if (!(error instanceof CsvRuntimeCounterIntegrityError)) return;
+    if (runtime.state !== undefined) {
+      reconcileRuntimeCounterAnomalyOnce(runtime.state, error);
+    } else {
+      this.opts.repository.reconcileJobCounters(
+        runtime.registration.jobId,
+        "anomaly",
+      );
+    }
+  }
+
   private *recoveredOutputItems(
     job: CsvAgentJob,
   ): IterableIterator<JobItemRecord> {
@@ -2014,6 +2273,7 @@ export class CsvJobRecoverySupervisor {
   private finishRegistration(runtime: RecoveredJobRuntime): void {
     if (runtime.finalized) return;
     runtime.finalized = true;
+    this.releaseRegistrationWindow(runtime);
     this.opts.repository.finishSupervisorRegistration(this.claimFor(runtime));
     this.spillReadyRows(runtime);
     if (runtime.inflight.size === 0) this.releaseRuntime(runtime);
@@ -2021,6 +2281,8 @@ export class CsvJobRecoverySupervisor {
 
   private releaseRuntime(runtime: RecoveredJobRuntime): void {
     const jobId = runtime.registration.jobId;
+    this.releaseRegistrationWindow(runtime);
+    this.globalCapacityWaiterIds.delete(jobId);
     jobs.delete(jobId);
     releaseCsvOutputSchemaValidation(jobId);
     this.active.delete(jobId);
@@ -2037,6 +2299,17 @@ export class CsvJobRecoverySupervisor {
     for (const [itemId, item] of runtime.state?.items ?? []) {
       if (item.status === "pending") runtime.state!.items.delete(itemId);
     }
+  }
+
+  private suspendRuntime(runtime: RecoveredJobRuntime): void {
+    this.releaseRegistrationWindow(runtime);
+    this.spillReadyRows(runtime);
+    if (runtime.inflight.size === 0) this.completeRotationAndRelease(runtime);
+  }
+
+  private completeRotationAndRelease(runtime: RecoveredJobRuntime): void {
+    this.opts.repository.completeSupervisorRotation(this.claimFor(runtime));
+    this.releaseRuntime(runtime);
   }
 
   private registrationIsCurrent(runtime: RecoveredJobRuntime): boolean {
@@ -2070,8 +2343,167 @@ export class CsvJobRecoverySupervisor {
     ) {
       return;
     }
+    if (!this.runtimeCanMakeImmediateProgress(runtime)) {
+      this.blockOnGlobalCapacity(runtime);
+      return;
+    }
+    this.globalCapacityWaiterIds.delete(runtime.registration.jobId);
     runtime.queuedForRound = true;
     this.round.enqueue(runtime.registration.jobId);
+  }
+
+  private runtimeCanMakeImmediateProgress(
+    runtime: RecoveredJobRuntime,
+  ): boolean {
+    if (runtime.rotationDue) return true;
+    if (!runtime.initialized) return true;
+    if (!runtime.recoveryScanDone || runtime.recoveryRows.size > 0) return true;
+    const state = runtime.state;
+    if (state === undefined) return true;
+    if (runtime.ready.size === 0) return runtime.inflight.size === 0;
+    return (
+      runtime.inflight.size < state.config.maxConcurrency &&
+      this.activeWorkers < MAX_CSV_ACTIVE_WORKERS
+    );
+  }
+
+  private scheduleRegistrationHoldWake(runtime: RecoveredJobRuntime): void {
+    this.clearRegistrationHoldWake(runtime);
+    if (!this.supervisorStarted || !runtime.registrationHeld) {
+      return;
+    }
+    const registeredAt =
+      runtime.registration.registeredAtMs ?? runtime.registration.updatedAtMs;
+    const remainingMs = Math.max(
+      0,
+      registeredAt + MAX_CSV_JOB_REGISTRATION_HOLD_MS - Date.now(),
+    );
+    runtime.holdWakeTimer = setTimeout(() => {
+      runtime.holdWakeTimer = undefined;
+      if (
+        this.controller.signal.aborted ||
+        !runtime.registrationHeld ||
+        runtime.finalized
+      ) {
+        return;
+      }
+      runtime.rotationDue = true;
+      this.enqueueForRoundIfRunnable(runtime);
+      this.notifySupervisorWake();
+    }, remainingMs);
+    runtime.holdWakeTimer.unref?.();
+  }
+
+  private clearRegistrationHoldWake(runtime: RecoveredJobRuntime): void {
+    if (runtime.holdWakeTimer === undefined) return;
+    clearTimeout(runtime.holdWakeTimer);
+    runtime.holdWakeTimer = undefined;
+  }
+
+  private releaseRegistrationWindow(runtime: RecoveredJobRuntime): void {
+    this.clearRegistrationHoldWake(runtime);
+    runtime.rotationDue = false;
+    if (!runtime.registrationHeld) return;
+    runtime.registrationHeld = false;
+    this.registeredRuntimeCountValue -= 1;
+  }
+
+  private blockOnGlobalCapacity(runtime: RecoveredJobRuntime): void {
+    const state = runtime.state;
+    if (
+      state === undefined ||
+      runtime.ready.size === 0 ||
+      runtime.inflight.size >= state.config.maxConcurrency ||
+      this.activeWorkers < MAX_CSV_ACTIVE_WORKERS
+    ) {
+      return;
+    }
+    const jobId = runtime.registration.jobId;
+    if (this.globalCapacityWaiterIds.has(jobId)) return;
+    this.globalCapacityWaiterIds.add(jobId);
+    this.globalCapacityWaiters.enqueue(jobId);
+  }
+
+  private wakeNextGlobalCapacityWaiter(): void {
+    while (this.globalCapacityWaiters.size > 0) {
+      const jobId = this.globalCapacityWaiters.dequeue();
+      if (jobId === undefined || !this.globalCapacityWaiterIds.delete(jobId)) {
+        continue;
+      }
+      const runtime = this.active.get(jobId);
+      if (
+        runtime === undefined ||
+        runtime.finalized ||
+        !this.registrationIsCurrent(runtime)
+      ) {
+        continue;
+      }
+      if (!this.runtimeCanMakeImmediateProgress(runtime)) {
+        this.blockOnGlobalCapacity(runtime);
+        return;
+      }
+      this.enqueueForRoundIfRunnable(runtime);
+      return;
+    }
+  }
+
+  private async waitForWorkerSettlementOrShutdown(): Promise<void> {
+    if (this.controller.signal.aborted || this.ownedWorkers.size === 0) return;
+    const workerSettled = this.nextWorkerSettlement();
+    const supervisorWake = this.nextSupervisorWake();
+    let onAbort!: () => void;
+    const shutdown = new Promise<void>((resolve) => {
+      onAbort = resolve;
+      this.controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      await Promise.race([workerSettled, supervisorWake, shutdown]);
+    } finally {
+      this.controller.signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  private nextWorkerSettlement(): Promise<void> {
+    if (this.workerSettlementWaiter === undefined) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((settled) => {
+        resolve = settled;
+      });
+      this.workerSettlementWaiter = { promise, resolve };
+    }
+    return this.workerSettlementWaiter.promise;
+  }
+
+  private notifyWorkerSettlement(): void {
+    const waiter = this.workerSettlementWaiter;
+    this.workerSettlementWaiter = undefined;
+    waiter?.resolve();
+  }
+
+  private nextSupervisorWake(): Promise<void> {
+    if (this.supervisorWakeWaiter === undefined) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((settled) => {
+        resolve = settled;
+      });
+      this.supervisorWakeWaiter = { promise, resolve };
+    }
+    return this.supervisorWakeWaiter.promise;
+  }
+
+  private notifySupervisorWake(): void {
+    const waiter = this.supervisorWakeWaiter;
+    this.supervisorWakeWaiter = undefined;
+    waiter?.resolve();
+  }
+
+  private throwFatalFailureIfPresent(): void {
+    const failure = this.fatalFailure;
+    if (failure === undefined) return;
+    if (failure.runtime !== undefined) {
+      this.reconcileCounterAnomalyOnce(failure.runtime, failure.error);
+    }
+    throw failure.error;
   }
 
   private settleStartupSuccess(): void {
@@ -2097,8 +2529,8 @@ export class CsvJobRecoverySupervisor {
     );
     await Promise.allSettled([...this.ownedWorkers]);
     for (const outcome of cancellations) {
-      if (outcome.status === "rejected" && this.fatalError === undefined) {
-        this.fatalError = outcome.reason;
+      if (outcome.status === "rejected" && this.fatalFailure === undefined) {
+        this.fatalFailure = { error: outcome.reason };
       }
     }
     for (const runtime of [...this.active.values()]) {
@@ -2402,6 +2834,13 @@ export function recordAgentJobResult(
   }
   const now = new Date();
   try {
+    assertRuntimeCountersMatchDurable(state);
+    assertRuntimeItemTransition(state, item, "completed");
+  } catch (error) {
+    publishRuntimeFatalError(state, error);
+    throw error;
+  }
+  try {
     state.repository?.markItemCompleted(
       args.jobId,
       args.itemId,
@@ -2468,6 +2907,13 @@ export async function recordAgentJobResultAsync(
     };
   }
   const now = new Date();
+  try {
+    assertRuntimeCountersMatchDurable(state);
+    assertRuntimeItemTransition(state, item, "completed");
+  } catch (error) {
+    publishRuntimeFatalError(state, error);
+    throw error;
+  }
   try {
     state.repository?.markItemCompletedValidated(
       args.jobId,

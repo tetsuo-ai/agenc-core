@@ -2,8 +2,15 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CsvAgentJobsRepository } from "../../state/csv-agent-jobs.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  MAX_CSV_JOB_REGISTRATION_HOLD_MS,
+  MAX_RECOVERED_CSV_JOBS,
+} from "../../contracts/csv-job-contract.js";
+import {
+  CsvAgentJobsRepository,
+  type CsvJobSupervisorRegistration,
+} from "../../state/csv-agent-jobs.js";
 import {
   openStateDatabases,
   type StateSqliteDriver,
@@ -14,6 +21,7 @@ import {
   recordAgentJobResult,
   type AgentJobSpawn,
 } from "./job-orchestrator.js";
+import { AgentRegistry } from "../registry.js";
 
 let home: string;
 let cwd: string;
@@ -32,6 +40,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   driver.close();
   if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = originalAgencHome;
@@ -152,6 +161,63 @@ describe("CsvJobRecoverySupervisor", () => {
     expect(repository.getSupervisorState().registeredJobs).toBe(0);
   });
 
+  it("runs one bounded anomaly reconciliation and exposes poisoned counters", async () => {
+    createJob("counter-anomaly", 1);
+    expect(repository.queueNextSupervisorJobPage(1)).toBe(1);
+    const abandoned = repository.registerNextSupervisorJob()!;
+    repository.beginItemDispatch("counter-anomaly", "counter-anomaly-item-0", {
+      supervisorClaim: {
+        jobId: abandoned.jobId,
+        supervisorEpoch: abandoned.supervisorEpoch,
+        registrationGeneration: abandoned.registrationGeneration,
+      },
+    });
+    const phases: string[] = [];
+    const reconcile = repository.reconcileJobCounters.bind(repository);
+    repository.reconcileJobCounters = (jobId, phase) => {
+      phases.push(phase);
+      return reconcile(jobId, phase);
+    };
+    const markUnknown = repository.markItemUnknownOutcome.bind(repository);
+    repository.markItemUnknownOutcome = (...args) => {
+      markUnknown(...args);
+      driver
+        .prepareState(
+          `UPDATE csv_agent_jobs SET pending_items = pending_items + 1
+           WHERE id = ?`,
+        )
+        .run(args[0]);
+    };
+    let observedErrors = 0;
+    const supervisor = new CsvJobRecoverySupervisor({
+      repository,
+      spawn: {
+        async spawn() {
+          throw new Error("ambiguous recovered rows must not respawn");
+        },
+        async cancelOutstanding() {},
+      },
+      onError: () => {
+        observedErrors += 1;
+      },
+    });
+
+    await supervisor.start();
+    await expect(supervisor.waitForCompletion()).rejects.toThrow(
+      /counter integrity violation/u,
+    );
+
+    expect(phases).toEqual(["startup", "anomaly"]);
+    expect(observedErrors).toBe(1);
+    expect(repository.getJob("counter-anomaly")).toMatchObject({
+      counterIntegrityState: "poisoned",
+      automaticFullReconciliations: 2,
+    });
+    expect(
+      repository.getJob("counter-anomaly")?.counterIntegrityError,
+    ).toContain("counter integrity mismatch during anomaly");
+  });
+
   it("keeps jobs progressing fairly while retrying a refused FIFO head", async () => {
     createJob("job-a", 3);
     createJob("job-b", 2);
@@ -253,5 +319,265 @@ describe("CsvJobRecoverySupervisor", () => {
       assignedThreadId: "owned-thread",
       reviewStatus: "pending",
     });
+  });
+
+  it("yields to timers while multiple jobs wait for worker settlement", async () => {
+    createJob("blocked-job-a", 1);
+    createJob("blocked-job-b", 1);
+    const finishWorkers = new Map<string, () => void>();
+    let markAllSpawned!: () => void;
+    const allSpawned = new Promise<void>((resolve) => {
+      markAllSpawned = resolve;
+    });
+    const cancelled: string[] = [];
+    const spawn: AgentJobSpawn = {
+      async spawn(ctx) {
+        const threadFinished = new Promise<void>((resolve) => {
+          finishWorkers.set(ctx.jobId, resolve);
+        });
+        if (finishWorkers.size === 2) markAllSpawned();
+        return {
+          kind: "launched",
+          threadId: `${ctx.jobId}-thread`,
+          threadFinished,
+        };
+      },
+      async cancelOutstanding(jobId) {
+        cancelled.push(jobId);
+        finishWorkers.get(jobId)?.();
+      },
+    };
+    const supervisor = new CsvJobRecoverySupervisor({ repository, spawn });
+
+    await supervisor.start();
+    await allSpawned;
+    let heartbeatObserved = false;
+    await new Promise<void>((resolve) => {
+      setTimeout(() => {
+        heartbeatObserved = true;
+        resolve();
+      }, 25);
+    });
+    await supervisor.shutdown("test saturated shutdown");
+
+    expect(heartbeatObserved).toBe(true);
+    expect(cancelled).toEqual(
+      expect.arrayContaining(["blocked-job-a", "blocked-job-b"]),
+    );
+  });
+
+  it("cancels a parked capacity waiter without leaking the forwarded slot", async () => {
+    createJob("capacity-waiter", 1);
+    const registry = new AgentRegistry({ maxThreads: 1 });
+    const held = await registry.acquireSpawnPermit({ ownerId: "held" });
+    let markAcquireStarted!: () => void;
+    const acquireStarted = new Promise<void>((resolve) => {
+      markAcquireStarted = resolve;
+    });
+    const supervisor = new CsvJobRecoverySupervisor({
+      repository,
+      spawn: {
+        async acquireCapacity({ jobId, signal }) {
+          markAcquireStarted();
+          const permit = await registry.acquireSpawnPermit({
+            ownerId: jobId,
+            ...(signal !== undefined ? { signal } : {}),
+          });
+          return { kind: "acquired", permit };
+        },
+        async spawn() {
+          throw new Error("a parked capacity waiter must not spawn");
+        },
+        async cancelOutstanding() {},
+      },
+    });
+
+    await supervisor.start();
+    await acquireStarted;
+    await supervisor.shutdown("cancel parked capacity waiter");
+    held.cancel();
+    const probe = await registry.acquireSpawnPermit({ ownerId: "probe" });
+    probe.cancel();
+  });
+
+  it("returns an unconsumed permit when supervisor spawn rejects", async () => {
+    createJob("rejected-permit", 1);
+    const registry = new AgentRegistry({ maxThreads: 1 });
+    const supervisor = new CsvJobRecoverySupervisor({
+      repository,
+      spawn: {
+        async acquireCapacity({ jobId, signal }) {
+          const permit = await registry.acquireSpawnPermit({
+            ownerId: jobId,
+            ...(signal !== undefined ? { signal } : {}),
+          });
+          return { kind: "acquired", permit };
+        },
+        async spawn() {
+          return { kind: "rejected", reason: "test rejection" };
+        },
+        async cancelOutstanding() {},
+      },
+    });
+
+    await supervisor.start();
+    const [result] = await supervisor.waitForCompletion();
+    expect(result?.summary).toMatchObject({
+      status: "failed",
+      failedItems: 1,
+    });
+    const probe = await registry.acquireSpawnPermit({ ownerId: "probe" });
+    probe.cancel();
+  });
+
+  it("observes one terminal rejection across multiple completion waiters", async () => {
+    createJob("terminal-rejection", 1);
+    let observedErrors = 0;
+    const supervisor = new CsvJobRecoverySupervisor({
+      repository,
+      spawn: {
+        async acquireCapacity() {
+          throw new Error("terminal scheduler failure");
+        },
+        async spawn() {
+          throw new Error("unreachable spawn");
+        },
+        async cancelOutstanding() {},
+      },
+      onError: () => {
+        observedErrors += 1;
+      },
+    });
+
+    await supervisor.start();
+    const first = supervisor.waitForCompletion();
+    const second = supervisor.waitForCompletion();
+    await expect(first).rejects.toThrow("terminal scheduler failure");
+    await expect(second).rejects.toThrow("terminal scheduler failure");
+    await supervisor.shutdown("terminal rejection observed");
+    expect(observedErrors).toBe(1);
+  });
+
+  it("releases registration capacity while a rotated worker remains owned", () => {
+    const backlogSize = 10_000;
+    const registrations = new Map<string, CsvJobSupervisorRegistration>();
+    let nextRegistration = 0;
+    const fakeRepository = {
+      registerNextSupervisorJob() {
+        if (nextRegistration >= backlogSize) return null;
+        const jobId = `job-${nextRegistration}`;
+        const registration: CsvJobSupervisorRegistration = {
+          jobId,
+          substate: "registered",
+          supervisorEpoch: 2,
+          registrationGeneration: `generation-${nextRegistration}`,
+          queueSequence: nextRegistration + 1,
+          admittedItems: 0,
+          registeredAtMs: 1,
+          updatedAtMs: 1,
+        };
+        nextRegistration += 1;
+        registrations.set(jobId, registration);
+        return registration;
+      },
+      getSupervisorRegistration(jobId: string) {
+        return registrations.get(jobId) ?? null;
+      },
+      completeSupervisorRotation() {
+        return true;
+      },
+    } as unknown as CsvAgentJobsRepository;
+    const supervisor = new CsvJobRecoverySupervisor({
+      repository: fakeRepository,
+      spawn: {
+        async spawn() {},
+        async cancelOutstanding() {},
+      },
+    });
+    const registerQueuedJobs = (
+      supervisor as unknown as { registerQueuedJobs(): number }
+    ).registerQueuedJobs.bind(supervisor);
+
+    while (registerQueuedJobs() > 0) {
+      // Fill the bounded in-memory window without running the queued jobs.
+    }
+
+    expect(supervisor.activeRuntimeCount).toBe(MAX_RECOVERED_CSV_JOBS);
+    expect(nextRegistration).toBe(MAX_RECOVERED_CSV_JOBS);
+    expect(registerQueuedJobs()).toBe(0);
+
+    const internals = supervisor as unknown as {
+      readonly active: Map<string, { readonly inflight: Set<Promise<void>> }>;
+      suspendRuntime(runtime: { readonly inflight: Set<Promise<void>> }): void;
+    };
+    const rotated = internals.active.values().next().value;
+    expect(rotated).toBeDefined();
+    rotated!.inflight.add(new Promise<void>(() => {}));
+    internals.suspendRuntime(rotated!);
+    expect(supervisor.activeRuntimeCount).toBe(MAX_RECOVERED_CSV_JOBS);
+    expect(supervisor.registeredRuntimeCount).toBe(MAX_RECOVERED_CSV_JOBS - 1);
+    expect(registerQueuedJobs()).toBe(1);
+    expect(supervisor.activeRuntimeCount).toBe(MAX_RECOVERED_CSV_JOBS + 1);
+    expect(supervisor.registeredRuntimeCount).toBe(MAX_RECOVERED_CSV_JOBS);
+    expect(nextRegistration).toBe(MAX_RECOVERED_CSV_JOBS + 1);
+  });
+
+  it("wakes a saturated inflight runtime at the registration hold deadline", async () => {
+    vi.useFakeTimers();
+    const registration: CsvJobSupervisorRegistration = {
+      jobId: "deadline-job",
+      substate: "registered",
+      supervisorEpoch: 2,
+      registrationGeneration: "deadline-generation",
+      queueSequence: 1,
+      admittedItems: 1,
+      registeredAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+    };
+    const fakeRepository = {
+      registerNextSupervisorJob: vi
+        .fn()
+        .mockReturnValueOnce(registration)
+        .mockReturnValue(null),
+      getSupervisorRegistration: vi.fn(() => registration),
+    } as unknown as CsvAgentJobsRepository;
+    const supervisor = new CsvJobRecoverySupervisor({
+      repository: fakeRepository,
+      spawn: {
+        async spawn() {},
+        async cancelOutstanding() {},
+      },
+    });
+    const internals = supervisor as unknown as {
+      supervisorStarted: boolean;
+      readonly round: CsvJobCompactingQueue<string>;
+      readonly active: Map<
+        string,
+        {
+          inflight: Set<Promise<void>>;
+          queuedForRound: boolean;
+          rotationDue: boolean;
+        }
+      >;
+      registerQueuedJobs(): number;
+      scheduleRegistrationHoldWake(runtime: unknown): void;
+      nextSupervisorWake(): Promise<void>;
+    };
+    internals.supervisorStarted = true;
+    expect(internals.registerQueuedJobs()).toBe(1);
+    const runtime = internals.active.get("deadline-job")!;
+    expect(internals.round.dequeue()).toBe("deadline-job");
+    runtime.queuedForRound = false;
+    runtime.inflight.add(new Promise<void>(() => {}));
+    internals.scheduleRegistrationHoldWake(runtime);
+    const wake = internals.nextSupervisorWake();
+
+    await vi.advanceTimersByTimeAsync(MAX_CSV_JOB_REGISTRATION_HOLD_MS - 1);
+    expect(runtime.rotationDue).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await wake;
+
+    expect(runtime.rotationDue).toBe(true);
+    expect(internals.round.dequeue()).toBe("deadline-job");
   });
 });

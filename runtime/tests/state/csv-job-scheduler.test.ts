@@ -1,9 +1,17 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { runtimeRootPath } from "../helpers/source-path.ts";
+import { MAX_CSV_JOB_REGISTRATION_HOLD_MS } from "../../src/contracts/csv-job-contract.js";
 import { CsvAgentJobsRepository } from "./csv-agent-jobs.js";
 import { STATE_DB_MIGRATIONS } from "./migrations/index.js";
 import {
@@ -166,6 +174,293 @@ describe("CSV durable linear scheduler repository", () => {
     expect(repository.getSupervisorState().registeredJobs).toBe(0);
   });
 
+  it("replays a refilled page after a crash before durable dispatch", () => {
+    const { repository } = openRepository();
+    createJob(repository, "refill-crash", 3);
+    expect(repository.queueNextSupervisorJobPage(1)).toBe(1);
+    const abandoned = repository.registerNextSupervisorJob()!;
+    const abandonedClaim = {
+      jobId: abandoned.jobId,
+      supervisorEpoch: abandoned.supervisorEpoch,
+      registrationGeneration: abandoned.registrationGeneration,
+    };
+    const refilled = repository.listReadyItemsForSupervisor(abandonedClaim, 2);
+    expect(refilled.items.map((item) => item.itemId)).toEqual([
+      "refill-crash-item-0",
+      "refill-crash-item-1",
+    ]);
+    expect(repository.getSupervisorRegistration("refill-crash")?.itemCursor)
+      .toBeUndefined;
+
+    const nextOwner = repository.claimSupervisorOwnership();
+    const adopted = repository.registerNextSupervisorJob()!;
+    const adoptedClaim = {
+      jobId: adopted.jobId,
+      supervisorEpoch: adopted.supervisorEpoch,
+      registrationGeneration: adopted.registrationGeneration,
+    };
+    expect(adopted.supervisorEpoch).toBe(nextOwner.epoch);
+    expect(
+      repository
+        .listReadyItemsForSupervisor(adoptedClaim, 2)
+        .items.map((item) => item.itemId),
+    ).toEqual(["refill-crash-item-0", "refill-crash-item-1"]);
+
+    repository.beginItemDispatch("refill-crash", "refill-crash-item-0", {
+      supervisorClaim: adoptedClaim,
+    });
+    expect(repository.getSupervisorRegistration("refill-crash")).toMatchObject({
+      itemCursor: { rowIndex: 0, itemId: "refill-crash-item-0" },
+    });
+  });
+
+  it("atomically rewinds the durable cursor when a dispatch returns to pending", () => {
+    const { driver, repository } = openRepository();
+    createJob(repository, "rotation-retry", 3);
+    createJob(repository, "rotation-wait", 1);
+    expect(repository.queueNextSupervisorJobPage(2)).toBe(2);
+    const registration = repository.registerNextSupervisorJob()!;
+    expect(registration.jobId).toBe("rotation-retry");
+    const claim = {
+      jobId: registration.jobId,
+      supervisorEpoch: registration.supervisorEpoch,
+      registrationGeneration: registration.registrationGeneration,
+    };
+
+    repository.beginItemDispatch("rotation-retry", "rotation-retry-item-0", {
+      supervisorClaim: claim,
+    });
+    repository.markItemPending(
+      "rotation-retry",
+      "rotation-retry-item-0",
+      undefined,
+      claim,
+    );
+    expect(
+      repository.getSupervisorRegistration("rotation-retry")?.itemCursor,
+    ).toBeUndefined();
+
+    repository.beginItemDispatch("rotation-retry", "rotation-retry-item-0", {
+      supervisorClaim: claim,
+    });
+    driver
+      .prepareState(
+        `UPDATE csv_job_supervisor_registrations
+         SET registered_at_ms = ? WHERE job_id = ?`,
+      )
+      .run(Date.now() - MAX_CSV_JOB_REGISTRATION_HOLD_MS, "rotation-retry");
+    expect(repository.rotateSupervisorRegistration(claim, false)).toBe(true);
+    repository.markItemPending(
+      "rotation-retry",
+      "rotation-retry-item-0",
+      undefined,
+      claim,
+    );
+    expect(
+      repository.getSupervisorRegistration("rotation-retry"),
+    ).toMatchObject({ substate: "rotating" });
+    expect(
+      repository.getSupervisorRegistration("rotation-retry")?.itemCursor,
+    ).toBeUndefined();
+
+    expect(repository.completeSupervisorRotation(claim)).toBe(true);
+    expect(repository.registerNextSupervisorJob()?.jobId).toBe("rotation-wait");
+    const replacement = repository.registerNextSupervisorJob()!;
+    expect(replacement.jobId).toBe("rotation-retry");
+    expect(
+      repository
+        .listReadyItemsForSupervisor(
+          {
+            jobId: replacement.jobId,
+            supervisorEpoch: replacement.supervisorEpoch,
+            registrationGeneration: replacement.registrationGeneration,
+          },
+          1,
+        )
+        .items.map((item) => item.itemId),
+    ).toEqual(["rotation-retry-item-0"]);
+  });
+
+  it("withholds a rotated job until its runtime releases ownership", () => {
+    const { repository } = openRepository();
+    createJob(repository, "rotation-release", 1);
+    expect(repository.queueNextSupervisorJobPage(1)).toBe(1);
+    const registration = repository.registerNextSupervisorJob()!;
+    const claim = {
+      jobId: registration.jobId,
+      supervisorEpoch: registration.supervisorEpoch,
+      registrationGeneration: registration.registrationGeneration,
+    };
+
+    expect(repository.rotateSupervisorRegistration(claim, true)).toBe(true);
+    expect(
+      repository.getSupervisorRegistration("rotation-release"),
+    ).toMatchObject({ substate: "rotating" });
+    expect(repository.getSupervisorState().registeredJobs).toBe(0);
+    expect(repository.registerNextSupervisorJob()).toBeNull();
+
+    expect(repository.completeSupervisorRotation(claim)).toBe(true);
+    expect(
+      repository.getSupervisorRegistration("rotation-release"),
+    ).toMatchObject({ substate: "recovery_queued" });
+    const replacement = repository.registerNextSupervisorJob()!;
+    expect(replacement.registrationGeneration).not.toBe(
+      registration.registrationGeneration,
+    );
+  });
+
+  it("fences ownership in constant time and adopts stale claims in queue order", () => {
+    const { driver, repository } = openRepository();
+    createJob(repository, "owner-a", 1);
+    createJob(repository, "owner-b", 1);
+    createJob(repository, "owner-c", 1);
+    driver
+      .prepareState("UPDATE csv_agent_jobs SET created_at_ms = ?")
+      .run(1_000);
+    expect(repository.queueNextSupervisorJobPage(3)).toBe(3);
+    const first = repository.registerNextSupervisorJob()!;
+    const second = repository.registerNextSupervisorJob()!;
+    const changesBefore = driver
+      .prepareState<[], { readonly changes: number }>(
+        "SELECT total_changes() AS changes",
+      )
+      .get()!.changes;
+
+    const claimed = repository.claimSupervisorOwnership();
+    const changesAfter = driver
+      .prepareState<[], { readonly changes: number }>(
+        "SELECT total_changes() AS changes",
+      )
+      .get()!.changes;
+
+    expect(changesAfter - changesBefore).toBe(1);
+    expect(claimed).toMatchObject({
+      epoch: first.supervisorEpoch + 1,
+      registeredJobs: 0,
+    });
+    expect(repository.getSupervisorRegistration(first.jobId)).toMatchObject({
+      substate: "registered",
+      supervisorEpoch: first.supervisorEpoch,
+      registrationGeneration: first.registrationGeneration,
+    });
+    const adopted = repository.registerNextSupervisorJob()!;
+    expect(adopted).toMatchObject({
+      jobId: first.jobId,
+      substate: "registered",
+      supervisorEpoch: claimed.epoch,
+    });
+    expect(adopted.registrationGeneration).not.toBe(
+      first.registrationGeneration,
+    );
+    expect(repository.getSupervisorRegistration(second.jobId)).toMatchObject({
+      supervisorEpoch: second.supervisorEpoch,
+      registrationGeneration: second.registrationGeneration,
+    });
+    expect(repository.getSupervisorState().registeredJobs).toBe(1);
+  });
+
+  it("keyset-sweeps physical registration pages before eligibility filtering", () => {
+    const { driver, repository } = openRepository();
+    for (const jobId of [
+      "sweep-a",
+      "sweep-b",
+      "sweep-c",
+      "sweep-d",
+      "sweep-e",
+      "sweep-f",
+    ]) {
+      createJob(repository, jobId, 1);
+    }
+    driver
+      .prepareState("UPDATE csv_agent_jobs SET created_at_ms = ?")
+      .run(1_000);
+    expect(repository.queueNextSupervisorJobPage(6)).toBe(6);
+    driver
+      .prepareState(
+        `UPDATE csv_agent_jobs SET status = 'failed'
+         WHERE id >= 'sweep-c'`,
+      )
+      .run();
+
+    const changesBefore = driver
+      .prepareState<[], { readonly changes: number }>(
+        "SELECT total_changes() AS changes",
+      )
+      .get()!.changes;
+    expect(repository.sweepNextInvalidSupervisorRegistrationPage(2)).toEqual({
+      inspected: 2,
+      invalidated: 0,
+      scanComplete: false,
+    });
+    const changesAfterEligiblePage = driver
+      .prepareState<[], { readonly changes: number }>(
+        "SELECT total_changes() AS changes",
+      )
+      .get()!.changes;
+    expect(changesAfterEligiblePage - changesBefore).toBe(1);
+    expect(repository.getSupervisorState().cleanupCursor).toEqual({
+      queueSequence: 2,
+      jobId: "sweep-b",
+    });
+    const cleanupPlan = driver
+      .prepareState<
+        [number, number, string, number],
+        { readonly detail: string }
+      >(
+        `EXPLAIN QUERY PLAN
+         SELECT registration.job_id, registration.queue_sequence
+         FROM csv_job_supervisor_registrations AS registration
+           INDEXED BY idx_csv_job_supervisor_registration_physical_keyset
+         LEFT JOIN csv_agent_jobs AS job ON job.id = registration.job_id
+         WHERE registration.substate IN (
+           'recovery_queued', 'registered', 'rotating'
+         ) AND (
+           registration.substate = 'recovery_queued'
+           OR registration.supervisor_epoch <> ?
+         ) AND (registration.queue_sequence, registration.job_id) > (?, ?)
+         ORDER BY registration.queue_sequence ASC, registration.job_id ASC
+         LIMIT ?`,
+      )
+      .all(repository.getSupervisorState().epoch, 2, "sweep-b", 2)
+      .map((row) => row.detail)
+      .join("\n");
+    expect(cleanupPlan).toContain(
+      "idx_csv_job_supervisor_registration_physical_keyset",
+    );
+    expect(cleanupPlan).not.toContain("USE TEMP B-TREE");
+
+    expect(repository.sweepNextInvalidSupervisorRegistrationPage(2)).toEqual({
+      inspected: 2,
+      invalidated: 2,
+      scanComplete: false,
+    });
+    expect(repository.sweepNextInvalidSupervisorRegistrationPage(2)).toEqual({
+      inspected: 2,
+      invalidated: 2,
+      scanComplete: false,
+    });
+    expect(repository.sweepNextInvalidSupervisorRegistrationPage(2)).toEqual({
+      inspected: 0,
+      invalidated: 0,
+      scanComplete: true,
+    });
+    expect(
+      driver
+        .prepareState<
+          [],
+          { readonly substate: string; readonly count: number }
+        >(
+          `SELECT substate, COUNT(*) AS count
+           FROM csv_job_supervisor_registrations
+           GROUP BY substate ORDER BY substate`,
+        )
+        .all(),
+    ).toEqual([
+      { substate: "done", count: 4 },
+      { substate: "recovery_queued", count: 2 },
+    ]);
+  });
+
   it("persists the automatic full-scan budget across supervisor restarts", () => {
     const { repository } = openRepository();
     createJob(repository, "bounded-scans", 2);
@@ -222,6 +517,65 @@ describe("CSV durable linear scheduler repository", () => {
 });
 
 describe("CSV scheduler migration", () => {
+  it("backfills scheduler counters for a populated pre-v21 database", () => {
+    const legacy = new Database(":memory:");
+    try {
+      applyMigrations(
+        legacy,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version <= 16),
+      );
+      const recipe = JSON.parse(
+        readFileSync(
+          join(
+            runtimeRootPath,
+            "tests/fnd/fixtures/csv/legacy-v2-on-state-v16.sqlite-seed.json",
+          ),
+          "utf8",
+        ),
+      ) as {
+        readonly statements: ReadonlyArray<{
+          readonly sql: string;
+          readonly params: ReadonlyArray<unknown>;
+        }>;
+      };
+      for (const statement of recipe.statements) {
+        legacy.prepare(statement.sql).run(...statement.params);
+      }
+      applyMigrations(
+        legacy,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version < 21),
+      );
+
+      applyMigrations(legacy, STATE_DB_MIGRATIONS);
+
+      expect(
+        legacy
+          .prepare(
+            `SELECT total_items, pending_items, running_items,
+                    completed_items, unknown_outcome_items,
+                    review_pending_items, available_results,
+                    unavailable_after_review_results, not_produced_results,
+                    counter_integrity_state
+             FROM csv_agent_jobs WHERE id = 'legacy-csv-v2'`,
+          )
+          .get(),
+      ).toEqual({
+        total_items: 3,
+        pending_items: 1,
+        running_items: 0,
+        completed_items: 1,
+        unknown_outcome_items: 1,
+        review_pending_items: 1,
+        available_results: 1,
+        unavailable_after_review_results: 0,
+        not_produced_results: 2,
+        counter_integrity_state: "unchecked",
+      });
+    } finally {
+      legacy.close();
+    }
+  });
+
   it("backs up the v19 database before applying the additive v21 schema", () => {
     const paths = resolveStateDatabasePaths({ cwd });
     mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });

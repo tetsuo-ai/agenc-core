@@ -288,6 +288,11 @@ export type CsvJobSupervisorRegistrationSubstate =
 export interface CsvJobSupervisorState {
   readonly epoch: number;
   readonly jobCursor?: CsvAgentJobSchedulerCursor;
+  readonly cleanupCursor?: {
+    readonly queueSequence: number;
+    readonly jobId: string;
+  };
+  readonly cleanupScanComplete: boolean;
   readonly nextQueueSequence: number;
   readonly registeredJobs: number;
   readonly epochScanComplete: boolean;
@@ -631,6 +636,9 @@ interface SupervisorStateRow {
   supervisor_epoch: number;
   job_cursor_created_at_ms: number | null;
   job_cursor_job_id: string | null;
+  cleanup_cursor_queue_sequence: number | null;
+  cleanup_cursor_job_id: string | null;
+  cleanup_scan_complete: number;
   next_queue_sequence: number;
   registered_jobs: number;
   epoch_scan_complete: number;
@@ -651,6 +659,12 @@ interface SupervisorRegistrationRow {
   last_admitted_at_ms: number | null;
   updated_at_ms: number;
 }
+interface SupervisorCleanupScanRow {
+  job_id: string;
+  queue_sequence: number;
+  invalid: number;
+}
+
 function decodeJob(row: JobRow): CsvAgentJob {
   return {
     id: row.id,
@@ -826,6 +840,16 @@ function decodeSupervisorState(row: SupervisorStateRow): CsvJobSupervisorState {
           },
         }
       : {}),
+    ...(row.cleanup_cursor_queue_sequence !== null &&
+    row.cleanup_cursor_job_id !== null
+      ? {
+          cleanupCursor: {
+            queueSequence: row.cleanup_cursor_queue_sequence,
+            jobId: row.cleanup_cursor_job_id,
+          },
+        }
+      : {}),
+    cleanupScanComplete: row.cleanup_scan_complete !== 0,
     nextQueueSequence: row.next_queue_sequence,
     registeredJobs: row.registered_jobs,
     epochScanComplete: row.epoch_scan_complete !== 0,
@@ -2062,7 +2086,9 @@ export class CsvAgentJobsRepository {
     const row = this.driver
       .prepareState<[], SupervisorStateRow>(
         `SELECT supervisor_epoch, job_cursor_created_at_ms,
-                job_cursor_job_id, next_queue_sequence, registered_jobs,
+                job_cursor_job_id, cleanup_cursor_queue_sequence,
+                cleanup_cursor_job_id, cleanup_scan_complete,
+                next_queue_sequence, registered_jobs,
                 epoch_scan_complete, background_scan_required, updated_at_ms
          FROM csv_job_supervisor_state WHERE singleton = 1`,
       )
@@ -2072,28 +2098,21 @@ export class CsvAgentJobsRepository {
   }
 
   /**
-   * Fence claims left by a dead supervisor and put their jobs back on the
-   * durable recovery queue without rewinding an already-admitted item cursor.
+   * Fence claims left by a dead supervisor in constant time. Stale durable
+   * registrations are adopted one at a time by registerNextSupervisorJob(),
+   * preserving their queue order and already-admitted item cursor.
    */
   claimSupervisorOwnership(): CsvJobSupervisorState {
     return this.driver.transactionImmediate(() => {
       const prior = this.getSupervisorState();
       const epoch = prior.epoch + 1;
       const now = Date.now();
-      this.driver
-        .prepareState(
-          `UPDATE csv_job_supervisor_registrations SET
-             substate = 'recovery_queued', supervisor_epoch = ?,
-             registration_generation = lower(hex(randomblob(16))),
-             admitted_items = 0, registered_at_ms = NULL,
-             last_admitted_at_ms = NULL, updated_at_ms = ?
-           WHERE substate IN ('recovery_queued', 'registered', 'rotating')`,
-        )
-        .run(epoch, now);
       const updated = this.driver
         .prepareState(
           `UPDATE csv_job_supervisor_state SET supervisor_epoch = ?,
-             registered_jobs = 0, updated_at_ms = ? WHERE singleton = 1`,
+             registered_jobs = 0, cleanup_cursor_queue_sequence = NULL,
+             cleanup_cursor_job_id = NULL, cleanup_scan_complete = 0,
+             updated_at_ms = ? WHERE singleton = 1`,
         )
         .run(epoch, now);
       if (updated.changes !== 1) {
@@ -2116,6 +2135,109 @@ export class CsvAgentJobsRepository {
     }
   }
 
+  sweepNextInvalidSupervisorRegistrationPage(
+    requestedLimit = CSV_RECOVERY_JOB_PAGE_SIZE,
+  ): {
+    readonly inspected: number;
+    readonly invalidated: number;
+    readonly scanComplete: boolean;
+  } {
+    const requested = normalizeSchedulerLimit(
+      requestedLimit,
+      CSV_RECOVERY_JOB_PAGE_SIZE,
+      "CSV supervisor cleanup page limit",
+    );
+    return this.driver.transactionImmediate(() => {
+      const state = this.getSupervisorState();
+      if (state.cleanupScanComplete) {
+        return { inspected: 0, invalidated: 0, scanComplete: true };
+      }
+      const eligibility = `
+        job.id IS NOT NULL
+        AND job.import_state = 'visible' AND job.retired_at IS NULL
+        AND job.execution_gate = 'ready'
+        AND job.counter_integrity_state <> 'poisoned'
+        AND job.status IN ('pending', 'running')
+        AND (job.pending_items > 0 OR job.running_items > 0)`;
+      const projection = `
+        SELECT registration.job_id, registration.queue_sequence,
+          CASE WHEN NOT (${eligibility}) THEN 1 ELSE 0 END AS invalid
+        FROM csv_job_supervisor_registrations AS registration
+          INDEXED BY idx_csv_job_supervisor_registration_physical_keyset
+        LEFT JOIN csv_agent_jobs AS job ON job.id = registration.job_id
+        WHERE registration.substate IN (
+          'recovery_queued', 'registered', 'rotating'
+        ) AND (
+          registration.substate = 'recovery_queued'
+          OR registration.supervisor_epoch <> ?
+        )`;
+      const page =
+        state.cleanupCursor === undefined
+          ? this.driver
+              .prepareState<[number, number], SupervisorCleanupScanRow>(
+                `${projection}
+                 ORDER BY registration.queue_sequence ASC,
+                          registration.job_id ASC
+                 LIMIT ?`,
+              )
+              .all(state.epoch, requested)
+          : this.driver
+              .prepareState<
+                [number, number, string, number],
+                SupervisorCleanupScanRow
+              >(
+                `${projection}
+                 AND (registration.queue_sequence, registration.job_id)
+                   > (?, ?)
+                 ORDER BY registration.queue_sequence ASC,
+                          registration.job_id ASC
+                 LIMIT ?`,
+              )
+              .all(
+                state.epoch,
+                state.cleanupCursor.queueSequence,
+                state.cleanupCursor.jobId,
+                requested,
+              );
+      const invalidate = this.driver.prepareState(
+        `UPDATE csv_job_supervisor_registrations
+         SET substate = 'done', updated_at_ms = ?
+         WHERE job_id = ? AND (
+           substate = 'recovery_queued'
+           OR (supervisor_epoch <> ? AND substate IN ('registered', 'rotating'))
+         )`,
+      );
+      let invalidated = 0;
+      for (const row of page) {
+        if (row.invalid === 0) continue;
+        invalidated += invalidate.run(
+          Date.now(),
+          row.job_id,
+          state.epoch,
+        ).changes;
+      }
+      const last = page.at(-1);
+      const scanComplete = page.length < requested;
+      const updated = this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_state SET
+             cleanup_cursor_queue_sequence = ?, cleanup_cursor_job_id = ?,
+             cleanup_scan_complete = ?, updated_at_ms = ?
+           WHERE singleton = 1`,
+        )
+        .run(
+          last?.queue_sequence ?? state.cleanupCursor?.queueSequence ?? null,
+          last?.job_id ?? state.cleanupCursor?.jobId ?? null,
+          scanComplete ? 1 : 0,
+          Date.now(),
+        );
+      if (updated.changes !== 1) {
+        throw new Error("CSV supervisor state is missing");
+      }
+      return { inspected: page.length, invalidated, scanComplete };
+    });
+  }
+
   /**
    * Persist one bounded job-keyset page as visibly queued registrations. The
    * durable cursor advances in the same transaction, so a crash can repeat a
@@ -2131,21 +2253,6 @@ export class CsvAgentJobsRepository {
     );
     return this.driver.transactionImmediate(() => {
       const state = this.getSupervisorState();
-      this.driver
-        .prepareState(
-          `UPDATE csv_job_supervisor_registrations
-           SET substate = 'done', updated_at_ms = ?
-           WHERE substate = 'recovery_queued' AND NOT EXISTS (
-             SELECT 1 FROM csv_agent_jobs AS job
-             WHERE job.id = csv_job_supervisor_registrations.job_id
-               AND job.import_state = 'visible' AND job.retired_at IS NULL
-               AND job.execution_gate = 'ready'
-               AND job.counter_integrity_state <> 'poisoned'
-               AND job.status IN ('pending', 'running')
-               AND (job.pending_items > 0 OR job.running_items > 0)
-           )`,
-        )
-        .run(Date.now());
       const page = this.listRunnableJobsPage({
         limit: requested,
         ...(state.jobCursor !== undefined ? { cursor: state.jobCursor } : {}),
@@ -2197,6 +2304,8 @@ export class CsvAgentJobsRepository {
           `UPDATE csv_job_supervisor_state SET
              job_cursor_created_at_ms = ?, job_cursor_job_id = ?,
              next_queue_sequence = ?, epoch_scan_complete = ?,
+             cleanup_scan_complete = CASE WHEN ? > 0 THEN 0
+               ELSE cleanup_scan_complete END,
              background_scan_required = ?, updated_at_ms = ?
            WHERE singleton = 1`,
         )
@@ -2205,6 +2314,7 @@ export class CsvAgentJobsRepository {
           nextCursor?.jobId ?? null,
           nextSequence,
           scanComplete ? 1 : 0,
+          queued,
           scanComplete ? 0 : 1,
           Date.now(),
         );
@@ -2249,11 +2359,17 @@ export class CsvAgentJobsRepository {
       const state = this.getSupervisorState();
       if (state.registeredJobs >= MAX_RECOVERED_CSV_JOBS) return null;
       const row = this.driver
-        .prepareState<[], SupervisorRegistrationRow>(
+        .prepareState<[number], SupervisorRegistrationRow>(
           `SELECT registration.*
            FROM csv_job_supervisor_registrations AS registration
            JOIN csv_agent_jobs AS job ON job.id = registration.job_id
-           WHERE registration.substate = 'recovery_queued'
+           WHERE (
+               registration.substate = 'recovery_queued'
+               OR (
+                 registration.supervisor_epoch <> ?
+                 AND registration.substate IN ('registered', 'rotating')
+               )
+             )
              AND job.import_state = 'visible' AND job.retired_at IS NULL
              AND job.execution_gate = 'ready'
              AND job.counter_integrity_state <> 'poisoned'
@@ -2262,7 +2378,7 @@ export class CsvAgentJobsRepository {
            ORDER BY registration.queue_sequence ASC, registration.job_id ASC
            LIMIT 1`,
         )
-        .get();
+        .get(state.epoch);
       if (row === undefined) return null;
       const generation = randomUUID();
       const now = Date.now();
@@ -2273,8 +2389,13 @@ export class CsvAgentJobsRepository {
              registration_generation = ?,
              admitted_items = 0, registered_at_ms = ?,
              last_admitted_at_ms = NULL, updated_at_ms = ?
-           WHERE job_id = ? AND substate = 'recovery_queued'
-             AND registration_generation = ?`,
+           WHERE job_id = ? AND registration_generation = ?
+             AND (
+               substate = 'recovery_queued'
+               OR (supervisor_epoch <> ? AND substate IN (
+                 'registered', 'rotating'
+               ))
+             )`,
         )
         .run(
           state.epoch,
@@ -2283,6 +2404,7 @@ export class CsvAgentJobsRepository {
           now,
           row.job_id,
           row.registration_generation,
+          state.epoch,
         );
       if (update.changes !== 1) return null;
       const counted = this.driver
@@ -2330,53 +2452,77 @@ export class CsvAgentJobsRepository {
       ) {
         return false;
       }
-      const state = this.getSupervisorState();
       const now = Date.now();
       const rotating = this.driver
         .prepareState(
           `UPDATE csv_job_supervisor_registrations SET
-             substate = 'rotating', updated_at_ms = ?
-           WHERE job_id = ? AND substate = 'registered'
-             AND supervisor_epoch = ? AND registration_generation = ?`,
-        )
-        .run(
-          now,
-          claim.jobId,
-          claim.supervisorEpoch,
-          claim.registrationGeneration,
-        );
-      if (rotating.changes !== 1) return false;
-      this.driver
-        .prepareState(
-          `UPDATE csv_job_supervisor_registrations SET
-             substate = 'recovery_queued', supervisor_epoch = ?,
-             registration_generation = ?, queue_sequence = ?,
+             substate = 'rotating',
              item_cursor_row_index = CASE WHEN ? THEN -1
                ELSE item_cursor_row_index END,
              item_cursor_item_id = CASE WHEN ? THEN NULL
                ELSE item_cursor_item_id END,
              admitted_items = 0, registered_at_ms = NULL,
              last_admitted_at_ms = NULL, updated_at_ms = ?
-           WHERE job_id = ? AND substate = 'rotating'`,
+           WHERE job_id = ? AND substate = 'registered'
+             AND supervisor_epoch = ? AND registration_generation = ?`,
+        )
+        .run(
+          resetItemCursor ? 1 : 0,
+          resetItemCursor ? 1 : 0,
+          now,
+          claim.jobId,
+          claim.supervisorEpoch,
+          claim.registrationGeneration,
+        );
+      if (rotating.changes !== 1) return false;
+      const counted = this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_state SET
+             registered_jobs = registered_jobs - 1, updated_at_ms = ?
+           WHERE singleton = 1 AND registered_jobs > 0`,
+        )
+        .run(now);
+      if (counted.changes !== 1) {
+        throw new Error("CSV supervisor registration count is inconsistent");
+      }
+      return true;
+    });
+  }
+
+  completeSupervisorRotation(
+    claim: CsvJobSupervisorRegistrationClaim,
+  ): boolean {
+    return this.driver.transactionImmediate(() => {
+      const state = this.getSupervisorState();
+      const now = Date.now();
+      const updated = this.driver
+        .prepareState(
+          `UPDATE csv_job_supervisor_registrations SET
+             substate = 'recovery_queued', supervisor_epoch = ?,
+             registration_generation = ?, queue_sequence = ?,
+             updated_at_ms = ?
+           WHERE job_id = ? AND substate = 'rotating'
+             AND supervisor_epoch = ? AND registration_generation = ?`,
         )
         .run(
           state.epoch,
           randomUUID(),
           state.nextQueueSequence,
-          resetItemCursor ? 1 : 0,
-          resetItemCursor ? 1 : 0,
           now,
           claim.jobId,
+          claim.supervisorEpoch,
+          claim.registrationGeneration,
         );
-      const counted = this.driver
+      if (updated.changes !== 1) return false;
+      const advanced = this.driver
         .prepareState(
-          `UPDATE csv_job_supervisor_state SET next_queue_sequence = ?,
-             registered_jobs = registered_jobs - 1, updated_at_ms = ?
-           WHERE singleton = 1 AND registered_jobs > 0`,
+          `UPDATE csv_job_supervisor_state SET
+             next_queue_sequence = next_queue_sequence + 1,
+             updated_at_ms = ? WHERE singleton = 1`,
         )
-        .run(state.nextQueueSequence + 1, now);
-      if (counted.changes !== 1) {
-        throw new Error("CSV supervisor registration count is inconsistent");
+        .run(now);
+      if (advanced.changes !== 1) {
+        throw new Error("CSV supervisor state is missing");
       }
       return true;
     });
@@ -2391,7 +2537,7 @@ export class CsvAgentJobsRepository {
         .prepareState(
           `UPDATE csv_job_supervisor_registrations SET
              substate = 'done', updated_at_ms = ?
-           WHERE job_id = ? AND substate IN ('registered', 'rotating')
+           WHERE job_id = ? AND substate = 'registered'
              AND supervisor_epoch = ? AND registration_generation = ?`,
         )
         .run(
@@ -2470,6 +2616,8 @@ export class CsvAgentJobsRepository {
           `UPDATE csv_job_supervisor_state SET
              supervisor_epoch = supervisor_epoch + 1,
              job_cursor_created_at_ms = NULL, job_cursor_job_id = NULL,
+             cleanup_cursor_queue_sequence = NULL,
+             cleanup_cursor_job_id = NULL, cleanup_scan_complete = 0,
              epoch_scan_complete = 0, background_scan_required = 1,
              updated_at_ms = ? WHERE singleton = 1`,
         )
@@ -5024,6 +5172,7 @@ export class CsvAgentJobsRepository {
     jobId: string,
     itemId: string,
     lookupEvidence?: Record<string, unknown>,
+    supervisorClaim?: CsvJobSupervisorRegistrationClaim,
   ): void {
     const now = nowSeconds();
     this.driver.transactionImmediate(() => {
@@ -5046,6 +5195,25 @@ export class CsvAgentJobsRepository {
         );
       if (result.changes !== 1) {
         throw new Error(`CSV item ${jobId}/${itemId} cannot return to pending`);
+      }
+      if (supervisorClaim !== undefined) {
+        const rewound = this.driver
+          .prepareState(
+            `UPDATE csv_job_supervisor_registrations SET
+               item_cursor_row_index = -1, item_cursor_item_id = NULL,
+               updated_at_ms = ?
+             WHERE job_id = ? AND substate IN ('registered', 'rotating')
+               AND supervisor_epoch = ? AND registration_generation = ?`,
+          )
+          .run(
+            Date.now(),
+            jobId,
+            supervisorClaim.supervisorEpoch,
+            supervisorClaim.registrationGeneration,
+          );
+        if (rewound.changes !== 1) {
+          throw new Error(`stale CSV supervisor claim for job ${jobId}`);
+        }
       }
       this.releaseResultReservation(jobId, reservation, now);
     });

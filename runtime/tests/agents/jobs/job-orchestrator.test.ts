@@ -1,8 +1,13 @@
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { once } from "node:events";
+import { createWriteStream, mkdirSync, mkdtempSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  MAX_CSV_AUTOMATIC_FULL_RECONCILIATIONS_PER_JOB_LIFECYCLE,
+  MAX_CSV_READY_ROWS_PER_JOB,
+} from "../../../src/contracts/csv-job-contract.js";
 import { CsvAgentJobsRepository } from "../../state/csv-agent-jobs.js";
 import { openStateDatabases } from "../../state/sqlite-driver.js";
 import {
@@ -15,6 +20,18 @@ import { createCsvInputRootCapability } from "./csv-reader.js";
 import { createCsvOutputRootCapability } from "./csv-output.js";
 
 let workDir: string;
+const configuredSchedulerStressRows = Number(
+  process.env.AGENC_CSV_SCHEDULER_STRESS_ROWS ?? 4_097,
+);
+const schedulerStressRows =
+  Number.isSafeInteger(configuredSchedulerStressRows) &&
+  configuredSchedulerStressRows > 0
+    ? configuredSchedulerStressRows
+    : 4_097;
+const schedulerStressTimeoutMs =
+  process.env.AGENC_CSV_SCHEDULER_STRESS_ROWS === undefined
+    ? 20_000
+    : 10 * 60_000;
 
 beforeEach(async () => {
   workDir = await mkdtemp(join(tmpdir(), "agenc-job-test-"));
@@ -35,6 +52,21 @@ function runAgentsOnCsv(
     ...opts,
     inputRootCapability: createCsvInputRootCapability(workDir),
   });
+}
+
+async function writeLargeCsvFixture(
+  path: string,
+  rowCount: number,
+): Promise<void> {
+  const output = createWriteStream(path, { encoding: "utf8" });
+  output.write("id,value\n");
+  for (let index = 0; index < rowCount; index += 1) {
+    if (!output.write(`row-${index},value-${index}\n`)) {
+      await once(output, "drain");
+    }
+  }
+  output.end();
+  await once(output, "finish");
 }
 
 function fakeSpawnReporter(): AgentJobSpawn & {
@@ -362,6 +394,135 @@ describe("runAgentsOnCsv", () => {
     ]);
   });
 
+  it("consumes simultaneous success and capacity-retry outcomes exactly once", async () => {
+    vi.useFakeTimers();
+    const csvPath = join(workDir, "input.csv");
+    await writeFile(csvPath, "id\nsuccess\nretry\n", "utf8");
+    const attempts: string[] = [];
+    let initialSpawns!: () => void;
+    const initialSpawned = new Promise<void>((resolve) => {
+      initialSpawns = resolve;
+    });
+    const spawn: AgentJobSpawn = {
+      async spawn(ctx) {
+        const sourceId = String(ctx.row.id);
+        attempts.push(sourceId);
+        if (attempts.length === 2) initialSpawns();
+        if (
+          sourceId === "retry" &&
+          attempts.filter((id) => id === sourceId).length === 1
+        ) {
+          return { kind: "capacity_unavailable", retryAfterMs: 1 };
+        }
+        setTimeout(() => {
+          recordAgentJobResult({
+            jobId: ctx.jobId,
+            itemId: ctx.itemId,
+            result: { sourceId },
+          });
+        }, 1);
+        return { kind: "launched" };
+      },
+      async cancelOutstanding() {},
+    };
+
+    const running = runAgentsOnCsv({
+      csvPath,
+      instruction: "x",
+      idColumn: "id",
+      maxConcurrency: 2,
+      spawn,
+    });
+    await initialSpawned;
+    await Promise.resolve();
+    vi.runOnlyPendingTimers();
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+
+    expect(attempts).toEqual(["success", "retry", "retry"]);
+    await vi.runAllTimersAsync();
+    const result = await running;
+    expect(result.summary).toMatchObject({
+      status: "completed",
+      pendingItems: 0,
+      completedItems: 2,
+    });
+  });
+
+  it("propagates a repository-backed foreground report anomaly without stranding its waiter", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-orchestrator-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-orchestrator-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const originalAgencHome = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = home;
+    const driver = openStateDatabases({ cwd });
+    const repository = new CsvAgentJobsRepository(driver);
+    const phases: string[] = [];
+    const reconcile = repository.reconcileJobCounters.bind(repository);
+    repository.reconcileJobCounters = (jobId, phase) => {
+      phases.push(phase);
+      return reconcile(jobId, phase);
+    };
+    const csvPath = join(workDir, "counter-anomaly.csv");
+    await writeFile(csvPath, "id,value\nrow-0,value-0\n", "utf8");
+    let reporterError: unknown;
+    try {
+      await expect(
+        runAgentsOnCsv({
+          csvPath,
+          instruction: "process",
+          idColumn: "id",
+          repository,
+          spawn: {
+            async spawn(ctx) {
+              driver
+                .prepareState(
+                  `UPDATE csv_agent_jobs SET
+                     pending_items = pending_items + 1,
+                     automatic_full_reconciliations = ?
+                   WHERE id = ?`,
+                )
+                .run(
+                  MAX_CSV_AUTOMATIC_FULL_RECONCILIATIONS_PER_JOB_LIFECYCLE,
+                  ctx.jobId,
+                );
+              queueMicrotask(() => {
+                try {
+                  recordAgentJobResult({
+                    jobId: ctx.jobId,
+                    itemId: ctx.itemId,
+                    result: { value: ctx.row.value },
+                  });
+                } catch (error) {
+                  reporterError = error;
+                }
+              });
+              return { kind: "launched" };
+            },
+            async cancelOutstanding() {},
+          },
+        }),
+      ).rejects.toThrow(/counter integrity violation/u);
+
+      expect(reporterError).toBeInstanceOf(Error);
+      expect(phases).toEqual(["anomaly"]);
+      const [job] = repository.listJobs();
+      expect(job).toMatchObject({
+        counterIntegrityState: "poisoned",
+        automaticFullReconciliations:
+          MAX_CSV_AUTOMATIC_FULL_RECONCILIATIONS_PER_JOB_LIFECYCLE,
+      });
+      expect(job?.counterIntegrityError).toContain(
+        "reconciliation limit exhausted before anomaly",
+      );
+    } finally {
+      driver.close();
+      if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = originalAgencHome;
+      await rm(home, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("holds capacity until a completed worker exits or is explicitly retired", async () => {
     vi.useFakeTimers();
     const csvPath = join(workDir, "input.csv");
@@ -568,4 +729,90 @@ describe("runAgentsOnCsv with SQLite repository", () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  // Raise AGENC_CSV_SCHEDULER_STRESS_ROWS to 100000 or 1000000 for the
+  // operation-count/RSS stress lane without slowing the required suite.
+  it(
+    "loads a large initial run through bounded keyset pages",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "agenc-orchestrator-home-"));
+      const cwd = mkdtempSync(join(tmpdir(), "agenc-orchestrator-cwd-"));
+      mkdirSync(join(cwd, ".git"));
+      const originalAgencHome = process.env.AGENC_HOME;
+      process.env.AGENC_HOME = home;
+      const driver = openStateDatabases({ cwd });
+      const repository = new CsvAgentJobsRepository(driver);
+      const originalMapSet = Map.prototype.set;
+      let residentItemHighWater = 0;
+      const mapSetSpy = vi
+        .spyOn(Map.prototype, "set")
+        .mockImplementation(function (key: unknown, value: unknown) {
+          const result = originalMapSet.call(this, key, value);
+          if (
+            typeof value === "object" &&
+            value !== null &&
+            "jobId" in value &&
+            "itemId" in value &&
+            "row" in value &&
+            "status" in value
+          ) {
+            residentItemHighWater = Math.max(residentItemHighWater, this.size);
+          }
+          return result;
+        });
+      const originalPage = repository.listItemsForScheduler.bind(repository);
+      const observedPageSizes: number[] = [];
+      repository.listItemsForScheduler = (options) => {
+        const page = originalPage(options);
+        observedPageSizes.push(page.items.length);
+        return page;
+      };
+      try {
+        const rowCount = schedulerStressRows;
+        const csvPath = join(workDir, "large-input.csv");
+        await writeLargeCsvFixture(csvPath, rowCount);
+        const spawn: AgentJobSpawn = {
+          async spawn(ctx) {
+            queueMicrotask(() => {
+              recordAgentJobResult({
+                jobId: ctx.jobId,
+                itemId: ctx.itemId,
+                result: { value: ctx.row.value },
+              });
+            });
+          },
+          async cancelOutstanding() {},
+        };
+
+        const result = await runAgentsOnCsv({
+          csvPath,
+          instruction: "process",
+          idColumn: "id",
+          maxConcurrency: 8,
+          spawn,
+          repository,
+        });
+
+        expect(result.summary).toMatchObject({
+          totalItems: rowCount,
+          completedItems: rowCount,
+        });
+        expect(observedPageSizes.length).toBeGreaterThanOrEqual(
+          Math.ceil(rowCount / 1_000),
+        );
+        expect(Math.max(...observedPageSizes)).toBeLessThanOrEqual(1_000);
+        expect(residentItemHighWater).toBeLessThanOrEqual(
+          MAX_CSV_READY_ROWS_PER_JOB,
+        );
+      } finally {
+        mapSetSpy.mockRestore();
+        driver.close();
+        if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
+        else process.env.AGENC_HOME = originalAgencHome;
+        await rm(home, { recursive: true, force: true });
+        await rm(cwd, { recursive: true, force: true });
+      }
+    },
+    schedulerStressTimeoutMs,
+  );
 });
