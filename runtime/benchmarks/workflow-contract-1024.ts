@@ -1,6 +1,8 @@
 import { pathToFileURL } from "node:url";
 
 import {
+  MAX_WORKFLOW_JSON_NODES,
+  MAX_WORKFLOW_JSON_TOTAL_STRING_UTF8_BYTES,
   MAX_WORKFLOW_STEPS,
   validateWorkflowManifestValue,
 } from "../src/agents/workflow-manifest-schema.js";
@@ -14,6 +16,8 @@ export const MAX_WORKFLOW_CONTRACT_BENCHMARK_ELAPSED_MS = 5_000;
 
 export interface WorkflowContractBenchmarkResult {
   readonly stepCount: number;
+  readonly maximumJsonNodes: number;
+  readonly maximumAggregateStringUtf8Bytes: number;
   readonly elapsedMs: number;
   readonly rssDeltaBytes: number;
   readonly maximumAggregatePreviewBytes: number;
@@ -73,6 +77,8 @@ export function runWorkflowContract1024Benchmark(): WorkflowContractBenchmarkRes
 
   return Object.freeze({
     stepCount: document.manifest.steps.length,
+    maximumJsonNodes: MAX_WORKFLOW_JSON_NODES,
+    maximumAggregateStringUtf8Bytes: MAX_WORKFLOW_JSON_TOTAL_STRING_UTF8_BYTES,
     elapsedMs,
     rssDeltaBytes,
     maximumAggregatePreviewBytes,
@@ -81,6 +87,11 @@ export function runWorkflowContract1024Benchmark(): WorkflowContractBenchmarkRes
   });
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.stdout.write(`${JSON.stringify(runWorkflowContract1024Benchmark())}\n`);
+if (
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  process.stdout.write(
+    `${JSON.stringify(runWorkflowContract1024Benchmark())}\n`,
+  );
 }

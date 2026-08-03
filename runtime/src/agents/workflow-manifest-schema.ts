@@ -2,7 +2,10 @@
 
 import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
 
-import { digestCanonicalJson, type Sha256Digest } from "../eval-contract/index.js";
+import {
+  digestCanonicalJson,
+  type Sha256Digest,
+} from "../eval-contract/index.js";
 import {
   cloneFiniteJsonValue,
   parseFiniteJsonBytes,
@@ -13,10 +16,10 @@ import {
 export const WORKFLOW_MANIFEST_VERSION = 2;
 export const MAX_WORKFLOW_MANIFEST_BYTES = 16_777_216;
 export const MAX_WORKFLOW_JSON_DEPTH = 64;
-export const MAX_WORKFLOW_JSON_NODES = 200_000;
+export const MAX_WORKFLOW_JSON_NODES = 100_000;
 export const MAX_WORKFLOW_JSON_KEY_UTF8_BYTES = 1_024;
 export const MAX_WORKFLOW_JSON_STRING_UTF8_BYTES = 262_144;
-export const MAX_WORKFLOW_JSON_TOTAL_STRING_UTF8_BYTES = 12_582_912;
+export const MAX_WORKFLOW_JSON_TOTAL_STRING_UTF8_BYTES = 8_388_608;
 export const MAX_WORKFLOW_STEPS = 1_024;
 export const MAX_WORKFLOW_GROUPS = 256;
 export const MAX_WORKFLOW_EXPANDED_EDGES = 65_536;
@@ -49,8 +52,7 @@ export type WorkflowFailurePolicy = "continue_independent" | "fail_fast";
 export type WorkflowIsolationMode = "none" | "cwd" | "worktree";
 
 export type WorkflowRef =
-  | { readonly step: string }
-  | { readonly group: string };
+  { readonly step: string } | { readonly group: string };
 
 export interface WorkflowStepV2 {
   readonly id: string;
@@ -103,8 +105,7 @@ export interface NormalizedLegacyCommandDocument {
 }
 
 export type NormalizedWorkflowManifest =
-  | NormalizedWorkflowDagDocument
-  | NormalizedLegacyCommandDocument;
+  NormalizedWorkflowDagDocument | NormalizedLegacyCommandDocument;
 
 export class WorkflowManifestValidationError extends Error {
   readonly code: string;
@@ -319,17 +320,15 @@ function normalizeFiniteWorkflowManifest(
       formatVersion: WORKFLOW_MANIFEST_VERSION,
       sourceVersion: 1,
       manifest,
-      manifestDigest: digestCanonicalJson("agenc.workflow.manifest.v2", manifest),
+      manifestDigest: digestCanonicalJson(
+        "agenc.workflow.manifest.v2",
+        manifest,
+      ),
       diagnostics: Object.freeze([diagnostic]),
     });
   }
 
-  assertSchema(
-    validateLegacyCommand,
-    value,
-    label,
-    "legacy command manifest",
-  );
+  assertSchema(validateLegacyCommand, value, label, "legacy command manifest");
   return Object.freeze({
     kind: "legacy_command",
     formatVersion: 1,
@@ -413,7 +412,8 @@ function assertLegacyTemplates(
     }
     const namespace = parsed[1];
     const name = parsed[2]!;
-    const known = namespace === "steps" ? stepIds.has(name) : groupNames.has(name);
+    const known =
+      namespace === "steps" ? stepIds.has(name) : groupNames.has(name);
     if (!known) {
       throw new WorkflowManifestValidationError(
         "WORKFLOW_LEGACY_TEMPLATE",
@@ -437,7 +437,10 @@ function enforceAggregateLimits(
     }
   }
   if (groupSizes.size > MAX_WORKFLOW_GROUPS) {
-    throw aggregateError(label, `exceeds ${MAX_WORKFLOW_GROUPS} workflow groups`);
+    throw aggregateError(
+      label,
+      `exceeds ${MAX_WORKFLOW_GROUPS} workflow groups`,
+    );
   }
   for (const step of manifest.steps) {
     const messageBytes = Buffer.byteLength(step.message, "utf8");
@@ -454,7 +457,8 @@ function enforceAggregateLimits(
         `exceeds ${MAX_WORKFLOW_TOTAL_MESSAGE_BYTES} aggregate message UTF-8 bytes`,
       );
     }
-    const aliases = step.inputs === undefined ? 0 : Object.keys(step.inputs).length;
+    const aliases =
+      step.inputs === undefined ? 0 : Object.keys(step.inputs).length;
     totalAliases += aliases;
     if (totalAliases > MAX_WORKFLOW_INPUT_ALIASES_TOTAL) {
       throw aggregateError(
@@ -514,7 +518,9 @@ function validateDagSemantics(
       rejectDuplicate: boolean,
     ): void => {
       const referenceKey =
-        "step" in reference ? `step\0${reference.step}` : `group\0${reference.group}`;
+        "step" in reference
+          ? `step\0${reference.step}`
+          : `group\0${reference.group}`;
       if (rejectDuplicate && declaredAfter.has(referenceKey)) {
         throw semanticError(
           label,
@@ -614,9 +620,14 @@ function formatSchemaErrors(
 ): readonly string[] {
   const formatted = (errors ?? [])
     .slice(0, MAX_SCHEMA_ERRORS)
-    .map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`);
+    .map(
+      (error) =>
+        `${error.instancePath || "/"} ${error.message ?? "is invalid"}`,
+    );
   if ((errors?.length ?? 0) > MAX_SCHEMA_ERRORS) {
-    formatted.push(`and ${(errors?.length ?? 0) - MAX_SCHEMA_ERRORS} more errors`);
+    formatted.push(
+      `and ${(errors?.length ?? 0) - MAX_SCHEMA_ERRORS} more errors`,
+    );
   }
   return formatted.length === 0 ? ["schema validation failed"] : formatted;
 }

@@ -53,6 +53,8 @@ recovery completes or removes without guessing.
 
 Initial contract limits are:
 
+- 16,777,216 serialized manifest bytes, 100,000 finite JSON nodes, and
+  8,388,608 aggregate string UTF-8 bytes across keys and values;
 - 32,768 handoff tokens, with a default ceiling of 8,192;
 - 131,072 tokens per full step result;
 - 16,777,216 bytes per artifact and 268,435,456 bytes per run;
@@ -60,6 +62,12 @@ Initial contract limits are:
 - 4,096 artifacts per run and 100,000 globally;
 - 2,048 preview bytes per step and 4,194,304 final-response bytes; and
 - 256 cleanup records per keyset page.
+
+Whole-document ingestion bounds apply before the independent schema and
+semantic maxima. Consequently, object keys, step ids, and reference values
+share the 8 MiB string budget, and reference objects share the 100,000-node
+budget; a nominal message or alias maximum does not reserve additional bytes or
+nodes beyond those whole-document ceilings.
 
 Hitting an artifact byte, count, inode, result-token, handoff-token, or
 reservation ceiling produces the exact `handoff_failed` path. It retains the

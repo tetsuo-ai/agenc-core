@@ -6,6 +6,8 @@ import {
   MAX_WORKFLOW_HANDOFF_TOKENS,
   MAX_WORKFLOW_INPUT_ALIASES_PER_STEP,
   MAX_WORKFLOW_INPUT_ALIASES_TOTAL,
+  MAX_WORKFLOW_JSON_NODES,
+  MAX_WORKFLOW_JSON_TOTAL_STRING_UTF8_BYTES,
   MAX_WORKFLOW_MAX_CONCURRENCY,
   MAX_WORKFLOW_STEP_MESSAGE_BYTES,
   MAX_WORKFLOW_STEPS,
@@ -21,7 +23,10 @@ import {
 } from "../../src/agents/workflow-manifest.js";
 import { validateWorkflowInvocationValue } from "../../src/agents/workflow-invocation.js";
 
-function manifest(steps: readonly unknown[], limits: Record<string, unknown> = {}) {
+function manifest(
+  steps: readonly unknown[],
+  limits: Record<string, unknown> = {},
+) {
   return validateWorkflowManifestValue({
     format_version: 2,
     kind: "agent_dag",
@@ -45,6 +50,11 @@ function aliases(
 }
 
 describe("workflow manifest named boundaries", () => {
+  it("freezes the finite-tree and aggregate-string ingestion ceilings", () => {
+    expect(MAX_WORKFLOW_JSON_NODES).toBe(100_000);
+    expect(MAX_WORKFLOW_JSON_TOTAL_STRING_UTF8_BYTES).toBe(8_388_608);
+  });
+
   it("accepts exact concurrency and handoff ceilings and rejects plus one", () => {
     const steps = [{ id: "root", message: "root" }];
     expect(
@@ -76,7 +86,7 @@ describe("workflow manifest named boundaries", () => {
     ).toThrow();
   });
 
-  it("accepts exact per-step and aggregate message bytes and rejects plus one", () => {
+  it("accepts the exact per-step message ceiling", () => {
     expect(() =>
       manifest([
         { id: "exact", message: "x".repeat(MAX_WORKFLOW_STEP_MESSAGE_BYTES) },
@@ -90,17 +100,28 @@ describe("workflow manifest named boundaries", () => {
         },
       ]),
     ).toThrow();
+  });
 
+  it("keeps the message ceiling subordinate to the whole-document string budget", () => {
+    expect(MAX_WORKFLOW_TOTAL_MESSAGE_BYTES).toBe(
+      MAX_WORKFLOW_JSON_TOTAL_STRING_UTF8_BYTES,
+    );
     const fullMessages =
       MAX_WORKFLOW_TOTAL_MESSAGE_BYTES / MAX_WORKFLOW_STEP_MESSAGE_BYTES;
-    const exact = Array.from({ length: fullMessages }, (_, index) => ({
-      id: `message-${index}`,
-      message: "x".repeat(MAX_WORKFLOW_STEP_MESSAGE_BYTES),
-    }));
-    expect(() => manifest(exact)).not.toThrow();
-    expect(() =>
-      manifest([...exact, { id: "aggregate-plus-one", message: "x" }]),
-    ).toThrow(WorkflowManifestValidationError);
+    const exactMessagePayload = Array.from(
+      { length: fullMessages },
+      (_, index) => ({
+        id: `message-${index}`,
+        message: "x".repeat(MAX_WORKFLOW_STEP_MESSAGE_BYTES),
+      }),
+    );
+
+    // Object keys, step ids, and schema discriminants share the frozen 8 MiB
+    // aggregate-string budget. The nominal message cap is therefore an upper
+    // bound, not permission to add 8 MiB of messages plus metadata.
+    expect(() => manifest(exactMessagePayload)).toThrow(
+      /aggregate string UTF-8 bytes/u,
+    );
   });
 
   it("accepts exactly 256 groups and rejects 257", () => {
@@ -145,7 +166,8 @@ describe("workflow manifest named boundaries", () => {
     ).toThrow(WorkflowManifestValidationError);
   });
 
-  it("accepts exactly 65,536 total aliases and rejects 65,537", () => {
+  it("keeps the alias ceiling subordinate to the finite-tree node budget", () => {
+    expect(MAX_WORKFLOW_INPUT_ALIASES_TOTAL).toBe(65_536);
     const fullSteps =
       MAX_WORKFLOW_INPUT_ALIASES_TOTAL / MAX_WORKFLOW_INPUT_ALIASES_PER_STEP;
     const exactConsumers = Array.from({ length: fullSteps }, (_, index) => ({
@@ -153,20 +175,12 @@ describe("workflow manifest named boundaries", () => {
       message: "consumer",
       inputs: aliases(MAX_WORKFLOW_INPUT_ALIASES_PER_STEP),
     }));
+    // Each alias contains a reference object and a string value. The frozen
+    // 100,000-node whole-document ceiling rejects this adversarial shape before
+    // it reaches the independent semantic alias ceiling.
     expect(() =>
       manifest([{ id: "root", message: "root" }, ...exactConsumers]),
-    ).not.toThrow();
-    expect(() =>
-      manifest([
-        { id: "root", message: "root" },
-        ...exactConsumers,
-        {
-          id: "aggregate-plus-one",
-          message: "consumer",
-          inputs: aliases(1),
-        },
-      ]),
-    ).toThrow(WorkflowManifestValidationError);
+    ).toThrow(/100000 JSON nodes/u);
   });
 
   it("accepts exactly 65,536 expanded edges and rejects 65,537", () => {
@@ -210,10 +224,16 @@ describe("workflow manifest named boundaries", () => {
   });
 
   it("keeps code-point, UTF-8, and filesystem component name bounds explicit", () => {
-    expect(() => validateWorkflowName("a".repeat(MAX_WORKFLOW_NAME_CODEPOINTS))).not.toThrow();
-    expect(() => validateWorkflowName("a".repeat(MAX_WORKFLOW_NAME_CODEPOINTS + 1))).toThrow();
+    expect(() =>
+      validateWorkflowName("a".repeat(MAX_WORKFLOW_NAME_CODEPOINTS)),
+    ).not.toThrow();
+    expect(() =>
+      validateWorkflowName("a".repeat(MAX_WORKFLOW_NAME_CODEPOINTS + 1)),
+    ).toThrow();
     const exactUtf8 = "é".repeat(MAX_WORKFLOW_NAME_UTF8_BYTES / 2);
-    expect(Buffer.byteLength(exactUtf8, "utf8")).toBe(MAX_WORKFLOW_NAME_UTF8_BYTES);
+    expect(Buffer.byteLength(exactUtf8, "utf8")).toBe(
+      MAX_WORKFLOW_NAME_UTF8_BYTES,
+    );
     expect(() => validateWorkflowName(exactUtf8)).not.toThrow();
     expect(() => validateWorkflowName(`${exactUtf8}é`)).toThrow();
     expect(() => validateWorkflowName("a", 6)).not.toThrow();
