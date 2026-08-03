@@ -6,12 +6,20 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { RuntimeAdmissionRequest } from "../../src/budget/admission-types.js";
 import { admissionRecordKey } from "../../src/budget/admission-types.js";
-import { upsertAgentRun } from "../../src/state/agent-runs.js";
+import {
+  upsertAgentRun,
+  updateAgentRunStatus,
+} from "../../src/state/agent-runs.js";
 import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
 import {
   cancelRunTreeAndAdmission,
   reconcileAdmissionAndRunTree,
 } from "../../src/state/run-admission-cancellation.js";
+import {
+  cancelAgentRunTree,
+  repairCancelledSubtrees,
+} from "../../src/state/run-cancellation.js";
+import { ThreadSpawnEdgeRepository } from "../../src/state/spawn-edges.js";
 import {
   openStateDatabases,
   type StateSqliteDriver,
@@ -52,9 +60,17 @@ function seedRun(runId: string): void {
   });
 }
 
-function request(runId: string, stepId: string): RuntimeAdmissionRequest {
+function request(
+  runId: string,
+  stepId: string,
+  parentRunId?: string,
+): RuntimeAdmissionRequest {
   return {
-    step: { runId, stepId },
+    step: {
+      runId,
+      stepId,
+      ...(parentRunId === undefined ? {} : { parentRunId }),
+    },
     kind: "model_turn",
     estimate: {
       maxInputTokens: 5,
@@ -170,19 +186,55 @@ describe("atomic run/admission cancellation", () => {
     ).toBe("voided");
   });
 
+  it("keeps spawn reporting spawn-only while admission cancellation uses the graph union", () => {
+    seedRun("graph-root");
+    const admissionChild = request(
+      "admission-only-child",
+      "turn-1",
+      "graph-root",
+    );
+    expect(admissions.enqueue(admissionChild).record.status).toBe("queued");
+
+    const spawnOnly = cancelAgentRunTree(driver, {
+      runId: "graph-root",
+      reason: "spawn-only-contract",
+      cancelledAt: NOW,
+    });
+    expect(spawnOnly.subtreeRunIds).toEqual(["graph-root"]);
+    expect(
+      admissions.get(admissionRecordKey(admissionChild.step))?.status,
+    ).toBe("queued");
+
+    const combined = cancelRunTreeAndAdmission(driver, admissions, {
+      runId: "graph-root",
+      reason: "admission-union-contract",
+      cancelledAt: NOW,
+    });
+    expect(combined.run.subtreeRunIds).toEqual(["graph-root"]);
+    expect(combined.admission.affectedRunIds).toEqual([
+      "graph-root",
+      "admission-only-child",
+    ]);
+    expect(
+      admissions.get(admissionRecordKey(admissionChild.step))?.status,
+    ).toBe("cancelled");
+  });
+
   it("rolls the agent-run cascade back when admission settlement fails", () => {
     seedRun("rollback-run");
     const admission = request("rollback-run", "turn-1");
     admissions.enqueue(admission);
     const claim = admissions.claim({ key: admissionRecordKey(admission.step) });
     if (claim.kind !== "claimed") throw new Error("expected admission claim");
-    driver.prepareState(
-      `CREATE TRIGGER reject_admission_cancel
+    driver
+      .prepareState(
+        `CREATE TRIGGER reject_admission_cancel
        BEFORE UPDATE ON execution_admission_reservations
        BEGIN
          SELECT RAISE(ABORT, 'fault-injected admission failure');
        END`,
-    ).run();
+      )
+      .run();
 
     expect(() =>
       cancelRunTreeAndAdmission(driver, admissions, {
@@ -201,6 +253,205 @@ describe("atomic run/admission cancellation", () => {
     expect(
       admissions.getReservation(claim.lease.reservation.reservationId)?.status,
     ).toBe("reserved");
+  });
+
+  it("repairs overlapping roots, locks the admission union, and rolls every projection back on a late failure", () => {
+    const edges = new ThreadSpawnEdgeRepository(driver);
+    for (const runId of ["repair_root", "repair_nested", "repair_leaf"]) {
+      seedRun(runId);
+    }
+    edges.create(
+      {
+        childThreadId: "repair_nested",
+        parentThreadId: "repair_root",
+        parentPath: "/root",
+        metadata: {
+          agentId: "repair_nested",
+          agentPath: "/root/repair_nested",
+          depth: 1,
+        },
+        status: "open",
+      },
+      { admissionGate: "import" },
+    );
+    edges.create(
+      {
+        childThreadId: "repair_leaf",
+        parentThreadId: "repair_nested",
+        parentPath: "/root/repair_nested",
+        metadata: {
+          agentId: "repair_leaf",
+          agentPath: "/root/repair_nested/repair_leaf",
+          depth: 2,
+        },
+        status: "open",
+      },
+      { admissionGate: "import" },
+    );
+
+    const reservedRequest = request(
+      "repair_leaf",
+      "reserved-step",
+      "repair_nested",
+    );
+    const dispatchedRequest = request(
+      "repair_admission_only",
+      "dispatched-step",
+      "repair_nested",
+    );
+    admissions.enqueue(reservedRequest);
+    admissions.enqueue(dispatchedRequest);
+    const reservedClaim = admissions.claim({
+      key: admissionRecordKey(reservedRequest.step),
+    });
+    const dispatchedClaim = admissions.claim({
+      key: admissionRecordKey(dispatchedRequest.step),
+    });
+    if (reservedClaim.kind !== "claimed") {
+      throw new Error("expected reserved repair claim");
+    }
+    if (dispatchedClaim.kind !== "claimed") {
+      throw new Error("expected dispatched repair claim");
+    }
+    admissions.markDispatched(
+      dispatchedClaim.lease.reservation.reservationId,
+    );
+    for (const runId of ["repair_root", "repair_nested"]) {
+      updateAgentRunStatus(driver, {
+        id: runId,
+        status: "cancelled",
+        lastActiveAt: NOW,
+      });
+    }
+    driver
+      .prepareState(
+        `CREATE TRIGGER reject_final_repair_marker
+         BEFORE UPDATE OF metadata_json ON agent_runs
+         WHEN OLD.id = 'repair_root'
+          AND json_extract(NEW.metadata_json, '$.cascadeComplete') = 1
+         BEGIN
+           SELECT RAISE(ABORT, 'fault-injected final repair failure');
+         END`,
+      )
+      .run();
+
+    expect(() =>
+      repairCancelledSubtrees(driver, admissions, { now: NOW }),
+    ).toThrow(/fault-injected final repair failure/u);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count
+           FROM execution_admission_cancellations
+           WHERE run_id IN (
+             'repair_root', 'repair_nested', 'repair_leaf',
+             'repair_admission_only'
+           )`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      admissions.getReservation(
+        reservedClaim.lease.reservation.reservationId,
+      )?.status,
+    ).toBe("reserved");
+    expect(
+      admissions.getReservation(
+        dispatchedClaim.lease.reservation.reservationId,
+      )?.status,
+    ).toBe("dispatched");
+    expect(
+      admissions.get(admissionRecordKey(reservedRequest.step))?.status,
+    ).toBe("running");
+    expect(
+      admissions.get(admissionRecordKey(dispatchedRequest.step))?.status,
+    ).toBe("running");
+    for (const runId of ["repair_root", "repair_nested"]) {
+      const metadata = driver
+        .prepareState<[string], { readonly metadata_json: string | null }>(
+          "SELECT metadata_json FROM agent_runs WHERE id = ?",
+        )
+        .get(runId)?.metadata_json;
+      expect(JSON.parse(metadata ?? "{}").cascadeComplete).not.toBe(true);
+    }
+    expect(
+      driver
+        .prepareState<[string], { readonly status: string }>(
+          "SELECT status FROM agent_runs WHERE id = ?",
+        )
+        .get("repair_leaf")?.status,
+    ).toBe("running");
+    expect(edges.get("repair_leaf")?.status).toBe("open");
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          "SELECT COUNT(*) AS count FROM temp.agenc_cancellation_operation_runs",
+        )
+        .get()?.count,
+    ).toBe(0);
+
+    driver.prepareState("DROP TRIGGER reject_final_repair_marker").run();
+    expect(
+      repairCancelledSubtrees(driver, admissions, { now: NOW }),
+    ).toEqual({ repairedRunIds: ["repair_leaf"] });
+    expect(
+      driver
+        .prepareState<
+          [],
+          { readonly run_id: string; readonly reason: string }
+        >(
+          `SELECT run_id, reason FROM execution_admission_cancellations
+           WHERE run_id IN (
+             'repair_root', 'repair_nested', 'repair_leaf',
+             'repair_admission_only'
+           )
+           ORDER BY run_id COLLATE BINARY`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        run_id: "repair_admission_only",
+        reason: "recovery_cascade_repair",
+      },
+      { run_id: "repair_leaf", reason: "recovery_cascade_repair" },
+      { run_id: "repair_nested", reason: "recovery_cascade_repair" },
+      { run_id: "repair_root", reason: "recovery_cascade_repair" },
+    ]);
+    expect(
+      admissions.getReservation(
+        reservedClaim.lease.reservation.reservationId,
+      )?.status,
+    ).toBe("voided");
+    expect(
+      admissions.getReservation(
+        dispatchedClaim.lease.reservation.reservationId,
+      )?.status,
+    ).toBe("held_unknown");
+    expect(
+      admissions.get(admissionRecordKey(reservedRequest.step))?.status,
+    ).toBe("voided");
+    expect(
+      admissions.get(admissionRecordKey(dispatchedRequest.step))?.status,
+    ).toBe("held_unknown");
+    expect(
+      admissions.listAllocations().find(
+        (allocation) => allocation.key === "run:repair_admission_only",
+      ),
+    ).toMatchObject({
+      heldTokens: 0,
+      usedTokens: 10,
+      heldCostUsd: 0,
+      usedCostUsd: 0.01,
+    });
+    expect(edges.get("repair_leaf")?.status).toBe("closed");
+    for (const runId of ["repair_root", "repair_nested"]) {
+      const metadata = driver
+        .prepareState<[string], { readonly metadata_json: string | null }>(
+          "SELECT metadata_json FROM agent_runs WHERE id = ?",
+        )
+        .get(runId)?.metadata_json;
+      expect(JSON.parse(metadata ?? "{}").cascadeComplete).toBe(true);
+    }
   });
 
   it("repairs a previously committed provider overrun on duplicate reconciliation", () => {

@@ -1,6 +1,7 @@
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import type { JsonObject } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
+import { ExecutionAdmissionRepository } from "./execution-admission.js";
 import { sqlPlaceholders } from "./sql.js";
 import { normalizeToolRecoveryCategory } from "./tool-output-rotation.js";
 import {
@@ -159,6 +160,9 @@ export function recoverDaemonStateOnStartup(
   const recoveredAt = options.now?.() ?? new Date().toISOString();
   const preexistingExclusions = loadStartupRecoveryExclusions(driver);
   const startupBudget = new StartupRecoveryBudget();
+  const admissions = new ExecutionAdmissionRepository(driver, {
+    now: () => new Date(recoveredAt),
+  });
   // The rollout JSONL is the M4 authority. Rebuild its SQLite projection
   // before stale tool classification or the recoverable-run load so a crash
   // after fsyncing `run_terminal`/`effect_result` cannot resurrect or replay
@@ -213,7 +217,7 @@ export function recoverDaemonStateOnStartup(
     // Crash-mid-cascade repair MUST precede the recoverable-run load: a
     // surviving descendant of a cancelled parent is finished off here so
     // the restore loop never resurrects it.
-    repairCancelledSubtrees(driver, { now: recoveredAt });
+    repairCancelledSubtrees(driver, admissions, { now: recoveredAt });
     const recoveredToolCalls = recoverStaleToolCalls(
       driver,
       warnings,

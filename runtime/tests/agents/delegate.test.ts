@@ -102,14 +102,15 @@ function makeRealDelegateHarness(label: string) {
   const cwd = mkdtempSync(join(tmpdir(), `agenc-delegate-${label}-`));
   const priorAgencHome = process.env.AGENC_HOME;
   process.env.AGENC_HOME = cwd;
+  const parentConversationId = `${label}-parent`;
   const rolloutStore = new RolloutStore({
     cwd,
-    sessionId: label,
+    sessionId: parentConversationId,
     agencVersion: "0.6.0",
     autoStartScheduler: false,
   });
   rolloutStore.open({
-    sessionId: label,
+    sessionId: parentConversationId,
     timestamp: new Date().toISOString(),
     cwd,
     originator: "delegate-test",
@@ -120,7 +121,7 @@ function makeRealDelegateHarness(label: string) {
   const roleWorkspace = createAgentRoleWorkspace(cwd);
   const parent = {
     ...makeParentSession(),
-    conversationId: `${label}-parent`,
+    conversationId: parentConversationId,
     sessionConfiguration: { cwd },
     config: { cwd },
     roleWorkspace,

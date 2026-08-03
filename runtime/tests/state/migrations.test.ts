@@ -8,9 +8,7 @@ import {
   STATE_DB_MIGRATIONS,
   type SqlMigration,
 } from "./migrations/index.js";
-import {
-  TOOL_PAIR_PROJECTION_SCHEMA_VERSION,
-} from "./migrations/020_tool_pair_projection_schema.js";
+import { TOOL_PAIR_PROJECTION_SCHEMA_VERSION } from "./migrations/020_tool_pair_projection_schema.js";
 import { applyMigrations } from "./sqlite-driver.js";
 import { StateSchemaMismatchError } from "./errors.js";
 
@@ -59,7 +57,7 @@ describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-      20, 21, 22,
+      20, 21, 22, 23,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -84,6 +82,7 @@ describe("state migration registry", () => {
       "tool_pair_projection_schema",
       "csv_job_scheduler",
       "workflow_handoff_artifacts",
+      "set_based_cancellation_indexes",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -124,6 +123,7 @@ describe("state migration registry", () => {
       "020_tool_pair_projection_schema.ts",
       "021_csv_job_scheduler.ts",
       "022_workflow_handoff_artifacts.ts",
+      "023_set_based_cancellation_indexes.ts",
     ]);
   });
 
@@ -313,10 +313,7 @@ describe("state migration registry", () => {
           )
           .all({ type: "table" })
           .map((row) => row.name),
-      ).toEqual([
-        "tool_pair_projection_entries",
-        "tool_pair_projection_runs",
-      ]);
+      ).toEqual(["tool_pair_projection_entries", "tool_pair_projection_runs"]);
     } finally {
       db.close();
     }

@@ -64,6 +64,7 @@
     "check:eval-regression": "node scripts/check-eval-regression.mjs",
     "benchmark:fnd-baseline": "node benchmarks/fnd/run-baselines.mjs",
     "benchmark:fuzzy-search": "node benchmarks/fuzzy-search/run.mjs",
+    "benchmark:set-cancellation": "tsx benchmarks/set-based-cancellation.ts",
     "check:fnd-benchmark-baseline": "node benchmarks/fnd/run-baselines.mjs --check",
     "test": "node scripts/run-hermetic-test-boundary.mjs run",
     "test:host-functional": "node scripts/run-hermetic-vitest.mjs run",

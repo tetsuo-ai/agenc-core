@@ -10,8 +10,13 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CancellationSetLimitError,
+  CancellationRepairDeferredError,
+  MAX_ANCESTOR_WALK,
+  MAX_CANCELLATION_REPAIR_ROOTS,
+  MAX_CANCELLATION_RUNS,
   cancelAgentRunTree,
   checkSpawnAdmissionGate,
   repairCancelledSubtrees,
@@ -21,6 +26,7 @@ import {
   upsertAgentRun,
   updateAgentRunStatus,
 } from "../../src/state/agent-runs.js";
+import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
 import { ThreadSpawnEdgeRepository } from "../../src/state/spawn-edges.js";
 import { recordInFlightToolCallStart } from "../../src/state/tool-output-rotation.js";
 import {
@@ -28,6 +34,7 @@ import {
   importAgentState,
 } from "../../src/state/export-import.js";
 import { recoverDaemonStateOnStartup } from "../../src/state/recovery.js";
+import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import {
   openStateDatabases,
   type StateSqliteDriver,
@@ -36,6 +43,7 @@ import {
 let home: string;
 let cwd: string;
 let driver: StateSqliteDriver;
+let admissions: ExecutionAdmissionRepository;
 
 const T0 = "2026-07-18T00:00:00.000Z";
 const T1 = "2026-07-18T00:05:00.000Z";
@@ -45,6 +53,9 @@ beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), "agenc-run-cancel-cwd-"));
   mkdirSync(join(cwd, ".git"));
   driver = openStateDatabases({ cwd, agencHome: home });
+  admissions = new ExecutionAdmissionRepository(driver, {
+    now: () => new Date(T1),
+  });
 });
 
 afterEach(() => {
@@ -76,7 +87,11 @@ function edge(
       childThreadId: childId,
       parentThreadId: parentId,
       parentPath,
-      metadata: { agentId: childId, agentPath: `${parentPath}/${childId}`, depth },
+      metadata: {
+        agentId: childId,
+        agentPath: `${parentPath}/${childId}`,
+        depth,
+      },
       status: "open",
     },
     opts,
@@ -143,7 +158,12 @@ describe("cancelAgentRunTree", () => {
       child_queued: "pending",
       grandchild: "working",
     });
-    for (const id of ["parent", "child_running", "child_queued", "grandchild"]) {
+    for (const id of [
+      "parent",
+      "child_running",
+      "child_queued",
+      "grandchild",
+    ]) {
       expect(statusOf(id)).toBe("cancelled");
     }
     // Terminal history is never rewritten.
@@ -246,6 +266,133 @@ describe("cancelAgentRunTree", () => {
     });
     expect([...report.cancelledRunIds].sort()).toEqual(["a", "b"]);
   });
+
+  it("reports roots first and every other identity in binary order", () => {
+    const edges = new ThreadSpawnEdgeRepository(driver);
+    for (const id of ["zz_root", "z_child", "a0_child", "a_child"]) {
+      run(id, "running");
+    }
+    edge(edges, "z_child", "zz_root", "/root");
+    edge(edges, "a0_child", "zz_root", "/root");
+    edge(edges, "a_child", "zz_root", "/root");
+
+    const report = cancelAgentRunTree(driver, {
+      runId: "zz_root",
+      reason: "ordered-report",
+      cancelledAt: T1,
+    });
+
+    expect(report.subtreeRunIds).toEqual([
+      "zz_root",
+      "a0_child",
+      "a_child",
+      "z_child",
+    ]);
+    expect(report.cancelledRunIds).toEqual(report.subtreeRunIds);
+    expect(report.cancellationNodeCount).toBe(4);
+    expect(report.cancellationEdgeCount).toBe(3);
+  });
+
+  it("uses a fixed SQL statement budget independent of subtree cardinality", () => {
+    const edges = new ThreadSpawnEdgeRepository(driver);
+    run("small_root", "running");
+    run("small_child", "running");
+    edge(edges, "small_child", "small_root", "/root");
+    run("large-root", "running");
+    driver
+      .prepareState(
+        `WITH RECURSIVE sequence(value) AS (
+           VALUES (1)
+           UNION ALL
+           SELECT value + 1 FROM sequence WHERE value < 1_000
+         )
+         INSERT INTO thread_spawn_edges (
+           child_thread_id, parent_thread_id, parent_path, metadata_json, status
+         )
+         SELECT printf('large-%04d', value),
+                CASE value WHEN 1 THEN 'large-root'
+                  ELSE printf('large-%04d', value - 1) END,
+                '/root', '{}', 'open'
+         FROM sequence`,
+      )
+      .run();
+    const prepare = vi.spyOn(driver, "prepareState");
+    prepare.mockClear();
+
+    cancelAgentRunTree(driver, {
+      runId: "small_root",
+      reason: "statement-count",
+      cancelledAt: T1,
+    });
+    const smallStatementCount = prepare.mock.calls.length;
+    prepare.mockClear();
+    const large = cancelAgentRunTree(driver, {
+      runId: "large-root",
+      reason: "statement-count",
+      cancelledAt: T1,
+    });
+
+    expect(large.subtreeRunIds).toHaveLength(1_001);
+    expect(prepare.mock.calls).toHaveLength(smallStatementCount);
+  });
+
+  it("accepts exactly the run bound and rejects the plus-one sentinel before mutation", () => {
+    const seedChain = (prefix: string, nodeCount: number): void => {
+      run(`${prefix}-000000`, "running");
+      driver
+        .prepareState<[number]>(
+          `WITH RECURSIVE sequence(value) AS (
+             VALUES (1)
+             UNION ALL
+             SELECT value + 1 FROM sequence WHERE value < ?
+           )
+           INSERT INTO thread_spawn_edges (
+             child_thread_id, parent_thread_id, parent_path,
+             metadata_json, status
+           )
+           SELECT printf('${prefix}-%06d', value),
+                  CASE value WHEN 1 THEN '${prefix}-000000'
+                    ELSE printf('${prefix}-%06d', value - 1) END,
+                  '/root', '{}', 'open'
+           FROM sequence`,
+        )
+        .run(nodeCount - 1);
+    };
+    seedChain("at-max", MAX_CANCELLATION_RUNS);
+    const atMax = cancelAgentRunTree(driver, {
+      runId: "at-max-000000",
+      reason: "bound",
+      cancelledAt: T1,
+    });
+    expect(atMax.subtreeRunIds).toHaveLength(MAX_CANCELLATION_RUNS);
+    expect(atMax.cancellationNodeCount).toBe(MAX_CANCELLATION_RUNS);
+
+    seedChain("over-max", MAX_CANCELLATION_RUNS + 1);
+    expect(() =>
+      cancelAgentRunTree(driver, {
+        runId: "over-max-000000",
+        reason: "bound",
+        cancelledAt: T1,
+      }),
+    ).toThrow(
+      expect.objectContaining<Partial<CancellationSetLimitError>>({
+        code: "CANCELLATION_SET_LIMIT",
+        dimension: "runs",
+        observed: MAX_CANCELLATION_RUNS + 1,
+        limit: MAX_CANCELLATION_RUNS,
+      }),
+    );
+    expect(statusOf("over-max-000000")).toBe("running");
+    expect(edgeStatusOf("over-max-000001")).toBe("open");
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count
+           FROM temp.agenc_cancellation_operation_runs`,
+        )
+        .get()?.count,
+    ).toBe(0);
+  }, 30_000);
 });
 
 describe("spawn admission gate", () => {
@@ -253,7 +400,11 @@ describe("spawn admission gate", () => {
     const edges = new ThreadSpawnEdgeRepository(driver);
     run("parent", "running");
     edge(edges, "ok_child", "parent", "/root");
-    cancelAgentRunTree(driver, { runId: "parent", reason: "r", cancelledAt: T1 });
+    cancelAgentRunTree(driver, {
+      runId: "parent",
+      reason: "r",
+      cancelledAt: T1,
+    });
 
     run("late_child", "running");
     expect(() => edge(edges, "late_child", "parent", "/root")).toThrow(
@@ -308,14 +459,16 @@ describe("spawn admission gate", () => {
     );
   });
 
-  it("allows spawns under live parents, unknown parents, and in import mode", () => {
+  it("allows live/import parents but rejects an unresolved parent", () => {
     const edges = new ThreadSpawnEdgeRepository(driver);
     run("live_parent", "running");
     edge(edges, "child_ok", "live_parent", "/root");
     expect(edgeStatusOf("child_ok")).toBe("open");
-    // No run row anywhere up the chain: nothing durable to gate on.
-    edge(edges, "orphan_child", "unknown_thread", "/root");
-    expect(edgeStatusOf("orphan_child")).toBe("open");
+    // No run row anywhere up the chain: ancestry remains unproved.
+    expect(() =>
+      edge(edges, "orphan_child", "unknown_thread", "/root"),
+    ).toThrow(expect.objectContaining({ reason: "ancestor_unresolved" }));
+    expect(edgeStatusOf("orphan_child")).toBeUndefined();
     // Import mode records historical topology even under a cancelled run.
     cancelAgentRunTree(driver, {
       runId: "live_parent",
@@ -327,12 +480,83 @@ describe("spawn admission gate", () => {
     });
     expect(edgeStatusOf("historic_child")).toBe("open");
   });
+
+  it("accepts a canonical rollout lifecycle root as durable identity", () => {
+    const durability = new StateRunDurabilityRepository(driver);
+    const edges = new ThreadSpawnEdgeRepository(driver);
+    durability.ensureInitialEpoch({
+      runId: "rollout_root",
+      openedAt: T0,
+    });
+
+    expect(
+      checkSpawnAdmissionGate(driver, { parentThreadId: "rollout_root" }),
+    ).toEqual({ allowed: true });
+    edge(edges, "rollout_child", "rollout_root", "/root");
+    expect(edgeStatusOf("rollout_child")).toBe("open");
+  });
+
+  it("allows depth 64 but denies depth 65 with a stable fail-closed reason", () => {
+    const edges = new ThreadSpawnEdgeRepository(driver);
+    const seedDepth = (prefix: string, depth: number): string => {
+      const rootId = `${prefix}_0`;
+      run(rootId, "running");
+      let parentId = rootId;
+      for (let index = 1; index <= depth; index++) {
+        const childId = `${prefix}_${index}`;
+        edge(edges, childId, parentId, `/root/${parentId}`, {
+          admissionGate: "import",
+        });
+        parentId = childId;
+      }
+      return parentId;
+    };
+    const atBound = seedDepth("depth_ok", MAX_ANCESTOR_WALK);
+    expect(
+      checkSpawnAdmissionGate(driver, { parentThreadId: atBound }),
+    ).toEqual({ allowed: true });
+    const overBound = seedDepth("depth_deny", MAX_ANCESTOR_WALK + 1);
+    expect(
+      checkSpawnAdmissionGate(driver, { parentThreadId: overBound }),
+    ).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reason: "ancestor_depth_exceeded",
+      parentStatus: "unproved",
+    });
+  });
+
+  it("denies corrupt ancestor cycles instead of treating deduplication as proof", () => {
+    const edges = new ThreadSpawnEdgeRepository(driver);
+    run("cycle_a", "running");
+    run("cycle_b", "running");
+    edge(edges, "cycle_b", "cycle_a", "/root", {
+      admissionGate: "import",
+    });
+    edge(edges, "cycle_a", "cycle_b", "/root/cycle_b", {
+      admissionGate: "import",
+    });
+
+    expect(
+      checkSpawnAdmissionGate(driver, { parentThreadId: "cycle_a" }),
+    ).toEqual({
+      allowed: false,
+      decision: "deny",
+      reason: "ancestor_cycle",
+      parentRunId: "cycle_a",
+      parentStatus: "unproved",
+    });
+  });
 });
 
 describe("cancel-lock stickiness", () => {
   it("refuses to move a cancelled run to a different status via update or upsert", () => {
     run("victim", "running");
-    cancelAgentRunTree(driver, { runId: "victim", reason: "r", cancelledAt: T1 });
+    cancelAgentRunTree(driver, {
+      runId: "victim",
+      reason: "r",
+      cancelledAt: T1,
+    });
 
     const updated = updateAgentRunStatus(driver, {
       id: "victim",
@@ -402,7 +626,11 @@ describe("recovery interplay", () => {
     run("done_child", "completed");
     edge(edges, "done_child", "parent", "/root");
     // Cascade cancel: parent stamped cascadeComplete, completed child kept.
-    cancelAgentRunTree(driver, { runId: "parent", reason: "r", cancelledAt: T1 });
+    cancelAgentRunTree(driver, {
+      runId: "parent",
+      reason: "r",
+      cancelledAt: T1,
+    });
     // The completed child is later legitimately revived (follow-up message).
     expect(
       updateAgentRunStatus(driver, {
@@ -432,12 +660,15 @@ describe("recovery interplay", () => {
     // First startup: survivor finished off, root stamped.
     recoverDaemonStateOnStartup(driver, { now: () => T1 });
     expect(statusOf("survivor")).toBe("cancelled");
+    expect(admissions.isRunCancellationLocked("parent")).toBe(true);
+    expect(admissions.isRunCancellationLocked("survivor")).toBe(true);
     // Completed child revived after the one-shot repair...
     updateAgentRunStatus(driver, {
       id: "done_child",
       status: "running",
       lastActiveAt: T1,
     });
+    expect(admissions.isRunCancellationLocked("done_child")).toBe(false);
     // ...survives every subsequent startup.
     recoverDaemonStateOnStartup(driver, { now: () => T1 });
     expect(statusOf("done_child")).toBe("running");
@@ -448,11 +679,133 @@ describe("recovery interplay", () => {
     run("done_parent", "completed");
     run("legit_child", "running");
     edge(edges, "legit_child", "done_parent", "/root");
-    const repair = repairCancelledSubtrees(driver, { now: T1 });
+    const repair = repairCancelledSubtrees(driver, admissions, { now: T1 });
     expect(repair.repairedRunIds).toEqual([]);
     expect(statusOf("legit_child")).toBe("running");
     const report = recoverDaemonStateOnStartup(driver, { now: () => T1 });
     expect(report.recoveredRuns.map((r) => r.id)).toContain("legit_child");
+  });
+
+  it("repairs overlapping roots as one union and stamps markers only after success", () => {
+    const edges = new ThreadSpawnEdgeRepository(driver);
+    run("repair_root", "running");
+    run("repair_nested_root", "running");
+    run("repair_leaf", "running");
+    edge(edges, "repair_nested_root", "repair_root", "/root");
+    edge(
+      edges,
+      "repair_leaf",
+      "repair_nested_root",
+      "/root/repair_nested_root",
+    );
+    updateAgentRunStatus(driver, {
+      id: "repair_root",
+      status: "cancelled",
+      lastActiveAt: T1,
+    });
+    updateAgentRunStatus(driver, {
+      id: "repair_nested_root",
+      status: "cancelled",
+      lastActiveAt: T1,
+    });
+    driver
+      .prepareState(
+        `CREATE TRIGGER fail_repair_leaf
+         BEFORE UPDATE OF status ON agent_runs
+         WHEN OLD.id = 'repair_leaf'
+         BEGIN
+           SELECT RAISE(ABORT, 'fault-injected repair failure');
+         END`,
+      )
+      .run();
+
+    expect(() => repairCancelledSubtrees(driver, admissions, { now: T1 })).toThrow(
+      /fault-injected repair failure/u,
+    );
+    for (const rootId of ["repair_root", "repair_nested_root"]) {
+      const metadata = driver
+        .prepareState<[string], { readonly metadata_json: string | null }>(
+          "SELECT metadata_json FROM agent_runs WHERE id = ?",
+        )
+        .get(rootId)?.metadata_json;
+      expect(JSON.parse(metadata ?? "{}").cascadeComplete).not.toBe(true);
+    }
+    expect(statusOf("repair_leaf")).toBe("running");
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count
+           FROM temp.agenc_cancellation_operation_runs`,
+        )
+        .get()?.count,
+    ).toBe(0);
+
+    driver.prepareState("DROP TRIGGER fail_repair_leaf").run();
+    expect(repairCancelledSubtrees(driver, admissions, { now: T1 })).toEqual({
+      repairedRunIds: ["repair_leaf"],
+    });
+    expect(statusOf("repair_leaf")).toBe("cancelled");
+    for (const rootId of ["repair_root", "repair_nested_root"]) {
+      const metadata = driver
+        .prepareState<[string], { readonly metadata_json: string | null }>(
+          "SELECT metadata_json FROM agent_runs WHERE id = ?",
+        )
+        .get(rootId)?.metadata_json;
+      expect(JSON.parse(metadata ?? "{}").cascadeComplete).toBe(true);
+    }
+    expect(repairCancelledSubtrees(driver, admissions, { now: T1 })).toEqual({
+      repairedRunIds: [],
+    });
+  });
+
+  it("stamps exactly the repair-root bound and defers plus one before mutation", () => {
+    const seedCancelledRoots = (prefix: string, count: number): void => {
+      driver
+        .prepareState<[number, string, string]>(
+          `WITH RECURSIVE sequence(value) AS (
+             VALUES (1)
+             UNION ALL
+             SELECT value + 1 FROM sequence WHERE value < ?
+           )
+           INSERT INTO agent_runs (
+             id, objective, status, started_at, last_active_at, metadata_json
+           )
+           SELECT printf('${prefix}_%05d', value), 'repair bound',
+                  'cancelled', ?, ?, NULL
+           FROM sequence`,
+        )
+        .run(count, T0, T0);
+    };
+    seedCancelledRoots("at_repair_bound", MAX_CANCELLATION_REPAIR_ROOTS);
+    expect(repairCancelledSubtrees(driver, admissions, { now: T1 })).toEqual({
+      repairedRunIds: [],
+    });
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM agent_runs
+           WHERE id LIKE 'at_repair_bound_%'
+             AND json_extract(metadata_json, '$.cascadeComplete') = 1`,
+        )
+        .get()?.count,
+    ).toBe(MAX_CANCELLATION_REPAIR_ROOTS);
+
+    seedCancelledRoots("over_repair_bound", MAX_CANCELLATION_REPAIR_ROOTS + 1);
+    expect(() => repairCancelledSubtrees(driver, admissions, { now: T1 })).toThrow(
+      expect.objectContaining<Partial<CancellationRepairDeferredError>>({
+        code: "CANCELLATION_REPAIR_DEFERRED",
+        reason: "repair_root_limit",
+      }),
+    );
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM agent_runs
+           WHERE id LIKE 'over_repair_bound_%'
+             AND metadata_json IS NOT NULL`,
+        )
+        .get()?.count,
+    ).toBe(0);
   });
 });
 
@@ -465,9 +818,9 @@ describe("state import over a cancel-locked run", () => {
       reason: "r",
       cancelledAt: T1,
     });
-    expect(() => importAgentState(driver, payload, { agencHome: home })).toThrow(
-      /review-locked/,
-    );
+    expect(() =>
+      importAgentState(driver, payload, { agencHome: home }),
+    ).toThrow(/review-locked/);
     // The refusal rolled the whole transaction back: run row untouched.
     expect(statusOf("locked_run")).toBe("cancelled");
   });

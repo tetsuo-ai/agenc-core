@@ -12,9 +12,10 @@ import {
   ExecutionAdmissionRepository,
   NANO_USD_PER_USD,
 } from "../../src/state/execution-admission.js";
-import { WORKFLOW_HANDOFF_ARTIFACTS_SCHEMA_VERSION } from "../../src/state/migrations/022_workflow_handoff_artifacts.js";
+import { SET_BASED_CANCELLATION_SCHEMA_VERSION } from "../../src/state/migrations/023_set_based_cancellation_indexes.js";
 import { STATE_DB_MIGRATIONS } from "../../src/state/migrations/index.js";
 import { cancelAgentRunTree } from "../../src/state/run-cancellation.js";
+import { ThreadSpawnEdgeRepository } from "../../src/state/spawn-edges.js";
 import {
   applyMigrations,
   openStateDatabases,
@@ -158,11 +159,31 @@ describe("execution admission schema migration", () => {
         "execution_admission_reservations",
         "execution_admission_run_limits",
       ]);
+      const cancellationIndexes = db
+        .prepare<[], { readonly name: string }>(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'index'
+             AND name IN (
+               'idx_thread_spawn_edges_parent_child',
+               'idx_thread_spawn_edges_child_parent',
+               'idx_agent_jobs_admission_parent_run',
+               'idx_agent_jobs_admission_run_parent'
+             )
+           ORDER BY name COLLATE BINARY`,
+        )
+        .all()
+        .map((row) => row.name);
+      expect(cancellationIndexes).toEqual([
+        "idx_agent_jobs_admission_parent_run",
+        "idx_agent_jobs_admission_run_parent",
+        "idx_thread_spawn_edges_child_parent",
+        "idx_thread_spawn_edges_parent_child",
+      ]);
       expect(
         db
           .prepare("SELECT MAX(version) AS version FROM schema_migrations")
           .get(),
-      ).toEqual({ version: WORKFLOW_HANDOFF_ARTIFACTS_SCHEMA_VERSION });
+      ).toEqual({ version: SET_BASED_CANCELLATION_SCHEMA_VERSION });
     } finally {
       db.close();
     }
@@ -203,6 +224,66 @@ describe("ExecutionAdmissionRepository", () => {
     expect(admissions.listJournal({ runId: "run-denied" })).toMatchObject([
       { event: "denied", reason: "unbounded_model_output" },
     ]);
+  });
+
+  it("denies ambiguous and unresolved admission ancestry with stable reasons", () => {
+    for (const id of ["spawn_parent", "declared_parent", "linked_parent"]) {
+      upsertAgentRun(driver, {
+        id,
+        objective: "ancestor proof",
+        status: "running",
+        startedAt: T0,
+        lastActiveAt: T0,
+      });
+    }
+    const edges = new ThreadSpawnEdgeRepository(driver);
+    edges.create(
+      {
+        childThreadId: "ambiguous_child",
+        parentThreadId: "spawn_parent",
+        parentPath: "/root",
+        metadata: {
+          agentId: "ambiguous_child",
+          agentPath: "/root/ambiguous_child",
+          depth: 1,
+        },
+        status: "open",
+      },
+      { admissionGate: "import" },
+    );
+    const ambiguous = admissions.enqueue(
+      request("ambiguous_child", "turn-1", {
+        parentRunId: "declared_parent",
+      }),
+    );
+    expect(ambiguous.record).toMatchObject({
+      status: "denied",
+      reason: "ancestor_parent_ambiguous",
+    });
+
+    edges.create(
+      {
+        childThreadId: "linked_parent",
+        parentThreadId: "missing_grandparent",
+        parentPath: "/root",
+        metadata: {
+          agentId: "linked_parent",
+          agentPath: "/root/linked_parent",
+          depth: 1,
+        },
+        status: "open",
+      },
+      { admissionGate: "import" },
+    );
+    const unresolved = admissions.enqueue(
+      request("unresolved_child", "turn-1", {
+        parentRunId: "linked_parent",
+      }),
+    );
+    expect(unresolved.record).toMatchObject({
+      status: "denied",
+      reason: "ancestor_unresolved",
+    });
   });
 
   it("persists deterministic priority order, idempotent enqueue, and fallback evidence", () => {
@@ -247,9 +328,7 @@ describe("ExecutionAdmissionRepository", () => {
   it("keeps nano-USD normalization idempotent across durable retries", () => {
     const original = request("fractional-cost", "turn-1", {
       cost: 0.000489528,
-      scopes: [
-        { key: "fractional-cost-budget", maxCostUsd: 0.0004895281 },
-      ],
+      scopes: [{ key: "fractional-cost-budget", maxCostUsd: 0.0004895281 }],
     });
 
     const first = admissions.enqueue(original);

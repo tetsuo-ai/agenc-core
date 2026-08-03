@@ -19,12 +19,22 @@ import {
   admissionRecordKey,
 } from "../budget/admission-types.js";
 import type { BudgetReservation } from "../contracts/run-contracts.js";
+import {
+  ADMISSION_CANCELLATION_GRAPH,
+  cancellationSetMembershipSql,
+  inspectCancellationAncestors,
+  materializeCancellationSet,
+  materializedCancellationRunIds,
+  withCancellationOperation,
+  type CancellationAncestorDenialReason,
+  type CancellationOperation,
+} from "./run-cancellation.js";
 import { sqlPlaceholders } from "./sql.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export const NANO_USD_PER_USD = 1_000_000_000;
 const MAX_LIST_LIMIT = 1_000;
-const MAX_ANCESTOR_WALK = 64;
+const MAX_ALLOCATION_ANCESTOR_WALK = 64;
 
 const FINAL_RESERVATION_STATUSES = new Set([
   "reconciled",
@@ -260,6 +270,13 @@ interface ReservationRow {
   readonly updated_at: string;
 }
 
+interface CancellationJobPreStateRow {
+  readonly id: string;
+  readonly admission_queue_sequence: number;
+  readonly admission_reservation_id: string | null;
+  readonly reservation_status: string | null;
+}
+
 interface AllocationRow {
   readonly scope_key: string;
   readonly owner_run_id: string;
@@ -381,12 +398,13 @@ export class ExecutionAdmissionRepository {
       ["execution_admission_cancellations", "run_id"],
       ["execution_admission_journal", "run_id"],
     ] as const;
-    return probes.some(([table, column]) =>
-      this.#driver
-        .prepareState<[string], { readonly found: number }>(
-          `SELECT 1 AS found FROM ${table} WHERE ${column} = ? LIMIT 1`,
-        )
-        .get(runId) !== undefined,
+    return probes.some(
+      ([table, column]) =>
+        this.#driver
+          .prepareState<[string], { readonly found: number }>(
+            `SELECT 1 AS found FROM ${table} WHERE ${column} = ? LIMIT 1`,
+          )
+          .get(runId) !== undefined,
     );
   }
 
@@ -416,10 +434,7 @@ export class ExecutionAdmissionRepository {
     const at = this.#timestamp();
     return this.#driver.transactionImmediate(() => {
       const existing = this.#driver
-        .prepareState<
-          [string],
-          { readonly deadline_at: string | null }
-        >(
+        .prepareState<[string], { readonly deadline_at: string | null }>(
           `SELECT deadline_at FROM execution_admission_run_limits
            WHERE run_id = ?`,
         )
@@ -499,10 +514,11 @@ export class ExecutionAdmissionRepository {
       let status: PersistedAdmissionStatus = "queued";
       let event: AdmissionJournalEvent["event"] = "queued";
       let reason: string | undefined;
-      if (this.#isCancellationLocked(request)) {
+      const ancestorDenial = this.#ancestorDenialReason(request);
+      if (ancestorDenial !== undefined) {
         status = "denied";
         event = "denied";
-        reason = "parent_cancel_locked";
+        reason = ancestorDenial;
       } else if (
         request.deadlineAt !== undefined &&
         request.deadlineAt <= now
@@ -640,12 +656,13 @@ export class ExecutionAdmissionRepository {
       }
 
       const request = parseRequest(row.input_json);
-      if (this.#isCancellationLocked(request)) {
+      const ancestorDenial = this.#ancestorDenialReason(request);
+      if (ancestorDenial !== undefined) {
         const denied = this.#finishUnclaimedJobLocked(
           row,
           request,
           "denied",
-          "parent_cancel_locked",
+          ancestorDenial,
           now,
         );
         return { kind: "not_claimed", reason: "cancelled", record: denied };
@@ -807,96 +824,105 @@ export class ExecutionAdmissionRepository {
       options.dispatchedAt === undefined
         ? undefined
         : normalizeTimestamp(options.dispatchedAt, "dispatchedAt");
-    return this.#driver.transactionImmediate(() => {
-      // Sample the repository clock only after BEGIN IMMEDIATE has acquired the
-      // writer lock. Time spent waiting behind another writer cannot become a
-      // loophole that dispatches work after its deadline.
-      const observedAt = this.#timestamp();
-      const at = evidenceAt ?? observedAt;
-      // A caller-provided evidence timestamp may predate the repository's clock,
-      // but it must never extend a deadline. Use the later observation for the
-      // final policy check while preserving `at` as audit evidence.
-      const decisionAt = observedAt < at ? at : observedAt;
-      const reservation = this.#requireReservationLocked(reservationId);
-      const job = this.#requireJobByIdLocked(reservation.job_id);
-      const request = parseRequest(job.input_json);
-      if (reservation.status === "reserved") {
-        const stopReason = this.#isCancellationLocked(request)
-          ? "parent_cancel_locked"
-          : request.deadlineAt !== undefined && request.deadlineAt <= decisionAt
-            ? "deadline_expired"
-            : undefined;
-        if (stopReason !== undefined) {
-          // Linearize cancellation/deadline policy against dispatch under the
-          // same BEGIN IMMEDIATE lock. A winning cancel voids the untouched
-          // hold and permanently locks the run before the caller reaches wire.
-          this.#cancelRunLocked(request.step.runId, stopReason, decisionAt);
-          return this.#recordFromRowLocked(
-            this.#requireJobByIdLocked(job.id),
-          );
-        }
-        this.#driver
-          .prepareState(
-            `UPDATE execution_admission_reservations
-             SET status = 'dispatched', dispatched_at = ?, updated_at = ?,
-                 provider_request_id = COALESCE(?, provider_request_id)
-             WHERE reservation_id = ? AND status = 'reserved'`,
-          )
-          .run(at, at, options.providerRequestId ?? null, reservationId);
-        this.#driver
-          .prepareState(
-            `UPDATE agent_jobs
-             SET admission_dispatched_at = ?, updated_at = ?
-             WHERE id = ? AND admission_reservation_id = ?`,
-          )
-          .run(at, at, job.id, reservationId);
-        this.#appendJournalLocked({
-          timestamp: at,
-          jobId: job.id,
-          reservationId,
-          request,
-          event: "dispatched",
-          reservedTokens: reservation.reserved_tokens,
-          reservedCostNanos: reservation.reserved_cost_nanos,
-          ...(options.details !== undefined ||
-          options.providerRequestId !== undefined
-            ? {
-                details: {
-                  ...options.details,
-                  ...(options.providerRequestId !== undefined
-                    ? { providerRequestId: options.providerRequestId }
-                    : {}),
-                },
-              }
-            : {}),
-        });
-      } else if (reservation.status === "dispatched") {
-        if (
-          options.providerRequestId !== undefined &&
-          reservation.provider_request_id === null
-        ) {
+    return withCancellationOperation(this.#driver, (operation) =>
+      this.#driver.transactionImmediate(() => {
+        // Sample the repository clock only after BEGIN IMMEDIATE has acquired the
+        // writer lock. Time spent waiting behind another writer cannot become a
+        // loophole that dispatches work after its deadline.
+        const observedAt = this.#timestamp();
+        const at = evidenceAt ?? observedAt;
+        // A caller-provided evidence timestamp may predate the repository's clock,
+        // but it must never extend a deadline. Use the later observation for the
+        // final policy check while preserving `at` as audit evidence.
+        const decisionAt = observedAt < at ? at : observedAt;
+        const reservation = this.#requireReservationLocked(reservationId);
+        const job = this.#requireJobByIdLocked(reservation.job_id);
+        const request = parseRequest(job.input_json);
+        if (reservation.status === "reserved") {
+          const ancestorDenial = this.#ancestorDenialReason(request);
+          const stopReason =
+            ancestorDenial ??
+            (request.deadlineAt !== undefined &&
+            request.deadlineAt <= decisionAt
+              ? "deadline_expired"
+              : undefined);
+          if (stopReason !== undefined) {
+            // Linearize cancellation/deadline policy against dispatch under the
+            // same BEGIN IMMEDIATE lock. A winning cancel voids the untouched
+            // hold and permanently locks the run before the caller reaches wire.
+            this.#cancelRunLocked(
+              request.step.runId,
+              stopReason,
+              decisionAt,
+              operation,
+            );
+            return this.#recordFromRowLocked(
+              this.#requireJobByIdLocked(job.id),
+            );
+          }
           this.#driver
             .prepareState(
               `UPDATE execution_admission_reservations
+             SET status = 'dispatched', dispatched_at = ?, updated_at = ?,
+                 provider_request_id = COALESCE(?, provider_request_id)
+             WHERE reservation_id = ? AND status = 'reserved'`,
+            )
+            .run(at, at, options.providerRequestId ?? null, reservationId);
+          this.#driver
+            .prepareState(
+              `UPDATE agent_jobs
+             SET admission_dispatched_at = ?, updated_at = ?
+             WHERE id = ? AND admission_reservation_id = ?`,
+            )
+            .run(at, at, job.id, reservationId);
+          this.#appendJournalLocked({
+            timestamp: at,
+            jobId: job.id,
+            reservationId,
+            request,
+            event: "dispatched",
+            reservedTokens: reservation.reserved_tokens,
+            reservedCostNanos: reservation.reserved_cost_nanos,
+            ...(options.details !== undefined ||
+            options.providerRequestId !== undefined
+              ? {
+                  details: {
+                    ...options.details,
+                    ...(options.providerRequestId !== undefined
+                      ? { providerRequestId: options.providerRequestId }
+                      : {}),
+                  },
+                }
+              : {}),
+          });
+        } else if (reservation.status === "dispatched") {
+          if (
+            options.providerRequestId !== undefined &&
+            reservation.provider_request_id === null
+          ) {
+            this.#driver
+              .prepareState(
+                `UPDATE execution_admission_reservations
                SET provider_request_id = ?, updated_at = ?
                WHERE reservation_id = ? AND provider_request_id IS NULL`,
-            )
-            .run(options.providerRequestId, at, reservationId);
-        } else if (
-          options.providerRequestId !== undefined &&
-          reservation.provider_request_id !== options.providerRequestId
-        ) {
+              )
+              .run(options.providerRequestId, at, reservationId);
+          } else if (
+            options.providerRequestId !== undefined &&
+            reservation.provider_request_id !== options.providerRequestId
+          ) {
+            throw new ExecutionAdmissionStateError(
+              `reservation ${reservationId} was already dispatched with a different provider request id`,
+            );
+          }
+        } else if (!FINAL_RESERVATION_STATUSES.has(reservation.status)) {
           throw new ExecutionAdmissionStateError(
-            `reservation ${reservationId} was already dispatched with a different provider request id`,
+            `invalid reservation status at dispatch: ${reservation.status}`,
           );
         }
-      } else if (!FINAL_RESERVATION_STATUSES.has(reservation.status)) {
-        throw new ExecutionAdmissionStateError(
-          `invalid reservation status at dispatch: ${reservation.status}`,
-        );
-      }
-      return this.#recordFromRowLocked(this.#requireJobByIdLocked(job.id));
-    });
+        return this.#recordFromRowLocked(this.#requireJobByIdLocked(job.id));
+      }),
+    );
   }
 
   reconcile(
@@ -909,9 +935,26 @@ export class ExecutionAdmissionRepository {
       options.at ?? this.#timestamp(),
       "reconcile.at",
     );
-    return this.#driver.transactionImmediate(() =>
-      this.#resolveReservationLocked(reservationId, input, at),
+    return withCancellationOperation(this.#driver, (operation) =>
+      this.#driver.transactionImmediate(() =>
+        this.#resolveReservationLocked(reservationId, input, at, operation),
+      ),
     );
+  }
+
+  /** Composition seam for a caller that already owns operation + writer txn. */
+  reconcileInCancellationOperation(
+    operation: CancellationOperation,
+    reservationId: string,
+    input: AdmissionReconcileInput,
+    options: ReconcileAdmissionOptions = {},
+  ): AdmissionReconcileResult {
+    requireNonEmpty(reservationId, "reservationId");
+    const at = normalizeTimestamp(
+      options.at ?? this.#timestamp(),
+      "reconcile.at",
+    );
+    return this.#resolveReservationLocked(reservationId, input, at, operation);
   }
 
   void(
@@ -964,8 +1007,51 @@ export class ExecutionAdmissionRepository {
       options.cancelledAt ?? this.#timestamp(),
       "cancel.cancelledAt",
     );
-    return this.#driver.transactionImmediate(() =>
-      this.#cancelRunLocked(runId, options.reason, at),
+    return withCancellationOperation(this.#driver, (operation) =>
+      this.#driver.transactionImmediate(() =>
+        this.#cancelRunLocked(runId, options.reason, at, operation),
+      ),
+    );
+  }
+
+  /** Composition seam for a caller that already owns operation + writer txn. */
+  cancelInCancellationOperation(
+    operation: CancellationOperation,
+    runId: string,
+    options: CancelAdmissionOptions,
+  ): AdmissionCancellationReport {
+    requireNonEmpty(runId, "cancel.runId");
+    requireNonEmpty(options.reason, "cancel.reason");
+    const at = normalizeTimestamp(
+      options.cancelledAt ?? this.#timestamp(),
+      "cancel.cancelledAt",
+    );
+    return this.#cancelRunLocked(runId, options.reason, at, operation);
+  }
+
+  /**
+   * Settle the admission identities already materialized for `operation` with
+   * `ADMISSION_CANCELLATION_GRAPH`. The caller owns the writer transaction and
+   * must materialize the complete root union before calling this seam. Repair
+   * scope preserves quiescent revivable terminals while still locking roots,
+   * cancel-locked/nonterminal identities, and active admission work.
+   */
+  settleMaterializedCancellationInOperation(
+    operation: CancellationOperation,
+    options: CancelAdmissionOptions & {
+      readonly lockScope?: "all" | "repair_targets";
+    },
+  ): void {
+    requireNonEmpty(options.reason, "cancel.reason");
+    const at = normalizeTimestamp(
+      options.cancelledAt ?? this.#timestamp(),
+      "cancel.cancelledAt",
+    );
+    this.#settleMaterializedCancellationLocked(
+      options.reason,
+      at,
+      operation,
+      options.lockScope ?? "all",
     );
   }
 
@@ -1035,167 +1121,172 @@ export class ExecutionAdmissionRepository {
       "recover.now",
     );
     const activeOwners = options.activeOwnerIds ?? new Set<string>();
-    return this.#driver.transactionImmediate(() => {
-      const requeuedJobIds: string[] = [];
-      const heldUnknownReservationIds: string[] = [];
-      const cancelledExpiredJobIds: string[] = [];
-      const detachedQueuedJobIds: string[] = [];
-      const expiredRuns = this.#driver
-        .prepareState<[string], { readonly run_id: string }>(
-          `SELECT run_id FROM execution_admission_run_limits
+    return withCancellationOperation(this.#driver, (operation) =>
+      this.#driver.transactionImmediate(() => {
+        const requeuedJobIds: string[] = [];
+        const heldUnknownReservationIds: string[] = [];
+        const cancelledExpiredJobIds: string[] = [];
+        const detachedQueuedJobIds: string[] = [];
+        const expiredRuns = this.#driver
+          .prepareState<[string], { readonly run_id: string }>(
+            `SELECT run_id FROM execution_admission_run_limits
            WHERE deadline_at IS NOT NULL AND deadline_at <= ?
            ORDER BY deadline_at ASC, run_id ASC`,
-        )
-        .all(now);
-      for (const { run_id: runId } of expiredRuns) {
-        const cancellation = this.#cancelRunLocked(
-          runId,
-          "deadline_expired_during_recovery",
-          now,
-        );
-        cancelledExpiredJobIds.push(...cancellation.cancelledJobIds);
-      }
-      const candidates = this.#driver
-        .prepareState<[], AgentJobRow>(
-          `SELECT ${JOB_COLUMNS}
+          )
+          .all(now);
+        for (const { run_id: runId } of expiredRuns) {
+          const cancellation = this.#cancelRunLocked(
+            runId,
+            "deadline_expired_during_recovery",
+            now,
+            operation,
+          );
+          cancelledExpiredJobIds.push(...cancellation.cancelledJobIds);
+        }
+        const candidates = this.#driver
+          .prepareState<[], AgentJobRow>(
+            `SELECT ${JOB_COLUMNS}
            FROM agent_jobs
            WHERE admission_run_id IS NOT NULL
              AND status IN ('queued', 'approval_required', 'running')
            ORDER BY admission_queue_sequence ASC`,
-        )
-        .all();
+          )
+          .all();
 
-      for (const row of candidates) {
-        const request = parseRequest(row.input_json);
-        const expired =
-          request.deadlineAt !== undefined && request.deadlineAt <= now;
-        if (row.status === "queued" || row.status === "approval_required") {
-          if (expired) {
-            this.#finishUnclaimedJobLocked(
-              row,
-              request,
-              "cancelled",
-              "deadline_expired_during_recovery",
-              now,
-            );
-            if (!cancelledExpiredJobIds.includes(row.id)) {
-              cancelledExpiredJobIds.push(row.id);
+        for (const row of candidates) {
+          const request = parseRequest(row.input_json);
+          const expired =
+            request.deadlineAt !== undefined && request.deadlineAt <= now;
+          if (row.status === "queued" || row.status === "approval_required") {
+            if (expired) {
+              this.#finishUnclaimedJobLocked(
+                row,
+                request,
+                "cancelled",
+                "deadline_expired_during_recovery",
+                now,
+              );
+              if (!cancelledExpiredJobIds.includes(row.id)) {
+                cancelledExpiredJobIds.push(row.id);
+              }
+              continue;
             }
-            continue;
-          }
-          if (
-            row.admission_owner_id !== null ||
-            row.admission_owner_pid !== null ||
-            row.admission_attached !== 0
-          ) {
-            this.#driver
-              .prepareState(
-                `UPDATE agent_jobs
+            if (
+              row.admission_owner_id !== null ||
+              row.admission_owner_pid !== null ||
+              row.admission_attached !== 0
+            ) {
+              this.#driver
+                .prepareState(
+                  `UPDATE agent_jobs
                  SET worker_id = NULL, admission_owner_id = NULL,
                      admission_owner_pid = NULL, admission_attached = 0,
                      updated_at = ?
                  WHERE id = ?`,
-              )
-              .run(now, row.id);
-            this.#appendJournalLocked({
-              timestamp: now,
-              jobId: row.id,
-              request,
-              event: "recovered",
-              reason: "queued_owner_detached",
-            });
-            detachedQueuedJobIds.push(row.id);
+                )
+                .run(now, row.id);
+              this.#appendJournalLocked({
+                timestamp: now,
+                jobId: row.id,
+                request,
+                event: "recovered",
+                reason: "queued_owner_detached",
+              });
+              detachedQueuedJobIds.push(row.id);
+            }
+            continue;
           }
-          continue;
-        }
 
-        if (
-          row.admission_owner_id !== null &&
-          activeOwners.has(row.admission_owner_id)
-        ) {
-          continue;
-        }
-        const reservation =
-          row.admission_reservation_id === null
-            ? undefined
-            : this.#reservationLocked(row.admission_reservation_id);
-        if (reservation?.status === "dispatched") {
-          this.#resolveReservationLocked(
-            reservation.reservation_id,
-            {
-              kind: "unknown",
-              reason: expired
-                ? "deadline_expired_after_dispatch"
-                : "daemon_restarted_after_dispatch",
-            },
-            now,
-          );
-          heldUnknownReservationIds.push(reservation.reservation_id);
-          if (expired && !cancelledExpiredJobIds.includes(row.id)) {
-            cancelledExpiredJobIds.push(row.id);
+          if (
+            row.admission_owner_id !== null &&
+            activeOwners.has(row.admission_owner_id)
+          ) {
+            continue;
           }
-          continue;
-        }
-        if (expired) {
-          if (reservation?.status === "reserved") {
+          const reservation =
+            row.admission_reservation_id === null
+              ? undefined
+              : this.#reservationLocked(row.admission_reservation_id);
+          if (reservation?.status === "dispatched") {
             this.#resolveReservationLocked(
               reservation.reservation_id,
-              { kind: "void", reason: "deadline_expired_before_dispatch" },
+              {
+                kind: "unknown",
+                reason: expired
+                  ? "deadline_expired_after_dispatch"
+                  : "daemon_restarted_after_dispatch",
+              },
               now,
+              operation,
             );
+            heldUnknownReservationIds.push(reservation.reservation_id);
+            if (expired && !cancelledExpiredJobIds.includes(row.id)) {
+              cancelledExpiredJobIds.push(row.id);
+            }
+            continue;
           }
-          this.#driver
-            .prepareState(
-              `UPDATE agent_jobs
+          if (expired) {
+            if (reservation?.status === "reserved") {
+              this.#resolveReservationLocked(
+                reservation.reservation_id,
+                { kind: "void", reason: "deadline_expired_before_dispatch" },
+                now,
+                operation,
+              );
+            }
+            this.#driver
+              .prepareState(
+                `UPDATE agent_jobs
                SET status = 'cancelled', worker_id = NULL,
                    admission_owner_id = NULL, admission_owner_pid = NULL,
                    admission_attached = 0, admission_completed_at = ?,
                    admission_reason = 'deadline_expired_during_recovery',
                    updated_at = ?
                WHERE id = ?`,
-            )
-            .run(now, now, row.id);
-          this.#appendJournalLocked({
-            timestamp: now,
-            jobId: row.id,
-            request,
-            event: "cancelled",
-            reason: "deadline_expired_during_recovery",
-          });
-          if (!cancelledExpiredJobIds.includes(row.id)) {
-            cancelledExpiredJobIds.push(row.id);
+              )
+              .run(now, now, row.id);
+            this.#appendJournalLocked({
+              timestamp: now,
+              jobId: row.id,
+              request,
+              event: "cancelled",
+              reason: "deadline_expired_during_recovery",
+            });
+            if (!cancelledExpiredJobIds.includes(row.id)) {
+              cancelledExpiredJobIds.push(row.id);
+            }
+            continue;
           }
-          continue;
-        }
-        if (reservation?.status === "reserved") {
-          this.#resolveReservationLocked(
-            reservation.reservation_id,
-            { kind: "void", reason: "daemon_restarted_before_dispatch" },
-            now,
-          );
-        } else if (
-          reservation !== undefined &&
-          FINAL_RESERVATION_STATUSES.has(reservation.status)
-        ) {
-          this.#driver
-            .prepareState(
-              `UPDATE agent_jobs
+          if (reservation?.status === "reserved") {
+            this.#resolveReservationLocked(
+              reservation.reservation_id,
+              { kind: "void", reason: "daemon_restarted_before_dispatch" },
+              now,
+              operation,
+            );
+          } else if (
+            reservation !== undefined &&
+            FINAL_RESERVATION_STATUSES.has(reservation.status)
+          ) {
+            this.#driver
+              .prepareState(
+                `UPDATE agent_jobs
                SET status = ?, admission_completed_at = COALESCE(admission_completed_at, ?),
                    admission_reason = COALESCE(admission_reason, ?), updated_at = ?
                WHERE id = ?`,
-            )
-            .run(
-              reservation.status,
-              now,
-              reservation.resolution_reason ?? "recovered_final_reservation",
-              now,
-              row.id,
-            );
-          continue;
-        }
-        this.#driver
-          .prepareState(
-            `UPDATE agent_jobs
+              )
+              .run(
+                reservation.status,
+                now,
+                reservation.resolution_reason ?? "recovered_final_reservation",
+                now,
+                row.id,
+              );
+            continue;
+          }
+          this.#driver
+            .prepareState(
+              `UPDATE agent_jobs
              SET status = 'queued', worker_id = NULL, result_json = NULL,
                  error = NULL,
                  admission_owner_id = NULL, admission_owner_pid = NULL,
@@ -1204,27 +1295,28 @@ export class ExecutionAdmissionRepository {
                  admission_completed_at = NULL, admission_reason = NULL,
                  admission_reservation_id = NULL, updated_at = ?
              WHERE id = ?`,
-          )
-          .run(now, row.id);
-        this.#appendJournalLocked({
-          timestamp: now,
-          jobId: row.id,
-          request,
-          event: "recovered",
-          reason: "requeued_before_dispatch",
-        });
-        requeuedJobIds.push(row.id);
-      }
+            )
+            .run(now, row.id);
+          this.#appendJournalLocked({
+            timestamp: now,
+            jobId: row.id,
+            request,
+            event: "recovered",
+            reason: "requeued_before_dispatch",
+          });
+          requeuedJobIds.push(row.id);
+        }
 
-      const repairedAllocationKeys = this.#rebuildAllocationsLocked(now);
-      return {
-        requeuedJobIds,
-        heldUnknownReservationIds,
-        cancelledExpiredJobIds,
-        detachedQueuedJobIds,
-        repairedAllocationKeys,
-      };
-    });
+        const repairedAllocationKeys = this.#rebuildAllocationsLocked(now);
+        return {
+          requeuedJobIds,
+          heldUnknownReservationIds,
+          cancelledExpiredJobIds,
+          detachedQueuedJobIds,
+          repairedAllocationKeys,
+        };
+      }),
+    );
   }
 
   get(key: string): PersistedAdmissionRecord | undefined {
@@ -1701,16 +1793,10 @@ export class ExecutionAdmissionRepository {
         );
       return this.#requireAllocationLocked(key);
     }
-    if (
-      parentKey !== undefined &&
-      existing.parent_scope_key !== parentKey
-    ) {
+    if (parentKey !== undefined && existing.parent_scope_key !== parentKey) {
       throw new AdmissionAllocationConflictError(key, "parentKey");
     }
-    if (
-      maxTokens !== undefined &&
-      existing.max_tokens !== maxTokens
-    ) {
+    if (maxTokens !== undefined && existing.max_tokens !== maxTokens) {
       throw new AdmissionAllocationConflictError(key, "maxTokens");
     }
     if (
@@ -1747,7 +1833,7 @@ export class ExecutionAdmissionRepository {
     const seen = new Set<string>();
     const queue = scopes.map((scope) => scope.key);
     for (let hops = 0; queue.length > 0; hops++) {
-      if (hops >= MAX_ANCESTOR_WALK * Math.max(1, scopes.length)) {
+      if (hops >= MAX_ALLOCATION_ANCESTOR_WALK * Math.max(1, scopes.length)) {
         throw new ExecutionAdmissionStateError(
           "admission allocation hierarchy exceeds cycle/depth bound",
         );
@@ -1768,6 +1854,7 @@ export class ExecutionAdmissionRepository {
     reservationId: string,
     rawInput: AdmissionReconcileInput,
     at: string,
+    operation?: CancellationOperation,
   ): AdmissionReconcileResult {
     const reservation = this.#requireReservationLocked(reservationId);
     const requestedProviderRequestId =
@@ -1875,8 +1962,7 @@ export class ExecutionAdmissionRepository {
           tokens: actualTokens,
           // Unknown provider cost is never treated as free. An explicit or
           // token-detected overrun keeps at least the full monetary reservation.
-          costNanos:
-            actualCostNanos ?? reservation.reserved_cost_nanos,
+          costNanos: actualCostNanos ?? reservation.reserved_cost_nanos,
           blockByProviderOverrun: overrun,
         };
       }
@@ -1960,7 +2046,17 @@ export class ExecutionAdmissionRepository {
     });
 
     if (overrun) {
-      this.#cancelRunLocked(reservation.run_id, "provider_overrun", at);
+      if (operation === undefined) {
+        throw new ExecutionAdmissionStateError(
+          "provider overrun cancellation is missing an operation context",
+        );
+      }
+      this.#cancelRunLocked(
+        reservation.run_id,
+        "provider_overrun",
+        at,
+        operation,
+      );
       return {
         applied: true,
         outcome: "provider_overrun",
@@ -2089,59 +2185,361 @@ export class ExecutionAdmissionRepository {
     runId: string,
     reason: string,
     at: string,
+    operation: CancellationOperation,
   ): AdmissionCancellationReport {
-    const affectedRunIds = this.#collectDescendantRunIdsLocked(runId);
-    for (const affectedRunId of affectedRunIds) {
-      this.#driver
-        .prepareState(
-          `INSERT INTO execution_admission_cancellations (
-            run_id, reason, cancelled_at
-          ) VALUES (?, ?, ?)
-          ON CONFLICT(run_id) DO NOTHING`,
-        )
-        .run(affectedRunId, reason, at);
-    }
+    materializeCancellationSet(
+      this.#driver,
+      operation,
+      ADMISSION_CANCELLATION_GRAPH,
+      [runId],
+    );
+    return {
+      runId,
+      ...this.#settleMaterializedCancellationLocked(
+        reason,
+        at,
+        operation,
+        "all",
+      ),
+    };
+  }
+
+  #settleMaterializedCancellationLocked(
+    reason: string,
+    at: string,
+    operation: CancellationOperation,
+    lockScope: "all" | "repair_targets",
+  ): Omit<AdmissionCancellationReport, "runId"> {
+    const affectedRunIds = materializedCancellationRunIds(
+      this.#driver,
+      operation,
+      ADMISSION_CANCELLATION_GRAPH,
+    );
     if (affectedRunIds.length === 0) {
       return {
-        runId,
         affectedRunIds: [],
         cancelledJobIds: [],
         voidedReservationIds: [],
         heldUnknownReservationIds: [],
       };
     }
+    const membership = cancellationSetMembershipSql("job.admission_run_id");
     const jobs = this.#driver
-      .prepareState<unknown[], AgentJobRow>(
-        `SELECT ${JOB_COLUMNS}
-         FROM agent_jobs
-         WHERE admission_run_id IN (${sqlPlaceholders(affectedRunIds.length)})
-         ORDER BY admission_queue_sequence ASC`,
+      .prepareState<unknown[], CancellationJobPreStateRow>(
+        `SELECT job.id, job.admission_queue_sequence,
+                job.admission_reservation_id,
+                reservation.status AS reservation_status
+         FROM agent_jobs AS job
+         LEFT JOIN execution_admission_reservations AS reservation
+           ON reservation.reservation_id = job.admission_reservation_id
+         WHERE job.status IN ('queued', 'approval_required', 'running')
+           AND ${membership}
+         ORDER BY job.admission_queue_sequence ASC, job.id COLLATE BINARY`,
       )
-      .all(...affectedRunIds);
-    const cancelledJobIds: string[] = [];
-    const voidedReservationIds: string[] = [];
-    const heldUnknownReservationIds: string[] = [];
-    for (const job of jobs) {
-      const before =
-        job.admission_reservation_id === null
-          ? undefined
-          : this.#reservationLocked(job.admission_reservation_id);
-      const changed = this.#cancelJobLocked(job, reason, at);
-      if (!changed) continue;
-      cancelledJobIds.push(job.id);
-      if (before?.status === "reserved") {
-        voidedReservationIds.push(before.reservation_id);
-      } else if (before?.status === "dispatched") {
-        heldUnknownReservationIds.push(before.reservation_id);
-      }
-    }
+      .all(operation.id, ADMISSION_CANCELLATION_GRAPH);
+    const lockEligibilitySql =
+      lockScope === "repair_targets"
+        ? `AND (
+             cancellation_set.is_root = 1
+             OR NOT EXISTS (
+               SELECT 1 FROM agent_runs AS terminal_run
+               WHERE terminal_run.id = cancellation_set.run_id
+                 AND terminal_run.status IN (
+                   'completed', 'failed', 'errored', 'error', 'stopped'
+                 )
+             )
+             OR EXISTS (
+               SELECT 1 FROM agent_jobs AS active_job
+               WHERE active_job.admission_run_id = cancellation_set.run_id
+                 AND active_job.status IN (
+                   'queued', 'approval_required', 'running'
+                 )
+             )
+           )`
+        : "";
+    this.#driver
+      .prepareState<unknown[]>(
+        `INSERT INTO execution_admission_cancellations (
+           run_id, reason, cancelled_at
+         )
+         SELECT cancellation_set.run_id, ?, ?
+         FROM temp.agenc_cancellation_operation_runs AS cancellation_set
+         WHERE cancellation_set.operation_id = ?
+           AND cancellation_set.graph_kind = ?
+           ${lockEligibilitySql}
+         ON CONFLICT(run_id) DO NOTHING`,
+      )
+      .run(reason, at, operation.id, ADMISSION_CANCELLATION_GRAPH);
+    this.#assertBulkCancellationAllocationBounds(operation);
+    this.#insertBulkCancellationJournal(operation, reason, at);
+    this.#applyBulkCancellationAllocationDeltas(operation, at);
+    const changedJobIds = new Set(
+      this.#driver
+        .prepareState<unknown[], { readonly id: string }>(
+          `UPDATE agent_jobs AS job
+           SET status = CASE (
+                 SELECT reservation.status
+                 FROM execution_admission_reservations AS reservation
+                 WHERE reservation.reservation_id = job.admission_reservation_id
+               )
+                 WHEN 'reserved' THEN 'voided'
+                 WHEN 'dispatched' THEN 'held_unknown'
+                 ELSE 'cancelled'
+               END,
+               result_json = NULL,
+               error = CASE (
+                 SELECT reservation.status
+                 FROM execution_admission_reservations AS reservation
+                 WHERE reservation.reservation_id = job.admission_reservation_id
+               )
+                 WHEN 'reserved' THEN 'cancelled_before_dispatch:' || ?
+                 WHEN 'dispatched' THEN 'cancelled_after_dispatch:' || ?
+                 ELSE ?
+               END,
+               worker_id = NULL,
+               updated_at = ?,
+               admission_owner_pid = NULL,
+               admission_owner_id = NULL,
+               admission_attached = 0,
+               admission_completed_at = ?,
+               admission_reason = CASE (
+                 SELECT reservation.status
+                 FROM execution_admission_reservations AS reservation
+                 WHERE reservation.reservation_id = job.admission_reservation_id
+               )
+                 WHEN 'reserved' THEN 'cancelled_before_dispatch:' || ?
+                 WHEN 'dispatched' THEN 'cancelled_after_dispatch:' || ?
+                 ELSE ?
+               END
+           WHERE job.status IN ('queued', 'approval_required', 'running')
+             AND ${membership}
+           RETURNING id`,
+        )
+        .all(
+          reason,
+          reason,
+          reason,
+          at,
+          at,
+          reason,
+          reason,
+          reason,
+          operation.id,
+          ADMISSION_CANCELLATION_GRAPH,
+        )
+        .map((row) => row.id),
+    );
+    this.#driver
+      .prepareState<unknown[]>(
+        `UPDATE execution_admission_reservations AS reservation
+         SET status = CASE reservation.status
+               WHEN 'reserved' THEN 'voided'
+               WHEN 'dispatched' THEN 'held_unknown'
+             END,
+             actual_input_tokens = NULL,
+             actual_output_tokens = NULL,
+             actual_tokens = NULL,
+             actual_cost_nanos = NULL,
+             resolved_at = ?,
+             resolution_reason = CASE reservation.status
+               WHEN 'reserved' THEN 'cancelled_before_dispatch:' || ?
+               WHEN 'dispatched' THEN 'cancelled_after_dispatch:' || ?
+             END,
+             updated_at = ?
+         WHERE reservation.status IN ('reserved', 'dispatched')
+           AND EXISTS (
+             SELECT 1 FROM agent_jobs AS job
+             WHERE job.id = reservation.job_id
+               AND ${membership}
+           )`,
+      )
+      .run(at, reason, reason, at, operation.id, ADMISSION_CANCELLATION_GRAPH);
+    const cancelledJobIds = jobs
+      .filter((job) => changedJobIds.has(job.id))
+      .map((job) => job.id);
+    const voidedReservationIds = jobs.flatMap((job) =>
+      changedJobIds.has(job.id) &&
+      job.admission_reservation_id !== null &&
+      job.reservation_status === "reserved"
+        ? [job.admission_reservation_id]
+        : [],
+    );
+    const heldUnknownReservationIds = jobs.flatMap((job) =>
+      changedJobIds.has(job.id) &&
+      job.admission_reservation_id !== null &&
+      job.reservation_status === "dispatched"
+        ? [job.admission_reservation_id]
+        : [],
+    );
     return {
-      runId,
       affectedRunIds,
       cancelledJobIds,
       voidedReservationIds,
       heldUnknownReservationIds,
     };
+  }
+
+  #assertBulkCancellationAllocationBounds(
+    operation: CancellationOperation,
+  ): void {
+    const membership = cancellationSetMembershipSql("job.admission_run_id");
+    const invalid = this.#driver
+      .prepareState<
+        unknown[],
+        { readonly scope_key: string; readonly failure: string }
+      >(
+        `WITH delta AS (
+           SELECT link.scope_key,
+                  SUM(link.reserved_tokens) AS held_tokens,
+                  SUM(CASE WHEN reservation.status = 'dispatched'
+                           THEN link.reserved_tokens ELSE 0 END) AS used_tokens,
+                  SUM(link.reserved_cost_nanos) AS held_cost_nanos,
+                  SUM(CASE WHEN reservation.status = 'dispatched'
+                           THEN link.reserved_cost_nanos ELSE 0 END) AS used_cost_nanos
+           FROM execution_admission_reservation_allocations AS link
+           JOIN execution_admission_reservations AS reservation
+             ON reservation.reservation_id = link.reservation_id
+           JOIN agent_jobs AS job ON job.id = reservation.job_id
+           WHERE reservation.status IN ('reserved', 'dispatched')
+             AND ${membership}
+           GROUP BY link.scope_key
+         )
+         SELECT allocation.scope_key,
+                CASE
+                  WHEN allocation.held_tokens < delta.held_tokens
+                    OR allocation.held_cost_nanos < delta.held_cost_nanos
+                  THEN 'hold_underflow'
+                  ELSE 'used_overflow'
+                END AS failure
+         FROM delta
+         JOIN execution_admission_allocations AS allocation
+           ON allocation.scope_key = delta.scope_key
+         WHERE allocation.held_tokens < delta.held_tokens
+            OR allocation.held_cost_nanos < delta.held_cost_nanos
+            OR allocation.used_tokens + delta.used_tokens > ${Number.MAX_SAFE_INTEGER}
+            OR allocation.used_cost_nanos + delta.used_cost_nanos > ${Number.MAX_SAFE_INTEGER}
+         ORDER BY allocation.scope_key COLLATE BINARY
+         LIMIT 1`,
+      )
+      .get(operation.id, ADMISSION_CANCELLATION_GRAPH);
+    if (invalid !== undefined) {
+      throw new ExecutionAdmissionStateError(
+        `bulk cancellation allocation ${invalid.failure}: ${invalid.scope_key}`,
+      );
+    }
+  }
+
+  #applyBulkCancellationAllocationDeltas(
+    operation: CancellationOperation,
+    at: string,
+  ): void {
+    const membership = cancellationSetMembershipSql("job.admission_run_id");
+    this.#driver
+      .prepareState<unknown[]>(
+        `WITH delta AS (
+           SELECT link.scope_key,
+                  SUM(link.reserved_tokens) AS held_tokens,
+                  SUM(CASE WHEN reservation.status = 'dispatched'
+                           THEN link.reserved_tokens ELSE 0 END) AS used_tokens,
+                  SUM(link.reserved_cost_nanos) AS held_cost_nanos,
+                  SUM(CASE WHEN reservation.status = 'dispatched'
+                           THEN link.reserved_cost_nanos ELSE 0 END) AS used_cost_nanos
+           FROM execution_admission_reservation_allocations AS link
+           JOIN execution_admission_reservations AS reservation
+             ON reservation.reservation_id = link.reservation_id
+           JOIN agent_jobs AS job ON job.id = reservation.job_id
+           WHERE reservation.status IN ('reserved', 'dispatched')
+             AND ${membership}
+           GROUP BY link.scope_key
+         )
+         UPDATE execution_admission_allocations AS allocation
+         SET held_tokens = held_tokens - (
+               SELECT delta.held_tokens FROM delta
+               WHERE delta.scope_key = allocation.scope_key
+             ),
+             held_cost_nanos = held_cost_nanos - (
+               SELECT delta.held_cost_nanos FROM delta
+               WHERE delta.scope_key = allocation.scope_key
+             ),
+             used_tokens = used_tokens + (
+               SELECT delta.used_tokens FROM delta
+               WHERE delta.scope_key = allocation.scope_key
+             ),
+             used_cost_nanos = used_cost_nanos + (
+               SELECT delta.used_cost_nanos FROM delta
+               WHERE delta.scope_key = allocation.scope_key
+             ),
+             updated_at = ?
+         WHERE allocation.scope_key IN (SELECT scope_key FROM delta)`,
+      )
+      .run(operation.id, ADMISSION_CANCELLATION_GRAPH, at);
+  }
+
+  #insertBulkCancellationJournal(
+    operation: CancellationOperation,
+    reason: string,
+    at: string,
+  ): void {
+    const membership = cancellationSetMembershipSql("job.admission_run_id");
+    this.#driver
+      .prepareState<unknown[]>(
+        `WITH target_jobs AS (
+           SELECT job.*, reservation.status AS reservation_status,
+                  reservation.reservation_id,
+                  reservation.reserved_tokens,
+                  reservation.reserved_cost_nanos
+           FROM agent_jobs AS job
+           LEFT JOIN execution_admission_reservations AS reservation
+             ON reservation.reservation_id = job.admission_reservation_id
+           WHERE job.status IN ('queued', 'approval_required', 'running')
+             AND ${membership}
+         ),
+         events AS (
+           SELECT job.id AS job_id, job.reservation_id,
+                  job.admission_run_id AS run_id,
+                  job.admission_step_id AS step_id,
+                  job.kind, job.admission_model AS model,
+                  job.admission_provider AS provider,
+                  CASE job.reservation_status
+                    WHEN 'reserved' THEN 'voided'
+                    ELSE 'held_unknown'
+                  END AS event,
+                  CASE job.reservation_status
+                    WHEN 'reserved' THEN 'cancelled_before_dispatch:' || ?
+                    ELSE 'cancelled_after_dispatch:' || ?
+                  END AS event_reason,
+                  job.reserved_tokens, job.reserved_cost_nanos,
+                  job.admission_queue_sequence, 0 AS event_order
+           FROM target_jobs AS job
+           WHERE job.reservation_status IN ('reserved', 'dispatched')
+           UNION ALL
+           SELECT job.id, job.reservation_id, job.admission_run_id,
+                  job.admission_step_id, job.kind, job.admission_model,
+                  job.admission_provider, 'cancelled', ?, NULL, NULL,
+                  job.admission_queue_sequence, 1
+           FROM target_jobs AS job
+         )
+         INSERT INTO execution_admission_journal (
+           event_id, timestamp, job_id, reservation_id, run_id, step_id,
+           kind, event, reason, model, provider, reserved_tokens,
+           reserved_cost_nanos, actual_tokens, actual_cost_nanos, details_json
+         )
+         SELECT 'cancel-' || lower(hex(randomblob(16))), ?, job_id,
+                reservation_id, run_id, step_id, kind, event, event_reason,
+                model, provider, reserved_tokens, reserved_cost_nanos,
+                NULL, NULL, '{}'
+         FROM events
+         ORDER BY admission_queue_sequence ASC, event_order ASC,
+                  job_id COLLATE BINARY`,
+      )
+      .run(
+        operation.id,
+        ADMISSION_CANCELLATION_GRAPH,
+        reason,
+        reason,
+        reason,
+        at,
+      );
   }
 
   #cancelJobLocked(row: AgentJobRow, reason: string, at: string): boolean {
@@ -2189,102 +2587,19 @@ export class ExecutionAdmissionRepository {
     return true;
   }
 
-  #collectDescendantRunIdsLocked(rootRunId: string): readonly string[] {
-    const seen = new Set<string>();
-    const ordered: string[] = [];
-    const queue = [rootRunId];
-    const spawnChildren = this.#driver.prepareState<
-      [string],
-      { readonly child_thread_id: string }
-    >(
-      `SELECT child_thread_id FROM thread_spawn_edges
-       WHERE parent_thread_id = ? ORDER BY child_thread_id ASC`,
-    );
-    const admissionChildren = this.#driver.prepareState<
-      [string],
-      { readonly admission_run_id: string }
-    >(
-      `SELECT DISTINCT admission_run_id FROM agent_jobs
-       WHERE admission_parent_run_id = ? AND admission_run_id IS NOT NULL
-       ORDER BY admission_run_id ASC`,
-    );
-    while (queue.length > 0) {
-      const current = queue.shift() as string;
-      if (seen.has(current)) continue;
-      if (seen.size >= 100_000) {
-        throw new ExecutionAdmissionStateError(
-          `admission cancellation subtree exceeds safety bound: ${rootRunId}`,
-        );
-      }
-      seen.add(current);
-      ordered.push(current);
-      for (const child of spawnChildren.all(current)) {
-        if (!seen.has(child.child_thread_id)) queue.push(child.child_thread_id);
-      }
-      for (const child of admissionChildren.all(current)) {
-        if (!seen.has(child.admission_run_id))
-          queue.push(child.admission_run_id);
-      }
-    }
-    return ordered;
-  }
-
-  #isCancellationLocked(request: RuntimeAdmissionRequest): boolean {
-    const seen = new Set<string>();
-    const queue = [
-      request.step.runId,
+  #ancestorDenialReason(
+    request: RuntimeAdmissionRequest,
+  ): CancellationAncestorDenialReason | undefined {
+    return inspectCancellationAncestors(this.#driver, {
+      startRunId: request.step.runId,
+      graphKind: ADMISSION_CANCELLATION_GRAPH,
       ...(request.step.parentRunId !== undefined
-        ? [request.step.parentRunId]
-        : []),
-    ];
-    const cancellation = this.#driver.prepareState<
-      [string],
-      { readonly run_id: string }
-    >(`SELECT run_id FROM execution_admission_cancellations WHERE run_id = ?`);
-    const runStatus = this.#driver.prepareState<
-      [string],
-      { readonly status: string }
-    >("SELECT status FROM agent_runs WHERE id = ?");
-    const spawnParent = this.#driver.prepareState<
-      [string],
-      { readonly parent_thread_id: string }
-    >(
-      `SELECT parent_thread_id FROM thread_spawn_edges
-       WHERE child_thread_id = ?`,
-    );
-    const admissionParent = this.#driver.prepareState<
-      [string],
-      { readonly admission_parent_run_id: string | null }
-    >(
-      `SELECT admission_parent_run_id FROM agent_jobs
-       WHERE admission_run_id = ? AND admission_parent_run_id IS NOT NULL
-       ORDER BY admission_queue_sequence ASC LIMIT 1`,
-    );
-    while (queue.length > 0 && seen.size < MAX_ANCESTOR_WALK) {
-      const current = queue.shift() as string;
-      if (seen.has(current)) continue;
-      seen.add(current);
-      if (cancellation.get(current) !== undefined) return true;
-      const status = runStatus.get(current)?.status;
-      if (
-        status === "cancelled" ||
-        status === "unknown_outcome" ||
-        status === "provider_overrun"
-      ) {
-        return true;
-      }
-      const parent =
-        spawnParent.get(current)?.parent_thread_id ??
-        admissionParent.get(current)?.admission_parent_run_id ??
-        undefined;
-      if (parent !== undefined && !seen.has(parent)) queue.push(parent);
-    }
-    if (queue.length > 0) {
-      throw new ExecutionAdmissionStateError(
-        `admission ancestor walk exceeds safety bound: ${request.step.runId}`,
-      );
-    }
-    return false;
+        ? { explicitParentRunId: request.step.parentRunId }
+        : {}),
+      // A request without a declared/durable parent is itself a root. A
+      // declared parent must resolve to durable identity before admission.
+      allowUnpersistedStartRoot: request.step.parentRunId === undefined,
+    })?.reason;
   }
 
   #rebuildAllocationsLocked(at: string): readonly string[] {
@@ -2458,7 +2773,10 @@ export function usdToNanos(value: number): number {
   // binary floating point. `nanosToUsd(n)` must round-trip to exactly `n`;
   // otherwise a retried durable request can gain a nano on each parse and
   // conflict with its own `(runId, stepId)` identity.
-  const nanos = decimalToScaledIntegerCeil(Object.is(value, -0) ? "0" : value.toString(), 9);
+  const nanos = decimalToScaledIntegerCeil(
+    Object.is(value, -0) ? "0" : value.toString(),
+    9,
+  );
   if (nanos > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new ExecutionAdmissionStateError(
       "USD value exceeds the safe nano-USD range",
@@ -2470,13 +2788,17 @@ export function usdToNanos(value: number): number {
 function decimalToScaledIntegerCeil(value: string, scale: number): bigint {
   const match = /^(\d+)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(value);
   if (match === null) {
-    throw new ExecutionAdmissionStateError("USD value has an invalid decimal representation");
+    throw new ExecutionAdmissionStateError(
+      "USD value has an invalid decimal representation",
+    );
   }
   const whole = match[1] ?? "0";
   const fraction = match[2] ?? "";
   const exponent = Number.parseInt(match[3] ?? "0", 10);
   if (!Number.isSafeInteger(exponent)) {
-    throw new ExecutionAdmissionStateError("USD value exponent is outside the safe range");
+    throw new ExecutionAdmissionStateError(
+      "USD value exponent is outside the safe range",
+    );
   }
   const digits = BigInt(`${whole}${fraction}`);
   const power = exponent - fraction.length + scale;

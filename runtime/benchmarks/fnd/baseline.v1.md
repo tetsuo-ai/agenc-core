@@ -4,7 +4,7 @@ This artifact records bounded observations of known failures. Every row is
 informational: no current result is a passing performance threshold or gate.
 Generated inputs are synthetic and created only for the benchmark process.
 
-- JSON SHA-256: `de1e702f0efbe5e2a6bdb5def5d8d5e608ad9251d38f843ab1da1eb7203e4300`
+- JSON SHA-256: `fe13e77f870fefb684aa683557bdaeb23200a57fb40366a44f49c54bd87680f1`
 - Source revision: `9449ec84edbb9968f4b6710b224c7ee19b173800`
 - Production tree: `runtime/src` at Git object `08b469162bbac1ed021a6ae08a15e1a9b635d72e`
 - Loaded production closure: `33` module bindings across `2` cases

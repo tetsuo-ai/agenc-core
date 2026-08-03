@@ -5,7 +5,8 @@ import type {
 } from "../budget/admission-types.js";
 import type { ExecutionAdmissionRepository } from "./execution-admission.js";
 import {
-  cancelAgentRunTree,
+  cancelAgentRunTreeInOperation,
+  withCancellationOperation,
   type CancelAgentRunTreeReport,
 } from "./run-cancellation.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
@@ -40,32 +41,35 @@ export function reconcileAdmissionAndRunTree(
     readonly reconciledAt: string;
   },
 ): AtomicAdmissionReconcileReport {
-  return driver.transactionImmediate(() => {
-    const reservation = admissions.getReservation(options.reservationId);
-    const admission = admissions.reconcile(
-      options.reservationId,
-      options.input,
-      { at: options.reconciledAt },
-    );
-    const isProviderOverrun =
-      admission.outcome === "provider_overrun" ||
-      (admission.outcome === "duplicate" &&
-        admission.existingStatus === "provider_overrun");
-    if (!isProviderOverrun) return { admission };
-    if (reservation === undefined) {
-      // `admissions.reconcile` normally throws first; retain a fail-closed
-      // invariant if repository behavior ever changes.
-      throw new Error(
-        `provider-overrun reservation disappeared: ${options.reservationId}`,
+  return withCancellationOperation(driver, (operation) =>
+    driver.transactionImmediate(() => {
+      const reservation = admissions.getReservation(options.reservationId);
+      const admission = admissions.reconcileInCancellationOperation(
+        operation,
+        options.reservationId,
+        options.input,
+        { at: options.reconciledAt },
       );
-    }
-    const run = cancelAgentRunTree(driver, {
-      runId: reservation.reservation.step.runId,
-      reason: "provider_overrun",
-      cancelledAt: options.reconciledAt,
-    });
-    return { admission, run };
-  });
+      const isProviderOverrun =
+        admission.outcome === "provider_overrun" ||
+        (admission.outcome === "duplicate" &&
+          admission.existingStatus === "provider_overrun");
+      if (!isProviderOverrun) return { admission };
+      if (reservation === undefined) {
+        // Reconciliation normally throws first; retain a fail-closed invariant
+        // if repository behavior ever changes.
+        throw new Error(
+          `provider-overrun reservation disappeared: ${options.reservationId}`,
+        );
+      }
+      const run = cancelAgentRunTreeInOperation(driver, operation, {
+        runId: reservation.reservation.step.runId,
+        reason: "provider_overrun",
+        cancelledAt: options.reconciledAt,
+      });
+      return { admission, run };
+    }),
+  );
 }
 
 /**
@@ -82,51 +86,62 @@ export function cancelRunTreeAndAdmission(
     readonly cancelledAt: string;
   },
 ): AtomicRunAdmissionCancellationReport {
-  return driver.transactionImmediate(() => {
-    const hasAgentRun =
-      driver
-        .prepareState<[string], { readonly found: number }>(
-          "SELECT 1 AS found FROM agent_runs WHERE id = ? LIMIT 1",
-        )
-        .get(options.runId) !== undefined;
-    const hasAdmissionState = admissions.hasRunState(options.runId);
-    const admissionAlreadyTerminal =
-      admissions.isRunCancellationLocked(options.runId);
-    if (!hasAgentRun && !hasAdmissionState) {
-      return {
-        run: {
-          runId: options.runId,
-          missing: true,
-          alreadyTerminal: false,
-          rootStatusBefore: null,
-          subtreeRunIds: [],
-          cancelledRunIds: [],
-          priorStatusById: {},
-          closedEdgeChildIds: [],
-        },
-      admission: emptyAdmissionCancellationReport(options.runId),
-      };
-    }
-
-    const agentRun = cancelAgentRunTree(driver, options);
-    const admission = admissions.cancel(options.runId, {
-      reason: options.reason,
-      cancelledAt: options.cancelledAt,
-    });
-    return {
-      run: hasAgentRun
-        ? agentRun
-        : {
-            ...agentRun,
-            missing: false,
-            admissionOnly: true,
-            alreadyTerminal: admissionAlreadyTerminal,
-            rootStatusBefore: admissionAlreadyTerminal ? "cancelled" : null,
-            subtreeRunIds: admission.affectedRunIds,
+  return withCancellationOperation(driver, (operation) =>
+    driver.transactionImmediate(() => {
+      const hasAgentRun =
+        driver
+          .prepareState<[string], { readonly found: number }>(
+            "SELECT 1 AS found FROM agent_runs WHERE id = ? LIMIT 1",
+          )
+          .get(options.runId) !== undefined;
+      const hasAdmissionState = admissions.hasRunState(options.runId);
+      const admissionAlreadyTerminal = admissions.isRunCancellationLocked(
+        options.runId,
+      );
+      if (!hasAgentRun && !hasAdmissionState) {
+        return {
+          run: {
+            runId: options.runId,
+            missing: true,
+            alreadyTerminal: false,
+            rootStatusBefore: null,
+            subtreeRunIds: [],
+            cancelledRunIds: [],
+            priorStatusById: {},
+            closedEdgeChildIds: [],
           },
-      admission,
-    };
-  });
+          admission: emptyAdmissionCancellationReport(options.runId),
+        };
+      }
+
+      const agentRun = cancelAgentRunTreeInOperation(
+        driver,
+        operation,
+        options,
+      );
+      const admission = admissions.cancelInCancellationOperation(
+        operation,
+        options.runId,
+        {
+          reason: options.reason,
+          cancelledAt: options.cancelledAt,
+        },
+      );
+      return {
+        run: hasAgentRun
+          ? agentRun
+          : {
+              ...agentRun,
+              missing: false,
+              admissionOnly: true,
+              alreadyTerminal: admissionAlreadyTerminal,
+              rootStatusBefore: admissionAlreadyTerminal ? "cancelled" : null,
+              subtreeRunIds: admission.affectedRunIds,
+            },
+        admission,
+      };
+    }),
+  );
 }
 
 function emptyAdmissionCancellationReport(

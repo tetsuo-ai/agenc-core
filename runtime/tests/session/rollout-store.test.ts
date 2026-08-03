@@ -12,9 +12,15 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import type { AgentMetadata } from "../agents/registry.js";
-import { resolveStateDatabasePaths } from "../state/sqlite-driver.js";
+import { upsertAgentRun } from "../state/agent-runs.js";
+import {
+  openStateDatabases,
+  resolveStateDatabasePaths,
+} from "../state/sqlite-driver.js";
 import { RolloutStore } from "./rollout-store.js";
 import { getProjectDir, getSessionDir } from "./session-store.js";
+
+const TEST_RUN_TIMESTAMP = "2026-08-03T00:00:00.000Z";
 
 let agencHome = "";
 let originalAgencHome = "";
@@ -40,6 +46,30 @@ function openStore(opts: {
     modelProvider: "test-provider",
   });
   return store;
+}
+
+function seedRunningAgentRun(cwd: string, runId: string): void {
+  const driver = openStateDatabases({ cwd });
+  try {
+    upsertAgentRun(driver, {
+      id: runId,
+      objective: "rollout-store spawn-edge test fixture",
+      status: "running",
+      startedAt: TEST_RUN_TIMESTAMP,
+      lastActiveAt: TEST_RUN_TIMESTAMP,
+    });
+  } finally {
+    driver.close();
+  }
+}
+
+function createAdmittedThreadSpawnEdge(
+  store: RolloutStore,
+  cwd: string,
+  edge: Parameters<RolloutStore["createThreadSpawnEdge"]>[0],
+): void {
+  seedRunningAgentRun(cwd, edge.parentThreadId);
+  store.createThreadSpawnEdge(edge);
 }
 
 function metadata(
@@ -146,7 +176,7 @@ describe("RolloutStore thread-spawn edges", () => {
     };
 
     try {
-      original.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(original, cwd, {
         parentThreadId: "root-1",
         childThreadId: "child-1",
         parentPath: "/root",
@@ -252,7 +282,7 @@ describe("RolloutStore thread-spawn edges", () => {
     const sessionId = "thread-spawn-invalid-status";
     const original = openStore({ cwd, sessionId });
     try {
-      original.createThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(original, cwd, {
         parentThreadId: "root-1",
         childThreadId: "child-invalid-status",
         parentPath: "/root",
@@ -292,7 +322,7 @@ describe("RolloutStore thread-spawn edges", () => {
     const sessionId = "thread-spawn-legacy-rewrite";
     const original = openStore({ cwd, sessionId });
     try {
-      original.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(original, cwd, {
         parentThreadId: "root-1",
         childThreadId: "child-legacy",
         parentPath: "/root",
@@ -351,7 +381,7 @@ describe("RolloutStore thread-spawn edges", () => {
       agentRoleFingerprint: "default-role-fingerprint",
     };
     try {
-      store.createThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(store, cwd, {
         parentThreadId: "root-1",
         childThreadId: "child-immutable",
         parentPath: "/root",
@@ -382,7 +412,7 @@ describe("RolloutStore thread-spawn edges", () => {
         const inMemoryBefore = store.getThreadSpawnEdge("child-immutable");
 
         expect(() =>
-          store.createThreadSpawnEdge({
+          createAdmittedThreadSpawnEdge(store, cwd, {
             parentThreadId: "attacker-root",
             childThreadId: "child-immutable",
             parentPath: "/root",
@@ -408,7 +438,7 @@ describe("RolloutStore thread-spawn edges", () => {
         ).toEqual(before);
 
         expect(() =>
-          store.createThreadSpawnEdge({
+          createAdmittedThreadSpawnEdge(store, cwd, {
             parentThreadId: "root-1",
             childThreadId: "child-immutable",
             parentPath: "/root",
@@ -425,7 +455,7 @@ describe("RolloutStore thread-spawn edges", () => {
         );
 
         expect(() =>
-          store.createThreadSpawnEdge({
+          createAdmittedThreadSpawnEdge(store, cwd, {
             parentThreadId: "root-1",
             childThreadId: "child-immutable",
             parentPath: "/root",
@@ -438,7 +468,7 @@ describe("RolloutStore thread-spawn edges", () => {
         );
 
         expect(() =>
-          store.createThreadSpawnEdge({
+          createAdmittedThreadSpawnEdge(store, cwd, {
             parentThreadId: "root-1",
             childThreadId: "edge-key",
             parentPath: "/root",
@@ -449,7 +479,7 @@ describe("RolloutStore thread-spawn edges", () => {
         expect(store.getThreadSpawnEdge("edge-key")).toBeUndefined();
 
         expect(() =>
-          store.createThreadSpawnEdge({
+          createAdmittedThreadSpawnEdge(store, cwd, {
             parentThreadId: "root-1",
             childThreadId: "invalid-status-edge",
             parentPath: "/root",
@@ -470,7 +500,7 @@ describe("RolloutStore thread-spawn edges", () => {
             .get("invalid-status-edge"),
         ).toBeUndefined();
 
-        store.createThreadSpawnEdge({
+        createAdmittedThreadSpawnEdge(store, cwd, {
           parentThreadId: "root-1",
           childThreadId: "status-failure-child",
           parentPath: "/root",
@@ -517,7 +547,7 @@ describe("RolloutStore thread-spawn edges", () => {
     const first = openStore({ cwd, sessionId: "create-race-first" });
     const second = openStore({ cwd, sessionId: "create-race-second" });
     try {
-      first.createThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(first, cwd, {
         parentThreadId: "root-first",
         childThreadId: "race-child",
         parentPath: "/root",
@@ -527,7 +557,7 @@ describe("RolloutStore thread-spawn edges", () => {
       const winner = first.getThreadSpawnEdge("race-child");
 
       expect(() =>
-        second.createThreadSpawnEdge({
+        createAdmittedThreadSpawnEdge(second, cwd, {
           parentThreadId: "root-second",
           childThreadId: "race-child",
           parentPath: "/root",
@@ -547,7 +577,7 @@ describe("RolloutStore thread-spawn edges", () => {
   it("publishes a monotonic close across live stores", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
     const first = openStore({ cwd, sessionId: "close-coherence-first" });
-    first.createThreadSpawnEdge({
+    createAdmittedThreadSpawnEdge(first, cwd, {
       parentThreadId: "root-1",
       childThreadId: "close-coherence-child",
       parentPath: "/root",
@@ -591,7 +621,7 @@ describe("RolloutStore thread-spawn edges", () => {
   it("reads current direct and descendant lists across live stores", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
     const first = openStore({ cwd, sessionId: "list-coherence-first" });
-    first.createThreadSpawnEdge({
+    createAdmittedThreadSpawnEdge(first, cwd, {
       parentThreadId: "root-1",
       childThreadId: "list-coherence-existing",
       parentPath: "/root",
@@ -606,7 +636,7 @@ describe("RolloutStore thread-spawn edges", () => {
 
     try {
       first.setThreadSpawnEdgeStatus("list-coherence-existing", "closed");
-      first.createThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(first, cwd, {
         parentThreadId: "root-1",
         childThreadId: "list-coherence-late",
         parentPath: "/root",
@@ -660,28 +690,28 @@ describe("RolloutStore thread-spawn edges", () => {
     const store = openStore({ cwd, sessionId });
 
     try {
-      store.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(store, cwd, {
         parentThreadId: "root-1",
         childThreadId: "child-z",
         parentPath: "/root",
         metadata: metadata("child-z", "/root/alpha", 1),
         status: "closed",
       });
-      store.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(store, cwd, {
         parentThreadId: "root-1",
         childThreadId: "child-a",
         parentPath: "/root",
         metadata: metadata("child-a", "/root/zulu", 1),
         status: "open",
       });
-      store.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(store, cwd, {
         parentThreadId: "child-z",
         childThreadId: "grandchild-a",
         parentPath: "/root/alpha",
         metadata: metadata("grandchild-a", "/root/alpha/scout", 2),
         status: "open",
       });
-      store.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(store, cwd, {
         parentThreadId: "child-a",
         childThreadId: "grandchild-b",
         parentPath: "/root/zulu",
@@ -716,21 +746,21 @@ describe("RolloutStore thread-spawn edges", () => {
     const store = openStore({ cwd, sessionId });
 
     try {
-      store.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(store, cwd, {
         parentThreadId: "root-1",
         childThreadId: "child-open",
         parentPath: "/root",
         metadata: metadata("child-open", "/root/open", 1),
         status: "open",
       });
-      store.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(store, cwd, {
         parentThreadId: "root-1",
         childThreadId: "child-closed",
         parentPath: "/root",
         metadata: metadata("child-closed", "/root/closed", 1),
         status: "closed",
       });
-      store.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(store, cwd, {
         parentThreadId: "child-closed",
         childThreadId: "grandchild-open",
         parentPath: "/root/closed",
@@ -762,14 +792,14 @@ describe("RolloutStore thread-spawn edges", () => {
     const store = openStore({ cwd, sessionId });
 
     try {
-      store.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(store, cwd, {
         parentThreadId: "root-1",
         childThreadId: "child-a",
         parentPath: "/root",
         metadata: metadata("child-a", "/root/duplicate", 1),
         status: "open",
       });
-      store.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(store, cwd, {
         parentThreadId: "root-1",
         childThreadId: "child-b",
         parentPath: "/root",
@@ -839,7 +869,7 @@ describe("RolloutStore thread-spawn edges", () => {
       expect(backups).toHaveLength(1);
       expect(existsSync(snapshotPath)).toBe(true);
 
-      store.upsertThreadSpawnEdge({
+      createAdmittedThreadSpawnEdge(store, cwd, {
         parentThreadId: "root-1",
         childThreadId: "child-after-corrupt",
         parentPath: "/root",

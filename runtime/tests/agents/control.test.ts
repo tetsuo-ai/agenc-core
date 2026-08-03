@@ -27,7 +27,11 @@ import {
   SimpleMailbox,
   type InterAgentCommunication,
 } from "../session/session.js";
-import { resolveStateDatabasePaths } from "../state/sqlite-driver.js";
+import { upsertAgentRun } from "../state/agent-runs.js";
+import {
+  openStateDatabases,
+  resolveStateDatabasePaths,
+} from "../state/sqlite-driver.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import {
   createMailboxMetadataRecord,
@@ -37,6 +41,8 @@ import {
 
 let agencHome = "";
 let originalAgencHome = "";
+
+const TEST_RUN_TIMESTAMP = "2026-08-03T00:00:00.000Z";
 
 function stubSession(
   opts: {
@@ -102,6 +108,30 @@ function openRolloutStore(opts: {
     modelProvider: "test-provider",
   });
   return store;
+}
+
+function seedRunningAgentRun(cwd: string, runId: string): void {
+  const driver = openStateDatabases({ cwd });
+  try {
+    upsertAgentRun(driver, {
+      id: runId,
+      objective: "agent-control spawn-edge test fixture",
+      status: "running",
+      startedAt: TEST_RUN_TIMESTAMP,
+      lastActiveAt: TEST_RUN_TIMESTAMP,
+    });
+  } finally {
+    driver.close();
+  }
+}
+
+function registerDurableSessionRoot(
+  control: AgentControl,
+  cwd: string,
+  threadId: string,
+): void {
+  seedRunningAgentRun(cwd, threadId);
+  control.registerSessionRoot(threadId);
 }
 
 function roleProvenance(control: AgentControl, roleName: string) {
@@ -330,7 +360,7 @@ describe("AgentControl", () => {
         session: sessionA,
         registry: registryA,
       });
-      controlA.registerSessionRoot("root-a");
+      registerDurableSessionRoot(controlA, cwd, "root-a");
       const existing = await controlA.spawn({
         parentPath: "/root",
         threadId: "duplicate-thread",
@@ -378,7 +408,7 @@ describe("AgentControl", () => {
         session: sessionB,
         registry: registryB,
       });
-      controlB.registerSessionRoot("root-b");
+      registerDurableSessionRoot(controlB, cwd, "root-b");
       await expect(
         controlB.spawn({
           parentPath: "/root",
@@ -415,7 +445,7 @@ describe("AgentControl", () => {
       });
       const registry = new AgentRegistry();
       const control = new AgentControl({ session, registry });
-      control.registerSessionRoot("nickname-root");
+      registerDurableSessionRoot(control, cwd, "nickname-root");
       registerAgentRole(control.roleWorkspace, {
         name: "single-nickname",
         config: { nicknameCandidates: ["only-nickname"] },
@@ -515,7 +545,7 @@ describe("AgentControl", () => {
       });
       const registry = new AgentRegistry();
       const control = new AgentControl({ session, registry });
-      control.registerSessionRoot("reconcile-root");
+      registerDurableSessionRoot(control, cwd, "reconcile-root");
 
       const child = await control.spawn({
         parentPath: "/root",
@@ -629,7 +659,7 @@ describe("AgentControl", () => {
       });
       const registry = new AgentRegistry();
       const control = new AgentControl({ session, registry });
-      control.registerSessionRoot("settlement-root");
+      registerDurableSessionRoot(control, cwd, "settlement-root");
 
       await expect(
         control.spawn({
@@ -670,7 +700,7 @@ describe("AgentControl", () => {
       });
       const registry = new AgentRegistry();
       const control = new AgentControl({ session, registry, maxDepth: 2 });
-      control.registerSessionRoot("cancel-root");
+      registerDurableSessionRoot(control, cwd, "cancel-root");
       const parent = await control.spawn({
         parentPath: "/root",
         threadId: "cancel-parent",
@@ -727,7 +757,7 @@ describe("AgentControl", () => {
       const control = new AgentControl({ session, registry, maxDepth: 2 });
       const threadManager = new ThreadManager({ control, registry });
       control.bindThreadManager(threadManager);
-      control.registerSessionRoot("close-failure-root");
+      registerDurableSessionRoot(control, cwd, "close-failure-root");
       const parent = await control.spawn({
         parentPath: "/root",
         threadId: "close-failure-parent",
@@ -876,7 +906,7 @@ describe("AgentControl", () => {
       });
       const registry = new AgentRegistry();
       const control = new AgentControl({ session, registry });
-      control.registerSessionRoot("root-close-failure");
+      registerDurableSessionRoot(control, cwd, "root-close-failure");
       const live = await control.spawn({
         parentPath: "/root",
         agentName: "durable_child",
@@ -1816,6 +1846,7 @@ describe("AgentControl", () => {
       const registry = new AgentRegistry();
       const control = new AgentControl({ session, registry, maxDepth: 3 });
       const root = await control.spawn({ parentPath: "/root" });
+      seedRunningAgentRun(cwd, root.agentId);
       const child = await control.spawn({ parentPath: root.agentPath });
       const grandchild = await control.spawn({ parentPath: child.agentPath });
       await control.shutdownAll("manager_shutdown");
@@ -1859,6 +1890,7 @@ describe("AgentControl", () => {
         maxDepth: 3,
       });
       const root = await originalControl.spawn({ parentPath: "/root" });
+      seedRunningAgentRun(cwd, root.agentId);
       const child = await originalControl.spawn({ parentPath: root.agentPath });
       const grandchild = await originalControl.spawn({
         parentPath: child.agentPath,
@@ -1915,6 +1947,7 @@ describe("AgentControl", () => {
       const registry = new AgentRegistry();
       const control = new AgentControl({ session, registry, maxDepth: 3 });
       const root = await control.spawn({ parentPath: "/root" });
+      seedRunningAgentRun(cwd, root.agentId);
       const child = await control.spawn({ parentPath: root.agentPath });
       const grandchild = await control.spawn({ parentPath: child.agentPath });
 
@@ -1947,6 +1980,7 @@ describe("AgentControl", () => {
       const registry = new AgentRegistry();
       const control = new AgentControl({ session, registry, maxDepth: 3 });
       const root = await control.spawn({ parentPath: "/root" });
+      seedRunningAgentRun(cwd, root.agentId);
       const child = await control.spawn({ parentPath: root.agentPath });
       const grandchild = await control.spawn({ parentPath: child.agentPath });
       const expectedPath = grandchild.agentPath;
@@ -1987,6 +2021,7 @@ describe("AgentControl", () => {
       const registry = new AgentRegistry();
       const control = new AgentControl({ session, registry, maxDepth: 3 });
       const root = await control.spawn({ parentPath: "/root" });
+      seedRunningAgentRun(cwd, root.agentId);
       const child = await control.spawn({ parentPath: root.agentPath });
       const grandchild = await control.spawn({ parentPath: child.agentPath });
 
@@ -2032,6 +2067,7 @@ describe("AgentControl", () => {
         threadId: "real-root-child",
         agentName: "real_parent",
       });
+      seedRunningAgentRun(cwd, root.agentId);
       rolloutStore.createThreadSpawnEdge({
         childThreadId: "orphan-child",
         parentThreadId: root.agentId,

@@ -57,11 +57,11 @@ durable reservation.
 Coverage is enforced at execution boundaries rather than duplicated in each
 caller:
 
-| Boundary | Covered runtime paths | Dispatch evidence |
-| --- | --- | --- |
-| Model | Main streamed turns, startup-prewarm attempts and fallback, compaction, tool-use summaries, permission classification, MCP sampling, and model-facing WebSearch/XSearch/WebFetch work | `provider_wire` |
-| Tool | Direct and turn-routed tool execution, after permission approval and immediately before `tool.execute` | `tool_effect` |
-| Spawn | `AgentControl`, delegate sessions, and legacy agent-hook spawns; child sessions inherit the root allocation and deadline. The dormant pane/team backend is fail-closed because it cannot propagate a parent allocation across processes. | `spawn_commit` |
+| Boundary | Covered runtime paths                                                                                                                                                                                                                    | Dispatch evidence |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| Model    | Main streamed turns, startup-prewarm attempts and fallback, compaction, tool-use summaries, permission classification, MCP sampling, and model-facing WebSearch/XSearch/WebFetch work                                                    | `provider_wire`   |
+| Tool     | Direct and turn-routed tool execution, after permission approval and immediately before `tool.execute`                                                                                                                                   | `tool_effect`     |
+| Spawn    | `AgentControl`, delegate sessions, and legacy agent-hook spawns; child sessions inherit the root allocation and deadline. The dormant pane/team backend is fail-closed because it cannot propagate a parent allocation across processes. | `spawn_commit`    |
 
 TUI, print, socket/SDK, and daemon background-agent entry points share the
 normal runtime bootstrap, which binds a client and sets `admissionRequired`.
@@ -79,15 +79,15 @@ disabled before release.
 
 Common fail-closed reasons include:
 
-| Condition | Result |
-| --- | --- |
-| Required client/kernel is absent or closed | deny (`admission_kernel_unavailable` / `admission_kernel_closed`) |
-| Model output has no finite positive maximum | deny (`unbounded_model_output`) |
-| Hard USD cap with an unpriced model or a provider lacking authoritative usage and output limits | deny before dispatch |
-| Budget exhausted, allocation blocked, parent cancelled, or deadline expired | deny/cancel with a journal reason |
-| Policy requests approval | persist `approval_required`; the current client does not auto-approve or bypass it |
-| Usage is missing or invalid after dispatch | consume the full reservation as `held_unknown` |
-| Provider exceeds the reservation | persist `provider_overrun`, block the allocation, and cancel the run subtree |
+| Condition                                                                                       | Result                                                                             |
+| ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Required client/kernel is absent or closed                                                      | deny (`admission_kernel_unavailable` / `admission_kernel_closed`)                  |
+| Model output has no finite positive maximum                                                     | deny (`unbounded_model_output`)                                                    |
+| Hard USD cap with an unpriced model or a provider lacking authoritative usage and output limits | deny before dispatch                                                               |
+| Budget exhausted, allocation blocked, parent cancelled, or deadline expired                     | deny/cancel with a journal reason                                                  |
+| Policy requests approval                                                                        | persist `approval_required`; the current client does not auto-approve or bypass it |
+| Usage is missing or invalid after dispatch                                                      | consume the full reservation as `held_unknown`                                     |
+| Provider exceeds the reservation                                                                | persist `provider_overrun`, block the allocation, and cancel the run subtree       |
 
 Provider-side automatic fallback is not used to make a cap appear satisfied.
 Every deliberate model/provider fallback is a visible `fallback` journal
@@ -105,13 +105,13 @@ $AGENC_HOME/projects/<project-slug>/agenc-state_1.sqlite
 Schema v14 adds nullable admission columns to the existing `agent_jobs` queue
 and the following tables:
 
-| Table | Purpose |
-| --- | --- |
-| `execution_admission_allocations` | Token/USD limits, used amounts, active holds, parent links, overrun block |
-| `execution_admission_reservations` | Unique reservation and exactly-once settlement state |
-| `execution_admission_reservation_allocations` | The allocation closure charged by each reservation |
-| `execution_admission_cancellations` | Durable run cancellation locks |
-| `execution_admission_journal` | Append-only, ordered decision and dispatch evidence |
+| Table                                         | Purpose                                                                   |
+| --------------------------------------------- | ------------------------------------------------------------------------- |
+| `execution_admission_allocations`             | Token/USD limits, used amounts, active holds, parent links, overrun block |
+| `execution_admission_reservations`            | Unique reservation and exactly-once settlement state                      |
+| `execution_admission_reservation_allocations` | The allocation closure charged by each reservation                        |
+| `execution_admission_cancellations`           | Durable run cancellation locks                                            |
+| `execution_admission_journal`                 | Append-only, ordered decision and dispatch evidence                       |
 
 The normal event path is:
 
@@ -205,13 +205,13 @@ data migration is available.
 
 The defaults are:
 
-| Scope | Default active steps |
-| --- | ---: |
-| Global daemon | 64 |
-| Workspace | 32 |
-| Session | 8 |
-| Immediate parent | 4 |
-| Provider | 16 |
+| Scope            | Default active steps |
+| ---------------- | -------------------: |
+| Global daemon    |                   64 |
+| Workspace        |                   32 |
+| Session          |                    8 |
+| Immediate parent |                    4 |
+| Provider         |                   16 |
 
 An admitted step must have capacity in every applicable scope. Active capacity
 is owned by the one daemon process; durable eligibility and order are owned by
@@ -263,18 +263,69 @@ durable spawn edges and admission parent edges. It then:
 Abort signals and deadlines use the same durable cancellation path. A provider
 overrun additionally marks the allocation blocked and terminates descendants.
 
+### Bounded set-based cancellation
+
+Cancellation materializes reachable identities with an identity-only recursive
+CTE using `UNION`, never a JavaScript queue or one query per descendant. The
+connection-local TEMP set is keyed by a random operation ID and graph kind. It
+is deleted after the outermost transaction commits or rolls back, so nested run
+and admission cancellation can reuse one set without leaking it into a later
+operation.
+
+The two graph contracts are intentionally different:
+
+- the public run-cancellation report follows `thread_spawn_edges` only;
+- admission settlement follows the union of spawn edges and
+  `agent_jobs(admission_parent_run_id, admission_run_id)`.
+
+Both materializations insert a plus-one sentinel before mutation. A set above
+100,000 identities or 1,000,000 distinct graph edges is rejected atomically;
+startup repair also defers before mutation above 4,096 incomplete roots. Run
+updates, edge closure, admission tombstones, job/reservation settlement,
+allocation deltas, and journal insertion are set operations over the same
+materialized membership. Reports put roots first and then use SQLite binary ID
+ordering. A dispatched reservation becomes `held_unknown`; it is never
+silently refunded.
+
+Startup repair materializes all incomplete and possibly overlapping cancelled
+roots as one admission-graph union. The same set drives descendant updates,
+edge closure, durable cancellation locks, reservation/accounting settlement,
+and journal evidence. Reserved work is voided; dispatched work becomes
+`held_unknown` and is never refunded. Quiescent revivable terminal descendants
+remain terminal without receiving a direct repair lock, while roots,
+nonterminal/cancel-locked identities, and identities with active admission work
+are locked. `cascadeComplete` is stamped only after every projection succeeds;
+any error rolls back locks, accounting, run/edge mutations, and markers. An
+oversized repair raises a typed deferred condition for a later bounded recovery
+pass.
+
+Admission proves ancestry with one bounded recursive SQL query. Depth 64 is
+accepted when it reaches a durable root represented by an agent run, admission
+record, or canonical rollout lifecycle epoch. Depth 65, ambiguous parents,
+cycles, and unresolved roots deny with stable machine reasons
+(`ancestor_depth_exceeded`, `ancestor_parent_ambiguous`, `ancestor_cycle`, and
+`ancestor_unresolved`). A cancel lock encountered on a proved path denies as
+`parent_cancel_locked`. Schema v23 provides both directed spawn-edge indexes
+and both directed partial admission-parent indexes required by these walks.
+
+The scaling harness exercises 1,000, 10,000, and 100,000-node chains:
+
+```bash
+npm --workspace=@tetsuo-ai/runtime run benchmark:set-cancellation
+```
+
 ## Configuration
 
 Concurrency is configured by environment; `agent_max_threads` is the fallback
 for the session limit when its dedicated environment variable is absent:
 
-| Environment variable | Scope | Default |
-| --- | --- | ---: |
-| `AGENC_ADMISSION_GLOBAL_CONCURRENCY` | Daemon | 64 |
-| `AGENC_ADMISSION_WORKSPACE_CONCURRENCY` | Workspace | 32 |
-| `AGENC_ADMISSION_SESSION_CONCURRENCY` | Session | 8 / `agent_max_threads` |
-| `AGENC_ADMISSION_PARENT_CONCURRENCY` | Immediate parent | 4 |
-| `AGENC_ADMISSION_PROVIDER_CONCURRENCY` | Provider | 16 |
+| Environment variable                    | Scope            |                 Default |
+| --------------------------------------- | ---------------- | ----------------------: |
+| `AGENC_ADMISSION_GLOBAL_CONCURRENCY`    | Daemon           |                      64 |
+| `AGENC_ADMISSION_WORKSPACE_CONCURRENCY` | Workspace        |                      32 |
+| `AGENC_ADMISSION_SESSION_CONCURRENCY`   | Session          | 8 / `agent_max_threads` |
+| `AGENC_ADMISSION_PARENT_CONCURRENCY`    | Immediate parent |                       4 |
+| `AGENC_ADMISSION_PROVIDER_CONCURRENCY`  | Provider         |                      16 |
 
 Values must be positive safe integers; invalid or non-positive values fall
 back to the configured/default value. Environment changes require a daemon
@@ -333,10 +384,11 @@ State migrations are per-project, ordered, transactional, and idempotent. The
 daemon migrates every existing project database during startup and migrates a
 newly discovered project before its first admission.
 
-| Version | Change | Compatibility |
-| --- | --- | --- |
-| 13 `thread_listing_indexes` | Adds four partial thread-listing indexes | Data shape unchanged; indexes may remain permanently |
-| 14 `execution_admission_schema` | Adds nullable admission columns to `agent_jobs` and five admission tables | Legacy queue rows remain unchanged with `admission_run_id = NULL` |
+| Version                             | Change                                                                    | Compatibility                                                     |
+| ----------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| 13 `thread_listing_indexes`         | Adds four partial thread-listing indexes                                  | Data shape unchanged; indexes may remain permanently              |
+| 14 `execution_admission_schema`     | Adds nullable admission columns to `agent_jobs` and five admission tables | Legacy queue rows remain unchanged with `admission_run_id = NULL` |
+| 23 `set_based_cancellation_indexes` | Adds directed spawn and admission graph indexes                           | Data shape unchanged; indexes may remain permanently              |
 
 Upgrading from v13 to v14 is supported directly. The current runtime also
 applies both migrations to older databases in order. An older runtime whose

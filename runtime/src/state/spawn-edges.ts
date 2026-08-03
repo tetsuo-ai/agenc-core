@@ -65,6 +65,7 @@ export class ThreadSpawnEdgeRepository {
             normalized.childThreadId,
             decision.parentRunId,
             decision.parentStatus,
+            decision.reason,
           );
         }
       }
