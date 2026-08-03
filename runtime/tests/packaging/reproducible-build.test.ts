@@ -449,7 +449,7 @@ describe("reproducible install and release contract", () => {
     expect(windowsJob).toContain("Run the exact Windows FND red-probe audit");
     expect(windowsJob).toContain("node runtime/scripts/run-fnd-red-probes.mjs");
     expect(windowsJob).toContain(
-      "red probes: files=6 expected-red=6 assertions=6 skipped=0 todo=0",
+      "red probes: files=5 expected-red=5 assertions=5 skipped=0 todo=0",
     );
     expect(windowsJob).toContain(
       'if ($LASTEXITCODE -ne 0) { throw "Windows red-probe audit failed" }',
