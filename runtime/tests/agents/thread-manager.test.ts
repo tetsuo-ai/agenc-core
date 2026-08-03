@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentStatusTracker } from "./status.js";
-import { Mailbox } from "./mailbox.js";
+import {
+  createMailboxMetadataRecord,
+  Mailbox,
+  MailboxCapacityError,
+} from "./mailbox.js";
 import { createAgentRoleWorkspace, resolveAgentRole } from "./role.js";
 import { ThreadManager } from "./thread-manager.js";
+import { drainChildMailboxForTesting } from "./run-agent.js";
 import type { LiveAgent } from "./control.js";
 import type { AgentMetadata } from "./registry.js";
 
@@ -23,7 +28,9 @@ function makeSession() {
   } as never;
 }
 
-function makeLive(): LiveAgent {
+function makeLive(
+  options: { readonly maxDownInboxDepth?: number } = {},
+): LiveAgent {
   const metadata: AgentMetadata = {
     agentId: "child-thread",
     agentPath: "/root/task_1",
@@ -40,7 +47,12 @@ function makeLive(): LiveAgent {
     nickname: "scout",
     status: new AgentStatusTracker(),
     upInbox: new Mailbox({ threadId: "child-thread-up" }),
-    downInbox: new Mailbox({ threadId: "child-thread-down" }),
+    downInbox: new Mailbox({
+      threadId: "child-thread-down",
+      ...(options.maxDownInboxDepth !== undefined
+        ? { maxDepth: options.maxDownInboxDepth }
+        : {}),
+    }),
     abortController: new AbortController(),
     metadata,
     messages: [],
@@ -101,8 +113,71 @@ describe("ThreadManager", () => {
 
     expect(created).toEqual(["child-thread"]);
     expect(live.downInbox.hasPending()).toBe(true);
-    expect(manager.getThread("child-thread").parentThreadId).toBe("root-thread");
+    expect(manager.getThread("child-thread").parentThreadId).toBe(
+      "root-thread",
+    );
     expect(manager.getThread("child-thread").kind).toBe("agent");
+  });
+
+  it("rejects a control kind before routing inter-agent communication", async () => {
+    const manager = new ThreadManager(makeSession());
+    const live = makeLive();
+    live.messages.push({ role: "assistant", content: "retained history" });
+    manager.registerLiveAgent(live, { parentThreadId: "root-thread" });
+
+    await expect(
+      manager.sendOp("child-thread", {
+        type: "inter_agent_communication",
+        communication: {
+          author: "/root",
+          recipient: live.agentPath,
+          content: "spoofed history clear",
+          triggerTurn: false,
+          metadata: createMailboxMetadataRecord("history_clear"),
+        },
+      }),
+    ).rejects.toThrow(
+      'mailbox routing metadata kind must be "inter_agent_communication"',
+    );
+    expect(live.downInbox.drain()).toEqual([]);
+    expect(live.messages).toEqual([
+      { role: "assistant", content: "retained history" },
+    ]);
+  });
+
+  it("preserves an accepted MCP refresh when a newer refresh is rejected", async () => {
+    const manager = new ThreadManager(makeSession());
+    const live = makeLive({ maxDownInboxDepth: 1 });
+    manager.registerLiveAgent(live, { parentThreadId: "root-thread" });
+    expect(
+      live.downInbox.send({
+        author: "/root",
+        recipient: live.agentPath,
+        content: "protected task",
+        triggerTurn: true,
+        direction: "down",
+        metadata: createMailboxMetadataRecord("user_input"),
+      }),
+    ).toBe("sent");
+    const acceptedConfig = { servers: ["accepted"] };
+    const rejectedConfig = { servers: ["rejected"] };
+
+    await manager.sendOp("child-thread", {
+      type: "refresh_mcp_servers",
+      config: acceptedConfig,
+    });
+    await expect(
+      manager.sendOp("child-thread", {
+        type: "refresh_mcp_servers",
+        config: rejectedConfig,
+      }),
+    ).rejects.toBeInstanceOf(MailboxCapacityError);
+
+    expect(live.pendingMcpRefresh?.config).toBe(acceptedConfig);
+    expect(drainChildMailboxForTesting(live)).toMatchObject({
+      nextUserMessage: "protected task",
+      refreshMcpConfig: acceptedConfig,
+    });
   });
 
   it("routes trigger-turn IAC to the root mailbox and wakes without display text", async () => {
@@ -157,7 +232,9 @@ describe("ThreadManager", () => {
       parentPath: "/root",
       agentName: "task_1",
     });
-    expect(manager.getThread("child-thread").parentThreadId).toBe("root-thread");
+    expect(manager.getThread("child-thread").parentThreadId).toBe(
+      "root-thread",
+    );
   });
 
   it("removes managed threads", () => {

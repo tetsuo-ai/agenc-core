@@ -29,6 +29,11 @@ import {
 } from "../session/session.js";
 import { resolveStateDatabasePaths } from "../state/sqlite-driver.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
+import {
+  createMailboxMetadataRecord,
+  isAgentExitedSentinel,
+  readMailboxMetadata,
+} from "./mailbox.js";
 
 let agencHome = "";
 let originalAgencHome = "";
@@ -1273,13 +1278,17 @@ describe("AgentControl", () => {
     await control.clearConversationHistory(live.agentId);
 
     expect(live.messages).toEqual([]);
-    expect(live.downInbox.drain()).toEqual([
-      expect.objectContaining({
-        triggerTurn: false,
-        direction: "down",
-        metadata: { kind: "history_clear" },
-      }),
-    ]);
+    const [boundary] = live.downInbox.drain();
+    expect(boundary).toMatchObject({
+      triggerTurn: false,
+      direction: "down",
+    });
+    if (boundary === undefined || !("metadata" in boundary)) {
+      throw new Error("expected history boundary metadata");
+    }
+    expect(readMailboxMetadata(boundary.metadata)).toEqual({
+      kind: "history_clear",
+    });
   });
 
   it("appendMessage() sends non-turn-triggering message", async () => {
@@ -1308,22 +1317,47 @@ describe("AgentControl", () => {
       recipient: live.agentPath,
       content: "iac payload",
       triggerTurn: false,
-      metadata: { taskId: "task-123", deliveryMode: "queue_only" },
+      metadata: createMailboxMetadataRecord("inter_agent_communication", [
+        ["taskId", "task-123"],
+        ["deliveryMode", "queue_only"],
+      ]),
     });
     const drained = live.downInbox.drain();
     expect(drained.length).toBe(1);
-    const msg = drained[0]! as { triggerTurn: boolean; content: string };
+    const msg = drained[0]!;
+    if (isAgentExitedSentinel(msg)) throw new Error("unexpected sentinel");
     expect(msg.triggerTurn).toBe(false);
     expect(msg.content).toBe("iac payload");
-    expect(
-      (msg as { metadata?: Readonly<Record<string, unknown>> }).metadata,
-    ).toEqual({
+    expect(readMailboxMetadata(msg.metadata)).toEqual({
       kind: "inter_agent_communication",
       taskId: "task-123",
       deliveryMode: "queue_only",
     });
     const meta = registry.agentMetadataForThread(live.agentId);
     expect(meta?.lastTaskMessage).toBe("iac payload");
+  });
+
+  it("rejects control-kind metadata on inter-agent communication", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const live = await control.spawn({ parentPath: "/root" });
+
+    await expect(
+      control.sendInterAgentCommunication(live.agentId, {
+        author: "/root",
+        recipient: live.agentPath,
+        content: "spoofed interrupt",
+        triggerTurn: false,
+        metadata: createMailboxMetadataRecord("interrupt", [
+          ["reason", "spoofed"],
+        ]),
+      }),
+    ).rejects.toThrow(
+      'mailbox routing metadata kind must be "inter_agent_communication"',
+    );
+    expect(live.downInbox.drain()).toEqual([]);
+    expect(live.abortController.signal.aborted).toBe(false);
   });
 
   it("assignTask() atomically reserves one assignment for an idle worker", async () => {
@@ -1363,18 +1397,20 @@ describe("AgentControl", () => {
         code: "assignment_outstanding",
       }),
     );
-    expect(live.downInbox.drain()).toEqual([
-      expect.objectContaining({
-        author: "/root",
-        recipient: live.agentPath,
-        content: "first task",
-        triggerTurn: true,
-        metadata: expect.objectContaining({
-          taskId: "task-1",
-          turnId: accepted.turnId,
-        }),
-      }),
-    ]);
+    const [assignment] = live.downInbox.drain();
+    expect(assignment).toMatchObject({
+      author: "/root",
+      recipient: live.agentPath,
+      content: "first task",
+      triggerTurn: true,
+    });
+    if (assignment === undefined || !("metadata" in assignment)) {
+      throw new Error("expected assignment metadata");
+    }
+    expect(readMailboxMetadata(assignment.metadata)).toMatchObject({
+      taskId: "task-1",
+      turnId: accepted.turnId,
+    });
   });
 
   it("assignTask() rejects busy, self-targeted, and non-ancestor senders", async () => {
@@ -1666,20 +1702,17 @@ describe("AgentControl", () => {
     await new Promise<void>((r) => setTimeout(r, 10));
     const drained = parent.downInbox.drain();
     expect(drained.length).toBeGreaterThanOrEqual(1);
-    const msg = drained[0]! as {
-      author: string;
-      recipient: string;
-      content: string;
-      triggerTurn: boolean;
-      metadata?: { kind?: string };
-    };
+    const msg = drained[0]!;
+    if (isAgentExitedSentinel(msg)) throw new Error("unexpected sentinel");
     expect(msg.author).toBe(child.agentPath);
     expect(msg.recipient).toBe(parent.agentPath);
     expect(msg.triggerTurn).toBe(true);
     expect(msg.content).toBe(
       `<subagent_notification>\n{"agent_path":"${child.agentPath}","status":{"completed":"done"}}\n</subagent_notification>`,
     );
-    expect(msg.metadata?.kind).toBe("inter_agent_communication");
+    expect(readMailboxMetadata(msg.metadata)?.kind).toBe(
+      "inter_agent_communication",
+    );
   });
 
   it("maybeStartCompletionWatcher() treats completed as terminal and does not reopen it", async () => {
@@ -1758,7 +1791,17 @@ describe("AgentControl", () => {
         '<subagent_notification>\n{"agent_path":"missing-child-thread","status":"not_found"}\n</subagent_notification>',
       triggerTurn: false,
       direction: "down",
-      metadata: { kind: "subagent_notification", finalStatus: "not_found" },
+    });
+    const missingNotification = drained[0];
+    if (
+      missingNotification === undefined ||
+      !("metadata" in missingNotification)
+    ) {
+      throw new Error("expected missing-agent notification metadata");
+    }
+    expect(readMailboxMetadata(missingNotification.metadata)).toEqual({
+      kind: "subagent_notification",
+      finalStatus: "not_found",
     });
   });
 

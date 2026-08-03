@@ -45,7 +45,11 @@ import {
   registerAgentRole,
 } from "./role.js";
 import { BUILTIN_READONLY_DISALLOWLIST } from "./built-in-prompts.js";
-import type { InterAgentCommunication } from "./mailbox.js";
+import {
+  createMailboxMetadataRecord,
+  readMailboxMetadata,
+  type InterAgentCommunication,
+} from "./mailbox.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -906,13 +910,14 @@ describe("runAgent", () => {
       services: { provider, registry, mcpManager: parentMcpManager },
     });
     const { control, live } = await spawnLive(session);
+    live.pendingMcpRefresh = { config: { servers: ["child"] } };
     live.downInbox.send({
       author: "/root",
       recipient: live.agentPath,
       content: "",
       triggerTurn: false,
       direction: "down",
-      metadata: { kind: "mcp_refresh", mcpConfig: { servers: ["child"] } },
+      metadata: createMailboxMetadataRecord("mcp_refresh"),
     });
     let childServices: SessionServices | undefined;
     const originalShutdown = Session.prototype.shutdown;
@@ -1062,7 +1067,9 @@ describe("runAgent", () => {
     expect(result.finalMessage).toBe("hello world");
     expect(result.toolCallCount).toBe(0);
 
-    expect(sent.map((msg) => msg.metadata?.kind)).toEqual(["subagent_status"]);
+    expect(sent.map((msg) => readMailboxMetadata(msg.metadata)?.kind)).toEqual([
+      "subagent_status",
+    ]);
     const parentMessages = session.mailbox.drain();
     expect(parentMessages).toHaveLength(1);
     expect(parentMessages[0]).toMatchObject({
@@ -1901,7 +1908,7 @@ describe("runAgent", () => {
       content: "follow up",
       triggerTurn: true,
       direction: "down",
-      metadata: { kind: "user_input" },
+      metadata: createMailboxMetadataRecord("user_input"),
     });
 
     const { result } = await collectRun(
@@ -2646,7 +2653,7 @@ describe("runAgent", () => {
         content: "context note",
         triggerTurn: false,
         direction: "down",
-        metadata: { kind: "inter_agent_communication" },
+        metadata: createMailboxMetadataRecord("inter_agent_communication"),
       });
       expect(live.downInbox.size).toBe(1);
       expect(provider.chatStream).toHaveBeenCalledTimes(1);
@@ -2822,13 +2829,14 @@ describe("runAgent", () => {
     const session = makeStubSession({ services: { provider } });
     const { live } = await spawnLive(session);
 
+    live.pendingMcpRefresh = { config: { servers: ["x"] } };
     live.downInbox.send({
       author: live.agentPath,
       recipient: live.agentPath,
       content: "",
       triggerTurn: false,
       direction: "down",
-      metadata: { kind: "mcp_refresh", mcpConfig: { servers: ["x"] } },
+      metadata: createMailboxMetadataRecord("mcp_refresh"),
     });
 
     const drained = drainChildMailboxForTesting(live);

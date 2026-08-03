@@ -1,13 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createMailboxMetadata,
   Mailbox,
   MailboxClosedError,
   MAX_MAILBOX_BLOCK_MS,
   MAX_MAILBOX_DEPTH,
   MAX_MAILBOX_TRIGGER_BYTES,
   isAgentExitedSentinel,
+  readMailboxMetadata,
   type InterAgentCommunication,
 } from "./mailbox.js";
+import {
+  MailboxMetadataAbortedError,
+  MAX_MAILBOX_METADATA_DEPTH,
+  MAX_MAILBOX_METADATA_UTF8_BYTES,
+} from "./mailbox-metadata.js";
 
 type MakeMsgOverrides = {
   readonly [K in keyof Omit<InterAgentCommunication, "seq">]?: Omit<
@@ -32,10 +39,197 @@ function makeMsg(
 function retainedEnvelopeBytes(
   message: Omit<InterAgentCommunication, "seq">,
 ): number {
-  return Buffer.byteLength(JSON.stringify(message), "utf8");
+  return Buffer.byteLength(
+    JSON.stringify({
+      author: message.author,
+      recipient: message.recipient,
+      content: message.content,
+      triggerTurn: message.triggerTurn,
+      direction: message.direction,
+      ...(message.metadata !== undefined
+        ? { metadata: readMailboxMetadata(message.metadata) }
+        : {}),
+    }),
+    "utf8",
+  );
+}
+
+function inputContentMetadata(inputContent: readonly unknown[]) {
+  return createMailboxMetadata((builder) => {
+    builder.beginObject();
+    builder.key("inputContent");
+    builder.beginArray();
+    for (const part of inputContent) {
+      const candidate = part as {
+        readonly type: string;
+        readonly text?: string;
+        readonly image_url?: { readonly url: string };
+      };
+      builder.beginObject();
+      builder.key("type");
+      builder.scalar(candidate.type);
+      if (candidate.type === "text") {
+        builder.key("text");
+        builder.scalar(candidate.text);
+      } else {
+        builder.key("image_url");
+        builder.beginObject();
+        builder.key("url");
+        builder.scalar(candidate.image_url?.url);
+        builder.endObject();
+      }
+      builder.endObject();
+    }
+    builder.endArray();
+    builder.endObject();
+  });
 }
 
 describe("Mailbox", () => {
+  it("drops an unbranded hostile proxy without reflecting over it", async () => {
+    const reflected = vi.fn(() => {
+      throw new Error("mailbox reflected over hostile metadata");
+    });
+    const metadata = new Proxy(Object.create(null) as object, {
+      get: reflected,
+      getOwnPropertyDescriptor: reflected,
+      ownKeys: reflected,
+    });
+    const invalidReasons: string[] = [];
+    const mb = new Mailbox({
+      threadId: "hostile",
+      onInvalidMessage: (reason) => invalidReasons.push(reason),
+    });
+
+    expect(mb.send(makeMsg({ metadata: metadata as never }))).toBe("dropped");
+    await Promise.resolve();
+
+    expect(reflected).not.toHaveBeenCalled();
+    expect(invalidReasons).toEqual(["unbranded"]);
+    expect(mb.droppedTotal).toBe(1);
+  });
+
+  it("decodes wire metadata once and exposes the authenticated graph", () => {
+    const mb = new Mailbox({ threadId: "wire" });
+    const metadata = new TextEncoder().encode(
+      '{"kind":"inter_agent_communication","taskId":"wire-task"}',
+    );
+
+    expect(
+      mb.sendEncoded({
+        author: "parent",
+        recipient: "child",
+        content: "wire payload",
+        triggerTurn: false,
+        direction: "down",
+        metadata,
+      }),
+    ).toBe("sent");
+
+    const [message] = mb.drain();
+    if (message === undefined || isAgentExitedSentinel(message)) {
+      throw new Error("expected decoded mailbox message");
+    }
+    expect(readMailboxMetadata(message.metadata)).toEqual({
+      kind: "inter_agent_communication",
+      taskId: "wire-task",
+    });
+  });
+
+  it("accepts the metadata depth boundary and rejects one level beyond it", async () => {
+    const invalidReasons: string[] = [];
+    const mb = new Mailbox({
+      threadId: "depth",
+      onInvalidMessage: (reason) => invalidReasons.push(reason),
+    });
+    const encodedObjectDepth = (depth: number): Uint8Array =>
+      new TextEncoder().encode(
+        `${'{"value":'.repeat(depth)}null${"}".repeat(depth)}`,
+      );
+    const envelope = {
+      author: "parent",
+      recipient: "child",
+      content: "depth",
+      triggerTurn: false,
+      direction: "down" as const,
+    };
+
+    expect(
+      mb.sendEncoded({
+        ...envelope,
+        metadata: encodedObjectDepth(MAX_MAILBOX_METADATA_DEPTH),
+      }),
+    ).toBe("sent");
+    expect(
+      mb.sendEncoded({
+        ...envelope,
+        metadata: encodedObjectDepth(MAX_MAILBOX_METADATA_DEPTH + 1),
+      }),
+    ).toBe("dropped");
+    await Promise.resolve();
+    expect(invalidReasons).toEqual(["depth"]);
+  });
+
+  it("accepts the metadata byte boundary and rejects one byte beyond it", async () => {
+    const invalidReasons: string[] = [];
+    const mb = new Mailbox({
+      threadId: "bytes",
+      maxPassiveBytes: MAX_MAILBOX_METADATA_UTF8_BYTES * 2,
+      onInvalidMessage: (reason) => invalidReasons.push(reason),
+    });
+    const encodedObjectBytes = (bytes: number): Uint8Array => {
+      const prefix = '{"value":"';
+      const suffix = '"}';
+      return new TextEncoder().encode(
+        prefix + "a".repeat(bytes - prefix.length - suffix.length) + suffix,
+      );
+    };
+    const envelope = {
+      author: "parent",
+      recipient: "child",
+      content: "bytes",
+      triggerTurn: false,
+      direction: "down" as const,
+    };
+
+    expect(
+      mb.sendEncoded({
+        ...envelope,
+        metadata: encodedObjectBytes(MAX_MAILBOX_METADATA_UTF8_BYTES),
+      }),
+    ).toBe("sent");
+    expect(
+      mb.sendEncoded({
+        ...envelope,
+        metadata: encodedObjectBytes(MAX_MAILBOX_METADATA_UTF8_BYTES + 1),
+      }),
+    ).toBe("dropped");
+    await Promise.resolve();
+    expect(invalidReasons).toEqual(["bytes"]);
+  });
+
+  it("propagates decoder abort as control flow instead of a dropped send", () => {
+    const controller = new AbortController();
+    controller.abort("test abort");
+    const mb = new Mailbox({ threadId: "abort" });
+
+    expect(() =>
+      mb.sendEncoded(
+        {
+          author: "parent",
+          recipient: "child",
+          content: "aborted",
+          triggerTurn: false,
+          direction: "down",
+          metadata: new TextEncoder().encode('{"kind":"aborted"}'),
+        },
+        { signal: controller.signal },
+      ),
+    ).toThrow(MailboxMetadataAbortedError);
+    expect(mb.droppedTotal).toBe(0);
+    expect(mb.drain()).toEqual([]);
+  });
+
   it("round-trips a send/drain", () => {
     const mb = new Mailbox({ threadId: "t1" });
     expect(mb.send(makeMsg())).toBe("sent");
@@ -440,7 +634,7 @@ describe("Mailbox", () => {
     const inputContent = [{ type: "text", text: "12345" }];
     const message = makeMsg({
       content: "display",
-      metadata: { inputContent },
+      metadata: inputContentMetadata(inputContent),
     });
     const retainedBytes = retainedEnvelopeBytes(message);
     const mb = new Mailbox({
@@ -455,7 +649,7 @@ describe("Mailbox", () => {
     expect(
       isAgentExitedSentinel(drained[0]!)
         ? null
-        : drained[0]!.metadata?.inputContent,
+        : readMailboxMetadata(drained[0]!.metadata)?.inputContent,
     ).toEqual([{ type: "text", text: "12345" }]);
     expect(mb.passiveBytes).toBe(0);
   });
@@ -475,7 +669,7 @@ describe("Mailbox", () => {
         makeMsg({
           content: "[image]",
           triggerTurn: true,
-          metadata: { inputContent },
+          metadata: inputContentMetadata(inputContent),
         }),
       ),
     ).toBe("dropped");

@@ -8,10 +8,15 @@ import { responseItemToLlmMessage as responseItemToLlmHistoryMessage } from "../
 import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 import { threadConfigSnapshot } from "../session/turn-context.js";
 import {
+  createMailboxMetadata,
+  createMailboxMetadataRecord,
   isMailboxSendAccepted,
   MailboxCapacityError,
+  readMailboxMetadata,
+  requireMailboxMetadataKind,
   type InterAgentCommunication,
 } from "./mailbox.js";
+import type { MailboxMetadataBuilder } from "./mailbox-metadata.js";
 import type { AgentStatus } from "./status.js";
 import { BehaviorSubject } from "./_deps/behavior-subject.js";
 import type { AgentPath, AgentRegistry, ThreadId } from "./registry.js";
@@ -212,11 +217,7 @@ export class AgenCThread implements ManagedThread {
     if (!this.live) return;
     const messages = history.map(responseItemToLlmHistoryMessage);
     validateAgentInvocationMessageSequence(messages);
-    this.live.messages.splice(
-      0,
-      this.live.messages.length,
-      ...messages,
-    );
+    this.live.messages.splice(0, this.live.messages.length, ...messages);
   }
 
   sourceSession(): Session | undefined {
@@ -580,16 +581,17 @@ async function submitToSession(
       });
       session.clearProviderResponseId();
       return session.conversationId;
-    case "inter_agent_communication":
+    case "inter_agent_communication": {
+      const metadata = requireMailboxMetadataKind(
+        op.communication.metadata,
+        "inter_agent_communication",
+      );
       if (
         !isMailboxSendAccepted(
           session.mailbox.send({
             ...op.communication,
             direction: "up",
-            metadata: {
-              ...(op.communication.metadata ?? {}),
-              kind: "inter_agent_communication",
-            },
+            metadata: readMailboxMetadata(metadata),
           }),
         )
       ) {
@@ -599,6 +601,7 @@ async function submitToSession(
         await session.submit("", { displayUserMessage: null });
       }
       return session.conversationId;
+    }
     case "append_message":
       if (
         !isMailboxSendAccepted(
@@ -608,7 +611,9 @@ async function submitToSession(
             content: op.message,
             triggerTurn: false,
             direction: "up",
-            metadata: { kind: "append_message" },
+            metadata: readMailboxMetadata(
+              createMailboxMetadataRecord("append_message"),
+            ),
           }),
         )
       ) {
@@ -641,7 +646,7 @@ async function submitToLiveAgent(
           content,
           triggerTurn: true,
           direction: "down",
-          metadata: { kind: "user_input", inputContent: op.input },
+          metadata: userInputMailboxMetadata(op.input),
         });
         if (delivery === "dropped") {
           throw new MailboxCapacityError(live.downInbox.threadId);
@@ -656,7 +661,7 @@ async function submitToLiveAgent(
         content: "",
         triggerTurn: false,
         direction: "down",
-        metadata: { kind: "history_clear" },
+        metadata: createMailboxMetadataRecord("history_clear"),
       });
       return live.agentId;
     case "inter_agent_communication":
@@ -664,10 +669,10 @@ async function submitToLiveAgent(
         const delivery = live.downInbox.send({
           ...op.communication,
           direction: "down",
-          metadata: {
-            ...(op.communication.metadata ?? {}),
-            kind: "inter_agent_communication",
-          },
+          metadata: requireMailboxMetadataKind(
+            op.communication.metadata,
+            "inter_agent_communication",
+          ),
         });
         if (delivery === "dropped") {
           throw new MailboxCapacityError(live.downInbox.threadId);
@@ -682,7 +687,7 @@ async function submitToLiveAgent(
           content: op.message,
           triggerTurn: false,
           direction: "down",
-          metadata: { kind: "append_message" },
+          metadata: createMailboxMetadataRecord("append_message"),
         });
         if (delivery === "dropped") {
           throw new MailboxCapacityError(live.downInbox.threadId);
@@ -711,20 +716,97 @@ async function submitToLiveAgent(
       // run-agent). Previously this was a silent no-op, leaving live
       // subagents on stale MCP config.
       {
+        const previousRefresh = live.pendingMcpRefresh;
+        const refresh = { config: op.config };
+        live.pendingMcpRefresh = refresh;
         const delivery = live.downInbox.send({
           author: live.agentPath,
           recipient: live.agentPath,
           content: "",
           triggerTurn: false,
           direction: "down",
-          metadata: { kind: "mcp_refresh", mcpConfig: op.config },
+          metadata: createMailboxMetadataRecord("mcp_refresh"),
         });
         if (delivery === "dropped") {
+          if (live.pendingMcpRefresh === refresh) {
+            live.pendingMcpRefresh = previousRefresh;
+          }
           throw new MailboxCapacityError(live.downInbox.threadId);
         }
       }
       return live.agentId;
   }
+}
+
+function userInputMailboxMetadata(input: string | readonly LLMContentPart[]) {
+  return createMailboxMetadata((builder) => {
+    builder.beginObject();
+    builder.key("kind");
+    builder.scalar("user_input");
+    builder.key("inputContent");
+    if (typeof input === "string") {
+      builder.scalar(input);
+    } else {
+      appendLlmContentParts(builder, input);
+    }
+    builder.endObject();
+  });
+}
+
+function appendLlmContentParts(
+  builder: MailboxMetadataBuilder,
+  parts: readonly LLMContentPart[],
+): void {
+  builder.beginArray();
+  for (const part of parts) {
+    builder.beginObject();
+    builder.key("type");
+    builder.scalar(part.type);
+    if (part.type === "text") {
+      builder.key("text");
+      builder.scalar(part.text);
+    } else if (part.type === "image_url") {
+      builder.key("image_url");
+      builder.beginObject();
+      builder.key("url");
+      builder.scalar(part.image_url.url);
+      builder.endObject();
+    } else {
+      builder.key("source");
+      builder.beginObject();
+      builder.key("type");
+      builder.scalar(part.source.type);
+      builder.key("media_type");
+      builder.scalar(part.source.media_type);
+      builder.key("data");
+      builder.scalar(part.source.data);
+      builder.endObject();
+      appendOptionalMetadataString(builder, "title", part.title);
+      appendOptionalMetadataString(builder, "filename", part.filename);
+      appendOptionalMetadataString(builder, "fallbackText", part.fallbackText);
+      if (part.fallbackTextTruncated !== undefined) {
+        builder.key("fallbackTextTruncated");
+        builder.scalar(part.fallbackTextTruncated);
+      }
+      appendOptionalMetadataString(
+        builder,
+        "fallbackTextError",
+        part.fallbackTextError,
+      );
+    }
+    builder.endObject();
+  }
+  builder.endArray();
+}
+
+function appendOptionalMetadataString(
+  builder: MailboxMetadataBuilder,
+  key: string,
+  value: string | undefined,
+): void {
+  if (value === undefined) return;
+  builder.key(key);
+  builder.scalar(value);
 }
 
 function userInputDisplayText(

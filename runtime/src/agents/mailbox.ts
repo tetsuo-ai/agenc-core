@@ -33,6 +33,19 @@
  */
 
 import { BehaviorSubject } from "./_deps/behavior-subject.js";
+import {
+  MailboxMetadataBuilder,
+  authenticateMailboxMetadata,
+  decodeMailboxMetadata,
+  getMailboxMetadataMetrics,
+  getMailboxMetadataValue,
+  type MailboxMetadataDecoderOptions,
+  type MailboxMetadataObject,
+  type MailboxMetadataRejectionReason,
+  type MailboxMetadataScalar,
+  type MailboxMetadataValue,
+  type ValidatedMailboxMetadata,
+} from "./mailbox-metadata.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants (I-16)
@@ -66,8 +79,16 @@ export interface InterAgentCommunication {
   readonly triggerTurn: boolean;
   readonly direction: MailboxDirection;
   readonly seq: number;
-  /** Optional free-form metadata (e.g. interrupt reason, task id). */
-  readonly metadata?: Readonly<Record<string, unknown>>;
+  /** Optional bounded metadata authenticated by mailbox-metadata.ts. */
+  readonly metadata?: ValidatedMailboxMetadata;
+}
+
+export interface EncodedMailboxCommunication extends Omit<
+  InterAgentCommunication,
+  "metadata" | "seq"
+> {
+  /** Untrusted versioned-wire metadata decoded before mailbox admission. */
+  readonly metadata?: Uint8Array;
 }
 
 export type SendResult = "sent" | "dropped";
@@ -119,6 +140,8 @@ export interface MailboxOpts {
   readonly onDrop?: (dropped: InterAgentCommunication) => void;
   /** Called once per drop streak for I-8 warning. */
   readonly onBackpressureStreak?: (count: number) => void;
+  /** Internal stable diagnostic for malformed or unbranded message input. */
+  readonly onInvalidMessage?: (reason: MailboxMetadataRejectionReason) => void;
 }
 
 export class Mailbox {
@@ -128,6 +151,9 @@ export class Mailbox {
   private readonly maxPassiveBytes: number;
   private readonly onDrop?: (dropped: InterAgentCommunication) => void;
   private readonly onBackpressureStreak?: (count: number) => void;
+  private readonly onInvalidMessage?: (
+    reason: MailboxMetadataRejectionReason,
+  ) => void;
   private queue: InterAgentCommunication[] = [];
   private nextSeq = 0;
   private closed = false;
@@ -163,7 +189,26 @@ export class Mailbox {
     this.maxPassiveBytes = opts.maxPassiveBytes ?? MAX_MAILBOX_PASSIVE_BYTES;
     this.onDrop = opts.onDrop;
     this.onBackpressureStreak = opts.onBackpressureStreak;
+    this.onInvalidMessage = opts.onInvalidMessage;
     this.seqWatch = new BehaviorSubject<number>(0);
+  }
+
+  /** Decode untrusted versioned-wire bytes before entering the live mailbox. */
+  sendEncoded(
+    msg: EncodedMailboxCommunication,
+    options: MailboxMetadataDecoderOptions = {},
+  ): SendResult {
+    const message = {
+      author: msg.author,
+      recipient: msg.recipient,
+      content: msg.content,
+      triggerTurn: msg.triggerTurn,
+      direction: msg.direction,
+    };
+    if (msg.metadata === undefined) return this.send(message);
+    const decoded = decodeMailboxMetadata(msg.metadata, options);
+    if (!decoded.ok) return this.rejectInput(message, decoded.reason);
+    return this.send({ ...message, metadata: decoded.metadata });
   }
 
   /**
@@ -189,9 +234,8 @@ export class Mailbox {
     this.nextSeq += 1;
     const seq = this.nextSeq;
     const normalized = normalizeMailboxMessage(msg, seq);
-    if (normalized === null) {
-      const rejected: InterAgentCommunication = { ...msg, seq };
-      this.dropMessage(rejected);
+    if (!normalized.ok) {
+      this.dropInvalidMessage(msg, seq, normalized.reason);
       return "dropped";
     }
     const { message: next, bytes: nextPayloadBytes } = normalized;
@@ -263,6 +307,37 @@ export class Mailbox {
     this.retainPassiveBytes(next, nextPassiveBytes);
     this.seqWatch.next(seq);
     return "sent";
+  }
+
+  private rejectInput(
+    input: Omit<InterAgentCommunication, "metadata" | "seq">,
+    reason: MailboxMetadataRejectionReason,
+  ): SendResult {
+    if (this.closed) throw new MailboxClosedError(this.threadId);
+    this.nextSeq += 1;
+    this.dropInvalidMessage(input, this.nextSeq, reason);
+    return "dropped";
+  }
+
+  private dropInvalidMessage(
+    input: Omit<InterAgentCommunication, "seq"> | EncodedMailboxCommunication,
+    seq: number,
+    reason: MailboxMetadataRejectionReason,
+  ): void {
+    const rejected: InterAgentCommunication = {
+      author: typeof input.author === "string" ? input.author : "mailbox",
+      recipient:
+        typeof input.recipient === "string" ? input.recipient : this.threadId,
+      content: typeof input.content === "string" ? input.content : "",
+      triggerTurn: input.triggerTurn === true,
+      direction: input.direction === "up" ? "up" : "down",
+      seq,
+    };
+    if (!rejected.triggerTurn) {
+      this.recordPassiveOmission(rejected, mailboxInputPayloadBytes(rejected));
+    }
+    this.dropMessage(rejected, true);
+    queueMicrotask(() => this.onInvalidMessage?.(reason));
   }
 
   /** I-16 bookkeeping for a dropped message (async I-8 warning). */
@@ -384,11 +459,16 @@ export class Mailbox {
         triggerTurn: false,
         direction: "down",
         seq: omission.firstSeq,
-        metadata: {
-          kind: "mailbox_omission",
-          omittedCount: omission.count,
-          omittedBytes: omission.bytes,
-        },
+        metadata: createMailboxMetadata((builder) => {
+          builder.beginObject();
+          builder.key("kind");
+          builder.scalar("mailbox_omission");
+          builder.key("omittedCount");
+          builder.scalar(omission.count);
+          builder.key("omittedBytes");
+          builder.scalar(omission.bytes);
+          builder.endObject();
+        }),
       };
       const insertionIndex = items.findIndex(
         (item) => item.seq > omission.firstSeq,
@@ -626,95 +706,170 @@ function mailboxInputPayloadBytes(
     | "metadata"
   >,
 ): number {
-  try {
-    return Buffer.byteLength(JSON.stringify(message), "utf8");
-  } catch {
-    return Number.POSITIVE_INFINITY;
+  let bytes = Buffer.byteLength('{"author":', "utf8");
+  bytes += mailboxJsonStringBytes(message.author);
+  bytes += Buffer.byteLength(',"recipient":', "utf8");
+  bytes += mailboxJsonStringBytes(message.recipient);
+  bytes += Buffer.byteLength(',"content":', "utf8");
+  bytes += mailboxJsonStringBytes(message.content);
+  bytes += Buffer.byteLength(',"triggerTurn":', "utf8");
+  bytes += Buffer.byteLength(message.triggerTurn ? "true" : "false", "utf8");
+  bytes += Buffer.byteLength(',"direction":', "utf8");
+  bytes += mailboxJsonStringBytes(message.direction);
+  if (message.metadata !== undefined) {
+    bytes += Buffer.byteLength(',"metadata":', "utf8");
+    bytes += getMailboxMetadataMetrics(message.metadata).utf8Bytes;
   }
+  return bytes + Buffer.byteLength("}", "utf8");
 }
 
 function mailboxTriggerInputBytes(
   message: Pick<InterAgentCommunication, "content" | "metadata">,
 ): number {
   const contentBytes = Buffer.byteLength(message.content, "utf8");
-  const inputContent = message.metadata?.inputContent;
+  const metadata =
+    message.metadata === undefined
+      ? undefined
+      : getMailboxMetadataValue(message.metadata);
+  const inputContent = metadata?.inputContent;
   if (typeof inputContent === "string") {
     return Math.max(contentBytes, Buffer.byteLength(inputContent, "utf8"));
   }
   if (Array.isArray(inputContent)) {
     let partBytes = 0;
-    for (const part of inputContent) {
-      partBytes += mailboxStringLeafBytes(part);
+    for (let index = 0; index < inputContent.length; index += 1) {
+      partBytes += mailboxStringLeafBytes(inputContent[index]);
     }
     return Math.max(contentBytes, partBytes);
   }
   return contentBytes;
 }
 
-function mailboxStringLeafBytes(value: unknown): number {
-  if (typeof value === "string") {
-    return Buffer.byteLength(value, "utf8");
+function mailboxStringLeafBytes(
+  value: MailboxMetadataValue | undefined,
+): number {
+  let bytes = 0;
+  const pending: Array<MailboxMetadataValue | undefined> = [value];
+  while (pending.length > 0) {
+    const next = pending.pop();
+    if (typeof next === "string") {
+      bytes += Buffer.byteLength(next, "utf8");
+      continue;
+    }
+    if (next === undefined || next === null || typeof next !== "object") {
+      continue;
+    }
+    if (Array.isArray(next)) {
+      for (let index = next.length - 1; index >= 0; index -= 1) {
+        pending.push(next[index]);
+      }
+      continue;
+    }
+    const object = next as MailboxMetadataObject;
+    for (const key in object) pending.push(object[key]);
   }
-  if (value === null || typeof value !== "object") return 0;
-  if (Array.isArray(value)) {
-    return value.reduce(
-      (total, entry) => total + mailboxStringLeafBytes(entry),
-      0,
-    );
-  }
-  return Object.values(value).reduce(
-    (total, entry) => total + mailboxStringLeafBytes(entry),
-    0,
-  );
+  return bytes;
 }
 
 function normalizeMailboxMessage(
   message: Omit<InterAgentCommunication, "seq">,
   seq: number,
-): {
-  readonly message: InterAgentCommunication;
-  readonly bytes: number;
-} | null {
-  if (!isJsonMailboxValue(message, new WeakSet<object>())) return null;
-  try {
-    const serialized = JSON.stringify(message);
-    const bytes = Buffer.byteLength(serialized, "utf8");
-    return {
-      message: {
-        ...(JSON.parse(serialized) as Omit<InterAgentCommunication, "seq">),
-        seq,
-      },
-      bytes,
-    };
-  } catch {
-    return null;
+):
+  | {
+      readonly ok: true;
+      readonly message: InterAgentCommunication;
+      readonly bytes: number;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: MailboxMetadataRejectionReason;
+    } {
+  if (
+    typeof message.author !== "string" ||
+    typeof message.recipient !== "string" ||
+    typeof message.content !== "string" ||
+    typeof message.triggerTurn !== "boolean" ||
+    (message.direction !== "up" && message.direction !== "down")
+  ) {
+    return { ok: false, reason: "non_json" };
   }
+  if (message.metadata !== undefined) {
+    const authenticated = authenticateMailboxMetadata(message.metadata);
+    if (!authenticated.ok) return authenticated;
+  }
+  const normalized: InterAgentCommunication = {
+    author: message.author,
+    recipient: message.recipient,
+    content: message.content,
+    triggerTurn: message.triggerTurn,
+    direction: message.direction,
+    seq,
+    ...(message.metadata !== undefined ? { metadata: message.metadata } : {}),
+  };
+  return {
+    ok: true,
+    message: normalized,
+    bytes: mailboxInputPayloadBytes(normalized),
+  };
 }
 
-function isJsonMailboxValue(value: unknown, seen: WeakSet<object>): boolean {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
-    return true;
+function mailboxJsonStringBytes(value: string): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+/** Construct trusted internal metadata through explicit builder operations. */
+export function createMailboxMetadata(
+  construct: (builder: MailboxMetadataBuilder) => void,
+): ValidatedMailboxMetadata {
+  const builder = new MailboxMetadataBuilder();
+  construct(builder);
+  const result = builder.finish();
+  if (!result.ok) {
+    throw new Error(`trusted mailbox metadata rejected: ${result.reason}`);
   }
-  if (typeof value === "number") return Number.isFinite(value);
-  if (value === undefined) return true;
-  if (typeof value !== "object" || seen.has(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  if (
-    !Array.isArray(value) &&
-    prototype !== Object.prototype &&
-    prototype !== null
-  ) {
-    return false;
+  return result.metadata;
+}
+
+/** Construct the common flat kind-tagged metadata shape without raw objects. */
+export function createMailboxMetadataRecord(
+  kind: string,
+  fields: readonly (readonly [string, MailboxMetadataScalar])[] = [],
+): ValidatedMailboxMetadata {
+  return createMailboxMetadata((builder) => {
+    builder.beginObject();
+    builder.key("kind");
+    builder.scalar(kind);
+    for (const [key, value] of fields) {
+      builder.key(key);
+      builder.scalar(value);
+    }
+    builder.endObject();
+  });
+}
+
+/** Require one authenticated semantic kind at a protocol routing boundary. */
+export function requireMailboxMetadataKind(
+  metadata: ValidatedMailboxMetadata | undefined,
+  expectedKind: string,
+): ValidatedMailboxMetadata {
+  if (metadata === undefined) {
+    return createMailboxMetadataRecord(expectedKind);
   }
-  seen.add(value);
-  const entries = Array.isArray(value) ? value : Object.values(value);
-  for (const entry of entries) {
-    if (!isJsonMailboxValue(entry, seen)) return false;
+  const authenticated = authenticateMailboxMetadata(metadata);
+  if (!authenticated.ok) {
+    throw new TypeError("mailbox routing metadata must be authenticated");
   }
-  seen.delete(value);
-  return true;
+  if (getMailboxMetadataValue(authenticated.metadata).kind !== expectedKind) {
+    throw new TypeError(
+      `mailbox routing metadata kind must be ${JSON.stringify(expectedKind)}`,
+    );
+  }
+  return authenticated.metadata;
+}
+
+/** Read an authenticated immutable metadata graph at a mailbox consumer. */
+export function readMailboxMetadata(
+  metadata: ValidatedMailboxMetadata | undefined,
+): MailboxMetadataObject | undefined {
+  return metadata === undefined ? undefined : getMailboxMetadataValue(metadata);
 }

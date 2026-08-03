@@ -9,12 +9,10 @@ import type { Session, SessionState } from "../session/session.js";
 import { SessionStartupPrewarmStore } from "../session/startup-prewarm.js";
 import { AgentControl, type LiveAgent } from "../agents/control.js";
 import { AgenCThread } from "../agents/thread-manager.js";
-import { Mailbox } from "../agents/mailbox.js";
+import { Mailbox, readMailboxMetadata } from "../agents/mailbox.js";
+import { drainChildMailboxForTesting } from "../agents/run-agent.js";
 import { AgentRegistry, type AgentMetadata } from "../agents/registry.js";
-import {
-  createAgentRoleWorkspace,
-  resolveAgentRole,
-} from "../agents/role.js";
+import { createAgentRoleWorkspace, resolveAgentRole } from "../agents/role.js";
 import { AgentStatusTracker } from "../agents/status.js";
 import { ConversationThreadManager } from "./thread-manager.js";
 
@@ -51,14 +49,16 @@ function makeSession(conversationId = "root-thread") {
     isRolloutPersistenceSuspended: vi.fn(
       () => rolloutPersistenceSuspendDepth > 0,
     ),
-    withRolloutPersistenceSuspended: vi.fn(async (fn: () => Promise<unknown>) => {
-      rolloutPersistenceSuspendDepth += 1;
-      try {
-        return await fn();
-      } finally {
-        rolloutPersistenceSuspendDepth -= 1;
-      }
-    }),
+    withRolloutPersistenceSuspended: vi.fn(
+      async (fn: () => Promise<unknown>) => {
+        rolloutPersistenceSuspendDepth += 1;
+        try {
+          return await fn();
+        } finally {
+          rolloutPersistenceSuspendDepth -= 1;
+        }
+      },
+    ),
   } as unknown as Session & {
     readonly state: AsyncLock<SessionState>;
     readonly submit: ReturnType<typeof vi.fn>;
@@ -249,7 +249,10 @@ describe("ConversationThreadManager", () => {
   test("forks a distinct replayed thread from truncated rollout history", async () => {
     const session = makeSession();
     const rolloutItems: RolloutItem[] = [
-      { type: "response_item", payload: { role: "user", content: "first ask" } },
+      {
+        type: "response_item",
+        payload: { role: "user", content: "first ask" },
+      },
       {
         type: "response_item",
         payload: { role: "assistant", content: "first answer" },
@@ -267,29 +270,29 @@ describe("ConversationThreadManager", () => {
       readAll: () => rolloutItems,
       rolloutPath: "/tmp/root-rollout.jsonl",
     };
-    (session as Session & {
-      rolloutStore?: typeof rolloutStore;
-    }).rolloutStore = rolloutStore;
-    const forkRunTurn = vi.fn(
-      async function* (
-        input: string | readonly LLMContentPart[],
-        opts: { readonly history?: ReadonlyArray<RolloutItem["payload"]> },
-      ) {
-        const prior = opts.history ?? [];
-        await session.state.update((current) => {
-          const next = {
-            ...current,
-            history: [
-              ...prior,
-              { role: "user", content: input },
-              { role: "assistant", content: "fork answer" },
-            ],
-          } as SessionState;
-          return { next, result: undefined };
-        });
-        yield { type: "turn_complete" } as never;
-      },
-    );
+    (
+      session as Session & {
+        rolloutStore?: typeof rolloutStore;
+      }
+    ).rolloutStore = rolloutStore;
+    const forkRunTurn = vi.fn(async function* (
+      input: string | readonly LLMContentPart[],
+      opts: { readonly history?: ReadonlyArray<RolloutItem["payload"]> },
+    ) {
+      const prior = opts.history ?? [];
+      await session.state.update((current) => {
+        const next = {
+          ...current,
+          history: [
+            ...prior,
+            { role: "user", content: input },
+            { role: "assistant", content: "fork answer" },
+          ],
+        } as SessionState;
+        return { next, result: undefined };
+      });
+      yield { type: "turn_complete" } as never;
+    });
     (
       session as Session & {
         runTurn: typeof forkRunTurn;
@@ -317,11 +320,9 @@ describe("ConversationThreadManager", () => {
       n: 1,
     });
     expect(secondFork.threadId).not.toBe(forked.threadId);
-    expect(manager.listThreadIds().sort()).toEqual([
-      forked.threadId,
-      "root-thread",
-      secondFork.threadId,
-    ].sort());
+    expect(manager.listThreadIds().sort()).toEqual(
+      [forked.threadId, "root-thread", secondFork.threadId].sort(),
+    );
     expect(manager.snapshot(forked.threadId)).toMatchObject({
       kind: "root",
       historyLength: 2,
@@ -354,15 +355,20 @@ describe("ConversationThreadManager", () => {
   test("serializes forked turns behind root turns for the same source session", async () => {
     const session = makeSession();
     const rolloutItems: RolloutItem[] = [
-      { type: "response_item", payload: { role: "user", content: "first ask" } },
+      {
+        type: "response_item",
+        payload: { role: "user", content: "first ask" },
+      },
       {
         type: "response_item",
         payload: { role: "assistant", content: "first answer" },
       },
     ];
-    (session as Session & {
-      rolloutStore?: { readAll(): RolloutItem[]; rolloutPath: string };
-    }).rolloutStore = {
+    (
+      session as Session & {
+        rolloutStore?: { readAll(): RolloutItem[]; rolloutPath: string };
+      }
+    ).rolloutStore = {
       readAll: () => rolloutItems,
       rolloutPath: "/tmp/root-rollout.jsonl",
     };
@@ -373,25 +379,23 @@ describe("ConversationThreadManager", () => {
           releaseRoot = resolve;
         }),
     );
-    const forkRunTurn = vi.fn(
-      async function* (
-        input: string | readonly LLMContentPart[],
-        opts: { readonly history?: ReadonlyArray<RolloutItem["payload"]> },
-      ) {
-        await session.state.update((current) => ({
-          next: {
-            ...current,
-            history: [
-              ...(opts.history ?? []),
-              { role: "user", content: input },
-              { role: "assistant", content: "fork answer" },
-            ],
-          } as SessionState,
-          result: undefined,
-        }));
-        yield { type: "turn_complete" } as never;
-      },
-    );
+    const forkRunTurn = vi.fn(async function* (
+      input: string | readonly LLMContentPart[],
+      opts: { readonly history?: ReadonlyArray<RolloutItem["payload"]> },
+    ) {
+      await session.state.update((current) => ({
+        next: {
+          ...current,
+          history: [
+            ...(opts.history ?? []),
+            { role: "user", content: input },
+            { role: "assistant", content: "fork answer" },
+          ],
+        } as SessionState,
+        result: undefined,
+      }));
+      yield { type: "turn_complete" } as never;
+    });
     (
       session as Session & {
         runTurn: typeof forkRunTurn;
@@ -490,10 +494,13 @@ describe("ConversationThreadManager", () => {
         ].join("\n"),
         "utf8",
       );
-      (session as Session & { rolloutStore?: { rolloutPath: string } })
-        .rolloutStore = { rolloutPath: rootRolloutPath };
+      (
+        session as Session & { rolloutStore?: { rolloutPath: string } }
+      ).rolloutStore = { rolloutPath: rootRolloutPath };
       const manager = new ConversationThreadManager({ now: () => 44 });
-      await manager.registerConversationRootSession(session, { prewarm: false });
+      await manager.registerConversationRootSession(session, {
+        prewarm: false,
+      });
       const live = makeLive();
 
       manager.registerLiveAgent(live, {
@@ -526,10 +533,13 @@ describe("ConversationThreadManager", () => {
       const childRolloutPath = join(childDir, "rollout-child-thread.jsonl");
       writeFileSync(rootRolloutPath, "", "utf8");
       writeFileSync(childRolloutPath, "{bad-json\n", "utf8");
-      (session as Session & { rolloutStore?: { rolloutPath: string } })
-        .rolloutStore = { rolloutPath: rootRolloutPath };
+      (
+        session as Session & { rolloutStore?: { rolloutPath: string } }
+      ).rolloutStore = { rolloutPath: rootRolloutPath };
       const manager = new ConversationThreadManager({ now: () => 46 });
-      await manager.registerConversationRootSession(session, { prewarm: false });
+      await manager.registerConversationRootSession(session, {
+        prewarm: false,
+      });
       const live = makeLive();
 
       expect(() =>
@@ -695,9 +705,48 @@ describe("ConversationThreadManager", () => {
     expect(message).toMatchObject({
       content: "look at this\n[image]",
       triggerTurn: true,
-      metadata: { kind: "user_input", inputContent: input },
+    });
+    if (message === undefined || !("metadata" in message)) {
+      throw new Error("expected structured mailbox metadata");
+    }
+    expect(readMailboxMetadata(message.metadata)).toEqual({
+      kind: "user_input",
+      inputContent: input,
     });
     expect(manager.snapshot("child-thread").lastSubmittedAtMs).toBe(102);
+  });
+
+  test("preserves multimodal input across manager, mailbox, and run-loop boundaries", async () => {
+    const session = makeSession();
+    const input: readonly LLMContentPart[] = [
+      { type: "text", text: "inspect the evidence" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,xyz" } },
+      {
+        type: "document",
+        source: {
+          type: "base64",
+          media_type: "application/pdf",
+          data: "cGRm",
+        },
+        title: "evidence",
+        filename: "evidence.pdf",
+        fallbackText: "PDF evidence",
+        fallbackTextTruncated: false,
+      },
+    ];
+    const manager = new ConversationThreadManager({ now: () => 103 });
+    await manager.registerConversationRootSession(session, { prewarm: false });
+    const live = makeLive();
+    manager.registerLiveAgent(live, { parentThreadId: "root-thread" });
+
+    await manager.submitTurn("child-thread", {
+      type: "user_input",
+      input,
+    });
+
+    expect(drainChildMailboxForTesting(live)).toEqual({
+      nextUserMessage: input,
+    });
   });
 
   test("runs the default startup prewarm path", async () => {

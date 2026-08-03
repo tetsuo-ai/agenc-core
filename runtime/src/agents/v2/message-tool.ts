@@ -1,4 +1,5 @@
 import type { ToolResult } from "../../tools/types.js";
+import { createMailboxMetadataRecord } from "../mailbox.js";
 import type { ThreadId } from "../registry.js";
 import {
   callIdFromArgs,
@@ -95,9 +96,9 @@ export async function handleMessageStringTool(
         recipient: receiverAgentPath,
         content: message,
         triggerTurn: false,
-        metadata: {
-          deliveryMode: mode,
-        },
+        metadata: createMailboxMetadataRecord("inter_agent_communication", [
+          ["deliveryMode", mode],
+        ]),
       });
     }
   } catch (error) {

@@ -39,11 +39,15 @@ import type { ThreadSpawnEdgeStatus } from "../session/rollout-store.js";
 import type { Session } from "../session/session.js";
 import type { SessionSubmitOptions } from "../session/autonomous-mode.js";
 import {
+  createMailboxMetadataRecord,
   Mailbox,
   MailboxCapacityError,
   MailboxClosedError,
   isMailboxSendAccepted,
+  readMailboxMetadata,
+  requireMailboxMetadataKind,
 } from "./mailbox.js";
+import type { ValidatedMailboxMetadata } from "./mailbox-metadata.js";
 import {
   AgentIdExistsError,
   AgentPathExistsError,
@@ -340,6 +344,8 @@ export interface LiveAgent {
   };
   /** Effective child configuration snapshot once the child session is built. */
   configSnapshot?: Record<string, unknown>;
+  /** Latest MCP refresh payload, kept out of the bounded mailbox protocol. */
+  pendingMcpRefresh?: { readonly config: unknown };
   /** Local rollout path for the live child session once initialized. */
   rolloutPath?: string;
 }
@@ -1040,7 +1046,7 @@ export class AgentControl {
         content: input,
         triggerTurn: true,
         direction: "down",
-        metadata: { kind: "user_input" },
+        metadata: createMailboxMetadataRecord("user_input"),
       });
       if (delivery === "dropped") {
         throw new MailboxCapacityError(agent.downInbox.threadId);
@@ -1069,7 +1075,7 @@ export class AgentControl {
         content: "",
         triggerTurn: false,
         direction: "down",
-        metadata: { kind: "history_clear" },
+        metadata: createMailboxMetadataRecord("history_clear"),
       });
       if (delivery === "dropped") {
         throw new MailboxCapacityError(agent.downInbox.threadId);
@@ -1100,7 +1106,7 @@ export class AgentControl {
         content: message,
         triggerTurn: false,
         direction: "down",
-        metadata: { kind: "append_message" },
+        metadata: createMailboxMetadataRecord("append_message"),
       });
       if (delivery === "dropped") {
         throw new MailboxCapacityError(agent.downInbox.threadId);
@@ -1174,12 +1180,11 @@ export class AgentControl {
         content: assignment.content,
         triggerTurn: true,
         direction: "down",
-        metadata: {
-          kind: "inter_agent_communication",
-          deliveryMode: "trigger_turn",
-          taskId: admission.taskId,
-          turnId: admission.turnId,
-        },
+        metadata: createMailboxMetadataRecord("inter_agent_communication", [
+          ["deliveryMode", "trigger_turn"],
+          ["taskId", admission.taskId],
+          ["turnId", admission.turnId],
+        ]),
       });
       if (delivery === "dropped") {
         throw new AgentAssignmentRejectedError(
@@ -1210,7 +1215,7 @@ export class AgentControl {
       readonly recipient: string;
       readonly content: string;
       readonly triggerTurn: boolean;
-      readonly metadata?: Readonly<Record<string, unknown>>;
+      readonly metadata?: ValidatedMailboxMetadata;
     },
   ): Promise<void> {
     if (this.threadManager?.hasThread(threadId)) {
@@ -1222,16 +1227,17 @@ export class AgentControl {
       return;
     }
     if (this.rootThreadId !== undefined && threadId === this.rootThreadId) {
+      const metadata = requireMailboxMetadataKind(
+        communication.metadata,
+        "inter_agent_communication",
+      );
       const deliverySequence = this.session.mailbox.send({
         author: communication.author,
         recipient: communication.recipient,
         content: communication.content,
         triggerTurn: communication.triggerTurn,
         direction: "up",
-        metadata: {
-          ...(communication.metadata ?? {}),
-          kind: "inter_agent_communication",
-        },
+        metadata: readMailboxMetadata(metadata),
       });
       if (!isMailboxSendAccepted(deliverySequence)) {
         throw new MailboxCapacityError(threadId);
@@ -1243,16 +1249,17 @@ export class AgentControl {
     }
     const agent = this.requireLive(threadId);
     try {
+      const metadata = requireMailboxMetadataKind(
+        communication.metadata,
+        "inter_agent_communication",
+      );
       const delivery = agent.downInbox.send({
         author: communication.author,
         recipient: communication.recipient,
         content: communication.content,
         triggerTurn: communication.triggerTurn,
         direction: "down",
-        metadata: {
-          ...(communication.metadata ?? {}),
-          kind: "inter_agent_communication",
-        },
+        metadata,
       });
       if (delivery === "dropped") {
         throw new MailboxCapacityError(agent.downInbox.threadId);
@@ -1293,7 +1300,9 @@ export class AgentControl {
         content: `interrupt: ${reason}`,
         triggerTurn: true,
         direction: "down",
-        metadata: { kind: "interrupt", reason },
+        metadata: createMailboxMetadataRecord("interrupt", [
+          ["reason", reason],
+        ]),
       });
     } catch (err) {
       if (err instanceof MailboxClosedError) {
@@ -1978,16 +1987,16 @@ export class AgentControl {
     }
 
     if (this.rootThreadId !== undefined && parentId === this.rootThreadId) {
+      const metadata = createMailboxMetadataRecord("subagent_notification", [
+        ["finalStatus", notification.finalStatus],
+      ]);
       this.session.mailbox.send({
         author: notification.author,
         recipient: "/root",
         content: notification.content,
         triggerTurn: false,
         direction: "up",
-        metadata: {
-          kind: "subagent_notification",
-          finalStatus: notification.finalStatus,
-        },
+        metadata: readMailboxMetadata(metadata),
       });
       return;
     }
@@ -2000,10 +2009,9 @@ export class AgentControl {
       content: notification.content,
       triggerTurn: false,
       direction: "down",
-      metadata: {
-        kind: "subagent_notification",
-        finalStatus: notification.finalStatus,
-      },
+      metadata: createMailboxMetadataRecord("subagent_notification", [
+        ["finalStatus", notification.finalStatus],
+      ]),
     });
   }
 

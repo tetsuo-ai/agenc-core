@@ -55,7 +55,11 @@ import {
   withSignedAllowedRoots,
   withSignedSessionId,
 } from "./_deps/filesystem-args.js";
-import { Session as ChildSession, type Session } from "../session/session.js";
+import {
+  Session as ChildSession,
+  type InterAgentCommunication as SessionInterAgentCommunication,
+  type Session,
+} from "../session/session.js";
 import {
   mountChildRunJournal,
   recordUnconstructedChildRunTerminal,
@@ -69,12 +73,22 @@ import {
 } from "../session/turn-context.js";
 import type { LiveAgent } from "./control.js";
 import {
+  createMailboxMetadata,
+  createMailboxMetadataRecord,
   isAgentExitedSentinel,
   isMailboxSendAccepted,
   MailboxCapacityError,
   MailboxClosedError,
+  readMailboxMetadata,
   type InterAgentCommunication,
 } from "./mailbox.js";
+import {
+  getMailboxMetadataMetrics,
+  type MailboxMetadataBuilder,
+  type MailboxMetadataObject,
+  type MailboxMetadataValue,
+  type ValidatedMailboxMetadata,
+} from "./mailbox-metadata.js";
 import type { AgentRoleConfig } from "./role.js";
 import {
   captureWorktreeTurnEvidence,
@@ -927,7 +941,7 @@ function relayToParentMailbox(params: {
   readonly parent: Session;
   readonly content: string;
   readonly triggerTurn: boolean;
-  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly metadata: ValidatedMailboxMetadata;
 }): void {
   try {
     const delivery = params.live.upInbox.send({
@@ -945,7 +959,7 @@ function relayToParentMailbox(params: {
         content: params.content,
         triggerTurn: true,
         direction: "up",
-        metadata: params.metadata,
+        metadata: readMailboxMetadata(params.metadata),
       });
       if (delivery === "dropped") {
         throw new MailboxCapacityError(params.live.upInbox.threadId);
@@ -966,6 +980,19 @@ function relayToParentMailbox(params: {
       `subagent ${params.live.agentPath} upInbox closed before delivery: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+function createAgentEventMetadata(
+  kind: string,
+  turnId: string,
+  taskId: string | undefined,
+  fields: readonly (readonly [string, string])[] = [],
+): ValidatedMailboxMetadata {
+  return createMailboxMetadataRecord(kind, [
+    ["turnId", turnId],
+    ...(taskId !== undefined ? ([["taskId", taskId]] as const) : []),
+    ...fields,
+  ]);
 }
 
 interface TaskTurnReceipt {
@@ -1226,45 +1253,114 @@ function sendSubagentNotificationToParent(params: {
     content,
     triggerTurn: true,
     direction: "up",
-    metadata: {
-      kind: "subagent_notification",
-      agentId: params.live.agentId,
-      agentPath: params.live.agentPath,
-      agentRole: params.live.role.name,
-      ...(params.live.metadata.agentRoleWorkspaceId !== undefined
-        ? {
-            agentRoleWorkspaceId: params.live.metadata.agentRoleWorkspaceId,
-          }
-        : {}),
-      ...(params.live.metadata.agentRoleFingerprint !== undefined
-        ? {
-            agentRoleFingerprint: params.live.metadata.agentRoleFingerprint,
-          }
-        : {}),
-      ...(projectedReceipt !== undefined
-        ? {
-            projectionId,
-            lifecycle: "turn",
-            outcome: projectedReceipt.outcome,
-            turnId: projectedReceipt.turnId,
-            toolCallCount: projectedReceipt.toolCallCount,
-            ...(projectedReceipt.taskId !== undefined
-              ? { taskId: projectedReceipt.taskId }
-              : {}),
-            ...(projectedReceipt.reason !== undefined
-              ? { reason: projectedReceipt.reason }
-              : {}),
-            ...(projectedReceipt.worktreeEvidence !== undefined
-              ? {
-                  isolation: "worktree",
-                  worktreeEvidence: projectedReceipt.worktreeEvidence,
-                }
-              : {}),
-          }
-        : {}),
-    },
+    metadata: createParentNotificationMetadata({
+      live: params.live,
+      projectedReceipt,
+      projectionId,
+    }),
   };
   return deliverOrQueueParentNotification(params, notification);
+}
+
+function createParentNotificationMetadata(params: {
+  readonly live: LiveAgent;
+  readonly projectedReceipt: TaskTurnReceipt | undefined;
+  readonly projectionId: string | undefined;
+}): ValidatedMailboxMetadata {
+  return createMailboxMetadata((builder) => {
+    builder.beginObject();
+    appendMailboxMetadataScalar(builder, "kind", "subagent_notification");
+    appendMailboxMetadataScalar(builder, "agentId", params.live.agentId);
+    appendMailboxMetadataScalar(builder, "agentPath", params.live.agentPath);
+    appendMailboxMetadataScalar(builder, "agentRole", params.live.role.name);
+    appendOptionalMailboxMetadataScalar(
+      builder,
+      "agentRoleWorkspaceId",
+      params.live.metadata.agentRoleWorkspaceId,
+    );
+    appendOptionalMailboxMetadataScalar(
+      builder,
+      "agentRoleFingerprint",
+      params.live.metadata.agentRoleFingerprint,
+    );
+    const receipt = params.projectedReceipt;
+    if (receipt !== undefined) {
+      appendMailboxMetadataScalar(
+        builder,
+        "projectionId",
+        params.projectionId ?? "",
+      );
+      appendMailboxMetadataScalar(builder, "lifecycle", "turn");
+      appendMailboxMetadataScalar(builder, "outcome", receipt.outcome);
+      appendMailboxMetadataScalar(builder, "turnId", receipt.turnId);
+      appendMailboxMetadataScalar(
+        builder,
+        "toolCallCount",
+        receipt.toolCallCount,
+      );
+      appendOptionalMailboxMetadataScalar(builder, "taskId", receipt.taskId);
+      appendOptionalMailboxMetadataScalar(builder, "reason", receipt.reason);
+      if (receipt.worktreeEvidence !== undefined) {
+        appendMailboxMetadataScalar(builder, "isolation", "worktree");
+        builder.key("worktreeEvidence");
+        appendWorktreeTurnEvidence(builder, receipt.worktreeEvidence);
+      }
+    }
+    builder.endObject();
+  });
+}
+
+function appendWorktreeTurnEvidence(
+  builder: MailboxMetadataBuilder,
+  evidence: WorktreeTurnEvidence,
+): void {
+  builder.beginObject();
+  appendMailboxMetadataScalar(builder, "state", evidence.state);
+  builder.key("locator");
+  builder.beginObject();
+  appendMailboxMetadataScalar(builder, "path", evidence.locator.path);
+  appendMailboxMetadataScalar(builder, "branch", evidence.locator.branch);
+  appendMailboxMetadataScalar(builder, "gitRoot", evidence.locator.gitRoot);
+  builder.endObject();
+  if (evidence.state === "unverifiable") {
+    appendMailboxMetadataScalar(builder, "error", evidence.error);
+  } else {
+    appendMailboxMetadataScalar(builder, "baseCommit", evidence.baseCommit);
+    appendMailboxMetadataScalar(builder, "headCommit", evidence.headCommit);
+    appendMailboxMetadataScalar(builder, "treeHash", evidence.treeHash);
+    appendMailboxMetadataScalar(builder, "clean", evidence.clean);
+    appendMailboxMetadataScalar(
+      builder,
+      "baseIsAncestor",
+      evidence.baseIsAncestor,
+    );
+    if (evidence.state === "committed_clean") {
+      appendMailboxMetadataScalar(
+        builder,
+        "integrationRef",
+        evidence.integrationRef,
+      );
+    }
+  }
+  builder.endObject();
+}
+
+function appendMailboxMetadataScalar(
+  builder: MailboxMetadataBuilder,
+  key: string,
+  value: string | number | boolean,
+): void {
+  builder.key(key);
+  builder.scalar(value);
+}
+
+function appendOptionalMailboxMetadataScalar(
+  builder: MailboxMetadataBuilder,
+  key: string,
+  value: string | undefined,
+): void {
+  if (value === undefined) return;
+  appendMailboxMetadataScalar(builder, key, value);
 }
 
 function parentMailboxDeliveryAccepted(result: unknown): boolean {
@@ -1313,7 +1409,7 @@ function parentNotificationKey(
   params: { readonly live: LiveAgent },
   notification: Omit<InterAgentCommunication, "seq">,
 ): string {
-  const metadata = notification.metadata;
+  const metadata = readMailboxMetadata(notification.metadata);
   if (typeof metadata?.projectionId === "string") {
     return metadata.projectionId;
   }
@@ -1327,15 +1423,10 @@ function parentNotificationKey(
 function parentNotificationBytes(
   notification: Omit<InterAgentCommunication, "seq">,
 ): number {
-  let metadataBytes = 0;
-  try {
-    metadataBytes = Buffer.byteLength(
-      JSON.stringify(notification.metadata ?? {}),
-      "utf8",
-    );
-  } catch {
-    metadataBytes = 0;
-  }
+  const metadataBytes =
+    notification.metadata === undefined
+      ? 0
+      : getMailboxMetadataMetrics(notification.metadata).utf8Bytes;
   return Buffer.byteLength(notification.content, "utf8") + metadataBytes;
 }
 
@@ -1350,12 +1441,29 @@ function tryParentNotificationDelivery(
   try {
     return {
       delivered: parentMailboxDeliveryAccepted(
-        pending.params.parent.mailbox.send(pending.notification),
+        pending.params.parent.mailbox.send(
+          sessionMailboxCommunication(pending.notification),
+        ),
       ),
     };
   } catch (error) {
     return { delivered: false, error };
   }
+}
+
+function sessionMailboxCommunication(
+  notification: Omit<InterAgentCommunication, "seq">,
+): Omit<SessionInterAgentCommunication, "seq"> {
+  return {
+    author: notification.author,
+    recipient: notification.recipient,
+    content: notification.content,
+    triggerTurn: notification.triggerTurn,
+    direction: notification.direction,
+    ...(notification.metadata !== undefined
+      ? { metadata: readMailboxMetadata(notification.metadata) }
+      : {}),
+  };
 }
 
 function deliverOrQueueParentNotification(
@@ -1824,13 +1932,12 @@ function drainChildMailbox(
     if (isAgentExitedSentinel(item)) {
       continue;
     }
-    const kind =
-      typeof item.metadata?.kind === "string" ? item.metadata.kind : undefined;
+    const metadata = readMailboxMetadata(item.metadata);
+    const kind = typeof metadata?.kind === "string" ? metadata.kind : undefined;
     if (kind === "interrupt") {
       const reason =
-        typeof item.metadata?.reason === "string" &&
-        item.metadata.reason.length > 0
-          ? item.metadata.reason
+        typeof metadata?.reason === "string" && metadata.reason.length > 0
+          ? metadata.reason
           : item.content.trim().length > 0
             ? item.content
             : "interrupt";
@@ -1845,12 +1952,16 @@ function drainChildMailbox(
     if (kind === "mcp_refresh") {
       // Control message: refresh the live child's MCP servers between turns.
       // Latest config wins; does not itself trigger a turn.
-      refreshMcpConfig = item.metadata?.mcpConfig;
+      const refresh = live.pendingMcpRefresh;
+      if (refresh !== undefined) {
+        refreshMcpConfig = refresh.config;
+        live.pendingMcpRefresh = undefined;
+      }
       continue;
     }
     if (kind === "mailbox_omission") {
-      const omittedCount = item.metadata?.omittedCount;
-      const omittedBytes = item.metadata?.omittedBytes;
+      const omittedCount = metadata?.omittedCount;
+      const omittedBytes = metadata?.omittedBytes;
       if (
         typeof omittedCount === "number" &&
         Number.isSafeInteger(omittedCount) &&
@@ -1866,10 +1977,11 @@ function drainChildMailbox(
         omittedPassiveBytes += omittedBytes;
       }
     }
-    const inputContent = item.metadata?.inputContent;
+    const inputContent = metadata?.inputContent;
     let inputPart: string | readonly LLMContentPart[] | undefined;
-    if (isLlmContentParts(inputContent)) {
-      inputPart = inputContent;
+    const contentParts = mailboxLlmContentParts(inputContent);
+    if (contentParts !== undefined) {
+      inputPart = contentParts;
     } else if (
       typeof inputContent === "string" &&
       inputContent.trim().length > 0
@@ -1904,14 +2016,12 @@ function drainChildMailbox(
     // the first trigger as one correlated task; any later trigger stays in the
     // bounded Mailbox when `throughFirstTrigger` is used.
     const taskId =
-      typeof item.metadata?.taskId === "string" &&
-      item.metadata.taskId.length > 0
-        ? item.metadata.taskId
+      typeof metadata?.taskId === "string" && metadata.taskId.length > 0
+        ? metadata.taskId
         : undefined;
     const assignedTurnId =
-      typeof item.metadata?.turnId === "string" &&
-      item.metadata.turnId.length > 0
-        ? item.metadata.turnId
+      typeof metadata?.turnId === "string" && metadata.turnId.length > 0
+        ? metadata.turnId
         : undefined;
     const boundedTrigger =
       inputPart !== undefined
@@ -1986,28 +2096,85 @@ export async function clearChildConversationHistory(
   live.messages.length = 0;
 }
 
-function isLlmContentParts(value: unknown): value is readonly LLMContentPart[] {
-  return (
-    Array.isArray(value) &&
-    value.every((part) => {
-      if (part === null || typeof part !== "object") return false;
-      const candidate = part as {
-        type?: unknown;
-        text?: unknown;
-        image_url?: unknown;
-      };
-      if (candidate.type === "text") return typeof candidate.text === "string";
-      if (candidate.type === "image_url") {
-        const image = candidate.image_url as { url?: unknown } | null;
-        return (
-          image !== null &&
-          typeof image === "object" &&
-          typeof image.url === "string"
-        );
+function mailboxLlmContentParts(
+  value: MailboxMetadataValue | undefined,
+): readonly LLMContentPart[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const parts: LLMContentPart[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const part = mailboxMetadataObject(value[index]);
+    if (part === undefined) return undefined;
+    if (part.type === "text" && typeof part.text === "string") {
+      parts.push({ type: "text", text: part.text });
+      continue;
+    }
+    if (part.type === "image_url") {
+      const image = mailboxMetadataObject(part.image_url);
+      if (image === undefined || typeof image.url !== "string") {
+        return undefined;
       }
-      return false;
-    })
-  );
+      parts.push({ type: "image_url", image_url: { url: image.url } });
+      continue;
+    }
+    if (part.type !== "document") return undefined;
+    const source = mailboxMetadataObject(part.source);
+    if (
+      source?.type !== "base64" ||
+      source.media_type !== "application/pdf" ||
+      typeof source.data !== "string"
+    ) {
+      return undefined;
+    }
+    if (
+      !isOptionalMailboxString(part.title) ||
+      !isOptionalMailboxString(part.filename) ||
+      !isOptionalMailboxString(part.fallbackText) ||
+      !isOptionalMailboxBoolean(part.fallbackTextTruncated) ||
+      !isOptionalMailboxString(part.fallbackTextError)
+    ) {
+      return undefined;
+    }
+    parts.push({
+      type: "document",
+      source: {
+        type: "base64",
+        media_type: "application/pdf",
+        data: source.data,
+      },
+      ...(typeof part.title === "string" ? { title: part.title } : {}),
+      ...(typeof part.filename === "string" ? { filename: part.filename } : {}),
+      ...(typeof part.fallbackText === "string"
+        ? { fallbackText: part.fallbackText }
+        : {}),
+      ...(typeof part.fallbackTextTruncated === "boolean"
+        ? { fallbackTextTruncated: part.fallbackTextTruncated }
+        : {}),
+      ...(typeof part.fallbackTextError === "string"
+        ? { fallbackTextError: part.fallbackTextError }
+        : {}),
+    });
+  }
+  return parts;
+}
+
+function mailboxMetadataObject(
+  value: MailboxMetadataValue | undefined,
+): MailboxMetadataObject | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as MailboxMetadataObject)
+    : undefined;
+}
+
+function isOptionalMailboxString(
+  value: MailboxMetadataValue | undefined,
+): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function isOptionalMailboxBoolean(
+  value: MailboxMetadataValue | undefined,
+): boolean {
+  return value === undefined || typeof value === "boolean";
 }
 
 function mergeChildInputParts(
@@ -3178,11 +3345,11 @@ export async function* runAgent(
       relayAgentEvent({
         content: opts.message,
         triggerTurn: false,
-        metadata: {
-          kind: "subagent_error",
+        metadata: createAgentEventMetadata(
+          "subagent_error",
           turnId,
-          ...(currentTaskId !== undefined ? { taskId: currentTaskId } : {}),
-        },
+          currentTaskId,
+        ),
       });
     }
     return {
@@ -3233,12 +3400,12 @@ export async function* runAgent(
     relayAgentEvent({
       content: `spawned subagent ${live.agentPath} (role=${live.role.name})`,
       triggerTurn: false,
-      metadata: {
-        kind: "subagent_status",
-        phase: "spawned",
+      metadata: createAgentEventMetadata(
+        "subagent_status",
         turnId,
-        ...(currentTaskId !== undefined ? { taskId: currentTaskId } : {}),
-      },
+        currentTaskId,
+        [["phase", "spawned"]],
+      ),
     });
     yield {
       kind: "status",
@@ -3527,12 +3694,12 @@ export async function* runAgent(
       relayAgentEvent({
         content: `accepted follow-up input for ${live.agentPath}`,
         triggerTurn: false,
-        metadata: {
-          kind: "subagent_status",
-          phase: "follow_up",
+        metadata: createAgentEventMetadata(
+          "subagent_status",
           turnId,
-          ...(currentTaskId !== undefined ? { taskId: currentTaskId } : {}),
-        },
+          currentTaskId,
+          [["phase", "follow_up"]],
+        ),
       });
     };
     while (true) {
@@ -3616,13 +3783,15 @@ export async function* runAgent(
           relayAgentEvent({
             content: `${event.toolCall.name} (${event.toolCall.id})`,
             triggerTurn: false,
-            metadata: {
-              kind: "subagent_tool_call",
+            metadata: createAgentEventMetadata(
+              "subagent_tool_call",
               turnId,
-              ...(currentTaskId !== undefined ? { taskId: currentTaskId } : {}),
-              toolCallId: event.toolCall.id,
-              toolName: event.toolCall.name,
-            },
+              currentTaskId,
+              [
+                ["toolCallId", event.toolCall.id],
+                ["toolName", event.toolCall.name],
+              ],
+            ),
           });
           yield {
             kind: "tool_call",
@@ -3750,11 +3919,11 @@ export async function* runAgent(
         relayAgentEvent({
           content: reason,
           triggerTurn: false,
-          metadata: {
-            kind: "subagent_interrupted",
+          metadata: createAgentEventMetadata(
+            "subagent_interrupted",
             turnId,
-            ...(currentTaskId !== undefined ? { taskId: currentTaskId } : {}),
-          },
+            currentTaskId,
+          ),
         });
         yield { kind: "run_interrupted", reason, ...taskCorrelation() };
         return {
@@ -3911,11 +4080,11 @@ export async function* runAgent(
       relayAgentEvent({
         content: reason,
         triggerTurn: false,
-        metadata: {
-          kind: "subagent_interrupted",
+        metadata: createAgentEventMetadata(
+          "subagent_interrupted",
           turnId,
-          ...(currentTaskId !== undefined ? { taskId: currentTaskId } : {}),
-        },
+          currentTaskId,
+        ),
       });
       yield { kind: "run_interrupted", reason, ...taskCorrelation() };
       return {
@@ -4010,11 +4179,11 @@ export async function* runAgent(
       relayAgentEvent({
         content: reason,
         triggerTurn: false,
-        metadata: {
-          kind: "subagent_interrupted",
+        metadata: createAgentEventMetadata(
+          "subagent_interrupted",
           turnId,
-          ...(currentTaskId !== undefined ? { taskId: currentTaskId } : {}),
-        },
+          currentTaskId,
+        ),
       });
       yield { kind: "run_interrupted", reason, ...taskCorrelation() };
       return {
