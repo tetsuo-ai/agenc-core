@@ -83,6 +83,8 @@ const STALE_REASON_RESTART_GAP = "restart_gap";
 const STALE_REASON_WATCHER_EVENT = "watcher_event";
 const STALE_REASON_WATCHER_UNAVAILABLE = "watcher_unavailable";
 const STALE_REASON_BUILD_RACE = "changed_during_build";
+const STALE_REASON_GENERATION_ADVANCED_DURING_QUERY =
+  "generation_advanced_during_query";
 const DEGRADED_REASON_EMPTY_DIRECTORIES = "empty_directories_unavailable";
 const MAX_SOURCE_CONVERGENCE_ATTEMPTS = 3;
 
@@ -184,6 +186,8 @@ export interface AgenCFuzzyFileSearchServiceOptions {
   readonly maximumRootStates?: number;
   readonly maximumCacheBytes?: number;
   readonly idleTtlMs?: number;
+  /** @internal Deterministic concurrency seam for pinned-generation tests. */
+  readonly onQuerySnapshotsPinned?: (signal: AbortSignal) => void | Promise<void>;
 }
 
 export interface AgenCFuzzyFileSearchSearchOptions {
@@ -214,6 +218,9 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
   readonly #maximumRootStates: number;
   readonly #maximumCacheBytes: number;
   readonly #idleTtlMs: number;
+  readonly #onQuerySnapshotsPinned:
+    | ((signal: AbortSignal) => void | Promise<void>)
+    | null;
   readonly #activeControllers = new Set<AbortController>();
   readonly #activeSettlements = new Set<Promise<void>>();
   readonly #activeBuildSettlements = new Set<Promise<void>>();
@@ -247,6 +254,7 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
       options.idleTtlMs ?? FUZZY_INDEX_IDLE_TTL_MS,
       FUZZY_INDEX_IDLE_TTL_MS,
     );
+    this.#onQuerySnapshotsPinned = options.onQuerySnapshotsPinned ?? null;
   }
 
   async search(
@@ -420,6 +428,7 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
           snapshots.set(root.canonicalRoot, state.snapshot);
         }
       }
+      await this.#onQuerySnapshotsPinned?.(signal);
       if (signal.aborted) return { files: [] };
       const collection = await collectRootEntries(roots, snapshots, signal);
       const generationKey = fuzzyQueryGenerationKey(roots, snapshots);
@@ -463,7 +472,11 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
         this.#queryCandidateCache = null;
       }
       const rootFreshness = roots.map((root) =>
-        this.#freshnessForRoot(root, pinnedStates.get(root.canonicalRoot)),
+        this.#freshnessForRoot(
+          root,
+          pinnedStates.get(root.canonicalRoot),
+          snapshots.get(root.canonicalRoot) ?? null,
+        ),
       );
       const freshness: FuzzyFileIndexFreshness = {
         schemaVersion: FUZZY_FILE_INDEX_SCHEMA_VERSION,
@@ -1000,8 +1013,18 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
   #freshnessForRoot(
     root: ResolvedSearchRoot,
     state: RootRuntimeState | undefined,
+    snapshot: FuzzyIndexSnapshot | null,
   ): FuzzyFileIndexRootFreshness {
-    const snapshot = state?.snapshot ?? null;
+    const currentGenerationId = state?.snapshot?.generationId ?? null;
+    const pinnedGenerationId = snapshot?.generationId ?? null;
+    const generationAdvancedDuringQuery =
+      currentGenerationId !== pinnedGenerationId;
+    const stateDescribesPinnedGeneration = !generationAdvancedDuringQuery;
+    const watcherDegraded =
+      (state?.watcherStatus ?? WATCHER_STATUS_NOT_STARTED) !==
+      WATCHER_STATUS_ACTIVE;
+    const pinnedDirectoryDegraded =
+      snapshot !== null && snapshot.directoryCoverage !== "complete";
     return {
       root: root.displayRoot,
       canonicalRoot: root.canonicalRoot,
@@ -1019,10 +1042,19 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
           ? null
           : new Date(state.lastAuditAtMs).toISOString(),
       building: (state?.activeBuilds ?? 0) > 0,
-      stale: state?.stale ?? true,
-      degraded: state?.degraded ?? true,
+      stale:
+        generationAdvancedDuringQuery ||
+        watcherDegraded ||
+        (stateDescribesPinnedGeneration ? (state?.stale ?? true) : false),
+      degraded:
+        watcherDegraded ||
+        pinnedDirectoryDegraded ||
+        (stateDescribesPinnedGeneration ? (state?.degraded ?? true) : false),
       truncated: snapshot?.truncated ?? false,
-      reason: state?.staleReason ?? null,
+      reason:
+        generationAdvancedDuringQuery
+          ? STALE_REASON_GENERATION_ADVANCED_DURING_QUERY
+          : (state?.staleReason ?? null),
     };
   }
 }

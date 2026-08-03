@@ -207,6 +207,113 @@ describe("daemon persistent fuzzy-file search", () => {
     index.close();
   });
 
+  test("does not mix a pinned query generation with a watcher cutover", async () => {
+    let now = 1_000;
+    const index = new PersistentFuzzyFileIndex({
+      databasePath: await temporaryDatabasePath(),
+      now: () => now,
+    });
+    let paths = ["src/alpha.ts"];
+    let directoryCoverage: "complete" | "nonempty_only" = "complete";
+    const discover = vi.fn(async () => ({
+      ...discovery(paths),
+      directoryCoverage,
+    }));
+    let blockNextPinnedQuery = false;
+    let markPinned = (): void => {};
+    const pinned = new Promise<void>((resolve) => {
+      markPinned = resolve;
+    });
+    let releasePinned = (): void => {};
+    const pinnedReleased = new Promise<void>((resolve) => {
+      releasePinned = resolve;
+    });
+    let signalChange = (): void => {};
+    let watcherEvents = 0;
+    const service = new AgenCFuzzyFileSearchService({
+      index,
+      discover,
+      now: () => now,
+      onQuerySnapshotsPinned: async () => {
+        if (!blockNextPinnedQuery) return;
+        blockNextPinnedQuery = false;
+        markPinned();
+        await pinnedReleased;
+      },
+      watchRoot: (_root, onChange) => {
+        signalChange = () => {
+          watcherEvents += 1;
+          onChange();
+        };
+        return { close: vi.fn() } as unknown as FSWatcher;
+      },
+    });
+
+    const initial = await service.search({
+      query: "alpha",
+      roots: ["/project"],
+    });
+    const initialGeneration = initial.freshness?.roots[0]?.generationId;
+    const initialBuiltAt = initial.freshness?.roots[0]?.builtAt;
+    expect(initialGeneration).toBeTypeOf("number");
+    expect(initialBuiltAt).toBe(new Date(now).toISOString());
+
+    blockNextPinnedQuery = true;
+    const inFlight = service.search({ query: "alpha", roots: ["/project"] });
+    await pinned;
+    now = 2_000;
+    paths = ["src/beta.ts"];
+    directoryCoverage = "nonempty_only";
+    signalChange();
+
+    let nextGeneration = initialGeneration;
+    let nextBuiltAt = initialBuiltAt;
+    await vi.waitFor(async () => {
+      const next = await service.search({
+        query: "beta",
+        roots: ["/project"],
+      });
+      expect(next.files.map((file) => file.path)).toEqual(["src/beta.ts"]);
+      nextGeneration = next.freshness?.roots[0]?.generationId;
+      nextBuiltAt = next.freshness?.roots[0]?.builtAt;
+      expect(nextGeneration).toBe((initialGeneration ?? 0) + 1);
+      expect(next.freshness?.roots[0]).toMatchObject({
+        directoryCoverage: "nonempty_only",
+        truncated: false,
+      });
+    });
+
+    releasePinned();
+    const pinnedResult = await inFlight;
+    expect(pinnedResult.files.map((file) => file.path)).toEqual([
+      "src/alpha.ts",
+    ]);
+    expect(pinnedResult.freshness?.roots[0]?.generationId).toBe(
+      initialGeneration,
+    );
+    expect(pinnedResult.freshness).toMatchObject({
+      stale: true,
+      roots: [
+        expect.objectContaining({
+          builtAt: initialBuiltAt,
+          degraded: false,
+          directoryCoverage: "complete",
+          reason: "generation_advanced_during_query",
+          stale: true,
+          truncated: false,
+          watcherStatus: "active",
+        }),
+      ],
+    });
+    expect(nextGeneration).toBe((initialGeneration ?? 0) + 1);
+    expect(nextBuiltAt).toBe(new Date(now).toISOString());
+    expect(watcherEvents).toBe(1);
+    expect(discover).toHaveBeenCalledTimes(2);
+
+    await service.close();
+    index.close();
+  });
+
   test("reports watcher gaps as stale and refreshes only on an explicit audit", async () => {
     const database = await temporaryDatabasePath();
     const index = new PersistentFuzzyFileIndex({ databasePath: database });
