@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted target; implementation pending |
+| Status | B3a artifact contract implemented; B3b scheduler consumption pending |
 | Audit snapshot | `d2b228e87ea63bd6a5d93e6f599f36bce88d672b` |
 | Audit date | 2026-07-31 |
 | Owners | Workflow artifact contract (B3a), then bounded scheduler consumption (B3b) |
@@ -124,3 +124,35 @@ preview, final-response, and RSS bounds.
 Primary references: SQLite's [atomic commit](https://www.sqlite.org/atomiccommit.html),
 [RIFL](https://web.stanford.edu/~ouster/cgi-bin/papers/rifl.pdf), and
 [OrchBench](https://arxiv.org/abs/2607.25656).
+
+## Implemented B3a surfaces
+
+The version-1 schema and kind registry live in
+`runtime/src/agents/workflow-handoff-schema.ts`, with the standalone JSON
+Schema in `workflow-handoff-artifact.v1.schema.json`. Public mirrors are
+checked in the runtime's generated SDK types and `@tetsuo-ai/agenc-sdk`.
+
+`WorkflowHandoffArtifactStore` owns intent reservation, exact-byte atomic
+publication, commit sequencing, digest-bound reads, references, quota
+accounting, restart recovery, and keyset-paged retention cleanup. POSIX uses a
+descriptor-confined private root and no-follow child operations. Windows uses
+a protected, non-inheriting current-user DACL, rejects reparse points and
+non-NTFS roots, publishes with an atomic no-replace hard link, and rechecks
+root/file identity and ACLs around each operation. Operator list and inspect
+methods return identity, ownership, digest, quota, reachability, and lifecycle
+metadata only; they never read artifact output or expose previews.
+
+Migration 022 is additive. Its table accepts only `workflow_handoff`; the
+explicit artifact-kind gate continues to recognize the legacy `tool-result`
+kind and throws on unknown kinds with an instruction to preserve bytes.
+
+Evidence is in:
+
+- `runtime/tests/agents/workflow-contracts.test.ts`;
+- `runtime/tests/bin/workflow-tool-contract.test.ts`;
+- `runtime/tests/agents/workflow-handoff-store.test.ts`;
+- `runtime/tests/sdk-package/workflow-handoff.contract.test.ts`; and
+- `runtime/benchmarks/workflow-contract-1024.ts`.
+
+The B3a layer does not release dependencies or replace the existing scheduler.
+That remains the separately reviewed B3b rollout gate.

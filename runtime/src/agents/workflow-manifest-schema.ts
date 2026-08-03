@@ -13,10 +13,10 @@ import {
 export const WORKFLOW_MANIFEST_VERSION = 2;
 export const MAX_WORKFLOW_MANIFEST_BYTES = 16_777_216;
 export const MAX_WORKFLOW_JSON_DEPTH = 64;
-export const MAX_WORKFLOW_JSON_NODES = 100_000;
+export const MAX_WORKFLOW_JSON_NODES = 200_000;
 export const MAX_WORKFLOW_JSON_KEY_UTF8_BYTES = 1_024;
 export const MAX_WORKFLOW_JSON_STRING_UTF8_BYTES = 262_144;
-export const MAX_WORKFLOW_JSON_TOTAL_STRING_UTF8_BYTES = 8_388_608;
+export const MAX_WORKFLOW_JSON_TOTAL_STRING_UTF8_BYTES = 12_582_912;
 export const MAX_WORKFLOW_STEPS = 1_024;
 export const MAX_WORKFLOW_GROUPS = 256;
 export const MAX_WORKFLOW_EXPANDED_EDGES = 65_536;
@@ -172,7 +172,6 @@ export const WORKFLOW_MANIFEST_V2_SCHEMA = Object.freeze({
           after: {
             type: "array",
             maxItems: MAX_WORKFLOW_EXPANDED_EDGES,
-            uniqueItems: true,
             items: WORKFLOW_REFERENCE_SCHEMA,
           },
           inputs: {
@@ -213,7 +212,6 @@ export const LEGACY_WORKFLOW_DAG_V1_SCHEMA = Object.freeze({
           after: {
             type: "array",
             maxItems: MAX_WORKFLOW_EXPANDED_EDGES,
-            uniqueItems: true,
             items: { type: "string", pattern: LEGACY_IDENTIFIER_PATTERN },
           },
         },
@@ -510,10 +508,20 @@ function validateDagSemantics(
   const dependents = new Map<string, Set<string>>();
   for (const step of manifest.steps) {
     const stepDependencies = new Set<string>();
-    for (const reference of [
-      ...(step.after ?? []),
-      ...Object.values(step.inputs ?? {}),
-    ]) {
+    const declaredAfter = new Set<string>();
+    const addReference = (
+      reference: WorkflowRef,
+      rejectDuplicate: boolean,
+    ): void => {
+      const referenceKey =
+        "step" in reference ? `step\0${reference.step}` : `group\0${reference.group}`;
+      if (rejectDuplicate && declaredAfter.has(referenceKey)) {
+        throw semanticError(
+          label,
+          `step ${JSON.stringify(step.id)} repeats dependency ${JSON.stringify(referenceKey.replace("\0", ":"))}`,
+        );
+      }
+      if (rejectDuplicate) declaredAfter.add(referenceKey);
       if ("step" in reference) {
         if (!stepsById.has(reference.step)) {
           throw semanticError(
@@ -528,7 +536,7 @@ function validateDagSemantics(
           );
         }
         stepDependencies.add(reference.step);
-        continue;
+        return;
       }
 
       const members = groups.get(reference.group);
@@ -541,6 +549,12 @@ function validateDagSemantics(
       for (const member of members) {
         if (member !== step.id) stepDependencies.add(member);
       }
+    };
+    for (const reference of step.after ?? []) {
+      addReference(reference, true);
+    }
+    for (const reference of Object.values(step.inputs ?? {})) {
+      addReference(reference, false);
     }
     dependencies.set(step.id, stepDependencies);
     for (const dependency of stepDependencies) {

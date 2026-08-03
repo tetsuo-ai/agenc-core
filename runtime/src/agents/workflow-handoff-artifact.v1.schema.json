@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.agenc.ag/workflow-handoff-artifact.v1.schema.json",
+  "title": "AgenC workflow handoff artifact metadata v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "kind",
+    "minimum_reader_runtime",
+    "artifact_id",
+    "owner",
+    "digest",
+    "byte_length",
+    "token_count",
+    "media_type",
+    "encoding",
+    "storage_ref",
+    "created_at_ms",
+    "committed_at_ms",
+    "commit_sequence",
+    "preview",
+    "preview_truncated"
+  ],
+  "properties": {
+    "format_version": { "const": 1 },
+    "kind": { "const": "workflow_handoff" },
+    "minimum_reader_runtime": { "const": "0.13.0" },
+    "artifact_id": { "type": "string", "pattern": "^wh_[0-9a-f]{48}$" },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "workflow_id", "producer_step_id"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "workflow_id": { "type": "string", "minLength": 1 },
+        "producer_step_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "byte_length": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+    "token_count": { "type": "integer", "minimum": 0, "maximum": 131072 },
+    "media_type": { "const": "text/plain" },
+    "encoding": { "const": "utf-8" },
+    "storage_ref": {
+      "type": "string",
+      "pattern": "^workflow-handoff:wh_[0-9a-f]{48}$"
+    },
+    "created_at_ms": { "type": "integer", "minimum": 0 },
+    "committed_at_ms": { "type": "integer", "minimum": 0 },
+    "commit_sequence": { "type": "integer", "minimum": 1 },
+    "preview": { "type": "string" },
+    "preview_truncated": { "type": "boolean" }
+  }
+}

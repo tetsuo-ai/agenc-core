@@ -1909,3 +1909,42 @@ const FastModeStateSchema = lazySchema(() =>
       'Fast mode state: off, in cooldown after rate limit, or actively enabled.',
     ),
 )
+
+// ============================================================================
+// Durable Workflow Handoff Types
+// ============================================================================
+
+export const WorkflowHandoffOwnerSchema = lazySchema(() =>
+  z
+    .object({
+      run_id: z.string().min(1),
+      workflow_id: z.string().min(1),
+      producer_step_id: z.string().min(1),
+    })
+    .strict(),
+)
+
+export const WorkflowHandoffArtifactSchema = lazySchema(() =>
+  z
+    .object({
+      format_version: z.literal(1),
+      kind: z.literal('workflow_handoff'),
+      minimum_reader_runtime: z.literal('0.13.0'),
+      artifact_id: z.string().regex(/^wh_[0-9a-f]{48}$/u),
+      owner: WorkflowHandoffOwnerSchema(),
+      digest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
+      byte_length: z.number().int().min(0).max(16_777_216),
+      token_count: z.number().int().min(0).max(131_072),
+      media_type: z.literal('text/plain'),
+      encoding: z.literal('utf-8'),
+      storage_ref: z
+        .string()
+        .regex(/^workflow-handoff:wh_[0-9a-f]{48}$/u),
+      created_at_ms: z.number().int().min(0),
+      committed_at_ms: z.number().int().min(0),
+      commit_sequence: z.number().int().min(1),
+      preview: z.string(),
+      preview_truncated: z.boolean(),
+    })
+    .strict(),
+)

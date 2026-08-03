@@ -8,6 +8,7 @@ export * from "./protocol.js";
 export * from "./events.js";
 export * from "./client.js";
 export * from "./csv-jobs.js";
+export * from "./workflow-handoff.generated.js";
 export {
   connect,
   resolveAgencHome,

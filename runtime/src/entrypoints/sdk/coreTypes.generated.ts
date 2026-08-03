@@ -2137,3 +2137,28 @@ export type SDKMessage = ({
 export type FastModeState = "off" | "cooldown" | "on"
 
 export type ExitReason = "clear" | "resume" | "logout" | "prompt_input_exit" | "other" | "bypass_permissions_disabled"
+
+export type WorkflowHandoffOwner = {
+  run_id: string
+  workflow_id: string
+  producer_step_id: string
+}
+
+export type WorkflowHandoffArtifact = {
+  format_version: 1
+  kind: "workflow_handoff"
+  minimum_reader_runtime: "0.13.0"
+  artifact_id: string
+  owner: WorkflowHandoffOwner
+  digest: `sha256:${string}`
+  byte_length: number
+  token_count: number
+  media_type: "text/plain"
+  encoding: "utf-8"
+  storage_ref: string
+  created_at_ms: number
+  committed_at_ms: number
+  commit_sequence: number
+  preview: string
+  preview_truncated: boolean
+}

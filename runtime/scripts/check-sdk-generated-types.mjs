@@ -72,6 +72,32 @@ async function main() {
     !/(updatedPermissions|permission_suggestions)\?: \(\{/.test(generated),
     `${paths.generated} expanded a PermissionUpdate array as an object-union array`,
   );
+
+  for (const marker of [
+    "export const WorkflowHandoffOwnerSchema",
+    "export const WorkflowHandoffArtifactSchema",
+    "kind: z.literal('workflow_handoff')",
+    "byte_length: z.number().int().min(0).max(16_777_216)",
+    "token_count: z.number().int().min(0).max(131_072)",
+  ]) {
+    expectCondition(
+      failures,
+      schemas.includes(marker),
+      `${paths.schemas} is missing workflow handoff marker ${marker}`,
+    );
+  }
+  for (const marker of [
+    "export type WorkflowHandoffOwner",
+    "export type WorkflowHandoffArtifact",
+    'kind: "workflow_handoff"',
+    'digest: `sha256:${string}`',
+  ]) {
+    expectCondition(
+      failures,
+      generated.includes(marker),
+      `${paths.generated} is missing workflow handoff marker ${marker}`,
+    );
+  }
   expectCondition(
     failures,
     countMatches(
