@@ -500,7 +500,7 @@ describe("reproducible install and release contract", () => {
       "tests/workspace/bound-helper-transport.win32.test.ts",
     );
     expect(windowsJob).toContain("--config vitest.native.config.ts");
-    expect(windowsJob).toContain("numTotalTestSuites: 16");
+    expect(windowsJob).toContain("numTotalTestSuites: 17");
     expect(windowsJob).toContain("numTotalTests: 90");
     expect(windowsJob).toContain(
       "npm.cmd ci --ignore-scripts --no-audit --no-fund",

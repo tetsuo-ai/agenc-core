@@ -1297,8 +1297,8 @@ jobs:
             "tests/workspace/bound-helper-transport.win32.test.ts",
           ];
           const exactCounts = {
-            numTotalTestSuites: 16,
-            numPassedTestSuites: 16,
+            numTotalTestSuites: 17,
+            numPassedTestSuites: 17,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
             numTotalTests: 90,
