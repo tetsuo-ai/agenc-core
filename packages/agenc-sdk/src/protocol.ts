@@ -11,6 +11,15 @@
  * so any protocol change fails tests until this mirror is updated.
  */
 
+import type {
+  CsvJobReviewListParams,
+  CsvJobReviewListResult,
+  CsvJobReviewResolveParams,
+  CsvJobReviewResolveResult,
+  CsvJobReviewShowParams,
+  CsvJobReviewShowResult,
+} from "./csv-jobs.js";
+
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.0.0" as const;
 
@@ -41,6 +50,9 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "run.evidence",
   "run.cancel",
   "run.start",
+  "csvJob.review.list",
+  "csvJob.review.show",
+  "csvJob.review.resolve",
   "session.create",
   "session.list",
   "session.attach",
@@ -446,6 +458,16 @@ export interface CommandExecTerminateParams extends JsonObject {
 
 export type EmptyParams = Record<string, never>;
 
+export type CsvJobReviewListWireParams = CsvJobReviewListParams & {
+  readonly cwd: string;
+};
+export type CsvJobReviewShowWireParams = CsvJobReviewShowParams & {
+  readonly cwd: string;
+};
+export type CsvJobReviewResolveWireParams = CsvJobReviewResolveParams & {
+  readonly cwd: string;
+};
+
 export interface AgencParamsByMethod {
   readonly initialize: InitializeParams;
   readonly "request.cancel": RequestCancelParams;
@@ -460,6 +482,9 @@ export interface AgencParamsByMethod {
   readonly "run.evidence": RunEvidenceParams;
   readonly "run.cancel": RunCancelParams;
   readonly "run.start": RunStartParams;
+  readonly "csvJob.review.list": CsvJobReviewListWireParams;
+  readonly "csvJob.review.show": CsvJobReviewShowWireParams;
+  readonly "csvJob.review.resolve": CsvJobReviewResolveWireParams;
   readonly "session.create": SessionCreateParams;
   readonly "session.list": SessionListParams;
   readonly "session.attach": SessionAttachParams;
@@ -1190,6 +1215,9 @@ export interface AgencResultByMethod {
   readonly "run.evidence": RunEvidenceResult;
   readonly "run.cancel": RunCancelResult;
   readonly "run.start": RunStartResult;
+  readonly "csvJob.review.list": CsvJobReviewListResult;
+  readonly "csvJob.review.show": CsvJobReviewShowResult;
+  readonly "csvJob.review.resolve": CsvJobReviewResolveResult;
   readonly "session.create": SessionCreateResult;
   readonly "session.list": SessionListResult;
   readonly "session.attach": SessionAttachResult;

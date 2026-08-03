@@ -55,6 +55,14 @@ import {
   type AgencPromptEvent,
   type AgencPromptResult,
 } from "./events.js";
+import type {
+  CsvJobReviewListParams,
+  CsvJobReviewListResult,
+  CsvJobReviewResolveParams,
+  CsvJobReviewResolveResult,
+  CsvJobReviewShowParams,
+  CsvJobReviewShowResult,
+} from "./csv-jobs.js";
 
 /**
  * Minimal transport contract. The runtime's
@@ -914,6 +922,36 @@ export class AgencClient {
    */
   startRun(params: RunStartParams): Promise<RunStartResult> {
     return this.request("run.start", params);
+  }
+
+  /** List a bounded page of CSV unknown-outcome reviews. */
+  listCsvJobReviews(
+    params: CsvJobReviewListParams,
+  ): Promise<CsvJobReviewListResult> {
+    return this.request("csvJob.review.list", {
+      ...params,
+      cwd: resolveClientCwd(params.cwd),
+    });
+  }
+
+  /** Read one bounded CSV review record. */
+  showCsvJobReview(
+    params: CsvJobReviewShowParams,
+  ): Promise<CsvJobReviewShowResult> {
+    return this.request("csvJob.review.show", {
+      ...params,
+      cwd: resolveClientCwd(params.cwd),
+    });
+  }
+
+  /** Resolve a CSV unknown outcome with canonical operator evidence. */
+  resolveCsvJobReview(
+    params: CsvJobReviewResolveParams,
+  ): Promise<CsvJobReviewResolveResult> {
+    return this.request("csvJob.review.resolve", {
+      ...params,
+      cwd: resolveClientCwd(params.cwd),
+    });
   }
 
   /**

@@ -28,6 +28,9 @@ LIVE multi-agent surface):
 | `report_agent_job_result` | Report a CSV/job worker result back to the orchestrator |
 | `inspect_csv_agent_job` | Read a bounded job summary and keyset item page |
 | `read_csv_agent_job_result` | Read one bounded base64 result chunk |
+| `list_csv_job_reviews` | List a bounded page of unknown-outcome reviews |
+| `show_csv_job_review` | Read one bounded review record |
+| `resolve_csv_job_review` | Approval-gated operator resolution with canonical evidence |
 
 ### CSV job contract
 
@@ -61,6 +64,33 @@ all prove the retry safe. Other interrupted dispatches enter
 undispatched rows cancelled and treats unresolved dispatched rows as
 ambiguous; capacity is released only after the worker exits or is explicitly
 retired.
+
+#### Unknown-outcome operator review
+
+The daemon and SDK expose the same durable operator workflow through
+`csvJob.review.list`, `csvJob.review.show`, and `csvJob.review.resolve`.
+`AgencClient` provides `listCsvJobReviews`, `showCsvJobReview`, and
+`resolveCsvJobReview`; the SDK fills an omitted `cwd` with the client's current
+absolute working directory. List pages contain at most 100 bounded summaries
+and use the repository's opaque, scope-bound cursor. Show responses bound long
+source IDs, reasons, and evidence; oversized evidence is represented by its
+byte count and SHA-256 digest instead of being embedded.
+
+Resolution accepts an external evidence reference and lowercase SHA-256 digest
+and persists the exact A1 operator-evidence record. Callers choose only the
+disposition; the runtime derives the domain action:
+
+| Disposition | Durable action |
+| --- | --- |
+| `confirmed_committed` | `mark_completed` (optionally with a recovered result object) |
+| `confirmed_no_effect` | `retry_new_attempt` |
+| `remains_unknown` | `abandon_item` |
+
+The model-facing resolver is mutating and always requires explicit approval.
+An identical request is idempotent across daemon restarts; the response reports
+`already_resolved`. A different disposition, evidence identity, reviewer, or
+recovered-result digest fails closed with `CSV_REVIEW_CONFLICT`. Operator
+reason text is an audit annotation; evidence identity is the replay key.
 
 ### Worker lifecycle
 

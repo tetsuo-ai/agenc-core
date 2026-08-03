@@ -729,6 +729,36 @@ describe("model-facing tools", () => {
     );
   });
 
+  it("keeps CSV review reads bounded and resolution approval-gated", () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+    });
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+    for (const name of ["list_csv_job_reviews", "show_csv_job_review"]) {
+      expect(byName.get(name)).toMatchObject({
+        isReadOnly: true,
+        recoveryCategory: "idempotent",
+      });
+    }
+    expect(byName.get("resolve_csv_job_review")).toMatchObject({
+      requiresApproval: true,
+      recoveryCategory: "side-effecting",
+      metadata: { mutating: true },
+    });
+    expect(byName.get("resolve_csv_job_review")?.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining([
+        "disposition",
+        "evidence_ref",
+        "evidence_sha256",
+        "reviewer",
+        "reason",
+      ]),
+    });
+  });
+
   it("uses max_workers as the CSV agent concurrency alias", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-csv-alias-"));
     let session: Session | undefined;

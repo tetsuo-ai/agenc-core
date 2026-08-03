@@ -21,6 +21,9 @@
     "run.evidence",
     "run.cancel",
     "run.start",
+    "csvJob.review.list",
+    "csvJob.review.show",
+    "csvJob.review.resolve",
     "session.create",
     "session.list",
     "session.attach",
@@ -496,6 +499,121 @@
       },
       "required": [
         "goal"
+      ]
+    },
+    "CsvJobReviewDisposition": {
+      "type": "string",
+      "enum": [
+        "confirmed_committed",
+        "confirmed_no_effect",
+        "remains_unknown"
+      ]
+    },
+    "CsvJobReviewListParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "cwd",
+        "jobId"
+      ]
+    },
+    "CsvJobReviewShowParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "itemId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "required": [
+        "cwd",
+        "jobId",
+        "itemId"
+      ]
+    },
+    "CsvJobReviewResolveParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "itemId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "disposition": {
+          "$ref": "#/definitions/CsvJobReviewDisposition"
+        },
+        "evidenceRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "evidenceSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "result": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": [
+        "cwd",
+        "jobId",
+        "itemId",
+        "disposition",
+        "evidenceRef",
+        "evidenceSha256",
+        "reviewer",
+        "reason"
       ]
     },
     "SessionCreateParams": {
@@ -2040,6 +2158,15 @@
           "$ref": "#/definitions/RunStartRequest"
         },
         {
+          "$ref": "#/definitions/CsvJobReviewListRequest"
+        },
+        {
+          "$ref": "#/definitions/CsvJobReviewShowRequest"
+        },
+        {
+          "$ref": "#/definitions/CsvJobReviewResolveRequest"
+        },
+        {
           "$ref": "#/definitions/SessionCreateRequest"
         },
         {
@@ -2907,6 +3034,78 @@
         },
         "params": {
           "$ref": "#/definitions/RunStartParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "CsvJobReviewListRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "csvJob.review.list"
+        },
+        "params": {
+          "$ref": "#/definitions/CsvJobReviewListParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "CsvJobReviewShowRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "csvJob.review.show"
+        },
+        "params": {
+          "$ref": "#/definitions/CsvJobReviewShowParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "CsvJobReviewResolveRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "csvJob.review.resolve"
+        },
+        "params": {
+          "$ref": "#/definitions/CsvJobReviewResolveParams"
         }
       },
       "required": [

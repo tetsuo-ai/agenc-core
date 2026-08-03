@@ -75,6 +75,8 @@ import {
 } from "../agents/jobs/csv-output.js";
 import { CsvAgentJobsRepository } from "../state/csv-agent-jobs.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
+import { AgenCCsvJobReviewStateService } from "../app-server/csv-job-review.js";
+import type { JsonObject } from "../app-server/protocol/index.js";
 import {
   CSV_MAX_ITEM_PAGE_SIZE,
   CSV_MAX_JOB_CONCURRENCY,
@@ -2239,6 +2241,128 @@ function createMultiAgentV2RuntimeTools(
     });
   };
 
+  const csvJobReviewService = new AgenCCsvJobReviewStateService();
+
+  const listCsvJobReviews = async (
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    const strict = strictArgs(args, {
+      allowed: new Set(["job_id", "cursor", "limit"]),
+      required: ["job_id"],
+    });
+    if (strict) return strict;
+    const cursor = stringValue(args.cursor);
+    if (args.cursor !== undefined && cursor === undefined) {
+      return json({ error: "cursor must be a non-empty string" }, true);
+    }
+    const limit = optionalPositiveIntegerArg(args, "limit");
+    if (isToolResult(limit)) return limit;
+    try {
+      const result = await csvJobReviewService.list({
+        cwd: opts.workspaceRoot,
+        jobId: stringValue(args.job_id)!,
+        ...(cursor !== undefined ? { cursor } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      });
+      return json(result);
+    } catch (error) {
+      return json({ error: errorMessage(error) }, true);
+    }
+  };
+
+  const showCsvJobReview = async (
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    const strict = strictArgs(args, {
+      allowed: new Set(["job_id", "item_id"]),
+      required: ["job_id", "item_id"],
+    });
+    if (strict) return strict;
+    try {
+      return json(
+        await csvJobReviewService.show({
+          cwd: opts.workspaceRoot,
+          jobId: stringValue(args.job_id)!,
+          itemId: stringValue(args.item_id)!,
+        }),
+      );
+    } catch (error) {
+      return json({ error: errorMessage(error) }, true);
+    }
+  };
+
+  const resolveCsvJobReview = async (
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    const strict = strictArgs(args, {
+      allowed: new Set([
+        "job_id",
+        "item_id",
+        "disposition",
+        "evidence_ref",
+        "evidence_sha256",
+        "reviewer",
+        "reason",
+        "result",
+      ]),
+      required: [
+        "job_id",
+        "item_id",
+        "disposition",
+        "evidence_ref",
+        "evidence_sha256",
+        "reviewer",
+        "reason",
+      ],
+    });
+    if (strict) return strict;
+    const disposition = stringValue(args.disposition);
+    if (
+      disposition !== "confirmed_committed" &&
+      disposition !== "confirmed_no_effect" &&
+      disposition !== "remains_unknown"
+    ) {
+      return json({ error: "invalid CSV review disposition" }, true);
+    }
+    if (!/^[a-f0-9]{64}$/.test(stringValue(args.evidence_sha256) ?? "")) {
+      return json(
+        { error: "evidence_sha256 must be a lowercase SHA-256 digest" },
+        true,
+      );
+    }
+    if (
+      args.result !== undefined &&
+      (disposition !== "confirmed_committed" ||
+        typeof args.result !== "object" ||
+        args.result === null ||
+        Array.isArray(args.result))
+    ) {
+      return json(
+        { error: "result must be an object for confirmed_committed" },
+        true,
+      );
+    }
+    try {
+      return json(
+        await csvJobReviewService.resolve({
+          cwd: opts.workspaceRoot,
+          jobId: stringValue(args.job_id)!,
+          itemId: stringValue(args.item_id)!,
+          disposition,
+          evidenceRef: stringValue(args.evidence_ref)!,
+          evidenceSha256: stringValue(args.evidence_sha256)!,
+          reviewer: stringValue(args.reviewer)!,
+          reason: stringValue(args.reason)!,
+          ...(args.result !== undefined
+            ? { result: args.result as JsonObject }
+            : {}),
+        }),
+      );
+    } catch (error) {
+      return json({ error: errorMessage(error) }, true);
+    }
+  };
+
   return [
     ...multiAgentV2Tools,
     {
@@ -2395,6 +2519,97 @@ function createMultiAgentV2RuntimeTools(
         additionalProperties: false,
       },
       execute: readCsvAgentJobResult,
+    },
+    {
+      name: "list_csv_job_reviews",
+      description:
+        "List a bounded cursor page of CSV job items with unknown outcomes.",
+      metadata: toolMetadata("agent", {
+        mutating: false,
+        keywords: ["agent", "job", "csv", "review", "list"],
+      }),
+      isReadOnly: true,
+      recoveryCategory: "idempotent",
+      inputSchema: {
+        type: "object",
+        properties: {
+          job_id: { type: "string" },
+          cursor: { type: "string" },
+          limit: {
+            type: "integer",
+            minimum: 1,
+            maximum: CSV_MAX_ITEM_PAGE_SIZE,
+          },
+        },
+        required: ["job_id"],
+        additionalProperties: false,
+      },
+      execute: listCsvJobReviews,
+    },
+    {
+      name: "show_csv_job_review",
+      description: "Read one bounded CSV unknown-outcome review record.",
+      metadata: toolMetadata("agent", {
+        mutating: false,
+        keywords: ["agent", "job", "csv", "review", "show"],
+      }),
+      isReadOnly: true,
+      recoveryCategory: "idempotent",
+      inputSchema: {
+        type: "object",
+        properties: {
+          job_id: { type: "string" },
+          item_id: { type: "string" },
+        },
+        required: ["job_id", "item_id"],
+        additionalProperties: false,
+      },
+      execute: showCsvJobReview,
+    },
+    {
+      name: "resolve_csv_job_review",
+      description:
+        "Resolve one CSV unknown outcome from operator evidence. This requires explicit approval and fails closed on a conflicting replay.",
+      metadata: toolMetadata("agent", {
+        mutating: true,
+        keywords: ["agent", "job", "csv", "review", "resolve"],
+      }),
+      requiresApproval: true,
+      recoveryCategory: "side-effecting",
+      inputSchema: {
+        type: "object",
+        properties: {
+          job_id: { type: "string" },
+          item_id: { type: "string" },
+          disposition: {
+            type: "string",
+            enum: [
+              "confirmed_committed",
+              "confirmed_no_effect",
+              "remains_unknown",
+            ],
+          },
+          evidence_ref: { type: "string" },
+          evidence_sha256: {
+            type: "string",
+            pattern: "^[a-f0-9]{64}$",
+          },
+          reviewer: { type: "string" },
+          reason: { type: "string" },
+          result: { type: "object" },
+        },
+        required: [
+          "job_id",
+          "item_id",
+          "disposition",
+          "evidence_ref",
+          "evidence_sha256",
+          "reviewer",
+          "reason",
+        ],
+        additionalProperties: false,
+      },
+      execute: resolveCsvJobReview,
     },
   ];
 }

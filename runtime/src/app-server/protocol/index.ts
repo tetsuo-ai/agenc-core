@@ -52,6 +52,9 @@ export const AGENC_DAEMON_METHODS = [
   "run.evidence",
   "run.cancel",
   "run.start",
+  "csvJob.review.list",
+  "csvJob.review.show",
+  "csvJob.review.resolve",
   "session.create",
   "session.list",
   "session.attach",
@@ -317,6 +320,29 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
       "Start the M5 verified-change workflow as a durable daemon run " +
       "(intake commits before the result returns; the pipeline continues " +
       "asynchronously under the returned run id).",
+  },
+  "csvJob.review.list": {
+    method: "csvJob.review.list",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "List a bounded cursor page of CSV items with unknown outcomes.",
+  },
+  "csvJob.review.show": {
+    method: "csvJob.review.show",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Read one bounded CSV unknown-outcome review record.",
+  },
+  "csvJob.review.resolve": {
+    method: "csvJob.review.resolve",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Resolve one CSV unknown outcome with canonical operator evidence.",
   },
   "session.create": {
     method: "session.create",
@@ -1131,6 +1157,48 @@ export interface RunStartParams extends JsonObject {
   readonly maxImplementAttempts?: number;
 }
 
+export type CsvJobReviewDisposition =
+  | "confirmed_committed"
+  | "confirmed_no_effect"
+  | "remains_unknown";
+
+export type CsvJobReviewDomainAction =
+  | "mark_completed"
+  | "retry_new_attempt"
+  | "abandon_item";
+
+export type CsvJobReviewStatus = "pending" | "resolved" | "abandoned";
+
+export interface CsvJobReviewListParams extends JsonObject {
+  /** Absolute workspace root selecting the durable project database. */
+  readonly cwd: string;
+  readonly jobId: string;
+  /** Opaque cursor returned by the preceding page. */
+  readonly cursor?: string;
+  /** Bounded page size; the durable CSV contract permits 1..100. */
+  readonly limit?: number;
+}
+
+export interface CsvJobReviewShowParams extends JsonObject {
+  readonly cwd: string;
+  readonly jobId: string;
+  readonly itemId: string;
+}
+
+export interface CsvJobReviewResolveParams extends JsonObject {
+  readonly cwd: string;
+  readonly jobId: string;
+  readonly itemId: string;
+  readonly disposition: CsvJobReviewDisposition;
+  readonly evidenceRef: string;
+  /** Lowercase SHA-256 digest of the operator's external evidence. */
+  readonly evidenceSha256: string;
+  readonly reviewer: string;
+  readonly reason: string;
+  /** Optional recovered result; valid only for confirmed_committed. */
+  readonly result?: JsonObject;
+}
+
 export interface SessionCreateParams extends JsonObject {
   readonly agentId?: string;
   /**
@@ -1936,6 +2004,18 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"run.evidence", RunEvidenceParams>
   | AgenCDaemonRequestWithParams<"run.cancel", RunCancelParams>
   | AgenCDaemonRequestWithParams<"run.start", RunStartParams>
+  | AgenCDaemonRequestWithParams<
+      "csvJob.review.list",
+      CsvJobReviewListParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "csvJob.review.show",
+      CsvJobReviewShowParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "csvJob.review.resolve",
+      CsvJobReviewResolveParams
+    >
   | AgenCDaemonRequestWithParams<"session.create", SessionCreateParams>
   | AgenCDaemonRequestWithParams<"session.list", SessionListParams>
   | AgenCDaemonRequestWithParams<"session.attach", SessionAttachParams>
@@ -2087,6 +2167,116 @@ export interface RunStartResult extends JsonObject {
   /** Exact base commit recorded before any work began. */
   readonly baseCommit: string;
   readonly baseDirty: RunStartBaseDirty;
+}
+
+export interface CsvJobReviewEvidenceProjection extends JsonObject {
+  readonly bytes: number;
+  readonly sha256: string;
+  readonly truncated: boolean;
+  readonly value?: JsonObject;
+}
+
+export interface CsvJobReviewEffectReference extends JsonObject {
+  readonly runId: string;
+  readonly stepId: string;
+  readonly epoch: number;
+}
+
+export interface CsvJobReviewDetail extends JsonObject {
+  readonly contractVersion: 1;
+  readonly jobId: string;
+  readonly itemId: string;
+  readonly rowIndex: number;
+  readonly sourceId?: string;
+  readonly sourceIdTruncated?: boolean;
+  readonly status:
+    | "pending"
+    | "running"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "unknown_outcome";
+  readonly attemptCount: number;
+  readonly resultAvailability:
+    | "not_produced"
+    | "available"
+    | "unavailable_after_review";
+  readonly resultSizeBytes: number;
+  readonly resultDigest?: string;
+  readonly reviewStatus: CsvJobReviewStatus;
+  readonly reviewReason?: string;
+  readonly reviewReasonTruncated?: boolean;
+  readonly disposition?: CsvJobReviewDisposition;
+  readonly domainAction?: CsvJobReviewDomainAction;
+  readonly evidence?: CsvJobReviewEvidenceProjection;
+  readonly effect?: CsvJobReviewEffectReference;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly completedAt?: number;
+}
+
+export interface CsvJobReviewJobSummary extends JsonObject {
+  readonly contractVersion: 1;
+  readonly jobId: string;
+  readonly status:
+    | "pending"
+    | "running"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "needs_review"
+    | "finished_with_unknown_outcomes";
+  readonly totalItems: number;
+  readonly pendingItems: number;
+  readonly runningItems: number;
+  readonly completedItems: number;
+  readonly failedItems: number;
+  readonly cancelledItems: number;
+  readonly unknownOutcomeItems: number;
+  readonly reviewPendingItems: number;
+  readonly resultBytes: number;
+  readonly availableResults: number;
+  readonly unavailableAfterReviewResults: number;
+  readonly notProducedResults: number;
+}
+
+export interface CsvJobReviewItemSummary extends JsonObject {
+  readonly itemId: string;
+  readonly rowIndex: number;
+  readonly sourceId?: string;
+  readonly sourceIdTruncated?: boolean;
+  readonly sourceIdDigest?: string;
+  readonly status: CsvJobReviewDetail["status"];
+  readonly attemptCount: number;
+  readonly resultAvailability: CsvJobReviewDetail["resultAvailability"];
+  readonly resultSizeBytes: number;
+  readonly resultDigest?: string;
+  readonly resultPreviewJson?: string;
+  readonly resultPreviewTruncated?: boolean;
+  readonly lastError?: string;
+  readonly lastErrorTruncated?: boolean;
+  readonly reviewStatus?: CsvJobReviewStatus;
+  readonly reviewReason?: string;
+  readonly reviewReasonTruncated?: boolean;
+}
+
+export interface CsvJobReviewListResult extends JsonObject {
+  readonly contractVersion: 1;
+  readonly job: CsvJobReviewJobSummary;
+  readonly reviews: readonly CsvJobReviewItemSummary[];
+  readonly nextCursor?: string;
+}
+
+export interface CsvJobReviewShowResult extends JsonObject {
+  readonly contractVersion: 1;
+  readonly review: CsvJobReviewDetail;
+}
+
+export interface CsvJobReviewResolveResult extends JsonObject {
+  readonly contractVersion: 1;
+  readonly outcome: "resolved" | "already_resolved";
+  readonly review: CsvJobReviewDetail;
+  readonly job?: CsvJobReviewJobSummary;
 }
 
 /** JSON-serializable mirror of a workflow step's content-addressed artifact. */
@@ -3005,6 +3195,9 @@ export interface AgenCDaemonResultByMethod {
   readonly "run.evidence": RunEvidenceResult;
   readonly "run.cancel": RunCancelResult;
   readonly "run.start": RunStartResult;
+  readonly "csvJob.review.list": CsvJobReviewListResult;
+  readonly "csvJob.review.show": CsvJobReviewShowResult;
+  readonly "csvJob.review.resolve": CsvJobReviewResolveResult;
   readonly "session.create": SessionCreateResult;
   readonly "session.list": SessionListResult;
   readonly "session.attach": SessionAttachResult;

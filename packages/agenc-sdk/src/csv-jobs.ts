@@ -1,9 +1,8 @@
 /**
  * Standalone public types for the bounded CSV agent-job result contract.
  *
- * CSV jobs are currently exposed through model-facing tools rather than a
- * daemon JSON-RPC method. These types therefore describe the durable result
- * and pagination vocabulary without inventing an unsupported transport.
+ * The result vocabulary is shared by model-facing tools and the daemon's
+ * connected `csvJob.review.*` operator surface.
  */
 
 export const AGENC_SDK_CSV_JOB_CONTRACT_VERSION = 1 as const;
@@ -117,4 +116,111 @@ export interface RunAgentsOnCsvResult {
   readonly stoppedEarly: boolean;
   readonly outputCsvPath?: string;
   readonly outputArtifact?: CsvOutputArtifact;
+}
+
+export type CsvReviewDisposition =
+  | "confirmed_committed"
+  | "confirmed_no_effect"
+  | "remains_unknown";
+
+export type CsvReviewDomainAction =
+  | "mark_completed"
+  | "retry_new_attempt"
+  | "abandon_item";
+
+/** Exact A1 operator evidence persisted by a CSV review resolution. */
+export interface CsvOperatorEffectReviewResolution {
+  readonly version: 1;
+  readonly kind: "effect_review_resolution";
+  readonly disposition: CsvReviewDisposition;
+  readonly actorKind: "operator";
+  readonly actorId: string;
+  readonly evidenceKind: "operator_evidence";
+  readonly evidenceRef: string;
+  readonly evidenceSha256: string;
+  readonly reviewedAt: string;
+  readonly workflowStatus: "resolved" | "abandoned";
+  readonly domainAction: CsvReviewDomainAction;
+}
+
+export interface CsvJobReviewListParams {
+  /** Absolute workspace root. The SDK fills the process cwd when omitted. */
+  readonly cwd?: string;
+  readonly jobId: string;
+  readonly cursor?: CsvJobItemCursor;
+  readonly limit?: number;
+}
+
+export interface CsvJobReviewShowParams {
+  readonly cwd?: string;
+  readonly jobId: string;
+  readonly itemId: string;
+}
+
+export interface CsvJobReviewResolveParams {
+  readonly cwd?: string;
+  readonly jobId: string;
+  readonly itemId: string;
+  readonly disposition: CsvReviewDisposition;
+  readonly evidenceRef: string;
+  readonly evidenceSha256: string;
+  readonly reviewer: string;
+  readonly reason: string;
+  readonly result?: Readonly<Record<string, unknown>>;
+}
+
+export interface CsvJobReviewEvidenceProjection {
+  readonly bytes: number;
+  readonly sha256: string;
+  readonly truncated: boolean;
+  readonly value?: Readonly<Record<string, unknown>>;
+}
+
+export interface CsvJobReviewEffectReference {
+  readonly runId: string;
+  readonly stepId: string;
+  readonly epoch: number;
+}
+
+export interface CsvJobReviewDetail {
+  readonly contractVersion: typeof AGENC_SDK_CSV_JOB_CONTRACT_VERSION;
+  readonly jobId: string;
+  readonly itemId: string;
+  readonly rowIndex: number;
+  readonly sourceId?: string;
+  readonly sourceIdTruncated?: boolean;
+  readonly status: CsvAgentJobItemStatus;
+  readonly attemptCount: number;
+  readonly resultAvailability: CsvResultAvailability;
+  readonly resultSizeBytes: number;
+  readonly resultDigest?: string;
+  readonly reviewStatus: CsvReviewStatus;
+  readonly reviewReason?: string;
+  readonly reviewReasonTruncated?: boolean;
+  readonly disposition?: CsvReviewDisposition;
+  readonly domainAction?: CsvReviewDomainAction;
+  readonly evidence?: CsvJobReviewEvidenceProjection;
+  readonly effect?: CsvJobReviewEffectReference;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly completedAt?: number;
+}
+
+export interface CsvJobReviewListResult {
+  readonly contractVersion: typeof AGENC_SDK_CSV_JOB_CONTRACT_VERSION;
+  readonly job: CsvAgentJobSummary;
+  readonly reviews: ReadonlyArray<CsvAgentJobItemSummary>;
+  readonly nextCursor?: CsvJobItemCursor;
+}
+
+export interface CsvJobReviewShowResult {
+  readonly contractVersion: typeof AGENC_SDK_CSV_JOB_CONTRACT_VERSION;
+  readonly review: CsvJobReviewDetail;
+}
+
+export interface CsvJobReviewResolveResult {
+  readonly contractVersion: typeof AGENC_SDK_CSV_JOB_CONTRACT_VERSION;
+  readonly outcome: "resolved" | "already_resolved";
+  readonly review: CsvJobReviewDetail;
+  readonly job?: CsvAgentJobSummary;
 }

@@ -44,6 +44,11 @@ import {
   AgenCDaemonRunInspectionError,
   type AgenCDaemonRunInspectionService,
 } from "./run-inspection.js";
+import {
+  AgenCCsvJobReviewError,
+  AgenCCsvJobReviewStateService,
+  type AgenCCsvJobReviewService,
+} from "./csv-job-review.js";
 import type { AuthBackend, AuthDaemonSocketIdentity } from "../auth/backend.js";
 import {
   requireAbsoluteWorkspaceCwd,
@@ -76,6 +81,9 @@ import {
   type RunCancelParams,
   type RunStartParams,
   type RunStartResult,
+  type CsvJobReviewListParams,
+  type CsvJobReviewResolveParams,
+  type CsvJobReviewShowParams,
   type AgenCDaemonErrorCode,
   type AgenCDaemonErrorObject,
   type AgenCDaemonMethod,
@@ -201,6 +209,17 @@ const THREAD_REALTIME_VOICES = [
   "verse",
 ] as const;
 
+const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
+const CSV_JOB_REVIEW_MAX_IDENTIFIER_BYTES = 1_024;
+const CSV_JOB_REVIEW_MAX_EVIDENCE_REF_BYTES = 4_096;
+const CSV_JOB_REVIEW_MAX_REASON_BYTES = 32_768;
+const CSV_JOB_REVIEW_SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const CSV_JOB_REVIEW_DISPOSITIONS = [
+  "confirmed_committed",
+  "confirmed_no_effect",
+  "remains_unknown",
+] as const;
+
 export const TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START = Symbol(
   "test-only-allow-unadmitted-command-exec-start",
 );
@@ -221,6 +240,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly realtime: AgenCRealtimeRpcHandlers;
   readonly runInspection: AgenCDaemonDispatcherOptions["runInspection"];
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
+  readonly csvJobReview: AgenCCsvJobReviewService;
   readonly codePrediction: AgenCDaemonDispatcherOptions["codePrediction"];
 }
 
@@ -243,6 +263,9 @@ function buildServerCapabilities(
     "run.evidence": hasMethod(inputs.runInspection, "evidence"),
     "run.cancel": hasMethod(agentManager, "cancelRunTree"),
     "run.start": hasMethod(inputs.workflow, "startRun"),
+    "csvJob.review.list": hasMethod(inputs.csvJobReview, "list"),
+    "csvJob.review.show": hasMethod(inputs.csvJobReview, "show"),
+    "csvJob.review.resolve": hasMethod(inputs.csvJobReview, "resolve"),
     "session.create": hasMethod(sessionManager, "createSession"),
     "session.list": hasMethod(sessionManager, "listSessions"),
     "session.attach": hasMethod(sessionManager, "attachSession"),
@@ -445,6 +468,8 @@ export interface AgenCDaemonDispatcherOptions {
   >;
   /** M5 verified-change workflow `run.start` seam (omit = not implemented). */
   readonly workflow?: AgenCDaemonWorkflowStartService;
+  /** Workspace-scoped CSV unknown-outcome review service. */
+  readonly csvJobReview?: AgenCCsvJobReviewService;
   readonly codePrediction?: Pick<
     CodePredictionService,
     "complete" | "cancel" | "feedback"
@@ -538,6 +563,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       >
     | undefined;
   readonly #workflow: AgenCDaemonWorkflowStartService | undefined;
+  readonly #csvJobReview: AgenCCsvJobReviewService;
   readonly #codePrediction:
     Pick<CodePredictionService, "complete" | "cancel" | "feedback"> | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
@@ -564,6 +590,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#realtime = options.realtime ?? new AgenCRealtimeRpcService();
     this.#runInspection = options.runInspection;
     this.#workflow = options.workflow;
+    this.#csvJobReview =
+      options.csvJobReview ?? new AgenCCsvJobReviewStateService();
     this.#codePrediction = options.codePrediction;
     this.#authHandlers =
       options.authBackend !== undefined
@@ -583,6 +611,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       runInspection: this.#runInspection,
       sessionManager: this.#sessionManager,
       workflow: this.#workflow,
+      csvJobReview: this.#csvJobReview,
       codePrediction: this.#codePrediction,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
@@ -798,6 +827,23 @@ export class AgenCDaemonJsonRpcDispatcher {
         return successResponse(
           id,
           await this.#workflow.startRun(validateRunStartParams(params)),
+        );
+      case "csvJob.review.list":
+        return successResponse(
+          id,
+          await this.#csvJobReview.list(validateCsvJobReviewListParams(params)),
+        );
+      case "csvJob.review.show":
+        return successResponse(
+          id,
+          await this.#csvJobReview.show(validateCsvJobReviewShowParams(params)),
+        );
+      case "csvJob.review.resolve":
+        return successResponse(
+          id,
+          await this.#csvJobReview.resolve(
+            validateCsvJobReviewResolveParams(params),
+          ),
         );
       case "session.create":
         return this.#createSession(id, params);
@@ -2136,6 +2182,146 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
     ...validated,
     ...(cwd !== undefined ? { cwd } : {}),
   } as RunStartParams;
+}
+
+function validateCsvJobReviewListParams(
+  params: JsonObject,
+): CsvJobReviewListParams {
+  const methodName = "csvJob.review.list";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["cwd", "jobId", "cursor"],
+    numberFields: ["limit"],
+  });
+  const cwd = validateCsvJobReviewWorkspace(validated, methodName);
+  validateRequiredBoundedString(validated, methodName, "jobId");
+  validatePositiveInteger(validated, methodName, "limit", false);
+  if (
+    typeof validated.limit === "number" &&
+    validated.limit > CSV_JOB_REVIEW_MAX_PAGE_SIZE
+  ) {
+    throw invalidParams(
+      `${methodName} param 'limit' must be at most ${CSV_JOB_REVIEW_MAX_PAGE_SIZE}`,
+    );
+  }
+  return { ...validated, cwd } as CsvJobReviewListParams;
+}
+
+function validateCsvJobReviewShowParams(
+  params: JsonObject,
+): CsvJobReviewShowParams {
+  const methodName = "csvJob.review.show";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["cwd", "jobId", "itemId"],
+  });
+  const cwd = validateCsvJobReviewWorkspace(validated, methodName);
+  validateRequiredBoundedString(validated, methodName, "jobId");
+  validateRequiredBoundedString(validated, methodName, "itemId");
+  return { ...validated, cwd } as CsvJobReviewShowParams;
+}
+
+function validateCsvJobReviewResolveParams(
+  params: JsonObject,
+): CsvJobReviewResolveParams {
+  const methodName = "csvJob.review.resolve";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: [
+      "cwd",
+      "jobId",
+      "itemId",
+      "disposition",
+      "evidenceRef",
+      "evidenceSha256",
+      "reviewer",
+      "reason",
+    ],
+    objectFields: ["result"],
+  });
+  const cwd = validateCsvJobReviewWorkspace(validated, methodName);
+  for (const field of ["jobId", "itemId", "reviewer"] as const) {
+    validateRequiredBoundedString(validated, methodName, field);
+  }
+  validateRequiredEnum(
+    validated,
+    methodName,
+    "disposition",
+    CSV_JOB_REVIEW_DISPOSITIONS,
+  );
+  validateRequiredString(validated, methodName, "evidenceRef");
+  validateMaximumUtf8Bytes(
+    validated.evidenceRef,
+    methodName,
+    "evidenceRef",
+    CSV_JOB_REVIEW_MAX_EVIDENCE_REF_BYTES,
+  );
+  validateRequiredString(validated, methodName, "reason");
+  validateMaximumUtf8Bytes(
+    validated.reason,
+    methodName,
+    "reason",
+    CSV_JOB_REVIEW_MAX_REASON_BYTES,
+  );
+  if (
+    typeof validated.evidenceSha256 !== "string" ||
+    !CSV_JOB_REVIEW_SHA256_PATTERN.test(validated.evidenceSha256)
+  ) {
+    throw invalidParams(
+      `${methodName} param 'evidenceSha256' must be a lowercase SHA-256 digest`,
+    );
+  }
+  if (
+    validated.result !== undefined &&
+    validated.disposition !== "confirmed_committed"
+  ) {
+    throw invalidParams(
+      `${methodName} param 'result' is valid only for confirmed_committed`,
+    );
+  }
+  return { ...validated, cwd } as CsvJobReviewResolveParams;
+}
+
+function validateCsvJobReviewWorkspace(
+  params: JsonObject,
+  methodName: string,
+): string {
+  try {
+    return requireAbsoluteWorkspaceCwd(params.cwd, methodName);
+  } catch (error) {
+    if (error instanceof WorkspaceCwdError) throw invalidParams(error.message);
+    throw error;
+  }
+}
+
+function validateRequiredBoundedString(
+  params: JsonObject,
+  methodName: string,
+  field: string,
+): void {
+  validateRequiredString(params, methodName, field);
+  validateMaximumUtf8Bytes(
+    params[field],
+    methodName,
+    field,
+    CSV_JOB_REVIEW_MAX_IDENTIFIER_BYTES,
+  );
+}
+
+function validateMaximumUtf8Bytes(
+  value: JsonValue | undefined,
+  methodName: string,
+  field: string,
+  maximumBytes: number,
+): void {
+  if (
+    typeof value === "string" &&
+    Buffer.byteLength(value, "utf8") > maximumBytes
+  ) {
+    throw invalidParams(
+      `${methodName} param '${field}' exceeds ${maximumBytes} UTF-8 bytes`,
+    );
+  }
 }
 
 function validateRunStatusParams(params: JsonObject): RunStatusParams {
@@ -4325,6 +4511,9 @@ function mapDispatchError(
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCDaemonWorkflowStartError) {
+    return errorResponse(id, -32602, error.message, { code: error.code });
+  }
+  if (error instanceof AgenCCsvJobReviewError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCSessionLifecycleError) {
