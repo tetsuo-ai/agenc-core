@@ -38,11 +38,11 @@ interface RepositoryEntry {
   readonly key: string;
   readonly controller: AbortController;
   readonly opening: Promise<CsvAgentJobsRepository>;
-  readonly queue: RepositoryWaiter[];
+  readonly openingWaiters: RepositoryWaiter[];
+  readonly activeLeases: Set<Promise<unknown>>;
   driver: StateSqliteDriver | undefined;
   repository: CsvAgentJobsRepository | undefined;
   state: "opening" | "ready" | "failed" | "closing" | "closed" | "close_failed";
-  active: boolean;
   driverCloseAttempted: boolean;
   driverCloseError: unknown | undefined;
 }
@@ -77,7 +77,6 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
     CsvAgentJobsRepositoryAuthorityOptions["openRepository"]
   >;
   readonly #entries = new Map<string, RepositoryEntry>();
-  readonly #activeOperations = new Set<Promise<unknown>>();
   #closed = false;
   #closeTask: Promise<void> | undefined;
 
@@ -145,7 +144,7 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
         settled: false,
       };
       if (signal !== undefined) {
-        waiter.onAbort = () => this.#abortQueuedWaiter(entry, waiter);
+        waiter.onAbort = () => this.#abortOpeningWaiter(entry, waiter);
         signal.addEventListener("abort", waiter.onAbort, {
           once: true,
         });
@@ -160,9 +159,9 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
         );
         return;
       }
-      entry.queue.push(waiter);
+      entry.openingWaiters.push(waiter);
       if (!this.#entryCanAcceptWaiter(entry)) {
-        this.#rejectQueuedWaiter(
+        this.#rejectOpeningWaiter(
           entry,
           waiter,
           this.#closed
@@ -172,10 +171,10 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
         return;
       }
       if (signal?.aborted === true) {
-        this.#abortQueuedWaiter(entry, waiter);
+        this.#abortOpeningWaiter(entry, waiter);
         return;
       }
-      this.#runNext(entry);
+      this.#startReadyLeases(entry);
     });
   }
 
@@ -193,7 +192,7 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
     for (const entry of entries) {
       if (entry.state !== "closed") entry.state = "closing";
       entry.controller.abort(new Error(AUTHORITY_CLOSED_MESSAGE));
-      for (const waiter of entry.queue.splice(0)) {
+      for (const waiter of entry.openingWaiters.splice(0)) {
         this.#settleWaiter(
           waiter,
           "reject",
@@ -205,7 +204,9 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
     void Promise.resolve()
       .then(async () => {
         await Promise.allSettled(entries.map((entry) => entry.opening));
-        await Promise.allSettled([...this.#activeOperations]);
+        await Promise.allSettled(
+          entries.flatMap((entry) => [...entry.activeLeases]),
+        );
         const closeResults = await Promise.allSettled(
           entries.map(async (entry) => this.#closeDriver(entry)),
         );
@@ -253,8 +254,8 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
       driver: undefined,
       repository: undefined,
       state: "opening",
-      queue: [],
-      active: false,
+      openingWaiters: [],
+      activeLeases: new Set(),
       driverCloseAttempted: false,
       driverCloseError: undefined,
     };
@@ -280,11 +281,11 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
       }
       entry.repository = repository;
       entry.state = "ready";
-      this.#runNext(entry);
+      this.#startReadyLeases(entry);
       return repository;
     } catch (error) {
       entry.state = this.#closed ? "closing" : "failed";
-      for (const waiter of entry.queue.splice(0)) {
+      for (const waiter of entry.openingWaiters.splice(0)) {
         this.#settleWaiter(waiter, "reject", error);
       }
       try {
@@ -311,8 +312,8 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
   #abandonIfUnused(entry: RepositoryEntry): void {
     if (
       entry.state === "opening" &&
-      entry.queue.length === 0 &&
-      !entry.active
+      entry.openingWaiters.length === 0 &&
+      entry.activeLeases.size === 0
     ) {
       this.#abandonOpeningEntry(entry);
     }
@@ -326,45 +327,42 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
     );
   }
 
-  #rejectQueuedWaiter(
+  #rejectOpeningWaiter(
     entry: RepositoryEntry,
     waiter: RepositoryWaiter,
     error: unknown,
   ): void {
-    const index = entry.queue.indexOf(waiter);
-    if (index >= 0) entry.queue.splice(index, 1);
+    const index = entry.openingWaiters.indexOf(waiter);
+    if (index >= 0) entry.openingWaiters.splice(index, 1);
     this.#settleWaiter(waiter, "reject", error);
     this.#abandonIfUnused(entry);
   }
 
-  #abortQueuedWaiter(entry: RepositoryEntry, waiter: RepositoryWaiter): void {
+  #abortOpeningWaiter(entry: RepositoryEntry, waiter: RepositoryWaiter): void {
     if (waiter.settled) return;
-    const index = entry.queue.indexOf(waiter);
+    const index = entry.openingWaiters.indexOf(waiter);
     if (index < 0) return;
-    this.#rejectQueuedWaiter(entry, waiter, waiter.signal?.reason);
+    this.#rejectOpeningWaiter(entry, waiter, waiter.signal?.reason);
   }
 
-  #runNext(entry: RepositoryEntry): void {
-    if (
-      entry.state !== "ready" ||
-      entry.active ||
-      entry.repository === undefined
-    ) {
-      return;
+  #startReadyLeases(entry: RepositoryEntry): void {
+    while (entry.state === "ready" && entry.repository !== undefined) {
+      const waiter = entry.openingWaiters.shift();
+      if (waiter === undefined) return;
+      this.#startLease(entry, waiter);
     }
-    const waiter = entry.queue.shift();
-    if (waiter === undefined) return;
+  }
+
+  #startLease(entry: RepositoryEntry, waiter: RepositoryWaiter): void {
     if (waiter.onAbort !== undefined && waiter.signal !== undefined) {
       waiter.signal.removeEventListener("abort", waiter.onAbort);
       waiter.onAbort = undefined;
     }
     if (waiter.signal?.aborted === true) {
       this.#settleWaiter(waiter, "reject", waiter.signal.reason);
-      this.#runNext(entry);
       return;
     }
 
-    entry.active = true;
     const operationSignal =
       waiter.signal === undefined
         ? entry.controller.signal
@@ -379,11 +377,9 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
         (error) => this.#settleWaiter(waiter, "reject", error),
       )
       .finally(() => {
-        entry.active = false;
-        this.#activeOperations.delete(task);
-        this.#runNext(entry);
+        entry.activeLeases.delete(task);
       });
-    this.#activeOperations.add(task);
+    entry.activeLeases.add(task);
   }
 
   #settleWaiter(
@@ -447,18 +443,5 @@ async function openCsvAgentJobsRepository(
   driver: StateSqliteDriver,
   options: { readonly signal: AbortSignal },
 ): Promise<CsvAgentJobsRepository> {
-  const repositoryClass =
-    CsvAgentJobsRepository as typeof CsvAgentJobsRepository & {
-      readonly open?: (
-        driver: StateSqliteDriver,
-        options: { readonly signal: AbortSignal },
-      ) => Promise<CsvAgentJobsRepository>;
-    };
-  if (repositoryClass.open !== undefined) {
-    return repositoryClass.open(driver, options);
-  }
-  // Compatibility for this dependency branch only. The core P1/P2 branch
-  // supplies the async static opener before integration.
-  options.signal.throwIfAborted();
-  return new CsvAgentJobsRepository(driver);
+  return CsvAgentJobsRepository.open(driver, options);
 }

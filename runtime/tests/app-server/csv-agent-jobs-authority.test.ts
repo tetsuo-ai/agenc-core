@@ -124,63 +124,125 @@ describe("CsvAgentJobsRepositoryAuthority", () => {
     expect(closeDriver).toHaveBeenCalledOnce();
   });
 
-  it("keeps FIFO ownership when a queued caller aborts", async () => {
-    const root = await workspace("authority-fifo-");
+  it("allows nested inspect and read leases while a long lease remains active", async () => {
+    const root = await workspace("authority-nested-leases-");
     const authority = authorityWith({ close: vi.fn() });
-    const releaseFirst = deferred<void>();
-    const order: string[] = [];
-    const first = authority.withRepository(root, async () => {
-      order.push("first-start");
-      await releaseFirst.promise;
-      order.push("first-end");
-    });
-    await vi.waitFor(() => expect(order).toEqual(["first-start"]));
-    const secondAbort = new AbortController();
-    const second = authority.withRepository(
-      root,
-      () => {
-        order.push("second");
-      },
-      { signal: secondAbort.signal },
-    );
-    const third = authority.withRepository(root, () => {
-      order.push("third");
+    const releaseOuter = deferred<void>();
+    const nestedResults = deferred<readonly string[]>();
+    const outer = authority.withRepository(root, async () => {
+      const results = await Promise.all([
+        authority.withRepository(root, () => "inspect"),
+        authority.withRepository(root, () => "read"),
+      ]);
+      nestedResults.resolve(results);
+      await releaseOuter.promise;
     });
 
-    secondAbort.abort(new Error("skip second"));
-    releaseFirst.resolve();
-    await expect(first).resolves.toBeUndefined();
-    await expect(second).rejects.toThrow("skip second");
-    await expect(third).resolves.toBeUndefined();
-    expect(order).toEqual(["first-start", "first-end", "third"]);
-    await authority.close();
+    try {
+      await expect(settleBeforeDeadline(nestedResults.promise)).resolves.toEqual(
+        ["inspect", "read"],
+      );
+    } finally {
+      releaseOuter.resolve();
+      const closing = authority.close();
+      await Promise.allSettled([outer, closing]);
+    }
   });
 
-  it("aborts and drains active work before one idempotent close", async () => {
+  it("cancels one active sibling lease without blocking another", async () => {
+    const root = await workspace("authority-sibling-abort-");
+    const authority = authorityWith({ close: vi.fn() });
+    const releaseLongLease = deferred<void>();
+    const longLeaseStarted = deferred<void>();
+    const siblingStarted = deferred<void>();
+    const longLease = authority.withRepository(root, async () => {
+      longLeaseStarted.resolve();
+      await releaseLongLease.promise;
+    });
+    await longLeaseStarted.promise;
+    const siblingAbort = new AbortController();
+    const sibling = authority.withRepository(
+      root,
+      async (_repository, signal) => {
+        siblingStarted.resolve();
+        await aborted(signal);
+      },
+      { signal: siblingAbort.signal },
+    );
+    const reason = new Error("cancel only the sibling");
+
+    try {
+      await expect(settleBeforeDeadline(siblingStarted.promise)).resolves.toBe(
+        undefined,
+      );
+      siblingAbort.abort(reason);
+      await expect(sibling).rejects.toBe(reason);
+      releaseLongLease.resolve();
+      await expect(longLease).resolves.toBeUndefined();
+    } finally {
+      siblingAbort.abort(reason);
+      releaseLongLease.resolve();
+      const closing = authority.close();
+      await Promise.allSettled([longLease, sibling, closing]);
+    }
+  });
+
+  it("aborts and drains every active sibling before one idempotent close", async () => {
     const root = await workspace("authority-active-close-");
     const closeDriver = vi.fn();
     const authority = authorityWith({ close: closeDriver });
-    const started = deferred<void>();
-    const active = authority.withRepository(
-      root,
-      async (_repository, signal) => {
+    const firstStarted = deferred<void>();
+    const secondStarted = deferred<void>();
+    const firstAborted = deferred<void>();
+    const secondAborted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const releaseSecond = deferred<void>();
+    const activeLease = (
+      started: Deferred<void>,
+      observedAbort: Deferred<void>,
+      release: Deferred<void>,
+    ) =>
+      authority.withRepository(root, async (_repository, signal) => {
         started.resolve();
-        await aborted(signal);
-      },
-    );
-    const queued = authority.withRepository(root, () => "queued");
-    await started.promise;
+        signal.addEventListener("abort", () => observedAbort.resolve(), {
+          once: true,
+        });
+        await release.promise;
+        signal.throwIfAborted();
+      });
+    const first = activeLease(firstStarted, firstAborted, releaseFirst);
+    const second = activeLease(secondStarted, secondAborted, releaseSecond);
 
-    const firstClose = authority.close();
-    const secondClose = authority.close();
-    expect(secondClose).toBe(firstClose);
-    await expect(active).rejects.toThrow(/authority is closed/u);
-    await expect(queued).rejects.toThrow(/authority is closed/u);
-    await expect(authority.withRepository(root, () => "late")).rejects.toThrow(
-      /authority is closed/u,
-    );
-    await firstClose;
-    expect(closeDriver).toHaveBeenCalledOnce();
+    try {
+      await expect(
+        settleBeforeDeadline(
+          Promise.all([firstStarted.promise, secondStarted.promise]),
+        ),
+      ).resolves.toEqual([undefined, undefined]);
+      const firstClose = authority.close();
+      const secondClose = authority.close();
+      expect(secondClose).toBe(firstClose);
+      await expect(
+        settleBeforeDeadline(
+          Promise.all([firstAborted.promise, secondAborted.promise]),
+        ),
+      ).resolves.toEqual([undefined, undefined]);
+      expect(closeDriver).not.toHaveBeenCalled();
+      releaseFirst.resolve();
+      releaseSecond.resolve();
+      await expect(first).rejects.toThrow(/authority is closed/u);
+      await expect(second).rejects.toThrow(/authority is closed/u);
+      await expect(
+        authority.withRepository(root, () => "late"),
+      ).rejects.toThrow(/authority is closed/u);
+      await firstClose;
+      expect(closeDriver).toHaveBeenCalledOnce();
+    } finally {
+      releaseFirst.resolve();
+      releaseSecond.resolve();
+      const closing = authority.close();
+      await Promise.allSettled([first, second, closing]);
+    }
   });
 
   it("aborts and closes a driver whose repository is still opening", async () => {
@@ -364,15 +426,32 @@ function fakePaths(cwd: string): StateDatabasePaths {
   };
 }
 
-function deferred<Value>(): {
+interface Deferred<Value> {
   readonly promise: Promise<Value>;
   readonly resolve: (value: Value) => void;
-} {
+}
+
+function deferred<Value>(): Deferred<Value> {
   let resolvePromise!: (value: Value) => void;
   const promise = new Promise<Value>((resolve) => {
     resolvePromise = resolve;
   });
   return { promise, resolve: resolvePromise };
+}
+
+async function settleBeforeDeadline<Value>(
+  promise: Promise<Value>,
+): Promise<Value | symbol> {
+  const deadlineExceeded = Symbol("deadline exceeded");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof deadlineExceeded>((resolvePromise) => {
+    timer = setTimeout(() => resolvePromise(deadlineExceeded), 1_000);
+  });
+  try {
+    return await Promise.race([promise, deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function aborted(signal: AbortSignal): Promise<never> {

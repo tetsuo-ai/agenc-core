@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createAgencClient,
   type AgencTransport,
@@ -17,9 +17,11 @@ import { CsvAgentJobsRepositoryAuthority } from "../../src/app-server/csv-agent-
 import { AgenCInProcessDaemonTransport } from "../../src/app-server/transport/in-process.js";
 import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
 import { CsvAgentJobsRepository } from "../../src/state/csv-agent-jobs.js";
+import { createOperatorEffectReviewResolution } from "../../src/state/effect-review.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 
 const EVIDENCE_DIGEST = "a".repeat(64);
+const EFFECT_REVIEW_PAYLOAD_MAX_BYTES = 4_096;
 
 let agencHome = "";
 let originalAgencHome: string | undefined;
@@ -39,6 +41,8 @@ beforeEach(() => {
 
 afterEach(async () => {
   await repositories.close();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = originalAgencHome;
   rmSync(agencHome, { recursive: true, force: true });
@@ -47,6 +51,11 @@ afterEach(async () => {
 
 describe("AgenCCsvJobReviewStateService", () => {
   it("pages bounded unknown outcomes and reads one review", async () => {
+    const getItem = vi.spyOn(CsvAgentJobsRepository.prototype, "getItem");
+    const listItemsPage = vi.spyOn(
+      CsvAgentJobsRepository.prototype,
+      "listItemsPage",
+    );
     const service = new AgenCCsvJobReviewStateService(repositories);
     const first = await service.list({
       cwd: workspace,
@@ -82,6 +91,8 @@ describe("AgenCCsvJobReviewStateService", () => {
       reviewStatus: "pending",
       reviewReason: "dispatch acknowledgement was ambiguous",
     });
+    expect(getItem).not.toHaveBeenCalled();
+    expect(listItemsPage).not.toHaveBeenCalled();
   });
 
   it("persists exact A1 evidence and treats an identical restart replay as idempotent", async () => {
@@ -131,6 +142,153 @@ describe("AgenCCsvJobReviewStateService", () => {
       restartedService.resolve({
         ...request,
         evidenceSha256: "b".repeat(64),
+      }),
+    ).rejects.toMatchObject<AgenCCsvJobReviewError>({
+      code: "CSV_REVIEW_CONFLICT",
+    });
+  });
+
+  it("replays canonical evidence at the aggregate byte limit", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const reviewedAt = "2026-08-03T12:00:00.123Z";
+    vi.setSystemTime(new Date(reviewedAt));
+    const evidenceRef = exactLimitEvidenceRef(reviewedAt);
+    const request = {
+      cwd: workspace,
+      jobId: "job",
+      itemId: "item-0",
+      disposition: "confirmed_no_effect" as const,
+      evidenceRef,
+      evidenceSha256: EVIDENCE_DIGEST,
+      reviewer: "operator",
+      reason: "authoritative lookup found no effect",
+    };
+    const service = new AgenCCsvJobReviewStateService(repositories);
+    const first = await service.resolve(request);
+
+    expect(first.review.evidence).toMatchObject({
+      truncated: false,
+      bytes: EFFECT_REVIEW_PAYLOAD_MAX_BYTES,
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    expect(first.review.evidence?.value).toBeDefined();
+
+    vi.setSystemTime(new Date("2026-08-03T12:05:00.987Z"));
+    await expect(service.resolve(request)).resolves.toMatchObject({
+      outcome: "already_resolved",
+      review: {
+        evidence: {
+          bytes: EFFECT_REVIEW_PAYLOAD_MAX_BYTES,
+          truncated: false,
+        },
+      },
+    });
+  });
+
+  it("rejects aggregate-over-limit evidence before the core mutation", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const reviewedAt = "2026-08-03T12:00:00.123Z";
+    vi.setSystemTime(new Date(reviewedAt));
+    const resolveUnknownOutcome = vi.spyOn(
+      CsvAgentJobsRepository.prototype,
+      "resolveUnknownOutcome",
+    );
+    const service = new AgenCCsvJobReviewStateService(repositories);
+
+    await expect(
+      service.resolve({
+        cwd: workspace,
+        jobId: "job",
+        itemId: "item-0",
+        disposition: "confirmed_no_effect",
+        evidenceRef: `${exactLimitEvidenceRef(reviewedAt)}x`,
+        evidenceSha256: EVIDENCE_DIGEST,
+        reviewer: "operator",
+        reason: "authoritative lookup found no effect",
+      }),
+    ).rejects.toMatchObject<AgenCCsvJobReviewError>({
+      code: "CSV_REVIEW_INVALID",
+    });
+    expect(resolveUnknownOutcome).not.toHaveBeenCalled();
+    await expect(
+      service.show({ cwd: workspace, jobId: "job", itemId: "item-0" }),
+    ).resolves.toMatchObject({ review: { reviewStatus: "pending" } });
+  });
+
+  it("propagates cancellation into the core mutation before any write", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("cancelled CSV review");
+    const original = CsvAgentJobsRepository.prototype.resolveUnknownOutcome;
+    vi.spyOn(
+      CsvAgentJobsRepository.prototype,
+      "resolveUnknownOutcome",
+    ).mockImplementation(async function (resolution, options) {
+      expect(options.signal).toBeInstanceOf(AbortSignal);
+      expect(options.signal?.aborted).toBe(false);
+      controller.abort(cancellation);
+      return original.call(this, resolution, options);
+    });
+    const service = new AgenCCsvJobReviewStateService(repositories);
+
+    await expect(
+      service.resolve(
+        {
+          cwd: workspace,
+          jobId: "job",
+          itemId: "item-0",
+          disposition: "confirmed_no_effect",
+          evidenceRef: "lookup://operation-key",
+          evidenceSha256: EVIDENCE_DIGEST,
+          reviewer: "operator",
+          reason: "authoritative lookup found no effect",
+        },
+        { signal: controller.signal },
+      ),
+    ).rejects.toBe(cancellation);
+    await expect(
+      service.show({ cwd: workspace, jobId: "job", itemId: "item-0" }),
+    ).resolves.toMatchObject({ review: { reviewStatus: "pending" } });
+  });
+
+  it("fails closed when legacy typed-shaped evidence is truncated", async () => {
+    const legacyResolution = createOperatorEffectReviewResolution({
+      disposition: "confirmed_no_effect",
+      actorId: "operator",
+      evidenceRef: "legacy://operator-evidence",
+      evidenceSha256: EVIDENCE_DIGEST,
+      reviewedAt: "2026-08-03T12:00:00.123Z",
+    });
+    const legacyEvidence = {
+      ...legacyResolution,
+      legacyPadding: "x".repeat(4_096),
+    };
+    const driver = openStateDatabases({ cwd: workspace, agencHome });
+    try {
+      driver
+        .prepareState(
+          `UPDATE csv_agent_job_items
+           SET status = 'pending', review_status = 'resolved',
+               review_disposition = 'confirmed_no_effect',
+               review_domain_action = 'retry_new_attempt',
+               review_evidence_json = ?
+           WHERE job_id = 'job' AND item_id = 'item-0'`,
+        )
+        .run(JSON.stringify(legacyEvidence));
+    } finally {
+      driver.close();
+    }
+    const service = new AgenCCsvJobReviewStateService(repositories);
+
+    await expect(
+      service.resolve({
+        cwd: workspace,
+        jobId: "job",
+        itemId: "item-0",
+        disposition: "confirmed_no_effect",
+        evidenceRef: legacyResolution.evidenceRef,
+        evidenceSha256: EVIDENCE_DIGEST,
+        reviewer: "operator",
+        reason: "authoritative lookup found no effect",
       }),
     ).rejects.toMatchObject<AgenCCsvJobReviewError>({
       code: "CSV_REVIEW_CONFLICT",
@@ -263,6 +421,18 @@ describe("AgenCCsvJobReviewStateService", () => {
     }
   });
 });
+
+function exactLimitEvidenceRef(reviewedAt: string): string {
+  const empty = createOperatorEffectReviewResolution({
+    disposition: "confirmed_no_effect",
+    actorId: "operator",
+    evidenceRef: "",
+    evidenceSha256: EVIDENCE_DIGEST,
+    reviewedAt,
+  });
+  const fixedBytes = Buffer.byteLength(JSON.stringify(empty), "utf8");
+  return "x".repeat(EFFECT_REVIEW_PAYLOAD_MAX_BYTES - fixedBytes);
+}
 
 function seedUnknownOutcomes(): void {
   const driver = openStateDatabases({ cwd: workspace, agencHome });

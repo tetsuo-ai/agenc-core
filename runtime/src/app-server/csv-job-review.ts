@@ -1,12 +1,12 @@
-import { createHash } from "node:crypto";
 import { canonicalizeCsvResult } from "../agents/jobs/csv-schema.js";
 import type { EffectReviewResolution } from "../contracts/run-contracts.js";
 import {
   CsvAgentJobsRepository,
-  type CsvAgentJobItem,
+  type CsvAgentJobReviewProjection,
   type CsvAgentJobSummary,
 } from "../state/csv-agent-jobs.js";
 import { createOperatorEffectReviewResolution } from "../state/effect-review.js";
+import { canonicalizeEffectReviewResolution } from "../state/run-durability.js";
 import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import {
   requireAbsoluteWorkspaceCwd,
@@ -26,9 +26,6 @@ import type {
 } from "./protocol/index.js";
 
 const CSV_REVIEW_CONTRACT_VERSION = 1 as const;
-const CSV_REVIEW_SOURCE_ID_MAX_BYTES = 1_024;
-const CSV_REVIEW_REASON_MAX_BYTES = 4_096;
-const CSV_REVIEW_EVIDENCE_MAX_BYTES = 4_096;
 const CSV_REVIEW_IDENTIFIER_MAX_BYTES = 1_024;
 const CSV_REVIEW_EVIDENCE_REF_MAX_BYTES = 4_096;
 const CSV_REVIEW_RESOLUTION_REASON_MAX_BYTES = 32_768;
@@ -83,16 +80,15 @@ export class AgenCCsvJobReviewStateService implements AgenCCsvJobReviewService {
       (repository, signal) => {
         signal.throwIfAborted();
         const job = requireJob(repository, params.jobId);
-        const page = repository.listItemsPage({
+        const page = repository.listReviewProjectionsPage({
           jobId: params.jobId,
-          status: "unknown_outcome",
           ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
           ...(params.limit !== undefined ? { limit: params.limit } : {}),
         });
         return {
           contractVersion: CSV_REVIEW_CONTRACT_VERSION,
           job: projectJobSummary(job),
-          reviews: page.items as unknown as readonly CsvJobReviewItemSummary[],
+          reviews: page.reviews.map(projectReviewSummary),
           ...(page.nextCursor !== undefined
             ? { nextCursor: page.nextCursor }
             : {}),
@@ -114,7 +110,7 @@ export class AgenCCsvJobReviewStateService implements AgenCCsvJobReviewService {
         return {
           contractVersion: CSV_REVIEW_CONTRACT_VERSION,
           review: projectReviewDetail(
-            requireReviewItem(repository, params.jobId, params.itemId),
+            requireReviewProjection(repository, params.jobId, params.itemId),
           ),
         };
       },
@@ -131,14 +127,12 @@ export class AgenCCsvJobReviewStateService implements AgenCCsvJobReviewService {
       params.cwd,
       async (repository, signal) => {
         signal.throwIfAborted();
-        const item = requireReviewItem(repository, params.jobId, params.itemId);
-        const resolution = createOperatorEffectReviewResolution({
-          disposition: params.disposition,
-          actorId: params.reviewer,
-          evidenceRef: params.evidenceRef,
-          evidenceSha256: params.evidenceSha256,
-          reviewedAt: new Date().toISOString(),
-        });
+        const item = requireReviewProjection(
+          repository,
+          params.jobId,
+          params.itemId,
+        );
+        const resolution = createCanonicalResolution(params);
         const requestedResult =
           params.result === undefined
             ? undefined
@@ -156,22 +150,31 @@ export class AgenCCsvJobReviewStateService implements AgenCCsvJobReviewService {
 
         try {
           signal.throwIfAborted();
-          await repository.resolveUnknownOutcome({
-            jobId: params.jobId,
-            itemId: params.itemId,
-            disposition: resolution.disposition,
-            domainAction: requireDomainAction(resolution),
-            evidence: resolution as unknown as Record<string, unknown>,
-            actor: params.reviewer,
-            reason: params.reason,
-            ...(item.effect !== undefined ? { effectReview: resolution } : {}),
-            ...(requestedResult !== undefined
-              ? { result: requestedResult.value }
-              : {}),
-          });
+          await repository.resolveUnknownOutcome(
+            {
+              jobId: params.jobId,
+              itemId: params.itemId,
+              disposition: resolution.disposition,
+              domainAction: requireDomainAction(resolution),
+              evidence: resolution as unknown as Record<string, unknown>,
+              actor: params.reviewer,
+              reason: params.reason,
+              ...(item.effect !== undefined
+                ? { effectReview: resolution }
+                : {}),
+              ...(requestedResult !== undefined
+                ? { result: requestedResult.value }
+                : {}),
+            },
+            { signal },
+          );
+          signal.throwIfAborted();
         } catch (error) {
           if (signal.aborted) throw signal.reason;
-          const current = repository.getItem(params.jobId, params.itemId);
+          const current = repository.getReviewProjection(
+            params.jobId,
+            params.itemId,
+          );
           if (current !== null && current.reviewStatus !== "pending") {
             return replayOrConflict(current, resolution, requestedResult);
           }
@@ -185,11 +188,12 @@ export class AgenCCsvJobReviewStateService implements AgenCCsvJobReviewService {
           );
         }
 
+        signal.throwIfAborted();
         return {
           contractVersion: CSV_REVIEW_CONTRACT_VERSION,
           outcome: "resolved",
           review: projectReviewDetail(
-            requireReviewItem(repository, params.jobId, params.itemId),
+            requireReviewProjection(repository, params.jobId, params.itemId),
           ),
           job: projectJobSummary(requireJob(repository, params.jobId)),
         };
@@ -288,13 +292,13 @@ function requireJob(
   return job;
 }
 
-function requireReviewItem(
+function requireReviewProjection(
   repository: CsvAgentJobsRepository,
   jobId: string,
   itemId: string,
-): CsvAgentJobItem {
+): CsvAgentJobReviewProjection {
   requireJob(repository, jobId);
-  const item = repository.getItem(jobId, itemId);
+  const item = repository.getReviewProjection(jobId, itemId);
   if (item === null) {
     throw new AgenCCsvJobReviewError(
       "CSV_REVIEW_NOT_FOUND",
@@ -311,12 +315,12 @@ function requireReviewItem(
 }
 
 function replayOrConflict(
-  item: CsvAgentJobItem,
+  item: CsvAgentJobReviewProjection,
   resolution: EffectReviewResolution,
   requestedResult: ReturnType<typeof canonicalizeCsvResult> | undefined,
 ): CsvJobReviewResolveResult {
   if (
-    sameResolution(item.reviewEvidence, resolution) &&
+    sameResolution(item, resolution) &&
     sameResolutionResult(item, resolution, requestedResult)
   ) {
     return {
@@ -332,9 +336,10 @@ function replayOrConflict(
 }
 
 function sameResolution(
-  stored: Record<string, unknown> | undefined,
+  item: CsvAgentJobReviewProjection,
   requested: EffectReviewResolution,
 ): boolean {
+  const stored = item.reviewEvidence?.value;
   if (stored === undefined) return false;
   const identityKeys = [
     "version",
@@ -351,8 +356,29 @@ function sameResolution(
   return identityKeys.every((key) => stored[key] === requested[key]);
 }
 
+function createCanonicalResolution(
+  params: CsvJobReviewResolveParams,
+): EffectReviewResolution {
+  try {
+    return canonicalizeEffectReviewResolution(
+      createOperatorEffectReviewResolution({
+        disposition: params.disposition,
+        actorId: params.reviewer,
+        evidenceRef: params.evidenceRef,
+        evidenceSha256: params.evidenceSha256,
+        reviewedAt: new Date().toISOString(),
+      }),
+    );
+  } catch (error) {
+    throw new AgenCCsvJobReviewError(
+      "CSV_REVIEW_INVALID",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
 function sameResolutionResult(
-  item: CsvAgentJobItem,
+  item: CsvAgentJobReviewProjection,
   resolution: EffectReviewResolution,
   requestedResult: ReturnType<typeof canonicalizeCsvResult> | undefined,
 ): boolean {
@@ -382,10 +408,39 @@ function projectJobSummary(job: CsvAgentJobSummary): CsvJobReviewJobSummary {
   return job as unknown as CsvJobReviewJobSummary;
 }
 
-function projectReviewDetail(item: CsvAgentJobItem): CsvJobReviewDetail {
-  const sourceId = projectText(item.sourceId, CSV_REVIEW_SOURCE_ID_MAX_BYTES);
-  const reason = projectText(item.reviewReason, CSV_REVIEW_REASON_MAX_BYTES);
-  const evidence = projectEvidence(item.reviewEvidence);
+function projectReviewSummary(
+  item: CsvAgentJobReviewProjection,
+): CsvJobReviewItemSummary {
+  return {
+    itemId: item.itemId,
+    rowIndex: item.rowIndex,
+    ...(item.sourceId !== undefined ? { sourceId: item.sourceId } : {}),
+    ...(item.sourceIdTruncated === true ? { sourceIdTruncated: true } : {}),
+    ...(item.sourceIdDigest !== undefined
+      ? { sourceIdDigest: item.sourceIdDigest }
+      : {}),
+    status: item.status,
+    attemptCount: item.attemptCount,
+    resultAvailability: item.resultAvailability,
+    resultSizeBytes: item.resultSizeBytes,
+    ...(item.resultDigest !== undefined
+      ? { resultDigest: item.resultDigest }
+      : {}),
+    ...(item.reviewStatus !== undefined
+      ? { reviewStatus: item.reviewStatus }
+      : {}),
+    ...(item.reviewReason !== undefined
+      ? { reviewReason: item.reviewReason }
+      : {}),
+    ...(item.reviewReasonTruncated === true
+      ? { reviewReasonTruncated: true }
+      : {}),
+  };
+}
+
+function projectReviewDetail(
+  item: CsvAgentJobReviewProjection,
+): CsvJobReviewDetail {
   return {
     contractVersion: CSV_REVIEW_CONTRACT_VERSION,
     jobId: item.jobId,
@@ -396,20 +451,35 @@ function projectReviewDetail(item: CsvAgentJobItem): CsvJobReviewDetail {
     resultAvailability: item.resultAvailability,
     resultSizeBytes: item.resultSizeBytes,
     reviewStatus: item.reviewStatus ?? "pending",
-    ...(sourceId.value !== undefined ? { sourceId: sourceId.value } : {}),
-    ...(sourceId.truncated ? { sourceIdTruncated: true } : {}),
+    ...(item.sourceId !== undefined ? { sourceId: item.sourceId } : {}),
+    ...(item.sourceIdTruncated === true ? { sourceIdTruncated: true } : {}),
     ...(item.resultDigest !== undefined
       ? { resultDigest: item.resultDigest }
       : {}),
-    ...(reason.value !== undefined ? { reviewReason: reason.value } : {}),
-    ...(reason.truncated ? { reviewReasonTruncated: true } : {}),
+    ...(item.reviewReason !== undefined
+      ? { reviewReason: item.reviewReason }
+      : {}),
+    ...(item.reviewReasonTruncated === true
+      ? { reviewReasonTruncated: true }
+      : {}),
     ...(item.reviewDisposition !== undefined
       ? { disposition: item.reviewDisposition }
       : {}),
     ...(item.reviewDomainAction !== undefined
       ? { domainAction: item.reviewDomainAction }
       : {}),
-    ...(evidence !== undefined ? { evidence } : {}),
+    ...(item.reviewEvidence !== undefined
+      ? {
+          evidence: {
+            bytes: item.reviewEvidence.bytes,
+            sha256: item.reviewEvidence.sha256,
+            truncated: item.reviewEvidence.truncated,
+            ...(item.reviewEvidence.value !== undefined
+              ? { value: item.reviewEvidence.value as unknown as JsonObject }
+              : {}),
+          },
+        }
+      : {}),
     ...(item.effect !== undefined
       ? {
           effect: {
@@ -425,33 +495,4 @@ function projectReviewDetail(item: CsvAgentJobItem): CsvJobReviewDetail {
       ? { completedAt: item.completedAt }
       : {}),
   };
-}
-
-function projectEvidence(
-  evidence: Record<string, unknown> | undefined,
-): CsvJobReviewDetail["evidence"] | undefined {
-  if (evidence === undefined) return undefined;
-  const json = JSON.stringify(evidence);
-  const bytes = Buffer.byteLength(json, "utf8");
-  const sha256 = createHash("sha256").update(json).digest("hex");
-  return bytes <= CSV_REVIEW_EVIDENCE_MAX_BYTES
-    ? {
-        bytes,
-        sha256,
-        truncated: false,
-        value: evidence as JsonObject,
-      }
-    : { bytes, sha256, truncated: true };
-}
-
-function projectText(
-  value: string | undefined,
-  maxBytes: number,
-): { readonly value?: string; readonly truncated: boolean } {
-  if (value === undefined) return { truncated: false };
-  const bytes = Buffer.from(value, "utf8");
-  if (bytes.length <= maxBytes) return { value, truncated: false };
-  let end = maxBytes;
-  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
-  return { value: bytes.subarray(0, end).toString("utf8"), truncated: true };
 }
