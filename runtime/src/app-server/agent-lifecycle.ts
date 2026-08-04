@@ -13,7 +13,11 @@ import {
   createOperatorEffectReviewResolution,
   resolveDurableEffectReview,
 } from "../state/effect-review.js";
-import { listUnresolvedUnknownOutcomeEffects } from "../state/unknown-outcome-gate.js";
+import { StateRunDurabilityRepository } from "../state/run-durability.js";
+import {
+  listUnresolvedUnknownOutcomeEffects,
+  resolveUnknownOutcomeEffect,
+} from "../state/unknown-outcome-gate.js";
 import {
   requireAbsoluteWorkspaceCwd,
   WorkspaceCwdError,
@@ -66,6 +70,7 @@ import type {
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionParams,
   SessionExtendCompactionRollbackRetentionResult,
+  SessionResolveToolCallEvidenceParams,
   SessionResolveToolCallParams,
   SessionResolveToolCallResult,
   SessionRewindConversationToMessageParams,
@@ -337,6 +342,12 @@ interface RunnerTerminationTarget {
   readonly transitionAt: string;
   readonly metadata?: JsonObject;
   readonly terminal?: AgenCBackgroundAgentTerminalSnapshot;
+}
+
+function isEvidenceToolCallResolution(
+  params: SessionResolveToolCallParams,
+): params is SessionResolveToolCallEvidenceParams {
+  return Object.prototype.hasOwnProperty.call(params, "disposition");
 }
 
 export class AgenCDaemonAgentManager {
@@ -1674,6 +1685,55 @@ export class AgenCDaemonAgentManager {
     }
     const driver = openStateDatabases({ cwd: session.cwd });
     try {
+      const candidates =
+        params.toolCallId !== undefined
+          ? [
+              {
+                sessionId: params.sessionId,
+                toolCallId: params.toolCallId,
+                toolName: "",
+                startedAt: "",
+              },
+            ]
+          : [...listUnresolvedUnknownOutcomeEffects(driver, params.sessionId)];
+      const resolved: SessionResolveToolCallResult["resolved"][number][] = [];
+
+      if (!isEvidenceToolCallResolution(params)) {
+        const durableEffects = new StateRunDurabilityRepository(driver);
+        for (const effect of candidates) {
+          // The published 1.0 request carried no disposition or evidence. It
+          // remains valid only for pre-durability poisoned rows; every durable
+          // v1/v2 effect stays pending until an evidence-bearing request arrives.
+          if (
+            durableEffects.getEffectBySessionCall(
+              params.sessionId,
+              effect.toolCallId,
+            ) !== undefined
+          ) {
+            continue;
+          }
+          if (
+            resolveUnknownOutcomeEffect(driver, {
+              sessionId: params.sessionId,
+              toolCallId: effect.toolCallId,
+            })
+          ) {
+            resolved.push({
+              toolCallId: effect.toolCallId,
+              toolName: effect.toolName,
+            });
+          }
+        }
+        return {
+          sessionId: params.sessionId,
+          resolved,
+          remaining: listUnresolvedUnknownOutcomeEffects(
+            driver,
+            params.sessionId,
+          ).length,
+        };
+      }
+
       const reviewedAt = new Date().toISOString();
       const reviewedBy = params.reviewer?.trim() || "tui_operator";
       const resolution = createOperatorEffectReviewResolution({
@@ -1683,15 +1743,6 @@ export class AgenCDaemonAgentManager {
         evidenceSha256: params.evidenceSha256,
         reviewedAt,
       });
-      const candidates = [
-        {
-          sessionId: params.sessionId,
-          toolCallId: params.toolCallId,
-          toolName: "",
-          startedAt: "",
-        },
-      ];
-      const resolved: SessionResolveToolCallResult["resolved"][number][] = [];
       for (const effect of candidates) {
         const reviewOptions = {
           sessionId: params.sessionId,

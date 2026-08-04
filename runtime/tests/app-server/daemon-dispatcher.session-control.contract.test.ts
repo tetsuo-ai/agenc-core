@@ -20,6 +20,92 @@ async function initialize(connection: {
 }
 
 describe("daemon session-control internal method dispatch", () => {
+  it("routes the exact SDK 0.3.0 tool-resolution shape and rejects partial hybrids", async () => {
+    const resolveSessionToolCall = vi.fn(async () => ({
+      sessionId: "session_1",
+      resolved: [],
+      remaining: 0,
+    }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: { resolveSessionToolCall } as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "legacy",
+        method: "session.resolveToolCall",
+        params: {
+          sessionId: "session_1",
+          toolCallId: "call_legacy",
+          reviewer: "sdk-0.3.0",
+        },
+      }),
+    ).resolves.toMatchObject({ result: { sessionId: "session_1" } });
+    expect(resolveSessionToolCall).toHaveBeenLastCalledWith({
+      sessionId: "session_1",
+      toolCallId: "call_legacy",
+      reviewer: "sdk-0.3.0",
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "evidence",
+        method: "session.resolveToolCall",
+        params: {
+          sessionId: "session_1",
+          toolCallId: "call_v2",
+          disposition: "confirmed_no_effect",
+          evidenceRef: "ticket:INC-14",
+          evidenceSha256: "a".repeat(64),
+          reviewer: "operator",
+        },
+      }),
+    ).resolves.toMatchObject({ result: { sessionId: "session_1" } });
+    expect(resolveSessionToolCall).toHaveBeenLastCalledWith({
+      sessionId: "session_1",
+      toolCallId: "call_v2",
+      disposition: "confirmed_no_effect",
+      evidenceRef: "ticket:INC-14",
+      evidenceSha256: "a".repeat(64),
+      reviewer: "operator",
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "partial-hybrid",
+        method: "session.resolveToolCall",
+        params: {
+          sessionId: "session_1",
+          toolCallId: "call_v2",
+          disposition: "confirmed_no_effect",
+        },
+      }),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+
+    for (const [id, field] of [
+      ["empty-tool-call", "toolCallId"],
+      ["empty-reviewer", "reviewer"],
+    ] as const) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id,
+          method: "session.resolveToolCall",
+          params: {
+            sessionId: "session_1",
+            [field]: "",
+          },
+        }),
+      ).resolves.toMatchObject({ error: { code: -32602 } });
+    }
+    expect(resolveSessionToolCall).toHaveBeenCalledTimes(2);
+  });
+
   it("routes both compaction operator methods", async () => {
     const rollbackCompaction = vi.fn(async () => ({
       sessionId: "session_1",

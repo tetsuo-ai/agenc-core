@@ -13,15 +13,26 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_NOTIFICATION_METHODS,
 } from "../../src/app-server/protocol/index.js";
 import { resolveAgenCDaemonSocketPath } from "../../src/app-server/daemon-cli.js";
 import {
+  AGENC_SDK_DAEMON_PROTOCOL_VERSION,
   AGENC_SDK_DAEMON_METHODS,
   AGENC_SDK_DAEMON_NOTIFICATION_METHODS,
+  type AgencParamsByMethod,
 } from "../../../packages/agenc-sdk/src/protocol";
 import { resolveDaemonSocketPath } from "../../../packages/agenc-sdk/src/socket";
+
+// @ts-expect-error A partial evidence request must not match the legacy branch.
+const invalidPartialToolResolution: AgencParamsByMethod["session.resolveToolCall"] = {
+  sessionId: "session_legacy",
+  toolCallId: "call_partial",
+  disposition: "confirmed_no_effect",
+};
+void invalidPartialToolResolution;
 
 const packageProtocolPath = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -34,6 +45,27 @@ describe("agenc-sdk protocol mirror", () => {
     expect([...AGENC_SDK_DAEMON_NOTIFICATION_METHODS]).toEqual([
       ...AGENC_DAEMON_NOTIFICATION_METHODS,
     ]);
+  });
+
+  it("retains the SDK 0.3.0 tool-resolution request shape", () => {
+    const resolveAllLegacy = {
+      sessionId: "session_legacy",
+      reviewer: "sdk-0.3.0",
+    } satisfies AgencParamsByMethod["session.resolveToolCall"];
+    const resolveOneLegacy = {
+      sessionId: "session_legacy",
+      toolCallId: "call_legacy",
+      reviewer: "sdk-0.3.0",
+    } satisfies AgencParamsByMethod["session.resolveToolCall"];
+
+    expect(AGENC_SDK_DAEMON_PROTOCOL_VERSION).toBe(
+      AGENC_DAEMON_PROTOCOL_VERSION,
+    );
+    expect(resolveAllLegacy).toEqual({
+      sessionId: "session_legacy",
+      reviewer: "sdk-0.3.0",
+    });
+    expect(resolveOneLegacy.toolCallId).toBe("call_legacy");
   });
 
   it("declares params and result mappings for every daemon method", () => {

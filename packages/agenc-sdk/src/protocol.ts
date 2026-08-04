@@ -289,7 +289,19 @@ export interface SessionCancelTurnParams extends JsonObject {
   readonly reason?: string;
 }
 
-export interface SessionResolveToolCallParams extends JsonObject {
+/** Protocol-1.0 request shape shipped with agenc-sdk 0.3.0. */
+export interface SessionResolveToolCallLegacyParams extends JsonObject {
+  readonly sessionId: string;
+  /** When omitted, every eligible legacy effect in the session is reviewed. */
+  readonly toolCallId?: string;
+  readonly reviewer?: string;
+  readonly disposition?: never;
+  readonly evidenceRef?: never;
+  readonly evidenceSha256?: never;
+}
+
+/** Evidence-bearing request required for canonical durable effect records. */
+export interface SessionResolveToolCallEvidenceParams extends JsonObject {
   readonly sessionId: string;
   readonly toolCallId: string;
   readonly disposition:
@@ -300,6 +312,10 @@ export interface SessionResolveToolCallParams extends JsonObject {
   readonly evidenceSha256: string;
   readonly reviewer?: string;
 }
+
+export type SessionResolveToolCallParams =
+  | SessionResolveToolCallLegacyParams
+  | SessionResolveToolCallEvidenceParams;
 
 export interface SessionMcpServerConfig extends JsonObject {
   readonly name: string;

@@ -120,6 +120,8 @@ import {
   type SessionAttachParams,
   type SessionAttachResult,
   type SessionCancelTurnParams,
+  type SessionResolveToolCallEvidenceParams,
+  type SessionResolveToolCallLegacyParams,
   type SessionResolveToolCallParams,
   type SessionClearParams,
   type SessionMcpAddServerParams,
@@ -2597,6 +2599,20 @@ function validateSessionResolveToolCallParams(
     ],
   });
   validateRequiredString(validated, "session.resolveToolCall", "sessionId");
+  const hasEvidenceFields = [
+    "disposition",
+    "evidenceRef",
+    "evidenceSha256",
+  ].some((field) => Object.prototype.hasOwnProperty.call(validated, field));
+  if (!hasEvidenceFields) {
+    if (validated.toolCallId !== undefined) {
+      validateRequiredString(validated, "session.resolveToolCall", "toolCallId");
+    }
+    if (validated.reviewer !== undefined) {
+      validateRequiredString(validated, "session.resolveToolCall", "reviewer");
+    }
+    return validated as SessionResolveToolCallLegacyParams;
+  }
   validateRequiredString(validated, "session.resolveToolCall", "toolCallId");
   validateRequiredString(validated, "session.resolveToolCall", "evidenceRef");
   validateRequiredString(
@@ -2619,7 +2635,7 @@ function validateSessionResolveToolCallParams(
       "session.resolveToolCall evidenceSha256 must be lowercase sha256",
     );
   }
-  return validated as SessionResolveToolCallParams;
+  return validated as SessionResolveToolCallEvidenceParams;
 }
 
 function validateSessionMcpAddServerParams(

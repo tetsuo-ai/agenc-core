@@ -11,6 +11,11 @@ import {
   openStateDatabases,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
+import { StateRunDurabilityRepository } from "../state/run-durability.js";
+import {
+  listUnresolvedUnknownOutcomeEffects,
+} from "../state/unknown-outcome-gate.js";
+import { recordInFlightToolCallUnknownOutcome } from "../state/tool-output-rotation.js";
 import {
   AgenCDaemonAgentLifecycleError,
   AgenCDaemonAgentManager,
@@ -3329,6 +3334,137 @@ describe("AgenC background agent lifecycle", () => {
       code: "BACKGROUND_RUNNER_UNAVAILABLE",
     });
     await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+  });
+
+  it("limits SDK 0.3.0 tool resolution to pure legacy poisoned rows", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: () => "session_legacy_review",
+      now: () => "2026-08-04T00:00:00.000Z",
+    });
+    let driver: StateSqliteDriver | undefined;
+    try {
+      await sessions.createSession({
+        cwd,
+        agentId: "agent_legacy_review",
+      });
+      const agents = new AgenCDaemonAgentManager({ sessionManager: sessions });
+      driver = openStateDatabases({ cwd });
+      const effects = new StateRunDurabilityRepository(driver);
+
+      const createDurableUnknown = (
+        runId: string,
+        callId: string,
+        effectFormatVersion: 1 | 2,
+      ): void => {
+        effects.ensureInitialEpoch({
+          runId,
+          openedAt: "2026-08-04T00:00:00.000Z",
+          openedEventId: `${runId}:opened`,
+        });
+        effects.beginEffect({
+          runId,
+          epoch: 1,
+          stepId: `${runId}:step`,
+          sessionId: "session_legacy_review",
+          callId,
+          toolName: "Write",
+          recoveryCategory: "side-effecting",
+          intentDigest: `${runId}:intent-digest`,
+          eventId: `${runId}:intent`,
+          eventSequence: 1,
+          intentAt: "2026-08-04T00:00:01.000Z",
+          effectFormatVersion,
+        });
+        effects.markEffectUnknown({
+          runId,
+          stepId: `${runId}:step`,
+          eventId: `${runId}:unknown`,
+          eventSequence: 2,
+          reason: "connection_lost_after_dispatch",
+          observedAt: "2026-08-04T00:00:02.000Z",
+        });
+        recordInFlightToolCallUnknownOutcome(driver!, {
+          sessionId: "session_legacy_review",
+          agentId: "agent_legacy_review",
+          toolCallId: callId,
+          toolName: "Write",
+          observedAt: "2026-08-04T00:00:02.000Z",
+          recoveryCategory: "side-effecting",
+        });
+      };
+
+      createDurableUnknown("run_v1", "call_v1", 1);
+      createDurableUnknown("run_v2", "call_v2", 2);
+      recordInFlightToolCallUnknownOutcome(driver, {
+        sessionId: "session_legacy_review",
+        agentId: "agent_legacy_review",
+        toolCallId: "call_pure_legacy",
+        toolName: "LegacyWrite",
+        observedAt: "2026-08-04T00:00:03.000Z",
+        recoveryCategory: "side-effecting",
+      });
+
+      await expect(
+        agents.resolveSessionToolCall({
+          sessionId: "session_legacy_review",
+          reviewer: "sdk-0.3.0",
+        }),
+      ).resolves.toEqual({
+        sessionId: "session_legacy_review",
+        resolved: [
+          {
+            toolCallId: "call_pure_legacy",
+            toolName: "LegacyWrite",
+          },
+        ],
+        remaining: 2,
+      });
+      expect(
+        effects.getEffect("run_v1", "run_v1:step"),
+      ).toMatchObject({
+        effectFormatVersion: 1,
+        reviewStatus: "pending",
+      });
+      expect(
+        effects.getEffect("run_v2", "run_v2:step"),
+      ).toMatchObject({
+        effectFormatVersion: 2,
+        reviewStatus: "pending",
+      });
+      expect(
+        effects.getEffect("run_v1", "run_v1:step")?.review,
+      ).toBeUndefined();
+      expect(
+        effects.getEffect("run_v2", "run_v2:step")?.review,
+      ).toBeUndefined();
+      expect(
+        listUnresolvedUnknownOutcomeEffects(
+          driver,
+          "session_legacy_review",
+        ).map((effect) => effect.toolCallId),
+      ).toEqual(["call_v1", "call_v2"]);
+
+      await expect(
+        agents.resolveSessionToolCall({
+          sessionId: "session_legacy_review",
+          toolCallId: "call_v2",
+          reviewer: "sdk-0.3.0",
+        }),
+      ).resolves.toEqual({
+        sessionId: "session_legacy_review",
+        resolved: [],
+        remaining: 2,
+      });
+      expect(
+        effects.getEffect("run_v2", "run_v2:step"),
+      ).toMatchObject({ reviewStatus: "pending" });
+    } finally {
+      driver?.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("stops a launched agent when lifecycle session creation fails", async () => {

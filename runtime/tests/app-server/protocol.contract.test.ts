@@ -128,6 +128,8 @@ const expectedInternalMethods = [
   "workspace.editor.cancelPrediction",
   "workspace.editor.predictionFeedback",
   "session.partialCompactFromMessage",
+  "session.rollbackCompaction",
+  "session.extendCompactionRollbackRetention",
   "session.rewindConversationToMessage",
   "session.previewFileRewind",
   "session.rewindFilesToMessage",
@@ -261,6 +263,49 @@ describe("AgenC daemon protocol surface", () => {
     // External installed/sibling protocol copies are release artifacts, not
     // build inputs for agenc-core. Exact method drift remains pinned above
     // against this repository's canonical TypeScript registry and schema.
+  });
+
+  it("keeps the published protocol-1.0 tool-resolution request compatible", () => {
+    const validate = compileRequestValidator(readProtocolSchema());
+    const request = (id: string, params: Record<string, unknown>) => ({
+      jsonrpc: JSON_RPC_VERSION,
+      id,
+      method: "session.resolveToolCall",
+      params,
+    });
+
+    expect(
+      validate(
+        request("legacy", {
+          sessionId: "session_1",
+          toolCallId: "call_legacy",
+          reviewer: "sdk-0.3.0",
+        }),
+      ),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+    expect(
+      validate(
+        request("evidence", {
+          sessionId: "session_1",
+          toolCallId: "call_v2",
+          disposition: "confirmed_no_effect",
+          evidenceRef: "ticket:INC-14",
+          evidenceSha256: "a".repeat(64),
+          reviewer: "operator",
+        }),
+      ),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+    expect(
+      validate(
+        request("partial-hybrid", {
+          sessionId: "session_1",
+          toolCallId: "call_v2",
+          disposition: "confirmed_no_effect",
+        }),
+      ),
+    ).toBe(false);
   });
 
   it("validates all request-bearing methods through the published schema", () => {

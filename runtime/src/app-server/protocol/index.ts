@@ -1253,7 +1253,24 @@ export interface SessionClearParams extends JsonObject {
   readonly sessionId: string;
 }
 
-export interface SessionResolveToolCallParams extends JsonObject {
+/**
+ * Protocol-1.0 compatibility request shipped with agenc-sdk 0.3.0.
+ *
+ * This shape may resolve only legacy poisoned rows that have no canonical
+ * durable effect. Durable effect records always require explicit evidence.
+ */
+export interface SessionResolveToolCallLegacyParams extends JsonObject {
+  readonly sessionId: string;
+  /** When omitted, review every eligible legacy effect in the session. */
+  readonly toolCallId?: string;
+  readonly reviewer?: string;
+  readonly disposition?: never;
+  readonly evidenceRef?: never;
+  readonly evidenceSha256?: never;
+}
+
+/** Evidence-bearing resolution required for every durable effect record. */
+export interface SessionResolveToolCallEvidenceParams extends JsonObject {
   readonly sessionId: string;
   readonly toolCallId: string;
   readonly disposition:
@@ -1264,6 +1281,10 @@ export interface SessionResolveToolCallParams extends JsonObject {
   readonly evidenceSha256: string;
   readonly reviewer?: string;
 }
+
+export type SessionResolveToolCallParams =
+  | SessionResolveToolCallLegacyParams
+  | SessionResolveToolCallEvidenceParams;
 
 export interface SessionSnapshotParams extends JsonObject {
   readonly sessionId: string;

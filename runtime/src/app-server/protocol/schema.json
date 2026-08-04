@@ -773,7 +773,7 @@
         "sessionId"
       ]
     },
-    "SessionResolveToolCallParams": {
+    "SessionResolveToolCallLegacyParams": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -792,6 +792,57 @@
       },
       "required": [
         "sessionId"
+      ]
+    },
+    "SessionResolveToolCallEvidenceParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolCallId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "confirmed_committed",
+            "confirmed_no_effect",
+            "remains_unknown"
+          ]
+        },
+        "evidenceRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidenceSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sessionId",
+        "toolCallId",
+        "disposition",
+        "evidenceRef",
+        "evidenceSha256"
+      ]
+    },
+    "SessionResolveToolCallParams": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/SessionResolveToolCallLegacyParams"
+        },
+        {
+          "$ref": "#/definitions/SessionResolveToolCallEvidenceParams"
+        }
       ]
     },
     "SessionMcpServerConfig": {
@@ -2200,6 +2251,9 @@
         },
         {
           "$ref": "#/definitions/SessionCancelTurnRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionResolveToolCallRequest"
         },
         {
           "$ref": "#/definitions/SessionMcpAddServerRequest"
