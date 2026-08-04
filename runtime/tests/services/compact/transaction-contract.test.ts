@@ -336,7 +336,7 @@ describe("transactional compaction production path", () => {
       await expect(runRealTransaction(store, source, provider, {
         compactionTransaction: adapter,
       })).rejects.toThrow(/durable compaction commit failed/i);
-      expect(store.readAll().filter((item) => item.type.startsWith("compaction_")))
+      expect(store.readAll().filter(isCompactionLifecycleItem))
         .toMatchObject([
           { type: "compaction_intent" },
           { type: "compaction_failed", payload: { reason: "commit_failed" } },
@@ -377,7 +377,7 @@ describe("transactional compaction production path", () => {
         .toThrow(/already in progress/i);
       releaseProvider();
       await expect(attempt).rejects.toThrow(/test abort/i);
-      expect(store.readAll().filter((item) => item.type.startsWith("compaction_")))
+      expect(store.readAll().filter(isCompactionLifecycleItem))
         .toMatchObject([
           { type: "compaction_intent" },
           { type: "compaction_failed", payload: { reason: "aborted" } },
