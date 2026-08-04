@@ -12,8 +12,18 @@ import {
   toRuntimeMessageContent,
 } from "../llm/content-conversion.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
-import type { CompactionResult, RuntimeMessage } from "../services/compact/types.js";
+import type {
+  CompactCleanupDeps,
+  CompactionResult,
+  RuntimeMessage,
+} from "../services/compact/types.js";
+import { runPostCompactCleanup } from "../services/compact/postCompactCleanup.js";
+import { resetMicrocompactState } from "../services/compact/microCompact.js";
 import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
+import {
+  CompactionCleanupPendingError,
+  finalizeCompactionTransaction,
+} from "../services/compact/finalize-transaction.js";
 import type { CompactedItem } from "../session/rollout-item.js";
 import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 import type { Session } from "../session/session.js";
@@ -442,6 +452,7 @@ interface AgenCToolUseContext {
   readonly admissionSession?: Session;
   readonly provider?: LLMProvider;
   readonly cwd?: string;
+  readonly deps?: { readonly cleanup?: CompactCleanupDeps };
 }
 
 type AgenCRuntimeTool = LLMTool & {
@@ -535,6 +546,15 @@ function buildAgenCToolUseContext(
       ? { queryTracking: surface.queryTracking }
       : {}),
     clearProviderResponseId: () => session.clearProviderResponseId(),
+    deps: {
+      cleanup: {
+        clearReadFileState: () => surface.readFileState?.clear(),
+        clearProviderResponseId: () => session.clearProviderResponseId(),
+        clearSearchIndexes: surface.clearSearchIndexes,
+        clearToolIndexes: surface.clearToolIndexes,
+        resetMicrocompactState,
+      },
+    },
     ...(session.rolloutStore !== undefined ? { rolloutStore: session.rolloutStore } : {}),
     ...(session.rolloutStore !== undefined
       ? { session: { rolloutStore: session.rolloutStore } }
@@ -609,6 +629,8 @@ type SessionSurface = {
   readonly setSDKStatus?: (status: "compacting" | null) => void;
   readonly addNotification?: (notification: unknown) => void;
   readonly emitWarning?: (warning: { readonly cause: string; readonly message: string }) => void;
+  readonly clearSearchIndexes?: () => void;
+  readonly clearToolIndexes?: () => void;
 };
 
 function readSessionSurface(session: Session): SessionSurface {
@@ -644,6 +666,8 @@ function readSessionSurface(session: Session): SessionSurface {
       read<(warning: { readonly cause: string; readonly message: string }) => void>(
         "emitWarning",
       ),
+    clearSearchIndexes: read<() => void>("clearSearchIndexes"),
+    clearToolIndexes: read<() => void>("clearToolIndexes"),
   };
 }
 
@@ -790,44 +814,33 @@ async function runManualCompact(params: {
     : compactionResult.transaction.committed.replacement_history.map(
         responseItemToLlmMessage,
       );
-  try {
+  const applyProjection = async (): Promise<void> => {
     await params.session.state.with((sessionState) => {
       sessionState.history = compacted.map(cloneLLMMessage);
     });
-    if (compactionResult.transaction !== undefined) {
-      if (rolloutStore === null || rolloutStore === undefined) {
-        throw new Error("transactional compaction lost its rollout owner");
-      }
-      rolloutStore.markProjectionComplete(
-        compactionResult.transaction.attempt_id,
-      );
+  };
+  const cleanup = async (): Promise<void> => {
+    runPostCompactCleanup(toolUseContext.deps?.cleanup);
+  };
+  if (compactionResult.transaction !== undefined) {
+    if (rolloutStore === null || rolloutStore === undefined) {
+      throw new Error("transactional compaction lost its rollout owner");
     }
-  } catch (error) {
-    if (compactionResult.transaction !== undefined && rolloutStore) {
-      rolloutStore.markProjectionFailed(
-        compactionResult.transaction.attempt_id,
-        error,
-      );
+    const attemptId = compactionResult.transaction.attempt_id;
+    try {
+      await finalizeCompactionTransaction({
+        store: rolloutStore,
+        attemptId,
+        applyProjection,
+        cleanup,
+      });
+    } catch (error) {
+      if (!(error instanceof CompactionCleanupPendingError)) throw error;
+      params.session.registerCompactionCleanupRetry(attemptId, cleanup);
     }
-    throw error;
-  }
-  try {
-    await resetAgenCMicrocompactState(toolUseContext);
-    params.session.clearProviderResponseId();
-    if (compactionResult.transaction !== undefined) {
-      rolloutStore?.markCleanupComplete(compactionResult.transaction.attempt_id);
-    }
-  } catch (error) {
-    if (compactionResult.transaction !== undefined) {
-      rolloutStore?.markCleanupPending(
-        compactionResult.transaction.attempt_id,
-        error,
-      );
-      throw new CompactionReconstructionRequiredError(
-        compactionResult.transaction.attempt_id,
-        { cause: error },
-      );
-    }
+  } else {
+    await applyProjection();
+    await cleanup();
   }
   return {
     displayText: typeof result.displayText === "string"
@@ -1484,16 +1497,6 @@ async function addManualCompactSlashMessages(
       ...slashMessages,
     ],
   };
-}
-
-async function resetAgenCMicrocompactState(
-  toolUseContext: AgenCToolUseContext,
-): Promise<void> {
-  await withCompactContextGuards(async () => {
-    const { resetMicrocompactState } =
-      await import("../services/compact/microCompact.js");
-    resetMicrocompactState();
-  }, envForToolUseContext(toolUseContext));
 }
 
 function toAgenCRuntimeMessages(

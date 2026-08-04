@@ -102,7 +102,7 @@ describe("slash /compact contract", () => {
     });
   });
 
-  test("manual compact succeeds while idle and replaces session history", async () => {
+  test("manual compact fails closed while idle without durable history", async () => {
     const registry = buildDefaultRegistry();
     const command = registry.find("compact");
     const { session, state } = mkSession({
@@ -144,16 +144,12 @@ describe("slash /compact contract", () => {
     });
 
     expect(result).toEqual({
-      kind: "compact",
-      text: "Conversation compacted",
+      kind: "error",
+      message:
+        "durable compaction is unavailable without a canonical rollout owner; history was not changed",
     });
-    expect(state.history[0]?.content).toContain("<compact>");
-    expect(state.history.map((message) => message.content).join("\n")).toContain(
-      "slash compact summary",
-    );
-    expect(state.history.map((message) => message.content).join("\n")).toContain(
-      "focus on the latest request",
-    );
+    expect(state.history[0]?.content).toBe("large request");
+    expect(JSON.stringify(state.history)).not.toContain("slash compact summary");
     expect(setSDKStatus).toHaveBeenNthCalledWith(1, "compacting");
     expect(setSDKStatus).toHaveBeenLastCalledWith(null);
     expect(setStreamMode).toHaveBeenCalledWith("requesting");

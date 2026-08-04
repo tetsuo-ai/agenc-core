@@ -20,6 +20,96 @@ async function initialize(connection: {
 }
 
 describe("daemon session-control internal method dispatch", () => {
+  it("routes both compaction operator methods", async () => {
+    const rollbackCompaction = vi.fn(async () => ({
+      sessionId: "session_1",
+      ok: true,
+      attemptId: "attempt-1",
+      mode: "reviewed_branch" as const,
+      targetSessionId: "reviewed-1",
+      displayText: "restored",
+    }));
+    const extendCompactionRollbackRetention = vi.fn(async () => ({
+      sessionId: "session_1",
+      ok: true,
+      attemptId: "attempt-1",
+      extendedUntilMs: 1_900_000_000_000,
+      displayText: "extended",
+    }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: {
+        rollbackCompaction,
+        extendCompactionRollbackRetention,
+      } as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "rollback",
+      method: "session.rollbackCompaction",
+      params: {
+        sessionId: "session_1",
+        attemptId: "attempt-1",
+        reviewedBranchTargetSessionId: "reviewed-1",
+      },
+    });
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "retain",
+      method: "session.extendCompactionRollbackRetention",
+      params: {
+        sessionId: "session_1",
+        attemptId: "attempt-1",
+        extendedUntilMs: 1_900_000_000_000,
+      },
+    });
+
+    expect(rollbackCompaction).toHaveBeenCalledWith({
+      sessionId: "session_1",
+      attemptId: "attempt-1",
+      reviewedBranchTargetSessionId: "reviewed-1",
+    });
+    expect(extendCompactionRollbackRetention).toHaveBeenCalledWith({
+      sessionId: "session_1",
+      attemptId: "attempt-1",
+      extendedUntilMs: 1_900_000_000_000,
+    });
+  });
+
+  it("rejects malformed compaction operator parameters", async () => {
+    const rollbackCompaction = vi.fn();
+    const extendCompactionRollbackRetention = vi.fn();
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: {
+        rollbackCompaction,
+        extendCompactionRollbackRetention,
+      } as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await expect(connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-rollback",
+      method: "session.rollbackCompaction",
+      params: { sessionId: "session_1", attemptId: "" },
+    })).resolves.toMatchObject({ error: { code: -32602 } });
+    await expect(connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-retain",
+      method: "session.extendCompactionRollbackRetention",
+      params: {
+        sessionId: "session_1",
+        attemptId: "attempt-1",
+        extendedUntilMs: 1.5,
+      },
+    })).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(rollbackCompaction).not.toHaveBeenCalled();
+    expect(extendCompactionRollbackRetention).not.toHaveBeenCalled();
+  });
+
   it("routes session.setModel to the agent manager", async () => {
     const setSessionModel = vi.fn(async (params: SessionSetModelParams) => ({
       sessionId: params.sessionId,

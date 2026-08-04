@@ -66,7 +66,7 @@ function commandContext(session: unknown, argsRaw = "") {
 }
 
 describe("runtime session compact contract", () => {
-  test("manual compact writes replacement history and clears provider continuation", async () => {
+  test("manual compact fails closed without a canonical rollout owner", async () => {
     const client = new ProviderHttpClient({
       providerName: "contract-provider",
       baseURL: "http://127.0.0.1:18080",
@@ -92,18 +92,14 @@ describe("runtime session compact contract", () => {
       commandContext(session, "Preserve test decisions"),
     );
 
-    expect(result).toMatchObject({ kind: "compact", text: "Conversation compacted" });
-    expect(clearSpy).toHaveBeenCalledTimes(1);
-    expect(state.history.map((message) => message.content).join("\n")).toContain(
-      "summary from compact provider",
-    );
-    expect(state.history[0]?.content).toContain("<compact>");
-    expect(
-      state.history.some((message) =>
-        String(message.content).includes("<command-name>/compact</command-name>") &&
-        String(message.content).includes("Preserve test decisions"),
-      ),
-    ).toBe(true);
+    expect(result).toEqual({
+      kind: "error",
+      message:
+        "durable compaction is unavailable without a canonical rollout owner; history was not changed",
+    });
+    expect(clearSpy).not.toHaveBeenCalled();
+    expect(state.history[0]?.content).toBe("first request");
+    expect(JSON.stringify(state.history)).not.toContain("summary from compact provider");
   });
 
   test("manual compact preserves process env when provider override is absent", async () => {
@@ -141,8 +137,9 @@ describe("runtime session compact contract", () => {
 
     const result = await compactCommand.execute(commandContext(session));
 
-    expect(result).toMatchObject({ kind: "compact" });
-    expect(seenEnv).toEqual({
+    expect(result).toMatchObject({ kind: "error" });
+    expect(seenEnv).toEqual({});
+    expect(process.env).toMatchObject({
       AGENC_USE_OPENAI: "1",
       OPENAI_MODEL: "env-model",
       OPENAI_BASE_URL: "http://127.0.0.1:18081",
@@ -210,8 +207,8 @@ describe("runtime session compact contract", () => {
       state,
     });
 
-    expect(recovered).toEqual({ kind: "applied", reason: "context_collapse" });
-    expect(state.messagesForQuery[0]?.content).toContain("<compact>");
+    expect(recovered).toEqual({ kind: "pass" });
+    expect(state.messagesForQuery[0]?.content).toBe("first request");
     expect(state.messagesForQuery.at(-1)?.content).toBe("continue");
   });
 
@@ -270,7 +267,7 @@ describe("runtime session compact contract", () => {
 
     const recovered = await runContextCollapseOverflowRecovery({ state });
 
-    expect(recovered).toEqual({ kind: "applied", reason: "context_collapse" });
+    expect(recovered).toEqual({ kind: "pass" });
     const documentMessage = state.messagesForQuery.find(
       (message) =>
         Array.isArray(message.content) &&

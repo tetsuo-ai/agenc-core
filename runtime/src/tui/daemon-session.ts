@@ -23,6 +23,10 @@ import type {
   SessionMcpServerMutationResult,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
+  SessionRollbackCompactionParams,
+  SessionRollbackCompactionResult,
+  SessionExtendCompactionRollbackRetentionParams,
+  SessionExtendCompactionRollbackRetentionResult,
   SessionRewindConversationToMessageParams,
   SessionRewindConversationToMessageResult,
   SessionFileRewindParams,
@@ -191,6 +195,14 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     readonly feedback?: string;
     readonly signal?: AbortSignal;
   }): Promise<SessionPartialCompactFromMessageResult>;
+  rollbackCompaction?(params: {
+    readonly attemptId: string;
+    readonly reviewedBranchTargetSessionId?: string;
+  }): Promise<SessionRollbackCompactionResult>;
+  extendCompactionRollbackRetention?(params: {
+    readonly attemptId: string;
+    readonly extendedUntilMs: number;
+  }): Promise<SessionExtendCompactionRollbackRetentionResult>;
   rewindConversationToMessage?(params: {
     readonly messageOrdinal: number;
   }): Promise<SessionRewindConversationToMessageResult>;
@@ -342,6 +354,14 @@ export type AgenCDaemonBackedTuiSession<
     readonly feedback?: string;
     readonly signal?: AbortSignal;
   }): Promise<SessionPartialCompactFromMessageResult>;
+  rollbackCompaction(params: {
+    readonly attemptId: string;
+    readonly reviewedBranchTargetSessionId?: string;
+  }): Promise<SessionRollbackCompactionResult>;
+  extendCompactionRollbackRetention(params: {
+    readonly attemptId: string;
+    readonly extendedUntilMs: number;
+  }): Promise<SessionExtendCompactionRollbackRetentionResult>;
   rewindConversationToMessage(params: {
     readonly messageOrdinal: number;
   }): Promise<SessionRewindConversationToMessageResult>;
@@ -359,6 +379,16 @@ export interface AgenCDaemonTuiClient {
     params?: JsonObject,
     options?: { readonly signal?: AbortSignal },
   ): Promise<SessionPartialCompactFromMessageResult>;
+  request(
+    method: "session.rollbackCompaction",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionRollbackCompactionResult>;
+  request(
+    method: "session.extendCompactionRollbackRetention",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionExtendCompactionRollbackRetentionResult>;
   request(
     method: "session.rewindConversationToMessage",
     params?: JsonObject,
@@ -1072,6 +1102,20 @@ export function createDaemonTuiSession<
           signal: params.signal,
         },
       ),
+    rollbackCompaction: async (params) =>
+      client.request("session.rollbackCompaction", {
+        sessionId,
+        attemptId: params.attemptId,
+        ...(params.reviewedBranchTargetSessionId !== undefined
+          ? { reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId }
+          : {}),
+      } satisfies SessionRollbackCompactionParams),
+    extendCompactionRollbackRetention: async (params) =>
+      client.request("session.extendCompactionRollbackRetention", {
+        sessionId,
+        attemptId: params.attemptId,
+        extendedUntilMs: params.extendedUntilMs,
+      } satisfies SessionExtendCompactionRollbackRetentionParams),
     rewindConversationToMessage: async (params) =>
       client.request("session.rewindConversationToMessage", {
         sessionId,

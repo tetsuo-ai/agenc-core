@@ -317,6 +317,7 @@ function mkSession(opts: {
   (session as unknown as { rolloutStore: unknown }).rolloutStore = {
     append: vi.fn(),
     appendRollout: vi.fn(),
+    assertCompactionProjectionReady: () => {},
     assertToolAdmissionAllowed: () => {},
     store: { reAppendSessionMetadata: vi.fn() },
   };

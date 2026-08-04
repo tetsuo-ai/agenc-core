@@ -117,6 +117,8 @@ import type {
   SessionMcpServerConfig,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
+  SessionRollbackCompactionResult,
+  SessionExtendCompactionRollbackRetentionResult,
   SessionRewindConversationToMessageResult,
   SessionPreviewFileRewindResult,
   SessionRewindFilesToMessageResult,
@@ -275,6 +277,18 @@ export interface AgenCBackgroundAgentPartialCompactParams {
   readonly signal?: AbortSignal;
 }
 
+export interface AgenCBackgroundAgentRollbackCompactionParams {
+  readonly sessionId: string;
+  readonly attemptId: string;
+  readonly reviewedBranchTargetSessionId?: string;
+}
+
+export interface AgenCBackgroundAgentExtendCompactionRetentionParams {
+  readonly sessionId: string;
+  readonly attemptId: string;
+  readonly extendedUntilMs: number;
+}
+
 export interface AgenCBackgroundAgentConversationRewindParams {
   readonly sessionId: string;
   readonly messageOrdinal: number;
@@ -416,6 +430,14 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentPartialCompactParams,
   ): Promise<SessionPartialCompactFromMessageResult>;
+  rollbackCompaction?(
+    agentId: string,
+    params: AgenCBackgroundAgentRollbackCompactionParams,
+  ): Promise<SessionRollbackCompactionResult>;
+  extendCompactionRollbackRetention?(
+    agentId: string,
+    params: AgenCBackgroundAgentExtendCompactionRetentionParams,
+  ): Promise<SessionExtendCompactionRollbackRetentionResult>;
   rewindConversationToMessage?(
     agentId: string,
     params: AgenCBackgroundAgentConversationRewindParams,
@@ -1845,6 +1867,51 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ? "No replacement event was produced."
         : result.message,
     };
+  }
+
+  async rollbackCompaction(
+    agentId: string,
+    params: AgenCBackgroundAgentRollbackCompactionParams,
+  ): Promise<SessionRollbackCompactionResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const result = await active.bootstrap.session.rollbackCompaction({
+      attemptId: params.attemptId,
+      ...(params.reviewedBranchTargetSessionId !== undefined
+        ? { reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId }
+        : {}),
+    });
+    return result.ok
+      ? {
+          sessionId: params.sessionId,
+          ok: true,
+          attemptId: result.attemptId,
+          mode: result.mode,
+          targetSessionId: result.targetSessionId,
+          displayText: result.displayText,
+        }
+      : {
+          sessionId: params.sessionId,
+          ok: false,
+          code: result.code,
+          message: result.message,
+        };
+  }
+
+  async extendCompactionRollbackRetention(
+    agentId: string,
+    params: AgenCBackgroundAgentExtendCompactionRetentionParams,
+  ): Promise<SessionExtendCompactionRollbackRetentionResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    return await active.bootstrap.session.extendCompactionRollbackRetention({
+      attemptId: params.attemptId,
+      extendedUntilMs: params.extendedUntilMs,
+    });
   }
 
   async rewindConversationToMessage(

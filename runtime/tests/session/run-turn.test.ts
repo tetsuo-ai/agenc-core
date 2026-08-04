@@ -1441,6 +1441,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     const appendRollout = vi.fn();
     const { session } = mkSession({ provider, registry });
     session.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
       append,
       appendRollout,
       assertToolAdmissionAllowed: () => {},
@@ -1535,6 +1536,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       registry: mkStaticToolRegistry(),
     });
     session.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
       append,
       appendRollout,
       assertToolAdmissionAllowed: () => {},
@@ -1604,6 +1606,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     const appendRollout = vi.fn();
     const { session, getState } = mkSession({ provider, registry });
     session.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
       append,
       appendRollout,
       assertToolAdmissionAllowed: () => {},
@@ -1898,6 +1901,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       registry: mkStaticToolRegistry(),
     });
     session.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
       append: vi.fn(),
       appendRollout,
     } as unknown as Session["rolloutStore"];
@@ -1949,6 +1953,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       registry: mkStaticToolRegistry(),
     });
     session.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
       append: vi.fn(),
       appendRollout,
     } as unknown as Session["rolloutStore"];
@@ -3011,6 +3016,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
         };
       }
     ).rolloutStore = {
+      assertCompactionProjectionReady: () => {},
       append,
       appendRollout,
     } as unknown as Session["rolloutStore"];
@@ -4867,6 +4873,7 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     });
     const append = vi.fn();
     session.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
       append,
       appendRollout: vi.fn(),
     } as unknown as Session["rolloutStore"];
@@ -7195,6 +7202,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       registry: mkRegistry(),
     });
     session2.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
       append: vi.fn(),
       appendRollout,
       store: {
@@ -7513,6 +7521,7 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
       registry,
     });
     session.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
       append: vi.fn(),
       appendRollout: vi.fn(),
       rolloutPath: "/tmp/does-not-matter.jsonl",
@@ -7648,6 +7657,7 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     const { session, events } = mkSession({ provider, registry });
     const appendRollout = vi.fn();
     session.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
       append,
       appendRollout,
       rolloutPath: "/tmp/does-not-matter.jsonl",
@@ -7738,6 +7748,7 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
       registry,
     });
     session.rolloutStore = {
+      assertCompactionProjectionReady: () => {},
       append: vi.fn(),
       appendRollout: vi.fn(),
       rolloutPath: "/tmp/does-not-matter.jsonl",

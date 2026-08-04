@@ -44,7 +44,7 @@ describe("runTurn compact contract", () => {
     expect(seen[0]).toEqual([{ role: "user", content: "hello" }]);
   });
 
-  test("pre-turn auto compact rehydrates replacement history before sampling", async () => {
+  test("pre-turn auto compact leaves history intact without a rollout owner", async () => {
     process.env.AGENC_AUTO_COMPACT_WINDOW = "80";
     process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "50";
     const seen: LLMMessage[][] = [];
@@ -63,15 +63,10 @@ describe("runTurn compact contract", () => {
 
     await drain(runTurn(session, mkCtx(), "new request"));
 
-    expect(seen[0]?.[0]?.content).toContain(
-      "This session is being continued from a previous conversation",
-    );
-    expect(seen[0]?.[0]?.content).toContain("compact summary");
-    expect(seen[0]?.some((message) =>
-      typeof message.content === "string" &&
-      message.content.includes("compact summary"))).toBe(true);
-    expect(JSON.stringify(seen[0])).not.toContain("old-0");
-    expect(state.history[0]?.content).toContain("<compact>");
+    expect(seen).toHaveLength(1);
+    expect(JSON.stringify(seen[0])).toContain("old-0");
+    expect(JSON.stringify(seen[0])).not.toContain("compact summary");
+    expect(state.history[0]?.content).toContain("old-0");
   });
 
   test("mid-turn compact runs before a continuation request and rebases sampling input", async () => {
@@ -110,7 +105,18 @@ describe("runTurn compact contract", () => {
           compactionResult: {
             message: "mid compact summary",
             replacementHistory: [
-              { role: "user", content: "<compact>mid</compact>" },
+              {
+                role: "developer",
+                content: "authenticated boundary",
+                runtimeOnly: {
+                  compactionHistory: {
+                    version: 1,
+                    kind: "boundary",
+                    attempt_id: "mid-attempt",
+                    summary_sha256: "a".repeat(64),
+                  },
+                },
+              },
               { role: "user", content: "mid compact summary" },
             ],
           },
@@ -178,7 +184,18 @@ describe("runTurn compact contract", () => {
         compactionResult: {
           message: "forced mid compact summary",
           replacementHistory: [
-            { role: "user", content: "<compact>forced</compact>" },
+            {
+              role: "developer",
+              content: "authenticated boundary",
+              runtimeOnly: {
+                compactionHistory: {
+                  version: 1,
+                  kind: "boundary",
+                  attempt_id: "forced-attempt",
+                  summary_sha256: "b".repeat(64),
+                },
+              },
+            },
             { role: "user", content: "forced mid compact summary" },
           ],
         },

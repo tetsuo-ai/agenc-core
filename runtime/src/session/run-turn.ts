@@ -118,6 +118,12 @@ import {
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
 import { extractMentionAllowedRoots } from "../prompts/file-mentions.js";
 import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
+import {
+  CompactionCleanupPendingError,
+  finalizeCompactionTransaction,
+} from "../services/compact/finalize-transaction.js";
+import { runPostCompactCleanup } from "../services/compact/postCompactCleanup.js";
+import { resetMicrocompactState } from "../services/compact/microCompact.js";
 import { seedFileMentionAttachmentSessionReads } from "./file-mention-session-reads.js";
 import {
   realtimeEndInstructionMessage,
@@ -2315,49 +2321,49 @@ async function runAutoCompact(
       const unsentImageTurn = cr.transaction === undefined && shouldKeepUnsentImageTurn
         ? state.messages.at(-1)
         : undefined;
-      // Replace both the full history view and the per-iteration
-      // projection so `prepareContext` (next phase) sees the same
-      // post-compact replacement history the rollout recorded.
-      state.messages = unsentImageTurn
-        ? [...compacted, { ...unsentImageTurn }]
-        : compacted;
-      state.messagesForQuery = [...compacted];
-      if (unsentImageTurn) {
-        state.messagesForQuery.push({ ...unsentImageTurn });
-      }
-      // Stamp auto-compact tracking so the commit phase emits the
-      // boundary marker (runtime/src/phases/commit.ts).
-      state.autoCompactTracking = {
-        compacted: true,
-        turnId: `auto-${reason}-${phase}-${Date.now().toString(36)}`,
-        turnCounter: 0,
-        consecutiveFailures: 0,
+      const applyProjection = (): void => {
+        // Replace both the full history view and the per-iteration
+        // projection so `prepareContext` (next phase) sees the same
+        // post-compact replacement history the rollout recorded.
+        state.messages = unsentImageTurn
+          ? [...compacted, { ...unsentImageTurn }]
+          : compacted;
+        state.messagesForQuery = [...compacted];
+        if (unsentImageTurn) {
+          state.messagesForQuery.push({ ...unsentImageTurn });
+        }
+        // Stamp auto-compact tracking so the commit phase emits the
+        // boundary marker (runtime/src/phases/commit.ts).
+        state.autoCompactTracking = {
+          compacted: true,
+          turnId: `auto-${reason}-${phase}-${Date.now().toString(36)}`,
+          turnCounter: 0,
+          consecutiveFailures: 0,
+        };
       };
       if (cr.transaction !== undefined) {
         const rolloutStore = session.rolloutStore;
         if (rolloutStore === null || rolloutStore === undefined) {
           throw new Error("transactional compaction lost its rollout owner");
         }
+        const attemptId = cr.transaction.attempt_id;
+        const cleanup = (): void => cleanupSessionAfterCompaction(session);
         try {
-          rolloutStore.markProjectionComplete(cr.transaction.attempt_id);
+          await finalizeCompactionTransaction({
+            store: rolloutStore,
+            attemptId,
+            applyProjection,
+            cleanup,
+          });
         } catch (error) {
-          rolloutStore.markProjectionFailed(
-            cr.transaction.attempt_id,
-            error,
-          );
-        }
-        try {
-          session.clearProviderResponseId();
-          rolloutStore.markCleanupComplete(cr.transaction.attempt_id);
-        } catch (error) {
-          rolloutStore.markCleanupPending(cr.transaction.attempt_id, error);
-          throw new CompactionReconstructionRequiredError(
-            cr.transaction.attempt_id,
-            { cause: error },
-          );
+          if (error instanceof CompactionCleanupPendingError) {
+            session.registerCompactionCleanupRetry(attemptId, cleanup);
+          }
+          throw error;
         }
       } else {
-        session.clearProviderResponseId();
+        applyProjection();
+        cleanupSessionAfterCompaction(session);
       }
       return true;
     }
@@ -2398,6 +2404,25 @@ async function runAutoCompact(
     }
     return false;
   }
+}
+
+function cleanupSessionAfterCompaction(session: Session): void {
+  const direct = session as unknown as {
+    readonly readFileState?: { clear(): void };
+    readonly clearSearchIndexes?: () => void;
+    readonly clearToolIndexes?: () => void;
+  };
+  const state = session.state.unsafePeek() as unknown as {
+    readonly readFileState?: { clear(): void };
+  };
+  runPostCompactCleanup({
+    clearReadFileState: () =>
+      (direct.readFileState ?? state.readFileState)?.clear(),
+    clearProviderResponseId: () => session.clearProviderResponseId(),
+    clearSearchIndexes: direct.clearSearchIndexes,
+    clearToolIndexes: direct.clearToolIndexes,
+    resetMicrocompactState,
+  });
 }
 
 function shouldForceAutoCompact(

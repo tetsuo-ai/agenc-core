@@ -36,6 +36,10 @@ import { memorySlashCommand } from "./memory/slash.js";
 import { pluginsCommand } from "./plugins.js";
 import { protocolCommands } from "./protocol.js";
 import { compactCommand, contextCommand } from "./session-compact.js";
+import {
+  compactRetainCommand,
+  compactRollbackCommand,
+} from "./compaction-operator.js";
 import { remoteCommand } from "./remote.js";
 import { initCommand } from "./init.js";
 import {
@@ -184,6 +188,8 @@ export function buildDefaultRegistry(
     outputStyleNewCommand,
     clearCommand,
     compactCommand,
+    compactRollbackCommand,
+    compactRetainCommand,
     contextCommand,
     coordinatorCommand,
     diffCommand,

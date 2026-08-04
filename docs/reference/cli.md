@@ -73,6 +73,25 @@ agenc --resume <session-id>
 agenc help permissions
 ```
 
+### Compaction operator commands
+
+The interactive runtime and daemon-backed TUI expose explicit recovery
+commands for a previously committed compaction. These commands require the
+attempt ID reported by the compaction transaction and refuse to run during an
+active turn.
+
+```text
+/compact-rollback <attempt-id>
+/compact-rollback <attempt-id> --branch <target-session-id>
+/compact-retain <attempt-id> --until <ISO-8601>
+```
+
+- Same-session rollback is allowed only when no newer canonical work exists.
+- `--branch` preserves newer source-session work and materializes the restored
+  history as the named reviewed session.
+- `/compact-retain` accepts an absolute future deadline and can only extend,
+  never shorten, the durable rollback-retention window.
+
 ---
 
 ## `help`

@@ -10,6 +10,7 @@
  */
 
 import { feature } from 'bun:bundle'
+import { randomUUID } from 'node:crypto'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { getSystemPrompt } from '../../constants/prompts.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
@@ -19,7 +20,24 @@ import {
   unregisterPermissionCallback,
 } from '../../tui/hooks/useSwarmPermissionPoller.js'
 import { getAutoCompactThreshold } from '../../services/compact/autoCompact.js'
-import { ERROR_MESSAGE_USER_ABORT } from '../../services/compact/compact.js'
+import {
+  compactConversation,
+  ERROR_MESSAGE_USER_ABORT,
+} from '../../services/compact/compact.js'
+import { finalizeCompactionTransaction } from '../../services/compact/finalize-transaction.js'
+import type { RuntimeMessage } from '../../services/compact/types.js'
+import type { LLMContentPart, LLMMessage } from '../../llm/types.js'
+import { RolloutStore } from '../../session/rollout-store.js'
+import { bindExecutionAdmissionJournal } from '../../session/execution-admission-journal.js'
+import type { Event } from '../../session/event-log.js'
+import {
+  llmMessageToDurableResponseItem,
+  responseItemToLlmMessage,
+} from '../../session/message-history-conversion.js'
+import { createToolResultIntegrity } from '../../session/tool-result-integrity.js'
+import { peekAmbientRuntimeSession } from '../../session/current-session.js'
+import type { Session } from '../../session/session.js'
+import { VERSION } from '../../version.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import type { Tool, ToolUseContext } from '../../tools/Tool.js'
 import { appendTeammateMessage } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
@@ -41,6 +59,7 @@ import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import type { Message } from '../../types/message.js'
 import type { PermissionDecision } from '../../types/permissions.js'
 import {
+  createAssistantMessage,
   createAssistantAPIErrorMessage,
   createUserMessage,
 } from '../messages.js'
@@ -94,6 +113,9 @@ import { resolveInProcessAgentDefinition } from './inProcessRolePolicy.js'
 type SetAppStateFn = (updater: (prev: AppState) => AppState) => void
 
 const PERMISSION_POLL_INTERVAL_MS = 500
+const TEAMMATE_ROLLOUT_ORIGINATOR = 'agenc-in-process-teammate'
+const TEAMMATE_ROLLOUT_PROVIDER = 'in-process-teammate'
+const TEAMMATE_ROLLOUT_NAME_PREFIX_LENGTH = 32
 
 /**
  * Creates a canUseTool function for in-process teammates that properly resolves
@@ -874,6 +896,284 @@ async function waitForNextPromptOrShutdown(
   return { type: 'aborted' }
 }
 
+interface TeammateRolloutOwner {
+  readonly store: RolloutStore
+  readonly admissionSession: Session
+  close(): void
+}
+
+function createTeammateRolloutOwner(params: {
+  identity: TeammateIdentity
+  cwd: string
+  model: string
+  parentSession: Session
+}): TeammateRolloutOwner {
+  const teammateName = params.identity.agentName
+    .replace(/[^A-Za-z0-9_-]/gu, '-')
+    .slice(0, TEAMMATE_ROLLOUT_NAME_PREFIX_LENGTH)
+  const sessionId = `teammate-${teammateName}-${randomUUID()}`
+  const store = new RolloutStore({
+    cwd: params.cwd,
+    sessionId,
+    agencVersion: VERSION,
+  })
+  store.open({
+    sessionId,
+    timestamp: new Date().toISOString(),
+    cwd: params.cwd,
+    originator: TEAMMATE_ROLLOUT_ORIGINATOR,
+    agencVersion: VERSION,
+    model: params.model,
+    modelProvider: TEAMMATE_ROLLOUT_PROVIDER,
+  })
+  try {
+    const parentAdmission = params.parentSession.services.executionAdmission
+    if (parentAdmission === undefined) {
+      throw new Error(
+        'in-process teammate compaction requires an execution-admission client',
+      )
+    }
+    const admission = parentAdmission.forSession({
+      runId: sessionId,
+      sessionId,
+      parentRunId: params.parentSession.conversationId,
+      parentScopeId: params.parentSession.conversationId,
+    })
+    let eventSequence = store.readAll().reduce(
+      (maximum, item) => item.type === 'event_msg'
+        ? Math.max(maximum, item.payload.seq ?? 0)
+        : maximum,
+      0,
+    )
+    const admissionSession = {
+      conversationId: sessionId,
+      modelInfo: params.parentSession.modelInfo,
+      rolloutStore: store,
+      services: {
+        ...params.parentSession.services,
+        executionAdmission: admission,
+        admissionRequired: true,
+      },
+      nextInternalSubId: () => `teammate-admission-${eventSequence + 1}`,
+      emit: (
+        event: Omit<Event, 'seq'>,
+        appendOptions?: { readonly durable?: boolean },
+      ) => {
+        const canonical = { ...event, seq: ++eventSequence } as Event
+        store.append(canonical, appendOptions)
+        return canonical
+      },
+      abortTerminal: () => {},
+      clearProviderResponseId: () => {},
+    } as unknown as Session
+    const unbindAdmission = bindExecutionAdmissionJournal(
+      admissionSession,
+      admission,
+    )
+    let closed = false
+    return {
+      store,
+      admissionSession,
+      close: () => {
+        if (closed) return
+        closed = true
+        unbindAdmission()
+        store.close()
+      },
+    }
+  } catch (error) {
+    store.close()
+    throw error
+  }
+}
+
+function appendTeammateCanonicalMessage(
+  store: RolloutStore,
+  canonicalMessages: LLMMessage[],
+  message: Message,
+): void {
+  for (const canonical of teammateMessageToLlmMessages(
+    message,
+    store.sessionId,
+  )) {
+    store.appendRollout(
+      { type: 'response_item', payload: llmMessageToDurableResponseItem(canonical) },
+      { durable: true },
+    )
+    canonicalMessages.push(canonical)
+  }
+}
+
+function teammateMessageToLlmMessages(
+  message: Message,
+  runId: string,
+): LLMMessage[] {
+  const role = message?.message?.role ?? message?.role ?? message?.type
+  const content = message?.message?.content ?? message?.content ?? ''
+  if (role === 'assistant' || message?.type === 'assistant') {
+    const blocks = Array.isArray(content) ? content : []
+    const text = blocks
+      .filter((block: unknown) => blockRecord(block)?.type === 'text')
+      .map((block: unknown) => String(blockRecord(block)?.text ?? ''))
+      .filter((part: string) => part.length > 0)
+      .join('\n')
+    const toolCalls = blocks.flatMap((block: unknown) => {
+      const record = blockRecord(block)
+      if (
+        record?.type !== 'tool_use' ||
+        typeof record.id !== 'string' ||
+        typeof record.name !== 'string'
+      ) {
+        return []
+      }
+      return [{
+        id: record.id,
+        name: record.name,
+        arguments: JSON.stringify(record.input ?? {}),
+      }]
+    })
+    if (text.length === 0 && toolCalls.length === 0) return []
+    return [{
+      role: 'assistant',
+      content: text,
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+    }]
+  }
+  if (role === 'user' || message?.type === 'user') {
+    if (!Array.isArray(content)) {
+      return [{ role: 'user', content: String(content) }]
+    }
+    const converted: LLMMessage[] = []
+    let userText = ''
+    for (const block of content) {
+      const record = blockRecord(block)
+      if (record?.type === 'tool_result' && typeof record.tool_use_id === 'string') {
+        if (userText.length > 0) {
+          converted.push({ role: 'user', content: userText })
+          userText = ''
+        }
+        const toolContent = compatContentText(record.content)
+        converted.push({
+          role: 'tool',
+          content: toolContent,
+          toolCallId: record.tool_use_id,
+          runtimeOnly: {
+            toolResultIntegrity: createToolResultIntegrity({
+              runId,
+              toolCallId: record.tool_use_id,
+              content: toolContent,
+            }),
+          },
+        })
+        continue
+      }
+      const text = compatContentText(block)
+      if (text.length > 0) userText += `${userText.length > 0 ? '\n' : ''}${text}`
+    }
+    if (userText.length > 0) converted.push({ role: 'user', content: userText })
+    return converted
+  }
+  if (role === 'system' || message?.type === 'system') {
+    return [{ role: 'system', content: compatContentText(content) }]
+  }
+  return []
+}
+
+function blockRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function compatContentText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    return value.map(compatContentText).filter(Boolean).join('\n')
+  }
+  const record = blockRecord(value)
+  if (record === null) return String(value ?? '')
+  if (typeof record.text === 'string') return record.text
+  if (typeof record.content === 'string') return record.content
+  return JSON.stringify(record)
+}
+
+function llmMessageToTeammateMessage(message: LLMMessage): Message {
+  if (message.role === 'assistant') {
+    const content: Array<Record<string, unknown>> = []
+    const text = llmContentText(message.content)
+    if (text.length > 0) content.push({ type: 'text', text })
+    for (const call of message.toolCalls ?? []) {
+      content.push({
+        type: 'tool_use',
+        id: call.id,
+        name: call.name,
+        input: parseToolArguments(call.arguments),
+      })
+    }
+    return createAssistantMessage({ content: content as never })
+  }
+  if (message.role === 'tool') {
+    return createUserMessage({
+      content: [{
+        type: 'tool_result',
+        tool_use_id: message.toolCallId ?? 'unknown-tool-call',
+        content: llmContentText(message.content),
+      }] as never,
+      isMeta: true,
+    })
+  }
+  return createUserMessage({
+    content: llmContentText(message.content),
+    ...(message.role === 'system' || message.role === 'developer'
+      ? { isMeta: true as const }
+      : {}),
+    ...(message.runtimeOnly?.compactionHistory?.kind === 'summary'
+      ? { isCompactSummary: true as const }
+      : {}),
+  })
+}
+
+function llmContentText(content: LLMMessage['content']): string {
+  if (typeof content === 'string') return content
+  return content.map((part: LLMContentPart) => {
+    if (part.type === 'text') return part.text
+    if (part.type === 'document') return '[document]'
+    return '[image]'
+  }).join('\n')
+}
+
+function parseToolArguments(value: string | undefined): unknown {
+  if (value === undefined || value.length === 0) return {}
+  try {
+    return JSON.parse(value)
+  } catch {
+    return { input: value }
+  }
+}
+
+function toTeammateRuntimeMessages(messages: readonly LLMMessage[]): RuntimeMessage[] {
+  return messages.map((message, index) => {
+    const role = message.role === 'developer'
+      ? 'system'
+      : message.role === 'tool'
+        ? 'user'
+        : message.role
+    return {
+      role,
+      originalRole: message.role,
+      type: role,
+      content: message.content,
+      message: { role, content: message.content },
+      uuid: `teammate-compact-${index}`,
+      timestamp: new Date(0).toISOString(),
+      ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
+      ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+      ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+      ...(message.runtimeOnly !== undefined ? { runtimeOnly: message.runtimeOnly } : {}),
+    }
+  })
+}
+
 /**
  * Runs an in-process teammate with a continuous prompt loop.
  *
@@ -985,6 +1285,17 @@ export async function runInProcessTeammate(
   )
   let currentPrompt = wrappedInitialPrompt
   let shouldExit = false
+  const parentSession = peekAmbientRuntimeSession()
+  const teammateRolloutOwner = parentSession === null
+    ? null
+    : createTeammateRolloutOwner({
+        identity,
+        cwd: parentSession.sessionConfiguration.cwd ?? parentSession.config.cwd,
+        model: model ?? toolUseContext.options.mainLoopModel,
+        parentSession,
+      })
+  const teammateRolloutStore = teammateRolloutOwner?.store ?? null
+  const canonicalMessages: LLMMessage[] = []
 
   // Try to claim an available task immediately so the UI can show activity
   // from the very start. The idle loop handles claiming for subsequent tasks.
@@ -1054,9 +1365,59 @@ export async function runInProcessTeammate(
         tokenCount >
         getAutoCompactThreshold(toolUseContext.options.mainLoopModel)
       ) {
-        throw new Error(
-          `in-process teammate ${identity.agentId} reached its context limit without an isolated canonical rollout owner; history was not changed`,
+        if (
+          teammateRolloutOwner === null ||
+          teammateRolloutStore === null ||
+          parentSession === null
+        ) {
+          throw new Error(
+            `in-process teammate ${identity.agentId} reached its context limit without an isolated canonical rollout owner; history was not changed`,
+          )
+        }
+        const compactionResult = await compactConversation(
+          toTeammateRuntimeMessages(canonicalMessages),
+          {
+            abortController: currentWorkAbortController,
+            provider: parentSession.services.provider,
+            admissionSession: teammateRolloutOwner.admissionSession,
+            compactionTransaction: teammateRolloutStore,
+            compactionMode: 'automatic',
+            options: {
+              mainLoopModel: model ?? toolUseContext.options.mainLoopModel,
+              contextWindowTokens: parentSession.modelInfo.contextWindow,
+              ...(parentSession.modelInfo.maxOutputTokens !== undefined
+                ? { maxOutputTokens: parentSession.modelInfo.maxOutputTokens }
+                : {}),
+              systemPrompt: teammateSystemPrompt,
+              querySource: 'agent:custom',
+            },
+          },
         )
+        if (compactionResult.transaction === undefined) {
+          throw new Error('teammate compaction did not produce a durable transaction')
+        }
+        const replacementHistory =
+          compactionResult.transaction.committed.replacement_history.map(
+            responseItemToLlmMessage,
+          )
+        await finalizeCompactionTransaction({
+          store: teammateRolloutStore,
+          attemptId: compactionResult.transaction.attempt_id,
+          applyProjection: () => {
+            canonicalMessages.splice(
+              0,
+              canonicalMessages.length,
+              ...replacementHistory,
+            )
+            allMessages.splice(
+              0,
+              allMessages.length,
+              ...replacementHistory.map(llmMessageToTeammateMessage),
+            )
+          },
+          cleanup: () => {},
+        })
+        contextMessages = allMessages
       }
 
       // Pass previous messages as context to preserve conversation history
@@ -1067,6 +1428,13 @@ export async function runInProcessTeammate(
       // Add the user message to allMessages so it's included in future context
       // This ensures the full conversation (user + assistant turns) is preserved
       allMessages.push(userMessage)
+      if (teammateRolloutStore !== null) {
+        appendTeammateCanonicalMessage(
+          teammateRolloutStore,
+          canonicalMessages,
+          userMessage,
+        )
+      }
 
       // Create fresh progress tracker for this prompt
       const tracker = createProgressTracker()
@@ -1158,6 +1526,13 @@ export async function runInProcessTeammate(
 
             iterationMessages.push(message)
             allMessages.push(message)
+            if (teammateRolloutStore !== null) {
+              appendTeammateCanonicalMessage(
+                teammateRolloutStore,
+                canonicalMessages,
+                message,
+              )
+            }
 
             updateProgressFromMessage(
               tracker,
@@ -1466,6 +1841,8 @@ export async function runInProcessTeammate(
       error: errorMessage,
       messages: allMessages,
     }
+  } finally {
+    teammateRolloutOwner?.close()
   }
 }
 

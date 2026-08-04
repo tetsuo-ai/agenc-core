@@ -56,6 +56,8 @@ import type {
   WorkspaceEditorTopologyReleaseResult,
   WorkspaceEditorTopologyReserveParams,
   WorkspaceEditorTopologyReserveResult,
+  SessionRollbackCompactionResult,
+  SessionExtendCompactionRollbackRetentionResult,
 } from "../app-server/protocol/index.js";
 
 export interface AgenCCompactProgressControls {
@@ -183,6 +185,14 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
         readonly message: string;
       }
   >;
+  rollbackCompaction?(params: {
+    readonly attemptId: string;
+    readonly reviewedBranchTargetSessionId?: string;
+  }): Promise<SessionRollbackCompactionResult>;
+  extendCompactionRollbackRetention?(params: {
+    readonly attemptId: string;
+    readonly extendedUntilMs: number;
+  }): Promise<SessionExtendCompactionRollbackRetentionResult>;
   rewindConversationToMessage?(params: {
     readonly messageOrdinal: number;
   }): Promise<

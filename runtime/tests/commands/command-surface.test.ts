@@ -62,6 +62,8 @@ const MINIMAL_NAMES = [
   "output-style:new",
   "clear",
   "compact",
+  "compact-rollback",
+  "compact-retain",
   "context",
   "coordinator",
   "diff",

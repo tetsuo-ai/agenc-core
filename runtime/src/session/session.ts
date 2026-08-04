@@ -66,11 +66,20 @@ import type {
 } from "../services/compact/types.js";
 import type { PartialCompactDirection } from "../services/compact/prompt.js";
 import {
-  CompactionReconstructionRequiredError,
-} from "../services/compact/transaction-types.js";
+  CompactionCleanupPendingError,
+  finalizeCompactionTransaction,
+} from "../services/compact/finalize-transaction.js";
+import {
+  extendCompactionRetentionForOperator,
+  rollbackCompactionForOperator,
+} from "../services/compact/operator.js";
+import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
+import { runPostCompactCleanup } from "../services/compact/postCompactCleanup.js";
+import { resetMicrocompactState } from "../services/compact/microCompact.js";
 import {
   COMPACTION_HISTORY_MARKER_VERSION,
   isAuthenticatedCompactionBoundary,
+  type CompactionHistoryMarkerV1,
 } from "./compaction-history-marker.js";
 import {
   normalizeProviderName,
@@ -1845,6 +1854,48 @@ export type SessionRewindConversationToMessageResult =
       readonly message: string;
     };
 
+export interface SessionRollbackCompactionParams {
+  readonly attemptId: string;
+  readonly reviewedBranchTargetSessionId?: string;
+}
+
+export type SessionRollbackCompactionResult =
+  | {
+      readonly ok: true;
+      readonly sessionId: string;
+      readonly attemptId: string;
+      readonly mode: "same_session" | "reviewed_branch";
+      readonly targetSessionId: string;
+      readonly replacementHistory?: readonly LLMMessage[];
+      readonly displayText: string;
+    }
+  | {
+      readonly ok: false;
+      readonly sessionId: string;
+      readonly code: "ACTIVE_TURN" | "ROLLOUT_UNAVAILABLE" | "ROLLOUT_DEGRADED";
+      readonly message: string;
+    };
+
+export interface SessionExtendCompactionRetentionParams {
+  readonly attemptId: string;
+  readonly extendedUntilMs: number;
+}
+
+export type SessionExtendCompactionRetentionResult =
+  | {
+      readonly ok: true;
+      readonly sessionId: string;
+      readonly attemptId: string;
+      readonly extendedUntilMs: number;
+      readonly displayText: string;
+    }
+  | {
+      readonly ok: false;
+      readonly sessionId: string;
+      readonly code: "ACTIVE_TURN" | "ROLLOUT_UNAVAILABLE" | "ROLLOUT_DEGRADED";
+      readonly message: string;
+    };
+
 function readProviderHttpClient(
   provider: LLMProvider | undefined,
 ): ProviderHttpClient | undefined {
@@ -1869,6 +1920,7 @@ function normalizeHistoryMessages(
         userMessageId?: unknown;
         toolResultIntegrity?: ToolResultIntegrity;
         agentInvocation?: AgentInvocationChannelMetadata;
+        compactionHistory?: CompactionHistoryMarkerV1;
       };
     };
     if (
@@ -1904,7 +1956,8 @@ function normalizeHistoryMessages(
       // metadata instead of accepting a transient serialized flag.
       ...(typeof candidate.runtimeOnly?.userMessageId === "string" ||
       candidate.runtimeOnly?.toolResultIntegrity !== undefined ||
-      candidate.runtimeOnly?.agentInvocation !== undefined
+      candidate.runtimeOnly?.agentInvocation !== undefined ||
+      candidate.runtimeOnly?.compactionHistory !== undefined
         ? {
             runtimeOnly: {
               ...(typeof candidate.runtimeOnly?.userMessageId === "string"
@@ -1920,6 +1973,12 @@ function normalizeHistoryMessages(
                 ? {
                     agentInvocation: candidate.runtimeOnly.agentInvocation,
                     mergeBoundary: "user_context" as const,
+                  }
+                : {}),
+              ...(candidate.runtimeOnly?.compactionHistory !== undefined
+                ? {
+                    compactionHistory:
+                      candidate.runtimeOnly.compactionHistory,
                   }
                 : {}),
             },
@@ -2459,6 +2518,12 @@ export class Session {
    * this set before it allows the run terminal callback to seal the journal.
    */
   private readonly pendingDurableOperations = new Set<Promise<unknown>>();
+
+  /** Process-local cleanup retries that must finish before more execution. */
+  private readonly pendingCompactionCleanups = new Map<
+    string,
+    () => void | Promise<void>
+  >();
 
   /** One-shot callbacks run after shutdown has quiesced event producers. */
   private readonly beforeDurableCloseListeners = new Set<
@@ -3337,6 +3402,9 @@ export class Session {
       if (this.lifecycleState !== "open") {
         throw new Error("session is shutting down");
       }
+      if (this.pendingCompactionCleanups.size > 0) {
+        await this.repairPendingCompactionCleanups();
+      }
       if (
         opts.editorInteraction === undefined &&
         this.deferredSessionStartHook !== null
@@ -3359,6 +3427,25 @@ export class Session {
       /* keep the queue alive for the next submit */
     });
     return run;
+  }
+
+  registerCompactionCleanupRetry(
+    attemptId: string,
+    cleanup: () => void | Promise<void>,
+  ): void {
+    this.pendingCompactionCleanups.set(attemptId, cleanup);
+  }
+
+  private async repairPendingCompactionCleanups(): Promise<void> {
+    for (const [attemptId, cleanup] of this.pendingCompactionCleanups) {
+      try {
+        await cleanup();
+        this.rolloutStore?.markCleanupComplete(attemptId);
+        this.pendingCompactionCleanups.delete(attemptId);
+      } catch (error) {
+        throw new CompactionCleanupPendingError(attemptId, { cause: error });
+      }
+    }
   }
 
   async flushEventLog(): Promise<void> {
@@ -3601,6 +3688,179 @@ export class Session {
     }
   }
 
+  async rollbackCompaction(
+    params: SessionRollbackCompactionParams,
+  ): Promise<SessionRollbackCompactionResult> {
+    const rolloutStore = this.rolloutStore;
+    if (rolloutStore === null) {
+      return {
+        ok: false,
+        sessionId: this.conversationId,
+        code: "ROLLOUT_UNAVAILABLE",
+        message: "Compaction rollback requires a durable session history.",
+      };
+    }
+    if (rolloutStore.isDegraded) {
+      return {
+        ok: false,
+        sessionId: this.conversationId,
+        code: "ROLLOUT_DEGRADED",
+        message: "Compaction rollback is disabled while durable history is degraded.",
+      };
+    }
+
+    let task: RunningTask | null = null;
+    try {
+      task = await this.beginIdleTask({
+        subId: this.nextInternalSubId(),
+        kind: "compact",
+        autoStart: false,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("turn is currently in flight")) {
+        return {
+          ok: false,
+          sessionId: this.conversationId,
+          code: "ACTIVE_TURN",
+          message: "Cannot roll back compaction while a turn is in flight.",
+        };
+      }
+      throw error;
+    }
+
+    try {
+      let result: SessionRollbackCompactionResult | null = null;
+      await this.taskDispatchLock.with(async () => {
+        const ownsTask = await this.activeTurn.with(
+          (current) => current?.tasks.has(task!.subId) === true,
+        );
+        if (!ownsTask) {
+          result = {
+            ok: false,
+            sessionId: this.conversationId,
+            code: "ACTIVE_TURN",
+            message: "Compaction rollback was cancelled.",
+          };
+          return;
+        }
+        const rollback = rollbackCompactionForOperator({
+          store: rolloutStore,
+          attemptId: params.attemptId,
+          nowMs: Date.now(),
+          ...(params.reviewedBranchTargetSessionId !== undefined
+            ? { reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId }
+            : {}),
+        });
+        if (rollback.mode === "reviewed_branch") {
+          result = {
+            ok: true,
+            sessionId: this.conversationId,
+            attemptId: rollback.attemptId,
+            mode: rollback.mode,
+            targetSessionId: rollback.targetSessionId,
+            displayText: `Compaction source restored to reviewed session ${rollback.targetSessionId}`,
+          };
+          return;
+        }
+
+        const replacementHistory = rollback.sourceHistory.map(
+          responseItemToLlmMessage,
+        );
+        try {
+          await this.state.with((sessionState) => {
+            sessionState.history = replacementHistory.map(cloneLlmMessage);
+          });
+          this.runPostCompactionCleanup();
+        } catch (error) {
+          try {
+            rolloutStore.recordProjectionFailure(rollback.attemptId, error);
+          } catch (recordError) {
+            throw new CompactionReconstructionRequiredError(rollback.attemptId, {
+              cause: new AggregateError([error, recordError]),
+            });
+          }
+          throw new CompactionReconstructionRequiredError(rollback.attemptId, {
+            cause: error,
+          });
+        }
+        result = {
+          ok: true,
+          sessionId: this.conversationId,
+          attemptId: rollback.attemptId,
+          mode: rollback.mode,
+          targetSessionId: rollback.targetSessionId,
+          replacementHistory,
+          displayText: "Compaction rolled back in the current session",
+        };
+      });
+      if (result === null) throw new Error("compaction rollback produced no result");
+      return result;
+    } finally {
+      if (task !== null) await this.onTaskFinished(task.subId);
+    }
+  }
+
+  async extendCompactionRollbackRetention(
+    params: SessionExtendCompactionRetentionParams,
+  ): Promise<SessionExtendCompactionRetentionResult> {
+    const rolloutStore = this.rolloutStore;
+    if (rolloutStore === null) {
+      return {
+        ok: false,
+        sessionId: this.conversationId,
+        code: "ROLLOUT_UNAVAILABLE",
+        message: "Compaction retention extension requires a durable session history.",
+      };
+    }
+    if (rolloutStore.isDegraded) {
+      return {
+        ok: false,
+        sessionId: this.conversationId,
+        code: "ROLLOUT_DEGRADED",
+        message: "Compaction retention cannot change while durable history is degraded.",
+      };
+    }
+
+    let task: RunningTask | null = null;
+    try {
+      task = await this.beginIdleTask({
+        subId: this.nextInternalSubId(),
+        kind: "compact",
+        autoStart: false,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("turn is currently in flight")) {
+        return {
+          ok: false,
+          sessionId: this.conversationId,
+          code: "ACTIVE_TURN",
+          message: "Cannot extend compaction retention while a turn is in flight.",
+        };
+      }
+      throw error;
+    }
+
+    try {
+      await this.taskDispatchLock.with(async () => {
+        extendCompactionRetentionForOperator({
+          store: rolloutStore,
+          attemptId: params.attemptId,
+          extendedUntilMs: params.extendedUntilMs,
+          nowMs: Date.now(),
+        });
+      });
+      return {
+        ok: true,
+        sessionId: this.conversationId,
+        attemptId: params.attemptId.trim(),
+        extendedUntilMs: params.extendedUntilMs,
+        displayText: `Compaction rollback retained until ${new Date(params.extendedUntilMs).toISOString()}`,
+      };
+    } finally {
+      if (task !== null) await this.onTaskFinished(task.subId);
+    }
+  }
+
   /**
    * File-history engine attached by the bootstrap path (it is created
    * alongside the SidecarManager, after the Session). Null when file
@@ -3790,6 +4050,9 @@ export class Session {
 
   private async beginIdleTask(opts: SpawnTaskOptions): Promise<RunningTask> {
     return this.taskDispatchLock.with(async () => {
+      if (this.pendingCompactionCleanups.size > 0) {
+        await this.repairPendingCompactionCleanups();
+      }
       const active = await this.activeTurn.with((current) => current);
       if (active !== null) {
         throw new Error(
@@ -3834,10 +4097,41 @@ export class Session {
       },
       deps: {
         cleanup: {
+          clearReadFileState: () => this.compactionReadFileState()?.clear(),
           clearProviderResponseId: () => this.clearProviderResponseId(),
+          clearSearchIndexes: this.compactionCleanupCallback("clearSearchIndexes"),
+          clearToolIndexes: this.compactionCleanupCallback("clearToolIndexes"),
+          resetMicrocompactState,
         },
       },
     };
+  }
+
+  private compactionReadFileState(): { clear(): void } | undefined {
+    const direct = this as unknown as {
+      readonly readFileState?: { clear(): void };
+    };
+    const snapshot = this.state.unsafePeek() as unknown as {
+      readonly readFileState?: { clear(): void };
+    };
+    return direct.readFileState ?? snapshot.readFileState;
+  }
+
+  private compactionCleanupCallback(
+    key: "clearSearchIndexes" | "clearToolIndexes",
+  ): (() => void) | undefined {
+    const value = (this as unknown as Record<string, unknown>)[key];
+    return typeof value === "function" ? value.bind(this) as () => void : undefined;
+  }
+
+  private runPostCompactionCleanup(): void {
+    runPostCompactCleanup({
+      clearReadFileState: () => this.compactionReadFileState()?.clear(),
+      clearProviderResponseId: () => this.clearProviderResponseId(),
+      clearSearchIndexes: this.compactionCleanupCallback("clearSearchIndexes"),
+      clearToolIndexes: this.compactionCleanupCallback("clearToolIndexes"),
+      resetMicrocompactState,
+    });
   }
 
   private async commitPartialCompaction(params: {
@@ -3907,42 +4201,28 @@ export class Session {
       const projectedItems = params.compactionResult.transaction === undefined
         ? replacementItems
         : params.compactionResult.transaction.committed.replacement_history;
-      try {
+      const applyProjection = async (): Promise<void> => {
         await this.state.with((sessionState) => {
           sessionState.history = projectedItems.map(responseItemToLlmMessage);
         });
-        if (params.compactionResult.transaction !== undefined) {
-          params.rolloutStore.markProjectionComplete(
-            params.compactionResult.transaction.attempt_id,
-          );
+      };
+      if (params.compactionResult.transaction !== undefined) {
+        const attemptId = params.compactionResult.transaction.attempt_id;
+        const cleanup = (): void => this.runPostCompactionCleanup();
+        try {
+          await finalizeCompactionTransaction({
+            store: params.rolloutStore,
+            attemptId,
+            applyProjection,
+            cleanup,
+          });
+        } catch (error) {
+          if (!(error instanceof CompactionCleanupPendingError)) throw error;
+          this.registerCompactionCleanupRetry(attemptId, cleanup);
         }
-      } catch (error) {
-        if (params.compactionResult.transaction !== undefined) {
-          params.rolloutStore.markProjectionFailed(
-            params.compactionResult.transaction.attempt_id,
-            error,
-          );
-        }
-        throw error;
-      }
-      try {
-        this.clearProviderResponseId();
-        if (params.compactionResult.transaction !== undefined) {
-          params.rolloutStore.markCleanupComplete(
-            params.compactionResult.transaction.attempt_id,
-          );
-        }
-      } catch (error) {
-        if (params.compactionResult.transaction !== undefined) {
-          params.rolloutStore.markCleanupPending(
-            params.compactionResult.transaction.attempt_id,
-            error,
-          );
-          throw new CompactionReconstructionRequiredError(
-            params.compactionResult.transaction.attempt_id,
-            { cause: error },
-          );
-        }
+      } else {
+        await applyProjection();
+        this.runPostCompactionCleanup();
       }
     });
     return failure;

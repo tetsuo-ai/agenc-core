@@ -168,6 +168,8 @@ const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgenCDaemonKnownMethod> = new Set([
   "message.stream",
   // Compact and rewind can run model summarization over large transcripts.
   "session.partialCompactFromMessage",
+  "session.rollbackCompaction",
+  "session.extendCompactionRollbackRetention",
   "session.rewindConversationToMessage",
 ]);
 

@@ -150,6 +150,8 @@ import {
   type SessionDetachParams,
   type SessionListParams,
   type SessionPartialCompactFromMessageParams,
+  type SessionRollbackCompactionParams,
+  type SessionExtendCompactionRollbackRetentionParams,
   type SessionRewindConversationToMessageParams,
   type SessionFileRewindParams,
   type SessionSetModelParams,
@@ -347,6 +349,11 @@ function buildServerCapabilities(
       agentManager,
       "partialCompactFromMessage",
     ),
+    "session.rollbackCompaction": hasMethod(agentManager, "rollbackCompaction"),
+    "session.extendCompactionRollbackRetention": hasMethod(
+      agentManager,
+      "extendCompactionRollbackRetention",
+    ),
     "session.rewindConversationToMessage": hasMethod(
       agentManager,
       "rewindConversationToMessage",
@@ -423,6 +430,8 @@ export interface AgenCDaemonDispatcherOptions {
     | "enableMcpServerOnSession"
     | "disableMcpServerOnSession"
     | "partialCompactFromMessage"
+    | "rollbackCompaction"
+    | "extendCompactionRollbackRetention"
     | "rewindConversationToMessage"
     | "previewFileRewind"
     | "rewindFilesToMessage"
@@ -511,6 +520,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "enableMcpServerOnSession"
     | "disableMcpServerOnSession"
     | "partialCompactFromMessage"
+    | "rollbackCompaction"
+    | "extendCompactionRollbackRetention"
     | "rewindConversationToMessage"
     | "previewFileRewind"
     | "rewindFilesToMessage"
@@ -1125,6 +1136,20 @@ export class AgenCDaemonJsonRpcDispatcher {
           await this.#agentManager.partialCompactFromMessage(
             validateSessionPartialCompactFromMessageParams(params),
             signal,
+          ),
+        );
+      case "session.rollbackCompaction":
+        return successResponse(
+          id,
+          await this.#agentManager.rollbackCompaction(
+            validateSessionRollbackCompactionParams(params),
+          ),
+        );
+      case "session.extendCompactionRollbackRetention":
+        return successResponse(
+          id,
+          await this.#agentManager.extendCompactionRollbackRetention(
+            validateSessionExtendCompactionRetentionParams(params),
           ),
         );
       case "session.rewindConversationToMessage":
@@ -2681,6 +2706,52 @@ function validateSessionPartialCompactFromMessageParams(
     );
   }
   return validated as SessionPartialCompactFromMessageParams;
+}
+
+function validateSessionRollbackCompactionParams(
+  params: JsonObject,
+): SessionRollbackCompactionParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.rollbackCompaction",
+    stringFields: [
+      "sessionId",
+      "attemptId",
+      "reviewedBranchTargetSessionId",
+    ],
+  });
+  validateRequiredString(validated, "session.rollbackCompaction", "sessionId");
+  validateRequiredString(validated, "session.rollbackCompaction", "attemptId");
+  return validated as SessionRollbackCompactionParams;
+}
+
+function validateSessionExtendCompactionRetentionParams(
+  params: JsonObject,
+): SessionExtendCompactionRollbackRetentionParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.extendCompactionRollbackRetention",
+    stringFields: ["sessionId", "attemptId"],
+    numberFields: ["extendedUntilMs"],
+  });
+  validateRequiredString(
+    validated,
+    "session.extendCompactionRollbackRetention",
+    "sessionId",
+  );
+  validateRequiredString(
+    validated,
+    "session.extendCompactionRollbackRetention",
+    "attemptId",
+  );
+  if (
+    typeof validated.extendedUntilMs !== "number" ||
+    !Number.isSafeInteger(validated.extendedUntilMs) ||
+    validated.extendedUntilMs < 0
+  ) {
+    throw invalidParams(
+      "session.extendCompactionRollbackRetention extendedUntilMs must be a non-negative integer",
+    );
+  }
+  return validated as SessionExtendCompactionRollbackRetentionParams;
 }
 
 function validateSessionRewindConversationToMessageParams(

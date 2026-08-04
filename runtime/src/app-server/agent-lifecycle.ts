@@ -62,6 +62,10 @@ import type {
   SessionTranscriptResult,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
+  SessionRollbackCompactionParams,
+  SessionRollbackCompactionResult,
+  SessionExtendCompactionRollbackRetentionParams,
+  SessionExtendCompactionRollbackRetentionResult,
   SessionResolveToolCallParams,
   SessionResolveToolCallResult,
   SessionRewindConversationToMessageParams,
@@ -2110,6 +2114,60 @@ export class AgenCDaemonAgentManager {
     });
   }
 
+  async rollbackCompaction(
+    params: SessionRollbackCompactionParams,
+  ): Promise<SessionRollbackCompactionResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.rollbackCompaction requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.rollbackCompaction === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.rollbackCompaction requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowCompactionOperator: true },
+    );
+    return await this.#runner.rollbackCompaction(agentId, {
+      sessionId: params.sessionId,
+      attemptId: params.attemptId,
+      ...(params.reviewedBranchTargetSessionId !== undefined
+        ? { reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId }
+        : {}),
+    });
+  }
+
+  async extendCompactionRollbackRetention(
+    params: SessionExtendCompactionRollbackRetentionParams,
+  ): Promise<SessionExtendCompactionRollbackRetentionResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.extendCompactionRollbackRetention requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.extendCompactionRollbackRetention === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.extendCompactionRollbackRetention requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowCompactionOperator: true },
+    );
+    return await this.#runner.extendCompactionRollbackRetention(agentId, {
+      sessionId: params.sessionId,
+      attemptId: params.attemptId,
+      extendedUntilMs: params.extendedUntilMs,
+    });
+  }
+
   async rewindConversationToMessage(
     params: SessionRewindConversationToMessageParams,
     signal?: AbortSignal,
@@ -2544,6 +2602,7 @@ export class AgenCDaemonAgentManager {
       readonly allowElicitationResponse?: boolean;
       readonly allowListPermissions?: boolean;
       readonly allowPartialCompact?: boolean;
+      readonly allowCompactionOperator?: boolean;
       readonly allowConversationRewind?: boolean;
       readonly allowMcpAddServer?: boolean;
       readonly allowMcpReconnectServer?: boolean;
@@ -2581,6 +2640,10 @@ export class AgenCDaemonAgentManager {
     const hasPartialCompactRunner =
       options.allowPartialCompact === true &&
       this.#runner?.partialCompactFromMessage !== undefined;
+    const hasCompactionOperatorRunner =
+      options.allowCompactionOperator === true &&
+      this.#runner?.rollbackCompaction !== undefined &&
+      this.#runner.extendCompactionRollbackRetention !== undefined;
     const hasConversationRewindRunner =
       options.allowConversationRewind === true &&
       this.#runner?.rewindConversationToMessage !== undefined;
@@ -2624,6 +2687,7 @@ export class AgenCDaemonAgentManager {
       !hasClearSessionRunner &&
       !hasPermissionListRunner &&
       !hasPartialCompactRunner &&
+      !hasCompactionOperatorRunner &&
       !hasConversationRewindRunner &&
       !hasMcpAddServerRunner &&
       !hasMcpReconnectServerRunner &&

@@ -29,7 +29,12 @@ import {
 } from "../llm/content-conversion.js";
 import { compactConversation } from "../services/compact/compact.js";
 import type { RuntimeMessage } from "../services/compact/types.js";
-import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
+import {
+  CompactionCleanupPendingError,
+  finalizeCompactionTransaction,
+} from "../services/compact/finalize-transaction.js";
+import { runPostCompactCleanup } from "../services/compact/postCompactCleanup.js";
+import { resetMicrocompactState } from "../services/compact/microCompact.js";
 import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -87,44 +92,66 @@ export async function runContextCollapseOverflowRecovery(params: {
   readonly turnContext?: TurnContext;
   readonly signal?: AbortSignal;
 }): Promise<ContextCollapseOverflowRecoveryResult> {
-  if (params.session?.rolloutStore === null || params.session?.rolloutStore === undefined) {
+  const session = params.session;
+  if (session?.rolloutStore === null || session?.rolloutStore === undefined) {
     return { kind: "pass" } as const;
   }
   const recovered = await recoverFromOverflow(
     toCollapseRuntimeMessages(params.state.messagesForQuery),
-    params.session,
+    session,
     params.turnContext,
     params.signal,
   );
   if (recovered.committed <= 0) {
     return { kind: "pass" } as const;
   }
-  params.state.messagesForQuery = [...recovered.messages];
-  params.state.messages = [...params.state.messagesForQuery];
-  try {
-    params.session.rolloutStore.markProjectionComplete(recovered.attemptId!);
-  } catch (error) {
-    params.session.rolloutStore.markProjectionFailed(recovered.attemptId!, error);
+  if (recovered.attemptId === undefined) {
+    throw new Error("overflow recovery committed without an attempt id");
   }
+  const cleanup = (): void => cleanupSessionAfterCompaction(session);
   try {
-    params.session.clearProviderResponseId();
-    params.session.rolloutStore.markCleanupComplete(recovered.attemptId!);
-  } catch (error) {
-    try {
-      params.session.rolloutStore.markCleanupPending(recovered.attemptId!, error);
-    } catch (markError) {
-      throw new CompactionReconstructionRequiredError(recovered.attemptId!, {
-        cause: new AggregateError([error, markError]),
-      });
-    }
-    throw new CompactionReconstructionRequiredError(recovered.attemptId!, {
-      cause: error,
+    await finalizeCompactionTransaction({
+      store: session.rolloutStore,
+      attemptId: recovered.attemptId,
+      applyProjection: () => {
+        params.state.messagesForQuery = [...recovered.messages];
+        params.state.messages = [...params.state.messagesForQuery];
+      },
+      cleanup,
     });
+  } catch (error) {
+    if (error instanceof CompactionCleanupPendingError) {
+      session.registerCompactionCleanupRetry(recovered.attemptId, cleanup);
+    }
+    throw error;
   }
   return {
     kind: "applied",
     reason: "context_collapse",
   } as const;
+}
+
+function cleanupSessionAfterCompaction(session: Session): void {
+  const direct = session as unknown as {
+    readonly readFileState?: { clear(): void };
+    readonly clearSearchIndexes?: () => void;
+    readonly clearToolIndexes?: () => void;
+  };
+  const snapshot = (
+    session as unknown as {
+      readonly state?: { unsafePeek?: () => unknown };
+    }
+  ).state?.unsafePeek?.() as {
+    readonly readFileState?: { clear(): void };
+  } | undefined;
+  runPostCompactCleanup({
+    clearReadFileState: () =>
+      (direct.readFileState ?? snapshot?.readFileState)?.clear(),
+    clearProviderResponseId: () => session.clearProviderResponseId(),
+    clearSearchIndexes: direct.clearSearchIndexes,
+    clearToolIndexes: direct.clearToolIndexes,
+    resetMicrocompactState,
+  });
 }
 
 /**

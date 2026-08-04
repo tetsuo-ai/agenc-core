@@ -57,7 +57,11 @@ import {
   type PermissionMode,
   type ToolPermissionContext,
 } from "../permissions/types.js";
-import type { LLMContentPart, LLMProvider } from "../llm/types.js";
+import type {
+  LLMContentPart,
+  LLMMessage,
+  LLMProvider,
+} from "../llm/types.js";
 import { ProviderHttpClient } from "../llm/client.js";
 import {
   createProvider,
@@ -71,6 +75,10 @@ import {
   createCsvAgentInvocationEnvelope,
   materializeAgentInvocationMessages,
 } from "../contracts/agent-invocation-envelope.js";
+import {
+  createCompactionTransactionHarness,
+  createProvider as createCompactionProvider,
+} from "../helpers/compaction-transaction-harness.js";
 
 (globalThis as Record<string, unknown>).MACRO ??= {
   VERSION: "test-version",
@@ -171,6 +179,12 @@ function mkProvider(): LLMProvider {
   } as unknown as LLMProvider;
 }
 
+function verboseHistoryText(prefix: string): string {
+  return Array.from({ length: 300 }, (_, index) => `${prefix}-${index}`).join(
+    " ",
+  );
+}
+
 function mkNetworkProxy(): NetworkProxy {
   return {
     httpsProxy: "http://127.0.0.1:9050",
@@ -201,6 +215,7 @@ function buildSession(
     eventQueue?: AsyncQueue<Event> | null;
     sessionConfiguration?: SessionConfiguration;
     config?: Config;
+    modelInfo?: ModelInfo;
   } = {},
 ): Session {
   const services = {
@@ -213,6 +228,9 @@ function buildSession(
     mcpStartupCancellationToken: {
       cancel: () => {},
       isCancelled: () => false,
+    },
+    agentControl: {
+      shutdownAgentTree: vi.fn(),
     },
     provider: mkProvider(),
     registry: {
@@ -233,7 +251,7 @@ function buildSession(
     services,
     jsRepl: { id: "repl-test" },
     config: overrides.config ?? mkConfig(),
-    modelInfo: mkModelInfo(),
+    modelInfo: overrides.modelInfo ?? mkModelInfo(),
     ...(overrides.eventQueue === null
       ? {}
       : { eventQueue: overrides.eventQueue ?? new AsyncQueue<Event>() }),
@@ -1731,70 +1749,65 @@ describe("isPlanMode via sessionConfiguration.permissionContext.mode", () => {
 
 describe("Session.partialCompactFromMessage", () => {
   it("commits a durable replacement history and returns a history_replaced event", async () => {
-    const appendRollout = vi.fn();
+    const sourceHistory: LLMMessage[] = [
+      { role: "user", content: "keep this" },
+      { role: "assistant", content: "assistant kept" },
+      {
+        role: "user",
+        content: `summarize from here\n${verboseHistoryText("old-detail")}`,
+      },
+      {
+        role: "assistant",
+        content: `assistant summarized\n${verboseHistoryText("more-detail")}`,
+      },
+    ];
+    const harness = createCompactionTransactionHarness(sourceHistory, {
+      sessionId: "conv-test",
+    });
     const session = buildSession({
+      modelInfo: { ...mkModelInfo(), slug: "grok-4.5" },
       services: {
-        provider: {
-          ...mkProvider(),
-          chat: vi.fn(async () => ({
-            content: "recent summary",
-            toolCalls: [],
-            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-            model: "test-model",
-            finishReason: "stop",
-          })),
-        },
+        provider: harness.provider,
+        executionAdmission: harness.session.services.executionAdmission,
+        admissionRequired: true,
       },
     });
-    session.rolloutStore = {
-      isDegraded: false,
-      appendRollout,
-    } as unknown as Session["rolloutStore"];
-    await session.state.with((state) => {
-      state.history = [
-        { role: "user", content: "keep this" },
-        {
-          role: "assistant",
-          content: "assistant kept",
-          toolCalls: [
-            { id: "call-1", name: "Read", arguments: '{"path":"a"}' },
-          ],
-        },
-        { role: "user", content: "summarize from here" },
-        { role: "assistant", content: "assistant summarized" },
-      ];
-    });
+    session.rolloutStore = harness.store;
+    try {
+      await session.state.with((state) => {
+        state.history = sourceHistory;
+      });
 
-    const result = await session.partialCompactFromMessage({
-      messageOrdinal: 1,
-      direction: "from",
-      feedback: "keep decisions",
-    });
+      const result = await session.partialCompactFromMessage({
+        messageOrdinal: 1,
+        direction: "from",
+        feedback: "keep decisions",
+      });
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(result.message);
-    expect(result.event.type).toBe("history_replaced");
-    expect(result.event.payload.messages.length).toBeGreaterThan(0);
-    expect(appendRollout).toHaveBeenCalledOnce();
-    expect(appendRollout.mock.calls[0]?.[0]).toMatchObject({
-      type: "compacted",
-      payload: {
-        replacementHistory: expect.arrayContaining([
-          expect.objectContaining({
-            role: "assistant",
-            toolCalls: [
-              { id: "call-1", name: "Read", arguments: '{"path":"a"}' },
-            ],
-          }),
-        ]),
-      },
-    });
-    const history = session.snapshotHistoryMessages();
-    expect(history[0]?.role).toBe("user");
-    expect(history[0]?.content).toEqual(expect.stringContaining("<compact>"));
-    expect(
-      history.some((message) => message.content === "summarize from here"),
-    ).toBe(false);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.message);
+      expect(result.event.type).toBe("history_replaced");
+      expect(result.event.payload.messages.length).toBeGreaterThan(0);
+      expect(
+        harness.store.readAll().some((item) =>
+          item.type === "compaction_committed"
+        ),
+      ).toBe(true);
+      const history = session.snapshotHistoryMessages();
+      const boundary = history.find(
+        (message) =>
+          message.runtimeOnly?.compactionHistory?.kind === "boundary",
+      );
+      expect(boundary?.role).toBe("developer");
+      expect(boundary?.content).toEqual(
+        expect.stringContaining("agenc_compaction_boundary_v1:"),
+      );
+      expect(
+        history.some((message) => message.content === sourceHistory[2]?.content),
+      ).toBe(false);
+    } finally {
+      harness.close();
+    }
   });
 
   it("preserves multimodal kept messages when compacting from a later message", async () => {
@@ -1815,109 +1828,121 @@ describe("Session.partialCompactFromMessage", () => {
       type: "image_url",
       image_url: { url: "file:///tmp/screenshot.png" },
     };
+    const sourceHistory: LLMMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "keep this" },
+          documentPart,
+          imagePart,
+        ],
+      },
+      {
+        role: "user",
+        content: `summarize from here\n${verboseHistoryText("old-detail")}`,
+      },
+      {
+        role: "assistant",
+        content: `assistant summarized\n${verboseHistoryText("more-detail")}`,
+      },
+    ];
+    const harness = createCompactionTransactionHarness(sourceHistory, {
+      sessionId: "conv-test",
+    });
     const session = buildSession({
+      modelInfo: { ...mkModelInfo(), slug: "grok-4.5" },
       services: {
-        provider: {
-          ...mkProvider(),
-          chat: vi.fn(async () => ({
-            content: "recent summary",
-            toolCalls: [],
-            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-            model: "test-model",
-            finishReason: "stop",
-          })),
-        },
+        provider: harness.provider,
+        executionAdmission: harness.session.services.executionAdmission,
+        admissionRequired: true,
       },
     });
-    session.rolloutStore = {
-      isDegraded: false,
-      appendRollout: vi.fn(),
-    } as unknown as Session["rolloutStore"];
-    await session.state.with((state) => {
-      state.history = [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "keep this" },
-            documentPart,
-            imagePart,
-          ],
-        },
-        { role: "user", content: "summarize from here" },
-        { role: "assistant", content: "assistant summarized" },
-      ];
-    });
+    session.rolloutStore = harness.store;
+    try {
+      await session.state.with((state) => {
+        state.history = sourceHistory;
+      });
 
-    const result = await session.partialCompactFromMessage({
-      messageOrdinal: 1,
-      direction: "from",
-    });
+      const result = await session.partialCompactFromMessage({
+        messageOrdinal: 1,
+        direction: "from",
+      });
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(result.message);
-    const history = session.snapshotHistoryMessages();
-    const kept = history.find(
-      (message) =>
-        Array.isArray(message.content) &&
-        message.content.some((part) => part.type === "document"),
-    );
-    expect(kept?.content).toContainEqual(documentPart);
-    expect(kept?.content).toContainEqual(imagePart);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.message);
+      const history = session.snapshotHistoryMessages();
+      const kept = history.find(
+        (message) =>
+          Array.isArray(message.content) &&
+          message.content.some((part) => part.type === "document"),
+      );
+      expect(kept?.content).toContainEqual(documentPart);
+      expect(kept?.content).toContainEqual(imagePart);
+    } finally {
+      harness.close();
+    }
   });
 
   it("installs an active compact task while provider summarization is running", async () => {
-    let resolveChat!: (value: Awaited<ReturnType<LLMProvider["chat"]>>) => void;
     let markStarted!: () => void;
+    let releaseChat!: () => void;
     const chatStarted = new Promise<void>((resolve) => {
       markStarted = resolve;
     });
-    const session = buildSession({
-      services: {
-        provider: {
-          ...mkProvider(),
-          chat: vi.fn(
-            () =>
-              new Promise<Awaited<ReturnType<LLMProvider["chat"]>>>(
-                (resolve) => {
-                  resolveChat = resolve;
-                  markStarted();
-                },
-              ),
-          ),
-        },
+    const chatGate = new Promise<void>((resolve) => {
+      releaseChat = resolve;
+    });
+    const sourceHistory: LLMMessage[] = [
+      {
+        role: "user",
+        content: `summarize this\n${verboseHistoryText("old-detail")}`,
+      },
+      {
+        role: "assistant",
+        content: `assistant text\n${verboseHistoryText("more-detail")}`,
+      },
+    ];
+    const compactionProvider = createCompactionProvider();
+    const harness = createCompactionTransactionHarness(sourceHistory, {
+      sessionId: "conv-test",
+      chat: async (messages) => {
+        markStarted();
+        await chatGate;
+        return compactionProvider.chat(messages);
       },
     });
-    session.rolloutStore = {
-      isDegraded: false,
-      appendRollout: vi.fn(),
-    } as unknown as Session["rolloutStore"];
-    await session.state.with((state) => {
-      state.history = [
-        { role: "user", content: "summarize this" },
-        { role: "assistant", content: "assistant text" },
-      ];
+    const session = buildSession({
+      modelInfo: { ...mkModelInfo(), slug: "grok-4.5" },
+      services: {
+        provider: harness.provider,
+        executionAdmission: harness.session.services.executionAdmission,
+        admissionRequired: true,
+      },
     });
+    session.rolloutStore = harness.store;
+    try {
+      await session.state.with((state) => {
+        state.history = sourceHistory;
+      });
 
-    const compacting = session.partialCompactFromMessage({
-      messageOrdinal: 0,
-      direction: "from",
-    });
-    await chatStarted;
+      const compacting = session.partialCompactFromMessage({
+        messageOrdinal: 0,
+        direction: "from",
+      });
+      await chatStarted;
 
-    expect(
-      session.activeTurn.unsafePeek()?.tasks.values().next().value?.kind,
-    ).toBe("compact");
-    await expect(clearSession(session)).rejects.toThrow(
-      "Cannot clear right now",
-    );
-    resolveChat({
-      content: "summary",
-      toolCalls: [],
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      model: "test-model",
-      finishReason: "stop",
-    });
-    await expect(compacting).resolves.toMatchObject({ ok: true });
+      expect(
+        session.activeTurn.unsafePeek()?.tasks.values().next().value?.kind,
+      ).toBe("compact");
+      await expect(clearSession(session)).rejects.toThrow(
+        "Cannot clear right now",
+      );
+      releaseChat();
+      await expect(compacting).resolves.toMatchObject({ ok: true });
+    } finally {
+      releaseChat();
+      harness.close();
+    }
   });
 });
 
@@ -1974,11 +1999,30 @@ describe("Session.rewindConversationToMessage", () => {
     } as unknown as Session["rolloutStore"];
     await session.state.with((state) => {
       state.history = [
-        { role: "user", content: "<compact>Conversation compacted</compact>" },
+        {
+          role: "developer",
+          content: "<compact>Conversation compacted</compact>",
+          runtimeOnly: {
+            compactionHistory: {
+              version: 1,
+              kind: "boundary",
+              attempt_id: "compact-authenticated",
+              summary_sha256: "a".repeat(64),
+            },
+          },
+        },
         {
           role: "user",
           content:
             "This session is being continued from a previous conversation that ran out of context. Summary.",
+          runtimeOnly: {
+            compactionHistory: {
+              version: 1,
+              kind: "summary",
+              attempt_id: "compact-authenticated",
+              summary_sha256: "a".repeat(64),
+            },
+          },
         },
         { role: "user", content: "active target" },
         { role: "assistant", content: "discarded answer" },
@@ -1992,11 +2036,30 @@ describe("Session.rewindConversationToMessage", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
     expect(session.snapshotHistoryMessages()).toEqual([
-      { role: "user", content: "<compact>Conversation compacted</compact>" },
+      {
+        role: "developer",
+        content: "<compact>Conversation compacted</compact>",
+        runtimeOnly: {
+          compactionHistory: {
+            version: 1,
+            kind: "boundary",
+            attempt_id: "compact-authenticated",
+            summary_sha256: "a".repeat(64),
+          },
+        },
+      },
       {
         role: "user",
         content:
           "This session is being continued from a previous conversation that ran out of context. Summary.",
+        runtimeOnly: {
+          compactionHistory: {
+            version: 1,
+            kind: "summary",
+            attempt_id: "compact-authenticated",
+            summary_sha256: "a".repeat(64),
+          },
+        },
       },
     ]);
   });

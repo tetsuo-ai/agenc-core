@@ -113,6 +113,8 @@ export const AGENC_DAEMON_INTERNAL_METHODS = [
   "workspace.editor.cancelPrediction",
   "workspace.editor.predictionFeedback",
   "session.partialCompactFromMessage",
+  "session.rollbackCompaction",
+  "session.extendCompactionRollbackRetention",
   "session.rewindConversationToMessage",
   "session.previewFileRewind",
   "session.rewindFilesToMessage",
@@ -741,6 +743,22 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     description:
       "TUI-internal request to summarize a selected range of daemon-owned session history.",
   },
+  "session.rollbackCompaction": {
+    method: "session.rollbackCompaction",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Operator request to roll back a committed compaction in place or into a reviewed branch.",
+  },
+  "session.extendCompactionRollbackRetention": {
+    method: "session.extendCompactionRollbackRetention",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Operator request to extend a committed compaction rollback deadline.",
+  },
   "session.rewindConversationToMessage": {
     method: "session.rewindConversationToMessage",
     direction: "client-to-server",
@@ -1281,6 +1299,18 @@ export interface SessionPartialCompactFromMessageParams extends JsonObject {
   readonly messageOrdinal: number;
   readonly direction: "from" | "up_to";
   readonly feedback?: string;
+}
+
+export interface SessionRollbackCompactionParams extends JsonObject {
+  readonly sessionId: string;
+  readonly attemptId: string;
+  readonly reviewedBranchTargetSessionId?: string;
+}
+
+export interface SessionExtendCompactionRollbackRetentionParams extends JsonObject {
+  readonly sessionId: string;
+  readonly attemptId: string;
+  readonly extendedUntilMs: number;
 }
 
 export interface SessionRewindConversationToMessageParams extends JsonObject {
@@ -2978,6 +3008,27 @@ export interface SessionPartialCompactFromMessageResult extends JsonObject {
   readonly event?: JsonObject;
 }
 
+export interface SessionRollbackCompactionResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  readonly attemptId?: string;
+  readonly mode?: "same_session" | "reviewed_branch";
+  readonly targetSessionId?: string;
+  readonly displayText?: string;
+  readonly code?: string;
+  readonly message?: string;
+}
+
+export interface SessionExtendCompactionRollbackRetentionResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  readonly attemptId?: string;
+  readonly extendedUntilMs?: number;
+  readonly displayText?: string;
+  readonly code?: string;
+  readonly message?: string;
+}
+
 export interface SessionRewindConversationToMessageResult extends JsonObject {
   readonly sessionId: string;
   readonly ok: boolean;
@@ -3293,6 +3344,8 @@ export interface AgenCDaemonInternalResultByMethod {
   readonly "workspace.editor.cancelPrediction": WorkspaceEditorCancelPredictionResult;
   readonly "workspace.editor.predictionFeedback": WorkspaceEditorPredictionFeedbackResult;
   readonly "session.partialCompactFromMessage": SessionPartialCompactFromMessageResult;
+  readonly "session.rollbackCompaction": SessionRollbackCompactionResult;
+  readonly "session.extendCompactionRollbackRetention": SessionExtendCompactionRollbackRetentionResult;
   readonly "session.rewindConversationToMessage": SessionRewindConversationToMessageResult;
   readonly "session.previewFileRewind": SessionPreviewFileRewindResult;
   readonly "session.rewindFilesToMessage": SessionRewindFilesToMessageResult;
