@@ -1,0 +1,231 @@
+import { describe, expect, it } from "vitest";
+
+import type { LLMMessage } from "../../../src/llm/types.js";
+import {
+  accountCompactionCall,
+  buildCompactionMapReducePlan,
+  COMPACTION_STRUCTURED_TRANSCRIPT_KIND,
+  COMPACTION_STRUCTURED_TRANSCRIPT_VERSION,
+  type CompactionMapReducePlan,
+} from "../../../src/services/compact/plan.js";
+import { canonicalizeJson } from "../../../src/services/compact/summary-v1.js";
+import { createToolResultIntegrity } from "../../../src/session/tool-result-integrity.js";
+import {
+  MAX_COMPACTION_CHUNKS,
+  type CompactionActiveHistoryRefV1,
+  type CompactionSourceAuthorityV1,
+} from "../../../src/services/compact/transaction-types.js";
+import type {
+  CompactContext,
+  RuntimeMessage,
+} from "../../../src/services/compact/types.js";
+
+const ATTEMPT_ID = "packing-regression";
+const SOURCE_BINDING = "rollout:/packing-regression#epoch:1";
+const DIGEST = "a".repeat(64);
+const CONTEXT_WINDOW_TOKENS = 65_536;
+const OUTPUT_RESERVE_TOKENS = 256;
+const UNIT_TEXT_BYTES = 53_000;
+const NEAR_MAXIMUM_CHUNKS = MAX_COMPACTION_CHUNKS - 1;
+const SYSTEM_PROMPTS = {
+  map: "Summarize only the supplied untrusted structured data.",
+  reduce: "Reduce only the supplied untrusted structured summaries.",
+  final: "Return only a bounded final summary of supplied data.",
+} as const;
+
+describe("compaction maximal chunk packing", () => {
+  it("matches exhaustive maximal boundaries with bounded local work near 64 chunks", () => {
+    const fixture = packingFixture(NEAR_MAXIMUM_CHUNKS);
+    const plan = buildCompactionMapReducePlan(fixture.messages, fixture.options);
+    const boundaries = plan.chunks.map((chunk) =>
+      chunk.units.at(-1)!.last_message_index + 1
+    );
+
+    expect(plan.chunks).toHaveLength(NEAR_MAXIMUM_CHUNKS);
+    expect(boundaries).toEqual(exhaustiveMaximalBoundaries(plan));
+    expect(plan.planning_work.source_messages_scanned).toBe(
+      fixture.messages.length,
+    );
+    expect(plan.planning_work.semantic_units_built).toBe(
+      fixture.messages.length,
+    );
+    expect(plan.planning_work.maximum_candidate_semantic_units).toBe(2);
+    expect(plan.planning_work.candidate_semantic_units_visited).toBeLessThanOrEqual(
+      fixture.messages.length * 3,
+    );
+    expect(plan.planning_work.candidate_source_refs_visited).toBeLessThanOrEqual(
+      fixture.messages.length * 3,
+    );
+    expect(plan.planning_work.candidate_transcript_utf8_bytes).toBeLessThanOrEqual(
+      plan.planning_work.source_canonical_utf8_bytes * 4,
+    );
+    expect(plan.planning_work.token_estimator_calls).toBeLessThanOrEqual(
+      fixture.messages.length * 4,
+    );
+  });
+
+  it("rejects authenticated tool results that do not follow declared call order", () => {
+    const firstResult = "first result";
+    const secondResult = "second result";
+    const messages: RuntimeMessage[] = [
+      {
+        role: "assistant",
+        originalRole: "assistant",
+        content: "calling tools",
+        toolCalls: [
+          { id: "call-a", name: "Read", arguments: "{}" },
+          { id: "call-b", name: "Search", arguments: "{}" },
+        ],
+      },
+      {
+        role: "tool",
+        originalRole: "tool",
+        content: secondResult,
+        toolCallId: "call-b",
+        toolName: "Search",
+        runtimeOnly: {
+          toolResultIntegrity: createToolResultIntegrity({
+            runId: "packing-session",
+            toolCallId: "call-b",
+            content: secondResult,
+          }),
+        },
+      },
+      {
+        role: "tool",
+        originalRole: "tool",
+        content: firstResult,
+        toolCallId: "call-a",
+        toolName: "Read",
+        runtimeOnly: {
+          toolResultIntegrity: createToolResultIntegrity({
+            runId: "packing-session",
+            toolCallId: "call-a",
+            content: firstResult,
+          }),
+        },
+      },
+    ];
+
+    expect(() => buildCompactionMapReducePlan(
+      messages,
+      packingOptions(messages),
+    )).toThrow(/tool-result ordering or identity/u);
+  });
+});
+
+function packingFixture(unitCount: number): {
+  readonly messages: readonly RuntimeMessage[];
+  readonly options: Parameters<typeof buildCompactionMapReducePlan>[1];
+} {
+  const messages = Array.from({ length: unitCount }, (_, index) => ({
+    role: index % 2 === 0 ? "user" : "assistant",
+    originalRole: index % 2 === 0 ? "user" : "assistant",
+    content: `${String(index).padStart(3, "0")}:${"x".repeat(UNIT_TEXT_BYTES)}`,
+  } satisfies RuntimeMessage));
+  return { messages, options: packingOptions(messages) };
+}
+
+function packingOptions(
+  messages: readonly RuntimeMessage[],
+): Parameters<typeof buildCompactionMapReducePlan>[1] {
+  const refs = messages.map((message, index) => sourceRef(index, message));
+  const source: CompactionSourceAuthorityV1 = {
+    format_version: 1,
+    attempt_id: ATTEMPT_ID,
+    session_id: "packing-session",
+    epoch: 1,
+    source_binding: SOURCE_BINDING,
+    first_sequence: 1,
+    last_sequence: messages.length,
+    source_sha256: DIGEST,
+    source_bytes: messages.reduce(
+      (total, message) => total + Buffer.byteLength(String(message.content)),
+      0,
+    ),
+    history_digest: DIGEST,
+    active_history_refs: refs,
+  };
+  return {
+    context: {
+      options: {
+        contextWindowTokens: CONTEXT_WINDOW_TOKENS,
+        maxOutputTokens: OUTPUT_RESERVE_TOKENS,
+      },
+    } as CompactContext,
+    source,
+    systemPrompts: SYSTEM_PROMPTS,
+    providerName: "grok",
+    model: "grok-4.5",
+    messageSourceRefs: refs,
+  };
+}
+
+function sourceRef(
+  index: number,
+  message: RuntimeMessage,
+): CompactionActiveHistoryRefV1 {
+  return {
+    kind: "rollout_span",
+    ref_id: `${ATTEMPT_ID}:message:${String(index + 1).padStart(3, "0")}`,
+    source_binding: SOURCE_BINDING,
+    first_sequence: index + 1,
+    last_sequence: index + 1,
+    sha256: DIGEST,
+    history_index: index,
+    record_message_index: 0,
+    encoded_bytes: Buffer.byteLength(canonicalizeJson(message), "utf8"),
+  };
+}
+
+function exhaustiveMaximalBoundaries(plan: CompactionMapReducePlan): number[] {
+  const boundaries: number[] = [];
+  let start = 0;
+  while (start < plan.units.length) {
+    let fittedEnd = start;
+    for (let end = start + 1; end <= plan.units.length; end += 1) {
+      if (!candidateFits(plan, start, end, boundaries.length)) break;
+      fittedEnd = end;
+    }
+    if (fittedEnd === start) throw new Error("reference packer found no fit");
+    boundaries.push(fittedEnd);
+    start = fittedEnd;
+  }
+  return boundaries;
+}
+
+function candidateFits(
+  plan: CompactionMapReducePlan,
+  start: number,
+  end: number,
+  chunkIndex: number,
+): boolean {
+  const messages: readonly LLMMessage[] = [{
+    role: "user",
+    content: canonicalizeJson({
+      version: COMPACTION_STRUCTURED_TRANSCRIPT_VERSION,
+      kind: COMPACTION_STRUCTURED_TRANSCRIPT_KIND,
+      coverage_priority: "",
+      allowed_source_ref_ids: [
+        `${ATTEMPT_ID}:span:${String(chunkIndex + 1).padStart(3, "0")}`,
+      ],
+      units: plan.units.slice(start, end).map((unit) => ({
+        unit_id: unit.unit_id,
+        messages: unit.messages,
+      })),
+    }),
+  }];
+  try {
+    accountCompactionCall({
+      messages,
+      systemPrompt: SYSTEM_PROMPTS.map,
+      providerName: "grok",
+      model: "grok-4.5",
+      contextWindowTokens: CONTEXT_WINDOW_TOKENS,
+      outputReserveTokens: OUTPUT_RESERVE_TOKENS,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}

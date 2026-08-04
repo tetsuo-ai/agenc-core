@@ -83,6 +83,42 @@ export interface CompactionMapReducePlan {
   readonly reduction_fan_in: number;
   readonly tool_pairs: readonly CompactionToolPairV1[];
   readonly calls: readonly CompactionCallPlan[];
+  /** Deterministic planner work counters; these are evidence, not timings. */
+  readonly planning_work: CompactionPlanningWork;
+}
+
+export interface CompactionPlanningWork {
+  readonly source_messages_scanned: number;
+  readonly source_canonical_utf8_bytes: number;
+  readonly semantic_units_built: number;
+  readonly semantic_unit_utf8_bytes: number;
+  readonly chunk_candidate_evaluations: number;
+  readonly candidate_semantic_units_visited: number;
+  readonly candidate_source_refs_visited: number;
+  readonly candidate_transcript_utf8_bytes: number;
+  readonly maximum_candidate_semantic_units: number;
+  readonly token_estimator_calls: number;
+}
+
+interface MutableCompactionPlanningWork {
+  source_messages_scanned: number;
+  source_canonical_utf8_bytes: number;
+  semantic_units_built: number;
+  semantic_unit_utf8_bytes: number;
+  chunk_candidate_evaluations: number;
+  candidate_semantic_units_visited: number;
+  candidate_source_refs_visited: number;
+  candidate_transcript_utf8_bytes: number;
+  maximum_candidate_semantic_units: number;
+  token_estimator_calls: number;
+}
+
+interface CompactionChunkCandidate {
+  readonly end: number;
+  readonly units: readonly CompactionSemanticUnit[];
+  readonly sourceRef: RolloutSpanRefV1;
+  readonly messages: readonly LLMMessage[];
+  readonly accounting: TokenAccountingResult;
 }
 
 export interface CompactionCallPlan {
@@ -113,6 +149,7 @@ export function buildCompactionMapReducePlan(
   messages: readonly RuntimeMessage[],
   options: BuildCompactionPlanOptions,
 ): CompactionMapReducePlan {
+  const planningWork = createPlanningWork();
   if (options.messageSourceRefs.length !== messages.length) {
     throw new CompactionTransactionError(
       "provenance_invalid",
@@ -125,7 +162,7 @@ export function buildCompactionMapReducePlan(
       `compaction source exceeds ${MAX_COMPACTION_SOURCE_MESSAGES} messages`,
     );
   }
-  const sourceBytes = measureCanonicalSourceBytes(messages);
+  const sourceBytes = measureCanonicalSourceBytes(messages, planningWork);
   if (sourceBytes > MAX_COMPACTION_SOURCE_BYTES) {
     throw new CompactionCannotReduceError(
       "source_limit",
@@ -137,6 +174,7 @@ export function buildCompactionMapReducePlan(
     modelMessages,
     options.source.session_id,
     messages,
+    planningWork,
   );
   if (units.length > MAX_COMPACTION_SEMANTIC_UNITS) {
     throw new CompactionCannotReduceError(
@@ -168,89 +206,41 @@ export function buildCompactionMapReducePlan(
   };
 
   const chunks: CompactionChunkPlan[] = [];
-  let current: CompactionSemanticUnit[] = [];
-  const flush = (): void => {
-    if (current.length === 0) return;
-    const index = chunks.length;
-    const sourceRef = chunkSourceRef(
-      options.source,
-      current,
-      index,
-      options.messageSourceRefs,
-    );
-    const requestMessages = structuredTranscriptMessages(
-      current,
-      [sourceRef.ref_id],
-      options.requestedFocus,
-    );
-    const accounting = accountCall(
-      requestMessages,
-      commonOptions,
-      options.providerName,
-      options.model,
-      contextWindow,
-      outputReserve,
-    );
-    chunks.push({
-      index,
-      units: current,
-      source_ref: sourceRef,
-      messages: requestMessages,
-      accounting,
-      tool_pairs: current.flatMap((unit) => unit.tool_pairs),
-    });
-    current = [];
-  };
-
   let nextUnitIndex = 0;
   while (nextUnitIndex < units.length) {
-    let low = nextUnitIndex + 1;
-    let high = units.length;
-    let fittedEnd = nextUnitIndex;
-    while (low <= high) {
-      const candidateEnd = low + Math.floor((high - low) / 2);
-      const candidate = units.slice(nextUnitIndex, candidateEnd);
-      const provisionalRef = chunkSourceRef(
-        options.source,
-        candidate,
-        chunks.length,
-        options.messageSourceRefs,
+    if (chunks.length >= MAX_COMPACTION_CHUNKS) {
+      throw new CompactionCannotReduceError(
+        "plan_limit",
+        `compaction requires more than ${MAX_COMPACTION_CHUNKS} chunks`,
       );
-      const accounting = accountCallWithoutContextAssertion(
-        structuredTranscriptMessages(
-          candidate,
-          [provisionalRef.ref_id],
-          options.requestedFocus,
-        ),
-        commonOptions,
-        options.providerName,
-        options.model,
-        contextWindow,
-        outputReserve,
-      );
-      if (accounting.totalTokens <= contextWindow) {
-        fittedEnd = candidateEnd;
-        low = candidateEnd + 1;
-      } else {
-        high = candidateEnd - 1;
-      }
     }
-    if (fittedEnd === nextUnitIndex) {
+    const candidate = findMaximalChunkCandidate({
+      units,
+      start: nextUnitIndex,
+      chunkIndex: chunks.length,
+      options,
+      commonOptions,
+      contextWindow,
+      outputReserve,
+      planningWork,
+    });
+    if (candidate === null) {
       const unit = units[nextUnitIndex]!;
       throw new CompactionCannotReduceError(
         "semantic_unit_oversized",
         `semantic unit ${unit.unit_id} cannot fit the compaction request budget; retain its rollout span and tool artifact references`,
       );
     }
-    current = units.slice(nextUnitIndex, fittedEnd);
-    flush();
-    nextUnitIndex = fittedEnd;
-    if (chunks.length > MAX_COMPACTION_CHUNKS) {
-      throw new CompactionCannotReduceError(
-        "plan_limit",
-        `compaction requires more than ${MAX_COMPACTION_CHUNKS} chunks`,
-      );
-    }
+    assertTokenAccountingWithinContext(candidate.accounting, contextWindow);
+    chunks.push({
+      index: chunks.length,
+      units: candidate.units,
+      source_ref: candidate.sourceRef,
+      messages: candidate.messages,
+      accounting: candidate.accounting,
+      tool_pairs: candidate.units.flatMap((unit) => unit.tool_pairs),
+    });
+    nextUnitIndex = candidate.end;
   }
   if (chunks.length === 0) {
     throw new CompactionCannotReduceError("source_limit", "compaction source is empty");
@@ -267,13 +257,13 @@ export function buildCompactionMapReducePlan(
         ...options,
         contextWindow,
         outputReserve,
-      });
+      }, planningWork);
   const calls = buildCallDag(chunks, {
     ...options,
     contextWindow,
     outputReserve,
     reductionFanIn,
-  });
+  }, planningWork);
   const topology = compactionMapReduceTopology(chunks.length, reductionFanIn);
   const toolPairs = units.flatMap((unit) => unit.tool_pairs);
   if (toolPairs.length > MAX_COMPACTION_TOOL_PAIRS_PER_OUTPUT) {
@@ -316,7 +306,150 @@ export function buildCompactionMapReducePlan(
     reduction_fan_in: reductionFanIn,
     tool_pairs: toolPairs,
     calls,
+    planning_work: Object.freeze({ ...planningWork }),
   };
+}
+
+function createPlanningWork(): MutableCompactionPlanningWork {
+  return {
+    source_messages_scanned: 0,
+    source_canonical_utf8_bytes: 0,
+    semantic_units_built: 0,
+    semantic_unit_utf8_bytes: 0,
+    chunk_candidate_evaluations: 0,
+    candidate_semantic_units_visited: 0,
+    candidate_source_refs_visited: 0,
+    candidate_transcript_utf8_bytes: 0,
+    maximum_candidate_semantic_units: 0,
+    token_estimator_calls: 0,
+  };
+}
+
+/**
+ * Find the exact maximal fitting prefix without probing the entire remaining
+ * suffix for every chunk. Exponential growth establishes a local failure
+ * bracket, then binary search resolves only that bracket. Every materialized
+ * candidate is therefore no larger than the remaining source or twice the
+ * preceding fitted prefix.
+ */
+function findMaximalChunkCandidate(params: {
+  readonly units: readonly CompactionSemanticUnit[];
+  readonly start: number;
+  readonly chunkIndex: number;
+  readonly options: BuildCompactionPlanOptions;
+  readonly commonOptions: LLMChatOptions;
+  readonly contextWindow: number;
+  readonly outputReserve: number;
+  readonly planningWork: MutableCompactionPlanningWork;
+}): CompactionChunkCandidate | null {
+  let best = evaluateChunkCandidate({ ...params, end: params.start + 1 });
+  if (!chunkCandidateFits(best, params.contextWindow)) return null;
+
+  let growth = 1;
+  let firstFailingEnd: number | undefined;
+  while (best.end < params.units.length) {
+    const candidateEnd = Math.min(
+      params.units.length,
+      safeSum(best.end, growth),
+    );
+    const candidate = evaluateChunkCandidate({ ...params, end: candidateEnd });
+    if (!chunkCandidateFits(candidate, params.contextWindow)) {
+      firstFailingEnd = candidateEnd;
+      break;
+    }
+    best = candidate;
+    if (best.end === params.units.length) return best;
+    growth = safeSum(growth, growth);
+  }
+
+  let low = best.end + 1;
+  let high = (firstFailingEnd ?? best.end) - 1;
+  while (low <= high) {
+    const candidateEnd = low + Math.floor((high - low) / 2);
+    const candidate = evaluateChunkCandidate({ ...params, end: candidateEnd });
+    if (chunkCandidateFits(candidate, params.contextWindow)) {
+      best = candidate;
+      low = candidateEnd + 1;
+    } else {
+      high = candidateEnd - 1;
+    }
+  }
+  return best;
+}
+
+function evaluateChunkCandidate(params: {
+  readonly units: readonly CompactionSemanticUnit[];
+  readonly start: number;
+  readonly end: number;
+  readonly chunkIndex: number;
+  readonly options: BuildCompactionPlanOptions;
+  readonly commonOptions: LLMChatOptions;
+  readonly contextWindow: number;
+  readonly outputReserve: number;
+  readonly planningWork: MutableCompactionPlanningWork;
+}): CompactionChunkCandidate {
+  const units = params.units.slice(params.start, params.end);
+  const sourceRef = chunkSourceRef(
+    params.options.source,
+    units,
+    params.chunkIndex,
+    params.options.messageSourceRefs,
+  );
+  const messages = structuredTranscriptMessages(
+    units,
+    [sourceRef.ref_id],
+    params.options.requestedFocus,
+  );
+  const sourceRefCount = units.length === 0
+    ? 0
+    : units.at(-1)!.last_message_index - units[0]!.first_message_index + 1;
+  params.planningWork.chunk_candidate_evaluations = safeSum(
+    params.planningWork.chunk_candidate_evaluations,
+    1,
+  );
+  params.planningWork.candidate_semantic_units_visited = safeSum(
+    params.planningWork.candidate_semantic_units_visited,
+    units.length,
+  );
+  params.planningWork.candidate_source_refs_visited = safeSum(
+    params.planningWork.candidate_source_refs_visited,
+    sourceRefCount,
+  );
+  params.planningWork.maximum_candidate_semantic_units = Math.max(
+    params.planningWork.maximum_candidate_semantic_units,
+    units.length,
+  );
+  params.planningWork.candidate_transcript_utf8_bytes = safeSum(
+    params.planningWork.candidate_transcript_utf8_bytes,
+    messagesUtf8Bytes(messages),
+  );
+  params.planningWork.token_estimator_calls = safeSum(
+    params.planningWork.token_estimator_calls,
+    1,
+  );
+  const accounting = accountCallWithoutContextAssertion(
+    messages,
+    params.commonOptions,
+    params.options.providerName,
+    params.options.model,
+    params.contextWindow,
+    params.outputReserve,
+  );
+  return { end: params.end, units, sourceRef, messages, accounting };
+}
+
+function chunkCandidateFits(
+  candidate: CompactionChunkCandidate,
+  contextWindow: number,
+): boolean {
+  return candidate.accounting.totalTokens <= contextWindow;
+}
+
+function messagesUtf8Bytes(messages: readonly LLMMessage[]): number {
+  return messages.reduce((total, message) => safeSum(
+    total,
+    Buffer.byteLength(canonicalizeJson(message), "utf8"),
+  ), 0);
 }
 
 function buildCallDag(
@@ -326,6 +459,7 @@ function buildCallDag(
     readonly outputReserve: number;
     readonly reductionFanIn: number;
   },
+  planningWork: MutableCompactionPlanningWork,
 ): readonly CompactionCallPlan[] {
   const calls: CompactionCallPlan[] = [];
   const resultRef = (callIndex: number): string =>
@@ -334,14 +468,14 @@ function buildCallDag(
   for (const chunk of chunks) {
     const callIndex = calls.length + 1;
     const stage = chunks.length === 1 ? "final" : "map";
-    const accounting = accountCompactionCall({
+    const accounting = accountPlannedCompactionCall({
       messages: chunk.messages,
       systemPrompt: options.systemPrompts[stage],
       providerName: options.providerName,
       model: options.model,
       contextWindowTokens: options.contextWindow,
       outputReserveTokens: options.outputReserve,
-    });
+    }, planningWork);
     calls.push({
       call_index: callIndex,
       stage,
@@ -372,14 +506,14 @@ function buildCallDag(
         stage,
         requestedFocus: options.requestedFocus,
       });
-      const wrapper = accountCompactionCall({
+      const wrapper = accountPlannedCompactionCall({
         messages,
         systemPrompt: options.systemPrompts[stage],
         providerName: options.providerName,
         model: options.model,
         contextWindowTokens: options.contextWindow,
         outputReserveTokens: options.outputReserve,
-      });
+      }, planningWork);
       const upperBound = safeSum(
         wrapper.inputTokens,
         group.length * options.outputReserve,
@@ -411,6 +545,7 @@ function selectReductionFanIn(
     readonly contextWindow: number;
     readonly outputReserve: number;
   },
+  planningWork: MutableCompactionPlanningWork,
 ): number {
   for (let candidate = MAX_COMPACTION_FAN_IN; candidate >= 2; candidate -= 1) {
     const messages = structuredReductionMessages({
@@ -422,14 +557,14 @@ function selectReductionFanIn(
       stage: "reduce",
       requestedFocus: options.requestedFocus,
     });
-    const wrapper = accountCompactionCall({
+    const wrapper = accountPlannedCompactionCall({
       messages,
       systemPrompt: options.systemPrompts.reduce,
       providerName: options.providerName,
       model: options.model,
       contextWindowTokens: options.contextWindow,
       outputReserveTokens: options.outputReserve,
-    });
+    }, planningWork);
     const childOutputs = candidate * options.outputReserve;
     if (
       safeSum(
@@ -499,10 +634,22 @@ export function accountCompactionCall(params: {
   );
 }
 
+function accountPlannedCompactionCall(
+  params: Parameters<typeof accountCompactionCall>[0],
+  planningWork: MutableCompactionPlanningWork,
+): TokenAccountingResult {
+  planningWork.token_estimator_calls = safeSum(
+    planningWork.token_estimator_calls,
+    1,
+  );
+  return accountCompactionCall(params);
+}
+
 function buildSemanticUnits(
   messages: readonly RuntimeMessage[],
   sourceSessionId: string,
   authoritativeMessages: readonly RuntimeMessage[],
+  planningWork: MutableCompactionPlanningWork,
 ): readonly CompactionSemanticUnit[] {
   const units: CompactionSemanticUnit[] = [];
   const allToolCallIds = new Set<string>();
@@ -518,6 +665,7 @@ function buildSemanticUnits(
       );
     }
     const expectedToolIds = new Set<string>();
+    const declaredToolIds: string[] = [];
     for (const call of toolCalls) {
       if (call.id.trim().length === 0) {
         throw new CompactionTransactionError(
@@ -538,6 +686,7 @@ function buildSemanticUnits(
         );
       }
       expectedToolIds.add(call.id);
+      declaredToolIds.push(call.id);
       allToolCallIds.add(call.id);
     }
     const unitMessages: StructuredMessageV1[] = [firstStructured];
@@ -549,7 +698,12 @@ function buildSemanticUnits(
       while (index < messages.length && roleOf(messages[index]!) === "tool") {
         const result = messages[index]!;
         const callId = result.toolCallId?.trim();
-        if (!callId || !unresolved.delete(callId)) {
+        const expectedCallId = declaredToolIds[toolPairs.length];
+        if (
+          !callId ||
+          callId !== expectedCallId ||
+          !unresolved.delete(callId)
+        ) {
           throw new CompactionTransactionError(
             "provenance_invalid",
             "tool-result ordering or identity is not representable as one semantic unit",
@@ -594,13 +748,22 @@ function buildSemanticUnits(
       );
     }
     const canonical = canonicalizeJson(unitMessages);
+    const utf8Bytes = Buffer.byteLength(canonical, "utf8");
+    planningWork.semantic_units_built = safeSum(
+      planningWork.semantic_units_built,
+      1,
+    );
+    planningWork.semantic_unit_utf8_bytes = safeSum(
+      planningWork.semantic_unit_utf8_bytes,
+      utf8Bytes,
+    );
     units.push({
       unit_id: `unit-${String(units.length + 1).padStart(6, "0")}`,
       first_message_index: firstIndex,
       last_message_index: index - 1,
       messages: unitMessages,
       canonical_json: canonical,
-      utf8_bytes: Buffer.byteLength(canonical, "utf8"),
+      utf8_bytes: utf8Bytes,
       tool_pairs: toolPairs,
     });
   }
@@ -674,14 +837,20 @@ function truncateUtf8(value: string, maximumBytes: number): string {
 
 function measureCanonicalSourceBytes(
   messages: readonly RuntimeMessage[],
+  planningWork: MutableCompactionPlanningWork,
 ): number {
   let bytes = 2;
   for (let index = 0; index < messages.length; index += 1) {
     if (index > 0) bytes = safeSum(bytes, 1);
+    planningWork.source_messages_scanned = safeSum(
+      planningWork.source_messages_scanned,
+      1,
+    );
     bytes = safeSum(
       bytes,
       Buffer.byteLength(canonicalizeJson(messageForDigest(messages[index]!)), "utf8"),
     );
+    planningWork.source_canonical_utf8_bytes = bytes;
     if (bytes > MAX_COMPACTION_SOURCE_BYTES) return bytes;
   }
   return bytes;
