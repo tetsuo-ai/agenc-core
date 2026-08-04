@@ -8,12 +8,29 @@ import {
   type CompactionPinRecord,
 } from "../../src/state/compaction-retention.js";
 import {
+  COMPACTION_RECONCILIATION_PAGE_SIZE,
+} from "../../src/services/compact/transaction-types.js";
+import {
   openStateDatabases,
   type StateSqliteDriver,
 } from "../../src/state/sqlite-driver.js";
 
 const DIGEST = "a".repeat(64);
 const SESSION_ID = "retention-query-plan";
+const INVALID_PAGE_LIMITS = [
+  { label: "negative integer", value: -1 },
+  { label: "negative fraction", value: -1.5 },
+  { label: "zero", value: 0 },
+  { label: "positive fraction", value: 1.5 },
+  { label: "NaN", value: Number.NaN },
+  { label: "positive infinity", value: Number.POSITIVE_INFINITY },
+  { label: "negative infinity", value: Number.NEGATIVE_INFINITY },
+  { label: "non-safe integer", value: Number.MAX_SAFE_INTEGER + 1 },
+] as const;
+const OVERSIZED_SAFE_PAGE_LIMITS = [
+  COMPACTION_RECONCILIATION_PAGE_SIZE + 1,
+  Number.MAX_SAFE_INTEGER,
+] as const;
 
 let root = "";
 let driver: StateSqliteDriver;
@@ -177,21 +194,23 @@ describe("compaction retention ordered query plans", () => {
       .toEqual(["pending-early", "pending-late", "eligible-early"]);
     expect(candidateIds(repository.listReleaseCandidates(SESSION_ID, 500, 1)))
       .toEqual(["pending-early"]);
-    expect(candidateIds(repository.listReleaseCandidates(SESSION_ID, 500, 0)))
-      .toEqual(["pending-early"]);
+    for (const { label, value } of INVALID_PAGE_LIMITS) {
+      expect(
+        repository.listReleaseCandidates(SESSION_ID, 500, value),
+        label,
+      ).toEqual([]);
+    }
 
     driver.prepareState(
       "DELETE FROM compaction_retention_pins WHERE state = 'release_pending'",
     ).run();
     expect(candidateIds(repository.listReleaseCandidates(SESSION_ID, 500, 3)))
       .toEqual(["eligible-early", "eligible-a", "eligible-b"]);
-    expect(
-      repository.listReleaseCandidates(
-        SESSION_ID,
-        20_000,
-        Number.POSITIVE_INFINITY,
-      ),
-    ).toHaveLength(256);
+    for (const limit of OVERSIZED_SAFE_PAGE_LIMITS) {
+      expect(
+        repository.listReleaseCandidates(SESSION_ID, 20_000, limit),
+      ).toHaveLength(COMPACTION_RECONCILIATION_PAGE_SIZE);
+    }
   });
 
   it("advances reconciliation with a stable tuple cursor", () => {
@@ -246,7 +265,13 @@ describe("compaction retention ordered query plans", () => {
     });
     insertReference("released-a", "checkpoint", "retained-a", 10);
 
-    expect(repository.deleteReleasedHistory(0)).toBe(1);
+    for (const { label, value } of INVALID_PAGE_LIMITS) {
+      expect(repository.deleteReleasedHistory(value), label).toBe(0);
+      expect(repository.listSession(SESSION_ID), label).toHaveLength(3);
+      expect(referenceCount("released-a"), label).toBe(1);
+    }
+
+    expect(repository.deleteReleasedHistory(1)).toBe(1);
     expect(repository.get("released-a")).toBeUndefined();
     expect(referenceCount("released-a")).toBe(0);
     expect(repository.get("released-b")).toBeDefined();
@@ -265,13 +290,17 @@ describe("compaction retention ordered query plans", () => {
         });
       }
     });
-    expect(repository.deleteReleasedHistory(Number.POSITIVE_INFINITY)).toBe(256);
+    expect(
+      repository.deleteReleasedHistory(
+        COMPACTION_RECONCILIATION_PAGE_SIZE + 1,
+      ),
+    ).toBe(COMPACTION_RECONCILIATION_PAGE_SIZE);
     expect(
       driver.prepareState<[], { readonly count: number }>(
         `SELECT COUNT(*) AS count FROM compaction_retention_pins
          WHERE state = 'released'`,
       ).get()?.count,
-    ).toBe(45);
+    ).toBe(301 - COMPACTION_RECONCILIATION_PAGE_SIZE);
   });
 
   it("releases only active reverse descendant references", () => {

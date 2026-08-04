@@ -22,8 +22,6 @@ import {
 const EMPTY_CURSOR_CREATED_AT_MS = 0;
 const EMPTY_CURSOR_ATTEMPT_ID = "";
 const FAILURE_ATTEMPT_HISTORY_LIMIT = MAX_COMPACTION_FAILURES_PER_HISTORY_DIGEST;
-const MIN_COMPACTION_RETENTION_PAGE_SIZE = 1;
-const MAX_COMPACTION_RETENTION_PAGE_SIZE = 256;
 
 export type CompactionReferenceKind =
   | "active_history"
@@ -825,7 +823,8 @@ export class CompactionRetentionRepository {
     nowMs: number,
     limit: number,
   ): readonly CompactionPinRecord[] {
-    const boundedLimit = clampCompactionRetentionPageSize(limit);
+    const boundedLimit = getCompactionRetentionPageSize(limit);
+    if (boundedLimit === undefined) return [];
     // A release tombstone always resumes before a new release begins. Keeping
     // the two ordered streams separate avoids an OR/CASE sort over pin history.
     const releasePending = this.driver
@@ -993,7 +992,8 @@ export class CompactionRetentionRepository {
   }
 
   deleteReleasedHistory(limit: number): number {
-    const boundedLimit = clampCompactionRetentionPageSize(limit);
+    const boundedLimit = getCompactionRetentionPageSize(limit);
+    if (boundedLimit === undefined) return 0;
     return this.driver.transactionImmediate(() => {
       const attempts = this.driver
         .prepareState<[number], { readonly attempt_id: string }>(
@@ -1118,16 +1118,9 @@ export class CompactionRetentionRepository {
   }
 }
 
-function clampCompactionRetentionPageSize(limit: number): number {
-  if (!Number.isFinite(limit)) {
-    return limit === Number.POSITIVE_INFINITY
-      ? MAX_COMPACTION_RETENTION_PAGE_SIZE
-      : MIN_COMPACTION_RETENTION_PAGE_SIZE;
-  }
-  return Math.min(
-    MAX_COMPACTION_RETENTION_PAGE_SIZE,
-    Math.max(MIN_COMPACTION_RETENTION_PAGE_SIZE, Math.floor(limit)),
-  );
+function getCompactionRetentionPageSize(limit: number): number | undefined {
+  if (!Number.isSafeInteger(limit) || limit <= 0) return undefined;
+  return Math.min(COMPACTION_RECONCILIATION_PAGE_SIZE, limit);
 }
 
 const PIN_SELECT = `SELECT
