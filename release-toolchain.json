@@ -287,6 +287,7 @@
       "libgcc": "libgcc-8.5.0-28.el8_10",
       "gcc-toolset-12-gcc-c++": "gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10",
       "gcc-toolset-12-binutils": "gcc-toolset-12-binutils-2.38-17.el8",
+      "kernel-headers": "kernel-headers-4.18.0-553.150.1.el8_10",
       "python3.12": "python3.12-3.12.13-2.el8_10",
       "make": "make-4.2.1-11.el8",
       "git": "git-2.43.7-1.el8_10",
@@ -298,8 +299,8 @@
       "format": "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
       "signatureKeyIds": ["15af5dac6d745a60"],
       "sha256": {
-        "x64": "a20edbdbf94e00d0e93ce30f04167861f67b3132f388f06d2c5bb44894b6e613",
-        "arm64": "530821a9904c1d9162750d564d89e7556575df1cbec0a54bd5029076dc58731d"
+        "x64": "20da0fd525fe8dbe596068bb896b949fe84c5ede3c2829e9481f6c2c97de0a5e",
+        "arm64": "98d1259fca66152fb91e739a15a4fa7f76b0a222369cb34ba853d7d72f02239f"
       }
     },
     "compilerVersion": "12.2.1",

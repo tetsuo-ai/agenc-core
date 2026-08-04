@@ -633,12 +633,14 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("libatomic-8.5.0-28.el8_10");
     expect(workflow).toContain("libgcc-8.5.0-28.el8_10");
     expect(workflow).toContain("gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10");
+    expect(workflow).toContain("kernel-headers-4.18.0-553.150.1.el8_10");
     expect(workflow).toContain("python3.12-3.12.13-2.el8_10");
     expect(workflow).toContain('["rpmContentInventory"]');
     expect(workflow).toContain("%{SHA256HEADER}");
     expect(workflow).toContain("%{PAYLOADDIGEST}");
     expect(workflow).toContain("%{RSAHEADER:pgpsig}");
     expect(workflow).toContain("signed RPM content inventory drift");
+    expect(workflow).toContain("observed signed RPM content inventory");
     expect(workflow).toContain("rpm-content-sha256:");
     expect(workflow).toContain("verify-reproducible-artifacts.mjs");
     expect(workflow).toContain("AGENC_BUILDER_ID=");
@@ -1050,6 +1052,9 @@ describe("reproducible install and release contract", () => {
     expect(nativeContract.linux.builderPackages.libgcc).toBe(
       "libgcc-8.5.0-28.el8_10",
     );
+    expect(nativeContract.linux.builderPackages["kernel-headers"]).toBe(
+      "kernel-headers-4.18.0-553.150.1.el8_10",
+    );
     expect(nativeContract.nodeBootstrap).toMatchObject({
       schemaVersion: 1,
       minimumRuntimeVersion: "0.11.2",
@@ -1138,9 +1143,9 @@ describe("reproducible install and release contract", () => {
         "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
       signatureKeyIds: ["15af5dac6d745a60"],
       sha256: {
-        x64: "a20edbdbf94e00d0e93ce30f04167861f67b3132f388f06d2c5bb44894b6e613",
+        x64: "20da0fd525fe8dbe596068bb896b949fe84c5ede3c2829e9481f6c2c97de0a5e",
         arm64:
-          "530821a9904c1d9162750d564d89e7556575df1cbec0a54bd5029076dc58731d",
+          "98d1259fca66152fb91e739a15a4fa7f76b0a222369cb34ba853d7d72f02239f",
       },
     });
   });

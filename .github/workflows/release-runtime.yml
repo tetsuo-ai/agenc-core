@@ -567,6 +567,7 @@ jobs:
             libgcc-8.5.0-28.el8_10 \
             gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10 \
             gcc-toolset-12-binutils-2.38-17.el8 \
+            kernel-headers-4.18.0-553.150.1.el8_10 \
             python3.12-3.12.13-2.el8_10 \
             make-4.2.1-11.el8 \
             git-2.43.7-1.el8_10 \
@@ -652,6 +653,9 @@ jobs:
           inventory_sha = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
           expected_sha = contract["sha256"][architecture]
           if inventory_sha != expected_sha:
+              print("::group::observed signed RPM content inventory")
+              print(canonical, end="")
+              print("::endgroup::")
               raise SystemExit(
                   f"signed RPM content inventory drift for {architecture}: {inventory_sha} != {expected_sha}"
               )
