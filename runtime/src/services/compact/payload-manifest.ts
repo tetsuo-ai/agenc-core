@@ -224,7 +224,7 @@ export function hydrateActiveHistoryRefs(
   }));
 }
 
-export function compactionPayloadChunkLineUtf8Bytes(
+function compactionPayloadChunkLineUtf8Bytes(
   chunk: CompactionPayloadChunkV1,
 ): number {
   return Buffer.byteLength(JSON.stringify({
@@ -342,9 +342,4 @@ function invalidPayload(message: string, cause?: unknown): CompactionTransaction
     message,
     cause === undefined ? undefined : { cause },
   );
-}
-
-/** Hash-only helper for evidence without retaining canonical payload text. */
-export function compactionPayloadEvidenceSha256(value: unknown): string {
-  return sha256Hex(canonicalizePayloadJson(value));
 }

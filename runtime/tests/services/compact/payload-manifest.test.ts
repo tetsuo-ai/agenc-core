@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   compactActiveHistoryEntries,
-  compactionPayloadChunkLineUtf8Bytes,
   createCompactionPayloadBundleV1,
   hydrateActiveHistoryRefs,
   reconstructCompactionPayloadV1,
@@ -14,6 +13,7 @@ import {
   type CompactionIntentV1,
   type CompactionActiveHistoryRefV1,
   type CompactionPayloadBundleV1,
+  type CompactionPayloadChunkV1,
   type CompactionPersistedIntentV1,
 } from "../../../src/services/compact/transaction-types.js";
 import {
@@ -40,7 +40,7 @@ describe("compaction canonical payload manifests", () => {
     });
     expect(bundle.chunks.length).toBeGreaterThan(1);
     expect(bundle.chunks.every((chunk) =>
-      compactionPayloadChunkLineUtf8Bytes(chunk) <=
+      serializedPayloadChunkUtf8Bytes(chunk) <=
         MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES
     )).toBe(true);
     expect(reconstructCompactionPayloadV1(bundle.manifest, bundle.chunks))
@@ -68,7 +68,7 @@ describe("compaction canonical payload manifests", () => {
       fragment_utf8_bytes: 0,
       canonical_json_fragment: "",
     };
-    const baseBytes = compactionPayloadChunkLineUtf8Bytes(empty);
+    const baseBytes = serializedPayloadChunkUtf8Bytes(empty);
     const exactFragment = "x".repeat(
       MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES - baseBytes,
     );
@@ -78,7 +78,7 @@ describe("compaction canonical payload manifests", () => {
       canonical_json_fragment: exactFragment,
     };
     // The decimal fragment length field grows compared with the empty seed.
-    const overshoot = compactionPayloadChunkLineUtf8Bytes(exact) -
+    const overshoot = serializedPayloadChunkUtf8Bytes(exact) -
       MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES;
     const adjusted = {
       ...exact,
@@ -87,9 +87,9 @@ describe("compaction canonical payload manifests", () => {
         ? exactFragment
         : exactFragment.slice(0, -overshoot),
     };
-    expect(compactionPayloadChunkLineUtf8Bytes(adjusted))
+    expect(serializedPayloadChunkUtf8Bytes(adjusted))
       .toBe(MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES);
-    expect(compactionPayloadChunkLineUtf8Bytes({
+    expect(serializedPayloadChunkUtf8Bytes({
       ...adjusted,
       fragment_utf8_bytes: adjusted.fragment_utf8_bytes + 1,
       canonical_json_fragment: `${adjusted.canonical_json_fragment}x`,
@@ -236,7 +236,7 @@ describe("compaction canonical payload manifests", () => {
     expect(reconstructCompactionPayloadV1(bundle.manifest, bundle.chunks))
       .toEqual(value);
     expect(bundle.chunks.every((chunk) =>
-      compactionPayloadChunkLineUtf8Bytes(chunk) <=
+      serializedPayloadChunkUtf8Bytes(chunk) <=
         MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES
     )).toBe(true);
     expect(() => createCompactionPayloadBundleV1({
@@ -263,7 +263,7 @@ describe("compaction canonical payload manifests", () => {
       .toBe(bundle.manifest.canonical_utf8_bytes);
     expect(bundle.chunks.length).toBeLessThanOrEqual(32);
     expect(bundle.chunks.every((chunk) =>
-      compactionPayloadChunkLineUtf8Bytes(chunk) <=
+      serializedPayloadChunkUtf8Bytes(chunk) <=
         MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES
     )).toBe(true);
     expect(residentGrowth).toBeLessThan(805_306_368);
@@ -389,6 +389,16 @@ function manifestIntent(): CompactionIntentV1 {
 
 function chunkLine(chunk: unknown): string {
   return rolloutLine("compaction_payload_chunk", chunk);
+}
+
+function serializedPayloadChunkUtf8Bytes(
+  chunk: CompactionPayloadChunkV1,
+): number {
+  return Buffer.byteLength(JSON.stringify({
+    type: "compaction_payload_chunk",
+    payload: chunk,
+    eventVersion: 2,
+  }), "utf8");
 }
 
 function rolloutLine(type: string, payload: unknown): string {

@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   canonicalCompactionSourceMessages,
-  compactionMapReduceTopology,
 } from "../../../src/services/compact/plan.js";
 import {
   canonicalizeJson,
@@ -13,23 +12,12 @@ import {
   parseCompactionBodyV1,
   verifyCompactionSummaryDigest,
 } from "../../../src/services/compact/summary-v1.js";
-import {
-  accumulateCompactionOutputBudget,
-  compactionOutputTokenUpperBound,
-  compactionWallTimeExceeded,
-} from "../../../src/services/compact/transaction.js";
 import { compactConversationTransactionally } from "../../../src/services/compact/transaction.js";
 import {
-  MAX_COMPACTION_INTERMEDIATE_TOKENS,
-  MAX_COMPACTION_OUTPUT_NODES_TOTAL,
-  MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL,
   MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
   MAX_COMPACTION_POST_HOOK_UTF8_BYTES,
   MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES,
   MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES,
-  MAX_COMPACTION_PROVIDER_CALLS,
-  MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT,
-  MAX_COMPACTION_WALL_MS,
   type CompactionTransactionAdapter,
 } from "../../../src/services/compact/transaction-types.js";
 import type {
@@ -60,94 +48,6 @@ describe("transactional compaction strict contracts", () => {
     expect(getCompactPrompt()).not.toContain(
       "There may be additional summarization instructions provided in the included context. If so, remember to follow these instructions",
     );
-  });
-
-  it("builds the exact bounded DAG topology without singleton calls", () => {
-    expect(compactionMapReduceTopology(1)).toEqual({
-      levels: 1,
-      calls: 1,
-      reductionChildReferences: 0,
-    });
-    expect(compactionMapReduceTopology(8)).toEqual({
-      levels: 2,
-      calls: 9,
-      reductionChildReferences: 8,
-    });
-    expect(compactionMapReduceTopology(9)).toEqual({
-      levels: 3,
-      calls: 11,
-      reductionChildReferences: 11,
-    });
-    expect(compactionMapReduceTopology(17)).toMatchObject({ calls: 20 });
-    expect(compactionMapReduceTopology(57)).toMatchObject({ calls: 65 });
-    expect(compactionMapReduceTopology(64)).toEqual({
-      levels: 3,
-      calls: MAX_COMPACTION_PROVIDER_CALLS,
-      reductionChildReferences: 72,
-    });
-    expect(compactionMapReduceTopology(8, 2)).toEqual({
-      levels: 4,
-      calls: 15,
-      reductionChildReferences: 14,
-    });
-  });
-
-  it("accepts exact aggregate output limits and rejects each plus one", () => {
-    const maximumWorkUnits =
-      MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT * MAX_COMPACTION_PROVIDER_CALLS;
-    const exact = accumulateCompactionOutputBudget(
-      { bytes: 0, nodes: 0, workUnits: 0 },
-      {
-        bytes: MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL,
-        nodes: MAX_COMPACTION_OUTPUT_NODES_TOTAL,
-        workUnits: maximumWorkUnits,
-      },
-    );
-    expect(exact).toEqual({
-      bytes: MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL,
-      nodes: MAX_COMPACTION_OUTPUT_NODES_TOTAL,
-      workUnits: maximumWorkUnits,
-    });
-    for (const delta of [
-      { bytes: 1, nodes: 0, workUnits: 0 },
-      { bytes: 0, nodes: 1, workUnits: 0 },
-      { bytes: 0, nodes: 0, workUnits: 1 },
-    ]) {
-      expect(() => accumulateCompactionOutputBudget(exact, delta))
-        .toThrow(/aggregate limit/i);
-    }
-  });
-
-  it("uses reported output tokens and a fail-closed UTF-8 upper bound", () => {
-    expect(
-      compactionOutputTokenUpperBound(
-        "x".repeat(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1),
-        undefined,
-      ),
-    ).toBe(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1);
-    expect(
-      compactionOutputTokenUpperBound("large response", MAX_COMPACTION_INTERMEDIATE_TOKENS),
-    ).toBe(MAX_COMPACTION_INTERMEDIATE_TOKENS);
-    expect(
-      compactionOutputTokenUpperBound("small", MAX_COMPACTION_INTERMEDIATE_TOKENS + 1),
-    ).toBe(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1);
-    expect(
-      compactionOutputTokenUpperBound(
-        "x".repeat(MAX_COMPACTION_INTERMEDIATE_TOKENS),
-        1,
-      ),
-    ).toBe(MAX_COMPACTION_INTERMEDIATE_TOKENS);
-    expect(
-      compactionOutputTokenUpperBound(
-        "x".repeat(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1),
-        1,
-      ),
-    ).toBe(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1);
-  });
-
-  it("accepts the exact wall limit and rejects plus one", () => {
-    expect(compactionWallTimeExceeded(MAX_COMPACTION_WALL_MS)).toBe(false);
-    expect(compactionWallTimeExceeded(MAX_COMPACTION_WALL_MS + 1)).toBe(true);
   });
 
   it("rejects duplicate keys and control markers in every body string", () => {

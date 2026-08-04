@@ -15,7 +15,6 @@ import { RolloutStore } from "../../src/session/rollout-store.js";
 import {
   COMPACTION_EVENT_FORMAT_VERSION,
   COMPACTION_MINIMUM_READER_RUNTIME,
-  COMPACTION_READER_RUNTIME_CAPABILITY,
   COMPACTION_ROLLBACK_RETENTION_MS,
   COMPACTION_SOURCE_DIGEST_DOMAIN,
   COMPACTION_SUMMARY_DAG_DIGEST_DOMAIN,
@@ -43,7 +42,6 @@ import {
 } from "../../src/services/compact/summary-v1.js";
 import { readCompactionRolloutPayload } from "../../src/session/compaction-event-reader.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
-import { compactionMapReduceTopology } from "../../src/services/compact/plan.js";
 import {
   compactActiveHistoryEntries,
   createCompactionPayloadBundleV1,
@@ -802,9 +800,9 @@ describe("RolloutStore transactional compaction", () => {
       expect(
         readCompactionRolloutPayload("compaction_intent", {
           ...transaction.intent,
-          minimum_reader_runtime: COMPACTION_READER_RUNTIME_CAPABILITY,
+          minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
         }).minimum_reader_runtime,
-      ).toBe(COMPACTION_READER_RUNTIME_CAPABILITY);
+      ).toBe(COMPACTION_MINIMUM_READER_RUNTIME);
       expect(() =>
         readCompactionRolloutPayload("compaction_intent", {
           ...transaction.intent,
@@ -1527,7 +1525,7 @@ function commitStructuredCompaction(
     );
   }
   const prepared = store.prepareSource(attemptId, []);
-  const topology = compactionMapReduceTopology(leafCount, fanIn);
+  const topology = fixtureTopology(leafCount, fanIn);
   const intent: CompactionIntentV1 = {
     format_version: COMPACTION_EVENT_FORMAT_VERSION,
     minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
@@ -1597,6 +1595,26 @@ function commitStructuredCompaction(
     }),
   });
   return { intent };
+}
+
+function fixtureTopology(
+  leaves: number,
+  fanIn: number,
+): { readonly levels: number; readonly calls: number } {
+  let levelWidth = leaves;
+  let levels = 1;
+  let calls = leaves;
+  while (levelWidth > 1) {
+    const fullGroups = Math.floor(levelWidth / fanIn);
+    const remainder = levelWidth % fanIn;
+    const reductionCalls = levelWidth <= fanIn
+      ? 1
+      : fullGroups + (remainder > 1 ? 1 : 0);
+    levelWidth = reductionCalls + (remainder === 1 ? 1 : 0);
+    calls += reductionCalls;
+    levels += 1;
+  }
+  return { levels, calls };
 }
 
 function balancedDagSummaries(

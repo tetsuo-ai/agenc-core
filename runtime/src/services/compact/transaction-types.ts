@@ -5,18 +5,14 @@
  * and provider output, so an unnamed default at a call site is a security bug.
  */
 
-import type { LLMMessage } from "../../llm/types.js";
 import type { AgentInvocationChannelMetadata } from "../../contracts/agent-invocation-envelope.js";
 import type { ToolResultIntegrity } from "../../session/tool-result-integrity.js";
 import type { RuntimeMessage } from "./types.js";
 import type { CompactionHistoryMarkerV1 } from "../../session/compaction-history-marker.js";
 
 export const COMPACTION_EVENT_FORMAT_VERSION = 1 as const;
-/** First runtime capability that understands the transactional C2 schema. */
-export const COMPACTION_READER_RUNTIME_CAPABILITY = "0.14.0" as const;
 /** Minimum reader stamped by writers of the current event format. */
-export const COMPACTION_MINIMUM_READER_RUNTIME =
-  COMPACTION_READER_RUNTIME_CAPABILITY;
+export const COMPACTION_MINIMUM_READER_RUNTIME = "0.14.0" as const;
 export const COMPACTION_SUMMARY_VERSION = 1 as const;
 export const COMPACTION_SUMMARY_KIND = "compaction_summary" as const;
 export const COMPACTION_BOUNDARY_MARKER_V1 =
@@ -95,7 +91,6 @@ export const MAX_COMPACTION_RECORD_TEXT_UTF8_BYTES = 65_536;
 export const MAX_COMPACTION_RECORD_ID_UTF8_BYTES = 1_024;
 export const MAX_COMPACTION_SOURCE_REF_ID_UTF8_BYTES = 1_024;
 export const MAX_COMPACTION_SOURCE_BINDING_UTF8_BYTES = 4_096;
-export const MAX_COMPACTION_ATTEMPT_ID_UTF8_BYTES = 1_024;
 
 export const MIN_COMPACTION_ABSOLUTE_TOKEN_SAVINGS = 1_024;
 export const MIN_COMPACTION_RELATIVE_TOKEN_SAVINGS = 0.2;
@@ -494,15 +489,6 @@ export interface CompactionTransactionMetadataV1 {
   readonly history_digest: string;
   readonly configuration_digest: string;
   readonly committed: CompactionCommittedV1;
-}
-
-export interface PlannedCompactionCall {
-  readonly stage: CompactionStage;
-  readonly index: number;
-  readonly level: number;
-  readonly source_refs: readonly CompactionSourceRefV1[];
-  readonly messages: readonly LLMMessage[];
-  readonly estimated_input_tokens: number;
 }
 
 export class CompactionCannotReduceError extends Error {

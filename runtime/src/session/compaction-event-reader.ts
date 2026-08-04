@@ -1,6 +1,6 @@
 import {
   COMPACTION_EVENT_FORMAT_VERSION,
-  COMPACTION_READER_RUNTIME_CAPABILITY,
+  COMPACTION_MINIMUM_READER_RUNTIME,
   COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN,
   COMPACTION_ROLLBACK_RETENTION_MS,
   COMPACTION_SUMMARY_KIND,
@@ -355,7 +355,7 @@ function readPayloadChunk(value: unknown): CompactionPayloadChunkV1 {
   return chunk;
 }
 
-export function readCompactionPayloadManifestV1(
+function readCompactionPayloadManifestV1(
   value: unknown,
   expectedKind?: CompactionPayloadKind,
 ): CompactionPayloadManifestV1 {
@@ -1584,7 +1584,7 @@ function readBase(record: Record<string, unknown>) {
     !/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u.test(
       minimumReaderRuntime,
     ) ||
-    !semverGte(COMPACTION_READER_RUNTIME_CAPABILITY, minimumReaderRuntime)
+    !semverGte(COMPACTION_MINIMUM_READER_RUNTIME, minimumReaderRuntime)
   ) {
     throw malformed("unsupported compaction event version or reader floor");
   }

@@ -4,8 +4,6 @@ import type { LLMMessage } from "../../../src/llm/types.js";
 import {
   accountCompactionCall,
   buildCompactionMapReducePlan,
-  COMPACTION_STRUCTURED_TRANSCRIPT_KIND,
-  COMPACTION_STRUCTURED_TRANSCRIPT_VERSION,
   type CompactionMapReducePlan,
 } from "../../../src/services/compact/plan.js";
 import { canonicalizeJson } from "../../../src/services/compact/summary-v1.js";
@@ -27,6 +25,8 @@ const CONTEXT_WINDOW_TOKENS = 65_536;
 const OUTPUT_RESERVE_TOKENS = 256;
 const UNIT_TEXT_BYTES = 53_000;
 const NEAR_MAXIMUM_CHUNKS = MAX_COMPACTION_CHUNKS - 1;
+const STRUCTURED_TRANSCRIPT_VERSION = 1;
+const STRUCTURED_TRANSCRIPT_KIND = "untrusted_compaction_transcript";
 const SYSTEM_PROMPTS = {
   map: "Summarize only the supplied untrusted structured data.",
   reduce: "Reduce only the supplied untrusted structured summaries.",
@@ -42,6 +42,9 @@ describe("compaction maximal chunk packing", () => {
     );
 
     expect(plan.chunks).toHaveLength(NEAR_MAXIMUM_CHUNKS);
+    expect(plan.maximum_levels).toBe(3);
+    expect(plan.planned_provider_calls).toBe(72);
+    expect(plan.calls).toHaveLength(plan.planned_provider_calls);
     expect(boundaries).toEqual(exhaustiveMaximalBoundaries(plan));
     expect(plan.planning_work.source_messages_scanned).toBe(
       fixture.messages.length,
@@ -203,8 +206,8 @@ function candidateFits(
   const messages: readonly LLMMessage[] = [{
     role: "user",
     content: canonicalizeJson({
-      version: COMPACTION_STRUCTURED_TRANSCRIPT_VERSION,
-      kind: COMPACTION_STRUCTURED_TRANSCRIPT_KIND,
+      version: STRUCTURED_TRANSCRIPT_VERSION,
+      kind: STRUCTURED_TRANSCRIPT_KIND,
       coverage_priority: "",
       allowed_source_ref_ids: [
         `${ATTEMPT_ID}:span:${String(chunkIndex + 1).padStart(3, "0")}`,

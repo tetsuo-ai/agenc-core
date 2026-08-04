@@ -32,12 +32,12 @@ import type { CompactContext, RuntimeMessage } from "./types.js";
 import { fromRuntimeMessageContent } from "../../llm/content-conversion.js";
 import { verifyToolResultIntegrity } from "../../session/tool-result-integrity.js";
 
-export const COMPACTION_STRUCTURED_TRANSCRIPT_VERSION = 1 as const;
-export const COMPACTION_STRUCTURED_TRANSCRIPT_KIND =
+const COMPACTION_STRUCTURED_TRANSCRIPT_VERSION = 1 as const;
+const COMPACTION_STRUCTURED_TRANSCRIPT_KIND =
   "untrusted_compaction_transcript" as const;
-export const COMPACTION_DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
-export const COMPACTION_DEFAULT_OUTPUT_RESERVE_TOKENS = 4_000;
-export const COMPACTION_MINIMUM_INPUT_TOKEN_BUDGET = 1_024;
+const COMPACTION_DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
+const COMPACTION_DEFAULT_OUTPUT_RESERVE_TOKENS = 4_000;
+const COMPACTION_MINIMUM_INPUT_TOKEN_BUDGET = 1_024;
 
 interface StructuredMessageV1 {
   readonly role: string;
@@ -775,7 +775,7 @@ function buildSemanticUnits(
  * media, data URLs, or document bodies. Provenance continues to bind the
  * untouched authoritative message and its canonical source ref.
  */
-export function createCompactionModelProjection(
+function createCompactionModelProjection(
   messages: readonly RuntimeMessage[],
 ): readonly RuntimeMessage[] {
   return messages.map((message) => {
@@ -1003,7 +1003,7 @@ function accountCallWithoutContextAssertion(
   return requireAdmissibleTokenAccounting(result);
 }
 
-export function compactionMapReduceTopology(
+function compactionMapReduceTopology(
   leaves: number,
   fanIn = MAX_COMPACTION_FAN_IN,
 ): {

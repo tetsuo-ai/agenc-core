@@ -76,7 +76,6 @@ import {
   CompactionTransactionError,
 } from "./transaction-types.js";
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
-import { estimateMessagesTokens } from "./_deps/runtime.js";
 import { COMPACTION_HISTORY_MARKER_VERSION } from "../../session/compaction-history-marker.js";
 import { bindExecutionAdmissionJournal } from "../../session/execution-admission-journal.js";
 import {
@@ -768,7 +767,7 @@ async function runSummaryTree(params: {
   };
 }
 
-export function accumulateCompactionOutputBudget(
+function accumulateCompactionOutputBudget(
   totals: CompactionOutputTotals,
   delta: CompactionOutputBudgetDelta,
 ): CompactionOutputTotals {
@@ -956,7 +955,7 @@ function assertPostHookProjectionBounded(
  * authoritative when present; otherwise the byte length is a deliberately
  * conservative upper bound that keeps the pre-parse output cap enforceable.
  */
-export function compactionOutputTokenUpperBound(
+function compactionOutputTokenUpperBound(
   content: string,
   reportedCompletionTokens: number | undefined,
 ): number {
@@ -971,7 +970,7 @@ export function compactionOutputTokenUpperBound(
   return utf8UpperBound;
 }
 
-export function compactionWallTimeExceeded(elapsedMs: number): boolean {
+function compactionWallTimeExceeded(elapsedMs: number): boolean {
   return elapsedMs > MAX_COMPACTION_WALL_MS;
 }
 
@@ -1565,12 +1564,4 @@ function createCompactionDeadline(context: CompactContext): CompactionDeadline {
       controller.signal.removeEventListener("abort", cancelAdmissionWork);
     },
   };
-}
-
-/** Legacy display estimate retained only for non-transactional callers/tests. */
-export function legacyCompactionEstimate(
-  messages: readonly RuntimeMessage[],
-  context: CompactContext,
-): number {
-  return estimateMessagesTokens(messages, context);
 }

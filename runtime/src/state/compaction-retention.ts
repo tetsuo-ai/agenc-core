@@ -12,7 +12,6 @@ import {
   type CompactionIntentV1,
   type CompactionPinState,
   type CompactionSourceReleaseV1,
-  CompactionCannotReduceError,
   CompactionTransactionError,
 } from "../services/compact/transaction-types.js";
 import {
@@ -1290,17 +1289,5 @@ function safeDetail(value: unknown): string {
     return JSON.stringify(value) ?? String(value);
   } catch {
     return Object.prototype.toString.call(value);
-  }
-}
-
-export function assertCompactionFailureGuard(
-  failures: number,
-  automatic: boolean,
-): void {
-  if (automatic && failures >= MAX_COMPACTION_FAILURES_PER_HISTORY_DIGEST) {
-    throw new CompactionCannotReduceError(
-      "failure_guard",
-      "automatic compaction is suppressed after two failures for this history and configuration; change history/configuration or request an explicit manual retry",
-    );
   }
 }
