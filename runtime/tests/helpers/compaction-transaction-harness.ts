@@ -273,8 +273,8 @@ export function createProvider(
       toolCalls: [],
       usage: {
         promptTokens: 128,
-        completionTokens: 32,
-        totalTokens: 160,
+        completionTokens: 128,
+        totalTokens: 256,
         availability: "reported",
         provenance: "provider",
       },

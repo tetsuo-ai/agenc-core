@@ -137,6 +137,38 @@ Benchmarks compare deterministic and provider-native candidates on held-out
 conversations for quality, shrink, calls, tokens, latency, RSS, and operation
 counts under the same safety contract.
 
+### Implementation evidence
+
+The local, provider-independent acceptance surface is split by failure phase:
+
+| Phase | Required durable result |
+| --- | --- |
+| Source preparation, attachment preflight, or pin before intent | No compaction event; original history remains active. |
+| Provider, accounting, schema, provenance, abort, or shrink after intent | Exactly one typed `compaction_failed`; original history remains active. |
+| Durable commit append/flush | Ordinary adapter failures are classified as `commit_failed`; an indeterminate storage result remains pinned for startup reconciliation. |
+| Projection after commit | The committed replacement remains authoritative and the session becomes `reconstruction_required`. |
+| Cleanup after projection | The commit remains authoritative and `cleanup_pending` is repaired idempotently. |
+| Abort after provider dispatch | The attempt-scoped admission tail and transaction lease remain open until the physical provider promise settles. |
+
+The focused contract suite is
+[`runtime/tests/services/compact/transaction-contract.test.ts`](../../../runtime/tests/services/compact/transaction-contract.test.ts).
+Restart, rollback, retention, DAG, and source-authority mutation coverage is in
+[`runtime/tests/session/rollout-store.compaction-transaction.test.ts`](../../../runtime/tests/session/rollout-store.compaction-transaction.test.ts).
+Canonical payload chunking and maximum-input operation counts are covered by
+[`runtime/tests/services/compact/payload-manifest.test.ts`](../../../runtime/tests/services/compact/payload-manifest.test.ts).
+
+Run the reproducible maximum-scale algorithm benchmark with:
+
+```sh
+npm --workspace=@tetsuo-ai/runtime run benchmark:compaction
+```
+
+It exercises 100,000 compact active-history references, a 64 MiB canonical
+source payload, and the maximum 64-leaf/73-call DAG. The benchmark reports
+deterministic splitter work, elapsed time, and RSS. Provider quality is not
+claimed by this local harness; quality/cost/latency comparisons require a
+separately versioned held-out provider evaluation.
+
 Primary references: [The Instruction Hierarchy](https://arxiv.org/abs/2404.13208),
 [ACON](https://arxiv.org/abs/2510.00615),
 [Context as a Tool](https://aclanthology.org/2026.findings-acl.1032/),

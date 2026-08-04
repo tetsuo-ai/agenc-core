@@ -243,9 +243,20 @@ describe("compactConversation per-context lock", () => {
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult).toBe(secondResult);
     expect(harness.provider.chat).toHaveBeenCalledOnce();
-    expect(harness.admission.acquire).toHaveBeenCalledOnce();
-    expect(harness.admission.markDispatched).toHaveBeenCalledOnce();
-    expect(harness.admission.reconcile).toHaveBeenCalledOnce();
+    const admissionEvents = harness.store.readAll().flatMap((item) =>
+      item.type === "event_msg" &&
+          item.payload.msg.type === "execution_admission" &&
+          item.payload.msg.payload.runId.startsWith("compact-")
+        ? [item.payload.msg.payload]
+        : []
+    );
+    expect(admissionEvents.map((event) => event.event)).toEqual([
+      "queued",
+      "allowed",
+      "dispatched",
+      "reconciled",
+    ]);
+    expect(new Set(admissionEvents.map((event) => event.runId)).size).toBe(1);
   });
 });
 

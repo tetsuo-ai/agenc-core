@@ -94,10 +94,22 @@ interface SummaryNode {
   readonly toolPairs: readonly CompactionToolPairV1[];
 }
 
-interface OutputTotals {
-  bytes: number;
-  nodes: number;
-  workUnits: number;
+export interface CompactionOutputTotals {
+  readonly bytes: number;
+  readonly nodes: number;
+  readonly workUnits: number;
+}
+
+export interface CompactionOutputBudgetDelta {
+  readonly bytes: number;
+  readonly nodes: number;
+  readonly workUnits: number;
+}
+
+interface CompactionOutputTokenAccounting {
+  readonly tokens: number;
+  readonly source: TokenAccountingResult["source"];
+  readonly exact: boolean;
 }
 
 export interface TransactionalCompactionOptions {
@@ -485,7 +497,17 @@ async function compactConversationTransactionBody(
         replacementHistory,
       }),
     } as const;
-    const committed = adapter.commit(commitInput);
+    let committed;
+    try {
+      committed = adapter.commit(commitInput);
+    } catch (error) {
+      if (error instanceof CompactionTransactionError) throw error;
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "durable compaction commit failed",
+        { cause: error },
+      );
+    }
     transactionCommitted = true;
     const transaction: CompactionTransactionMetadataV1 = {
       attempt_id: attemptId,
@@ -552,7 +574,7 @@ async function runSummaryTree(params: {
 }> {
   const summaries = new Map<string, CompactionSummaryV1>();
   const allowedChildren = new Map<string, ReadonlySet<string>>();
-  const totals: OutputTotals = { bytes: 0, nodes: 0, workUnits: 0 };
+  let totals: CompactionOutputTotals = { bytes: 0, nodes: 0, workUnits: 0 };
   let callCount = 0;
   let inputTokens = 0;
   const call = async (
@@ -647,23 +669,7 @@ async function runSummaryTree(params: {
     const allowedIds = new Set(sourceRefs.map((ref) => ref.ref_id));
     const validated = parseCompactionBodyV1(response.content, allowedIds);
     assertExactToolPairs(validated.body.tool_pairs, expectedToolPairs);
-    totals.bytes = safeBudgetSum(totals.bytes, validated.budget.bytes);
-    totals.nodes = safeBudgetSum(totals.nodes, validated.budget.nodes);
-    totals.workUnits = safeBudgetSum(
-      totals.workUnits,
-      validated.budget.workUnits,
-    );
-    if (
-      totals.bytes > MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL ||
-      totals.nodes > MAX_COMPACTION_OUTPUT_NODES_TOTAL ||
-      totals.workUnits >
-        MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT * MAX_COMPACTION_PROVIDER_CALLS
-    ) {
-      throw new CompactionTransactionError(
-        "output_limit_exceeded",
-        "compaction provider outputs exceeded an aggregate limit",
-      );
-    }
+    totals = accumulateCompactionOutputBudget(totals, validated.budget);
     const summary = createCompactionSummaryV1({
       stage,
       attemptId: params.attemptId,
@@ -760,6 +766,29 @@ async function runSummaryTree(params: {
     finalSummary: final.summary,
     summaryDag: createSummaryDag(params.plan, summaries, final.ref.ref_id),
   };
+}
+
+export function accumulateCompactionOutputBudget(
+  totals: CompactionOutputTotals,
+  delta: CompactionOutputBudgetDelta,
+): CompactionOutputTotals {
+  const next = {
+    bytes: safeBudgetSum(totals.bytes, delta.bytes),
+    nodes: safeBudgetSum(totals.nodes, delta.nodes),
+    workUnits: safeBudgetSum(totals.workUnits, delta.workUnits),
+  };
+  if (
+    next.bytes > MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL ||
+    next.nodes > MAX_COMPACTION_OUTPUT_NODES_TOTAL ||
+    next.workUnits >
+      MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT * MAX_COMPACTION_PROVIDER_CALLS
+  ) {
+    throw new CompactionTransactionError(
+      "output_limit_exceeded",
+      "compaction provider outputs exceeded an aggregate limit",
+    );
+  }
+  return next;
 }
 
 function createSummaryDag(
@@ -1034,11 +1063,11 @@ async function invokeCompactionProvider(params: {
       const reported = candidate.usage?.completionTokens;
       outputTokenUpperBound = outputAccounting.source === "conservative_fallback"
         ? compactionOutputTokenUpperBound(candidate.content, reported)
-        : Math.max(reported ?? 0, outputAccounting.inputTokens);
+        : Math.max(reported ?? 0, outputAccounting.tokens);
       if (
-        outputAccounting.source !== "conservative_fallback" &&
+        outputAccounting.exact &&
         reported !== undefined &&
-        outputAccounting.inputTokens > reported
+        outputAccounting.tokens > reported
       ) {
         throw new CompactionTransactionError(
           "output_limit_exceeded",
@@ -1072,26 +1101,54 @@ async function countCompactionProviderOutput(params: {
   readonly model: string;
   readonly content: string;
   readonly signal: AbortSignal | undefined;
-}): Promise<TokenAccountingResult> {
-  const request = createTokenAccountingRequest({
-    provider: params.providerName,
-    model: params.model,
-    messages: [{ role: "assistant", content: params.content }],
-    options: {
+}): Promise<CompactionOutputTokenAccounting> {
+  const count = async (content: string): Promise<TokenAccountingResult> => {
+    const request = createTokenAccountingRequest({
+      provider: params.providerName,
       model: params.model,
-      systemPrompt: "",
-      maxOutputTokens: 0,
+      messages: [{ role: "assistant", content }],
+      options: {
+        model: params.model,
+        systemPrompt: "",
+        maxOutputTokens: 0,
+        contextWindowTokens: MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL,
+      },
       contextWindowTokens: MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL,
-    },
-    contextWindowTokens: MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL,
-    reservedOutputTokens: 0,
-  });
-  return requireAdmissibleTokenAccounting(
-    await tokenAccountingService.count(request, {
-      capability: params.context.provider?.tokenCountCapability,
-      ...(params.signal !== undefined ? { signal: params.signal } : {}),
-    }),
-  );
+      reservedOutputTokens: 0,
+    });
+    return requireAdmissibleTokenAccounting(
+      await tokenAccountingService.count(request, {
+        capability: params.context.provider?.tokenCountCapability,
+        ...(params.signal !== undefined ? { signal: params.signal } : {}),
+      }),
+    );
+  };
+  const withContent = await count(params.content);
+  if (withContent.source === "conservative_fallback") {
+    return {
+      tokens: Buffer.byteLength(params.content, "utf8"),
+      source: "conservative_fallback",
+      exact: false,
+    };
+  }
+  const emptyEnvelope = await count("");
+  if (
+    emptyEnvelope.source === "conservative_fallback" ||
+    emptyEnvelope.source !== withContent.source
+  ) {
+    return {
+      tokens: Buffer.byteLength(params.content, "utf8"),
+      source: "conservative_fallback",
+      exact: false,
+    };
+  }
+  return {
+    tokens: Math.max(0, withContent.inputTokens - emptyEnvelope.inputTokens),
+    source: withContent.source,
+    exact:
+      withContent.confidence === "exact" &&
+      emptyEnvelope.confidence === "exact",
+  };
 }
 
 async function validateShrink(params: {

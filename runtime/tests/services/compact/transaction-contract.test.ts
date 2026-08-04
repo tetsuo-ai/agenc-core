@@ -14,17 +14,23 @@ import {
   verifyCompactionSummaryDigest,
 } from "../../../src/services/compact/summary-v1.js";
 import {
+  accumulateCompactionOutputBudget,
   compactionOutputTokenUpperBound,
   compactionWallTimeExceeded,
 } from "../../../src/services/compact/transaction.js";
 import { compactConversationTransactionally } from "../../../src/services/compact/transaction.js";
 import {
   MAX_COMPACTION_INTERMEDIATE_TOKENS,
+  MAX_COMPACTION_OUTPUT_NODES_TOTAL,
+  MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL,
   MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
   MAX_COMPACTION_POST_HOOK_UTF8_BYTES,
   MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES,
   MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES,
+  MAX_COMPACTION_PROVIDER_CALLS,
+  MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT,
   MAX_COMPACTION_WALL_MS,
+  type CompactionTransactionAdapter,
 } from "../../../src/services/compact/transaction-types.js";
 import type {
   CompactContext,
@@ -55,10 +61,60 @@ describe("transactional compaction strict contracts", () => {
     );
   });
 
-  it("carries singleton reduction remainders without redundant provider calls", () => {
-    expect(compactionMapReduceTopology(9)).toMatchObject({ calls: 11 });
+  it("builds the exact bounded DAG topology without singleton calls", () => {
+    expect(compactionMapReduceTopology(1)).toEqual({
+      levels: 1,
+      calls: 1,
+      reductionChildReferences: 0,
+    });
+    expect(compactionMapReduceTopology(8)).toEqual({
+      levels: 2,
+      calls: 9,
+      reductionChildReferences: 8,
+    });
+    expect(compactionMapReduceTopology(9)).toEqual({
+      levels: 3,
+      calls: 11,
+      reductionChildReferences: 11,
+    });
     expect(compactionMapReduceTopology(17)).toMatchObject({ calls: 20 });
     expect(compactionMapReduceTopology(57)).toMatchObject({ calls: 65 });
+    expect(compactionMapReduceTopology(64)).toEqual({
+      levels: 3,
+      calls: MAX_COMPACTION_PROVIDER_CALLS,
+      reductionChildReferences: 72,
+    });
+    expect(compactionMapReduceTopology(8, 2)).toEqual({
+      levels: 4,
+      calls: 15,
+      reductionChildReferences: 14,
+    });
+  });
+
+  it("accepts exact aggregate output limits and rejects each plus one", () => {
+    const maximumWorkUnits =
+      MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT * MAX_COMPACTION_PROVIDER_CALLS;
+    const exact = accumulateCompactionOutputBudget(
+      { bytes: 0, nodes: 0, workUnits: 0 },
+      {
+        bytes: MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL,
+        nodes: MAX_COMPACTION_OUTPUT_NODES_TOTAL,
+        workUnits: maximumWorkUnits,
+      },
+    );
+    expect(exact).toEqual({
+      bytes: MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL,
+      nodes: MAX_COMPACTION_OUTPUT_NODES_TOTAL,
+      workUnits: maximumWorkUnits,
+    });
+    for (const delta of [
+      { bytes: 1, nodes: 0, workUnits: 0 },
+      { bytes: 0, nodes: 1, workUnits: 0 },
+      { bytes: 0, nodes: 0, workUnits: 1 },
+    ]) {
+      expect(() => accumulateCompactionOutputBudget(exact, delta))
+        .toThrow(/aggregate limit/i);
+    }
   });
 
   it("uses reported output tokens and a fail-closed UTF-8 upper bound", () => {
@@ -271,6 +327,65 @@ describe("transactional compaction production path", () => {
     });
   });
 
+  it("records a commit failure terminal and leaves source history active", async () => {
+    await withTransactionalStore("transaction-commit-failure", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const provider = compactionProvider();
+      const adapter = failingCommitAdapter(store);
+      await expect(runRealTransaction(store, source, provider, {
+        compactionTransaction: adapter,
+      })).rejects.toThrow(/durable compaction commit failed/i);
+      expect(store.readAll().filter((item) => item.type.startsWith("compaction_")))
+        .toMatchObject([
+          { type: "compaction_intent" },
+          { type: "compaction_failed", payload: { reason: "commit_failed" } },
+        ]);
+      expect(reduceAll(store.readAll()).state.history.map((item) => item.content))
+        .toEqual(source.map((message) => message.content));
+    });
+  });
+
+  it("holds the lease until an abort-ignoring provider physically settles", async () => {
+    await withTransactionalStore("transaction-abort-quiescence", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const baseProvider = compactionProvider();
+      let enterProvider!: () => void;
+      let releaseProvider!: () => void;
+      const entered = new Promise<void>((resolve) => { enterProvider = resolve; });
+      const gate = new Promise<void>((resolve) => { releaseProvider = resolve; });
+      const chat = vi.fn(async (messages: LLMMessage[]) => {
+        enterProvider();
+        await gate;
+        return await baseProvider.chat(messages);
+      });
+      const provider = { ...baseProvider, chat, chatStream: chat };
+      const controller = new AbortController();
+      const attempt = runRealTransaction(store, source, provider, {
+        abortController: controller,
+      });
+      let settled = false;
+      void attempt.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+      await entered;
+      controller.abort(new DOMException("test abort", "AbortError"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(() => store.acquireCompactionLease("competing-attempt"))
+        .toThrow(/already in progress/i);
+      releaseProvider();
+      await expect(attempt).rejects.toThrow(/test abort/i);
+      expect(store.readAll().filter((item) => item.type.startsWith("compaction_")))
+        .toMatchObject([
+          { type: "compaction_intent" },
+          { type: "compaction_failed", payload: { reason: "aborted" } },
+        ]);
+      const nextLease = store.acquireCompactionLease("after-quiescence");
+      await nextLease.release();
+    });
+  });
+
   it("rejects an oversized source-derived attachment before provider admission", async () => {
     await withTransactionalStore("transaction-attachment-limit", async (store) => {
       const source = appendSourceMessages(store, 2, 32);
@@ -470,7 +585,10 @@ async function runRealTransaction(
   store: RolloutStore,
   source: readonly RuntimeMessage[],
   provider: LLMProvider,
-  contextOverrides: Pick<CompactContext, "deps"> = {},
+  contextOverrides: Pick<
+    CompactContext,
+    "abortController" | "compactionTransaction" | "deps"
+  > = {},
 ) {
   const admissionCwd = mkdtempSync(join(tmpdir(), "agenc-c2-admission-workspace-"));
   mkdirSync(join(admissionCwd, ".git"));
@@ -534,4 +652,20 @@ async function runRealTransaction(
     kernel.close();
     rmSync(admissionCwd, { recursive: true, force: true });
   }
+}
+
+function failingCommitAdapter(
+  store: RolloutStore,
+): CompactionTransactionAdapter {
+  return new Proxy(store, {
+    get(target, property, receiver) {
+      if (property === "commit") {
+        return () => {
+          throw new Error("injected commit failure");
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
