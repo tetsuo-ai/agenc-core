@@ -174,13 +174,22 @@ describe('in-process teammate canonical rollout ownership', () => {
     ])
     const parent = harness.session
     const parentCwd = harness.store.store.cwd
+    const rootAdmission = parent.services.executionAdmission
+    if (rootAdmission === undefined) {
+      throw new Error('missing parent execution admission')
+    }
+    const parentAdmission = rootAdmission.forSession({
+      runId: 'parent-run-distinct-from-session',
+      sessionId: parent.conversationId,
+      parentRunId: rootAdmission.scope.runId,
+      parentScopeId: rootAdmission.scope.sessionId,
+    })
+    Object.assign(parent.services, { executionAdmission: parentAdmission })
     Object.assign(parent, {
       sessionConfiguration: { cwd: parentCwd },
       config: { cwd: parentCwd },
     })
-    const parentResponseItemsBefore = harness.store
-      .readAll()
-      .filter(item => item.type === 'response_item')
+    const parentJournalBefore = structuredClone(harness.store.readAll())
 
     const abortController = new AbortController()
     capture.lifecycleAbort = abortController
@@ -278,11 +287,9 @@ describe('in-process teammate canonical rollout ownership', () => {
         reopened.readAll().filter(item => item.type === 'compaction_committed'),
       ).toHaveLength(1)
 
-      const parentResponseItemsAfter = harness.store
-        .readAll()
-        .filter(item => item.type === 'response_item')
-      expect(parentResponseItemsAfter).toEqual(parentResponseItemsBefore)
-      expect(JSON.stringify(parentResponseItemsAfter)).not.toContain(
+      const parentJournalAfter = harness.store.readAll()
+      expect(parentJournalAfter).toEqual(parentJournalBefore)
+      expect(JSON.stringify(parentJournalAfter)).not.toContain(
         'teammate-tool-1',
       )
     } finally {

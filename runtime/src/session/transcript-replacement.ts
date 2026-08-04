@@ -15,7 +15,7 @@ export interface HistoryReplacedEvent {
   readonly type: "history_replaced";
   readonly acceptedAt: string;
   readonly payload: {
-    readonly reason: "partial_compact" | "rewind";
+    readonly reason: "partial_compact" | "rewind" | "compaction_rollback";
     readonly messages: readonly RuntimeTranscriptMessage[];
   };
 }

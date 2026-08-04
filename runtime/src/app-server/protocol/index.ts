@@ -3011,10 +3011,12 @@ export interface SessionPartialCompactFromMessageResult extends JsonObject {
 export interface SessionRollbackCompactionResult extends JsonObject {
   readonly sessionId: string;
   readonly ok: boolean;
+  readonly eventAlreadyEmitted: boolean;
   readonly attemptId?: string;
   readonly mode?: "same_session" | "reviewed_branch";
   readonly targetSessionId?: string;
   readonly displayText?: string;
+  readonly event?: JsonObject;
   readonly code?: string;
   readonly message?: string;
 }

@@ -1883,18 +1883,26 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ? { reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId }
         : {}),
     });
+    if (result.ok && result.event !== undefined) {
+      await this.#emitOrBufferEvent(active, result.event as never);
+    }
     return result.ok
       ? {
           sessionId: params.sessionId,
           ok: true,
+          eventAlreadyEmitted: true,
           attemptId: result.attemptId,
           mode: result.mode,
           targetSessionId: result.targetSessionId,
           displayText: result.displayText,
+          ...(result.event !== undefined
+            ? { event: result.event as unknown as JsonObject }
+            : {}),
         }
       : {
           sessionId: params.sessionId,
           ok: false,
+          eventAlreadyEmitted: true,
           code: result.code,
           message: result.message,
         };

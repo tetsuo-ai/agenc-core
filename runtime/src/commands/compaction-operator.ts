@@ -18,7 +18,11 @@ interface CompactionOperatorSession {
     readonly attemptId: string;
     readonly extendedUntilMs: number;
   }): Promise<SessionExtendCompactionRetentionResult>;
+  emitPhaseEvent?(event: unknown): void;
 }
+
+const ISO_8601_TIMESTAMP =
+  /^(\d{4}|[+-]\d{6})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/u;
 
 export const compactRollbackCommand: SlashCommand = {
   name: "compact-rollback",
@@ -34,9 +38,13 @@ export const compactRollbackCommand: SlashCommand = {
       throw new Error("compaction rollback is unavailable on this session");
     }
     const result = await rollback.call(ctx.session, parsed);
-    return result.ok
-      ? { kind: "text", text: result.displayText }
-      : { kind: "error", message: result.message };
+    if (!result.ok) return { kind: "error", message: result.message };
+    if (!result.eventAlreadyEmitted && result.event !== undefined) {
+      operatorSession(ctx).emitPhaseEvent?.(result.event);
+    }
+    return result.mode === "same_session"
+      ? { kind: "compact", text: result.displayText }
+      : { kind: "text", text: result.displayText };
   }),
 };
 
@@ -88,11 +96,45 @@ function parseRetentionArgs(argsRaw: string): {
   if (args.length !== 3 || args[1] !== "--until") {
     throw new Error("usage: /compact-retain <attempt-id> --until <ISO-8601>");
   }
-  const extendedUntilMs = Date.parse(args[2]!);
+  const timestamp = args[2]!;
+  const match = ISO_8601_TIMESTAMP.exec(timestamp);
+  if (match === null || !isCalendarDate(match[1]!, match[2]!, match[3]!)) {
+    throw new Error("--until must be a valid ISO-8601 timestamp");
+  }
+  const extendedUntilMs = Date.parse(timestamp);
   if (!Number.isFinite(extendedUntilMs)) {
     throw new Error("--until must be a valid ISO-8601 timestamp");
   }
   return { attemptId: args[0]!, extendedUntilMs };
+}
+
+function isCalendarDate(
+  yearText: string,
+  monthText: string,
+  dayText: string,
+): boolean {
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const monthLengths = [
+    31,
+    isLeapYear(year) ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  return day <= monthLengths[month - 1]!;
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
 }
 
 function words(value: string): string[] {

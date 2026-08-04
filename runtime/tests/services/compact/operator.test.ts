@@ -67,6 +67,77 @@ describe("compaction operator surface", () => {
       nowMs: 100,
       extendedUntilMs: 100,
     })).toThrow(/future timestamp/u);
+    expect(() => extendCompactionRetentionForOperator({
+      store,
+      attemptId: "attempt-1",
+      nowMs: 100,
+      extendedUntilMs: 8_640_000_000_000_001,
+    })).toThrow(/valid JavaScript date/u);
+    expect(store.extendCompactionRollbackRetention).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects non-ISO and impossible retention timestamps before storage", async () => {
+    const registry = buildDefaultRegistry({ surface: "runtime" });
+    const extendCompactionRollbackRetention = vi.fn();
+    const context = {
+      session: { extendCompactionRollbackRetention },
+      cwd: "/tmp",
+      home: "/tmp",
+    };
+
+    for (const timestamp of [
+      "2030/01/01T00:00:00.000Z",
+      "2030-01-01",
+      "2030-02-30T00:00:00.000Z",
+      "2030-01-01T24:00:00.000Z",
+    ]) {
+      await expect(registry.find("compact-retain")?.execute({
+        ...context,
+        argsRaw: `attempt-1 --until ${timestamp}`,
+      } as never)).resolves.toMatchObject({
+        kind: "error",
+        message: expect.stringMatching(/ISO-8601/u),
+      });
+    }
+
+    expect(extendCompactionRollbackRetention).not.toHaveBeenCalled();
+  });
+
+  it("emits an exact replacement event for direct-runtime rollback", async () => {
+    const registry = buildDefaultRegistry({ surface: "runtime" });
+    const event = {
+      id: "history-replaced-rollback",
+      type: "history_replaced" as const,
+      acceptedAt: "2030-01-01T00:00:00.000Z",
+      payload: {
+        reason: "compaction_rollback" as const,
+        messages: [],
+      },
+    };
+    const emitPhaseEvent = vi.fn();
+    const rollbackCompaction = vi.fn(async () => ({
+      ok: true,
+      sessionId: "session-1",
+      eventAlreadyEmitted: false as const,
+      event,
+      attemptId: "attempt-1",
+      mode: "same_session" as const,
+      targetSessionId: "session-1",
+      replacementHistory: [{ role: "user" as const, content: "source" }],
+      displayText: "restored current session",
+    }));
+
+    await expect(registry.find("compact-rollback")?.execute({
+      session: { rollbackCompaction, emitPhaseEvent },
+      cwd: "/tmp",
+      home: "/tmp",
+      argsRaw: "attempt-1",
+    } as never)).resolves.toEqual({
+      kind: "compact",
+      text: "restored current session",
+    });
+    expect(emitPhaseEvent).toHaveBeenCalledOnce();
+    expect(emitPhaseEvent).toHaveBeenCalledWith(event);
   });
 
   it("registers unambiguous runtime and daemon command forms", async () => {
@@ -74,6 +145,7 @@ describe("compaction operator surface", () => {
     const rollbackCompaction = vi.fn(async () => ({
       ok: true,
       sessionId: "session-1",
+      eventAlreadyEmitted: false as const,
       attemptId: "attempt-1",
       mode: "reviewed_branch" as const,
       targetSessionId: "reviewed-1",

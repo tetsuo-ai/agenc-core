@@ -224,10 +224,20 @@ function createClient(): AgenCDaemonTuiClient & {
         return {
           sessionId: "session_1",
           ok: true,
+          eventAlreadyEmitted: true,
           attemptId: "attempt-1",
           mode: "same_session",
           targetSessionId: "session_1",
           displayText: "restored",
+          event: {
+            id: "history-replaced-rollback",
+            type: "history_replaced",
+            acceptedAt: "2030-01-01T00:00:00.000Z",
+            payload: {
+              reason: "compaction_rollback",
+              messages: [],
+            },
+          },
         };
       }
       if (method === "session.extendCompactionRollbackRetention") {
@@ -1063,13 +1073,22 @@ describe("AgenC TUI daemon session adapter", () => {
       clientId: "tui_1",
     });
 
-    await session.rollbackCompaction({
+    const rollback = await session.rollbackCompaction({
       attemptId: "attempt-1",
       reviewedBranchTargetSessionId: "reviewed-1",
     });
     await session.extendCompactionRollbackRetention({
       attemptId: "attempt-1",
       extendedUntilMs: 1_900_000_000_000,
+    });
+
+    expect(rollback).toMatchObject({
+      ok: true,
+      eventAlreadyEmitted: true,
+      event: {
+        type: "history_replaced",
+        payload: { reason: "compaction_rollback" },
+      },
     });
 
     expect(client.requests).toEqual([

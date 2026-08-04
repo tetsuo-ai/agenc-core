@@ -586,6 +586,65 @@ describe("AgenC delegate background-agent runner", () => {
     }
   });
 
+  it("broadcasts a same-session rollback replacement before acknowledging it", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-rollback-replacement",
+    });
+    const replacementEvent = {
+      id: "history-replaced-rollback",
+      type: "history_replaced" as const,
+      acceptedAt: "2026-05-09T00:00:00.000Z",
+      payload: {
+        reason: "compaction_rollback" as const,
+        messages: [],
+      },
+    };
+    Object.assign(session, {
+      rollbackCompaction: vi.fn(async () => ({
+        ok: true,
+        sessionId: "session-rollback-replacement",
+        eventAlreadyEmitted: false as const,
+        event: replacementEvent,
+        attemptId: "attempt-rollback",
+        mode: "same_session" as const,
+        targetSessionId: "session-rollback-replacement",
+        replacementHistory: [],
+        displayText: "Compaction rolled back in the current session",
+      })),
+    });
+    const emitted: unknown[] = [];
+    const started = await runner.startAgent({
+      objective: "verify rollback replacement",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents(started.agentId, {
+      sessionId: "session-rollback-replacement",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    await expect(runner.rollbackCompaction?.(started.agentId, {
+      sessionId: "session-rollback-replacement",
+      attemptId: "attempt-rollback",
+    })).resolves.toMatchObject({
+      ok: true,
+      eventAlreadyEmitted: true,
+      event: replacementEvent,
+    });
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      params: {
+        event: {
+          type: "history_replaced",
+          payload: { reason: "compaction_rollback" },
+        },
+      },
+    });
+  });
+
   it("drains the canonical turn tail before shutdown and terminal teardown", async () => {
     let releaseTurnDelivery!: () => void;
     const turnDeliveryBlocked = new Promise<void>((resolve) => {

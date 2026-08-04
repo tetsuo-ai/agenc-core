@@ -4,6 +4,7 @@ import type {
 } from "./transaction-types.js";
 
 const MAX_SESSION_ID_LENGTH = 128;
+const MAX_JAVASCRIPT_DATE_MS = 8_640_000_000_000_000;
 const CANONICAL_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
 
 export interface CompactionOperatorStore {
@@ -69,6 +70,11 @@ export function extendCompactionRetentionForOperator(params: {
     params.extendedUntilMs <= params.nowMs
   ) {
     throw new Error("compaction retention deadline must be a future timestamp");
+  }
+  if (params.extendedUntilMs > MAX_JAVASCRIPT_DATE_MS) {
+    throw new Error(
+      "compaction retention deadline must be a valid JavaScript date",
+    );
   }
   params.store.extendCompactionRollbackRetention(
     attemptId,

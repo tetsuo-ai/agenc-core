@@ -1863,15 +1863,18 @@ export type SessionRollbackCompactionResult =
   | {
       readonly ok: true;
       readonly sessionId: string;
+      readonly eventAlreadyEmitted: false;
       readonly attemptId: string;
       readonly mode: "same_session" | "reviewed_branch";
       readonly targetSessionId: string;
+      readonly event?: HistoryReplacedEvent;
       readonly replacementHistory?: readonly LLMMessage[];
       readonly displayText: string;
     }
   | {
       readonly ok: false;
       readonly sessionId: string;
+      readonly eventAlreadyEmitted: false;
       readonly code: "ACTIVE_TURN" | "ROLLOUT_UNAVAILABLE" | "ROLLOUT_DEGRADED";
       readonly message: string;
     };
@@ -3696,6 +3699,7 @@ export class Session {
       return {
         ok: false,
         sessionId: this.conversationId,
+        eventAlreadyEmitted: false,
         code: "ROLLOUT_UNAVAILABLE",
         message: "Compaction rollback requires a durable session history.",
       };
@@ -3704,6 +3708,7 @@ export class Session {
       return {
         ok: false,
         sessionId: this.conversationId,
+        eventAlreadyEmitted: false,
         code: "ROLLOUT_DEGRADED",
         message: "Compaction rollback is disabled while durable history is degraded.",
       };
@@ -3721,6 +3726,7 @@ export class Session {
         return {
           ok: false,
           sessionId: this.conversationId,
+          eventAlreadyEmitted: false,
           code: "ACTIVE_TURN",
           message: "Cannot roll back compaction while a turn is in flight.",
         };
@@ -3738,6 +3744,7 @@ export class Session {
           result = {
             ok: false,
             sessionId: this.conversationId,
+            eventAlreadyEmitted: false,
             code: "ACTIVE_TURN",
             message: "Compaction rollback was cancelled.",
           };
@@ -3755,6 +3762,7 @@ export class Session {
           result = {
             ok: true,
             sessionId: this.conversationId,
+            eventAlreadyEmitted: false,
             attemptId: rollback.attemptId,
             mode: rollback.mode,
             targetSessionId: rollback.targetSessionId,
@@ -3766,11 +3774,15 @@ export class Session {
         const replacementHistory = rollback.sourceHistory.map(
           responseItemToLlmMessage,
         );
+        const event = createHistoryReplacedEvent({
+          replacementHistory,
+          id: `history-replaced-${task!.subId}`,
+          reason: "compaction_rollback",
+        });
         try {
           await this.state.with((sessionState) => {
             sessionState.history = replacementHistory.map(cloneLlmMessage);
           });
-          this.runPostCompactionCleanup();
         } catch (error) {
           try {
             rolloutStore.recordProjectionFailure(rollback.attemptId, error);
@@ -3783,12 +3795,29 @@ export class Session {
             cause: error,
           });
         }
+
+        const cleanup = (): void => this.runPostCompactionCleanup();
+        try {
+          cleanup();
+          rolloutStore.markCleanupComplete(rollback.attemptId);
+        } catch (error) {
+          try {
+            rolloutStore.markCleanupPending(rollback.attemptId, error);
+          } catch (markError) {
+            throw new CompactionReconstructionRequiredError(rollback.attemptId, {
+              cause: new AggregateError([error, markError]),
+            });
+          }
+          this.registerCompactionCleanupRetry(rollback.attemptId, cleanup);
+        }
         result = {
           ok: true,
           sessionId: this.conversationId,
+          eventAlreadyEmitted: false,
           attemptId: rollback.attemptId,
           mode: rollback.mode,
           targetSessionId: rollback.targetSessionId,
+          event,
           replacementHistory,
           displayText: "Compaction rolled back in the current session",
         };

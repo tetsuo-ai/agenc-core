@@ -79,6 +79,7 @@ import {
   createCompactionTransactionHarness,
   createProvider as createCompactionProvider,
 } from "../helpers/compaction-transaction-harness.js";
+import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
 
 (globalThis as Record<string, unknown>).MACRO ??= {
   VERSION: "test-version",
@@ -2105,6 +2106,110 @@ describe("Session.rewindConversationToMessage", () => {
       { role: "user", content: "first prompt" },
       { role: "assistant", content: "first answer" },
     ]);
+  });
+});
+
+describe("Session.rollbackCompaction", () => {
+  function rollbackStore() {
+    return {
+      isDegraded: false,
+      rollbackCompaction: vi.fn(() => ({
+        attempt_id: "attempt-rollback",
+        rollback_mode: "same_session" as const,
+        target_session_id: "conv-test",
+        source_history: [
+          { role: "user" as const, content: "source prompt" },
+          { role: "assistant" as const, content: "source answer" },
+        ],
+      }) as never),
+      recordProjectionFailure: vi.fn(),
+      markCleanupPending: vi.fn(),
+      markCleanupComplete: vi.fn(),
+      extendCompactionRollbackRetention: vi.fn(),
+    };
+  }
+
+  it("projects the source history and returns an exact replacement event", async () => {
+    const store = rollbackStore();
+    const session = buildSession();
+    session.rolloutStore = store as unknown as Session["rolloutStore"];
+    await session.state.with((state) => {
+      state.history = [{ role: "user", content: "compacted history" }];
+    });
+
+    const result = await session.rollbackCompaction({
+      attemptId: "attempt-rollback",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result).toMatchObject({
+      eventAlreadyEmitted: false,
+      mode: "same_session",
+      targetSessionId: "conv-test",
+      event: {
+        type: "history_replaced",
+        payload: { reason: "compaction_rollback" },
+      },
+    });
+    expect(session.snapshotHistoryMessages()).toEqual([
+      { role: "user", content: "source prompt" },
+      { role: "assistant", content: "source answer" },
+    ]);
+    expect(store.markCleanupComplete).toHaveBeenCalledWith(
+      "attempt-rollback",
+    );
+    expect(store.recordProjectionFailure).not.toHaveBeenCalled();
+  });
+
+  it("marks cleanup pending without poisoning a successful projection", async () => {
+    const store = rollbackStore();
+    const session = buildSession();
+    session.rolloutStore = store as unknown as Session["rolloutStore"];
+    let cleanupFails = true;
+    const clearSearchIndexes = vi.fn(() => {
+      if (cleanupFails) throw new Error("cleanup failed");
+    });
+    Object.assign(session, { clearSearchIndexes });
+
+    const result = await session.rollbackCompaction({
+      attemptId: "attempt-rollback",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.markCleanupPending).toHaveBeenCalledWith(
+      "attempt-rollback",
+      expect.objectContaining({ message: "cleanup failed" }),
+    );
+    expect(store.recordProjectionFailure).not.toHaveBeenCalled();
+
+    cleanupFails = false;
+    await expect(session.extendCompactionRollbackRetention({
+      attemptId: "attempt-rollback",
+      extendedUntilMs: Date.now() + 60_000,
+    })).resolves.toMatchObject({ ok: true });
+    expect(store.markCleanupComplete).toHaveBeenCalledWith(
+      "attempt-rollback",
+    );
+    expect(clearSearchIndexes).toHaveBeenCalledTimes(2);
+  });
+
+  it("records only projection failures as reconstruction-required", async () => {
+    const store = rollbackStore();
+    const session = buildSession();
+    session.rolloutStore = store as unknown as Session["rolloutStore"];
+    const projectionError = new Error("projection failed");
+    vi.spyOn(session.state, "with").mockRejectedValueOnce(projectionError);
+
+    await expect(session.rollbackCompaction({
+      attemptId: "attempt-rollback",
+    })).rejects.toBeInstanceOf(CompactionReconstructionRequiredError);
+    expect(store.recordProjectionFailure).toHaveBeenCalledWith(
+      "attempt-rollback",
+      projectionError,
+    );
+    expect(store.markCleanupPending).not.toHaveBeenCalled();
+    expect(store.markCleanupComplete).not.toHaveBeenCalled();
   });
 });
 

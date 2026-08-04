@@ -936,8 +936,8 @@ function createTeammateRolloutOwner(params: {
     const admission = parentAdmission.forSession({
       runId: sessionId,
       sessionId,
-      parentRunId: params.parentSession.conversationId,
-      parentScopeId: params.parentSession.conversationId,
+      parentRunId: parentAdmission.scope.runId,
+      parentScopeId: parentAdmission.scope.sessionId,
     })
     let eventSequence = store.readAll().reduce(
       (maximum, item) => item.type === 'event_msg'
