@@ -6,10 +6,7 @@ import {
   hydrateActiveHistoryRefs,
   reconstructCompactionPayloadV1,
 } from "../src/services/compact/payload-manifest.js";
-import {
-  buildCompactionMapReducePlan,
-  compactionMapReduceTopology,
-} from "../src/services/compact/plan.js";
+import { buildCompactionMapReducePlan } from "../src/services/compact/plan.js";
 import {
   MAX_COMPACTION_CHUNKS,
   MAX_COMPACTION_PROVIDER_CALLS,
@@ -31,7 +28,7 @@ const BENCHMARK_SOURCE_BINDING = "rollout:/benchmark#epoch:1";
 const PLANNER_CONTEXT_WINDOW_TOKENS = 65_536;
 const PLANNER_OUTPUT_RESERVE_TOKENS = 256;
 const PLANNER_UNIT_TEXT_BYTES = 53_000;
-const PLANNER_SOURCE_MESSAGES = MAX_COMPACTION_CHUNKS - 1;
+const PLANNER_SOURCE_MESSAGES = MAX_COMPACTION_CHUNKS;
 
 export interface CompactionTransactionBenchmarkResult {
   readonly activeHistoryEntries: number;
@@ -149,7 +146,6 @@ export function runCompactionTransactionBenchmark():
     model: "grok-4.5",
     messageSourceRefs: plannerRefs,
   });
-  const topology = compactionMapReduceTopology(MAX_COMPACTION_CHUNKS);
   const elapsedMs = performance.now() - startedAt;
   const rssDeltaBytes = Math.max(0, process.memoryUsage.rss() - residentBefore);
 
@@ -169,7 +165,7 @@ export function runCompactionTransactionBenchmark():
   ) {
     throw new Error("compaction payload splitting performed non-linear scan work");
   }
-  if (topology.calls !== MAX_COMPACTION_PROVIDER_CALLS) {
+  if (planner.planned_provider_calls !== MAX_COMPACTION_PROVIDER_CALLS) {
     throw new Error("maximum compaction DAG has an unexpected provider-call count");
   }
   if (
@@ -207,8 +203,8 @@ export function runCompactionTransactionBenchmark():
       sourceBundle.manifest.canonical_utf8_bytes,
     sourcePayloadChunks: sourceBundle.chunks.length,
     sourcePayloadSplitCodeUnitsVisited: sourceBundle.split_code_units_visited,
-    maximumDagLeaves: MAX_COMPACTION_CHUNKS,
-    maximumDagCalls: topology.calls,
+    maximumDagLeaves: planner.chunks.length,
+    maximumDagCalls: planner.planned_provider_calls,
     plannerSourceMessages: plannerMessages.length,
     plannerChunks: planner.chunks.length,
     plannerPlannedInputTokens: planner.planned_input_tokens,

@@ -22,6 +22,11 @@ import {
   structuredReductionMessages,
   type CompactionMapReducePlan,
 } from "./plan.js";
+import {
+  accumulateCompactionOutputBudget,
+  compactionOutputTokenUpperBound,
+  compactionWallTimeExceeded,
+} from "./transaction-limits.js";
 import { getCompactionSystemPrompt } from "./prompt.js";
 import {
   canonicalizeJson,
@@ -42,15 +47,12 @@ import {
   MAX_COMPACTION_FOCUS_UTF8_BYTES,
   MAX_COMPACTION_ABORT_QUIESCENCE_MS,
   MAX_COMPACTION_INTERMEDIATE_TOKENS,
-  MAX_COMPACTION_OUTPUT_NODES_TOTAL,
   MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL,
-  MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL,
   MAX_COMPACTION_PROVIDER_CALLS,
   MAX_COMPACTION_POST_HOOK_UTF8_BYTES,
   MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
   MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES,
   MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES,
-  MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT,
   MAX_COMPACTION_TOTAL_INPUT_TOKENS,
   MAX_COMPACTION_WALL_MS,
   MIN_COMPACTION_ABSOLUTE_TOKEN_SAVINGS,
@@ -91,18 +93,6 @@ interface SummaryNode {
   readonly ref: CompactionSummaryRefV1;
   readonly summary: CompactionSummaryV1;
   readonly toolPairs: readonly CompactionToolPairV1[];
-}
-
-export interface CompactionOutputTotals {
-  readonly bytes: number;
-  readonly nodes: number;
-  readonly workUnits: number;
-}
-
-export interface CompactionOutputBudgetDelta {
-  readonly bytes: number;
-  readonly nodes: number;
-  readonly workUnits: number;
 }
 
 interface CompactionOutputTokenAccounting {
@@ -573,7 +563,7 @@ async function runSummaryTree(params: {
 }> {
   const summaries = new Map<string, CompactionSummaryV1>();
   const allowedChildren = new Map<string, ReadonlySet<string>>();
-  let totals: CompactionOutputTotals = { bytes: 0, nodes: 0, workUnits: 0 };
+  let totals = { bytes: 0, nodes: 0, workUnits: 0 };
   let callCount = 0;
   let inputTokens = 0;
   const call = async (
@@ -767,29 +757,6 @@ async function runSummaryTree(params: {
   };
 }
 
-function accumulateCompactionOutputBudget(
-  totals: CompactionOutputTotals,
-  delta: CompactionOutputBudgetDelta,
-): CompactionOutputTotals {
-  const next = {
-    bytes: safeBudgetSum(totals.bytes, delta.bytes),
-    nodes: safeBudgetSum(totals.nodes, delta.nodes),
-    workUnits: safeBudgetSum(totals.workUnits, delta.workUnits),
-  };
-  if (
-    next.bytes > MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL ||
-    next.nodes > MAX_COMPACTION_OUTPUT_NODES_TOTAL ||
-    next.workUnits >
-      MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT * MAX_COMPACTION_PROVIDER_CALLS
-  ) {
-    throw new CompactionTransactionError(
-      "output_limit_exceeded",
-      "compaction provider outputs exceeded an aggregate limit",
-    );
-  }
-  return next;
-}
-
 function createSummaryDag(
   plan: CompactionMapReducePlan,
   summaries: ReadonlyMap<string, CompactionSummaryV1>,
@@ -948,30 +915,6 @@ function assertPostHookProjectionBounded(
       `post-compaction hook projection exceeds ${MAX_COMPACTION_POST_HOOK_UTF8_BYTES} UTF-8 bytes`,
     );
   }
-}
-
-/**
- * A tokenizer can emit at most one token per UTF-8 byte. Provider usage is
- * authoritative when present; otherwise the byte length is a deliberately
- * conservative upper bound that keeps the pre-parse output cap enforceable.
- */
-function compactionOutputTokenUpperBound(
-  content: string,
-  reportedCompletionTokens: number | undefined,
-): number {
-  const utf8UpperBound = Buffer.byteLength(content, "utf8");
-  if (
-    reportedCompletionTokens !== undefined &&
-    Number.isSafeInteger(reportedCompletionTokens) &&
-    reportedCompletionTokens >= 0
-  ) {
-    return Math.max(reportedCompletionTokens, utf8UpperBound);
-  }
-  return utf8UpperBound;
-}
-
-function compactionWallTimeExceeded(elapsedMs: number): boolean {
-  return elapsedMs > MAX_COMPACTION_WALL_MS;
 }
 
 function assertExactToolPairs(

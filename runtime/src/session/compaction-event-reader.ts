@@ -1,6 +1,5 @@
 import {
   COMPACTION_EVENT_FORMAT_VERSION,
-  COMPACTION_MINIMUM_READER_RUNTIME,
   COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN,
   COMPACTION_ROLLBACK_RETENTION_MS,
   COMPACTION_SUMMARY_KIND,
@@ -61,6 +60,8 @@ import {
 import { gte as semverGte } from "../utils/semver.js";
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+/** First runtime capability that can safely read transactional C2 events. */
+const COMPACTION_READER_RUNTIME_CAPABILITY = "0.14.0" as const;
 const COMPACTION_EVENT_TYPES = Object.freeze([
   "compaction_intent",
   "compaction_payload_chunk",
@@ -1584,7 +1585,7 @@ function readBase(record: Record<string, unknown>) {
     !/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u.test(
       minimumReaderRuntime,
     ) ||
-    !semverGte(COMPACTION_MINIMUM_READER_RUNTIME, minimumReaderRuntime)
+    !semverGte(COMPACTION_READER_RUNTIME_CAPABILITY, minimumReaderRuntime)
   ) {
     throw malformed("unsupported compaction event version or reader floor");
   }
