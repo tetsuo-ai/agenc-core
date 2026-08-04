@@ -28,6 +28,8 @@ const INITIAL_CHUNK_DIGEST = "0".repeat(64);
 export interface CompactionPayloadBundleV1 {
   readonly manifest: CompactionPayloadManifestV1;
   readonly chunks: readonly CompactionPayloadChunkV1[];
+  /** Deterministic splitter work evidence: each UTF-16 code unit at most once. */
+  readonly split_code_units_visited: number;
 }
 
 export function createCompactionPayloadBundleV1(params: {
@@ -51,12 +53,13 @@ export function createCompactionPayloadBundleV1(params: {
       "compaction payload item count is invalid",
     );
   }
-  const payloadSha256 = digestWithDomain(COMPACTION_PAYLOAD_DIGEST_DOMAIN, {
-    attempt_id: params.attemptId,
-    payload_kind: params.payloadKind,
-    canonical_json: canonicalJson,
-  });
-  const fragments = splitCanonicalPayload(params, payloadSha256, canonicalJson);
+  const payloadSha256 = compactionPayloadSha256(
+    params.attemptId,
+    params.payloadKind,
+    canonicalJson,
+  );
+  const split = splitCanonicalPayload(params, payloadSha256, canonicalJson);
+  const fragments = split.fragments;
   let previousChunkSha256 = INITIAL_CHUNK_DIGEST;
   const chunks = fragments.map((fragment, chunkIndex) => {
     const withoutDigest = {
@@ -93,6 +96,7 @@ export function createCompactionPayloadBundleV1(params: {
   } as const;
   return {
     chunks,
+    split_code_units_visited: split.codeUnitsVisited,
     manifest: {
       ...manifestWithoutDigest,
       manifest_sha256: digestWithDomain(
@@ -112,7 +116,7 @@ export function reconstructCompactionPayloadV1(
     throw invalidPayload("payload chunk count does not match its manifest");
   }
   let previousChunkSha256 = INITIAL_CHUNK_DIGEST;
-  let canonicalJson = "";
+  const fragments: string[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index]!;
     verifyCompactionPayloadChunkV1(chunk);
@@ -126,21 +130,22 @@ export function reconstructCompactionPayloadV1(
     ) {
       throw invalidPayload("payload chunk chain is missing, reordered, or mismatched");
     }
-    canonicalJson += chunk.canonical_json_fragment;
+    fragments.push(chunk.canonical_json_fragment);
     previousChunkSha256 = chunk.chunk_sha256;
   }
   if (previousChunkSha256 !== manifest.final_chunk_sha256) {
     throw invalidPayload("payload final chunk does not match its manifest");
   }
+  const canonicalJson = fragments.join("");
   if (Buffer.byteLength(canonicalJson, "utf8") !== manifest.canonical_utf8_bytes) {
     throw invalidPayload("payload canonical byte count does not match its manifest");
   }
   if (
-    digestWithDomain(COMPACTION_PAYLOAD_DIGEST_DOMAIN, {
-      attempt_id: manifest.attempt_id,
-      payload_kind: manifest.payload_kind,
-      canonical_json: canonicalJson,
-    }) !== manifest.payload_sha256
+    compactionPayloadSha256(
+      manifest.attempt_id,
+      manifest.payload_kind,
+      canonicalJson,
+    ) !== manifest.payload_sha256
   ) {
     throw invalidPayload("payload digest does not match its manifest");
   }
@@ -242,50 +247,88 @@ function splitCanonicalPayload(
   >,
   payloadSha256: string,
   canonicalJson: string,
-): readonly string[] {
+): { readonly fragments: readonly string[]; readonly codeUnitsVisited: number } {
   const fragments: string[] = [];
+  const placeholder: CompactionPayloadChunkV1 = {
+    format_version: COMPACTION_EVENT_FORMAT_VERSION,
+    minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+    attempt_id: params.attemptId,
+    recorded_at_ms: params.recordedAtMs,
+    payload_kind: params.payloadKind,
+    payload_sha256: payloadSha256,
+    chunk_index: MAX_COMPACTION_PAYLOAD_CHUNKS - 1,
+    chunk_count: MAX_COMPACTION_PAYLOAD_CHUNKS,
+    previous_chunk_sha256: INITIAL_CHUNK_DIGEST,
+    fragment_utf8_bytes: MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
+    canonical_json_fragment: "",
+    chunk_sha256: INITIAL_CHUNK_DIGEST,
+  };
+  const escapedFragmentBudget = MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES -
+    compactionPayloadChunkLineUtf8Bytes(placeholder);
+  if (escapedFragmentBudget <= 0) {
+    throw invalidPayload("payload chunk metadata exceeds the canonical line limit");
+  }
   let offset = 0;
+  let codeUnitsVisited = 0;
   while (offset < canonicalJson.length || fragments.length === 0) {
-    let low = offset;
-    let high = canonicalJson.length;
-    let acceptedEnd = offset;
-    while (low <= high) {
-      const end = low + Math.floor((high - low) / 2);
-      const candidate = canonicalJson.slice(offset, end);
-      const placeholder: CompactionPayloadChunkV1 = {
-        format_version: COMPACTION_EVENT_FORMAT_VERSION,
-        minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
-        attempt_id: params.attemptId,
-        recorded_at_ms: params.recordedAtMs,
-        payload_kind: params.payloadKind,
-        payload_sha256: payloadSha256,
-        chunk_index: MAX_COMPACTION_PAYLOAD_CHUNKS - 1,
-        chunk_count: MAX_COMPACTION_PAYLOAD_CHUNKS,
-        previous_chunk_sha256: INITIAL_CHUNK_DIGEST,
-        fragment_utf8_bytes: Buffer.byteLength(candidate, "utf8"),
-        canonical_json_fragment: candidate,
-        chunk_sha256: INITIAL_CHUNK_DIGEST,
-      };
-      if (
-        compactionPayloadChunkLineUtf8Bytes(placeholder) <=
-        MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES
-      ) {
-        acceptedEnd = end;
-        low = end + 1;
-      } else {
-        high = end - 1;
-      }
+    const fragmentStart = offset;
+    let escapedBytes = 0;
+    while (offset < canonicalJson.length) {
+      const measured = escapedJsonCodePointBytes(canonicalJson, offset);
+      if (escapedBytes + measured.escapedBytes > escapedFragmentBudget) break;
+      escapedBytes += measured.escapedBytes;
+      offset += measured.codeUnits;
+      codeUnitsVisited += measured.codeUnits;
     }
-    if (acceptedEnd === offset && offset < canonicalJson.length) {
+    if (fragmentStart === offset && offset < canonicalJson.length) {
       throw invalidPayload("payload fragment cannot fit the canonical line limit");
     }
-    fragments.push(canonicalJson.slice(offset, acceptedEnd));
-    offset = acceptedEnd;
+    fragments.push(canonicalJson.slice(fragmentStart, offset));
     if (fragments.length > MAX_COMPACTION_PAYLOAD_CHUNKS) {
       throw invalidPayload("payload requires too many canonical chunks");
     }
   }
-  return fragments;
+  return { fragments, codeUnitsVisited };
+}
+
+function escapedJsonCodePointBytes(
+  value: string,
+  offset: number,
+): { readonly escapedBytes: number; readonly codeUnits: 1 | 2 } {
+  const first = value.charCodeAt(offset);
+  if (first >= 0xd800 && first <= 0xdbff) {
+    const second = value.charCodeAt(offset + 1);
+    if (second >= 0xdc00 && second <= 0xdfff) {
+      return { escapedBytes: 4, codeUnits: 2 };
+    }
+    return { escapedBytes: 6, codeUnits: 1 };
+  }
+  if (first >= 0xdc00 && first <= 0xdfff) {
+    return { escapedBytes: 6, codeUnits: 1 };
+  }
+  if (first === 0x22 || first === 0x5c) {
+    return { escapedBytes: 2, codeUnits: 1 };
+  }
+  if (
+    first === 0x08 || first === 0x09 || first === 0x0a ||
+    first === 0x0c || first === 0x0d
+  ) {
+    return { escapedBytes: 2, codeUnits: 1 };
+  }
+  if (first <= 0x1f) return { escapedBytes: 6, codeUnits: 1 };
+  if (first <= 0x7f) return { escapedBytes: 1, codeUnits: 1 };
+  if (first <= 0x7ff) return { escapedBytes: 2, codeUnits: 1 };
+  return { escapedBytes: 3, codeUnits: 1 };
+}
+
+function compactionPayloadSha256(
+  attemptId: string,
+  payloadKind: CompactionPayloadKind,
+  canonicalJson: string,
+): string {
+  return sha256Hex(
+    `${COMPACTION_PAYLOAD_DIGEST_DOMAIN}${attemptId}\0${payloadKind}\0${canonicalJson}`,
+  );
 }
 
 function assertCompactionPayloadChunkLineBound(

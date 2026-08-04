@@ -151,6 +151,53 @@ describe("compaction canonical payload manifests", () => {
     expect(validateCanonicalJournalText(`${intentLine}${chunkLines[0]}`))
       .toMatchObject({ recordCount: 2 });
   });
+
+  it("round-trips hostile escaped text and rejects non-I-JSON surrogates", () => {
+    const value = [{
+      text: "quote:\" slash:\\ controls:\b\t\n\f\r\u0000 unicode:雪 emoji:🚀",
+    }];
+    const bundle = createCompactionPayloadBundleV1({
+      attemptId: "manifest-hostile-text",
+      recordedAtMs: 1,
+      payloadKind: "replacement_history",
+      value,
+      itemCount: 1,
+    });
+    expect(reconstructCompactionPayloadV1(bundle.manifest, bundle.chunks))
+      .toEqual(value);
+    expect(bundle.chunks.every((chunk) =>
+      compactionPayloadChunkLineUtf8Bytes(chunk) <=
+        MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES
+    )).toBe(true);
+    expect(() => createCompactionPayloadBundleV1({
+      attemptId: "manifest-lone-surrogate",
+      recordedAtMs: 1,
+      payloadKind: "replacement_history",
+      value: [{ text: "\ud800" }],
+      itemCount: 1,
+    })).toThrow(/surrogate/i);
+  });
+
+  it("splits a 64 MiB payload with linear work and bounded resident growth", () => {
+    const residentBefore = process.memoryUsage.rss();
+    const value = [{ text: "x".repeat(67_108_864) }];
+    const bundle = createCompactionPayloadBundleV1({
+      attemptId: "manifest-64mib-benchmark",
+      recordedAtMs: 1,
+      payloadKind: "source_history",
+      value,
+      itemCount: 1,
+    });
+    const residentGrowth = process.memoryUsage.rss() - residentBefore;
+    expect(bundle.split_code_units_visited)
+      .toBe(bundle.manifest.canonical_utf8_bytes);
+    expect(bundle.chunks.length).toBeLessThanOrEqual(32);
+    expect(bundle.chunks.every((chunk) =>
+      compactionPayloadChunkLineUtf8Bytes(chunk) <=
+        MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES
+    )).toBe(true);
+    expect(residentGrowth).toBeLessThan(805_306_368);
+  }, 30_000);
 });
 
 function manifestIntent(): CompactionIntentV1 {
