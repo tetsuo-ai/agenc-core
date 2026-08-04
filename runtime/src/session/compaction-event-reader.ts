@@ -24,6 +24,10 @@ import {
   type CompactionCommittedV1,
   type CompactionFailedV1,
   type CompactionIntentV1,
+  type CompactionPersistedIntentV1,
+  type CompactionPersistedCommittedV1,
+  type CompactionPersistedRollbackCommittedV1,
+  type CompactionPersistedSourceAuthorityV1,
   type CompactionProjectionMessageV1,
   type CompactionPayloadChunkV1,
   type CompactionPayloadKind,
@@ -107,6 +111,183 @@ export function readCompactionRolloutPayload(
     case "compaction_source_release":
       return readRelease(value);
   }
+}
+
+export function readCompactionPersistedIntentV1(
+  value: unknown,
+): CompactionPersistedIntentV1 {
+  const record = exact(value, [
+    ...baseKeys(),
+    "source",
+    "source_history_manifest",
+    "policy_digest",
+    "configuration_digest",
+    "accounting_ref",
+    "automatic",
+    "selected_history_indexes",
+    "admission_required",
+    "planned_provider_calls",
+  ]);
+  const base = readBase(record);
+  const source = readPersistedSource(record.source);
+  const sourceHistoryManifest = readCompactionPayloadManifestV1(
+    record.source_history_manifest,
+    "source_history",
+  );
+  if (
+    source.attempt_id !== base.attempt_id ||
+    source.active_history_refs_manifest.attempt_id !== base.attempt_id ||
+    sourceHistoryManifest.attempt_id !== base.attempt_id ||
+    source.active_history_refs_manifest.item_count !==
+      sourceHistoryManifest.item_count
+  ) {
+    throw malformed("manifest intent payloads do not bind one source attempt");
+  }
+  if (record.admission_required !== true) {
+    throw malformed("transactional compaction requires durable admission");
+  }
+  return {
+    ...base,
+    source,
+    source_history_manifest: sourceHistoryManifest,
+    policy_digest: digest(record.policy_digest, "policy_digest"),
+    configuration_digest: digest(record.configuration_digest, "configuration_digest"),
+    accounting_ref: digest(record.accounting_ref, "accounting_ref"),
+    automatic: boolean(record.automatic, "automatic"),
+    selected_history_indexes: readManifestSelectedHistoryIndexes(
+      record.selected_history_indexes,
+      source.active_history_refs_manifest.item_count,
+    ),
+    admission_required: true,
+    planned_provider_calls: integer(
+      record.planned_provider_calls,
+      "planned_provider_calls",
+      1,
+      MAX_COMPACTION_PROVIDER_CALLS,
+    ),
+  };
+}
+
+export function readCompactionPersistedCommittedV1(
+  value: unknown,
+): CompactionPersistedCommittedV1 {
+  const record = exact(value, [
+    ...baseKeys(),
+    "committed_at_ms",
+    "rollback_retention_deadline_ms",
+    "source",
+    "selected_history_indexes",
+    "policy_digest",
+    "configuration_digest",
+    "final_summary_manifest",
+    "summary_dag_manifest",
+    "accounting",
+    "replacement_history_manifest",
+    "cleanup_state",
+  ]);
+  const base = readBase(record);
+  const committedAtMs = integer(record.committed_at_ms, "committed_at_ms", 0);
+  const source = readPersistedSource(record.source);
+  const finalSummaryManifest = readCompactionPayloadManifestV1(
+    record.final_summary_manifest,
+    "final_summary",
+  );
+  const summaryDagManifest = readCompactionPayloadManifestV1(
+    record.summary_dag_manifest,
+    "summary_dag",
+  );
+  const replacementHistoryManifest = readCompactionPayloadManifestV1(
+    record.replacement_history_manifest,
+    "replacement_history",
+  );
+  if (
+    committedAtMs !== base.recorded_at_ms ||
+    source.attempt_id !== base.attempt_id ||
+    [finalSummaryManifest, summaryDagManifest, replacementHistoryManifest]
+      .some((manifest) => manifest.attempt_id !== base.attempt_id) ||
+    finalSummaryManifest.item_count !== 1 ||
+    summaryDagManifest.item_count !== 1 ||
+    replacementHistoryManifest.item_count < 1
+  ) {
+    throw malformed("manifest commit payloads do not bind one source attempt");
+  }
+  const cleanupState = text(record.cleanup_state, "cleanup_state");
+  if (cleanupState !== "pending" && cleanupState !== "complete") {
+    throw malformed("cleanup_state is unsupported");
+  }
+  const accounting = readAccounting(record.accounting);
+  assertCompactionShrink(accounting);
+  return {
+    ...base,
+    committed_at_ms: committedAtMs,
+    rollback_retention_deadline_ms: integer(
+      record.rollback_retention_deadline_ms,
+      "rollback_retention_deadline_ms",
+      committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS,
+    ),
+    source,
+    selected_history_indexes: readManifestSelectedHistoryIndexes(
+      record.selected_history_indexes,
+      source.active_history_refs_manifest.item_count,
+    ),
+    policy_digest: digest(record.policy_digest, "policy_digest"),
+    configuration_digest: digest(record.configuration_digest, "configuration_digest"),
+    final_summary_manifest: finalSummaryManifest,
+    summary_dag_manifest: summaryDagManifest,
+    accounting,
+    replacement_history_manifest: replacementHistoryManifest,
+    cleanup_state: cleanupState,
+  };
+}
+
+export function readCompactionPersistedRollbackCommittedV1(
+  value: unknown,
+): CompactionPersistedRollbackCommittedV1 {
+  const record = exact(value, [
+    ...baseKeys(),
+    "commit_sha256",
+    "source_sha256",
+    "history_digest",
+    "source_session_id",
+    "source_epoch",
+    "rollback_mode",
+    "target_session_id",
+    "source_history_manifest",
+  ]);
+  const base = readBase(record);
+  const mode = text(record.rollback_mode, "rollback_mode");
+  if (mode !== "same_session" && mode !== "reviewed_branch") {
+    throw malformed("rollback_mode is unsupported");
+  }
+  const sourceSessionId = text(record.source_session_id, "source_session_id");
+  const targetSessionId = text(record.target_session_id, "target_session_id");
+  if (
+    mode === "same_session" && targetSessionId !== sourceSessionId ||
+    mode === "reviewed_branch" && targetSessionId === sourceSessionId
+  ) {
+    throw malformed("rollback mode does not match its source and target sessions");
+  }
+  const sourceHistoryManifest = readCompactionPayloadManifestV1(
+    record.source_history_manifest,
+    "source_history",
+  );
+  if (sourceHistoryManifest.attempt_id !== base.attempt_id) {
+    throw malformed("rollback source-history manifest attempt mismatch");
+  }
+  if (sourceHistoryManifest.item_count < 1) {
+    throw malformed("rollback source-history manifest is empty");
+  }
+  return {
+    ...base,
+    commit_sha256: digest(record.commit_sha256, "commit_sha256"),
+    source_sha256: digest(record.source_sha256, "source_sha256"),
+    history_digest: digest(record.history_digest, "history_digest"),
+    source_session_id: sourceSessionId,
+    source_epoch: integer(record.source_epoch, "source_epoch", 1),
+    rollback_mode: mode,
+    target_session_id: targetSessionId,
+    source_history_manifest: sourceHistoryManifest,
+  };
 }
 
 function readPayloadChunk(value: unknown): CompactionPayloadChunkV1 {
@@ -220,6 +401,7 @@ function readPayloadKind(value: unknown): CompactionPayloadKind {
   if (
     kind !== "active_history_refs" &&
     kind !== "source_history" &&
+    kind !== "final_summary" &&
     kind !== "summary_dag" &&
     kind !== "replacement_history"
   ) {
@@ -712,6 +894,33 @@ function readSelectedHistoryIndexes(
   });
 }
 
+function readManifestSelectedHistoryIndexes(
+  value: unknown,
+  activeHistoryCount: number,
+): readonly number[] {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > activeHistoryCount
+  ) {
+    throw malformed("selected history manifest is empty or exceeds its source");
+  }
+  let previous = -1;
+  return value.map((candidate) => {
+    const index = integer(
+      candidate,
+      "selected_history_indexes entry",
+      0,
+      activeHistoryCount - 1,
+    );
+    if (index <= previous) {
+      throw malformed("selected history manifest is not strictly ordered");
+    }
+    previous = index;
+    return index;
+  });
+}
+
 function assertCompactionShrink(
   accounting: CompactionCommittedV1["accounting"],
 ): void {
@@ -1071,6 +1280,66 @@ function readSource(value: unknown): CompactionSourceAuthorityV1 {
     source_bytes: sourceBytes,
     history_digest: digest(record.history_digest, "history_digest"),
     active_history_refs: activeHistoryRefs,
+  };
+}
+
+function readPersistedSource(
+  value: unknown,
+): CompactionPersistedSourceAuthorityV1 {
+  const record = exact(value, [
+    "format_version",
+    "attempt_id",
+    "session_id",
+    "epoch",
+    "source_binding",
+    "first_sequence",
+    "last_sequence",
+    "source_sha256",
+    "source_bytes",
+    "history_digest",
+    "active_history_refs_manifest",
+  ]);
+  if (record.format_version !== COMPACTION_EVENT_FORMAT_VERSION) {
+    throw malformed("unsupported compaction source version");
+  }
+  const attemptId = text(record.attempt_id, "attempt_id");
+  const activeHistoryRefsManifest = readCompactionPayloadManifestV1(
+    record.active_history_refs_manifest,
+    "active_history_refs",
+  );
+  if (
+    activeHistoryRefsManifest.attempt_id !== attemptId ||
+    activeHistoryRefsManifest.item_count < 1 ||
+    activeHistoryRefsManifest.item_count > MAX_COMPACTION_SOURCE_MESSAGES
+  ) {
+    throw malformed("active-history manifest does not bind its source attempt");
+  }
+  const firstSequence = integer(record.first_sequence, "first_sequence", 1);
+  return {
+    format_version: COMPACTION_EVENT_FORMAT_VERSION,
+    attempt_id: attemptId,
+    session_id: text(record.session_id, "session_id"),
+    epoch: integer(record.epoch, "epoch", 1),
+    source_binding: boundedText(
+      record.source_binding,
+      "source_binding",
+      MAX_COMPACTION_SOURCE_BINDING_UTF8_BYTES,
+    ),
+    first_sequence: firstSequence,
+    last_sequence: integer(
+      record.last_sequence,
+      "last_sequence",
+      firstSequence,
+    ),
+    source_sha256: digest(record.source_sha256, "source_sha256"),
+    source_bytes: integer(
+      record.source_bytes,
+      "source_bytes",
+      1,
+      MAX_COMPACTION_SOURCE_BYTES,
+    ),
+    history_digest: digest(record.history_digest, "history_digest"),
+    active_history_refs_manifest: activeHistoryRefsManifest,
   };
 }
 

@@ -11,6 +11,7 @@ import {
   type CompactionActiveHistoryEntryV1,
   type CompactionActiveHistoryRefV1,
   type CompactionPayloadChunkV1,
+  type CompactionPayloadBundleV1,
   type CompactionPayloadKind,
   type CompactionPayloadManifestV1,
   type CompactionSourceAuthorityV1,
@@ -24,13 +25,6 @@ import { canonicalizeJson as canonicalizePayloadJson } from "../../eval-contract
 
 const COMPACTION_ROLLOUT_ITEM_VERSION = 2;
 const INITIAL_CHUNK_DIGEST = "0".repeat(64);
-
-export interface CompactionPayloadBundleV1 {
-  readonly manifest: CompactionPayloadManifestV1;
-  readonly chunks: readonly CompactionPayloadChunkV1[];
-  /** Deterministic splitter work evidence: each UTF-16 code unit at most once. */
-  readonly split_code_units_visited: number;
-}
 
 export function createCompactionPayloadBundleV1(params: {
   readonly attemptId: string;

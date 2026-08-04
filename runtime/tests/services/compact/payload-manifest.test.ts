@@ -10,9 +10,17 @@ import {
 import {
   MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES,
   COMPACTION_MINIMUM_READER_RUNTIME,
+  COMPACTION_ROLLBACK_RETENTION_MS,
   type CompactionIntentV1,
   type CompactionActiveHistoryRefV1,
+  type CompactionPayloadBundleV1,
+  type CompactionPersistedIntentV1,
 } from "../../../src/services/compact/transaction-types.js";
+import {
+  readCompactionPersistedCommittedV1,
+  readCompactionPersistedIntentV1,
+  readCompactionPersistedRollbackCommittedV1,
+} from "../../../src/session/compaction-event-reader.js";
 import { validateCanonicalJournalText } from "../../../src/state/recovery-journal-contract.js";
 
 const DIGEST = "a".repeat(64);
@@ -152,6 +160,68 @@ describe("compaction canonical payload manifests", () => {
       .toMatchObject({ recordCount: 2 });
   });
 
+  it("strictly reads manifest-backed persistence records without inline payloads", () => {
+    const bundles = persistedPayloadBundles();
+    const intent = persistedIntent(bundles.activeRefs, bundles.sourceHistory);
+    expect(readCompactionPersistedIntentV1(intent)).toEqual(intent);
+
+    const committedAtMs = 10;
+    const commit = {
+      ...eventBase(intent.attempt_id, committedAtMs),
+      committed_at_ms: committedAtMs,
+      rollback_retention_deadline_ms:
+        committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS,
+      source: intent.source,
+      selected_history_indexes: intent.selected_history_indexes,
+      policy_digest: intent.policy_digest,
+      configuration_digest: intent.configuration_digest,
+      final_summary_manifest: bundles.finalSummary.manifest,
+      summary_dag_manifest: bundles.summaryDag.manifest,
+      accounting: {
+        accounting_ref: intent.accounting_ref,
+        source_tokens: 10_000,
+        candidate_tokens: 1_000,
+        context_window_tokens: 20_000,
+        reserved_output_tokens: 1_000,
+        source: "provider_exact",
+        confidence: "exact",
+      },
+      replacement_history_manifest: bundles.replacementHistory.manifest,
+      cleanup_state: "pending",
+    } as const;
+    expect(readCompactionPersistedCommittedV1(commit)).toEqual(commit);
+
+    const rollback = {
+      ...eventBase(intent.attempt_id, 20),
+      commit_sha256: DIGEST,
+      source_sha256: intent.source.source_sha256,
+      history_digest: intent.source.history_digest,
+      source_session_id: intent.source.session_id,
+      source_epoch: intent.source.epoch,
+      rollback_mode: "same_session",
+      target_session_id: intent.source.session_id,
+      source_history_manifest: bundles.sourceHistory.manifest,
+    } as const;
+    expect(readCompactionPersistedRollbackCommittedV1(rollback))
+      .toEqual(rollback);
+
+    expect(() => readCompactionPersistedIntentV1({
+      ...intent,
+      source_history: [],
+    })).toThrow(/unknown or missing fields/i);
+    expect(() => readCompactionPersistedCommittedV1({
+      ...commit,
+      final_summary_manifest: {
+        ...commit.final_summary_manifest,
+        payload_kind: "summary_dag",
+      },
+    })).toThrow(/wrong kind|digest/i);
+    expect(() => readCompactionPersistedRollbackCommittedV1({
+      ...rollback,
+      source_history: [],
+    })).toThrow(/unknown or missing fields/i);
+  });
+
   it("round-trips hostile escaped text and rejects non-I-JSON surrogates", () => {
     const value = [{
       text: "quote:\" slash:\\ controls:\b\t\n\f\r\u0000 unicode:雪 emoji:🚀",
@@ -199,6 +269,83 @@ describe("compaction canonical payload manifests", () => {
     expect(residentGrowth).toBeLessThan(805_306_368);
   }, 30_000);
 });
+
+function persistedPayloadBundles(): {
+  readonly activeRefs: CompactionPayloadBundleV1;
+  readonly sourceHistory: CompactionPayloadBundleV1;
+  readonly finalSummary: CompactionPayloadBundleV1;
+  readonly summaryDag: CompactionPayloadBundleV1;
+  readonly replacementHistory: CompactionPayloadBundleV1;
+} {
+  const attemptId = "persisted-manifest-records";
+  const create = (
+    payloadKind: Parameters<typeof createCompactionPayloadBundleV1>[0]["payloadKind"],
+    value: unknown,
+    itemCount: number,
+  ): CompactionPayloadBundleV1 => createCompactionPayloadBundleV1({
+    attemptId,
+    recordedAtMs: 1,
+    payloadKind,
+    value,
+    itemCount,
+  });
+  return {
+    activeRefs: create("active_history_refs", [{
+      sequence: 1,
+      record_message_index: 0,
+      encoded_bytes: 1,
+      sha256: DIGEST,
+    }], 1),
+    sourceHistory: create("source_history", [{ role: "user", content: "x" }], 1),
+    finalSummary: create("final_summary", { summary_sha256: DIGEST }, 1),
+    summaryDag: create("summary_dag", { dag_sha256: DIGEST }, 1),
+    replacementHistory: create(
+      "replacement_history",
+      [{ role: "assistant", content: "summary" }],
+      1,
+    ),
+  };
+}
+
+function persistedIntent(
+  activeRefs: CompactionPayloadBundleV1,
+  sourceHistory: CompactionPayloadBundleV1,
+): CompactionPersistedIntentV1 {
+  const attemptId = activeRefs.manifest.attempt_id;
+  return {
+    ...eventBase(attemptId, 1),
+    source: {
+      format_version: 1,
+      attempt_id: attemptId,
+      session_id: "persisted-manifest-session",
+      epoch: 1,
+      source_binding: "rollout:/persisted-manifest#epoch:1",
+      first_sequence: 1,
+      last_sequence: 1,
+      source_sha256: DIGEST,
+      source_bytes: 1,
+      history_digest: DIGEST,
+      active_history_refs_manifest: activeRefs.manifest,
+    },
+    source_history_manifest: sourceHistory.manifest,
+    policy_digest: DIGEST,
+    configuration_digest: DIGEST,
+    accounting_ref: DIGEST,
+    automatic: false,
+    selected_history_indexes: [0],
+    admission_required: true,
+    planned_provider_calls: 1,
+  };
+}
+
+function eventBase(attemptId: string, recordedAtMs: number) {
+  return {
+    format_version: 1 as const,
+    minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+    attempt_id: attemptId,
+    recorded_at_ms: recordedAtMs,
+  };
+}
 
 function manifestIntent(): CompactionIntentV1 {
   const attemptId = "manifest-lifecycle";

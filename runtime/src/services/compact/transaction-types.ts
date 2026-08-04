@@ -135,6 +135,7 @@ export interface CompactionActiveHistoryEntryV1 {
 export type CompactionPayloadKind =
   | "active_history_refs"
   | "source_history"
+  | "final_summary"
   | "summary_dag"
   | "replacement_history";
 
@@ -159,6 +160,12 @@ export interface CompactionPayloadChunkV1 extends CompactionEventBaseV1 {
   readonly fragment_utf8_bytes: number;
   readonly canonical_json_fragment: string;
   readonly chunk_sha256: string;
+}
+
+export interface CompactionPayloadBundleV1 {
+  readonly manifest: CompactionPayloadManifestV1;
+  readonly chunks: readonly CompactionPayloadChunkV1[];
+  readonly split_code_units_visited: number;
 }
 
 export interface CompactionSummaryRefV1 {
@@ -220,6 +227,26 @@ export interface CompactionSourceAuthorityV1 {
   readonly source_bytes: number;
   readonly history_digest: string;
   readonly active_history_refs: readonly CompactionActiveHistoryRefV1[];
+}
+
+/** Canonical single-record authority; the large ref vector is manifest-backed. */
+export interface CompactionPersistedSourceAuthorityV1 extends Omit<
+  CompactionSourceAuthorityV1,
+  "active_history_refs"
+> {
+  readonly active_history_refs_manifest: CompactionPayloadManifestV1;
+}
+
+export interface CompactionPersistedIntentV1 extends CompactionEventBaseV1 {
+  readonly source: CompactionPersistedSourceAuthorityV1;
+  readonly source_history_manifest: CompactionPayloadManifestV1;
+  readonly policy_digest: string;
+  readonly configuration_digest: string;
+  readonly accounting_ref: string;
+  readonly automatic: boolean;
+  readonly selected_history_indexes: readonly number[];
+  readonly admission_required: true;
+  readonly planned_provider_calls: number;
 }
 
 export interface CompactionAccountingObservationV1 {
@@ -321,6 +348,20 @@ export interface CompactionCommittedV1 extends CompactionEventBaseV1 {
   readonly cleanup_state: "pending" | "complete";
 }
 
+export interface CompactionPersistedCommittedV1 extends CompactionEventBaseV1 {
+  readonly committed_at_ms: number;
+  readonly rollback_retention_deadline_ms: number;
+  readonly source: CompactionPersistedSourceAuthorityV1;
+  readonly selected_history_indexes: readonly number[];
+  readonly policy_digest: string;
+  readonly configuration_digest: string;
+  readonly final_summary_manifest: CompactionPayloadManifestV1;
+  readonly summary_dag_manifest: CompactionPayloadManifestV1;
+  readonly accounting: CompactionAccountingObservationV1;
+  readonly replacement_history_manifest: CompactionPayloadManifestV1;
+  readonly cleanup_state: "pending" | "complete";
+}
+
 export interface CompactionSummaryDagLeafV1 {
   readonly source_ref: RolloutSpanRefV1;
   readonly tool_pairs: readonly CompactionToolPairV1[];
@@ -357,6 +398,18 @@ export interface CompactionRollbackCommittedV1 extends CompactionEventBaseV1 {
   readonly source_history: readonly CompactionProjectionMessageV1[];
 }
 
+export interface CompactionPersistedRollbackCommittedV1
+  extends CompactionEventBaseV1 {
+  readonly commit_sha256: string;
+  readonly source_sha256: string;
+  readonly history_digest: string;
+  readonly source_session_id: string;
+  readonly source_epoch: number;
+  readonly rollback_mode: "same_session" | "reviewed_branch";
+  readonly target_session_id: string;
+  readonly source_history_manifest: CompactionPayloadManifestV1;
+}
+
 export interface CompactionSourceReleaseV1 extends CompactionEventBaseV1 {
   readonly source_sha256: string;
   readonly source_session_id: string;
@@ -390,6 +443,18 @@ export interface CompactionCommitInputV1 {
   readonly accounting: CompactionAccountingObservationV1;
   readonly replacement_history: readonly CompactionProjectionMessageV1[];
   readonly committed_at_ms: number;
+  readonly payload_bundles?: CompactionCommitPayloadBundlesV1;
+}
+
+export interface CompactionSourcePayloadBundlesV1 {
+  readonly active_history_refs: CompactionPayloadBundleV1;
+  readonly source_history: CompactionPayloadBundleV1;
+}
+
+export interface CompactionCommitPayloadBundlesV1 {
+  readonly final_summary: CompactionPayloadBundleV1;
+  readonly summary_dag: CompactionPayloadBundleV1;
+  readonly replacement_history: CompactionPayloadBundleV1;
 }
 
 /** Exclusive durable-owner lease for one compaction transaction. */
@@ -408,7 +473,10 @@ export interface CompactionTransactionAdapter {
     messages: readonly RuntimeMessage[],
   ): CompactionPreparedSourceV1;
   failureCount(historyDigest: string, configurationDigest: string): number;
-  pinAndRecordIntent(intent: CompactionIntentV1): void;
+  pinAndRecordIntent(
+    intent: CompactionIntentV1,
+    payloadBundles?: CompactionSourcePayloadBundlesV1,
+  ): void;
   recordFailure(failure: CompactionFailedV1): void;
   commit(input: CompactionCommitInputV1): CompactionCommittedV1;
   markProjectionComplete(attemptId: string): void;
