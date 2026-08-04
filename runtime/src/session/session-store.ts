@@ -1031,6 +1031,26 @@ export class SessionStore {
   }
 
   /**
+   * Acquire the canonical writer lock without creating a rollout. Reviewed
+   * branch creation uses this as a no-clobber reservation before its source
+   * authorization is durable. A subsequent open() reuses the same lock.
+   */
+  acquireExclusiveReservation(): void {
+    if (this.closed) {
+      throw new Error("cannot reserve a closed session store");
+    }
+    this.lock.acquire();
+  }
+
+  /** Release a reservation that has not been promoted through open(). */
+  releaseExclusiveReservation(): void {
+    if (this.opened) {
+      throw new Error("an opened session store must be closed, not unreserved");
+    }
+    this.lock.release();
+  }
+
+  /**
    * Register a callback for degraded / suspend / fsync-fail events.
    * The session layer wires this to `EventLog.emit()` so I-8 / I-38 /
    * I-83 surface as typed events. Diagnostics captured BEFORE the

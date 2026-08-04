@@ -956,7 +956,7 @@ class RecoveryReadBudget {
   }
 }
 
-class DiskCanonicalIdentityRegistry implements RecoveryRunIdentityRegistry {
+export class DiskCanonicalIdentityRegistry implements RecoveryRunIdentityRegistry {
   readonly #directory: string;
   readonly #database: BetterSqlite3.Database;
   readonly #insert: BetterSqlite3.Statement<[number, string]>;

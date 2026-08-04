@@ -1,8 +1,10 @@
 import {
+  existsSync,
   fsyncSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,6 +36,11 @@ import { compactionMapReduceTopology } from "../../src/services/compact/plan.js"
 import { validateCanonicalJournalBytes } from "../../src/state/recovery-journal-contract.js";
 import { reconstructFromRollout } from "../../src/session/rollout-reconstruction.js";
 import { SessionStore } from "../../src/session/session-store.js";
+import {
+  openStateDatabases,
+  resolveStateDatabasePaths,
+} from "../../src/state/sqlite-driver.js";
+import { CompactionRetentionRepository } from "../../src/state/compaction-retention.js";
 import { compactConversationTransactionally } from "../../src/services/compact/transaction.js";
 import { bindCompactionTransactionHarness } from "../helpers/compaction-transaction-harness.js";
 
@@ -285,6 +292,50 @@ describe("RolloutStore transactional compaction", () => {
     expect(
       reconstructFromRollout(targetStore.readAll()).history.map((message) => message.content),
     ).toEqual(["source one", "source two"]);
+  });
+
+  it("does not create a reviewed target before source rollback fsync succeeds", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    temporaryWorkspaces.push(cwd);
+    const sourceSessionId = "reviewed-fsync-source";
+    const targetSessionId = "reviewed-fsync-target";
+    const source = openStore(sourceSessionId, {}, cwd);
+    const targetProbe = new SessionStore({
+      cwd,
+      sessionId: targetSessionId,
+      agencVersion: "0.13.0",
+      resume: true,
+    });
+    try {
+      const transaction = commitSmallCompaction(source, "reviewed-fsync-attempt");
+      source.markProjectionComplete(transaction.intent.attempt_id);
+      source.appendRollout(
+        { type: "response_item", payload: { role: "user", content: "newer work" } },
+        { durable: true },
+      );
+      source.setFsyncImplForTest((fd) => {
+        fsyncSync(fd);
+        throw new Error("injected source rollback fsync uncertainty");
+      });
+      expect(() => source.rollbackCompaction({
+        attemptId: transaction.intent.attempt_id,
+        nowMs: transaction.committedAtMs + 1,
+        reviewedBranchTargetSessionId: targetSessionId,
+      })).toThrow(/source rollback fsync uncertainty/i);
+      expect(existsSync(targetProbe.rolloutPath)).toBe(false);
+    } finally {
+      source.close();
+    }
+
+    const reopened = openStore(sourceSessionId, { resume: true }, cwd);
+    try {
+      expect(existsSync(targetProbe.rolloutPath)).toBe(false);
+      expect(reopened.readAll().some(
+        (item) => item.type === "compaction_rollback_committed",
+      )).toBe(false);
+    } finally {
+      reopened.close();
+    }
   });
 
   it("rejects a conflicting reviewed target before appending source rollback", () => {
@@ -704,7 +755,10 @@ describe("RolloutStore transactional compaction", () => {
   });
 
   it("retains an ancestor source until its descendant compaction releases", () => {
-    const store = openStore("provenance-generations");
+    let nowMs = Date.now();
+    const store = openStore("provenance-generations", {
+      nowMilliseconds: () => nowMs,
+    });
     try {
       const first = commitSmallCompaction(store, "generation-a");
       store.markProjectionComplete(first.intent.attempt_id);
@@ -718,6 +772,7 @@ describe("RolloutStore transactional compaction", () => {
         }),
       ).toThrow(/descendant_compaction reference generation-b/i);
 
+      nowMs = second.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS;
       store.beginCompactionSourceRelease({
         attemptId: second.intent.attempt_id,
         nowMs: second.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS,
@@ -735,8 +790,131 @@ describe("RolloutStore transactional compaction", () => {
     }
   });
 
+  it("uses the store clock instead of a caller-supplied future release time", () => {
+    let nowMs = Date.now();
+    const store = openStore("retention-clock", { nowMilliseconds: () => nowMs });
+    try {
+      const transaction = commitSmallCompaction(store, "retention-clock-attempt");
+      store.markProjectionComplete(transaction.intent.attempt_id);
+      expect(() => store.beginCompactionSourceRelease({
+        attemptId: transaction.intent.attempt_id,
+        nowMs: Number.MAX_SAFE_INTEGER,
+      })).toThrow(/rollback window/i);
+      nowMs = transaction.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS;
+      expect(() => store.beginCompactionSourceRelease({
+        attemptId: transaction.intent.attempt_id,
+        nowMs: 0,
+      })).not.toThrow();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("blocks the exact first ordinal after a physically deleted source row", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    temporaryWorkspaces.push(cwd);
+    let nowMs = Date.now();
+    const store = openStore("deleted-plus-one", { nowMilliseconds: () => nowMs }, cwd);
+    try {
+      const transaction = commitSmallCompaction(store, "deleted-plus-one-source");
+      store.markProjectionComplete(transaction.intent.attempt_id);
+      const deletedLine = Math.min(...transaction.prepared.source.active_history_refs
+        .map((ref) => ref.first_sequence));
+      seedOrdinalGuardPin(
+        cwd,
+        transaction.intent,
+        "deleted-plus-one-guard",
+        deletedLine + 1,
+      );
+      nowMs = transaction.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS;
+      expect(() => store.beginCompactionSourceRelease({
+        attemptId: transaction.intent.attempt_id,
+        nowMs: 0,
+      })).toThrow(/deleted-plus-one-guard.*live ordinal/i);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("does not overblock an active ordinal strictly before deleted rows", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    temporaryWorkspaces.push(cwd);
+    let nowMs = Date.now();
+    const store = openStore("before-deleted-row", { nowMilliseconds: () => nowMs }, cwd);
+    try {
+      const transaction = commitSmallCompaction(store, "before-deleted-source");
+      store.markProjectionComplete(transaction.intent.attempt_id);
+      const deletedLine = Math.min(...transaction.prepared.source.active_history_refs
+        .map((ref) => ref.first_sequence));
+      seedOrdinalGuardPin(
+        cwd,
+        transaction.intent,
+        "before-deleted-guard",
+        deletedLine - 1,
+      );
+      nowMs = transaction.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS;
+      expect(() => store.beginCompactionSourceRelease({
+        attemptId: transaction.intent.attempt_id,
+        nowMs: 0,
+      })).not.toThrow();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("blocks A pruning when C retains a post-A ordinal after B was released", () => {
+    let nowMs = Date.now();
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    temporaryWorkspaces.push(cwd);
+    const store = openStore("transitive-ordinal-prune", {
+      nowMilliseconds: () => nowMs,
+    }, cwd);
+    try {
+      const generationA = commitSmallCompaction(store, "ordinal-a");
+      store.markProjectionComplete(generationA.intent.attempt_id);
+      const generationB = commitSmallCompaction(store, "ordinal-b");
+      store.markProjectionComplete(generationB.intent.attempt_id);
+
+      nowMs = generationB.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS;
+      store.beginCompactionSourceRelease({
+        attemptId: generationB.intent.attempt_id,
+        nowMs: Number.MAX_SAFE_INTEGER,
+      });
+
+      const generationC = commitSmallCompaction(store, "ordinal-c");
+      store.markProjectionComplete(generationC.intent.attempt_id);
+      const expected = store.prepareSource("ordinal-reopen-proof", []);
+      expect(() =>
+        store.beginCompactionSourceRelease({
+          attemptId: generationA.intent.attempt_id,
+          nowMs: Number.MAX_SAFE_INTEGER,
+        }),
+      ).toThrow(/descendant_compaction reference ordinal-c|ordinal-c.*live ordinal/i);
+      expect(readFileSync(store.rolloutPath, "utf8")).toContain("source one");
+      store.close();
+      const reopened = openStore("transitive-ordinal-prune", {
+        resume: true,
+        nowMilliseconds: () => nowMs,
+      }, cwd);
+      try {
+        const actual = reopened.prepareSource("ordinal-reopen-proof", []);
+        expect(actual.source.source_sha256).toBe(expected.source.source_sha256);
+        expect(actual.source.active_history_refs).toEqual(
+          expected.source.active_history_refs,
+        );
+        expect(actual.messages).toEqual(expected.messages);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      store.close();
+    }
+  });
+
   it("resumes finalization after a crash following physical source pruning", () => {
+    let nowMs = Date.now();
     const store = openStore("prune-crash", {
+      nowMilliseconds: () => nowMs,
       afterCompactionSourcePruneRewriteForTestingOnly: () => {
         throw new Error("crash after physical prune");
       },
@@ -745,6 +923,7 @@ describe("RolloutStore transactional compaction", () => {
       const transaction = commitSmallCompaction(store, "prune-crash-attempt");
       store.markProjectionComplete(transaction.intent.attempt_id);
       const releaseAt = transaction.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS;
+      nowMs = releaseAt;
       expect(() =>
         store.beginCompactionSourceRelease({
           attemptId: transaction.intent.attempt_id,
@@ -762,6 +941,52 @@ describe("RolloutStore transactional compaction", () => {
       store.close();
     }
   });
+
+  it("rebuilds canonical compaction authority after complete SQLite loss", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    temporaryWorkspaces.push(cwd);
+    let nowMs = Date.now();
+    const sessionId = "canonical-db-rebuild";
+    const store = openStore(sessionId, { nowMilliseconds: () => nowMs }, cwd);
+    let attemptId = "";
+    let releaseAt = 0;
+    try {
+      const transaction = commitSmallCompaction(store, "canonical-db-attempt");
+      attemptId = transaction.intent.attempt_id;
+      store.markProjectionComplete(attemptId);
+      store.markCleanupComplete(attemptId);
+      releaseAt = transaction.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS;
+    } finally {
+      store.close();
+    }
+
+    const { stateDbPath } = resolveStateDatabasePaths({ cwd });
+    unlinkSync(stateDbPath);
+    for (const suffix of ["-wal", "-shm"]) {
+      try {
+        unlinkSync(`${stateDbPath}${suffix}`);
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+          throw error;
+        }
+      }
+    }
+
+    const reopened = openStore(sessionId, {
+      resume: true,
+      nowMilliseconds: () => nowMs,
+    }, cwd);
+    try {
+      expect(() => reopened.assertCompactionProjectionReady()).not.toThrow();
+      nowMs = releaseAt;
+      expect(() => reopened.beginCompactionSourceRelease({
+        attemptId,
+        nowMs: Number.MAX_SAFE_INTEGER,
+      })).not.toThrow();
+    } finally {
+      reopened.close();
+    }
+  });
 });
 
 function openStore(
@@ -770,6 +995,7 @@ function openStore(
     readonly afterCompactionCommitAppendForTestingOnly?: () => void;
     readonly afterCompactionSourcePruneRewriteForTestingOnly?: () => void;
     readonly afterCompactionRollbackAppendForTestingOnly?: () => void;
+    readonly nowMilliseconds?: () => number;
     readonly resume?: boolean;
   } = {},
   existingCwd?: string,
@@ -1393,7 +1619,7 @@ function appendCompactionAdmissionLifecycle(
               sequence,
               eventId,
               timestamp,
-              runId: intent.source.session_id,
+              runId: intent.attempt_id,
               stepId,
               kind: "model_turn",
               event,
@@ -1404,5 +1630,45 @@ function appendCompactionAdmissionLifecycle(
         { durable: true },
       );
     }
+  }
+}
+
+function seedOrdinalGuardPin(
+  cwd: string,
+  sourceIntent: CompactionIntentV1,
+  attemptId: string,
+  sequence: number,
+): void {
+  const digest = "a".repeat(64);
+  const driver = openStateDatabases({ cwd });
+  try {
+    new CompactionRetentionRepository(driver).createPreparingPin({
+      ...sourceIntent,
+      attempt_id: attemptId,
+      recorded_at_ms: sourceIntent.recorded_at_ms + 1,
+      source: {
+        ...sourceIntent.source,
+        attempt_id: attemptId,
+        first_sequence: sequence,
+        last_sequence: sequence,
+        source_sha256: digest,
+        source_bytes: 1,
+        history_digest: digest,
+        active_history_refs: [{
+          kind: "rollout_span",
+          ref_id: `${attemptId}:guard`,
+          source_binding: sourceIntent.source.source_binding,
+          first_sequence: sequence,
+          last_sequence: sequence,
+          sha256: digest,
+          history_index: 0,
+          record_message_index: 0,
+          encoded_bytes: 1,
+        }],
+      },
+      selected_history_indexes: [0],
+    });
+  } finally {
+    driver.close();
   }
 }
