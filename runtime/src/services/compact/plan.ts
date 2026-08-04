@@ -22,7 +22,6 @@ import {
   MAX_COMPACTION_TOTAL_INPUT_TOKENS,
   MAX_COMPACTION_TOOL_PAIRS_PER_OUTPUT,
   type CompactionSourceAuthorityV1,
-  type CompactionProjectionMessageV1,
   type CompactionToolPairV1,
   type RolloutSpanRefV1,
   CompactionCannotReduceError,
@@ -1070,35 +1069,6 @@ export function canonicalCompactionSourceMessages(
   messages: readonly RuntimeMessage[],
 ): readonly unknown[] {
   return messagesForDigest(messages);
-}
-
-/** Canonical digest projection for already-persisted rollback messages. */
-export function canonicalCompactionProjectionMessages(
-  messages: readonly CompactionProjectionMessageV1[],
-): readonly unknown[] {
-  return messages.map((message) => ({
-    role: message.role,
-    content: fromRuntimeMessageContent(message.content),
-    ...(message.toolCallId !== undefined
-      ? { tool_call_id: message.toolCallId }
-      : {}),
-    ...(message.toolName !== undefined ? { tool_name: message.toolName } : {}),
-    ...(message.toolCalls !== undefined
-      ? {
-          tool_calls: message.toolCalls.map((call) => ({
-            id: call.id,
-            name: call.name,
-            arguments: call.arguments ?? "",
-          })),
-        }
-      : {}),
-    ...(message.toolResultIntegrity !== undefined
-      ? { tool_result_integrity: message.toolResultIntegrity }
-      : {}),
-    ...(message.agentInvocation !== undefined
-      ? { agent_invocation: message.agentInvocation }
-      : {}),
-  }));
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {

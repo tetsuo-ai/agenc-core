@@ -50,7 +50,7 @@ import {
   validateCompactionProvenance,
   verifyCompactionSummaryDigest,
 } from "../services/compact/summary-v1.js";
-import { canonicalCompactionProjectionMessages } from "../services/compact/plan.js";
+import { canonicalCompactionProjectionMessages } from "../services/compact/projection-digest.js";
 import { verifyToolResultIntegrity } from "./tool-result-integrity.js";
 import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import {
