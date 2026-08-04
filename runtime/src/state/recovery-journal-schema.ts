@@ -1324,6 +1324,9 @@ const ROLLOUT_PAYLOAD_VALIDATORS = defineRolloutPayloadValidators({
     },
   ),
   compaction_intent: compactionPayloadValidator("compaction_intent"),
+  compaction_payload_chunk: compactionPayloadValidator(
+    "compaction_payload_chunk",
+  ),
   compaction_failed: compactionPayloadValidator("compaction_failed"),
   compaction_committed: compactionPayloadValidator("compaction_committed"),
   compaction_cleanup_pending: compactionPayloadValidator(
@@ -1331,6 +1334,9 @@ const ROLLOUT_PAYLOAD_VALIDATORS = defineRolloutPayloadValidators({
   ),
   compaction_rollback_committed: compactionPayloadValidator(
     "compaction_rollback_committed",
+  ),
+  compaction_retention_extended: compactionPayloadValidator(
+    "compaction_retention_extended",
   ),
   compaction_source_release: compactionPayloadValidator(
     "compaction_source_release",

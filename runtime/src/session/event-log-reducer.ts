@@ -220,8 +220,10 @@ export function reduce(
       };
 
     case "compaction_intent":
+    case "compaction_payload_chunk":
     case "compaction_failed":
     case "compaction_cleanup_pending":
+    case "compaction_retention_extended":
     case "compaction_source_release":
       return { state, report: {} };
 

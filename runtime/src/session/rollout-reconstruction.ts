@@ -769,8 +769,10 @@ export function reconstructFromRollout(
       case "session_meta":
       case "session_state":
       case "compaction_intent":
+      case "compaction_payload_chunk":
       case "compaction_failed":
       case "compaction_cleanup_pending":
+      case "compaction_retention_extended":
       case "compaction_source_release":
         break;
     }

@@ -35,6 +35,14 @@ export const COMPACTION_ACCOUNTING_DIGEST_DOMAIN =
   "agenc.compaction-accounting.v1\0" as const;
 export const COMPACTION_SUMMARY_DAG_DIGEST_DOMAIN =
   "agenc.compaction-summary-dag.v1\0" as const;
+export const COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN =
+  "agenc.compaction-retention-extension.v1\0" as const;
+export const COMPACTION_PAYLOAD_DIGEST_DOMAIN =
+  "agenc.compaction-payload.v1\0" as const;
+export const COMPACTION_PAYLOAD_CHUNK_DIGEST_DOMAIN =
+  "agenc.compaction-payload-chunk.v1\0" as const;
+export const COMPACTION_PAYLOAD_MANIFEST_DIGEST_DOMAIN =
+  "agenc.compaction-payload-manifest.v1\0" as const;
 
 export const MAX_COMPACTION_PINS_PER_SESSION = 128;
 export const MAX_COMPACTION_ACTIVE_PINS_GLOBAL = 4_096;
@@ -57,7 +65,15 @@ export const MAX_COMPACTION_PROVIDER_CALLS = 73;
 export const MAX_COMPACTION_TOTAL_INPUT_TOKENS = 4_000_000;
 export const MAX_COMPACTION_INTERMEDIATE_TOKENS = 8_192;
 export const MAX_COMPACTION_WALL_MS = 300_000;
+export const MAX_COMPACTION_ABORT_QUIESCENCE_MS = 5_000;
 export const MAX_COMPACTION_FOCUS_UTF8_BYTES = 16_384;
+/** Canonical JSONL record ceiling shared with strict restart recovery. */
+export const MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES = 4_194_304;
+/** Reserved commit space for deterministic post-summary hook projections. */
+export const MAX_COMPACTION_POST_HOOK_UTF8_BYTES = 65_536;
+export const COMPACTION_PAYLOAD_FORMAT_VERSION = 1 as const;
+export const MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES = 134_217_728;
+export const MAX_COMPACTION_PAYLOAD_CHUNKS = 256;
 
 export const MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL = 4_194_304;
 export const MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL = 67_108_864;
@@ -74,6 +90,7 @@ export const MAX_COMPACTION_TOOL_PAIRS_PER_OUTPUT = 4_096;
 export const MAX_COMPACTION_RECORD_TEXT_UTF8_BYTES = 65_536;
 export const MAX_COMPACTION_RECORD_ID_UTF8_BYTES = 1_024;
 export const MAX_COMPACTION_SOURCE_REF_ID_UTF8_BYTES = 1_024;
+export const MAX_COMPACTION_SOURCE_BINDING_UTF8_BYTES = 4_096;
 export const MAX_COMPACTION_ATTEMPT_ID_UTF8_BYTES = 1_024;
 
 export const MIN_COMPACTION_ABSOLUTE_TOKEN_SAVINGS = 1_024;
@@ -101,6 +118,47 @@ export interface CompactionActiveHistoryRefV1 extends RolloutSpanRefV1 {
   readonly history_index: number;
   readonly record_message_index: number;
   readonly encoded_bytes: number;
+}
+
+/**
+ * Compact persisted form. Attempt id, source binding, kind, history index,
+ * and the single-record first/last sequence relation are carried once or
+ * derived by array position during deterministic hydration.
+ */
+export interface CompactionActiveHistoryEntryV1 {
+  readonly sequence: number;
+  readonly record_message_index: number;
+  readonly encoded_bytes: number;
+  readonly sha256: string;
+}
+
+export type CompactionPayloadKind =
+  | "active_history_refs"
+  | "source_history"
+  | "summary_dag"
+  | "replacement_history";
+
+export interface CompactionPayloadManifestV1 {
+  readonly version: typeof COMPACTION_PAYLOAD_FORMAT_VERSION;
+  readonly attempt_id: string;
+  readonly payload_kind: CompactionPayloadKind;
+  readonly payload_sha256: string;
+  readonly canonical_utf8_bytes: number;
+  readonly item_count: number;
+  readonly chunk_count: number;
+  readonly final_chunk_sha256: string;
+  readonly manifest_sha256: string;
+}
+
+export interface CompactionPayloadChunkV1 extends CompactionEventBaseV1 {
+  readonly payload_kind: CompactionPayloadKind;
+  readonly payload_sha256: string;
+  readonly chunk_index: number;
+  readonly chunk_count: number;
+  readonly previous_chunk_sha256: string;
+  readonly fragment_utf8_bytes: number;
+  readonly canonical_json_fragment: string;
+  readonly chunk_sha256: string;
 }
 
 export interface CompactionSummaryRefV1 {
@@ -308,6 +366,17 @@ export interface CompactionSourceReleaseV1 extends CompactionEventBaseV1 {
   readonly reference_scan_generation: number;
 }
 
+/** Append-only operator extension of an already committed rollback window. */
+export interface CompactionRetentionExtendedV1 extends CompactionEventBaseV1 {
+  readonly commit_sha256: string;
+  readonly source_sha256: string;
+  readonly source_session_id: string;
+  readonly source_epoch: number;
+  readonly previous_retention_deadline_ms: number;
+  readonly effective_retention_deadline_ms: number;
+  readonly extension_sha256: string;
+}
+
 export interface CompactionPreparedSourceV1 {
   readonly source: CompactionSourceAuthorityV1;
   readonly messages: readonly RuntimeMessage[];
@@ -323,9 +392,17 @@ export interface CompactionCommitInputV1 {
   readonly committed_at_ms: number;
 }
 
+/** Exclusive durable-owner lease for one compaction transaction. */
+export interface CompactionTransactionLease {
+  release(): void | Promise<void>;
+}
+
 export interface CompactionTransactionAdapter {
   readonly sessionId: string;
   readonly epoch: number;
+  acquireCompactionLease(
+    attemptId: string,
+  ): CompactionTransactionLease | Promise<CompactionTransactionLease>;
   prepareSource(
     attemptId: string,
     messages: readonly RuntimeMessage[],

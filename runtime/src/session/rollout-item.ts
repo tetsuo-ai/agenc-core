@@ -25,7 +25,9 @@ import type {
   CompactionCommittedV1,
   CompactionFailedV1,
   CompactionIntentV1,
+  CompactionPayloadChunkV1,
   CompactionRollbackCommittedV1,
+  CompactionRetentionExtendedV1,
   CompactionSourceReleaseV1,
 } from "../services/compact/transaction-types.js";
 import {
@@ -147,6 +149,11 @@ export type RolloutItem =
       readonly eventVersion?: number;
     }
   | {
+      readonly type: "compaction_payload_chunk";
+      readonly payload: CompactionPayloadChunkV1;
+      readonly eventVersion?: number;
+    }
+  | {
       readonly type: "compaction_failed";
       readonly payload: CompactionFailedV1;
       readonly eventVersion?: number;
@@ -164,6 +171,11 @@ export type RolloutItem =
   | {
       readonly type: "compaction_rollback_committed";
       readonly payload: CompactionRollbackCommittedV1;
+      readonly eventVersion?: number;
+    }
+  | {
+      readonly type: "compaction_retention_extended";
+      readonly payload: CompactionRetentionExtendedV1;
       readonly eventVersion?: number;
     }
   | {
@@ -187,10 +199,12 @@ const KNOWN_ROLLOUT_TYPES = Object.freeze(
     "turn_context",
     "event_msg",
     "compaction_intent",
+    "compaction_payload_chunk",
     "compaction_failed",
     "compaction_committed",
     "compaction_cleanup_pending",
     "compaction_rollback_committed",
+    "compaction_retention_extended",
     "compaction_source_release",
     "unknown",
   ]),

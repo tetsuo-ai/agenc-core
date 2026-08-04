@@ -432,6 +432,8 @@ describe("strict canonical journal contract", () => {
       "compaction_committed",
       "compaction_failed",
       "compaction_intent",
+      "compaction_payload_chunk",
+      "compaction_retention_extended",
       "compaction_rollback_committed",
       "compaction_source_release",
       "event_msg",

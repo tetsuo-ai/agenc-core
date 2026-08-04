@@ -21,7 +21,12 @@ import {
   isCanonicalEventPayload,
   isCanonicalRolloutPayload,
 } from "./recovery-journal-schema.js";
-import { COMPACTION_ACCOUNTING_DIGEST_DOMAIN } from "../services/compact/transaction-types.js";
+import {
+  COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
+  MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
+  COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN,
+  type CompactionPayloadKind,
+} from "../services/compact/transaction-types.js";
 import {
   canonicalizeJson,
   digestWithDomain,
@@ -91,18 +96,22 @@ const KNOWN_CANONICAL_TYPES = new Set<string>([
   "turn_context",
   "event_msg",
   "compaction_intent",
+  "compaction_payload_chunk",
   "compaction_failed",
   "compaction_committed",
   "compaction_cleanup_pending",
   "compaction_rollback_committed",
+  "compaction_retention_extended",
   "compaction_source_release",
 ]);
 const COMPACTION_CANONICAL_TYPES = new Set<string>([
   "compaction_intent",
+  "compaction_payload_chunk",
   "compaction_failed",
   "compaction_committed",
   "compaction_cleanup_pending",
   "compaction_rollback_committed",
+  "compaction_retention_extended",
   "compaction_source_release",
 ]);
 const LEGACY_EVENT_TYPE_ALIASES = new Set<string>([
@@ -141,8 +150,19 @@ export class StrictCanonicalJournalValidator {
     intent?: Readonly<Record<string, unknown>>;
     terminal?: "failed" | "committed";
     commitSha256?: string;
+    retentionDeadlineMs?: number;
+    retentionExtensionDigests?: Set<string>;
     rollback?: true;
     release?: true;
+    payloadChunks?: Map<CompactionPayloadKind, {
+      payloadSha256: string;
+      chunkCount: number;
+      nextIndex: number;
+      previousChunkSha256: string;
+      fragmentUtf8Bytes: number;
+      complete: boolean;
+    }>;
+    lastPayloadKind?: CompactionPayloadKind;
   }>();
 
   constructor(options: StrictCanonicalJournalOptions = {}) {
@@ -436,7 +456,81 @@ export class StrictCanonicalJournalValidator {
         );
       }
       current.intent = payload;
+      current.payloadChunks = new Map();
       this.#compactionAttempts.set(attemptId, current);
+      return;
+    }
+    if (item.type === "compaction_payload_chunk") {
+      if (current.intent === undefined) {
+        this.#fail(
+          "identity_conflict",
+          "compaction payload chunk precedes its intent",
+          facts,
+        );
+      }
+      if (current.terminal !== undefined) {
+        this.#fail(
+          "identity_conflict",
+          "compaction payload chunk follows its terminal",
+          facts,
+        );
+      }
+      const kind = item.payload.payload_kind;
+      const chunks = current.payloadChunks ?? new Map();
+      const existing = chunks.get(kind);
+      const previousKindState = current.lastPayloadKind === undefined
+        ? undefined
+        : chunks.get(current.lastPayloadKind);
+      if (
+        previousKindState?.complete === false ||
+        current.lastPayloadKind !== undefined &&
+        current.lastPayloadKind !== kind &&
+        existing !== undefined
+      ) {
+        this.#fail(
+          "identity_conflict",
+          "compaction payload chunks are not contiguous by kind",
+          facts,
+        );
+      }
+      const state = existing ?? {
+        payloadSha256: item.payload.payload_sha256,
+        chunkCount: item.payload.chunk_count,
+        nextIndex: 0,
+        previousChunkSha256: "0".repeat(64),
+        fragmentUtf8Bytes: 0,
+        complete: false,
+      };
+      if (
+        state.complete ||
+        item.payload.payload_sha256 !== state.payloadSha256 ||
+        item.payload.chunk_count !== state.chunkCount ||
+        item.payload.chunk_index !== state.nextIndex ||
+        item.payload.previous_chunk_sha256 !== state.previousChunkSha256
+      ) {
+        this.#fail(
+          "identity_conflict",
+          "compaction payload chunk is duplicated, missing, reordered, or mismatched",
+          facts,
+        );
+      }
+      state.nextIndex += 1;
+      state.previousChunkSha256 = item.payload.chunk_sha256;
+      state.fragmentUtf8Bytes += item.payload.fragment_utf8_bytes;
+      state.complete = state.nextIndex === state.chunkCount;
+      if (
+        !Number.isSafeInteger(state.fragmentUtf8Bytes) ||
+        state.fragmentUtf8Bytes > MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES
+      ) {
+        this.#fail(
+          "source_byte_limit",
+          "compaction payload chunks exceed their aggregate byte limit",
+          facts,
+        );
+      }
+      chunks.set(kind, state);
+      current.payloadChunks = chunks;
+      current.lastPayloadKind = kind;
       return;
     }
     if (current.intent === undefined) {
@@ -447,6 +541,15 @@ export class StrictCanonicalJournalValidator {
         this.#fail("identity_conflict", "compaction attempt has conflicting terminals", facts);
       }
       if (item.type === "compaction_committed") {
+        if ([...(current.payloadChunks?.values() ?? [])].some(
+          (chunkState) => !chunkState.complete
+        )) {
+          this.#fail(
+            "identity_conflict",
+            "compaction commit follows an incomplete payload chunk chain",
+            facts,
+          );
+        }
         const source = payload.source as Readonly<Record<string, unknown>>;
         const intentSource = current.intent.source as Readonly<Record<string, unknown>>;
         for (const key of [
@@ -498,6 +601,8 @@ export class StrictCanonicalJournalValidator {
           COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
           payload,
         );
+        current.retentionDeadlineMs = payload.rollback_retention_deadline_ms as number;
+        current.retentionExtensionDigests = new Set();
       }
       return;
     }
@@ -514,6 +619,7 @@ export class StrictCanonicalJournalValidator {
     const intentSource = current.intent.source as Readonly<Record<string, unknown>>;
     if (
       (item.type === "compaction_rollback_committed" ||
+        item.type === "compaction_retention_extended" ||
         item.type === "compaction_source_release") &&
       (payload.source_sha256 !== intentSource.source_sha256 ||
         payload.source_session_id !== intentSource.session_id ||
@@ -552,9 +658,56 @@ export class StrictCanonicalJournalValidator {
       }
       current.rollback = true;
     }
+    if (item.type === "compaction_retention_extended") {
+      if (current.release === true) {
+        this.#fail(
+          "identity_conflict",
+          "compaction retention extension follows source release",
+          facts,
+        );
+      }
+      if (
+        payload.previous_retention_deadline_ms !== current.retentionDeadlineMs ||
+        typeof payload.effective_retention_deadline_ms !== "number" ||
+        payload.effective_retention_deadline_ms <=
+          (current.retentionDeadlineMs ?? Number.MAX_SAFE_INTEGER)
+      ) {
+        this.#fail(
+          "identity_conflict",
+          "compaction retention extension does not continue its durable deadline",
+          facts,
+        );
+      }
+      const extensionSha256 = payload.extension_sha256;
+      const extensionMaterial = { ...payload };
+      delete extensionMaterial.extension_sha256;
+      if (
+        typeof extensionSha256 !== "string" ||
+        extensionSha256 !== digestWithDomain(
+          COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN,
+          extensionMaterial,
+        ) ||
+        current.retentionExtensionDigests?.has(extensionSha256) === true
+      ) {
+        this.#fail(
+          "identity_conflict",
+          "compaction retention extension digest is invalid or duplicated",
+          facts,
+        );
+      }
+      current.retentionExtensionDigests?.add(extensionSha256);
+      current.retentionDeadlineMs = payload.effective_retention_deadline_ms;
+    }
     if (item.type === "compaction_source_release") {
       if (current.release === true) {
         this.#fail("identity_conflict", "duplicate compaction source release", facts);
+      }
+      if (payload.retention_deadline_ms !== current.retentionDeadlineMs) {
+        this.#fail(
+          "identity_conflict",
+          "compaction source release does not bind the effective retention deadline",
+          facts,
+        );
       }
       current.release = true;
     }

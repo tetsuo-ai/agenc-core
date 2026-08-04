@@ -1,6 +1,7 @@
 import {
   COMPACTION_EVENT_FORMAT_VERSION,
   COMPACTION_READER_RUNTIME_CAPABILITY,
+  COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN,
   COMPACTION_ROLLBACK_RETENTION_MS,
   COMPACTION_SUMMARY_KIND,
   COMPACTION_SUMMARY_DAG_DIGEST_DOMAIN,
@@ -8,9 +9,15 @@ import {
   COMPACTION_SUMMARY_VERSION,
   MAX_COMPACTION_SOURCE_BYTES,
   MAX_COMPACTION_SOURCE_MESSAGES,
+  MAX_COMPACTION_SOURCE_BINDING_UTF8_BYTES,
+  MAX_COMPACTION_SOURCE_REF_ID_UTF8_BYTES,
   MAX_COMPACTION_PROVIDER_CALLS,
   MAX_COMPACTION_REDUCTION_LEVELS,
   MAX_COMPACTION_FAN_IN,
+  MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES,
+  COMPACTION_PAYLOAD_FORMAT_VERSION,
+  MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
+  MAX_COMPACTION_PAYLOAD_CHUNKS,
   MIN_COMPACTION_ABSOLUTE_TOKEN_SAVINGS,
   MIN_COMPACTION_RELATIVE_TOKEN_SAVINGS,
   type CompactionCleanupPendingV1,
@@ -18,6 +25,10 @@ import {
   type CompactionFailedV1,
   type CompactionIntentV1,
   type CompactionProjectionMessageV1,
+  type CompactionPayloadChunkV1,
+  type CompactionPayloadKind,
+  type CompactionPayloadManifestV1,
+  type CompactionRetentionExtendedV1,
   type CompactionRollbackCommittedV1,
   type CompactionSourceAuthorityV1,
   type CompactionSourceRefV1,
@@ -26,6 +37,10 @@ import {
   type CompactionSummaryDagV1,
   type CompactionToolPairV1,
 } from "../services/compact/transaction-types.js";
+import {
+  verifyCompactionPayloadChunkV1,
+  verifyCompactionPayloadManifestV1,
+} from "../services/compact/payload-manifest.js";
 import {
   digestWithDomain,
   validateProgrammaticCompactionBodyV1,
@@ -44,10 +59,12 @@ import { gte as semverGte } from "../utils/semver.js";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const COMPACTION_EVENT_TYPES = Object.freeze([
   "compaction_intent",
+  "compaction_payload_chunk",
   "compaction_failed",
   "compaction_committed",
   "compaction_cleanup_pending",
   "compaction_rollback_committed",
+  "compaction_retention_extended",
   "compaction_source_release",
 ] as const);
 
@@ -55,10 +72,12 @@ export type CompactionRolloutType = (typeof COMPACTION_EVENT_TYPES)[number];
 
 export type CompactionRolloutPayload =
   | CompactionIntentV1
+  | CompactionPayloadChunkV1
   | CompactionFailedV1
   | CompactionCommittedV1
   | CompactionCleanupPendingV1
   | CompactionRollbackCommittedV1
+  | CompactionRetentionExtendedV1
   | CompactionSourceReleaseV1;
 
 export function isCompactionRolloutType(value: string): value is CompactionRolloutType {
@@ -73,6 +92,8 @@ export function readCompactionRolloutPayload(
   switch (type) {
     case "compaction_intent":
       return readIntent(value);
+    case "compaction_payload_chunk":
+      return readPayloadChunk(value);
     case "compaction_failed":
       return readFailure(value);
     case "compaction_committed":
@@ -81,9 +102,130 @@ export function readCompactionRolloutPayload(
       return readCleanupPending(value);
     case "compaction_rollback_committed":
       return readRollback(value);
+    case "compaction_retention_extended":
+      return readRetentionExtension(value);
     case "compaction_source_release":
       return readRelease(value);
   }
+}
+
+function readPayloadChunk(value: unknown): CompactionPayloadChunkV1 {
+  const record = exact(value, [
+    ...baseKeys(),
+    "payload_kind",
+    "payload_sha256",
+    "chunk_index",
+    "chunk_count",
+    "previous_chunk_sha256",
+    "fragment_utf8_bytes",
+    "canonical_json_fragment",
+    "chunk_sha256",
+  ]);
+  const chunkCount = integer(
+    record.chunk_count,
+    "chunk_count",
+    1,
+    MAX_COMPACTION_PAYLOAD_CHUNKS,
+  );
+  const chunk: CompactionPayloadChunkV1 = {
+    ...readBase(record),
+    payload_kind: readPayloadKind(record.payload_kind),
+    payload_sha256: digest(record.payload_sha256, "payload_sha256"),
+    chunk_index: integer(record.chunk_index, "chunk_index", 0, chunkCount - 1),
+    chunk_count: chunkCount,
+    previous_chunk_sha256: digest(
+      record.previous_chunk_sha256,
+      "previous_chunk_sha256",
+    ),
+    fragment_utf8_bytes: integer(
+      record.fragment_utf8_bytes,
+      "fragment_utf8_bytes",
+      0,
+      MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES,
+    ),
+    canonical_json_fragment: boundedText(
+      record.canonical_json_fragment,
+      "canonical_json_fragment",
+      MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES,
+    ),
+    chunk_sha256: digest(record.chunk_sha256, "chunk_sha256"),
+  };
+  if (
+    chunk.chunk_index === 0 &&
+    chunk.previous_chunk_sha256 !== "0".repeat(64)
+  ) {
+    throw malformed("first payload chunk has a predecessor");
+  }
+  verifyCompactionPayloadChunkV1(chunk);
+  return chunk;
+}
+
+export function readCompactionPayloadManifestV1(
+  value: unknown,
+  expectedKind?: CompactionPayloadKind,
+): CompactionPayloadManifestV1 {
+  const record = exact(value, [
+    "version",
+    "attempt_id",
+    "payload_kind",
+    "payload_sha256",
+    "canonical_utf8_bytes",
+    "item_count",
+    "chunk_count",
+    "final_chunk_sha256",
+    "manifest_sha256",
+  ]);
+  if (record.version !== COMPACTION_PAYLOAD_FORMAT_VERSION) {
+    throw malformed("unsupported compaction payload manifest version");
+  }
+  const payloadKind = readPayloadKind(record.payload_kind);
+  if (expectedKind !== undefined && payloadKind !== expectedKind) {
+    throw malformed("compaction payload manifest has the wrong kind");
+  }
+  const manifest: CompactionPayloadManifestV1 = {
+    version: COMPACTION_PAYLOAD_FORMAT_VERSION,
+    attempt_id: text(record.attempt_id, "attempt_id"),
+    payload_kind: payloadKind,
+    payload_sha256: digest(record.payload_sha256, "payload_sha256"),
+    canonical_utf8_bytes: integer(
+      record.canonical_utf8_bytes,
+      "canonical_utf8_bytes",
+      0,
+      MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
+    ),
+    item_count: integer(
+      record.item_count,
+      "item_count",
+      0,
+      MAX_COMPACTION_SOURCE_MESSAGES + 8_192,
+    ),
+    chunk_count: integer(
+      record.chunk_count,
+      "chunk_count",
+      1,
+      MAX_COMPACTION_PAYLOAD_CHUNKS,
+    ),
+    final_chunk_sha256: digest(
+      record.final_chunk_sha256,
+      "final_chunk_sha256",
+    ),
+    manifest_sha256: digest(record.manifest_sha256, "manifest_sha256"),
+  };
+  verifyCompactionPayloadManifestV1(manifest);
+  return manifest;
+}
+
+function readPayloadKind(value: unknown): CompactionPayloadKind {
+  const kind = text(value, "payload_kind");
+  if (
+    kind !== "active_history_refs" &&
+    kind !== "source_history" &&
+    kind !== "summary_dag" &&
+    kind !== "replacement_history"
+  ) {
+    throw malformed("unsupported compaction payload kind");
+  }
+  return kind;
 }
 
 function readIntent(value: unknown): CompactionIntentV1 {
@@ -679,6 +821,50 @@ function readRelease(value: unknown): CompactionSourceReleaseV1 {
   };
 }
 
+function readRetentionExtension(value: unknown): CompactionRetentionExtendedV1 {
+  const record = exact(value, [
+    ...baseKeys(),
+    "commit_sha256",
+    "source_sha256",
+    "source_session_id",
+    "source_epoch",
+    "previous_retention_deadline_ms",
+    "effective_retention_deadline_ms",
+    "extension_sha256",
+  ]);
+  const withoutDigest = {
+    ...readBase(record),
+    commit_sha256: digest(record.commit_sha256, "commit_sha256"),
+    source_sha256: digest(record.source_sha256, "source_sha256"),
+    source_session_id: text(record.source_session_id, "source_session_id"),
+    source_epoch: integer(record.source_epoch, "source_epoch", 1),
+    previous_retention_deadline_ms: integer(
+      record.previous_retention_deadline_ms,
+      "previous_retention_deadline_ms",
+      0,
+    ),
+    effective_retention_deadline_ms: integer(
+      record.effective_retention_deadline_ms,
+      "effective_retention_deadline_ms",
+      1,
+    ),
+  };
+  if (
+    withoutDigest.effective_retention_deadline_ms <=
+      withoutDigest.previous_retention_deadline_ms
+  ) {
+    throw malformed("retention extension must strictly increase its deadline");
+  }
+  const extensionSha256 = digest(record.extension_sha256, "extension_sha256");
+  if (
+    extensionSha256 !==
+    digestWithDomain(COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN, withoutDigest)
+  ) {
+    throw malformed("retention extension digest mismatch");
+  }
+  return { ...withoutDigest, extension_sha256: extensionSha256 };
+}
+
 function readSummary(value: unknown): CompactionSummaryV1 {
   const record = exact(value, [
     "version", "kind", "stage", "attempt_id", "policy_digest",
@@ -740,15 +926,27 @@ function readSourceRef(value: unknown): CompactionSourceRefV1 {
       throw malformed("rollout span contributing_ref_ids is invalid");
     }
     const contributingRefIds = record.contributing_ref_ids.map((candidate) =>
-      text(candidate, "contributing_ref_ids entry")
+      boundedText(
+        candidate,
+        "contributing_ref_ids entry",
+        MAX_COMPACTION_SOURCE_REF_ID_UTF8_BYTES,
+      )
     );
     if (new Set(contributingRefIds).size !== contributingRefIds.length) {
       throw malformed("rollout span contributing_ref_ids contains duplicates");
     }
     return {
       kind: "rollout_span",
-      ref_id: text(record.ref_id, "ref_id"),
-      source_binding: text(record.source_binding, "source_binding"),
+      ref_id: boundedText(
+        record.ref_id,
+        "ref_id",
+        MAX_COMPACTION_SOURCE_REF_ID_UTF8_BYTES,
+      ),
+      source_binding: boundedText(
+        record.source_binding,
+        "source_binding",
+        MAX_COMPACTION_SOURCE_BINDING_UTF8_BYTES,
+      ),
       first_sequence: integer(record.first_sequence, "first_sequence", 1),
       last_sequence: integer(record.last_sequence, "last_sequence", 1),
       sha256: digest(record.sha256, "sha256"),
@@ -761,7 +959,11 @@ function readSourceRef(value: unknown): CompactionSourceRefV1 {
     exact(record, ["kind", "ref_id", "sha256"]);
     return {
       kind: "compaction_summary",
-      ref_id: text(record.ref_id, "ref_id"),
+      ref_id: boundedText(
+        record.ref_id,
+        "ref_id",
+        MAX_COMPACTION_SOURCE_REF_ID_UTF8_BYTES,
+      ),
       sha256: digest(record.sha256, "sha256"),
     };
   }
@@ -798,8 +1000,16 @@ function readSource(value: unknown): CompactionSourceAuthorityV1 {
     if (historyIndex !== index) throw malformed("active history refs are out of order");
     return {
       kind: "rollout_span" as const,
-      ref_id: text(ref.ref_id, "ref_id"),
-      source_binding: text(ref.source_binding, "source_binding"),
+      ref_id: boundedText(
+        ref.ref_id,
+        "ref_id",
+        MAX_COMPACTION_SOURCE_REF_ID_UTF8_BYTES,
+      ),
+      source_binding: boundedText(
+        ref.source_binding,
+        "source_binding",
+        MAX_COMPACTION_SOURCE_BINDING_UTF8_BYTES,
+      ),
       first_sequence: refFirst,
       last_sequence: refLast,
       sha256: digest(ref.sha256, "sha256"),
@@ -813,7 +1023,11 @@ function readSource(value: unknown): CompactionSourceAuthorityV1 {
       encoded_bytes: integer(ref.encoded_bytes, "encoded_bytes", 1),
     };
   });
-  const sourceBinding = text(record.source_binding, "source_binding");
+  const sourceBinding = boundedText(
+    record.source_binding,
+    "source_binding",
+    MAX_COMPACTION_SOURCE_BINDING_UTF8_BYTES,
+  );
   const uniqueRecordBytes = new Map<number, number>();
   for (const ref of activeHistoryRefs) {
     if (
