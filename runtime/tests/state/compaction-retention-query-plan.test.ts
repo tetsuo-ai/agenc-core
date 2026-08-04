@@ -39,7 +39,8 @@ describe("compaction retention ordered query plans", () => {
   it("uses bounded ordered indexes without temporary B-trees", () => {
     const plans = [
       {
-        index: "idx_compaction_pins_reconcile",
+        expectedSearch:
+          /SEARCH compaction_retention_pins USING (?:COVERING )?INDEX idx_compaction_pins_reconcile \(session_id=\? AND \(created_at_ms,attempt_id\)>\(\?,\?\)\)/,
         sql: `SELECT attempt_id FROM compaction_retention_pins
           INDEXED BY idx_compaction_pins_reconcile
           WHERE session_id = ? AND state != 'released'
@@ -49,7 +50,8 @@ describe("compaction retention ordered query plans", () => {
         parameters: [SESSION_ID, 0, "", 256],
       },
       {
-        index: "idx_compaction_pins_release_pending",
+        expectedSearch:
+          /SEARCH compaction_retention_pins USING (?:COVERING )?INDEX idx_compaction_pins_release_pending \(session_id=\?\)/,
         sql: `SELECT attempt_id FROM compaction_retention_pins
           INDEXED BY idx_compaction_pins_release_pending
           WHERE session_id = ? AND state = 'release_pending'
@@ -58,7 +60,8 @@ describe("compaction retention ordered query plans", () => {
         parameters: [SESSION_ID, 256],
       },
       {
-        index: "idx_compaction_pins_release_eligible",
+        expectedSearch:
+          /SEARCH compaction_retention_pins USING (?:COVERING )?INDEX idx_compaction_pins_release_eligible \(session_id=\? AND <expr><\?\)/,
         sql: `SELECT attempt_id FROM compaction_retention_pins
           INDEXED BY idx_compaction_pins_release_eligible
           WHERE session_id = ? AND state = 'committed_reference'
@@ -76,16 +79,18 @@ describe("compaction retention ordered query plans", () => {
         parameters: [SESSION_ID, 500, 256],
       },
       {
-        index: "idx_compaction_pins_released_gc",
+        expectedSearch:
+          /SEARCH compaction_retention_pins USING (?:COVERING )?INDEX idx_compaction_pins_released_gc \(released_at_ms>\?\)/,
         sql: `SELECT attempt_id FROM compaction_retention_pins
           INDEXED BY idx_compaction_pins_released_gc
-          WHERE state = 'released'
+          WHERE state = 'released' AND released_at_ms IS NOT NULL
           ORDER BY released_at_ms ASC, attempt_id ASC
           LIMIT ?`,
         parameters: [256],
       },
       {
-        index: "idx_compaction_references_active_descendant",
+        expectedSearch:
+          /SEARCH compaction_retention_references USING (?:COVERING )?INDEX idx_compaction_references_active_descendant \(reference_id=\?\)/,
         sql: `SELECT attempt_id FROM compaction_retention_references
           INDEXED BY idx_compaction_references_active_descendant
           WHERE reference_kind = 'descendant_compaction'
@@ -93,7 +98,8 @@ describe("compaction retention ordered query plans", () => {
         parameters: ["child"],
       },
       {
-        index: "idx_compaction_references_active_descendant",
+        expectedSearch:
+          /SEARCH compaction_retention_references USING (?:COVERING )?INDEX idx_compaction_references_active_descendant \(reference_id=\?\)/,
         sql: `UPDATE compaction_retention_references
           INDEXED BY idx_compaction_references_active_descendant
           SET released_at_ms = ?
@@ -105,7 +111,7 @@ describe("compaction retention ordered query plans", () => {
 
     for (const entry of plans) {
       const detail = explainQueryPlan(entry.sql, entry.parameters);
-      expect(detail).toContain(entry.index);
+      expect(detail).toMatch(entry.expectedSearch);
       expect(detail).not.toContain("USE TEMP B-TREE");
     }
   });
@@ -171,12 +177,21 @@ describe("compaction retention ordered query plans", () => {
       .toEqual(["pending-early", "pending-late", "eligible-early"]);
     expect(candidateIds(repository.listReleaseCandidates(SESSION_ID, 500, 1)))
       .toEqual(["pending-early"]);
+    expect(candidateIds(repository.listReleaseCandidates(SESSION_ID, 500, 0)))
+      .toEqual(["pending-early"]);
 
     driver.prepareState(
       "DELETE FROM compaction_retention_pins WHERE state = 'release_pending'",
     ).run();
     expect(candidateIds(repository.listReleaseCandidates(SESSION_ID, 500, 3)))
       .toEqual(["eligible-early", "eligible-a", "eligible-b"]);
+    expect(
+      repository.listReleaseCandidates(
+        SESSION_ID,
+        20_000,
+        Number.POSITIVE_INFINITY,
+      ),
+    ).toHaveLength(256);
   });
 
   it("advances reconciliation with a stable tuple cursor", () => {
@@ -231,13 +246,32 @@ describe("compaction retention ordered query plans", () => {
     });
     insertReference("released-a", "checkpoint", "retained-a", 10);
 
-    expect(repository.deleteReleasedHistory(1)).toBe(1);
+    expect(repository.deleteReleasedHistory(0)).toBe(1);
     expect(repository.get("released-a")).toBeUndefined();
     expect(referenceCount("released-a")).toBe(0);
     expect(repository.get("released-b")).toBeDefined();
     expect(repository.deleteReleasedHistory(1)).toBe(1);
     expect(repository.get("released-b")).toBeUndefined();
     expect(repository.get("released-newer")).toBeDefined();
+
+    driver.transactionImmediate(() => {
+      for (let index = 0; index < 300; index += 1) {
+        insertPin({
+          attemptId: `released-bulk-${index.toString().padStart(3, "0")}`,
+          state: "released",
+          retentionDeadlineMs: 300,
+          releaseTombstoneAtMs: 400,
+          releasedAtMs: 500,
+        });
+      }
+    });
+    expect(repository.deleteReleasedHistory(Number.POSITIVE_INFINITY)).toBe(256);
+    expect(
+      driver.prepareState<[], { readonly count: number }>(
+        `SELECT COUNT(*) AS count FROM compaction_retention_pins
+         WHERE state = 'released'`,
+      ).get()?.count,
+    ).toBe(45);
   });
 
   it("releases only active reverse descendant references", () => {
