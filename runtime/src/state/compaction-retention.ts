@@ -824,24 +824,46 @@ export class CompactionRetentionRepository {
     nowMs: number,
     limit: number,
   ): readonly CompactionPinRecord[] {
-    return this.driver
-      .prepareState<[string, number, number, number], CompactionPinRow>(
+    const boundedLimit = Math.max(1, Math.floor(limit));
+    // A release tombstone always resumes before a new release begins. Keeping
+    // the two ordered streams separate avoids an OR/CASE sort over pin history.
+    const releasePending = this.driver
+      .prepareState<[string, number], CompactionPinRow>(
         `${PIN_SELECT}
-         WHERE session_id = ? AND (
-           state = 'release_pending' OR (
-             state = 'committed_reference'
-             AND projection_state = 'complete' AND reference_count = 0
-             AND retention_deadline_ms IS NOT NULL
-             AND retention_deadline_ms <= ?
-             AND COALESCE(rollback_extended_until_ms, 0) <= ?
-           )
-         )
-         ORDER BY CASE WHEN state = 'release_pending' THEN 0 ELSE 1 END,
-                  retention_deadline_ms ASC, attempt_id ASC
+         INDEXED BY idx_compaction_pins_release_pending
+         WHERE session_id = ? AND state = 'release_pending'
+         ORDER BY retention_deadline_ms ASC, attempt_id ASC
          LIMIT ?`,
       )
-      .all(sessionId, nowMs, nowMs, Math.max(1, Math.floor(limit)))
-      .map(mapPin);
+      .all(sessionId, boundedLimit);
+    if (releasePending.length >= boundedLimit) {
+      return releasePending.map(mapPin);
+    }
+    // Range and order by the same indexed effective deadline so rows with a
+    // future rollback extension cannot occupy the scanned prefix.
+    const committed = this.driver
+      .prepareState<[string, number, number], CompactionPinRow>(
+        `${PIN_SELECT}
+         INDEXED BY idx_compaction_pins_release_eligible
+         WHERE session_id = ? AND state = 'committed_reference'
+           AND projection_state = 'complete' AND reference_count = 0
+           AND retention_deadline_ms IS NOT NULL
+           AND MAX(
+             retention_deadline_ms,
+             COALESCE(rollback_extended_until_ms, 0)
+           ) <= ?
+         ORDER BY MAX(
+           retention_deadline_ms,
+           COALESCE(rollback_extended_until_ms, 0)
+         ) ASC, attempt_id ASC
+         LIMIT ?`,
+      )
+      .all(
+        sessionId,
+        nowMs,
+        boundedLimit - releasePending.length,
+      );
+    return [...releasePending, ...committed].map(mapPin);
   }
 
   listActiveForSourceBinding(sourceBinding: string): readonly CompactionPinRecord[] {
@@ -912,16 +934,16 @@ export class CompactionRetentionRepository {
         attempt_id: EMPTY_CURSOR_ATTEMPT_ID,
       };
     return this.driver
-      .prepareState<[string, number, number, string, number], CompactionPinRow>(
+      .prepareState<[string, number, string, number], CompactionPinRow>(
         `${PIN_SELECT}
+         INDEXED BY idx_compaction_pins_reconcile
          WHERE session_id = ? AND state != 'released'
-           AND (created_at_ms > ? OR (created_at_ms = ? AND attempt_id > ?))
+           AND (created_at_ms, attempt_id) > (?, ?)
          ORDER BY created_at_ms ASC, attempt_id ASC
          LIMIT ?`,
       )
       .all(
         sessionId,
-        cursor.created_at_ms,
         cursor.created_at_ms,
         cursor.attempt_id,
         COMPACTION_RECONCILIATION_PAGE_SIZE,
@@ -975,6 +997,7 @@ export class CompactionRetentionRepository {
       const attempts = this.driver
         .prepareState<[number], { readonly attempt_id: string }>(
           `SELECT attempt_id FROM compaction_retention_pins
+           INDEXED BY idx_compaction_pins_released_gc
            WHERE state = 'released'
            ORDER BY released_at_ms ASC, attempt_id ASC
            LIMIT ?`,
@@ -1051,6 +1074,7 @@ export class CompactionRetentionRepository {
       >(
         `SELECT attempt_id
          FROM compaction_retention_references
+         INDEXED BY idx_compaction_references_active_descendant
          WHERE reference_kind = 'descendant_compaction'
            AND reference_id = ? AND released_at_ms IS NULL`,
       )
@@ -1059,6 +1083,7 @@ export class CompactionRetentionRepository {
     this.driver
       .prepareState<[number, string]>(
         `UPDATE compaction_retention_references
+         INDEXED BY idx_compaction_references_active_descendant
          SET released_at_ms = ?
          WHERE reference_kind = 'descendant_compaction'
            AND reference_id = ? AND released_at_ms IS NULL`,

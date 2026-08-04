@@ -106,15 +106,28 @@ CREATE TABLE compaction_retention_pins (
 );
 
 CREATE INDEX idx_compaction_pins_reconcile
-  ON compaction_retention_pins(state, created_at_ms, attempt_id);
+  ON compaction_retention_pins(session_id, created_at_ms, attempt_id)
+  WHERE state != 'released';
 CREATE INDEX idx_compaction_pins_session_quota
   ON compaction_retention_pins(session_id, state, attempt_id);
 CREATE INDEX idx_compaction_pins_global_bytes
   ON compaction_retention_pins(state, source_bytes, attempt_id);
-CREATE INDEX idx_compaction_pins_release
+CREATE INDEX idx_compaction_pins_release_pending
+  ON compaction_retention_pins(session_id, retention_deadline_ms, attempt_id)
+  WHERE state = 'release_pending';
+CREATE INDEX idx_compaction_pins_release_eligible
   ON compaction_retention_pins(
-    state, retention_deadline_ms, rollback_extended_until_ms, attempt_id
-  );
+    session_id,
+    MAX(retention_deadline_ms, COALESCE(rollback_extended_until_ms, 0)),
+    attempt_id
+  )
+  WHERE state = 'committed_reference'
+    AND projection_state = 'complete'
+    AND reference_count = 0
+    AND retention_deadline_ms IS NOT NULL;
+CREATE INDEX idx_compaction_pins_released_gc
+  ON compaction_retention_pins(released_at_ms, attempt_id)
+  WHERE state = 'released';
 CREATE INDEX idx_compaction_pins_source
   ON compaction_retention_pins(source_binding, state, attempt_id);
 
@@ -141,6 +154,10 @@ CREATE INDEX idx_compaction_references_active
   ON compaction_retention_references(
     attempt_id, released_at_ms, reference_kind, reference_id
   );
+CREATE INDEX idx_compaction_references_active_descendant
+  ON compaction_retention_references(reference_id, attempt_id)
+  WHERE reference_kind = 'descendant_compaction'
+    AND released_at_ms IS NULL;
 
 CREATE TABLE compaction_failure_guards (
   session_id TEXT NOT NULL,
