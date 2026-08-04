@@ -13,6 +13,7 @@ import {
   MAX_COMPACTION_CHUNKS,
   MAX_COMPACTION_FAN_IN,
   MAX_COMPACTION_INTERMEDIATE_TOKENS,
+  MAX_COMPACTION_RECORD_TEXT_UTF8_BYTES,
   MAX_COMPACTION_PROVIDER_CALLS,
   MAX_COMPACTION_REDUCTION_LEVELS,
   MAX_COMPACTION_SEMANTIC_UNITS,
@@ -118,20 +119,25 @@ export function buildCompactionMapReducePlan(
       "authoritative source/message mapping is incomplete",
     );
   }
-  const sourceBytes = Buffer.byteLength(canonicalizeJson(messagesForDigest(messages)), "utf8");
-  if (sourceBytes > MAX_COMPACTION_SOURCE_BYTES) {
-    throw new CompactionCannotReduceError(
-      "source_limit",
-      `compaction source exceeds ${MAX_COMPACTION_SOURCE_BYTES} UTF-8 bytes`,
-    );
-  }
   if (messages.length > MAX_COMPACTION_SOURCE_MESSAGES) {
     throw new CompactionCannotReduceError(
       "source_limit",
       `compaction source exceeds ${MAX_COMPACTION_SOURCE_MESSAGES} messages`,
     );
   }
-  const units = buildSemanticUnits(messages, options.source.session_id);
+  const sourceBytes = measureCanonicalSourceBytes(messages);
+  if (sourceBytes > MAX_COMPACTION_SOURCE_BYTES) {
+    throw new CompactionCannotReduceError(
+      "source_limit",
+      `compaction source exceeds ${MAX_COMPACTION_SOURCE_BYTES} UTF-8 bytes`,
+    );
+  }
+  const modelMessages = createCompactionModelProjection(messages);
+  const units = buildSemanticUnits(
+    modelMessages,
+    options.source.session_id,
+    messages,
+  );
   if (units.length > MAX_COMPACTION_SEMANTIC_UNITS) {
     throw new CompactionCannotReduceError(
       "source_limit",
@@ -496,6 +502,7 @@ export function accountCompactionCall(params: {
 function buildSemanticUnits(
   messages: readonly RuntimeMessage[],
   sourceSessionId: string,
+  authoritativeMessages: readonly RuntimeMessage[],
 ): readonly CompactionSemanticUnit[] {
   const units: CompactionSemanticUnit[] = [];
   const allToolCallIds = new Set<string>();
@@ -548,11 +555,15 @@ function buildSemanticUnits(
             "tool-result ordering or identity is not representable as one semantic unit",
           );
         }
+        const authoritativeResult = authoritativeMessages[index]!;
         const verification = verifyToolResultIntegrity({
-          integrity: result.runtimeOnly?.toolResultIntegrity,
+          integrity: authoritativeResult.runtimeOnly?.toolResultIntegrity,
           expectedRunId: sourceSessionId,
           toolCallId: callId,
-          content: result.content ?? result.message?.content ?? "",
+          content:
+            authoritativeResult.content ??
+            authoritativeResult.message?.content ??
+            "",
         });
         if (verification.status !== "valid") {
           throw new CompactionTransactionError(
@@ -594,6 +605,86 @@ function buildSemanticUnits(
     });
   }
   return units;
+}
+
+/**
+ * Build the untrusted provider-facing projection without releasing binary
+ * media, data URLs, or document bodies. Provenance continues to bind the
+ * untouched authoritative message and its canonical source ref.
+ */
+export function createCompactionModelProjection(
+  messages: readonly RuntimeMessage[],
+): readonly RuntimeMessage[] {
+  return messages.map((message) => {
+    const content = message.content ?? message.message?.content;
+    if (!Array.isArray(content)) return message;
+    const projectedContent = content.map(redactCompactionContentPart);
+    return {
+      ...message,
+      content: projectedContent,
+      ...(message.message === undefined
+        ? {}
+        : { message: { ...message.message, content: projectedContent } }),
+    };
+  });
+}
+
+function redactCompactionContentPart(part: unknown): unknown {
+  if (part === null || typeof part !== "object" || Array.isArray(part)) {
+    return { type: "text", text: mediaPlaceholder(part, "unknown") };
+  }
+  const record = part as Readonly<Record<string, unknown>>;
+  if (record.type === "text" && typeof record.text === "string") {
+    return { type: "text", text: record.text };
+  }
+  if (record.type === "document") {
+    const fallback = typeof record.fallbackText === "string"
+      ? truncateUtf8(record.fallbackText, MAX_COMPACTION_RECORD_TEXT_UTF8_BYTES)
+      : "";
+    const label = mediaPlaceholder(part, "document");
+    return {
+      type: "text",
+      text: fallback.length > 0 ? `${label}\n${fallback}` : label,
+    };
+  }
+  if (record.type === "image" || record.type === "image_url") {
+    return { type: "text", text: mediaPlaceholder(part, "image") };
+  }
+  return { type: "text", text: mediaPlaceholder(part, "unsupported-content") };
+}
+
+function mediaPlaceholder(value: unknown, kind: string): string {
+  return `[${kind} omitted from compaction model input; sha256:${sha256Hex(
+    canonicalizeJson(value),
+  )}]`;
+}
+
+function truncateUtf8(value: string, maximumBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maximumBytes) return value;
+  let bytes = 0;
+  let end = 0;
+  for (const codePoint of value) {
+    const codePointBytes = Buffer.byteLength(codePoint, "utf8");
+    if (bytes + codePointBytes > maximumBytes) break;
+    bytes += codePointBytes;
+    end += codePoint.length;
+  }
+  return value.slice(0, end);
+}
+
+function measureCanonicalSourceBytes(
+  messages: readonly RuntimeMessage[],
+): number {
+  let bytes = 2;
+  for (let index = 0; index < messages.length; index += 1) {
+    if (index > 0) bytes = safeSum(bytes, 1);
+    bytes = safeSum(
+      bytes,
+      Buffer.byteLength(canonicalizeJson(messageForDigest(messages[index]!)), "utf8"),
+    );
+    if (bytes > MAX_COMPACTION_SOURCE_BYTES) return bytes;
+  }
+  return bytes;
 }
 
 function structuredMessage(message: RuntimeMessage): StructuredMessageV1 {
@@ -776,8 +867,8 @@ export function compactionMapReduceTopology(
   return { levels, calls, reductionChildReferences: childReferences };
 }
 
-function messagesForDigest(messages: readonly RuntimeMessage[]): readonly unknown[] {
-  return messages.map((message) => ({
+function messageForDigest(message: RuntimeMessage): unknown {
+  return {
     role: roleOf(message),
     content: fromRuntimeMessageContent(
       message.content ?? message.message?.content ?? messageText(message),
@@ -799,7 +890,11 @@ function messagesForDigest(messages: readonly RuntimeMessage[]): readonly unknow
     ...(message.runtimeOnly?.agentInvocation !== undefined
       ? { agent_invocation: message.runtimeOnly.agentInvocation }
       : {}),
-  }));
+  };
+}
+
+function messagesForDigest(messages: readonly RuntimeMessage[]): readonly unknown[] {
+  return messages.map(messageForDigest);
 }
 
 export function canonicalCompactionSourceMessages(

@@ -40,10 +40,16 @@ import {
   COMPACTION_POLICY_DIGEST_DOMAIN,
   COMPACTION_SUMMARY_DAG_DIGEST_DOMAIN,
   MAX_COMPACTION_FOCUS_UTF8_BYTES,
+  MAX_COMPACTION_ABORT_QUIESCENCE_MS,
   MAX_COMPACTION_INTERMEDIATE_TOKENS,
   MAX_COMPACTION_OUTPUT_NODES_TOTAL,
+  MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL,
   MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL,
   MAX_COMPACTION_PROVIDER_CALLS,
+  MAX_COMPACTION_POST_HOOK_UTF8_BYTES,
+  MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
+  MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES,
+  MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES,
   MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT,
   MAX_COMPACTION_TOTAL_INPUT_TOKENS,
   MAX_COMPACTION_WALL_MS,
@@ -54,6 +60,8 @@ import {
   type CompactionIntentV1,
   type CompactionProjectionMessageV1,
   type CompactionPreparedSourceV1,
+  type CompactionCommitPayloadBundlesV1,
+  type CompactionSourcePayloadBundlesV1,
   type CompactionSourceRefV1,
   type CompactionStage,
   type CompactionSummaryRefV1,
@@ -61,6 +69,7 @@ import {
   type CompactionSummaryV1,
   type CompactionToolPairV1,
   type CompactionTransactionAdapter,
+  type CompactionTransactionLease,
   type CompactionTransactionMetadataV1,
   CompactionCannotReduceError,
   CompactionReconstructionRequiredError,
@@ -69,6 +78,11 @@ import {
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { estimateMessagesTokens } from "./_deps/runtime.js";
 import { COMPACTION_HISTORY_MARKER_VERSION } from "../../session/compaction-history-marker.js";
+import { bindExecutionAdmissionJournal } from "../../session/execution-admission-journal.js";
+import {
+  compactActiveHistoryEntries,
+  createCompactionPayloadBundleV1,
+} from "./payload-manifest.js";
 
 const COMPACTION_BOUNDARY_MESSAGE = "Conversation compacted transactionally";
 const COMPACTION_UNKNOWN_MODEL = "unknown";
@@ -102,7 +116,30 @@ interface CompactionDeadline {
   readonly context: CompactContext;
   assertActive(): void;
   wait<T>(work: Promise<T>): Promise<T>;
+  hasPendingWork(): boolean;
+  awaitQuiescence(): Promise<void>;
   dispose(): void;
+}
+
+interface CompactionAdmissionScope {
+  readonly context: CompactContext;
+  unbind(): void;
+}
+
+async function acquireCompactionTransactionLease(
+  adapter: CompactionTransactionAdapter,
+  attemptId: string,
+): Promise<CompactionTransactionLease> {
+  try {
+    return await adapter.acquireCompactionLease(attemptId);
+  } catch (error) {
+    if (error instanceof CompactionTransactionError) throw error;
+    throw new CompactionTransactionError(
+      "intent_failed",
+      "compaction already in progress",
+      { cause: error },
+    );
+  }
 }
 
 export function readCompactionTransactionAdapter(
@@ -116,6 +153,7 @@ export function readCompactionTransactionAdapter(
   if (candidate === null || typeof candidate !== "object") return undefined;
   const adapter = candidate as Partial<CompactionTransactionAdapter>;
   const methods: ReadonlyArray<keyof CompactionTransactionAdapter> = [
+    "acquireCompactionLease",
     "prepareSource",
     "failureCount",
     "pinAndRecordIntent",
@@ -137,24 +175,6 @@ export async function compactConversationTransactionally(
   context: CompactContext,
   options: TransactionalCompactionOptions,
 ): Promise<CompactionResult> {
-  const deadline = createCompactionDeadline(context);
-  try {
-    return await compactConversationTransactionBody(
-      deadline.context,
-      options,
-      deadline,
-    );
-  } finally {
-    deadline.dispose();
-  }
-}
-
-async function compactConversationTransactionBody(
-  context: CompactContext,
-  options: TransactionalCompactionOptions,
-  deadline: CompactionDeadline,
-): Promise<CompactionResult> {
-  deadline.assertActive();
   const adapter = readCompactionTransactionAdapter(context);
   if (adapter === undefined) {
     throw new CompactionTransactionError(
@@ -162,6 +182,75 @@ async function compactConversationTransactionBody(
       "durable compaction transaction adapter is unavailable",
     );
   }
+  const attemptId = `compact-${randomUUID()}`;
+  const lease = await acquireCompactionTransactionLease(adapter, attemptId);
+  let admissionScope: CompactionAdmissionScope;
+  try {
+    admissionScope = createCompactionAdmissionScope(context, attemptId);
+  } catch (error) {
+    await lease.release();
+    throw error;
+  }
+  const deadline = createCompactionDeadline(admissionScope.context);
+  try {
+    return await compactConversationTransactionBody(
+      deadline.context,
+      options,
+      deadline,
+      adapter,
+      attemptId,
+    );
+  } finally {
+    deadline.dispose();
+    if (deadline.hasPendingWork()) {
+      // A timed-out provider remains capable of emitting an admission tail.
+      // Retain both guards until its physical promise settles; a permanently
+      // stuck provider keeps the durable-owner lease poisoned for this process.
+      void deadline.awaitQuiescence().then(async () => {
+        admissionScope.unbind();
+        await lease.release();
+      }).catch(() => {
+        // Retaining the lease is safer than admitting a competing transaction.
+      });
+    } else {
+      admissionScope.unbind();
+      await lease.release();
+    }
+  }
+}
+
+function createCompactionAdmissionScope(
+  context: CompactContext,
+  attemptId: string,
+): CompactionAdmissionScope {
+  const session = context.admissionSession;
+  const parent = session?.services.executionAdmission;
+  if (session === undefined || parent === undefined) {
+    return { context, unbind: () => {} };
+  }
+  const child = parent.forSession({
+    runId: attemptId,
+    sessionId: session.conversationId,
+    parentRunId: parent.scope.runId,
+  });
+  const childSession = Object.assign(Object.create(session) as object, {
+    services: { ...session.services, executionAdmission: child },
+  }) as typeof session;
+  const unbind = bindExecutionAdmissionJournal(childSession, child);
+  return {
+    context: { ...context, admissionSession: childSession },
+    unbind,
+  };
+}
+
+async function compactConversationTransactionBody(
+  context: CompactContext,
+  options: TransactionalCompactionOptions,
+  deadline: CompactionDeadline,
+  adapter: CompactionTransactionAdapter,
+  attemptId: string,
+): Promise<CompactionResult> {
+  deadline.assertActive();
   const provider = context.provider;
   const session = context.admissionSession;
   if (provider === undefined) {
@@ -184,7 +273,6 @@ async function compactConversationTransactionBody(
   }
 
   const startedAt = performance.now();
-  const attemptId = `compact-${randomUUID()}`;
   const direction = options.direction ?? "from";
   if (
     Buffer.byteLength(options.customInstructions, "utf8") >
@@ -259,6 +347,21 @@ async function compactConversationTransactionBody(
     messageSourceRefs: selected.sourceRefs,
   });
   deadline.assertActive();
+  const rawBoundaryMarker = options.createBoundaryMarker();
+  const attachments =
+    (await deadline.wait(Promise.resolve(
+      context.deps?.createAttachments?.(
+        prepared.messages,
+        context,
+      ) ?? [],
+    ))) ?? [];
+  deadline.assertActive();
+  assertPlannedReplacementPayloadBounded({
+    messages: prepared.messages,
+    selectedIndexes,
+    rawBoundaryMarker,
+    attachments,
+  });
   const intentAtMs = Date.now();
   const intent: CompactionIntentV1 = {
     format_version: COMPACTION_EVENT_FORMAT_VERSION,
@@ -274,11 +377,15 @@ async function compactConversationTransactionBody(
     admission_required: true,
     planned_provider_calls: plan.planned_provider_calls,
   };
+  const sourcePayloadBundles = createSourcePayloadBundles(
+    prepared,
+    intentAtMs,
+  );
 
   let intentCommitted = false;
   let transactionCommitted = false;
   try {
-    adapter.pinAndRecordIntent(intent);
+    adapter.pinAndRecordIntent(intent, sourcePayloadBundles);
     intentCommitted = true;
     deadline.assertActive();
     const run = await deadline.wait(runSummaryTree({
@@ -295,7 +402,6 @@ async function compactConversationTransactionBody(
     }));
     deadline.assertActive();
     const narrative = renderSummaryBody(run.finalSummary);
-    const rawBoundaryMarker = options.createBoundaryMarker();
     const rawSummaryMessage = options.createSummaryMessage(
       canonicalizeJson({
         version: 1,
@@ -324,13 +430,6 @@ async function compactConversationTransactionBody(
         compactionHistory: { ...historyMarkerBase, kind: "summary" },
       },
     };
-    const attachments =
-      (await deadline.wait(Promise.resolve(
-        context.deps?.createAttachments?.(
-          prepared.messages,
-          context,
-        ) ?? [],
-      ))) ?? [];
     const hookResults =
       (await deadline.wait(Promise.resolve(
         context.deps?.createHookResults?.(narrative, context) ?? [],
@@ -354,16 +453,12 @@ async function compactConversationTransactionBody(
       ...candidateResult.attachments,
       ...candidateResult.hookResults,
     ];
-    const firstSelectedIndex = Math.min(...selected.preparedIndexes);
-    const replacementRuntime: RuntimeMessage[] = [];
-    for (let index = 0; index < prepared.messages.length; index += 1) {
-      if (index === firstSelectedIndex) {
-        replacementRuntime.push(...replacementSegment);
-      }
-      if (!selectedIndexes.has(index)) {
-        replacementRuntime.push(prepared.messages[index]!);
-      }
-    }
+    const replacementRuntime = materializeReplacementHistory({
+      messages: prepared.messages,
+      selectedIndexes,
+      replacementSegment,
+    });
+    assertPostHookProjectionBounded(hookResults);
     const shrink = await deadline.wait(validateShrink({
       context,
       sourceMessages: prepared.messages,
@@ -373,14 +468,24 @@ async function compactConversationTransactionBody(
       accountingRef,
     }));
     deadline.assertActive();
-    const committed = adapter.commit({
+    const replacementHistory = replacementRuntime.map(toProjectionMessage);
+    const committedAtMs = Date.now();
+    const commitInput = {
       intent,
       summary: run.finalSummary,
       summary_dag: run.summaryDag,
       accounting: shrink.observation,
-      replacement_history: replacementRuntime.map(toProjectionMessage),
-      committed_at_ms: Date.now(),
-    });
+      replacement_history: replacementHistory,
+      committed_at_ms: committedAtMs,
+      payload_bundles: createCommitPayloadBundles({
+        attemptId,
+        recordedAtMs: committedAtMs,
+        finalSummary: run.finalSummary,
+        summaryDag: run.summaryDag,
+        replacementHistory,
+      }),
+    } as const;
+    const committed = adapter.commit(commitInput);
     transactionCommitted = true;
     const transaction: CompactionTransactionMetadataV1 = {
       attempt_id: attemptId,
@@ -480,7 +585,7 @@ async function runSummaryTree(params: {
         "runtime compaction call diverged from the frozen preflight DAG",
       );
     }
-    if (performance.now() - params.startedAt > MAX_COMPACTION_WALL_MS) {
+    if (compactionWallTimeExceeded(performance.now() - params.startedAt)) {
       throw new CompactionTransactionError(
         "wall_time_exceeded",
         "compaction exceeded its wall-clock budget",
@@ -530,10 +635,9 @@ async function runSummaryTree(params: {
       );
     }
     if (
-      compactionOutputTokenUpperBound(
-        response.content,
-        response.usage?.completionTokens,
-      ) > params.plan.output_reserve_tokens
+      Buffer.byteLength(response.content, "utf8") >
+        MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL ||
+      invocation.outputTokenUpperBound > params.plan.output_reserve_tokens
     ) {
       throw new CompactionTransactionError(
         "output_limit_exceeded",
@@ -691,6 +795,133 @@ function createSummaryDag(
   };
 }
 
+function createSourcePayloadBundles(
+  prepared: CompactionPreparedSourceV1,
+  recordedAtMs: number,
+): CompactionSourcePayloadBundlesV1 {
+  const attemptId = prepared.source.attempt_id;
+  const activeHistoryEntries = compactActiveHistoryEntries(
+    prepared.source.active_history_refs,
+  );
+  const sourceHistory = prepared.messages.map(toProjectionMessage);
+  return {
+    active_history_refs: createCompactionPayloadBundleV1({
+      attemptId,
+      recordedAtMs,
+      payloadKind: "active_history_refs",
+      value: activeHistoryEntries,
+      itemCount: activeHistoryEntries.length,
+    }),
+    source_history: createCompactionPayloadBundleV1({
+      attemptId,
+      recordedAtMs,
+      payloadKind: "source_history",
+      value: sourceHistory,
+      itemCount: sourceHistory.length,
+    }),
+  };
+}
+
+function createCommitPayloadBundles(params: {
+  readonly attemptId: string;
+  readonly recordedAtMs: number;
+  readonly finalSummary: CompactionSummaryV1;
+  readonly summaryDag: CompactionSummaryDagV1;
+  readonly replacementHistory: readonly CompactionProjectionMessageV1[];
+}): CompactionCommitPayloadBundlesV1 {
+  return {
+    final_summary: createCompactionPayloadBundleV1({
+      attemptId: params.attemptId,
+      recordedAtMs: params.recordedAtMs,
+      payloadKind: "final_summary",
+      value: params.finalSummary,
+      itemCount: 1,
+    }),
+    summary_dag: createCompactionPayloadBundleV1({
+      attemptId: params.attemptId,
+      recordedAtMs: params.recordedAtMs,
+      payloadKind: "summary_dag",
+      value: params.summaryDag,
+      itemCount: 1,
+    }),
+    replacement_history: createCompactionPayloadBundleV1({
+      attemptId: params.attemptId,
+      recordedAtMs: params.recordedAtMs,
+      payloadKind: "replacement_history",
+      value: params.replacementHistory,
+      itemCount: params.replacementHistory.length,
+    }),
+  };
+}
+
+function assertPlannedReplacementPayloadBounded(params: {
+  readonly messages: readonly RuntimeMessage[];
+  readonly selectedIndexes: ReadonlySet<number>;
+  readonly rawBoundaryMarker: RuntimeMessage;
+  readonly attachments: readonly RuntimeMessage[];
+}): void {
+  const plannedReplacement = materializeReplacementHistory({
+    messages: params.messages,
+    selectedIndexes: params.selectedIndexes,
+    replacementSegment: [params.rawBoundaryMarker, ...params.attachments],
+  });
+  const plannedBytes = Buffer.byteLength(
+    canonicalizeJson(plannedReplacement.map(toProjectionMessage)),
+    "utf8",
+  );
+  const withSummary = safeBudgetSum(
+    plannedBytes,
+    MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES,
+  );
+  const withHooks = safeBudgetSum(
+    withSummary,
+    MAX_COMPACTION_POST_HOOK_UTF8_BYTES,
+  );
+  const totalReservedBytes = safeBudgetSum(
+    withHooks,
+    MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES,
+  );
+  if (totalReservedBytes > MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES) {
+    throw new CompactionTransactionError(
+      "output_limit_exceeded",
+      `planned replacement history requires ${totalReservedBytes} canonical UTF-8 bytes; payload limit is ${MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES}`,
+    );
+  }
+}
+
+function materializeReplacementHistory(params: {
+  readonly messages: readonly RuntimeMessage[];
+  readonly selectedIndexes: ReadonlySet<number>;
+  readonly replacementSegment: readonly RuntimeMessage[];
+}): RuntimeMessage[] {
+  const firstSelectedIndex = Math.min(...params.selectedIndexes);
+  const replacement: RuntimeMessage[] = [];
+  for (let index = 0; index < params.messages.length; index += 1) {
+    if (index === firstSelectedIndex) {
+      replacement.push(...params.replacementSegment);
+    }
+    if (!params.selectedIndexes.has(index)) {
+      replacement.push(params.messages[index]!);
+    }
+  }
+  return replacement;
+}
+
+function assertPostHookProjectionBounded(
+  messages: readonly RuntimeMessage[],
+): void {
+  const bytes = Buffer.byteLength(
+    JSON.stringify(messages.map(toProjectionMessage)),
+    "utf8",
+  );
+  if (bytes > MAX_COMPACTION_POST_HOOK_UTF8_BYTES) {
+    throw new CompactionTransactionError(
+      "output_limit_exceeded",
+      `post-compaction hook projection exceeds ${MAX_COMPACTION_POST_HOOK_UTF8_BYTES} UTF-8 bytes`,
+    );
+  }
+}
+
 /**
  * A tokenizer can emit at most one token per UTF-8 byte. Provider usage is
  * authoritative when present; otherwise the byte length is a deliberately
@@ -709,6 +940,10 @@ export function compactionOutputTokenUpperBound(
     return Math.max(reportedCompletionTokens, utf8UpperBound);
   }
   return utf8UpperBound;
+}
+
+export function compactionWallTimeExceeded(elapsedMs: number): boolean {
+  return elapsedMs > MAX_COMPACTION_WALL_MS;
 }
 
 function assertExactToolPairs(
@@ -776,6 +1011,7 @@ async function invokeCompactionProvider(params: {
       "exact provider token count exceeds the remaining aggregate compaction budget",
     );
   }
+  let outputTokenUpperBound: number | undefined;
   const response = await runAdmittedModelCall({
     session,
     provider,
@@ -786,9 +1022,76 @@ async function invokeCompactionProvider(params: {
     model: params.model,
     providerName: params.providerName,
     ...(signal !== undefined ? { signal } : {}),
-    invoke: (admittedOptions) => provider.chat([...params.messages], admittedOptions),
+    invoke: async (admittedOptions) => {
+      const candidate = await provider.chat([...params.messages], admittedOptions);
+      const outputAccounting = await countCompactionProviderOutput({
+        context: params.context,
+        providerName: params.providerName,
+        model: params.model,
+        content: candidate.content,
+        signal: admittedOptions.signal,
+      });
+      const reported = candidate.usage?.completionTokens;
+      outputTokenUpperBound = outputAccounting.source === "conservative_fallback"
+        ? compactionOutputTokenUpperBound(candidate.content, reported)
+        : Math.max(reported ?? 0, outputAccounting.inputTokens);
+      if (
+        outputAccounting.source !== "conservative_fallback" &&
+        reported !== undefined &&
+        outputAccounting.inputTokens > reported
+      ) {
+        throw new CompactionTransactionError(
+          "output_limit_exceeded",
+          "compaction provider under-reported output tokens",
+        );
+      }
+      if (outputTokenUpperBound > params.outputReserveTokens) {
+        throw new CompactionTransactionError(
+          "output_limit_exceeded",
+          "compaction provider exceeded the intermediate-token limit",
+        );
+      }
+      return candidate;
+    },
   });
-  return { response, accounting: exactAccounting };
+  return {
+    response,
+    accounting: exactAccounting,
+    outputTokenUpperBound:
+      outputTokenUpperBound ??
+      compactionOutputTokenUpperBound(
+        response.content,
+        response.usage?.completionTokens,
+      ),
+  };
+}
+
+async function countCompactionProviderOutput(params: {
+  readonly context: CompactContext;
+  readonly providerName: string;
+  readonly model: string;
+  readonly content: string;
+  readonly signal: AbortSignal | undefined;
+}): Promise<TokenAccountingResult> {
+  const request = createTokenAccountingRequest({
+    provider: params.providerName,
+    model: params.model,
+    messages: [{ role: "assistant", content: params.content }],
+    options: {
+      model: params.model,
+      systemPrompt: "",
+      maxOutputTokens: 0,
+      contextWindowTokens: MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL,
+    },
+    contextWindowTokens: MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL,
+    reservedOutputTokens: 0,
+  });
+  return requireAdmissibleTokenAccounting(
+    await tokenAccountingService.count(request, {
+      capability: params.context.provider?.tokenCountCapability,
+      ...(params.signal !== undefined ? { signal: params.signal } : {}),
+    }),
+  );
 }
 
 async function validateShrink(params: {
@@ -1099,6 +1402,23 @@ function safeBudgetSum(left: number, right: number): number {
 function createCompactionDeadline(context: CompactContext): CompactionDeadline {
   const controller = new AbortController();
   const upstream = context.abortController?.signal;
+  const pendingWork = new Set<Promise<unknown>>();
+  let admissionCancellationError: unknown;
+  const cancelAdmissionWork = (): void => {
+    try {
+      context.admissionSession?.services.executionAdmission?.cancelAdmissions?.(
+        controller.signal.reason instanceof CompactionTransactionError &&
+            controller.signal.reason.reason === "wall_time_exceeded"
+          ? "compaction_wall_time_exceeded"
+          : "compaction_aborted",
+      );
+    } catch (error) {
+      admissionCancellationError = error;
+    }
+  };
+  controller.signal.addEventListener("abort", cancelAdmissionWork, {
+    once: true,
+  });
   const abortFromUpstream = (): void => {
     controller.abort(
       upstream?.reason ?? new DOMException("Compaction aborted", "AbortError"),
@@ -1122,31 +1442,70 @@ function createCompactionDeadline(context: CompactContext): CompactionDeadline {
   };
   const wait = async <T>(work: Promise<T>): Promise<T> => {
     assertActive();
-    return await new Promise<T>((resolve, reject) => {
-      const aborted = (): void => reject(
-        controller.signal.reason ??
-          new DOMException("Compaction aborted", "AbortError"),
-      );
-      controller.signal.addEventListener("abort", aborted, { once: true });
-      work.then(
-        (value) => {
-          controller.signal.removeEventListener("abort", aborted);
-          resolve(value);
-        },
-        (error: unknown) => {
-          controller.signal.removeEventListener("abort", aborted);
-          reject(error);
-        },
-      );
+    const settled = work.then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+    pendingWork.add(settled);
+    void settled.finally(() => pendingWork.delete(settled));
+    let removeAbortListener = (): void => {};
+    const aborted = new Promise<{ readonly status: "aborted" }>((resolve) => {
+      const listener = (): void => resolve({ status: "aborted" });
+      controller.signal.addEventListener("abort", listener, { once: true });
+      removeAbortListener = () =>
+        controller.signal.removeEventListener("abort", listener);
     });
+    try {
+      const first = await Promise.race([settled, aborted]);
+      if (first.status === "fulfilled") return first.value;
+      if (first.status === "rejected") throw first.reason;
+
+      // Cancellation first settles the attempt-scoped admission scope. Then
+      // give an abort-ignoring provider one bounded interval to reconcile and
+      // acknowledge its physical slot before the compaction terminal is made.
+      const quiescenceExpired = new Promise<{ readonly status: "expired" }>(
+        (resolve) => {
+          const timer = setTimeout(
+            () => resolve({ status: "expired" }),
+            MAX_COMPACTION_ABORT_QUIESCENCE_MS,
+          );
+          timer.unref();
+          void settled.finally(() => clearTimeout(timer));
+        },
+      );
+      const quiescence = await Promise.race([settled, quiescenceExpired]);
+      if (quiescence.status === "expired") {
+        throw new CompactionTransactionError(
+          "recovery_interrupted",
+          `compaction provider did not quiesce within ${MAX_COMPACTION_ABORT_QUIESCENCE_MS} ms after cancellation`,
+        );
+      }
+      if (admissionCancellationError !== undefined) {
+        throw new CompactionTransactionError(
+          "recovery_interrupted",
+          "compaction cancellation could not durably quiesce admitted work",
+          { cause: admissionCancellationError },
+        );
+      }
+      assertActive();
+      if (quiescence.status === "rejected") throw quiescence.reason;
+      return quiescence.value;
+    } finally {
+      removeAbortListener();
+    }
   };
   return {
     context: { ...context, abortController: controller },
     assertActive,
     wait,
+    hasPendingWork: () => pendingWork.size > 0,
+    awaitQuiescence: async () => {
+      await Promise.allSettled([...pendingWork]);
+    },
     dispose: () => {
       clearTimeout(timer);
       upstream?.removeEventListener("abort", abortFromUpstream);
+      controller.signal.removeEventListener("abort", cancelAdmissionWork);
     },
   };
 }

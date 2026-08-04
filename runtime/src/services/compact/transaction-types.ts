@@ -71,6 +71,10 @@ export const MAX_COMPACTION_FOCUS_UTF8_BYTES = 16_384;
 export const MAX_COMPACTION_CANONICAL_LINE_UTF8_BYTES = 4_194_304;
 /** Reserved commit space for deterministic post-summary hook projections. */
 export const MAX_COMPACTION_POST_HOOK_UTF8_BYTES = 65_536;
+/** Worst-case nested JSON escaping of one accepted final provider response. */
+export const MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES = 8_388_608;
+/** Fixed boundary/summary marker and canonical array framing reserve. */
+export const MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES = 16_384;
 export const COMPACTION_PAYLOAD_FORMAT_VERSION = 1 as const;
 export const MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES = 134_217_728;
 export const MAX_COMPACTION_PAYLOAD_CHUNKS = 256;

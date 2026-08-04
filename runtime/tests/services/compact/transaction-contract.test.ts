@@ -13,10 +13,23 @@ import {
   parseCompactionBodyV1,
   verifyCompactionSummaryDigest,
 } from "../../../src/services/compact/summary-v1.js";
-import { compactionOutputTokenUpperBound } from "../../../src/services/compact/transaction.js";
+import {
+  compactionOutputTokenUpperBound,
+  compactionWallTimeExceeded,
+} from "../../../src/services/compact/transaction.js";
 import { compactConversationTransactionally } from "../../../src/services/compact/transaction.js";
-import { MAX_COMPACTION_INTERMEDIATE_TOKENS } from "../../../src/services/compact/transaction-types.js";
-import type { RuntimeMessage } from "../../../src/services/compact/types.js";
+import {
+  MAX_COMPACTION_INTERMEDIATE_TOKENS,
+  MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES,
+  MAX_COMPACTION_POST_HOOK_UTF8_BYTES,
+  MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES,
+  MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES,
+  MAX_COMPACTION_WALL_MS,
+} from "../../../src/services/compact/transaction-types.js";
+import type {
+  CompactContext,
+  RuntimeMessage,
+} from "../../../src/services/compact/types.js";
 import { getCompactPrompt } from "../../../src/services/compact/prompt.js";
 import { RolloutStore } from "../../../src/session/rollout-store.js";
 import { reduceAll } from "../../../src/session/event-log-reducer.js";
@@ -73,6 +86,11 @@ describe("transactional compaction strict contracts", () => {
         1,
       ),
     ).toBe(MAX_COMPACTION_INTERMEDIATE_TOKENS + 1);
+  });
+
+  it("accepts the exact wall limit and rejects plus one", () => {
+    expect(compactionWallTimeExceeded(MAX_COMPACTION_WALL_MS)).toBe(false);
+    expect(compactionWallTimeExceeded(MAX_COMPACTION_WALL_MS + 1)).toBe(true);
   });
 
   it("rejects duplicate keys and control markers in every body string", () => {
@@ -228,6 +246,117 @@ describe("transactional compaction production path", () => {
       ]);
     });
   });
+
+  it("fails closed when exact output accounting exceeds provider-reported usage", async () => {
+    await withTransactionalStore("transaction-output-under-report", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const provider = compactionProvider({
+        usage: {
+          promptTokens: 128,
+          completionTokens: 1,
+          totalTokens: 129,
+          availability: "reported",
+          provenance: "provider",
+        },
+      });
+      await expect(runRealTransaction(store, source, provider)).rejects.toThrow(
+        /under-reported output tokens/i,
+      );
+      expect(provider.chat).toHaveBeenCalledOnce();
+      expect(store.readAll().filter((item) => item.type.startsWith("compaction_")))
+        .toMatchObject([
+          { type: "compaction_intent" },
+          { type: "compaction_failed", payload: { reason: "output_limit_exceeded" } },
+        ]);
+    });
+  });
+
+  it("rejects an oversized source-derived attachment before provider admission", async () => {
+    await withTransactionalStore("transaction-attachment-limit", async (store) => {
+      const source = appendSourceMessages(store, 2, 32);
+      const provider = compactionProvider();
+      const oversizedAttachmentBytes =
+        MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES -
+        MAX_COMPACTION_REPLACEMENT_SUMMARY_UTF8_BYTES -
+        MAX_COMPACTION_POST_HOOK_UTF8_BYTES -
+        MAX_COMPACTION_REPLACEMENT_ENVELOPE_UTF8_BYTES +
+        1_024;
+      await expect(runRealTransaction(store, source, provider, {
+        deps: {
+          createAttachments: () => [{
+            role: "user",
+            content: "x".repeat(oversizedAttachmentBytes),
+          }],
+        },
+      })).rejects.toThrow(/planned replacement history requires/i);
+      expect(provider.chat).not.toHaveBeenCalled();
+      expect(store.readAll().some((item) => item.type.startsWith("compaction_")))
+        .toBe(false);
+    });
+  }, 30_000);
+
+  it("redacts selected media from model input while preserving source provenance", async () => {
+    await withTransactionalStore("transaction-media", async (store) => {
+      const rawImageUrl = "https://private.example/secret-image.png";
+      const rawDocument = "c2VjcmV0LWRvY3VtZW50LWJ5dGVz";
+      const source: RuntimeMessage[] = [
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: rawImageUrl } },
+            {
+              type: "document",
+              source: {
+                type: "base64",
+                media_type: "application/pdf",
+                data: rawDocument,
+              },
+              fallbackText: "bounded document description",
+            },
+            { type: "text", text: "Summarize the media context." },
+          ],
+        },
+        ...Array.from({ length: 7 }, (_, index) => ({
+          role: index % 2 === 0 ? "assistant" as const : "user" as const,
+          content: `${index}:${"x".repeat(4_000)}`,
+        })),
+      ];
+      for (const message of source) {
+        store.appendRollout({
+          type: "response_item",
+          payload: {
+            role: message.role ?? "user",
+            content: message.content as string | ReadonlyArray<{
+              readonly type: string;
+              readonly text?: string;
+              readonly [key: string]: unknown;
+            }>,
+          },
+        }, { durable: true });
+      }
+      const before = store.prepareSource("media-provenance-probe", source);
+      const provider = compactionProvider();
+      const result = await runRealTransaction(store, source, provider);
+
+      for (const [messages] of provider.chat.mock.calls) {
+        const modelInput = JSON.stringify(messages);
+        expect(modelInput).not.toContain(rawImageUrl);
+        expect(modelInput).not.toContain(rawDocument);
+        expect(modelInput).toContain("omitted from compaction model input");
+      }
+      expect(result.transaction?.committed.selected_history_indexes).toEqual(
+        source.map((_, index) => index),
+      );
+      expect(result.transaction?.committed.source.history_digest)
+        .toBe(before.source.history_digest);
+      const physicalProvenance = (
+        refs: typeof before.source.active_history_refs,
+      ) => refs.map(({ ref_id: _attemptScopedRefId, ...ref }) => ref);
+      expect(physicalProvenance(
+        result.transaction!.committed.source.active_history_refs,
+      )).toEqual(physicalProvenance(before.source.active_history_refs));
+    });
+  });
 });
 
 async function withTransactionalStore(
@@ -298,8 +427,8 @@ function compactionProvider(
       toolCalls: [],
       usage: {
         promptTokens: 128,
-        completionTokens: 32,
-        totalTokens: 160,
+        completionTokens: 128,
+        totalTokens: 256,
         availability: "reported",
         provenance: "provider",
       },
@@ -320,6 +449,20 @@ function compactionProvider(
     chat,
     chatStream: chat,
     healthCheck: async () => true,
+    tokenCountCapability: {
+      capabilityVersion: "c2-contract-v1",
+      adapterRevision: "c2-contract-adapter-v1",
+      configurationRevision: "c2-contract-config-v1",
+      countTokens: async (request: { readonly messages: readonly LLMMessage[] }) => ({
+        inputTokens: Math.max(
+          1,
+          Math.ceil(Buffer.byteLength(JSON.stringify(request.messages), "utf8") / 4),
+        ),
+        complete: true as const,
+        confidence: "exact" as const,
+        countedComponents: ["messages" as const],
+      }),
+    },
   } as unknown as LLMProvider & { readonly chat: ReturnType<typeof vi.fn> };
 }
 
@@ -327,6 +470,7 @@ async function runRealTransaction(
   store: RolloutStore,
   source: readonly RuntimeMessage[],
   provider: LLMProvider,
+  contextOverrides: Pick<CompactContext, "deps"> = {},
 ) {
   const admissionCwd = mkdtempSync(join(tmpdir(), "agenc-c2-admission-workspace-"));
   mkdirSync(join(admissionCwd, ".git"));
@@ -363,6 +507,7 @@ async function runRealTransaction(
         provider,
         admissionSession,
         compactionTransaction: store,
+        ...contextOverrides,
         options: {
           mainLoopModel: "grok-4.5",
           contextWindowTokens: 64_000,
