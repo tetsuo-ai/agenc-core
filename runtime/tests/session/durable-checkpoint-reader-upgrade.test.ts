@@ -505,8 +505,8 @@ describe("durable checkpoint v2 reader", () => {
 });
 
 describe("legacy durable checkpoint upgrade planner", () => {
-  it("cuts the live rollout writer over to schema v2", () => {
-    expect(ROLLOUT_SCHEMA_VERSION).toBe(2);
+  it("cuts the live rollout writer over to schema v3", () => {
+    expect(ROLLOUT_SCHEMA_VERSION).toBe(3);
   });
 
   it("makes equal-length fixture substitutions produce distinct v2 identities", () => {

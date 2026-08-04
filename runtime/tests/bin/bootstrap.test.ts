@@ -163,6 +163,7 @@ function rolloutEvent(
   return {
     type: "event_msg",
     payload: {
+      eventId: `bootstrap:${seq}:${id}`,
       id,
       seq,
       msg: { type, payload },
@@ -1139,7 +1140,11 @@ describe("bootstrapLocalRuntimeSession", () => {
         rolloutEvent(
           "tool-input-delta",
           "tool_input_delta",
-          { index: 0, partialJson: '{"path":"src/partial' },
+          {
+            callId: "tool-call-1",
+            index: 0,
+            partialJson: '{"path":"src/partial',
+          },
           firstEventSequence,
         ),
       );

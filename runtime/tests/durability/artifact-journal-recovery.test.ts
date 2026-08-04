@@ -312,6 +312,7 @@ describe("M4 artifact journal recovery", () => {
       expect(
         rollout.append(
           {
+            eventId: "legacy-event:1:artifact-intent-1",
             id: "artifact-intent-1",
             seq: 1,
             msg: { type: "artifact_intent", payload },
@@ -390,6 +391,7 @@ describe("M4 artifact journal recovery", () => {
     );
     rollout.append(
       {
+        eventId: "legacy-event:1:artifact-intent-missing",
         id: "artifact-intent-missing",
         seq: 1,
         msg: { type: "artifact_intent", payload },
@@ -480,6 +482,7 @@ describe("M4 artifact journal recovery", () => {
     );
     rollout.append(
       {
+        eventId: "legacy-event:1:artifact-intent-combined",
         id: "artifact-intent-combined",
         seq: 1,
         msg: { type: "artifact_intent", payload },
@@ -488,6 +491,7 @@ describe("M4 artifact journal recovery", () => {
     );
     rollout.append(
       {
+        eventId: "legacy-event:2:effect-intent-combined",
         id: "effect-intent-combined",
         seq: 2,
         msg: {
@@ -533,6 +537,7 @@ describe("M4 artifact journal recovery", () => {
     const payload = intentPayload(runId, targetPath, "expected");
     rollout.append(
       {
+        eventId: "legacy-event:1:artifact-intent-conflict",
         id: "artifact-intent-conflict",
         seq: 1,
         msg: { type: "artifact_intent", payload },

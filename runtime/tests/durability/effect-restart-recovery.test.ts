@@ -190,8 +190,10 @@ function intent(
   runId: string,
   recoveryCategory: "idempotent" | "side-effecting",
 ): Event {
+  const id = `intent-${recoveryCategory}`;
   return {
-    id: `intent-${recoveryCategory}`,
+    eventId: `legacy-event:1:${id}`,
+    id,
     seq: 1,
     msg: {
       type: "effect_intent",
@@ -267,6 +269,7 @@ describe("M4 effect restart recovery", () => {
     expect(
       original.append(
         {
+          eventId: "legacy-event:1:v2-intent",
           id: "v2-intent",
           seq: 1,
           msg: {
@@ -291,6 +294,7 @@ describe("M4 effect restart recovery", () => {
     expect(
       original.append(
         {
+          eventId: "legacy-event:2:v2-result-without-boundary",
           id: "v2-result-without-boundary",
           seq: 2,
           msg: {
