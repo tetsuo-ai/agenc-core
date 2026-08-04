@@ -58,6 +58,22 @@ afterEach(() => {
 });
 
 describe("RolloutStore transactional compaction", () => {
+  it("fails fast on a concurrent compaction lease and releases idempotently", () => {
+    const store = openStore("compaction-lease");
+    try {
+      const first = store.acquireCompactionLease("lease-a");
+      expect(() => store.acquireCompactionLease("lease-b")).toThrow(
+        /compaction already in progress/i,
+      );
+      first.release();
+      first.release();
+      const second = store.acquireCompactionLease("lease-c");
+      second.release();
+    } finally {
+      store.close();
+    }
+  });
+
   it("pins only physical records that constitute current active history", () => {
     const store = openStore("active-manifest");
     try {

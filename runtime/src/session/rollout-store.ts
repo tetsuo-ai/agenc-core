@@ -153,6 +153,10 @@ export interface RolloutStoreOpts extends SessionStoreOpts {
   readonly afterCompactionRollbackAppendForTestingOnly?: () => void;
 }
 
+export interface CompactionTransactionLease {
+  release(): void;
+}
+
 export class DurableCheckpointUpgradeBlockedError extends Error {
   constructor(
     readonly runId: string,
@@ -218,6 +222,7 @@ export interface ThreadSpawnEdgeRecord {
 }
 
 const THREAD_SPAWN_EDGE_SNAPSHOT_VERSION = 1;
+const activeCompactionLeases = new Map<string, symbol>();
 
 function rolloutItemsContainTerminal(
   items: readonly RolloutItem[],
@@ -792,6 +797,35 @@ export class RolloutStore {
   /** CompactionTransactionAdapter epoch alias. */
   get epoch(): number {
     return this.runEpoch;
+  }
+
+  /** Acquire fail-fast exclusion for this canonical session epoch. */
+  acquireCompactionLease(attemptId: string): CompactionTransactionLease {
+    if (attemptId.trim().length === 0) {
+      throw new CompactionTransactionError(
+        "pin_failed",
+        "compaction lease requires a nonempty attempt id",
+      );
+    }
+    const key = `${resolve(this.rolloutPath)}#epoch:${this.runEpoch}`;
+    if (activeCompactionLeases.has(key)) {
+      throw new CompactionTransactionError(
+        "intent_failed",
+        "compaction already in progress",
+      );
+    }
+    const owner = Symbol(attemptId);
+    activeCompactionLeases.set(key, owner);
+    let released = false;
+    return {
+      release: () => {
+        if (released) return;
+        released = true;
+        if (activeCompactionLeases.get(key) === owner) {
+          activeCompactionLeases.delete(key);
+        }
+      },
+    };
   }
 
   /** Bind the exact canonical records that currently project active history. */
