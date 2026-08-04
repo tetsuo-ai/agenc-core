@@ -67,6 +67,7 @@ import {
 const RUNTIME_ROOT = join(import.meta.dirname, "../..");
 const RUNNER_PATH = join(RUNTIME_ROOT, "benchmarks/fnd/run-baselines.mjs");
 const CASE_WORKER_PATH = join(RUNTIME_ROOT, "benchmarks/fnd/case-worker.mjs");
+const NPM_CLI_BOUNDARY_PROBE_TIMEOUT_MS = 15_000;
 const MODULE_TRACKER_PATH = join(
   RUNTIME_ROOT,
   "benchmarks/fnd/module-closure.mjs",
@@ -857,6 +858,7 @@ describe("FND benchmark harness fault contracts", () => {
           cwd: RUNTIME_ROOT,
           label: "npm CLI boundary probe",
           maxOutputBytes: 65_536,
+          timeoutMs: NPM_CLI_BOUNDARY_PROBE_TIMEOUT_MS,
         }),
       ).toMatch(/^\d+\.\d+\.\d+(?:[-+].+)?$/u);
       expect(existsSync(executionMarkerPath)).toBe(false);
