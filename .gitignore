@@ -48,6 +48,8 @@ obj/
 !/runtime/src/eval-contract/contract-v1.schema.json
 !/runtime/src/eval-suites/suite-protocol-v1.schema.json
 !/runtime/src/eval-suites/suite-evidence-v1.schema.json
+!/runtime/benchmarks/compaction/held-out-corpus.v1.json
+!/runtime/benchmarks/compaction/offline-results.v1.json
 !/runtime/src/eval-suites/trust-fixture-bundle-v1.schema.json
 !runtime/scripts/hermetic-docker-seccomp.json
 !.mcp.json

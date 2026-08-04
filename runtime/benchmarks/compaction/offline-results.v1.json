@@ -1,0 +1,417 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "agenc.c2.compaction-held-out.v1",
+  "corpus": {
+    "version": "2026-08-03.v1",
+    "sha256": "d3eba3f8b0a779d02b56ed3828d917ecb432e04ba0baa5451b9d74311a436ac7",
+    "caseCount": 3,
+    "sourceMessages": 15,
+    "sourceUtf8Bytes": 23302,
+    "expectedFacts": 16
+  },
+  "evidence": {
+    "kind": "deterministic_offline",
+    "networkAccess": false,
+    "providerCallsExecuted": 0,
+    "providerQualityClaimed": false,
+    "note": "The C2 planner is production code; both summary candidates are deterministic offline extractors and are not provider-quality evidence."
+  },
+  "candidates": [
+    {
+      "candidateId": "c2_planner_deterministic_extractive_proxy_v1",
+      "label": "C2 planner + deterministic extractive proxy (offline; not provider-native)",
+      "implementationKind": "production_planner_replay_plus_deterministic_extractive_proxy",
+      "providerNative": false,
+      "productionSummaryImplementation": false,
+      "executedProviderCalls": 0,
+      "cases": [
+        {
+          "caseId": "canary-deployment-rollback",
+          "outputSha256": "21012b66c9c1c6e5929a515889e579c825377bd125875ea0fdbd797da384cbbc",
+          "statementCount": 17,
+          "quality": {
+            "matchedFacts": 5,
+            "totalFacts": 5,
+            "factRecallPermille": 1000,
+            "matchedRecoveryFacts": 5,
+            "totalRecoveryFacts": 5,
+            "recoveryRecallPermille": 1000
+          },
+          "shrink": {
+            "sourceUtf8Bytes": 7778,
+            "summaryUtf8Bytes": 2008,
+            "savedUtf8Bytes": 5770,
+            "reductionPermille": 741,
+            "sourceEstimatedTokens": 1945,
+            "summaryEstimatedTokens": 502,
+            "savedEstimatedTokens": 1443
+          },
+          "calls": {
+            "plannedProviderCalls": 1,
+            "executedProviderCalls": 0,
+            "plannedInputTokens": 9776
+          },
+          "operationCounts": {
+            "sourceSentencesScanned": 59,
+            "candidateSentencesScored": 58,
+            "injectionSentencesRejected": 1,
+            "source_messages_scanned": 5,
+            "source_canonical_utf8_bytes": 7658,
+            "semantic_units_built": 5,
+            "semantic_unit_utf8_bytes": 7662,
+            "chunk_candidate_evaluations": 4,
+            "candidate_semantic_units_visited": 12,
+            "candidate_source_refs_visited": 12,
+            "candidate_transcript_utf8_bytes": 17105,
+            "maximum_candidate_semantic_units": 5,
+            "token_estimator_calls": 5,
+            "outputUtf8Bytes": 2008
+          },
+          "gates": {
+            "quality": true,
+            "injection": true,
+            "provenance": true,
+            "shrink": true,
+            "recovery": true,
+            "allPassed": true
+          }
+        },
+        {
+          "caseId": "queue-incident-recovery",
+          "outputSha256": "b5b15f49c3a0181b90eeee3c1e963db68930267c2b6e9a44918b8198979e39aa",
+          "statementCount": 16,
+          "quality": {
+            "matchedFacts": 5,
+            "totalFacts": 5,
+            "factRecallPermille": 1000,
+            "matchedRecoveryFacts": 4,
+            "totalRecoveryFacts": 4,
+            "recoveryRecallPermille": 1000
+          },
+          "shrink": {
+            "sourceUtf8Bytes": 7607,
+            "summaryUtf8Bytes": 2002,
+            "savedUtf8Bytes": 5605,
+            "reductionPermille": 736,
+            "sourceEstimatedTokens": 1902,
+            "summaryEstimatedTokens": 501,
+            "savedEstimatedTokens": 1401
+          },
+          "calls": {
+            "plannedProviderCalls": 1,
+            "executedProviderCalls": 0,
+            "plannedInputTokens": 9579
+          },
+          "operationCounts": {
+            "sourceSentencesScanned": 57,
+            "candidateSentencesScored": 56,
+            "injectionSentencesRejected": 1,
+            "source_messages_scanned": 5,
+            "source_canonical_utf8_bytes": 7482,
+            "semantic_units_built": 5,
+            "semantic_unit_utf8_bytes": 7486,
+            "chunk_candidate_evaluations": 4,
+            "candidate_semantic_units_visited": 12,
+            "candidate_source_refs_visited": 12,
+            "candidate_transcript_utf8_bytes": 16717,
+            "maximum_candidate_semantic_units": 5,
+            "token_estimator_calls": 5,
+            "outputUtf8Bytes": 2002
+          },
+          "gates": {
+            "quality": true,
+            "injection": true,
+            "provenance": true,
+            "shrink": true,
+            "recovery": true,
+            "allPassed": true
+          }
+        },
+        {
+          "caseId": "schema-cutover-handoff",
+          "outputSha256": "2aba42e92f592957a2940710fdc26366557a4b0fff85d508152c2190dacfe903",
+          "statementCount": 17,
+          "quality": {
+            "matchedFacts": 6,
+            "totalFacts": 6,
+            "factRecallPermille": 1000,
+            "matchedRecoveryFacts": 5,
+            "totalRecoveryFacts": 5,
+            "recoveryRecallPermille": 1000
+          },
+          "shrink": {
+            "sourceUtf8Bytes": 7917,
+            "summaryUtf8Bytes": 2044,
+            "savedUtf8Bytes": 5873,
+            "reductionPermille": 741,
+            "sourceEstimatedTokens": 1980,
+            "summaryEstimatedTokens": 511,
+            "savedEstimatedTokens": 1469
+          },
+          "calls": {
+            "plannedProviderCalls": 1,
+            "executedProviderCalls": 0,
+            "plannedInputTokens": 9924
+          },
+          "operationCounts": {
+            "sourceSentencesScanned": 57,
+            "candidateSentencesScored": 56,
+            "injectionSentencesRejected": 1,
+            "source_messages_scanned": 5,
+            "source_canonical_utf8_bytes": 7797,
+            "semantic_units_built": 5,
+            "semantic_unit_utf8_bytes": 7801,
+            "chunk_candidate_evaluations": 4,
+            "candidate_semantic_units_visited": 12,
+            "candidate_source_refs_visited": 12,
+            "candidate_transcript_utf8_bytes": 17414,
+            "maximum_candidate_semantic_units": 5,
+            "token_estimator_calls": 5,
+            "outputUtf8Bytes": 2044
+          },
+          "gates": {
+            "quality": true,
+            "injection": true,
+            "provenance": true,
+            "shrink": true,
+            "recovery": true,
+            "allPassed": true
+          }
+        }
+      ],
+      "metrics": {
+        "quality": {
+          "matchedFacts": 16,
+          "totalFacts": 16,
+          "factRecallPermille": 1000,
+          "matchedRecoveryFacts": 14,
+          "totalRecoveryFacts": 14,
+          "recoveryRecallPermille": 1000
+        },
+        "shrink": {
+          "sourceUtf8Bytes": 23302,
+          "summaryUtf8Bytes": 6054,
+          "savedUtf8Bytes": 17248,
+          "reductionPermille": 740,
+          "sourceEstimatedTokens": 5827,
+          "summaryEstimatedTokens": 1514,
+          "savedEstimatedTokens": 4313
+        },
+        "calls": {
+          "plannedProviderCalls": 3,
+          "executedProviderCalls": 0,
+          "plannedInputTokens": 29279
+        },
+        "operationCounts": {
+          "sourceSentencesScanned": 173,
+          "candidateSentencesScored": 170,
+          "injectionSentencesRejected": 3,
+          "source_messages_scanned": 15,
+          "source_canonical_utf8_bytes": 22937,
+          "semantic_units_built": 15,
+          "semantic_unit_utf8_bytes": 22949,
+          "chunk_candidate_evaluations": 12,
+          "candidate_semantic_units_visited": 36,
+          "candidate_source_refs_visited": 36,
+          "candidate_transcript_utf8_bytes": 51236,
+          "maximum_candidate_semantic_units": 15,
+          "token_estimator_calls": 15,
+          "outputUtf8Bytes": 6054
+        },
+        "localPerformance": {
+          "elapsedMs": 5.031,
+          "rssDeltaBytes": 0
+        }
+      },
+      "gates": {
+        "quality": true,
+        "injection": true,
+        "provenance": true,
+        "shrink": true,
+        "recovery": true,
+        "allPassed": true
+      }
+    },
+    {
+      "candidateId": "tail_window_deterministic_extractive_baseline_v1",
+      "label": "Deterministic tail-window extractive baseline (offline; not provider-native)",
+      "implementationKind": "deterministic_tail_window_baseline",
+      "providerNative": false,
+      "productionSummaryImplementation": false,
+      "executedProviderCalls": 0,
+      "cases": [
+        {
+          "caseId": "canary-deployment-rollback",
+          "outputSha256": "6c8ece885dc600b5b90a5d6847a23fafdb057cd0d1229eaee01aac60144f66fd",
+          "statementCount": 15,
+          "quality": {
+            "matchedFacts": 1,
+            "totalFacts": 5,
+            "factRecallPermille": 200,
+            "matchedRecoveryFacts": 1,
+            "totalRecoveryFacts": 5,
+            "recoveryRecallPermille": 200
+          },
+          "shrink": {
+            "sourceUtf8Bytes": 7778,
+            "summaryUtf8Bytes": 1998,
+            "savedUtf8Bytes": 5780,
+            "reductionPermille": 743,
+            "sourceEstimatedTokens": 1945,
+            "summaryEstimatedTokens": 500,
+            "savedEstimatedTokens": 1445
+          },
+          "calls": {
+            "plannedProviderCalls": 0,
+            "executedProviderCalls": 0,
+            "plannedInputTokens": 0
+          },
+          "operationCounts": {
+            "sourceSentencesScanned": 15,
+            "candidateSentencesScored": 0,
+            "injectionSentencesRejected": 0,
+            "outputUtf8Bytes": 1998
+          },
+          "gates": {
+            "quality": false,
+            "injection": false,
+            "provenance": true,
+            "shrink": true,
+            "recovery": false,
+            "allPassed": false
+          }
+        },
+        {
+          "caseId": "queue-incident-recovery",
+          "outputSha256": "7b137fd2c8ded93523fc00929e95e9c30aa58b1ca4810ba7dde68116566a7ebb",
+          "statementCount": 15,
+          "quality": {
+            "matchedFacts": 1,
+            "totalFacts": 5,
+            "factRecallPermille": 200,
+            "matchedRecoveryFacts": 1,
+            "totalRecoveryFacts": 4,
+            "recoveryRecallPermille": 250
+          },
+          "shrink": {
+            "sourceUtf8Bytes": 7607,
+            "summaryUtf8Bytes": 2009,
+            "savedUtf8Bytes": 5598,
+            "reductionPermille": 735,
+            "sourceEstimatedTokens": 1902,
+            "summaryEstimatedTokens": 503,
+            "savedEstimatedTokens": 1399
+          },
+          "calls": {
+            "plannedProviderCalls": 0,
+            "executedProviderCalls": 0,
+            "plannedInputTokens": 0
+          },
+          "operationCounts": {
+            "sourceSentencesScanned": 15,
+            "candidateSentencesScored": 0,
+            "injectionSentencesRejected": 0,
+            "outputUtf8Bytes": 2009
+          },
+          "gates": {
+            "quality": false,
+            "injection": false,
+            "provenance": true,
+            "shrink": true,
+            "recovery": false,
+            "allPassed": false
+          }
+        },
+        {
+          "caseId": "schema-cutover-handoff",
+          "outputSha256": "dc82008213fb058070bbdd10177b1df161c22106684d6c6dad93b9a3dc428700",
+          "statementCount": 14,
+          "quality": {
+            "matchedFacts": 1,
+            "totalFacts": 6,
+            "factRecallPermille": 166,
+            "matchedRecoveryFacts": 1,
+            "totalRecoveryFacts": 5,
+            "recoveryRecallPermille": 200
+          },
+          "shrink": {
+            "sourceUtf8Bytes": 7917,
+            "summaryUtf8Bytes": 2017,
+            "savedUtf8Bytes": 5900,
+            "reductionPermille": 745,
+            "sourceEstimatedTokens": 1980,
+            "summaryEstimatedTokens": 505,
+            "savedEstimatedTokens": 1475
+          },
+          "calls": {
+            "plannedProviderCalls": 0,
+            "executedProviderCalls": 0,
+            "plannedInputTokens": 0
+          },
+          "operationCounts": {
+            "sourceSentencesScanned": 14,
+            "candidateSentencesScored": 0,
+            "injectionSentencesRejected": 0,
+            "outputUtf8Bytes": 2017
+          },
+          "gates": {
+            "quality": false,
+            "injection": false,
+            "provenance": true,
+            "shrink": true,
+            "recovery": false,
+            "allPassed": false
+          }
+        }
+      ],
+      "metrics": {
+        "quality": {
+          "matchedFacts": 3,
+          "totalFacts": 16,
+          "factRecallPermille": 187,
+          "matchedRecoveryFacts": 3,
+          "totalRecoveryFacts": 14,
+          "recoveryRecallPermille": 214
+        },
+        "shrink": {
+          "sourceUtf8Bytes": 23302,
+          "summaryUtf8Bytes": 6024,
+          "savedUtf8Bytes": 17278,
+          "reductionPermille": 741,
+          "sourceEstimatedTokens": 5827,
+          "summaryEstimatedTokens": 1508,
+          "savedEstimatedTokens": 4319
+        },
+        "calls": {
+          "plannedProviderCalls": 0,
+          "executedProviderCalls": 0,
+          "plannedInputTokens": 0
+        },
+        "operationCounts": {
+          "sourceSentencesScanned": 44,
+          "candidateSentencesScored": 0,
+          "injectionSentencesRejected": 0,
+          "outputUtf8Bytes": 6024
+        },
+        "localPerformance": {
+          "elapsedMs": 0.141,
+          "rssDeltaBytes": 0
+        }
+      },
+      "gates": {
+        "quality": false,
+        "injection": false,
+        "provenance": true,
+        "shrink": true,
+        "recovery": false,
+        "allPassed": false
+      }
+    }
+  ],
+  "measurements": {
+    "suiteElapsedMs": 5.392,
+    "rssDeltaBytes": 0,
+    "node": "v26.5.0",
+    "platform": "linux-x64"
+  }
+}
