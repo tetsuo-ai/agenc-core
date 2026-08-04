@@ -95,6 +95,7 @@ import {
   COMPACTION_EVENT_FORMAT_VERSION,
   COMPACTION_MINIMUM_READER_RUNTIME,
   COMPACTION_RECONCILIATION_PAGE_SIZE,
+  COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN,
   COMPACTION_PRUNE_RECORDS_PER_PAGE,
   COMPACTION_ROLLBACK_RETENTION_MS,
   COMPACTION_SOURCE_DIGEST_DOMAIN,
@@ -111,6 +112,7 @@ import {
   type CompactionPreparedSourceV1,
   type CompactionProjectionMessageV1,
   type CompactionRollbackCommittedV1,
+  type CompactionRetentionExtendedV1,
   type CompactionSourceReleaseV1,
   type CompactionSourceAuthorityV1,
   CompactionReconstructionRequiredError,
@@ -1410,10 +1412,60 @@ export class RolloutStore {
     attemptId: string,
     extendedUntilMs: number,
   ): void {
-    this.compactionRetentionRepo.extendRollbackRetention(
-      attemptId,
-      extendedUntilMs,
+    const pin = this.compactionRetentionRepo.require(attemptId);
+    if (pin.state !== "committed_reference" || pin.commitSha256 === undefined ||
+        pin.retentionDeadlineMs === undefined) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "rollback retention can only extend a committed source",
+      );
+    }
+    const previousDeadlineMs = Math.max(
+      pin.retentionDeadlineMs,
+      pin.rollbackExtendedUntilMs ?? 0,
     );
+    if (!Number.isSafeInteger(extendedUntilMs) ||
+        extendedUntilMs <= previousDeadlineMs ||
+        extendedUntilMs <= this.nowMilliseconds()) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "rollback retention extension must strictly increase the effective future deadline",
+      );
+    }
+    const withoutDigest = {
+      format_version: COMPACTION_EVENT_FORMAT_VERSION,
+      minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+      attempt_id: attemptId,
+      recorded_at_ms: this.nowMilliseconds(),
+      commit_sha256: pin.commitSha256,
+      source_sha256: pin.sourceSha256,
+      source_session_id: pin.sessionId,
+      source_epoch: pin.epoch,
+      previous_retention_deadline_ms: previousDeadlineMs,
+      effective_retention_deadline_ms: extendedUntilMs,
+    } as const;
+    const event: CompactionRetentionExtendedV1 = {
+      ...withoutDigest,
+      extension_sha256: digestWithDomain(
+        COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN,
+        withoutDigest,
+      ),
+    };
+    readCompactionRolloutPayload("compaction_retention_extended", event);
+    this.appendRollout(
+      { type: "compaction_retention_extended", payload: event },
+      { durable: true },
+    );
+    try {
+      this.compactionRetentionRepo.extendRollbackRetention(
+        attemptId,
+        extendedUntilMs,
+      );
+    } catch (error) {
+      throw new CompactionReconstructionRequiredError(attemptId, {
+        cause: error,
+      });
+    }
   }
 
   /**
@@ -2296,6 +2348,8 @@ export class RolloutStore {
         commit.payload.committed_at_ms,
       );
       this.compactionRetentionRepo.markCleanupComplete(pin.attemptId);
+      this.reconcileCompactionRetentionExtensions(pin, items);
+      pin = this.compactionRetentionRepo.require(pin.attemptId);
       const rollback = items.find(
         (item): item is Extract<RolloutItem, { type: "compaction_rollback_committed" }> =>
           item.type === "compaction_rollback_committed",
@@ -2460,6 +2514,8 @@ export class RolloutStore {
           commitSha256,
         );
       }
+      this.reconcileCompactionRetentionExtensions(pin, items);
+      pin = this.compactionRetentionRepo.require(pin.attemptId);
       if (rollback !== undefined) {
         if (rollback.payload.rollback_mode === "reviewed_branch") {
           this.materializeReviewedRollbackTarget(rollback.payload);
@@ -2536,6 +2592,43 @@ export class RolloutStore {
           createdAtMs: nowMs,
         });
       }
+    }
+  }
+
+  private reconcileCompactionRetentionExtensions(
+    initialPin: CompactionPinRecord,
+    items: readonly RolloutItem[],
+  ): void {
+    let pin = initialPin;
+    for (const item of items) {
+      if (item.type !== "compaction_retention_extended") continue;
+      const extension = item.payload;
+      if (pin.commitSha256 !== extension.commit_sha256 ||
+          pin.sourceSha256 !== extension.source_sha256 ||
+          pin.sessionId !== extension.source_session_id ||
+          pin.epoch !== extension.source_epoch) {
+        throw new CompactionTransactionError(
+          "commit_failed",
+          "canonical retention extension does not bind the durable compaction pin",
+        );
+      }
+      const currentDeadline = Math.max(
+        pin.retentionDeadlineMs ?? 0,
+        pin.rollbackExtendedUntilMs ?? 0,
+      );
+      if (extension.effective_retention_deadline_ms <= currentDeadline) {
+        continue;
+      }
+      if (extension.previous_retention_deadline_ms !== currentDeadline) {
+        throw new CompactionTransactionError(
+          "commit_failed",
+          "canonical retention extension is not contiguous with SQLite state",
+        );
+      }
+      pin = this.compactionRetentionRepo.extendRollbackRetention(
+        pin.attemptId,
+        extension.effective_retention_deadline_ms,
+      );
     }
   }
 

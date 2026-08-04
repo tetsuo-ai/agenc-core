@@ -810,6 +810,95 @@ describe("RolloutStore transactional compaction", () => {
     }
   });
 
+  it("persists an operator rollback extension across restart before release", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    temporaryWorkspaces.push(cwd);
+    let nowMs = Date.now();
+    const sessionId = "retention-extension-restart";
+    const store = openStore(sessionId, { nowMilliseconds: () => nowMs }, cwd);
+    let attemptId = "";
+    let originalDeadline = 0;
+    let extendedDeadline = 0;
+    try {
+      const transaction = commitSmallCompaction(store, "retention-extension-attempt");
+      attemptId = transaction.intent.attempt_id;
+      store.markProjectionComplete(attemptId);
+      store.markCleanupComplete(attemptId);
+      originalDeadline = transaction.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS;
+      extendedDeadline = originalDeadline + 60_000;
+      store.extendCompactionRollbackRetention(attemptId, extendedDeadline);
+      expect(store.readAll().at(-1)).toMatchObject({
+        type: "compaction_retention_extended",
+        payload: {
+          previous_retention_deadline_ms: originalDeadline,
+          effective_retention_deadline_ms: extendedDeadline,
+        },
+      });
+    } finally {
+      store.close();
+    }
+
+    nowMs = originalDeadline;
+    const reopened = openStore(sessionId, {
+      resume: true,
+      nowMilliseconds: () => nowMs,
+    }, cwd);
+    try {
+      expect(() => reopened.beginCompactionSourceRelease({
+        attemptId,
+        nowMs: Number.MAX_SAFE_INTEGER,
+      })).toThrow(/rollback window/i);
+      nowMs = extendedDeadline;
+      expect(() => reopened.beginCompactionSourceRelease({
+        attemptId,
+        nowMs: 0,
+      })).not.toThrow();
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it("rebuilds a rollback extension from canonical after SQLite loss", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    temporaryWorkspaces.push(cwd);
+    let nowMs = Date.now();
+    const sessionId = "retention-extension-db-loss";
+    const store = openStore(sessionId, { nowMilliseconds: () => nowMs }, cwd);
+    let attemptId = "";
+    let originalDeadline = 0;
+    let extendedDeadline = 0;
+    try {
+      const transaction = commitSmallCompaction(store, "extension-db-loss-attempt");
+      attemptId = transaction.intent.attempt_id;
+      store.markProjectionComplete(attemptId);
+      store.markCleanupComplete(attemptId);
+      originalDeadline = transaction.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS;
+      extendedDeadline = originalDeadline + 120_000;
+      store.extendCompactionRollbackRetention(attemptId, extendedDeadline);
+    } finally {
+      store.close();
+    }
+    removeStateDatabase(cwd);
+    nowMs = originalDeadline;
+    const reopened = openStore(sessionId, {
+      resume: true,
+      nowMilliseconds: () => nowMs,
+    }, cwd);
+    try {
+      expect(() => reopened.beginCompactionSourceRelease({
+        attemptId,
+        nowMs: Number.MAX_SAFE_INTEGER,
+      })).toThrow(/rollback window/i);
+      nowMs = extendedDeadline;
+      expect(() => reopened.beginCompactionSourceRelease({
+        attemptId,
+        nowMs: 0,
+      })).not.toThrow();
+    } finally {
+      reopened.close();
+    }
+  });
+
   it("blocks the exact first ordinal after a physically deleted source row", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
     temporaryWorkspaces.push(cwd);
@@ -960,17 +1049,7 @@ describe("RolloutStore transactional compaction", () => {
       store.close();
     }
 
-    const { stateDbPath } = resolveStateDatabasePaths({ cwd });
-    unlinkSync(stateDbPath);
-    for (const suffix of ["-wal", "-shm"]) {
-      try {
-        unlinkSync(`${stateDbPath}${suffix}`);
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-          throw error;
-        }
-      }
-    }
+    removeStateDatabase(cwd);
 
     const reopened = openStore(sessionId, {
       resume: true,
@@ -1670,5 +1749,19 @@ function seedOrdinalGuardPin(
     });
   } finally {
     driver.close();
+  }
+}
+
+function removeStateDatabase(cwd: string): void {
+  const { stateDbPath } = resolveStateDatabasePaths({ cwd });
+  unlinkSync(stateDbPath);
+  for (const suffix of ["-wal", "-shm"]) {
+    try {
+      unlinkSync(`${stateDbPath}${suffix}`);
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+        throw error;
+      }
+    }
   }
 }
