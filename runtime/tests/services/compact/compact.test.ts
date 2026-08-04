@@ -21,6 +21,10 @@ import type {
   RuntimeMessage,
 } from "../../../src/services/compact/types.js";
 import type {
+  CompactionPayloadChunkV1,
+  CompactionPayloadKind,
+} from "../../../src/services/compact/transaction-types.js";
+import type {
   LLMMessage,
   LLMProvider,
   LLMResponse,
@@ -118,12 +122,41 @@ describe("compact service", () => {
       .toEqual(["attachment"]);
     expect(result.compactionResult.hookResults.map((item) => item.content))
       .toEqual(["hook"]);
-    expect(harness.store.readAll().filter((item) =>
-      item.type.startsWith("compaction_"),
+    const compactionRows = harness.store.readAll().filter((item) =>
+      item.type.startsWith("compaction_")
+    );
+    expect(compactionRows.filter((item) =>
+      item.type !== "compaction_payload_chunk"
     ).map((item) => item.type)).toEqual([
       "compaction_intent",
       "compaction_committed",
     ]);
+
+    const payloadChunks = compactionRows.flatMap((item) =>
+      item.type === "compaction_payload_chunk" ? [item.payload] : []
+    );
+    const payloadKindOrder: readonly CompactionPayloadKind[] = [
+      "active_history_refs",
+      "source_history",
+      "final_summary",
+      "summary_dag",
+      "replacement_history",
+    ];
+    expect([...new Set(payloadChunks.map((chunk) => chunk.payload_kind))])
+      .toEqual(payloadKindOrder);
+    for (const payloadKind of payloadKindOrder) {
+      const chunksForKind = payloadChunks.filter(
+        (chunk): chunk is CompactionPayloadChunkV1 =>
+          chunk.payload_kind === payloadKind,
+      );
+      expect(chunksForKind.length).toBeGreaterThan(0);
+      expect(chunksForKind.map((chunk) => chunk.chunk_index)).toEqual(
+        Array.from({ length: chunksForKind.length }, (_, index) => index),
+      );
+      expect(chunksForKind.every((chunk) =>
+        chunk.chunk_count === chunksForKind.length
+      )).toBe(true);
+    }
   });
 
   test("runs a real bounded multi-chunk map/reduce without raw transcript delimiters", async () => {
