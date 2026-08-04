@@ -185,6 +185,7 @@ interface MutableAttemptScan {
   persistedIntent?: CompactionPersistedIntentV1;
   intentRecord?: StrictCanonicalJournalRecord;
   sourceHistoryManifest?: CompactionPayloadManifestV1;
+  sourceHistoryValidated?: boolean;
   commitSha256?: string;
   readonly records: StrictCanonicalJournalRecord[];
   readonly calls: Map<number, MutableAdmissionState>;
@@ -204,6 +205,7 @@ export interface CanonicalCompactionAttemptScan {
   readonly admissionValid: boolean;
   readonly hasLaterCanonicalWork: boolean;
   readonly sourceHistoryManifest?: CompactionPayloadManifestV1;
+  readonly sourceHistoryRetained: boolean;
 }
 
 export interface CanonicalRolloutSourceRecord {
@@ -212,6 +214,13 @@ export interface CanonicalRolloutSourceRecord {
   readonly itemType: RolloutItem["type"];
   readonly compactionSourceSha256: string;
   readonly committedAttemptId?: string;
+}
+
+export interface CanonicalRolloutPayloadRecord {
+  readonly lineNumber: number;
+  readonly encodedByteLength: number;
+  readonly payloadKind: CompactionPayloadChunkV1["payload_kind"];
+  readonly compactionSourceSha256: string;
 }
 
 export interface CanonicalActiveHistoryPosition {
@@ -228,6 +237,10 @@ export interface CanonicalRolloutScan {
   readonly proof: Omit<StrictCanonicalJournal, "records">;
   readonly attempts: ReadonlyMap<string, CanonicalCompactionAttemptScan>;
   readonly sourceRecords: ReadonlyMap<number, CanonicalRolloutSourceRecord>;
+  readonly payloadRecordsAtAttempts: ReadonlyMap<
+    string,
+    readonly CanonicalRolloutPayloadRecord[]
+  >;
   readonly activeHistory?: CanonicalActiveHistoryScan;
   readonly historyAtAttempts: ReadonlyMap<string, readonly ResponseItem[]>;
 }
@@ -243,6 +256,7 @@ export interface CanonicalRolloutScanOptions
   readonly compactionSourceDigestDomain: string;
   readonly captureActiveHistory?: boolean;
   readonly captureHistoryAtAttemptIds?: readonly string[];
+  readonly capturePayloadRecordsAtAttemptIds?: readonly string[];
 }
 
 /**
@@ -275,6 +289,10 @@ export function scanCanonicalRollout(
     checkOperationalBudget();
     const attempts = new Map<string, MutableAttemptScan>();
     const capturedAttemptIds = new Set(options.captureHistoryAtAttemptIds ?? []);
+    const capturedPayloadAttemptIds = new Set(
+      options.capturePayloadRecordsAtAttemptIds ?? [],
+    );
+    const payloadLineAttempts = new Map<number, string>();
     const trackHistory = options.captureActiveHistory === true ||
       capturedAttemptIds.size > 0;
     let reducedState = emptyReducedState();
@@ -341,6 +359,12 @@ export function scanCanonicalRollout(
               observeAdmission(record, activeAdmissionAttempt);
             }
             payloadRegistry.add(item.payload);
+            if (
+              item.payload.payload_kind === "source_history" &&
+              capturedPayloadAttemptIds.has(item.payload.attempt_id)
+            ) {
+              payloadLineAttempts.set(record.lineNumber, item.payload.attempt_id);
+            }
             retainedLifecycleRecords += 1;
             if (retainedLifecycleRecords > MAX_COMPACTION_LIFECYCLE_RECORDS) {
               throw new RecoveryOperationalError(
@@ -350,14 +374,10 @@ export function scanCanonicalRollout(
             }
             const pending = attempts.get(item.payload.attempt_id);
             const pendingIntent = pending?.persistedIntent;
-            if (pending !== undefined && pending.intent === undefined &&
-                pendingIntent !== undefined &&
+            if (pending !== undefined && pendingIntent !== undefined &&
                 payloadRegistry.hasComplete(
                   pendingIntent.source.active_history_refs_manifest,
-                ) &&
-                payloadRegistry.hasComplete(
-                  pendingIntent.source_history_manifest,
-                )) {
+                ) && pending.intent === undefined) {
               const hydrated = hydratePersistedIntentRecord(
                 pending.intentRecord!,
                 pendingIntent,
@@ -367,6 +387,17 @@ export function scanCanonicalRollout(
               pending.records.push(hydrated.record);
               pending.sourceHistoryManifest = pendingIntent.source_history_manifest;
               activeAdmissionAttempt = pending;
+            }
+            if (pending !== undefined && pendingIntent !== undefined &&
+                item.payload.payload_kind === "source_history" &&
+                payloadRegistry.hasComplete(
+                  pendingIntent.source_history_manifest,
+                )) {
+              validatePersistedSourceHistory(
+                pendingIntent,
+                payloadRegistry,
+              );
+              pending.sourceHistoryValidated = true;
             }
             return;
           }
@@ -429,12 +460,16 @@ export function scanCanonicalRollout(
           }
           const persistedRollback = persistedRollbackPayload(item);
           if (persistedRollback !== undefined) {
-            record = hydratePersistedRollbackRecord(
-              record,
-              persistedRollback,
-              payloadRegistry,
-            );
-            item = record.item;
+            if (payloadRegistry.hasComplete(
+              persistedRollback.source_history_manifest,
+            )) {
+              record = hydratePersistedRollbackRecord(
+                record,
+                persistedRollback,
+                payloadRegistry,
+              );
+              item = record.item;
+            }
           }
           if (activeAdmissionAttempt !== undefined) {
             observeAdmission(record, activeAdmissionAttempt);
@@ -456,6 +491,7 @@ export function scanCanonicalRollout(
                 item.payload.replacementHistory !== undefined) ||
               item.type === "compaction_committed" ||
               (item.type === "compaction_rollback_committed" &&
+                Array.isArray(item.payload.source_history) &&
                 item.payload.target_session_id === options.expectedRunId)
             ) {
               checkOperationalBudget();
@@ -559,6 +595,15 @@ export function scanCanonicalRollout(
           "canonical compaction intent did not reconstruct its source manifests",
         );
       }
+      if (attempt.persistedIntent !== undefined &&
+          attempt.sourceHistoryValidated !== true &&
+          !attempt.records.some((record) =>
+            record.item.type === "compaction_source_release"
+          )) {
+        throw new Error(
+          "canonical compaction source history is missing without a durable release",
+        );
+      }
     }
 
     checkOperationalBudget();
@@ -574,28 +619,56 @@ export function scanCanonicalRollout(
       }
     }
     const sourceRecords = new Map<number, CanonicalRolloutSourceRecord>();
+    const payloadRecordsAtAttempts = new Map<
+      string,
+      CanonicalRolloutPayloadRecord[]
+    >();
+    for (const attemptId of capturedPayloadAttemptIds) {
+      payloadRecordsAtAttempts.set(attemptId, []);
+    }
     const second = scanPass(fd, snapshot.size, {
       ...strictOptions(options, checkOperationalBudget),
       trustedSourceSha256: first.sourceSha256,
       retainRecords: false,
       identityPolicy: "trusted_replay",
       onRecord: (record) => {
-        if (!sourceLines.has(record.lineNumber)) return;
+        const payloadAttemptId = payloadLineAttempts.get(record.lineNumber);
+        if (!sourceLines.has(record.lineNumber) && payloadAttemptId === undefined) return;
         checkOperationalBudget();
         const physical = readPhysicalRecord(fd, record);
         const item = record.item;
-        sourceRecords.set(record.lineNumber, {
-          lineNumber: record.lineNumber,
-          encodedByteLength: physical.byteLength,
-          itemType: item.type,
-          compactionSourceSha256: createHash("sha256")
-            .update(options.compactionSourceDigestDomain, "utf8")
-            .update(physical)
-            .digest("hex"),
-          ...(item.type === "compaction_committed"
-            ? { committedAttemptId: item.payload.attempt_id }
-            : {}),
-        });
+        const physicalSha256 = createHash("sha256")
+          .update(options.compactionSourceDigestDomain, "utf8")
+          .update(physical)
+          .digest("hex");
+        if (sourceLines.has(record.lineNumber)) {
+          sourceRecords.set(record.lineNumber, {
+            lineNumber: record.lineNumber,
+            encodedByteLength: physical.byteLength,
+            itemType: item.type,
+            compactionSourceSha256: physicalSha256,
+            ...(item.type === "compaction_committed"
+              ? { committedAttemptId: item.payload.attempt_id }
+              : {}),
+          });
+        }
+        if (payloadAttemptId !== undefined) {
+          if (item.type !== "compaction_payload_chunk" ||
+              item.payload.attempt_id !== payloadAttemptId ||
+              item.payload.payload_kind !== "source_history") {
+            throw new Error(
+              "captured compaction source-history row changed during canonical scan",
+            );
+          }
+          const records = payloadRecordsAtAttempts.get(payloadAttemptId) ?? [];
+          records.push({
+            lineNumber: record.lineNumber,
+            encodedByteLength: physical.byteLength,
+            payloadKind: item.payload.payload_kind,
+            compactionSourceSha256: physicalSha256,
+          });
+          payloadRecordsAtAttempts.set(payloadAttemptId, records);
+        }
       },
     });
     assertMatchingProof(first, second);
@@ -609,12 +682,19 @@ export function scanCanonicalRollout(
           records: Object.freeze(attempt.records.slice()),
           admissionValid: validAdmission(attempt),
           hasLaterCanonicalWork: attempt.laterWork,
+          sourceHistoryRetained: attempt.sourceHistoryValidated === true,
           ...(attempt.sourceHistoryManifest !== undefined
             ? { sourceHistoryManifest: attempt.sourceHistoryManifest }
             : {}),
         }]),
       ),
       sourceRecords,
+      payloadRecordsAtAttempts: new Map(
+        [...payloadRecordsAtAttempts].map(([attemptId, records]) => [
+          attemptId,
+          Object.freeze(records.slice()),
+        ]),
+      ),
       ...(options.captureActiveHistory === true
         ? { activeHistory: {
             messages: Object.freeze(reducedState.history.slice()),
@@ -662,25 +742,6 @@ function hydratePersistedIntentRecord(
     sourceBase,
     activeEntries as readonly CompactionActiveHistoryEntryV1[],
   );
-  const sourceHistory = payloadRegistry.reconstruct(
-    persisted.source_history_manifest,
-  );
-  // The inline rollback reader strictly validates projection messages and the
-  // source-history digest before the value can participate in reconstruction.
-  readCompactionRolloutPayload("compaction_rollback_committed", {
-    format_version: persisted.format_version,
-    minimum_reader_runtime: persisted.minimum_reader_runtime,
-    attempt_id: persisted.attempt_id,
-    recorded_at_ms: persisted.recorded_at_ms,
-    commit_sha256: "0".repeat(64),
-    source_sha256: persisted.source.source_sha256,
-    history_digest: persisted.source.history_digest,
-    source_session_id: persisted.source.session_id,
-    source_epoch: persisted.source.epoch,
-    rollback_mode: "same_session",
-    target_session_id: persisted.source.session_id,
-    source_history: sourceHistory,
-  });
   const hydrated = readCompactionRolloutPayload("compaction_intent", {
     format_version: persisted.format_version,
     minimum_reader_runtime: persisted.minimum_reader_runtime,
@@ -711,6 +772,31 @@ function hydratePersistedIntentRecord(
     },
     intent,
   };
+}
+
+function validatePersistedSourceHistory(
+  persisted: CompactionPersistedIntentV1,
+  payloadRegistry: DiskCompactionPayloadRegistry,
+): void {
+  const sourceHistory = payloadRegistry.reconstruct(
+    persisted.source_history_manifest,
+  );
+  // The inline rollback reader strictly validates projection messages and the
+  // source-history digest before the value can participate in reconstruction.
+  readCompactionRolloutPayload("compaction_rollback_committed", {
+    format_version: persisted.format_version,
+    minimum_reader_runtime: persisted.minimum_reader_runtime,
+    attempt_id: persisted.attempt_id,
+    recorded_at_ms: persisted.recorded_at_ms,
+    commit_sha256: "0".repeat(64),
+    source_sha256: persisted.source.source_sha256,
+    history_digest: persisted.source.history_digest,
+    source_session_id: persisted.source.session_id,
+    source_epoch: persisted.source.epoch,
+    rollback_mode: "same_session",
+    target_session_id: persisted.source.session_id,
+    source_history: sourceHistory,
+  });
 }
 
 function hydratePersistedCommitRecord(

@@ -284,6 +284,18 @@ export class StrictCanonicalJournalValidator {
         "canonical journal is missing its required terminal",
       );
     }
+    for (const attempt of this.#compactionAttempts.values()) {
+      const sourceHistoryManifest = attempt.intent?.source_history_manifest;
+      if (!isPlainRecord(sourceHistoryManifest)) continue;
+      const sourceHistory = attempt.payloadChunks?.get("source_history");
+      if (sourceHistory !== undefined) continue;
+      if (attempt.terminal !== "committed" || attempt.release !== true) {
+        this.#fail(
+          "identity_conflict",
+          "compaction source_history manifest has no chunk chain or durable release",
+        );
+      }
+    }
     return Object.freeze({
       records: Object.freeze(this.#records.slice()),
       recordCount: this.#recordCount,
@@ -587,7 +599,9 @@ export class StrictCanonicalJournalValidator {
             intentSource.active_history_refs_manifest,
             facts,
           );
-          this.#assertPayloadManifestComplete(current, intentManifest, facts);
+          if (current.payloadChunks?.has("source_history") === true) {
+            this.#assertPayloadManifestComplete(current, intentManifest, facts);
+          }
           this.#assertPayloadManifestComplete(
             current,
             payload.final_summary_manifest,
@@ -674,6 +688,18 @@ export class StrictCanonicalJournalValidator {
       );
     }
     if (item.type === "compaction_rollback_committed") {
+      const rollbackManifest = payload.source_history_manifest;
+      if (
+        rollbackManifest !== undefined &&
+        canonicalizeJson(rollbackManifest) !==
+          canonicalizeJson(current.intent.source_history_manifest)
+      ) {
+        this.#fail(
+          "identity_conflict",
+          "compaction rollback source-history manifest conflicts with its intent",
+          facts,
+        );
+      }
       if (current.rollback === true) {
         this.#fail("identity_conflict", "duplicate compaction rollback", facts);
       }

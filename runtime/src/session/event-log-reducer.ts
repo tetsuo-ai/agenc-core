@@ -201,6 +201,7 @@ export function reduce(
 
     case "compaction_rollback_committed":
       if (
+        !Array.isArray(item.payload.source_history) ||
         state.sessionMeta === undefined ||
         state.sessionMeta === null ||
         typeof state.sessionMeta !== "object" ||

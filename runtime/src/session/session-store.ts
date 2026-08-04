@@ -108,6 +108,19 @@ import {
 export const I4_FSYNC_RETRY_MS = 100;
 const I83_SUSPEND_DETECTION_MS = 10_000;
 
+type RolloutPhysicalLineExclusion = {
+  readonly lineNumber: number;
+  readonly encodedBytes: number;
+  readonly sha256: string;
+} & (
+  | { readonly itemType: "response_item" | "compacted" }
+  | {
+      readonly itemType: "compaction_payload_chunk";
+      readonly attemptId: string;
+      readonly payloadKind: CompactionPayloadKind;
+    }
+);
+
 // OOM: bound the per-session monotonic indices (`toolResultBytesByTurn`,
 // `tokenEstimateByTurn`, `toolCallTurnIds`, `offsetsBySeq`). These are advisory
 // accumulators — the rollout JSONL is the source of truth (I-25), the live
@@ -782,11 +795,18 @@ function hydrateManifestCompactionItems(items: readonly RolloutItem[]): RolloutI
     byKind.set(item.payload.payload_kind, ordered);
     chunks.set(item.payload.attempt_id, byKind);
   }
+  const releasedAttemptIds = new Set(items.flatMap((item) =>
+    item.type === "compaction_source_release" ? [item.payload.attempt_id] : []
+  ));
+  const payloadChunks = (
+    manifest: Parameters<typeof reconstructCompactionPayloadV1>[0],
+  ): readonly CompactionPayloadChunkV1[] =>
+    chunks.get(manifest.attempt_id)?.get(manifest.payload_kind) ?? [];
   const reconstruct = (
     manifest: Parameters<typeof reconstructCompactionPayloadV1>[0],
   ): unknown => reconstructCompactionPayloadV1(
     manifest,
-    chunks.get(manifest.attempt_id)?.get(manifest.payload_kind) ?? [],
+    payloadChunks(manifest),
   );
   const hydratedIntents = new Map<string, Extract<
     RolloutItem,
@@ -809,21 +829,25 @@ function hydrateManifestCompactionItems(items: readonly RolloutItem[]): RolloutI
       }
       const { active_history_refs_manifest: _manifest, ...sourceBase } =
         persisted.source;
-      const sourceHistory = reconstruct(persisted.source_history_manifest);
-      readCompactionRolloutPayload("compaction_rollback_committed", {
-        format_version: persisted.format_version,
-        minimum_reader_runtime: persisted.minimum_reader_runtime,
-        attempt_id: persisted.attempt_id,
-        recorded_at_ms: persisted.recorded_at_ms,
-        commit_sha256: "0".repeat(64),
-        source_sha256: persisted.source.source_sha256,
-        history_digest: persisted.source.history_digest,
-        source_session_id: persisted.source.session_id,
-        source_epoch: persisted.source.epoch,
-        rollback_mode: "same_session",
-        target_session_id: persisted.source.session_id,
-        source_history: sourceHistory,
-      });
+      const sourceHistoryChunks = payloadChunks(persisted.source_history_manifest);
+      if (sourceHistoryChunks.length > 0 ||
+          !releasedAttemptIds.has(persisted.attempt_id)) {
+        const sourceHistory = reconstruct(persisted.source_history_manifest);
+        readCompactionRolloutPayload("compaction_rollback_committed", {
+          format_version: persisted.format_version,
+          minimum_reader_runtime: persisted.minimum_reader_runtime,
+          attempt_id: persisted.attempt_id,
+          recorded_at_ms: persisted.recorded_at_ms,
+          commit_sha256: "0".repeat(64),
+          source_sha256: persisted.source.source_sha256,
+          history_digest: persisted.source.history_digest,
+          source_session_id: persisted.source.session_id,
+          source_epoch: persisted.source.epoch,
+          rollback_mode: "same_session",
+          target_session_id: persisted.source.session_id,
+          source_history: sourceHistory,
+        });
+      }
       const payload = readCompactionRolloutPayload("compaction_intent", {
         format_version: persisted.format_version,
         minimum_reader_runtime: persisted.minimum_reader_runtime,
@@ -880,6 +904,14 @@ function hydrateManifestCompactionItems(items: readonly RolloutItem[]): RolloutI
       if (typeof raw !== "object" || raw === null ||
           !("source_history_manifest" in raw)) return item;
       const persisted = readCompactionPersistedRollbackCommittedV1(raw);
+      const sourceHistoryChunks = payloadChunks(persisted.source_history_manifest);
+      if (sourceHistoryChunks.length === 0 &&
+          releasedAttemptIds.has(persisted.attempt_id)) {
+        // The release tombstone proves that no live rollback owner remains.
+        // Preserve the manifest-backed rollback row as audit evidence without
+        // reconstructing payload bytes that were durably garbage-collected.
+        return item;
+      }
       const payload = readCompactionRolloutPayload(
         "compaction_rollback_committed",
         {
@@ -894,7 +926,10 @@ function hydrateManifestCompactionItems(items: readonly RolloutItem[]): RolloutI
           source_epoch: persisted.source_epoch,
           rollback_mode: persisted.rollback_mode,
           target_session_id: persisted.target_session_id,
-          source_history: reconstruct(persisted.source_history_manifest),
+          source_history: reconstructCompactionPayloadV1(
+            persisted.source_history_manifest,
+            sourceHistoryChunks,
+          ),
         },
       ) as Extract<
         RolloutItem,
@@ -1835,11 +1870,7 @@ export class SessionStore {
    * loading the complete rollout into memory.
    */
   rewriteRolloutExcludingPhysicalLinesAtomically(
-    exclusions: readonly {
-      readonly lineNumber: number;
-      readonly encodedBytes: number;
-      readonly sha256: string;
-    }[],
+    exclusions: readonly RolloutPhysicalLineExclusion[],
     digestDomain: string,
   ): void {
     if (!this.opened || this.closed) {
@@ -1853,7 +1884,12 @@ export class SessionStore {
       const existing = byLine.get(exclusion.lineNumber);
       if (existing !== undefined &&
           (existing.encodedBytes !== exclusion.encodedBytes ||
-            existing.sha256 !== exclusion.sha256)) {
+            existing.sha256 !== exclusion.sha256 ||
+            existing.itemType !== exclusion.itemType ||
+            (existing.itemType === "compaction_payload_chunk" &&
+              exclusion.itemType === "compaction_payload_chunk" &&
+              (existing.attemptId !== exclusion.attemptId ||
+                existing.payloadKind !== exclusion.payloadKind)))) {
         throw new Error("conflicting physical-row exclusion authority");
       }
       byLine.set(exclusion.lineNumber, exclusion);
@@ -1897,7 +1933,11 @@ export class SessionStore {
           .digest("hex");
         if (physical.byteLength !== exclusion.encodedBytes ||
             digest !== exclusion.sha256 ||
-            (item.type !== "response_item" && item.type !== "compacted")) {
+            item.type !== exclusion.itemType ||
+            (exclusion.itemType === "compaction_payload_chunk" &&
+              (item.type !== "compaction_payload_chunk" ||
+                item.payload.attempt_id !== exclusion.attemptId ||
+                item.payload.payload_kind !== exclusion.payloadKind))) {
           throw new Error("physical-row exclusion no longer matches canonical source");
         }
         matched.add(lineNumber);

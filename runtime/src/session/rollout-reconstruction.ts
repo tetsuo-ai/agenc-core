@@ -638,7 +638,8 @@ export function reconstructFromRollout(
       }
 
       case "compaction_rollback_committed": {
-        if (!rollbackTargetsReconstructedSession(item)) break;
+        if (!Array.isArray(item.payload.source_history) ||
+            !rollbackTargetsReconstructedSession(item)) break;
         if (!active) active = emptySegment();
         if (active.referenceContextItem.kind === "never_set") {
           active.referenceContextItem = { kind: "cleared" };

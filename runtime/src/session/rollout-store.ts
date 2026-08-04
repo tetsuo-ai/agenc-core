@@ -511,7 +511,7 @@ function compactionPinSourceMatchesScan(
   }, scan);
 }
 
-function compactionPhysicalPruneCompleteInScan(
+function compactionSourceRowsPrunedInScan(
   pin: CompactionPinRecord,
   scan: CanonicalRolloutScan,
 ): boolean {
@@ -522,6 +522,16 @@ function compactionPhysicalPruneCompleteInScan(
       (retained.itemType !== "response_item" &&
         retained.itemType !== "compacted");
   });
+}
+
+function compactionPhysicalPruneCompleteInScan(
+  pin: CompactionPinRecord,
+  scan: CanonicalRolloutScan,
+): boolean {
+  if (!compactionSourceRowsPrunedInScan(pin, scan)) return false;
+  const attempt = scan.attempts.get(pin.attemptId);
+  if (attempt?.sourceHistoryManifest === undefined) return true;
+  return !attempt.sourceHistoryRetained;
 }
 
 function cloneProjectionMessage(
@@ -1829,6 +1839,7 @@ export class RolloutStore {
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
       nowMilliseconds: this.nowMilliseconds,
       compactionSourceDigestDomain: COMPACTION_SOURCE_DIGEST_DOMAIN,
+      capturePayloadRecordsAtAttemptIds: [pin.attemptId],
       additionalSourceLines: pin.activeHistoryRefs.map(
         (ref) => ref.first_sequence,
       ),
@@ -1838,7 +1849,7 @@ export class RolloutStore {
       !sourceMatches &&
       !(
         pin.pruneCursor === pin.activeHistoryRefs.length &&
-        compactionPhysicalPruneCompleteInScan(pin, scan)
+        compactionSourceRowsPrunedInScan(pin, scan)
       )
     ) {
       throw new CompactionTransactionError(
@@ -1861,8 +1872,7 @@ export class RolloutStore {
       referenceScanGeneration: pin.referenceScanGeneration,
     });
     if (nextCursor < pin.activeHistoryRefs.length) return false;
-    if (sourceMatches) {
-      this.pruneCompactionPhysicalSource(pin, scan);
+    if (this.pruneCompactionPhysicalSource(pin, scan)) {
       this.afterCompactionSourcePruneRewriteForTestingOnly?.();
     }
     this.compactionRetentionRepo.markReleased({
@@ -1879,24 +1889,37 @@ export class RolloutStore {
   private pruneCompactionPhysicalSource(
     pin: CompactionPinRecord,
     scan: CanonicalRolloutScan,
-  ): void {
+  ): boolean {
     const exclusions = pin.activeHistoryRefs.flatMap((ref) => {
       const record = scan.sourceRecords.get(ref.first_sequence);
-      return record !== undefined &&
-        (record.itemType === "response_item" || record.itemType === "compacted") &&
-        record.compactionSourceSha256 === ref.sha256
-        ? [{
-            lineNumber: ref.first_sequence,
-            encodedBytes: ref.encoded_bytes,
-            sha256: ref.sha256,
-          }]
-        : [];
+      if (record === undefined ||
+          (record.itemType !== "response_item" && record.itemType !== "compacted") ||
+          record.compactionSourceSha256 !== ref.sha256) return [];
+      return [{
+        lineNumber: ref.first_sequence,
+        encodedBytes: ref.encoded_bytes,
+        sha256: ref.sha256,
+        itemType: record.itemType,
+      }];
     });
-    if (exclusions.length === 0) return;
+    const attempt = scan.attempts.get(pin.attemptId);
+    const sourceHistoryExclusions = attempt?.sourceHistoryManifest === undefined
+      ? []
+      : (scan.payloadRecordsAtAttempts.get(pin.attemptId) ?? []).map((record) => ({
+          lineNumber: record.lineNumber,
+          encodedBytes: record.encodedByteLength,
+          sha256: record.compactionSourceSha256,
+          itemType: "compaction_payload_chunk" as const,
+          attemptId: pin.attemptId,
+          payloadKind: record.payloadKind,
+        }));
+    const physicalExclusions = [...exclusions, ...sourceHistoryExclusions];
+    if (physicalExclusions.length === 0) return false;
     this.store.rewriteRolloutExcludingPhysicalLinesAtomically(
-      exclusions,
+      physicalExclusions,
       COMPACTION_SOURCE_DIGEST_DOMAIN,
     );
+    return true;
   }
 
   /** Explicit durable references used by checkpoint/branch/provenance owners. */
@@ -2296,7 +2319,11 @@ export class RolloutStore {
         (item): item is Extract<RolloutItem, { type: "compaction_rollback_committed" }> =>
           item.type === "compaction_rollback_committed",
       );
-      if (rollback !== undefined) {
+      const release = items.find(
+        (item): item is Extract<RolloutItem, { type: "compaction_source_release" }> =>
+          item.type === "compaction_source_release",
+      );
+      if (rollback !== undefined && release === undefined) {
         if (rollback.payload.rollback_mode === "reviewed_branch") {
           this.materializeReviewedRollbackTarget(rollback.payload);
         }
@@ -2307,10 +2334,6 @@ export class RolloutStore {
           recordedAtMs: rollback.payload.recorded_at_ms,
         });
       }
-      const release = items.find(
-        (item): item is Extract<RolloutItem, { type: "compaction_source_release" }> =>
-          item.type === "compaction_source_release",
-      );
       if (release === undefined) continue;
       pin = this.compactionRetentionRepo.markReleasePending(release.payload);
       if (!compactionPhysicalPruneCompleteInScan(pin, scan)) continue;
@@ -2458,7 +2481,7 @@ export class RolloutStore {
       }
       this.reconcileCompactionRetentionExtensions(pin, items);
       pin = this.compactionRetentionRepo.require(pin.attemptId);
-      if (rollback !== undefined) {
+      if (rollback !== undefined && release === undefined) {
         if (rollback.payload.rollback_mode === "reviewed_branch") {
           this.materializeReviewedRollbackTarget(rollback.payload);
         }

@@ -1260,12 +1260,20 @@ describe("RolloutStore transactional compaction", () => {
         }),
       ).toThrow(/crash after physical prune/i);
       expect(physicalResponseContents(store.rolloutPath)).not.toContain("source one");
+      expect(sourceHistoryPayloadStats(store.rolloutPath)).toEqual({
+        records: 0,
+        encodedBytes: 0,
+      });
       expect(
         store.resumeCompactionSourceRelease({
           attemptId: transaction.intent.attempt_id,
           nowMs: releaseAt + 1,
         }),
       ).toBe(true);
+      expect(sourceHistoryPayloadStats(store.rolloutPath)).toEqual({
+        records: 0,
+        encodedBytes: 0,
+      });
     } finally {
       store.close();
     }
@@ -1302,8 +1310,144 @@ describe("RolloutStore transactional compaction", () => {
         attemptId,
         nowMs: Number.MAX_SAFE_INTEGER,
       })).not.toThrow();
+      expect(sourceHistoryPayloadStats(reopened.rolloutPath)).toEqual({
+        records: 0,
+        encodedBytes: 0,
+      });
     } finally {
       reopened.close();
+    }
+
+    removeStateDatabase(cwd);
+    const rebuiltAfterRelease = openStore(sessionId, {
+      resume: true,
+      nowMilliseconds: () => nowMs,
+    }, cwd);
+    try {
+      expect(() => rebuiltAfterRelease.assertCompactionProjectionReady()).not.toThrow();
+      expect(sourceHistoryPayloadStats(rebuiltAfterRelease.rolloutPath)).toEqual({
+        records: 0,
+        encodedBytes: 0,
+      });
+      expect(rebuiltAfterRelease.readAll().some((item) =>
+        item.type === "compaction_source_release" &&
+        item.payload.attempt_id === attemptId
+      )).toBe(true);
+    } finally {
+      rebuiltAfterRelease.close();
+    }
+  });
+
+  it("does not accumulate released source-history payloads", () => {
+    let nowMs = Date.now();
+    const store = openStore("repeated-source-payload-gc", {
+      nowMilliseconds: () => nowMs,
+    });
+    try {
+      for (let generation = 0; generation < 4; generation += 1) {
+        const transaction = commitSmallCompaction(
+          store,
+          `released-payload-${generation}`,
+        );
+        store.markProjectionComplete(transaction.intent.attempt_id);
+        const beforeRelease = sourceHistoryPayloadStats(
+          store.rolloutPath,
+          transaction.intent.attempt_id,
+        );
+        expect(beforeRelease.records).toBeGreaterThan(0);
+        expect(beforeRelease.encodedBytes).toBeGreaterThan(0);
+        nowMs = Math.max(
+          nowMs,
+          transaction.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS,
+        );
+        store.beginCompactionSourceRelease({
+          attemptId: transaction.intent.attempt_id,
+          nowMs,
+        });
+        expect(sourceHistoryPayloadStats(store.rolloutPath)).toEqual({
+          records: 0,
+          encodedBytes: 0,
+        });
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  it("garbage-collects source history after a reviewed rollback owner is released", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    temporaryWorkspaces.push(cwd);
+    const sessionId = "released-reviewed-rollback-source";
+    const targetSessionId = "released-reviewed-rollback-target";
+    let nowMs = Date.now();
+    const source = openStore(sessionId, {
+      nowMilliseconds: () => nowMs,
+    }, cwd);
+    let attemptId = "";
+    try {
+      const transaction = commitSmallCompaction(
+        source,
+        "released-reviewed-rollback-attempt",
+      );
+      attemptId = transaction.intent.attempt_id;
+      source.markProjectionComplete(attemptId);
+      source.markCleanupComplete(attemptId);
+      source.appendRollout(
+        { type: "response_item", payload: { role: "user", content: "newer work" } },
+        { durable: true },
+      );
+      nowMs = transaction.committedAtMs + 1;
+      source.rollbackCompaction({
+        attemptId,
+        nowMs,
+        reviewedBranchTargetSessionId: targetSessionId,
+      });
+      source.releaseCompactionSourceReference({
+        attemptId,
+        kind: "branch",
+        referenceId: targetSessionId,
+        recordedAtMs: nowMs + 1,
+      });
+      nowMs = transaction.committedAtMs + COMPACTION_ROLLBACK_RETENTION_MS;
+      source.beginCompactionSourceRelease({ attemptId, nowMs });
+
+      expect(sourceHistoryPayloadStats(source.rolloutPath, attemptId)).toEqual({
+        records: 0,
+        encodedBytes: 0,
+      });
+      const releasedRows = source.readAll();
+      expect(releasedRows.some((item) =>
+        item.type === "compaction_rollback_committed" &&
+        item.payload.attempt_id === attemptId
+      )).toBe(true);
+      expect(reconstructFromRollout(releasedRows).history.map(
+        (message) => message.content,
+      )).toEqual([
+        "authenticated compaction boundary",
+        "source summary",
+        "newer work",
+      ]);
+    } finally {
+      source.close();
+    }
+
+    removeStateDatabase(cwd);
+    const rebuilt = openStore(sessionId, {
+      resume: true,
+      nowMilliseconds: () => nowMs,
+    }, cwd);
+    try {
+      expect(() => rebuilt.assertCompactionProjectionReady()).not.toThrow();
+      expect(sourceHistoryPayloadStats(rebuilt.rolloutPath, attemptId)).toEqual({
+        records: 0,
+        encodedBytes: 0,
+      });
+      expect(rebuilt.readAll().some((item) =>
+        item.type === "compaction_source_release" &&
+        item.payload.attempt_id === attemptId
+      )).toBe(true);
+    } finally {
+      rebuilt.close();
     }
   });
 });
@@ -1913,6 +2057,25 @@ function physicalResponseContents(rolloutPath: string): readonly unknown[] {
   return readTestRolloutRows(rolloutPath)
     .filter((row) => row.type === "response_item")
     .map((row) => (row.payload as { readonly content?: unknown }).content);
+}
+
+function sourceHistoryPayloadStats(
+  rolloutPath: string,
+  attemptId?: string,
+): { readonly records: number; readonly encodedBytes: number } {
+  const rows = readTestRolloutRows(rolloutPath).filter((row) =>
+    row.type === "compaction_payload_chunk" &&
+    (row.payload as CompactionPayloadChunkV1).payload_kind === "source_history" &&
+    (attemptId === undefined ||
+      (row.payload as CompactionPayloadChunkV1).attempt_id === attemptId)
+  );
+  return {
+    records: rows.length,
+    encodedBytes: rows.reduce(
+      (total, row) => total + Buffer.byteLength(`${JSON.stringify(row)}\n`, "utf8"),
+      0,
+    ),
+  };
 }
 
 function leafForActiveRange(
