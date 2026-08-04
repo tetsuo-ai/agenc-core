@@ -7,8 +7,7 @@
 
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { compactConversation } from "./compact.js";
-import { runPostCompactCleanup } from "./postCompactCleanup.js";
-import { trySessionMemoryCompaction } from "./sessionMemoryCompact.js";
+import { CompactionReconstructionRequiredError } from "./transaction-types.js";
 import {
   estimateMessagesTokens,
   isTruthyEnv,
@@ -68,10 +67,10 @@ export async function autoCompactIfNeeded(
     return { wasCompacted: false, consecutiveFailures: 0 };
   }
   try {
-    const compactionResult =
-      await trySessionMemoryCompaction(messages, context) ??
-      await compactConversation(messages, context);
-    runPostCompactCleanup(context.deps?.cleanup);
+    // Every destructive compaction uses the canonical transaction. Session
+    // memory remains recall input; it is never an unauthenticated replacement
+    // history or a bypass around pin/intent/provider validation/commit.
+    const compactionResult = await compactConversation(messages, context);
     return {
       wasCompacted: true,
       compactionResult,
@@ -83,7 +82,10 @@ export async function autoCompactIfNeeded(
     // of being swallowed, and do NOT increment consecutiveFailures (which
     // would otherwise trip the 3-strike circuit breaker and disable
     // auto-compaction for the rest of the turn on benign cancels).
-    if (isAbortError(context, error)) {
+    if (
+      error instanceof CompactionReconstructionRequiredError ||
+      isAbortError(context, error)
+    ) {
       throw error;
     }
     return {

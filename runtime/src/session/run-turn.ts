@@ -83,6 +83,7 @@ import type {
   CompactionResult,
   RuntimeMessage,
 } from "../services/compact/types.js";
+import { isAuthenticatedCompactionBoundary } from "./compaction-history-marker.js";
 import { getAutoCompactThreshold } from "../services/compact/autoCompact.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
@@ -116,6 +117,7 @@ import {
 } from "../prompts/live-instructions.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
 import { extractMentionAllowedRoots } from "../prompts/file-mentions.js";
+import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
 import { seedFileMentionAttachmentSessionReads } from "./file-mention-session-reads.js";
 import {
   realtimeEndInstructionMessage,
@@ -334,7 +336,6 @@ export {
 } from "./editor-interaction.js";
 export const EDITOR_INTERACTION_MAX_QUERY_TOKENS = 128_000;
 
-const AGENC_COMPACT_BOUNDARY = "<compact>";
 const PREPARED_TERMINAL = Symbol("agenc_prepared_terminal");
 
 interface AgenCPreparedTerminal {
@@ -353,6 +354,7 @@ interface AgenCAutoCompactResult {
     readonly replacementHistory: readonly LLMMessage[];
     readonly preCompactTokens?: number;
     readonly postCompactTokens?: number;
+    readonly transaction?: CompactionResult["transaction"];
   };
   readonly consecutiveFailures?: number;
 }
@@ -401,6 +403,7 @@ type AgenCCompactionResult = {
   readonly preCompactTokenCount?: number;
   readonly postCompactTokenCount?: number;
   readonly truePostCompactTokenCount?: number;
+  readonly transaction?: CompactionResult["transaction"];
 };
 
 async function prepareAgenCTurnContext(
@@ -503,7 +506,6 @@ async function runAgenCAutoCompact(params: {
     if (!result.wasCompacted || !result.compactionResult) {
       return compactionNotRun(result.consecutiveFailures);
     }
-    params.session.clearProviderResponseId();
     const compactionResult = await toAgenCCompactionResult(
       result.compactionResult as AgenCCompactionResult,
     );
@@ -593,11 +595,7 @@ function messagesAfterAgenCBoundary(
 ): LLMMessage[] {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (
-      message?.role === "user" &&
-      typeof message.content === "string" &&
-      message.content.startsWith(AGENC_COMPACT_BOUNDARY)
-    ) {
+    if (isAuthenticatedCompactionBoundary(message)) {
       return messages.slice(index + 1).map((item) => ({ ...item }));
     }
   }
@@ -782,18 +780,29 @@ async function toAgenCCompactionResult(
   result: AgenCCompactionResult,
   toolUseContext?: AgenCToolUseContext,
 ): Promise<NonNullable<AgenCAutoCompactResult["compactionResult"]>> {
-  const replacementHistory = await withCompactContextGuards(
-    async () => {
-      const { buildPostCompactMessages } =
-        await import("../services/compact/compact.js");
-      return fromAgenCRuntimeMessages(
-        buildPostCompactMessages(
-          toCompactServiceResult(result),
-        ) as AgenCRuntimeMessage[],
+  let replacementHistory: LLMMessage[];
+  try {
+    replacementHistory = await withCompactContextGuards(
+      async () => {
+        const { buildPostCompactMessages } =
+          await import("../services/compact/compact.js");
+        return fromAgenCRuntimeMessages(
+          buildPostCompactMessages(
+            toCompactServiceResult(result),
+          ) as AgenCRuntimeMessage[],
+        );
+      },
+      toolUseContext ? envForToolUseContext(toolUseContext) : undefined,
+    );
+  } catch (error) {
+    if (result.transaction !== undefined) {
+      throw new CompactionReconstructionRequiredError(
+        result.transaction.attempt_id,
+        { cause: error },
       );
-    },
-    toolUseContext ? envForToolUseContext(toolUseContext) : undefined,
-  );
+    }
+    throw error;
+  }
   const postCompactTokens =
     result.truePostCompactTokenCount ?? result.postCompactTokenCount;
   return {
@@ -806,6 +815,9 @@ async function toAgenCCompactionResult(
       ? { preCompactTokens: result.preCompactTokenCount }
       : {}),
     ...(postCompactTokens !== undefined ? { postCompactTokens } : {}),
+    ...(result.transaction !== undefined
+      ? { transaction: result.transaction }
+      : {}),
   };
 }
 
@@ -834,6 +846,9 @@ function toCompactServiceResult(
       : {}),
     ...(result.truePostCompactTokenCount !== undefined
       ? { truePostCompactTokenCount: result.truePostCompactTokenCount }
+      : {}),
+    ...(result.transaction !== undefined
+      ? { transaction: result.transaction }
       : {}),
   };
 }
@@ -2238,6 +2253,7 @@ async function runAutoCompact(
       ? "model_downshift"
       : sessionQuerySourceForTurn(session, options.querySource);
   const force = shouldForceAutoCompact(reason, phase);
+  let committedAttemptId: string | undefined;
   try {
     const autoCompactImplOverride = getAutoCompactImplOverride();
     const result = autoCompactImplOverride
@@ -2267,6 +2283,7 @@ async function runAutoCompact(
         );
       }
       const cr = result.compactionResult;
+      committedAttemptId = cr.transaction?.attempt_id;
       const compactedRollout = buildAgenCCompactedRolloutItem(cr);
       // Honor the rollout-persistence suspension invariant. Every other
       // durable write in the turn engine is gated on this flag
@@ -2280,6 +2297,7 @@ async function runAutoCompact(
       // later --resume and silently destroys the user's real conversation.
       if (
         cr &&
+        cr.transaction === undefined &&
         !session.isRolloutPersistenceSuspended?.() &&
         session.rolloutStore !== null &&
         session.rolloutStore !== undefined
@@ -2289,8 +2307,12 @@ async function runAutoCompact(
           { durable: true },
         );
       }
-      const compacted = buildAgenCPostCompactMessages(compactedRollout);
-      const unsentImageTurn = shouldKeepUnsentImageTurn
+      const compacted = cr.transaction === undefined
+        ? buildAgenCPostCompactMessages(compactedRollout)
+        : cr.transaction.committed.replacement_history.map((message) =>
+            responseItemToLlmMessage(message),
+          );
+      const unsentImageTurn = cr.transaction === undefined && shouldKeepUnsentImageTurn
         ? state.messages.at(-1)
         : undefined;
       // Replace both the full history view and the per-iteration
@@ -2311,6 +2333,32 @@ async function runAutoCompact(
         turnCounter: 0,
         consecutiveFailures: 0,
       };
+      if (cr.transaction !== undefined) {
+        const rolloutStore = session.rolloutStore;
+        if (rolloutStore === null || rolloutStore === undefined) {
+          throw new Error("transactional compaction lost its rollout owner");
+        }
+        try {
+          rolloutStore.markProjectionComplete(cr.transaction.attempt_id);
+        } catch (error) {
+          rolloutStore.markProjectionFailed(
+            cr.transaction.attempt_id,
+            error,
+          );
+        }
+        try {
+          session.clearProviderResponseId();
+          rolloutStore.markCleanupComplete(cr.transaction.attempt_id);
+        } catch (error) {
+          rolloutStore.markCleanupPending(cr.transaction.attempt_id, error);
+          throw new CompactionReconstructionRequiredError(
+            cr.transaction.attempt_id,
+            { cause: error },
+          );
+        }
+      } else {
+        session.clearProviderResponseId();
+      }
       return true;
     }
 
@@ -2341,7 +2389,13 @@ async function runAutoCompact(
         },
       },
     });
-    if (options.propagateErrors === true) throw error;
+    if (
+      committedAttemptId !== undefined ||
+      error instanceof CompactionReconstructionRequiredError ||
+      options.propagateErrors === true
+    ) {
+      throw error;
+    }
     return false;
   }
 }

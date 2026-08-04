@@ -1,17 +1,8 @@
 {
   "schemaVersion": 1,
   "auditSha": "d2b228e87ea63bd6a5d93e6f599f36bce88d672b",
-  "probeCount": 2,
+  "probeCount": 1,
   "probes": [
-    {
-      "id": "c2-compaction-transcript-instruction-trust",
-      "task": "C2",
-      "classification": "defect",
-      "file": "tests/fnd/red-probes/c2-compaction-transcript-instruction-trust.red-probe.ts",
-      "fingerprint": "C2:COMPACTION:TRANSCRIPT-INSTRUCTION-TRUST",
-      "sourceSha256": "372c1ee37b9a02f6360438802a83edfa1fc5588a14451c1d094f811117020528",
-      "timeoutMs": 10000
-    },
     {
       "id": "intentional-transition-omission",
       "task": "FND-001",

@@ -22,6 +22,7 @@ import { toolPairProjectionSchemaMigration } from "./020_tool_pair_projection_sc
 import { csvJobSchedulerMigration } from "./021_csv_job_scheduler.js";
 import { workflowHandoffArtifactsMigration } from "./022_workflow_handoff_artifacts.js";
 import { setBasedCancellationIndexesMigration } from "./023_set_based_cancellation_indexes.js";
+import { compactionTransactionMigration } from "./024_compaction_transaction.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -51,6 +52,7 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   csvJobSchedulerMigration,
   workflowHandoffArtifactsMigration,
   setBasedCancellationIndexesMigration,
+  compactionTransactionMigration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [

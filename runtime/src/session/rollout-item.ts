@@ -18,7 +18,20 @@ import type { Event, EventMsg, SessionMetaLine } from "./event-log.js";
 import type { SessionAgentTask } from "./agent-task-lifecycle.js";
 import type { ToolResultIntegrity } from "./tool-result-integrity.js";
 import type { AgentInvocationChannelMetadata } from "../contracts/agent-invocation-envelope.js";
+import type { CompactionHistoryMarkerV1 } from "./compaction-history-marker.js";
 import { redactSecretsInValue } from "../secrets/index.js";
+import type {
+  CompactionCleanupPendingV1,
+  CompactionCommittedV1,
+  CompactionFailedV1,
+  CompactionIntentV1,
+  CompactionRollbackCommittedV1,
+  CompactionSourceReleaseV1,
+} from "../services/compact/transaction-types.js";
+import {
+  isCompactionRolloutType,
+  readCompactionRolloutPayload,
+} from "./compaction-event-reader.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Per-variant payloads
@@ -51,6 +64,8 @@ export interface ResponseItem {
   readonly toolResultIntegrity?: ToolResultIntegrity;
   /** Durable authority/channel identity for a versioned agent invocation. */
   readonly agentInvocation?: AgentInvocationChannelMetadata;
+  /** Authenticated by the enclosing compaction commit digest. */
+  readonly compactionHistory?: CompactionHistoryMarkerV1;
   readonly id?: string;
   readonly endTurn?: boolean;
   readonly phase?: string;
@@ -92,7 +107,8 @@ import type { TurnContextItem } from "./event-log.js";
  * unknown variants in the I-26 `{type:'unknown'}` shim instead of
  * crashing.
  */
-export const ROLLOUT_ITEM_VERSION = 1;
+export const ROLLOUT_ITEM_VERSION = 2;
+export const LEGACY_ROLLOUT_ITEM_VERSION = 1;
 
 export type RolloutItem =
   | {
@@ -126,6 +142,36 @@ export type RolloutItem =
       readonly eventVersion?: number;
     }
   | {
+      readonly type: "compaction_intent";
+      readonly payload: CompactionIntentV1;
+      readonly eventVersion?: number;
+    }
+  | {
+      readonly type: "compaction_failed";
+      readonly payload: CompactionFailedV1;
+      readonly eventVersion?: number;
+    }
+  | {
+      readonly type: "compaction_committed";
+      readonly payload: CompactionCommittedV1;
+      readonly eventVersion?: number;
+    }
+  | {
+      readonly type: "compaction_cleanup_pending";
+      readonly payload: CompactionCleanupPendingV1;
+      readonly eventVersion?: number;
+    }
+  | {
+      readonly type: "compaction_rollback_committed";
+      readonly payload: CompactionRollbackCommittedV1;
+      readonly eventVersion?: number;
+    }
+  | {
+      readonly type: "compaction_source_release";
+      readonly payload: CompactionSourceReleaseV1;
+      readonly eventVersion?: number;
+    }
+  | {
       /** I-26 shim — unknown variant encountered during replay. */
       readonly type: "unknown";
       readonly payload: { readonly raw: string; readonly originalType: string };
@@ -140,6 +186,12 @@ const KNOWN_ROLLOUT_TYPES = Object.freeze(
     "compacted",
     "turn_context",
     "event_msg",
+    "compaction_intent",
+    "compaction_failed",
+    "compaction_committed",
+    "compaction_cleanup_pending",
+    "compaction_rollback_committed",
+    "compaction_source_release",
     "unknown",
   ]),
 );
@@ -164,9 +216,12 @@ const ROLLOUT_LEGACY_TYPE_ALIASES: Readonly<Record<string, string>> =
  * Stamps `eventVersion` when absent (I-26).
  */
 export function serializeRolloutItem(item: RolloutItem): string {
+  const defaultEventVersion = isCompactionRolloutType(item.type)
+    ? ROLLOUT_ITEM_VERSION
+    : LEGACY_ROLLOUT_ITEM_VERSION;
   const stamped =
     item.eventVersion === undefined
-      ? { ...item, eventVersion: ROLLOUT_ITEM_VERSION }
+      ? { ...item, eventVersion: defaultEventVersion }
       : item;
   return `${JSON.stringify(redactSecretsInValue(stamped))}\n`;
 }
@@ -213,6 +268,13 @@ export function parseRolloutLine(line: string): RolloutItem | null {
         eventVersion: parsed.eventVersion,
       };
     }
+  }
+  if (typeof typeTag === "string" && isCompactionRolloutType(typeTag)) {
+    return {
+      type: typeTag,
+      payload: readCompactionRolloutPayload(typeTag, parsed.payload),
+      eventVersion: parsed.eventVersion,
+    } as RolloutItem;
   }
   return parsed;
 }

@@ -1,5 +1,9 @@
 import type { EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
+import {
+  readCompactionRolloutPayload,
+  type CompactionRolloutType,
+} from "../session/compaction-event-reader.js";
 
 type KnownRolloutItem = Exclude<RolloutItem, { readonly type: "unknown" }>;
 type KnownRolloutType = KnownRolloutItem["type"];
@@ -69,6 +73,19 @@ function defineRolloutPayloadValidators<
   const Validators extends Record<KnownRolloutType, AnyValidator>,
 >(validators: Validators & RolloutValidatorChecks<Validators>): Validators {
   return validators;
+}
+
+function compactionPayloadValidator<T extends CompactionRolloutType>(
+  type: T,
+): Validator<RolloutPayload<T>, keyof RolloutPayload<T>> {
+  return ((value: unknown): value is RolloutPayload<T> => {
+    try {
+      readCompactionRolloutPayload(type, value);
+      return true;
+    } catch {
+      return false;
+    }
+  }) as Validator<RolloutPayload<T>, keyof RolloutPayload<T>>;
 }
 
 const LEGACY_EVENT_TYPES = Object.freeze({
@@ -1305,6 +1322,18 @@ const ROLLOUT_PAYLOAD_VALIDATORS = defineRolloutPayloadValidators({
       preCompactTokens: isNumber,
       postCompactTokens: isNumber,
     },
+  ),
+  compaction_intent: compactionPayloadValidator("compaction_intent"),
+  compaction_failed: compactionPayloadValidator("compaction_failed"),
+  compaction_committed: compactionPayloadValidator("compaction_committed"),
+  compaction_cleanup_pending: compactionPayloadValidator(
+    "compaction_cleanup_pending",
+  ),
+  compaction_rollback_committed: compactionPayloadValidator(
+    "compaction_rollback_committed",
+  ),
+  compaction_source_release: compactionPayloadValidator(
+    "compaction_source_release",
   ),
   turn_context: isTurnContext,
   event_msg: objectShape(

@@ -12,6 +12,11 @@ import type { LLMProvider, LLMTool, LLMToolChoice } from "../../llm/types.js";
 import type { Session } from "../../session/session.js";
 import type { ToolResultIntegrity } from "../../session/tool-result-integrity.js";
 import type { AgentInvocationChannelMetadata } from "../../contracts/agent-invocation-envelope.js";
+import type { CompactionHistoryMarkerV1 } from "../../session/compaction-history-marker.js";
+import type {
+  CompactionTransactionAdapter,
+  CompactionTransactionMetadataV1,
+} from "./transaction-types.js";
 
 export type RuntimeMessage = {
   readonly role?: "system" | "user" | "assistant" | "tool";
@@ -38,6 +43,7 @@ export type RuntimeMessage = {
     readonly toolResultIntegrity?: ToolResultIntegrity;
     readonly agentInvocation?: AgentInvocationChannelMetadata;
     readonly mergeBoundary?: "user_context";
+    readonly compactionHistory?: CompactionHistoryMarkerV1;
   };
 };
 
@@ -46,6 +52,10 @@ export type CompactContext = {
   readonly provider?: LLMProvider;
   /** Live owner used to admit every provider-backed compaction pass. */
   readonly admissionSession?: Session;
+  /** Canonical rollout/pin owner for durable transactional compaction. */
+  readonly compactionTransaction?: CompactionTransactionAdapter;
+  /** Explicit callers bypass the persistent automatic-failure suppression. */
+  readonly compactionMode?: "automatic" | "manual";
   readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength?: (updater: (length: number) => number) => void;
   readonly onCompactProgress?: (event: CompactProgressEvent) => void;
@@ -110,4 +120,6 @@ export type CompactionResult = {
   readonly preCompactTokenCount?: number;
   readonly postCompactTokenCount?: number;
   readonly truePostCompactTokenCount?: number;
+  /** Present only after the canonical compaction_committed fsync succeeds. */
+  readonly transaction?: CompactionTransactionMetadataV1;
 };

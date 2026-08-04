@@ -7,7 +7,8 @@ import {
 import { autoCompactIfNeeded } from "src/services/compact/autoCompact.js";
 import { compactConversation } from "src/services/compact/compact.js";
 import type { RuntimeMessage } from "src/services/compact/types.js";
-import type { Session } from "src/session/session.js";
+import type { LLMMessage, LLMResponse } from "src/llm/types.js";
+import { createCompactionTransactionHarness } from "../helpers/compaction-transaction-harness.js";
 
 /**
  * Revert-sensitive regression tests for gaphunt #3 compaction findings.
@@ -76,28 +77,31 @@ describe("gaphunt3 #10 — oversized transcript is summarized whole (map-reduce)
     // appears in one of the provider calls.
     const MIDDLE_SENTINEL = "UNIQUE_MIDDLE_SENTINEL_7f3a2b";
     const seenTranscripts: string[] = [];
-    const provider = {
-      name: "test",
-      chat: vi.fn(async (msgs: Array<{ readonly content: string }>) => {
+    const chat = vi.fn(async (msgs: LLMMessage[]): Promise<LLMResponse> => {
         seenTranscripts.push(msgs[0]?.content ?? "");
-        return { content: "chunk summary" };
-      }),
-    };
+        return validSummaryResponse();
+      });
 
     // Build a >200k-char prefix to summarize with the sentinel in the middle.
-    const head = makeMessage("h".repeat(100_000));
-    const middle = makeMessage(`prefix ${MIDDLE_SENTINEL} suffix`);
-    const tail = makeMessage("t".repeat(100_000));
+    const transcript = Array.from({ length: 20 }, (_, index) =>
+      makeMessage(
+        index === 10
+          ? `${"m".repeat(6_000)}${MIDDLE_SENTINEL}${"m".repeat(6_000)}`
+          : `${index}:${"x".repeat(12_000)}`,
+        index % 2 === 0 ? "user" : "assistant",
+      ),
+    );
     const recentUser = makeMessage("most recent request");
-    const messages: RuntimeMessage[] = [head, middle, tail, recentUser];
-
-    await compactConversation(messages, {
-      provider: provider as never,
-      admissionSession: admissionSessionFor(provider),
-      options: { contextWindowTokens: 200, mainLoopModel: "qwen3:8b" },
+    const messages: RuntimeMessage[] = [...transcript, recentUser];
+    const harness = createCompactionTransactionHarness(messages, {
+      contextWindowTokens: 32_000,
+      maxOutputTokens: 256,
+      chat,
     });
 
-    expect(provider.chat).toHaveBeenCalled();
+    await compactConversation(messages, harness.context);
+
+    expect(chat).toHaveBeenCalled();
     const allTranscripts = seenTranscripts.join("\n");
     // The middle sentinel reached the summarizer (no middle was dropped).
     expect(allTranscripts).toContain(MIDDLE_SENTINEL);
@@ -105,25 +109,22 @@ describe("gaphunt3 #10 — oversized transcript is summarized whole (map-reduce)
     expect(allTranscripts).not.toContain("[...middle omitted during compaction...]");
     // Map-reduce: head, middle, and tail were all summarized → more than one
     // provider call for an over-limit input.
-    expect(provider.chat.mock.calls.length).toBeGreaterThan(1);
+    expect(chat.mock.calls.length).toBeGreaterThan(1);
+    harness.close();
   });
 
   it("does not chunk a small transcript (single summarizer call, unchanged path)", async () => {
-    const provider = {
-      name: "test",
-      chat: vi.fn(async () => ({ content: "small summary" })),
-    };
+    const messages = [
+      makeMessage(`short history ${"x".repeat(8_000)}`),
+      makeMessage(`recent ${"y".repeat(8_000)}`, "assistant"),
+    ];
+    const chat = vi.fn(async (): Promise<LLMResponse> => validSummaryResponse());
+    const harness = createCompactionTransactionHarness(messages, { chat });
 
-    await compactConversation(
-      [makeMessage("short history"), makeMessage("recent", "assistant")],
-      {
-        provider: provider as never,
-        admissionSession: admissionSessionFor(provider),
-        options: { contextWindowTokens: 200, mainLoopModel: "qwen3:8b" },
-      },
-    );
+    await compactConversation(messages, harness.context);
 
-    expect(provider.chat).toHaveBeenCalledOnce();
+    expect(chat).toHaveBeenCalledOnce();
+    harness.close();
   });
 });
 
@@ -144,21 +145,20 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
 
     // Provider whose summary call throws once aborted. The abort discriminator
     // must surface the cancel rather than swallowing it into a failure count.
-    const provider = {
-      name: "test",
-      chat: vi.fn(async () => {
+    const messages = [makeMessage("x".repeat(10_000)), makeMessage("recent request")];
+    const harness = createCompactionTransactionHarness(messages, {
+      compactionMode: "automatic",
+      chat: async () => {
         throw new Error("Partial compaction aborted");
-      }),
-    };
+      },
+    });
 
     await expect(
       autoCompactIfNeeded(
-        [makeMessage("x".repeat(10_000)), makeMessage("recent request")],
+        messages,
         {
-          provider: provider as never,
-          admissionSession: admissionSessionFor(provider),
+          ...harness.context,
           abortController,
-          options: { contextWindowTokens: 100, mainLoopModel: "qwen3:8b" },
         },
         undefined,
         undefined,
@@ -166,27 +166,25 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
         0,
         { force: true },
       ),
-    ).rejects.toThrow(/abort/i);
+    ).rejects.toBe("user pressed esc");
+    harness.close();
   });
 
   it("classifies a provider AbortError as a cancel even without an aborted controller", async () => {
     const abortError = new Error("aborted");
     abortError.name = "AbortError";
-    const provider = {
-      name: "test",
-      chat: vi.fn(async () => {
+    const messages = [makeMessage("x".repeat(10_000)), makeMessage("recent request")];
+    const harness = createCompactionTransactionHarness(messages, {
+      compactionMode: "automatic",
+      chat: async () => {
         throw abortError;
-      }),
-    };
+      },
+    });
 
     await expect(
       autoCompactIfNeeded(
-        [makeMessage("x".repeat(10_000)), makeMessage("recent request")],
-        {
-          provider: provider as never,
-          admissionSession: admissionSessionFor(provider),
-          options: { contextWindowTokens: 100, mainLoopModel: "qwen3:8b" },
-        },
+        messages,
+        harness.context,
         undefined,
         undefined,
         { consecutiveFailures: 0 },
@@ -194,6 +192,7 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
         { force: true },
       ),
     ).rejects.toBe(abortError);
+    harness.close();
   });
 
   it("still counts a genuine (non-abort) compaction failure", async () => {
@@ -201,17 +200,15 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
     // (here a hook-results dep failure — provider summary errors are swallowed
     // into a fallback summary) must still increment the circuit-breaker counter
     // so the abort carve-out does not mask genuine failures.
-    const provider = {
-      name: "test",
-      chat: vi.fn(async () => ({ content: "summary" })),
-    };
+    const messages = [makeMessage("x".repeat(10_000)), makeMessage("recent request")];
+    const harness = createCompactionTransactionHarness(messages, {
+      compactionMode: "automatic",
+    });
 
     const result = await autoCompactIfNeeded(
-      [makeMessage("x".repeat(10_000)), makeMessage("recent request")],
+      messages,
       {
-        provider: provider as never,
-        admissionSession: admissionSessionFor(provider),
-        options: { contextWindowTokens: 100, mainLoopModel: "qwen3:8b" },
+        ...harness.context,
         deps: {
           createHookResults: () => {
             throw new Error("post-compact hook exploded");
@@ -227,6 +224,7 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
 
     expect(result.wasCompacted).toBe(false);
     expect(result.consecutiveFailures).toBe(1);
+    harness.close();
   });
 });
 
@@ -242,16 +240,25 @@ function makeMessage(
   };
 }
 
-function admissionSessionFor(provider: unknown): Session {
+function validSummaryResponse(): LLMResponse {
   return {
-    conversationId: "gaphunt-compact-test",
-    nextInternalSubId: () => "compact-step",
-    modelInfo: { slug: "test-model" },
-    services: {
-      provider,
-      admissionRequired: false,
+    content: JSON.stringify({
+      narrative: "Bounded summary.",
+      facts: [],
+      open_actions: [],
+      tool_pairs: [],
+    }),
+    toolCalls: [],
+    usage: {
+      promptTokens: 128,
+      completionTokens: 32,
+      totalTokens: 160,
+      availability: "reported",
+      provenance: "provider",
     },
-  } as unknown as Session;
+    model: "grok-4.5",
+    finishReason: "stop",
+  };
 }
 
 function standaloneToolResult(

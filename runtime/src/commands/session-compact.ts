@@ -13,9 +13,11 @@ import {
 } from "../llm/content-conversion.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { CompactionResult, RuntimeMessage } from "../services/compact/types.js";
+import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
 import type { CompactedItem } from "../session/rollout-item.js";
 import { validateAgentInvocationMessageSequence } from "../contracts/agent-invocation-envelope.js";
 import type { Session } from "../session/session.js";
+import { isAuthenticatedCompactionBoundary } from "../session/compaction-history-marker.js";
 import {
   llmMessageToReplacementResponseItem,
   responseItemToLlmMessage,
@@ -645,7 +647,6 @@ function readSessionSurface(session: Session): SessionSurface {
   };
 }
 
-const AGENC_COMPACT_BOUNDARY = "<compact>";
 
 interface AgenCAutoCompactResult {
   readonly wasCompacted: boolean;
@@ -654,6 +655,7 @@ interface AgenCAutoCompactResult {
     readonly replacementHistory: readonly LLMMessage[];
     readonly preCompactTokens?: number;
     readonly postCompactTokens?: number;
+    readonly transaction?: CompactionResult["transaction"];
   };
   readonly consecutiveFailures?: number;
 }
@@ -716,6 +718,7 @@ type AgenCCompactionResult = {
   readonly preCompactTokenCount?: number;
   readonly postCompactTokenCount?: number;
   readonly truePostCompactTokenCount?: number;
+  readonly transaction?: CompactionResult["transaction"];
 };
 
 async function runManualCompact(params: {
@@ -762,30 +765,70 @@ async function runManualCompact(params: {
   if (result.type !== "compact") {
     throw new Error("Compact command did not return a compaction result");
   }
-  const compactionResultWithSlashMessages =
-    await addManualCompactSlashMessages(
-      result.compactionResult as AgenCCompactionResult,
-      params.customInstructions ?? "",
-      typeof result.displayText === "string" ? result.displayText : undefined,
-    );
-  await resetAgenCMicrocompactState(toolUseContext);
+  const rawCompactionResult = result.compactionResult as AgenCCompactionResult;
+  const compactionResultWithSlashMessages = rawCompactionResult.transaction === undefined
+    ? await addManualCompactSlashMessages(
+        rawCompactionResult,
+        params.customInstructions ?? "",
+        typeof result.displayText === "string" ? result.displayText : undefined,
+      )
+    : rawCompactionResult;
   const compactionResult = await toAgenCCompactionResult(
     compactionResultWithSlashMessages,
     toolUseContext,
   );
   const compactedRollout = buildAgenCCompactedRolloutItem(compactionResult);
   const rolloutStore = params.session.rolloutStore;
-  rolloutStore?.appendRollout(
-    { type: "compacted", payload: compactedRollout },
-    { durable: true },
-  );
-  const compacted = (compactedRollout.replacementHistory ?? []).map(
-    responseItemToLlmMessage,
-  );
-  await params.session.state.with((sessionState) => {
-    sessionState.history = compacted.map(cloneLLMMessage);
-  });
-  params.session.clearProviderResponseId();
+  if (compactionResult.transaction === undefined) {
+    rolloutStore?.appendRollout(
+      { type: "compacted", payload: compactedRollout },
+      { durable: true },
+    );
+  }
+  const compacted = compactionResult.transaction === undefined
+    ? (compactedRollout.replacementHistory ?? []).map(responseItemToLlmMessage)
+    : compactionResult.transaction.committed.replacement_history.map(
+        responseItemToLlmMessage,
+      );
+  try {
+    await params.session.state.with((sessionState) => {
+      sessionState.history = compacted.map(cloneLLMMessage);
+    });
+    if (compactionResult.transaction !== undefined) {
+      if (rolloutStore === null || rolloutStore === undefined) {
+        throw new Error("transactional compaction lost its rollout owner");
+      }
+      rolloutStore.markProjectionComplete(
+        compactionResult.transaction.attempt_id,
+      );
+    }
+  } catch (error) {
+    if (compactionResult.transaction !== undefined && rolloutStore) {
+      rolloutStore.markProjectionFailed(
+        compactionResult.transaction.attempt_id,
+        error,
+      );
+    }
+    throw error;
+  }
+  try {
+    await resetAgenCMicrocompactState(toolUseContext);
+    params.session.clearProviderResponseId();
+    if (compactionResult.transaction !== undefined) {
+      rolloutStore?.markCleanupComplete(compactionResult.transaction.attempt_id);
+    }
+  } catch (error) {
+    if (compactionResult.transaction !== undefined) {
+      rolloutStore?.markCleanupPending(
+        compactionResult.transaction.attempt_id,
+        error,
+      );
+      throw new CompactionReconstructionRequiredError(
+        compactionResult.transaction.attempt_id,
+        { cause: error },
+      );
+    }
+  }
   return {
     displayText: typeof result.displayText === "string"
       ? result.displayText
@@ -1077,11 +1120,7 @@ function messagesAfterAgenCBoundary(
 ): LLMMessage[] {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (
-      message?.role === "user" &&
-      typeof message.content === "string" &&
-      message.content.startsWith(AGENC_COMPACT_BOUNDARY)
-    ) {
+    if (isAuthenticatedCompactionBoundary(message)) {
       return messages.slice(index + 1).map((item) => ({ ...item }));
     }
   }
@@ -1348,13 +1387,24 @@ async function toAgenCCompactionResult(
   result: AgenCCompactionResult,
   toolUseContext?: AgenCToolUseContext,
 ): Promise<NonNullable<AgenCAutoCompactResult["compactionResult"]>> {
-  const replacementHistory = await withCompactContextGuards(async () => {
-    const { buildPostCompactMessages } =
-      await import("../services/compact/compact.js");
-    return fromAgenCRuntimeMessages(
-      buildPostCompactMessages(toCompactServiceResult(result)) as AgenCRuntimeMessage[],
-    );
-  }, toolUseContext ? envForToolUseContext(toolUseContext) : undefined);
+  let replacementHistory: LLMMessage[];
+  try {
+    replacementHistory = await withCompactContextGuards(async () => {
+      const { buildPostCompactMessages } =
+        await import("../services/compact/compact.js");
+      return fromAgenCRuntimeMessages(
+        buildPostCompactMessages(toCompactServiceResult(result)) as AgenCRuntimeMessage[],
+      );
+    }, toolUseContext ? envForToolUseContext(toolUseContext) : undefined);
+  } catch (error) {
+    if (result.transaction !== undefined) {
+      throw new CompactionReconstructionRequiredError(
+        result.transaction.attempt_id,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   const postCompactTokens =
     result.truePostCompactTokenCount ?? result.postCompactTokenCount;
   return {
@@ -1367,6 +1417,9 @@ async function toAgenCCompactionResult(
       ? { preCompactTokens: result.preCompactTokenCount }
       : {}),
     ...(postCompactTokens !== undefined ? { postCompactTokens } : {}),
+    ...(result.transaction !== undefined
+      ? { transaction: result.transaction }
+      : {}),
   };
 }
 
@@ -1393,6 +1446,9 @@ function toCompactServiceResult(result: AgenCCompactionResult): CompactionResult
       : {}),
     ...(result.truePostCompactTokenCount !== undefined
       ? { truePostCompactTokenCount: result.truePostCompactTokenCount }
+      : {}),
+    ...(result.transaction !== undefined
+      ? { transaction: result.transaction }
       : {}),
   };
 }

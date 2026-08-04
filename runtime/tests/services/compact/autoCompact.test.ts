@@ -7,6 +7,7 @@ import {
   isAutoCompactEnabled,
 } from "./autoCompact.js";
 import type { RuntimeMessage } from "./types.js";
+import { createCompactionTransactionHarness } from "../../helpers/compaction-transaction-harness.js";
 
 describe("auto compact", () => {
   const savedEnv = { ...process.env };
@@ -78,33 +79,36 @@ describe("auto compact", () => {
   });
 
   test("compacts when usage crosses threshold with only context-window data", async () => {
+    process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "1";
     const messages = [
       message("x".repeat(10_000)),
       message("recent request"),
     ];
 
-    const result = await autoCompactIfNeeded(messages, {
-      options: { contextWindowTokens: 100 },
+    const harness = createCompactionTransactionHarness(messages, {
+      compactionMode: "automatic",
     });
+    const result = await autoCompactIfNeeded(messages, harness.context);
 
     expect(result.wasCompacted).toBe(true);
-    expect(result.compactionResult?.summaryMessages[0]?.content)
-      .toContain("recent request");
+    expect(result.compactionResult?.transaction).toBeDefined();
+    harness.close();
   });
 
-  test("force compacts even when local estimation is below threshold", async () => {
+  test("force still refuses a candidate that cannot prove shrink", async () => {
     const messages = [message("small current turn")];
+    const harness = createCompactionTransactionHarness(messages, {
+      compactionMode: "automatic",
+    });
 
-    await expect(autoCompactIfNeeded(messages, {
-      options: { contextWindowTokens: 100_000 },
-    })).resolves.toEqual({
+    await expect(autoCompactIfNeeded(messages, harness.context)).resolves.toEqual({
       wasCompacted: false,
       consecutiveFailures: 0,
     });
 
     const result = await autoCompactIfNeeded(
       messages,
-      { options: { contextWindowTokens: 100_000 } },
+      harness.context,
       undefined,
       "repl_main_thread",
       undefined,
@@ -112,12 +116,13 @@ describe("auto compact", () => {
       { force: true },
     );
 
-    expect(result.wasCompacted).toBe(true);
-    expect(result.compactionResult?.summaryMessages[0]?.content)
-      .toContain("small current turn");
+    expect(result.wasCompacted).toBe(false);
+    expect(result.consecutiveFailures).toBe(1);
+    expect(harness.provider.chat).toHaveBeenCalledOnce();
+    harness.close();
   });
 
-  test("prefers session-memory compaction and runs cleanup after success", async () => {
+  test("does not let session memory bypass the canonical transaction", async () => {
     process.env.AGENC_ENABLE_SESSION_MEMORY_COMPACT = "1";
     const cleanup = {
       clearReadFileState: vi.fn(),
@@ -125,27 +130,34 @@ describe("auto compact", () => {
       resetMicrocompactState: vi.fn(),
     };
 
-    const result = await autoCompactIfNeeded(
-      [message("x".repeat(10_000)), message("recent request")],
-      {
-        options: { contextWindowTokens: 100 },
-        deps: {
+    const messages = [message("x".repeat(10_000)), message("recent request")];
+    const harness = createCompactionTransactionHarness(messages, {
+      compactionMode: "automatic",
+    });
+    process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "1";
+    const result = await autoCompactIfNeeded(messages, {
+      ...harness.context,
+      deps: {
           cleanup,
           sessionMemory: {
             getContent: async () => "remembered decisions",
           },
-        },
       },
-    );
+    });
 
     expect(result.wasCompacted).toBe(true);
-    expect(result.compactionResult?.summaryMessages[0]?.content)
-      .toContain("remembered decisions");
+    expect(result.compactionResult?.transaction).toBeDefined();
+    expect(String(result.compactionResult?.summaryMessages[0]?.content))
+      .not.toContain("remembered decisions");
     expect(result.compactionResult?.userDisplayMessage)
-      .toBe("Conversation compacted with session memory");
-    expect(cleanup.clearReadFileState).toHaveBeenCalledOnce();
-    expect(cleanup.clearProviderResponseId).toHaveBeenCalledOnce();
-    expect(cleanup.resetMicrocompactState).toHaveBeenCalledOnce();
+      .toBe("Conversation compacted transactionally");
+    expect(cleanup.clearReadFileState).not.toHaveBeenCalled();
+    expect(cleanup.clearProviderResponseId).not.toHaveBeenCalled();
+    expect(cleanup.resetMicrocompactState).not.toHaveBeenCalled();
+    expect(() => harness.store.assertCompactionProjectionReady()).toThrow(
+      /reconstruction is required/i,
+    );
+    harness.close();
   });
 
   test("respects AgenC disable switches", async () => {

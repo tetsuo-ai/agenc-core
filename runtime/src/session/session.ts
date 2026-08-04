@@ -66,6 +66,13 @@ import type {
 } from "../services/compact/types.js";
 import type { PartialCompactDirection } from "../services/compact/prompt.js";
 import {
+  CompactionReconstructionRequiredError,
+} from "../services/compact/transaction-types.js";
+import {
+  COMPACTION_HISTORY_MARKER_VERSION,
+  isAuthenticatedCompactionBoundary,
+} from "./compaction-history-marker.js";
+import {
   normalizeProviderName,
   normalizeManagedGatewayModel,
   prepareProviderSwitch,
@@ -1924,7 +1931,6 @@ function normalizeHistoryMessages(
   return normalized;
 }
 
-const COMPACT_BOUNDARY_PREFIX = "<compact>";
 const COMPACT_SUMMARY_PREFIX =
   "This session is being continued from a previous conversation";
 const NON_SELECTABLE_USER_TAGS = [
@@ -1937,19 +1943,25 @@ const NON_SELECTABLE_USER_TAGS = [
   "teammate-message",
 ] as const;
 
-function isCompactBoundaryMessage(message: LLMMessage | undefined): boolean {
-  return (
-    message?.role === "user" &&
-    typeof message.content === "string" &&
-    message.content.startsWith(COMPACT_BOUNDARY_PREFIX)
-  );
+export function isCompactBoundaryMessage(message: LLMMessage | undefined): boolean {
+  return isAuthenticatedCompactionBoundary(message);
+}
+
+export function isTransactionalCompactSummaryMessage(
+  message: LLMMessage | undefined,
+): boolean {
+  const marker = message?.runtimeOnly?.compactionHistory;
+  return message?.role === "user" &&
+    marker?.version === COMPACTION_HISTORY_MARKER_VERSION &&
+    marker.kind === "summary";
 }
 
 function isCompactSummaryMessage(message: LLMMessage | undefined): boolean {
   return (
     message?.role === "user" &&
     typeof message.content === "string" &&
-    message.content.startsWith(COMPACT_SUMMARY_PREFIX)
+    (message.content.startsWith(COMPACT_SUMMARY_PREFIX) ||
+      isTransactionalCompactSummaryMessage(message))
   );
 }
 
@@ -1983,7 +1995,7 @@ function isSelectableHistoryUserMessage(message: LLMMessage): boolean {
   );
 }
 
-function splitActiveHistory(messages: readonly LLMMessage[]): {
+export function splitActiveHistory(messages: readonly LLMMessage[]): {
   readonly prefixBeforeActive: readonly LLMMessage[];
   readonly activeHistory: readonly LLMMessage[];
 } {
@@ -3083,6 +3095,7 @@ export class Session {
     userMessage: string | readonly LLMContentPart[],
     opts: SessionRunTurnOptions = {},
   ): AsyncGenerator<PhaseEvent, Terminal> {
+    this.rolloutStore?.assertCompactionProjectionReady();
     if (
       opts.ctx !== undefined &&
       (opts.subId !== undefined || opts.configOverrides !== undefined)
@@ -3449,14 +3462,19 @@ export class Session {
           signal: abortController.signal,
         },
       );
-      this.throwIfPartialCompactAborted(abortController.signal);
-      const compactedActiveHistory = fromCompactRuntimeMessages(
-        buildPostCompactMessages(compactionResult),
-      );
-      const replacementHistory = [
-        ...prefixBeforeActive,
-        ...compactedActiveHistory,
-      ].map(cloneLlmMessage);
+      if (compactionResult.transaction === undefined) {
+        this.throwIfPartialCompactAborted(abortController.signal);
+      }
+      const replacementHistory = compactionResult.transaction !== undefined
+        ? compactionResult.transaction.committed.replacement_history
+          .map(responseItemToLlmMessage)
+          .map(cloneLlmMessage)
+        : [
+            ...prefixBeforeActive,
+            ...fromCompactRuntimeMessages(
+              buildPostCompactMessages(compactionResult),
+            ),
+          ].map(cloneLlmMessage);
       const event = createHistoryReplacedEvent({
         replacementHistory,
         id: `history-replaced-${task.subId}`,
@@ -3795,6 +3813,10 @@ export class Session {
       abortController,
       provider: this.services.provider,
       admissionSession: this,
+      ...(this.rolloutStore !== null
+        ? { compactionTransaction: this.rolloutStore }
+        : {}),
+      compactionMode: "manual",
       setStreamMode: surface.setStreamMode,
       setResponseLength: surface.setResponseLength,
       onCompactProgress: surface.onCompactProgress,
@@ -3827,7 +3849,10 @@ export class Session {
   }): Promise<SessionPartialCompactFromMessageResult | null> {
     let failure: SessionPartialCompactFromMessageResult | null = null;
     await this.taskDispatchLock.with(async () => {
-      if (params.signal.aborted) {
+      if (
+        params.compactionResult.transaction === undefined &&
+        params.signal.aborted
+      ) {
         failure = this.partialCompactFailure(
           "ABORTED",
           "Conversation summarization was cancelled.",
@@ -3837,14 +3862,17 @@ export class Session {
       const ownsTask = await this.activeTurn.with(
         (current) => current?.tasks.has(params.task.subId) === true,
       );
-      if (!ownsTask) {
+      if (!ownsTask && params.compactionResult.transaction === undefined) {
         failure = this.partialCompactFailure(
           "ABORTED",
           "Conversation summarization was cancelled.",
         );
         return;
       }
-      if (params.rolloutStore.isDegraded) {
+      if (
+        params.compactionResult.transaction === undefined &&
+        params.rolloutStore.isDegraded
+      ) {
         failure = this.partialCompactFailure(
           "ROLLOUT_DEGRADED",
           "Conversation summarization is disabled because durable session history is degraded.",
@@ -3857,27 +3885,65 @@ export class Session {
       const replacementItems = params.replacementHistory.map((message) =>
         llmMessageToReplacementResponseItem(message, "compacted"),
       );
-      params.rolloutStore.appendRollout(
-        {
-          type: "compacted",
-          payload: {
-            message: compactionMessage(params.compactionResult),
-            replacementHistory: replacementItems,
-            ...(params.compactionResult.preCompactTokenCount !== undefined
-              ? {
-                  preCompactTokens:
-                    params.compactionResult.preCompactTokenCount,
-                }
-              : {}),
-            ...(postCompactTokens !== undefined ? { postCompactTokens } : {}),
+      if (params.compactionResult.transaction === undefined) {
+        params.rolloutStore.appendRollout(
+          {
+            type: "compacted",
+            payload: {
+              message: compactionMessage(params.compactionResult),
+              replacementHistory: replacementItems,
+              ...(params.compactionResult.preCompactTokenCount !== undefined
+                ? {
+                    preCompactTokens:
+                      params.compactionResult.preCompactTokenCount,
+                  }
+                : {}),
+              ...(postCompactTokens !== undefined ? { postCompactTokens } : {}),
+            },
           },
-        },
-        { durable: true },
-      );
-      await this.state.with((sessionState) => {
-        sessionState.history = replacementItems.map(responseItemToLlmMessage);
-      });
-      this.clearProviderResponseId();
+          { durable: true },
+        );
+      }
+      const projectedItems = params.compactionResult.transaction === undefined
+        ? replacementItems
+        : params.compactionResult.transaction.committed.replacement_history;
+      try {
+        await this.state.with((sessionState) => {
+          sessionState.history = projectedItems.map(responseItemToLlmMessage);
+        });
+        if (params.compactionResult.transaction !== undefined) {
+          params.rolloutStore.markProjectionComplete(
+            params.compactionResult.transaction.attempt_id,
+          );
+        }
+      } catch (error) {
+        if (params.compactionResult.transaction !== undefined) {
+          params.rolloutStore.markProjectionFailed(
+            params.compactionResult.transaction.attempt_id,
+            error,
+          );
+        }
+        throw error;
+      }
+      try {
+        this.clearProviderResponseId();
+        if (params.compactionResult.transaction !== undefined) {
+          params.rolloutStore.markCleanupComplete(
+            params.compactionResult.transaction.attempt_id,
+          );
+        }
+      } catch (error) {
+        if (params.compactionResult.transaction !== undefined) {
+          params.rolloutStore.markCleanupPending(
+            params.compactionResult.transaction.attempt_id,
+            error,
+          );
+          throw new CompactionReconstructionRequiredError(
+            params.compactionResult.transaction.attempt_id,
+            { cause: error },
+          );
+        }
+      }
     });
     return failure;
   }

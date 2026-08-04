@@ -32,6 +32,8 @@ import {
   isContextualDeveloperMessageContent,
   isContextualUserMessageContent,
 } from "./rollout-reconstruction.js";
+import { sha256Hex, canonicalizeJson } from "../services/compact/summary-v1.js";
+import { COMPACTION_HISTORY_MARKER_VERSION } from "./compaction-history-marker.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Reducer state shape
@@ -168,12 +170,60 @@ export function reduce(
         item.payload.replacementHistory !== undefined
           ? {
               ...state,
-              history: [...item.payload.replacementHistory],
+              history: authenticateLegacyCompactedHistory(
+                item.payload.replacementHistory,
+                item.payload,
+              ),
               lastCompaction: item.payload,
             }
           : { ...state, lastCompaction: item.payload };
       return { state: next, report: {} };
     }
+
+    case "compaction_committed":
+      return {
+        state: {
+          ...state,
+          history: item.payload.replacement_history.map((message) => ({
+            ...message,
+          })),
+          lastCompaction: {
+            message: item.payload.summary.body.narrative,
+            replacementHistory: item.payload.replacement_history.map(
+              (message) => ({ ...message }),
+            ),
+            preCompactTokens: item.payload.accounting.source_tokens,
+            postCompactTokens: item.payload.accounting.candidate_tokens,
+          },
+        },
+        report: {},
+      };
+
+    case "compaction_rollback_committed":
+      if (
+        state.sessionMeta === undefined ||
+        state.sessionMeta === null ||
+        typeof state.sessionMeta !== "object" ||
+        !("sessionId" in state.sessionMeta) ||
+        item.payload.target_session_id !== state.sessionMeta.sessionId
+      ) {
+        return { state, report: {} };
+      }
+      return {
+        state: {
+          ...state,
+          history: item.payload.source_history.map((message) => ({
+            ...message,
+          })),
+        },
+        report: {},
+      };
+
+    case "compaction_intent":
+    case "compaction_failed":
+    case "compaction_cleanup_pending":
+    case "compaction_source_release":
+      return { state, report: {} };
 
     case "turn_context":
       return {
@@ -262,6 +312,47 @@ export function reduce(
       return { state, report: {} };
     }
   }
+}
+
+function authenticateLegacyCompactedHistory(
+  history: readonly ResponseItem[],
+  payload: CompactedItem,
+): ResponseItem[] {
+  const boundaryIndex = history.findIndex(
+    (message) =>
+      message.role === "user" &&
+      typeof message.content === "string" &&
+      message.content.startsWith("<compact>"),
+  );
+  if (boundaryIndex < 0) return history.map((message) => ({ ...message }));
+  const summarySha256 = sha256Hex(canonicalizeJson(payload));
+  const attemptId = `legacy-compacted:${summarySha256}`;
+  return history.map((message, index) => {
+    if (index === boundaryIndex) {
+      return {
+        ...message,
+        role: "developer",
+        compactionHistory: {
+          version: COMPACTION_HISTORY_MARKER_VERSION,
+          kind: "boundary",
+          attempt_id: attemptId,
+          summary_sha256: summarySha256,
+        },
+      };
+    }
+    if (index === boundaryIndex + 1 && message.role === "user") {
+      return {
+        ...message,
+        compactionHistory: {
+          version: COMPACTION_HISTORY_MARKER_VERSION,
+          kind: "summary",
+          attempt_id: attemptId,
+          summary_sha256: summarySha256,
+        },
+      };
+    }
+    return { ...message };
+  });
 }
 
 /**

@@ -14,17 +14,10 @@ nonzero exit status and the exact registered defect fingerprint. Do not use
 `skip`, `todo`, `test.fails`, or an assertion whose success means the unsafe
 behavior remains present.
 
-After A1, A2a, A2b, A3, B1, B3a, C1, C3a, D1, D3, and E1a promotion, the P0
-inventory contains one task-owned defect probe plus the FND-001 harness
-self-test, so the exact green audit summary is
-`files=2 expected-red=2 assertions=2 skipped=0 todo=0`. The
-remaining task-owned
-probe calls a production seam without a provider, public network, or
-uncontained subprocess:
-
-| Task | Current defect frozen red                                                                        | Desired assertion                                                                                                              |
-| ---- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| C2   | The compaction policy tells the summarizer to obey instructions embedded in transcript context.  | Transcript instructions remain untrusted and cannot alter compaction policy.                                                   |
+After C2 promotion, every task-owned P0 defect probe has ordinary
+revert-sensitive regression coverage. Only the FND-001 harness self-test
+remains, so the exact green audit summary is
+`files=1 expected-red=1 assertions=1 skipped=0 todo=0`.
 
 Some production modules import repository-owned Markdown prompt assets. The
 red-probe bootstrap admits only exact `.md` files under the canonical
@@ -41,8 +34,8 @@ A2b corrupt-journal exclusion, A3 full-body tool-result digest, B1
 prototype-header round trip, B3a confined workflow-name traversal, C1
 message-frame floor, C3a admitted memory recall and lexical fallback, D1
 pinned-ripgrep assertions, D3 byte-fidelity assertions, and E1a recovery
-line-limit assertion are now ordinary regression coverage. The one unresolved
-task-owned P0 probe remains registered alongside FND-001.
+line-limit assertion, and C2 transcript-instruction trust assertion are now
+ordinary regression coverage. No task-owned P0 probe remains registered.
 When another product defect is fixed, promote its assertion into an ordinary
 test and verify that reversing the functional change in a disposable worktree
 makes that test fail.

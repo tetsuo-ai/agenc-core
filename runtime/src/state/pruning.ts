@@ -302,6 +302,10 @@ export function pruneRolloutSessions(
     if (rollout === undefined) continue;
     // Keep anything touched at/after the cutoff.
     if (rollout.newestMtimeMs >= cutoffMs) continue;
+    // A compaction pin owns rollback authority over these bytes independently
+    // of file age. Only the durable released state makes whole-session
+    // retention eligible again.
+    if (sessionHasUnreleasedCompactionSource(driver, sessionId)) continue;
     // Live-writer guard: never prune a session whose rollout lock is held by a
     // live process. The daemon shares this sessions dir with separate foreground
     // processes; the mtime cutoff already spares actively-written sessions, and
@@ -318,6 +322,8 @@ export function pruneRolloutSessions(
     if (heldLocks === undefined) continue;
 
     try {
+      // Close the observation/acquisition race under the canonical leases.
+      if (sessionHasUnreleasedCompactionSource(driver, sessionId)) continue;
       // Retire each durable binding and drop its SQLite mirror rows in one
       // transaction before removing the canonical file. A crash can therefore
       // leave either the complete pre-prune state or an inactive binding that
@@ -373,6 +379,20 @@ export function pruneRolloutSessions(
     prunedMirrorRows,
     prunedSessionIds,
   };
+}
+
+function sessionHasUnreleasedCompactionSource(
+  driver: StateSqliteDriver,
+  sessionId: string,
+): boolean {
+  return driver
+    .prepareState<[string], { readonly present: number }>(
+      `SELECT 1 AS present
+       FROM compaction_retention_pins
+       WHERE session_id = ? AND state != 'released'
+       LIMIT 1`,
+    )
+    .get(sessionId) !== undefined;
 }
 
 /**

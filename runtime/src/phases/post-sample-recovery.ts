@@ -25,13 +25,12 @@
 import { emitError, emitWarning } from "../session/event-log.js";
 import type { LLMMessage } from "../llm/types.js";
 import {
-  cloneLlmContent as cloneContent,
-  fromRuntimeMessageContent,
   toRuntimeMessageContent,
 } from "../llm/content-conversion.js";
 import { compactConversation } from "../services/compact/compact.js";
-import { shrinkOversizedToolResults } from "../session/_deps/tool-result-storage.js";
 import type { RuntimeMessage } from "../services/compact/types.js";
+import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
+import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
@@ -84,17 +83,44 @@ type CollapseRuntimeMessage = Omit<
 
 export async function runContextCollapseOverflowRecovery(params: {
   readonly state: TurnState;
+  readonly session?: Session;
+  readonly turnContext?: TurnContext;
+  readonly signal?: AbortSignal;
 }): Promise<ContextCollapseOverflowRecoveryResult> {
+  if (params.session?.rolloutStore === null || params.session?.rolloutStore === undefined) {
+    return { kind: "pass" } as const;
+  }
   const recovered = await recoverFromOverflow(
     toCollapseRuntimeMessages(params.state.messagesForQuery),
+    params.session,
+    params.turnContext,
+    params.signal,
   );
   if (recovered.committed <= 0) {
     return { kind: "pass" } as const;
   }
-  params.state.messagesForQuery = fromCollapseRuntimeMessages(
-    recovered.messages as CollapseRuntimeMessage[],
-  );
+  params.state.messagesForQuery = [...recovered.messages];
   params.state.messages = [...params.state.messagesForQuery];
+  try {
+    params.session.rolloutStore.markProjectionComplete(recovered.attemptId!);
+  } catch (error) {
+    params.session.rolloutStore.markProjectionFailed(recovered.attemptId!, error);
+  }
+  try {
+    params.session.clearProviderResponseId();
+    params.session.rolloutStore.markCleanupComplete(recovered.attemptId!);
+  } catch (error) {
+    try {
+      params.session.rolloutStore.markCleanupPending(recovered.attemptId!, error);
+    } catch (markError) {
+      throw new CompactionReconstructionRequiredError(recovered.attemptId!, {
+        cause: new AggregateError([error, markError]),
+      });
+    }
+    throw new CompactionReconstructionRequiredError(recovered.attemptId!, {
+      cause: error,
+    });
+  }
   return {
     kind: "applied",
     reason: "context_collapse",
@@ -108,76 +134,66 @@ export async function runContextCollapseOverflowRecovery(params: {
  * fix, looping the 413. Head+tail slicing keeps the pairing valid while
  * guaranteeing the rebuilt prompt is small.
  */
-const RECOVERY_TAIL_RESULT_CAP_CHARS = 20_000;
-
-async function recoverFromOverflow(messages: RuntimeMessage[]): Promise<{
-  readonly messages: RuntimeMessage[];
+async function recoverFromOverflow(
+  messages: RuntimeMessage[],
+  session: Session,
+  turnContext?: TurnContext,
+  signal?: AbortSignal,
+): Promise<{
+  readonly messages: readonly LLMMessage[];
   readonly committed: number;
+  readonly attemptId?: string;
 }> {
-  if (messages.length < 4) return { messages, committed: 0 };
-  const retainedTail = shrinkOversizedToolResults(
-    selectOverflowRetainedTail(messages) as CollapseRuntimeMessage[],
-    RECOVERY_TAIL_RESULT_CAP_CHARS,
-  ).messages as unknown as readonly RuntimeMessage[];
-  const compacted = await compactConversation(
-    messages,
-    {},
-    "Recover from a prompt-too-long provider response.",
-  );
+  if (messages.length < 4) return { messages: [], committed: 0 };
+  const rolloutStore = session.rolloutStore;
+  if (rolloutStore === null || rolloutStore === undefined) {
+    return { messages: [], committed: 0 };
+  }
+  const provider = turnContext?.provider ?? session.services.provider;
+  const modelInfo = turnContext?.modelInfo ?? session.modelInfo;
+  const abortController = new AbortController();
+  const forwardAbort = (): void => abortController.abort(signal?.reason);
+  if (signal?.aborted === true) forwardAbort();
+  else signal?.addEventListener("abort", forwardAbort, { once: true });
+  let compacted;
+  try {
+    compacted = await compactConversation(
+      messages,
+      {
+        provider,
+        admissionSession: session,
+        compactionTransaction: rolloutStore,
+        compactionMode: "automatic",
+        abortController,
+        options: {
+          mainLoopModel: modelInfo.slug,
+          ...(modelInfo.contextWindow !== undefined
+            ? { contextWindowTokens: modelInfo.contextWindow }
+            : {}),
+          ...(modelInfo.maxOutputTokens !== undefined
+            ? { maxOutputTokens: modelInfo.maxOutputTokens }
+            : {}),
+          ...(turnContext?.baseInstructions !== undefined
+            ? { systemPrompt: turnContext.baseInstructions }
+            : {}),
+          querySource: "overflow_recovery",
+        },
+      },
+      "Recover from a prompt-too-long provider response.",
+    );
+  } finally {
+    signal?.removeEventListener("abort", forwardAbort);
+  }
+  if (compacted.transaction === undefined) {
+    throw new Error("overflow recovery did not produce a durable transaction");
+  }
   return {
-    messages: [
-      compacted.boundaryMarker,
-      ...compacted.summaryMessages,
-      ...retainedTail,
-    ],
+    messages: compacted.transaction.committed.replacement_history.map(
+      responseItemToLlmMessage,
+    ),
     committed: 1,
+    attemptId: compacted.transaction.attempt_id,
   };
-}
-
-function selectOverflowRetainedTail(
-  messages: readonly RuntimeMessage[],
-): readonly RuntimeMessage[] {
-  const keepCount = Math.min(3, messages.length);
-  let start = messages.length - keepCount;
-  const first = messages[start];
-  const toolCallId = toolResultId(first);
-  if (toolCallId === null) return messages.slice(start);
-
-  const assistantIndex = findAssistantToolCallOwner(
-    messages,
-    start - 1,
-    toolCallId,
-  );
-  if (assistantIndex !== null) {
-    start = assistantIndex;
-  }
-  return messages.slice(start);
-}
-
-function toolResultId(message: RuntimeMessage | undefined): string | null {
-  if (!message) return null;
-  const candidate = message as CollapseRuntimeMessage;
-  if (candidate.originalRole !== "tool" && candidate.role !== "tool") {
-    return null;
-  }
-  const id = candidate.toolCallId?.trim();
-  return id && id.length > 0 ? id : null;
-}
-
-function findAssistantToolCallOwner(
-  messages: readonly RuntimeMessage[],
-  fromIndex: number,
-  toolCallId: string,
-): number | null {
-  for (let index = fromIndex; index >= 0; index -= 1) {
-    const message = messages[index] as CollapseRuntimeMessage | undefined;
-    if (!message) continue;
-    if (toolResultId(message) !== null) continue;
-    const calls = message.toolCalls ?? [];
-    if (calls.some((call) => call.id === toolCallId)) return index;
-    return null;
-  }
-  return null;
 }
 
 function toCollapseRuntimeMessages(
@@ -221,6 +237,9 @@ function toCollapseRuntimeMessages(
           }
         : {}),
       ...(message.role === "tool" ? { isMeta: true } : {}),
+      ...(message.runtimeOnly !== undefined
+        ? { runtimeOnly: message.runtimeOnly }
+        : {}),
     };
   });
 }
@@ -229,71 +248,6 @@ function toRuntimeWireRole(role: LLMMessage["role"]): RuntimeWireRole {
   if (role === "tool") return "user";
   if (role === "developer") return "system";
   return role;
-}
-
-function fromCollapseRuntimeMessages(
-  messages: readonly CollapseRuntimeMessage[],
-): LLMMessage[] {
-  return messages
-    .map(fromCollapseRuntimeMessage)
-    .filter((message): message is LLMMessage => message !== null);
-}
-
-function fromCollapseRuntimeMessage(
-  message: CollapseRuntimeMessage,
-): LLMMessage | null {
-  const toolCalls = cloneToolCalls(message);
-  if (message.role && message.content !== undefined) {
-    const role = message.originalRole ?? message.role;
-    return {
-      role,
-      content: fromRuntimeMessageContent(message.content),
-      ...(toolCalls !== undefined ? { toolCalls } : {}),
-      ...(message.toolCallId !== undefined
-        ? { toolCallId: message.toolCallId }
-        : {}),
-      ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
-      ...(message.phase === "commentary" || message.phase === "final_answer"
-        ? { phase: message.phase }
-        : {}),
-    };
-  }
-  const role = normalizeRole(message.message?.role ?? message.type);
-  if (!role) return null;
-  return {
-    role,
-    content: fromRuntimeMessageContent(readContent(message)),
-    ...(toolCalls !== undefined ? { toolCalls } : {}),
-  };
-}
-
-function cloneToolCalls(
-  message: CollapseRuntimeMessage,
-): LLMMessage["toolCalls"] | undefined {
-  if (!message.toolCalls || message.toolCalls.length === 0) return undefined;
-  return message.toolCalls.map((call) => ({
-    id: call.id,
-    name: call.name,
-    arguments: call.arguments ?? "",
-  }));
-}
-
-function normalizeRole(value: unknown): LLMMessage["role"] | null {
-  if (
-    value === "system" ||
-    value === "developer" ||
-    value === "user" ||
-    value === "assistant" ||
-    value === "tool"
-  ) {
-    return value;
-  }
-  return null;
-}
-
-function readContent(message: CollapseRuntimeMessage): LLMMessage["content"] {
-  const content = message.message?.content ?? message.content ?? "";
-  return cloneContent(content);
 }
 
 /**
@@ -357,6 +311,9 @@ export async function postSampleRecovery(
           markContextCollapseAttempted(c.state);
           const drain = await runContextCollapseOverflowRecovery({
             state: c.state,
+            session: c.session,
+            turnContext: ctx,
+            ...(signal !== undefined ? { signal } : {}),
           });
           if (drain.kind === "applied") {
             c.state.transition = { reason: "collapse_drain_retry" };

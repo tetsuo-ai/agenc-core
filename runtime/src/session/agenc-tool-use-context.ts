@@ -171,6 +171,9 @@ export function buildAgenCToolUseContext(
     readonly llmTools?: readonly LLMTool[];
   } = {},
 ): AgenCToolUseContext {
+  const durableCompactionAllowed =
+    session.rolloutStore !== undefined &&
+    session.isRolloutPersistenceSuspended?.() !== true;
   const model = toAgenCModelContext(ctx);
   const providerOverride = buildProviderOverride(session, model.model);
   const surface = readSessionSurface(session);
@@ -248,10 +251,10 @@ export function buildAgenCToolUseContext(
       ? { queryTracking: surface.queryTracking }
       : {}),
     clearProviderResponseId: () => session.clearProviderResponseId?.(),
-    ...(session.rolloutStore !== undefined
+    ...(durableCompactionAllowed
       ? { rolloutStore: session.rolloutStore }
       : {}),
-    ...(session.rolloutStore !== undefined
+    ...(durableCompactionAllowed
       ? { session: { rolloutStore: session.rolloutStore } }
       : {}),
     admissionSession: session,

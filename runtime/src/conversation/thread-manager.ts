@@ -342,9 +342,20 @@ export class ConversationThreadManager extends ThreadManager {
         : {}),
       ...(checkpointProjection === undefined ? {} : { checkpointProjection }),
     });
-    const appliedState = await applyRolloutReconstructionToSession(
-      session,
-      reconstruction,
+    let appliedState: SessionState;
+    try {
+      appliedState = await applyRolloutReconstructionToSession(
+        session,
+        reconstruction,
+      );
+    } catch (error) {
+      for (const attemptId of reconstruction.activeCompactionAttemptIds) {
+        session.rolloutStore?.recordProjectionFailure(attemptId, error);
+      }
+      throw error;
+    }
+    session.rolloutStore?.acknowledgeCompactionReconstruction(
+      reconstruction.activeCompactionAttemptIds,
     );
 
     // GOAL #4b Stage 1 — stash the reconstruction so the prewarm hook can

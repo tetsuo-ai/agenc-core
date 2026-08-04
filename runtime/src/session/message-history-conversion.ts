@@ -40,6 +40,9 @@ export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
     ...(message.runtimeOnly?.agentInvocation !== undefined
       ? { agentInvocation: message.runtimeOnly.agentInvocation }
       : {}),
+    ...(message.runtimeOnly?.compactionHistory !== undefined
+      ? { compactionHistory: message.runtimeOnly.compactionHistory }
+      : {}),
   };
 }
 
@@ -103,7 +106,8 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
     ...(item.toolCallId !== undefined ? { toolCallId: item.toolCallId } : {}),
     ...(item.toolName !== undefined ? { toolName: item.toolName } : {}),
     ...(item.toolResultIntegrity !== undefined ||
-    item.agentInvocation !== undefined
+    item.agentInvocation !== undefined ||
+    item.compactionHistory !== undefined
       ? {
           runtimeOnly: {
             ...(item.toolResultIntegrity !== undefined
@@ -114,6 +118,9 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
                   agentInvocation: item.agentInvocation,
                   mergeBoundary: "user_context" as const,
                 }
+              : {}),
+            ...(item.compactionHistory !== undefined
+              ? { compactionHistory: item.compactionHistory }
               : {}),
           },
         }

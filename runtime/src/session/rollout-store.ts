@@ -34,6 +34,8 @@ import {
 import type { Event, EventMsg } from "./event-log.js";
 import {
   parseRolloutLine,
+  serializeRolloutItem,
+  type ResponseItem,
   type RolloutItem,
 } from "./rollout-item.js";
 import {
@@ -82,6 +84,59 @@ import {
   type ToolPairValidationOutcome,
 } from "./tool-pair-validator.js";
 import { formatIdentityForLog } from "./tool-result-integrity.js";
+import {
+  CompactionPinQuotaError,
+  CompactionRetentionRepository,
+  type CompactionPinRecord,
+  type CompactionReferenceKind,
+} from "../state/compaction-retention.js";
+import {
+  COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
+  COMPACTION_EVENT_FORMAT_VERSION,
+  COMPACTION_MINIMUM_READER_RUNTIME,
+  COMPACTION_RECONCILIATION_PAGE_SIZE,
+  COMPACTION_PRUNE_RECORDS_PER_PAGE,
+  COMPACTION_ROLLBACK_RETENTION_MS,
+  COMPACTION_SOURCE_DIGEST_DOMAIN,
+  MAX_COMPACTION_RECONCILIATION_MS_PER_START,
+  MAX_COMPACTION_RECONCILIATION_PAGES_PER_START,
+  MAX_COMPACTION_PROVIDER_CALLS,
+  MAX_COMPACTION_SOURCE_BYTES,
+  MAX_COMPACTION_SOURCE_MESSAGES,
+  type CompactionCleanupPendingV1,
+  type CompactionCommitInputV1,
+  type CompactionCommittedV1,
+  type CompactionFailedV1,
+  type CompactionIntentV1,
+  type CompactionPreparedSourceV1,
+  type CompactionProjectionMessageV1,
+  type CompactionRollbackCommittedV1,
+  type CompactionSourceReleaseV1,
+  type CompactionSourceAuthorityV1,
+  CompactionReconstructionRequiredError,
+  CompactionTransactionError,
+} from "../services/compact/transaction-types.js";
+import type { AdmissionJournalEvent } from "../budget/admission-types.js";
+import {
+  canonicalizeJson,
+  digestWithDomain,
+  sha256Hex,
+  verifyCompactionSummaryDigest,
+} from "../services/compact/summary-v1.js";
+import { canonicalCompactionSourceMessages } from "../services/compact/plan.js";
+import type { RuntimeMessage } from "../services/compact/types.js";
+import {
+  validateCanonicalJournalBytes,
+  type StrictCanonicalJournal,
+} from "../state/recovery-journal-contract.js";
+import {
+  HARD_MAX_RECOVERY_LINE_BYTES,
+  MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
+} from "../state/recovery-contract.js";
+import { emptyReducedState, reduce } from "./event-log-reducer.js";
+import { responseItemToLlmMessage } from "./message-history-conversion.js";
+import { ROLLOUT_SCHEMA_VERSION } from "./event-log.js";
+import { readCompactionRolloutPayload } from "./compaction-event-reader.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
   /** Flush interval in ms. Default 100. */
@@ -90,6 +145,12 @@ export interface RolloutStoreOpts extends SessionStoreOpts {
   readonly autoStartScheduler?: boolean;
   /** Test-only crash seam immediately before the atomic v2 inode swap. */
   readonly beforeCheckpointUpgradePublishForTestingOnly?: () => void;
+  /** Test-only crash seam after the compaction commit fsync, before projection. */
+  readonly afterCompactionCommitAppendForTestingOnly?: () => void;
+  /** Test-only crash seam after atomic source pruning, before SQLite finalize. */
+  readonly afterCompactionSourcePruneRewriteForTestingOnly?: () => void;
+  /** Test-only crash seam after source rollback fsync, before target projection. */
+  readonly afterCompactionRollbackAppendForTestingOnly?: () => void;
 }
 
 export class DurableCheckpointUpgradeBlockedError extends Error {
@@ -198,6 +259,399 @@ function checkpointProjectionIdentity(
   return hash.digest("hex");
 }
 
+function compactionIntentMatchesPin(
+  intent: CompactionIntentV1,
+  pin: CompactionPinRecord,
+): boolean {
+  return (
+    intent.attempt_id === pin.attemptId &&
+    intent.source.session_id === pin.sessionId &&
+    intent.source.epoch === pin.epoch &&
+    intent.source.source_binding === pin.sourceBinding &&
+    intent.source.first_sequence === pin.firstSequence &&
+    intent.source.last_sequence === pin.lastSequence &&
+    intent.source.source_sha256 === pin.sourceSha256 &&
+    intent.source.source_bytes === pin.sourceBytes &&
+    intent.source.history_digest === pin.historyDigest &&
+    canonicalizeJson(intent.source.active_history_refs) ===
+      canonicalizeJson(pin.activeHistoryRefs) &&
+    canonicalizeJson(intent.selected_history_indexes) ===
+      canonicalizeJson(pin.selectedHistoryIndexes) &&
+    intent.policy_digest === pin.policyDigest &&
+    intent.configuration_digest === pin.configurationDigest &&
+    intent.accounting_ref === pin.accountingRef &&
+    intent.automatic === pin.automatic &&
+    intent.admission_required === pin.admissionRequired &&
+    intent.planned_provider_calls === pin.plannedProviderCalls
+  );
+}
+
+function compactionCommitMatchesIntentAndPin(
+  commit: CompactionCommittedV1,
+  intent: CompactionIntentV1,
+  pin: CompactionPinRecord,
+): boolean {
+  return (
+    compactionIntentMatchesPin(intent, pin) &&
+    commit.attempt_id === intent.attempt_id &&
+    canonicalizeJson(commit.source) === canonicalizeJson(intent.source) &&
+    canonicalizeJson(commit.selected_history_indexes) ===
+      canonicalizeJson(intent.selected_history_indexes) &&
+    commit.policy_digest === intent.policy_digest &&
+    commit.configuration_digest === intent.configuration_digest &&
+    commit.accounting.accounting_ref === intent.accounting_ref &&
+    commit.summary_dag.planned_provider_calls === intent.planned_provider_calls
+  );
+}
+
+function compactionSourceAuthorityMatchesJournal(
+  source: CompactionSourceAuthorityV1,
+  journal: StrictCanonicalJournal,
+  bytes: Buffer,
+): boolean {
+  const seenRecords = new Set<number>();
+  let sourceBytes = 0;
+  for (const ref of source.active_history_refs) {
+    const record = journal.records[ref.first_sequence - 1];
+    if (
+      record === undefined ||
+      record.lineNumber !== ref.first_sequence ||
+      ref.first_sequence !== ref.last_sequence
+    ) {
+      return false;
+    }
+    const physical = bytes.subarray(
+      record.byteOffset,
+      record.byteOffset + record.encodedByteLength + 1,
+    );
+    if (
+      physical.byteLength !== ref.encoded_bytes ||
+      sha256Hex(
+        Buffer.concat([
+          Buffer.from(COMPACTION_SOURCE_DIGEST_DOMAIN, "utf8"),
+          physical,
+        ]),
+      ) !== ref.sha256
+    ) {
+      return false;
+    }
+    if (!seenRecords.has(record.lineNumber)) {
+      seenRecords.add(record.lineNumber);
+      sourceBytes += physical.byteLength;
+    }
+  }
+  return (
+    sourceBytes === source.source_bytes &&
+    digestWithDomain(
+      COMPACTION_SOURCE_DIGEST_DOMAIN,
+      source.active_history_refs,
+    ) === source.source_sha256
+  );
+}
+
+interface CompactionAdmissionCallState {
+  queued: boolean;
+  allowed: boolean;
+  dispatched: boolean;
+  reconciled: boolean;
+  reservationId?: string;
+}
+
+/**
+ * A compaction intentionally permits only its own admission evidence to
+ * advance the rollout between intent and commit. This keeps the provider
+ * calls auditable without allowing an unrelated turn, tool, or compaction to
+ * hide behind the intent's source snapshot.
+ */
+function compactionTailContainsOnlyIntentAdmission(
+  journal: StrictCanonicalJournal,
+  intent: CompactionIntentV1,
+  endExclusive = journal.records.length,
+): boolean {
+  const intentIndexes: number[] = [];
+  journal.records.forEach((record, index) => {
+    if (
+      record.item.type === "compaction_intent" &&
+      record.item.payload.attempt_id === intent.attempt_id
+    ) {
+      intentIndexes.push(index);
+    }
+  });
+  if (intentIndexes.length !== 1) return false;
+
+  const intentIndex = intentIndexes[0]!;
+  const persistedIntent = journal.records[intentIndex]!.item;
+  if (
+    persistedIntent.type !== "compaction_intent" ||
+    canonicalizeJson(persistedIntent.payload) !== canonicalizeJson(intent)
+  ) {
+    return false;
+  }
+
+  const states = new Map<number, CompactionAdmissionCallState>();
+  let admissionRunId: string | undefined;
+  let latestCall = 0;
+  let latestAdmissionSequence = 0;
+  const eventIds = new Set<string>();
+  const reservationIds = new Set<string>();
+  if (endExclusive <= intentIndex || endExclusive > journal.records.length) {
+    return false;
+  }
+  for (const record of journal.records.slice(intentIndex + 1, endExclusive)) {
+    const item = record.item;
+    if (
+      item.type !== "event_msg" ||
+      item.payload.msg.type !== "execution_admission"
+    ) {
+      return false;
+    }
+    const admission = item.payload.msg.payload;
+    if (
+      admission.sequence <= latestAdmissionSequence ||
+      admission.eventId.length === 0 ||
+      eventIds.has(admission.eventId) ||
+      item.payload.eventId !== admission.eventId ||
+      item.payload.id !== admission.eventId
+    ) return false;
+    latestAdmissionSequence = admission.sequence;
+    eventIds.add(admission.eventId);
+    const callNumber = compactionAdmissionCallNumber(admission, intent);
+    if (callNumber === undefined || callNumber < latestCall) return false;
+    admissionRunId ??= admission.runId;
+    if (
+      admission.runId !== admissionRunId ||
+      admission.runId !== intent.source.session_id
+    ) return false;
+
+    const state = states.get(callNumber) ?? {
+      queued: false,
+      allowed: false,
+      dispatched: false,
+      reconciled: false,
+    };
+    if (!advanceCompactionAdmissionState(state, admission, reservationIds)) {
+      return false;
+    }
+    states.set(callNumber, state);
+    latestCall = callNumber;
+  }
+
+  // Unit-level transaction adapters may explicitly disable admission. A real
+  // runtime session requires admission and therefore produces at least one
+  // complete state machine for every provider call.
+  if (states.size === 0) return !intent.admission_required;
+  if (
+    !intent.admission_required ||
+    states.size !== intent.planned_provider_calls ||
+    latestCall !== states.size
+  ) return false;
+  for (let callNumber = 1; callNumber <= latestCall; callNumber += 1) {
+    const state = states.get(callNumber);
+    if (
+      state === undefined ||
+      !state.queued ||
+      !state.allowed ||
+      !state.dispatched ||
+      !state.reconciled
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function compactionAdmissionCallNumber(
+  admission: AdmissionJournalEvent,
+  intent: CompactionIntentV1,
+): number | undefined {
+  if (admission.kind !== "model_turn") return undefined;
+  const prefix = `compact:${intent.attempt_id}:`;
+  if (!admission.stepId.startsWith(prefix)) return undefined;
+  const suffix = admission.stepId.slice(prefix.length);
+  if (!/^[1-9][0-9]*$/u.test(suffix)) return undefined;
+  const callNumber = Number(suffix);
+  return Number.isSafeInteger(callNumber) &&
+    callNumber <= MAX_COMPACTION_PROVIDER_CALLS
+    ? callNumber
+    : undefined;
+}
+
+function advanceCompactionAdmissionState(
+  state: CompactionAdmissionCallState,
+  admission: AdmissionJournalEvent,
+  reservationIds: Set<string>,
+): boolean {
+  switch (admission.event) {
+    case "queued":
+      if (state.queued || state.allowed || state.dispatched || state.reconciled) {
+        return false;
+      }
+      state.queued = true;
+      return true;
+    case "allowed":
+      if (!state.queued || state.allowed || state.dispatched || state.reconciled) {
+        return false;
+      }
+      if (
+        admission.reservationId === undefined ||
+        admission.reservationId.length === 0 ||
+        reservationIds.has(admission.reservationId)
+      ) return false;
+      state.reservationId = admission.reservationId;
+      reservationIds.add(admission.reservationId);
+      state.allowed = true;
+      return true;
+    case "fallback":
+      return state.allowed &&
+        !state.reconciled &&
+        admission.reservationId === state.reservationId;
+    case "dispatched":
+      if (
+        !state.allowed ||
+        state.dispatched ||
+        state.reconciled ||
+        admission.reservationId !== state.reservationId
+      ) return false;
+      state.dispatched = true;
+      return true;
+    case "reconciled":
+      if (
+        !state.dispatched ||
+        state.reconciled ||
+        admission.reservationId !== state.reservationId
+      ) return false;
+      state.reconciled = true;
+      return true;
+    default:
+      return false;
+  }
+}
+
+function compactionPhysicalRecordDigest(
+  record: StrictCanonicalJournal["records"][number],
+  bytes: Buffer,
+): string {
+  const physical = bytes.subarray(
+    record.byteOffset,
+    record.byteOffset + record.encodedByteLength + 1,
+  );
+  return sha256Hex(
+    Buffer.concat([
+      Buffer.from(COMPACTION_SOURCE_DIGEST_DOMAIN, "utf8"),
+      physical,
+    ]),
+  );
+}
+
+function compactionPhysicalPruneComplete(
+  pin: CompactionPinRecord,
+  journal: StrictCanonicalJournal,
+  bytes: Buffer,
+): boolean {
+  return pin.activeHistoryRefs.every((ref) => {
+    const retained = journal.records[ref.first_sequence - 1];
+    return retained === undefined ||
+      retained.lineNumber !== ref.first_sequence ||
+      compactionPhysicalRecordDigest(retained, bytes) !== ref.sha256 ||
+      (retained.item.type !== "response_item" &&
+        retained.item.type !== "compacted");
+  });
+}
+
+function compactionPinSourceMatchesJournal(
+  pin: CompactionPinRecord,
+  journal: StrictCanonicalJournal,
+  bytes: Buffer,
+): boolean {
+  return compactionSourceAuthorityMatchesJournal(
+    {
+      format_version: COMPACTION_EVENT_FORMAT_VERSION,
+      attempt_id: pin.attemptId,
+      session_id: pin.sessionId,
+      epoch: pin.epoch,
+      source_binding: pin.sourceBinding,
+      first_sequence: pin.firstSequence,
+      last_sequence: pin.lastSequence,
+      source_sha256: pin.sourceSha256,
+      source_bytes: pin.sourceBytes,
+      history_digest: pin.historyDigest,
+      active_history_refs: pin.activeHistoryRefs,
+    },
+    journal,
+    bytes,
+  );
+}
+
+function uniqueCompactionRecordIndex(
+  journal: StrictCanonicalJournal,
+  attemptId: string,
+  type: "compaction_intent" | "compaction_committed",
+): number {
+  const indexes: number[] = [];
+  journal.records.forEach((record, index) => {
+    if (
+      record.item.type === type &&
+      record.item.payload.attempt_id === attemptId
+    ) {
+      indexes.push(index);
+    }
+  });
+  if (indexes.length !== 1) {
+    throw new CompactionTransactionError(
+      "commit_failed",
+      `canonical compaction lifecycle requires exactly one ${type}`,
+    );
+  }
+  return indexes[0]!;
+}
+
+function cloneProjectionMessage(
+  message: ResponseItem,
+): CompactionProjectionMessageV1 {
+  return {
+    ...message,
+    content:
+      typeof message.content === "string"
+        ? message.content
+        : message.content.map((part) => ({ ...part })),
+    ...(message.toolCalls !== undefined
+      ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
+      : {}),
+    ...(message.toolResultIntegrity !== undefined
+      ? { toolResultIntegrity: { ...message.toolResultIntegrity } }
+      : {}),
+    ...(message.agentInvocation !== undefined
+      ? { agentInvocation: { ...message.agentInvocation } }
+      : {}),
+  };
+}
+
+function reviewedRollbackTargetOriginator(
+  rollback: CompactionRollbackCommittedV1,
+): string {
+  return `c2-reviewed-rollback:${digestWithDomain(
+    COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
+    {
+      kind: "reviewed_rollback_target_lineage_v1",
+      source_session_id: rollback.source_session_id,
+      source_epoch: rollback.source_epoch,
+      target_session_id: rollback.target_session_id,
+      attempt_id: rollback.attempt_id,
+      commit_sha256: rollback.commit_sha256,
+    },
+  )}`;
+}
+
+function assertCompactionItemFitsCanonicalLine(item: RolloutItem): void {
+  const encodedBytes = Buffer.byteLength(serializeRolloutItem(item), "utf8") - 1;
+  if (encodedBytes > HARD_MAX_RECOVERY_LINE_BYTES) {
+    throw new CompactionTransactionError(
+      "source_limit_exceeded",
+      `compaction ${item.type} event requires ${encodedBytes} bytes; canonical line limit is ${HARD_MAX_RECOVERY_LINE_BYTES}`,
+    );
+  }
+}
+
 function* responseItemsForToolPairValidation(
   items: Iterable<RolloutItem>,
 ): Iterable<ToolPairMessage> {
@@ -216,8 +670,14 @@ export class RolloutStore {
   private readonly stateDriver: StateSqliteDriver;
   private readonly threadSpawnEdgeRepo: ThreadSpawnEdgeRepository;
   private readonly runDurabilityRepo: StateRunDurabilityRepository;
+  private readonly compactionRetentionRepo: CompactionRetentionRepository;
   private readonly retrySafeDeferredEffectSteps = new Set<string>();
   private readonly beforeCheckpointUpgradePublishForTestingOnly?: () => void;
+  private readonly afterCompactionCommitAppendForTestingOnly?: () => void;
+  private readonly afterCompactionSourcePruneRewriteForTestingOnly?: () => void;
+  private readonly afterCompactionRollbackAppendForTestingOnly?: () => void;
+  private readonly durablyCommittedCompactionsAwaitingReconstruction =
+    new Set<string>();
   private liveToolPairProjection: ToolPairProjection | undefined;
   private liveToolPairValidator: StreamingToolPairValidator | undefined;
   private openedAt: string | undefined;
@@ -242,8 +702,17 @@ export class RolloutStore {
     });
     this.threadSpawnEdgeRepo = new ThreadSpawnEdgeRepository(this.stateDriver);
     this.runDurabilityRepo = new StateRunDurabilityRepository(this.stateDriver);
+    this.compactionRetentionRepo = new CompactionRetentionRepository(
+      this.stateDriver,
+    );
     this.beforeCheckpointUpgradePublishForTestingOnly =
       opts.beforeCheckpointUpgradePublishForTestingOnly;
+    this.afterCompactionCommitAppendForTestingOnly =
+      opts.afterCompactionCommitAppendForTestingOnly;
+    this.afterCompactionSourcePruneRewriteForTestingOnly =
+      opts.afterCompactionSourcePruneRewriteForTestingOnly;
+    this.afterCompactionRollbackAppendForTestingOnly =
+      opts.afterCompactionRollbackAppendForTestingOnly;
     this.loadThreadSpawnEdges();
   }
 
@@ -293,6 +762,11 @@ export class RolloutStore {
           boundAt: epoch.openedAt,
         });
       }
+      // C2 reconciliation precedes every other executable recovery family and
+      // all pruning. Unresolved pins therefore fail closed before a resumed
+      // turn can run or retention can remove source bytes.
+      this.reconcileCompactionsOnOpen();
+      this.runCompactionRetentionMaintenance(Date.now());
       if (this.resumed) this.recoverEffectProjectionOnOpen();
       if (this.startScheduler) this.scheduler.start();
     } catch (error) {
@@ -313,6 +787,1461 @@ export class RolloutStore {
       throw new Error(`rollout store for ${this.sessionId} is not open`);
     }
     return this.openedEpoch;
+  }
+
+  /** CompactionTransactionAdapter epoch alias. */
+  get epoch(): number {
+    return this.runEpoch;
+  }
+
+  /** Bind the exact canonical records that currently project active history. */
+  prepareSource(
+    attemptId: string,
+    _messages: readonly RuntimeMessage[],
+  ): CompactionPreparedSourceV1 {
+    this.store.upgradeCanonicalSchemaHeader(ROLLOUT_SCHEMA_VERSION);
+    this.store.syncCanonicalTail();
+    const bytes = readFileSync(this.rolloutPath);
+    const journal = validateCanonicalJournalBytes(bytes, {
+      maxSourceBytes: MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
+    });
+    if (journal.records.length === 0) {
+      throw new CompactionTransactionError(
+        "pin_failed",
+        "canonical rollout is empty and cannot authorize compaction",
+      );
+    }
+    let state = emptyReducedState();
+    let messageRecordPositions: Array<{
+      readonly recordIndex: number;
+      readonly recordMessageIndex: number;
+    }> = [];
+    for (let index = 0; index < journal.records.length; index += 1) {
+      const item = journal.records[index]!.item;
+      const next = reduce(state, item).state;
+      if (item.type === "response_item") {
+        messageRecordPositions.push({ recordIndex: index, recordMessageIndex: 0 });
+      } else if (
+        (item.type === "compacted" &&
+          item.payload.replacementHistory !== undefined) ||
+        item.type === "compaction_committed" ||
+        (item.type === "compaction_rollback_committed" &&
+          item.payload.target_session_id === this.sessionId)
+      ) {
+        messageRecordPositions = next.history.map((_, recordMessageIndex) => ({
+          recordIndex: index,
+          recordMessageIndex,
+        }));
+      } else if (next.history.length < messageRecordPositions.length) {
+        messageRecordPositions = messageRecordPositions.slice(0, next.history.length);
+      }
+      state = next;
+    }
+    if (messageRecordPositions.length !== state.history.length) {
+      throw new CompactionTransactionError(
+        "pin_failed",
+        "active history cannot be mapped exactly to canonical rollout records",
+      );
+    }
+    if (
+      state.history.length === 0 ||
+      state.history.length > MAX_COMPACTION_SOURCE_MESSAGES
+    ) {
+      throw new CompactionTransactionError(
+        "source_limit_exceeded",
+        "active canonical history is empty or exceeds the compaction message limit",
+      );
+    }
+    const authoritativeMessages = state.history.map(runtimeMessageFromResponseItem);
+    const historyDigest = digestWithDomain(
+      COMPACTION_SOURCE_DIGEST_DOMAIN,
+      canonicalCompactionSourceMessages(authoritativeMessages),
+    );
+    const sourceBinding = `rollout:${this.rolloutPath}#epoch:${this.runEpoch}`;
+    const activeHistoryRefs = messageRecordPositions.map(
+      ({ recordIndex, recordMessageIndex }, historyIndex) => {
+        const record = journal.records[recordIndex]!;
+        const physical = bytes.subarray(
+          record.byteOffset,
+          record.byteOffset + record.encodedByteLength + 1,
+        );
+        return {
+          kind: "rollout_span" as const,
+          ref_id: `${attemptId}:message:${String(historyIndex + 1).padStart(6, "0")}`,
+          source_binding: sourceBinding,
+          first_sequence: record.lineNumber,
+          last_sequence: record.lineNumber,
+          sha256: sha256Hex(
+            Buffer.concat([
+              Buffer.from(COMPACTION_SOURCE_DIGEST_DOMAIN, "utf8"),
+              physical,
+            ]),
+          ),
+          history_index: historyIndex,
+          record_message_index: recordMessageIndex,
+          encoded_bytes: physical.byteLength,
+        };
+      },
+    );
+    const uniqueRecords = new Map<number, number>();
+    for (const ref of activeHistoryRefs) {
+      uniqueRecords.set(ref.first_sequence, ref.encoded_bytes);
+    }
+    const sourceBytes = [...uniqueRecords.values()].reduce(
+      (total, size) => total + size,
+      0,
+    );
+    if (sourceBytes > MAX_COMPACTION_SOURCE_BYTES) {
+      throw new CompactionTransactionError(
+        "source_limit_exceeded",
+        "active canonical history exceeds the compaction source-byte limit",
+      );
+    }
+    const firstSequence = Math.min(
+      ...activeHistoryRefs.map((ref) => ref.first_sequence),
+    );
+    const lastSequence = Math.max(
+      ...activeHistoryRefs.map((ref) => ref.last_sequence),
+    );
+    const sourceSha256 = digestWithDomain(
+      COMPACTION_SOURCE_DIGEST_DOMAIN,
+      activeHistoryRefs,
+    );
+    return {
+      source: {
+        format_version: COMPACTION_EVENT_FORMAT_VERSION,
+        attempt_id: attemptId,
+        session_id: this.sessionId,
+        epoch: this.runEpoch,
+        source_binding: sourceBinding,
+        first_sequence: firstSequence,
+        last_sequence: lastSequence,
+        source_sha256: sourceSha256,
+        source_bytes: sourceBytes,
+        history_digest: historyDigest,
+        active_history_refs: activeHistoryRefs,
+      },
+      messages: authoritativeMessages,
+      message_source_refs: activeHistoryRefs.map((ref) => ({
+        kind: ref.kind,
+        ref_id: ref.ref_id,
+        source_binding: ref.source_binding,
+        first_sequence: ref.first_sequence,
+        last_sequence: ref.last_sequence,
+        sha256: ref.sha256,
+        first_history_index: ref.history_index,
+        last_history_index: ref.history_index,
+        contributing_ref_ids: [ref.ref_id],
+      })),
+    };
+  }
+
+  failureCount(historyDigest: string, configurationDigest: string): number {
+    return this.compactionRetentionRepo.failureCount(
+      this.sessionId,
+      historyDigest,
+      configurationDigest,
+    );
+  }
+
+  pinAndRecordIntent(intent: CompactionIntentV1): void {
+    this.runCompactionRetentionMaintenance(intent.recorded_at_ms);
+    readCompactionRolloutPayload("compaction_intent", intent);
+    assertCompactionItemFitsCanonicalLine({
+      type: "compaction_intent",
+      payload: intent,
+    });
+    try {
+      this.compactionRetentionRepo.createPreparingPin(
+        intent,
+        this.compactionSourceProvenanceAttemptIds(intent.source),
+      );
+    } catch (error) {
+      if (error instanceof CompactionPinQuotaError) {
+        this.compactionRetentionRepo.createDeferral({
+          sessionId: this.sessionId,
+          attemptId: intent.attempt_id,
+          reason: error.reason,
+          detail: error.message,
+          createdAtMs: intent.recorded_at_ms,
+        });
+      }
+      throw error;
+    }
+    // The pin is durable before this append. A failed append intentionally
+    // leaves `preparing` for startup orphan reconciliation.
+    this.appendRollout(
+      { type: "compaction_intent", payload: intent },
+      { durable: true },
+    );
+    this.compactionRetentionRepo.bindIntent(
+      intent.attempt_id,
+      intent.recorded_at_ms,
+    );
+  }
+
+  private compactionSourceProvenanceAttemptIds(
+    source: CompactionSourceAuthorityV1,
+  ): readonly string[] {
+    this.store.syncCanonicalTail();
+    const bytes = readFileSync(this.rolloutPath);
+    const journal = validateCanonicalJournalBytes(bytes, {
+      expectedRunId: source.session_id,
+      expectedEpoch: source.epoch,
+      maxSourceBytes: MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
+    });
+    if (!compactionSourceAuthorityMatchesJournal(source, journal, bytes)) {
+      throw new CompactionTransactionError(
+        "pin_failed",
+        "compaction source changed before provenance references were acquired",
+      );
+    }
+    const attempts = new Set<string>();
+    for (const ref of source.active_history_refs) {
+      const item = journal.records[ref.first_sequence - 1]?.item;
+      if (item?.type === "compaction_committed") {
+        attempts.add(item.payload.attempt_id);
+      }
+    }
+    return [...attempts].sort();
+  }
+
+  recordFailure(failure: CompactionFailedV1): void {
+    readCompactionRolloutPayload("compaction_failed", failure);
+    // Terminal evidence must reach the canonical rollout before pin release or
+    // failure-guard state can advance.
+    this.appendRollout(
+      { type: "compaction_failed", payload: failure },
+      { durable: true },
+    );
+    const pin = this.compactionRetentionRepo.get(failure.attempt_id);
+    this.compactionRetentionRepo.recordFailure({
+      attemptId: failure.attempt_id,
+      sessionId: pin?.sessionId ?? this.sessionId,
+      historyDigest: failure.history_digest,
+      configurationDigest: pin?.configurationDigest ?? "0".repeat(64),
+      recordedAtMs: failure.recorded_at_ms,
+      sourceStillAuthoritative:
+        pin !== undefined && this.compactionSourcePrefixMatches(pin),
+      automatic: pin?.automatic ?? false,
+    });
+  }
+
+  commit(input: CompactionCommitInputV1): CompactionCommittedV1 {
+    verifyCompactionSummaryDigest(input.summary);
+    if (
+      input.summary.attempt_id !== input.intent.attempt_id ||
+      input.summary.policy_digest !== input.intent.policy_digest ||
+      input.summary.accounting_ref !== input.intent.accounting_ref
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "summary trusted wrapper does not match the durable compaction intent",
+      );
+    }
+    if (
+      input.summary_dag.planned_provider_calls !==
+      input.intent.planned_provider_calls
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "summary DAG provider-call count does not match the durable compaction intent",
+      );
+    }
+    this.assertCompactionCommitFresh(input.intent);
+    const committed: CompactionCommittedV1 = {
+      format_version: COMPACTION_EVENT_FORMAT_VERSION,
+      minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+      attempt_id: input.intent.attempt_id,
+      recorded_at_ms: input.committed_at_ms,
+      committed_at_ms: input.committed_at_ms,
+      rollback_retention_deadline_ms:
+        input.committed_at_ms + COMPACTION_ROLLBACK_RETENTION_MS,
+      source: input.intent.source,
+      selected_history_indexes: input.intent.selected_history_indexes,
+      policy_digest: input.intent.policy_digest,
+      configuration_digest: input.intent.configuration_digest,
+      summary: input.summary,
+      summary_dag: input.summary_dag,
+      accounting: input.accounting,
+      replacement_history: input.replacement_history,
+      cleanup_state: "pending",
+    };
+    const commitSha256 = digestWithDomain(
+      COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
+      committed,
+    );
+    readCompactionRolloutPayload("compaction_committed", committed);
+    // This fsync is the sole commit point. SQLite projection follows and is
+    // rebuildable from this event if the process dies between the two writes.
+    const commitItem = { type: "compaction_committed", payload: committed } as const;
+    assertCompactionItemFitsCanonicalLine(commitItem);
+    try {
+      this.appendRollout(commitItem, { durable: true });
+    } catch (appendError) {
+      this.resolveAmbiguousCompactionCommitAppend(commitItem, appendError);
+      throw appendError;
+    }
+    try {
+      this.afterCompactionCommitAppendForTestingOnly?.();
+      this.compactionRetentionRepo.markCommitted(committed, commitSha256);
+    } catch (error) {
+      this.durablyCommittedCompactionsAwaitingReconstruction.add(
+        committed.attempt_id,
+      );
+      try {
+        this.compactionRetentionRepo.createDeferral({
+          sessionId: this.sessionId,
+          attemptId: committed.attempt_id,
+          reason: "projection_reconstruction",
+          detail: error,
+          createdAtMs: Date.now(),
+        });
+      } catch {
+        // The canonical commit is authoritative even if both rebuildable
+        // SQLite writes fail. The in-memory poison below still blocks turns.
+      }
+      throw new CompactionReconstructionRequiredError(committed.attempt_id, {
+        cause: error,
+      });
+    }
+    return committed;
+  }
+
+  /**
+   * A durable append can report failure after every commit byte was written.
+   * Resolve that ambiguity before the transaction layer is allowed to append
+   * a failure terminal. Once the exact commit is present and a fresh fsync of
+   * the canonical tail succeeds, the attempt is committed and must remain
+   * poisoned until its rebuildable projection is reconstructed.
+   */
+  private resolveAmbiguousCompactionCommitAppend(
+    expected: Extract<RolloutItem, { readonly type: "compaction_committed" }>,
+    appendError: unknown,
+  ): void {
+    try {
+      this.store.syncCanonicalTail();
+    } catch (syncError) {
+      this.poisonCompactionProjection(expected.payload.attempt_id, [
+        appendError,
+        syncError,
+      ]);
+    }
+    const terminalItems = this.store.readAll().filter(
+      (item) =>
+        (item.type === "compaction_committed" ||
+          item.type === "compaction_failed") &&
+        item.payload.attempt_id === expected.payload.attempt_id,
+    );
+    if (terminalItems.length === 0) {
+      // The canonical tail was repaired and fsynced without this commit. The
+      // transaction layer may now append the single failure terminal.
+      return;
+    }
+    const exactCommit =
+      terminalItems.length === 1 &&
+      terminalItems[0]?.type === "compaction_committed" &&
+      canonicalizeJson(terminalItems[0].payload) ===
+        canonicalizeJson(expected.payload);
+    if (!exactCommit) {
+      this.poisonCompactionProjection(expected.payload.attempt_id, [
+        appendError,
+        new Error("ambiguous compaction append produced conflicting terminal evidence"),
+      ]);
+    }
+    this.poisonCompactionProjection(expected.payload.attempt_id, [appendError]);
+  }
+
+  private poisonCompactionProjection(
+    attemptId: string,
+    causes: readonly unknown[],
+  ): never {
+    this.durablyCommittedCompactionsAwaitingReconstruction.add(attemptId);
+    const cause = causes.length === 1 ? causes[0] : new AggregateError(causes);
+    try {
+      this.compactionRetentionRepo.createDeferral({
+        sessionId: this.sessionId,
+        attemptId,
+        reason: "projection_reconstruction",
+        detail: cause,
+        createdAtMs: Date.now(),
+      });
+    } catch {
+      // Canonical evidence and the in-memory poison remain authoritative.
+    }
+    throw new CompactionReconstructionRequiredError(attemptId, { cause });
+  }
+
+  private assertCompactionCommitFresh(intent: CompactionIntentV1): void {
+    this.store.syncCanonicalTail();
+    const bytes = readFileSync(this.rolloutPath);
+    const journal = validateCanonicalJournalBytes(bytes, {
+      maxSourceBytes: MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
+    });
+    if (!compactionSourceAuthorityMatchesJournal(intent.source, journal, bytes)) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "canonical active-history source records changed before compaction commit",
+      );
+    }
+    const tail = journal.records.at(-1)?.item;
+    if (
+      tail === undefined ||
+      !compactionTailContainsOnlyIntentAdmission(
+        journal,
+        intent,
+      )
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "active rollout advanced outside the compaction admission journal before commit",
+      );
+    }
+  }
+
+  markProjectionComplete(attemptId: string): void {
+    this.compactionRetentionRepo.markProjectionComplete(attemptId, Date.now());
+    this.durablyCommittedCompactionsAwaitingReconstruction.delete(attemptId);
+  }
+
+  markProjectionFailed(attemptId: string, reason: unknown): never {
+    try {
+      this.recordProjectionFailure(attemptId, reason);
+    } catch (recordError) {
+      throw new CompactionReconstructionRequiredError(attemptId, {
+        cause: new AggregateError([reason, recordError]),
+      });
+    }
+    throw new CompactionReconstructionRequiredError(attemptId, {
+      cause: reason,
+    });
+  }
+
+  recordProjectionFailure(attemptId: string, reason: unknown): void {
+    this.compactionRetentionRepo.markProjectionReconstructionRequired(
+      attemptId,
+      Date.now(),
+      reason,
+    );
+  }
+
+  markCleanupComplete(attemptId: string): void {
+    this.compactionRetentionRepo.markCleanupComplete(attemptId);
+  }
+
+  markCleanupPending(attemptId: string, reason: unknown): void {
+    const pin = this.compactionRetentionRepo.require(attemptId);
+    const event: CompactionCleanupPendingV1 = {
+      format_version: COMPACTION_EVENT_FORMAT_VERSION,
+      minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+      attempt_id: attemptId,
+      recorded_at_ms: Date.now(),
+      commit_sha256: pin.commitSha256 ?? "0".repeat(64),
+      reason_digest: sha256Hex(compactionErrorDetail(reason)),
+    };
+    this.appendRollout(
+      { type: "compaction_cleanup_pending", payload: event },
+      { durable: true },
+    );
+    this.compactionRetentionRepo.markCleanupPending(
+      attemptId,
+      event.recorded_at_ms,
+      reason,
+    );
+  }
+
+  /** Explicit operator extension; the durable minimum can never shrink. */
+  extendCompactionRollbackRetention(
+    attemptId: string,
+    extendedUntilMs: number,
+  ): void {
+    this.compactionRetentionRepo.extendRollbackRetention(
+      attemptId,
+      extendedUntilMs,
+    );
+  }
+
+  /**
+   * Durably authorize restoration before any caller changes its projection.
+   * Newer canonical work forces an explicit reviewed-branch target.
+   */
+  rollbackCompaction(params: {
+    readonly attemptId: string;
+    readonly nowMs: number;
+    readonly reviewedBranchTargetSessionId?: string;
+  }): CompactionRollbackCommittedV1 {
+    const pin = this.compactionRetentionRepo.require(params.attemptId);
+    if (pin.state !== "committed_reference" || pin.commitSha256 === undefined) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "only a durably committed compaction can be rolled back",
+      );
+    }
+    const rollbackDeadline = Math.max(
+      pin.retentionDeadlineMs ?? 0,
+      pin.rollbackExtendedUntilMs ?? 0,
+    );
+    if (params.nowMs > rollbackDeadline) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "the durable compaction rollback window has closed",
+      );
+    }
+    this.store.syncCanonicalTail();
+    const bytes = readFileSync(this.rolloutPath);
+    const journal = validateCanonicalJournalBytes(bytes, {
+      expectedRunId: pin.sessionId,
+      expectedEpoch: pin.epoch,
+      maxSourceBytes: MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
+    });
+    if (!compactionPinSourceMatchesJournal(pin, journal, bytes)) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "rollback source records no longer match their durable authority",
+      );
+    }
+    const intentIndex = uniqueCompactionRecordIndex(
+      journal,
+      pin.attemptId,
+      "compaction_intent",
+    );
+    const commitIndex = uniqueCompactionRecordIndex(
+      journal,
+      pin.attemptId,
+      "compaction_committed",
+    );
+    if (
+      journal.records.some(
+        ({ item }) =>
+          item.type === "compaction_rollback_committed" &&
+          item.payload.attempt_id === pin.attemptId,
+      )
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "compaction attempt already has a durable rollback",
+      );
+    }
+    if (intentIndex >= commitIndex) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "compaction rollback lifecycle is out of order",
+      );
+    }
+    const commit = journal.records[commitIndex]!.item;
+    if (
+      commit.type !== "compaction_committed" ||
+      digestWithDomain(COMPACTION_ACCOUNTING_DIGEST_DOMAIN, commit.payload) !==
+        pin.commitSha256
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "compaction rollback commit digest does not match its pin",
+      );
+    }
+    const laterWork = journal.records
+      .slice(commitIndex + 1)
+      .some(({ item }) =>
+        !(
+          item.type === "compaction_cleanup_pending" &&
+          item.payload.attempt_id === pin.attemptId
+        ),
+      );
+    const reviewedTarget = params.reviewedBranchTargetSessionId;
+    if (laterWork && reviewedTarget === undefined) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "newer canonical work exists; rollback requires an explicit reviewed branch target",
+      );
+    }
+    if (reviewedTarget !== undefined && reviewedTarget === pin.sessionId) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "a reviewed rollback branch must have a distinct target session",
+      );
+    }
+    let sourceState = emptyReducedState();
+    for (const record of journal.records.slice(0, intentIndex)) {
+      sourceState = reduce(sourceState, record.item).state;
+    }
+    const sourceHistory = sourceState.history.map(cloneProjectionMessage);
+    if (
+      digestWithDomain(
+        COMPACTION_SOURCE_DIGEST_DOMAIN,
+        canonicalCompactionSourceMessages(
+          sourceHistory.map(runtimeMessageFromResponseItem),
+        ),
+      ) !== pin.historyDigest
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "rollback reconstruction does not match the pinned history digest",
+      );
+    }
+    const targetSessionId = reviewedTarget ?? pin.sessionId;
+    const event: CompactionRollbackCommittedV1 = {
+      format_version: COMPACTION_EVENT_FORMAT_VERSION,
+      minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+      attempt_id: pin.attemptId,
+      recorded_at_ms: params.nowMs,
+      commit_sha256: pin.commitSha256,
+      source_sha256: pin.sourceSha256,
+      history_digest: pin.historyDigest,
+      source_session_id: pin.sessionId,
+      source_epoch: pin.epoch,
+      rollback_mode:
+        reviewedTarget === undefined ? "same_session" : "reviewed_branch",
+      target_session_id: targetSessionId,
+      source_history: sourceHistory,
+    };
+    readCompactionRolloutPayload("compaction_rollback_committed", event);
+    assertCompactionItemFitsCanonicalLine({
+      type: "compaction_rollback_committed",
+      payload: event,
+    });
+    const targetReservation = event.rollback_mode === "reviewed_branch"
+      ? this.reserveReviewedRollbackTarget(event)
+      : undefined;
+    try {
+      this.appendRollout(
+        { type: "compaction_rollback_committed", payload: event },
+        { durable: true },
+      );
+      this.afterCompactionRollbackAppendForTestingOnly?.();
+      if (targetReservation !== undefined) {
+        this.completeReviewedRollbackTarget(event, targetReservation);
+      }
+      this.compactionRetentionRepo.recordRollbackReference({
+        attemptId: pin.attemptId,
+        mode: event.rollback_mode,
+        targetSessionId,
+        recordedAtMs: params.nowMs,
+      });
+    } catch (error) {
+      this.durablyCommittedCompactionsAwaitingReconstruction.add(pin.attemptId);
+      throw new CompactionReconstructionRequiredError(pin.attemptId, {
+        cause: error,
+      });
+    } finally {
+      targetReservation?.close();
+    }
+    return event;
+  }
+
+  /**
+   * Materialize a reviewed rollback into its own canonical session journal.
+   * The source journal remains authoritative for authorization and lineage;
+   * this target is an idempotent, exact projection that can be rebuilt after
+   * a crash between the source rollback fsync and target completion.
+   */
+  private materializeReviewedRollbackTarget(
+    rollback: CompactionRollbackCommittedV1,
+  ): void {
+    const reservation = this.reserveReviewedRollbackTarget(rollback);
+    try {
+      this.completeReviewedRollbackTarget(rollback, reservation);
+    } finally {
+      reservation.close();
+    }
+  }
+
+  private reserveReviewedRollbackTarget(
+    rollback: CompactionRollbackCommittedV1,
+  ): SessionStore {
+    if (
+      rollback.rollback_mode !== "reviewed_branch" ||
+      rollback.target_session_id === this.sessionId
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "reviewed rollback target materialization requires a distinct session",
+      );
+    }
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(
+        rollback.target_session_id,
+      )
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "reviewed rollback target session id is not canonical or path-safe",
+      );
+    }
+    const target = new SessionStore({
+      cwd: this.store.cwd,
+      sessionId: rollback.target_session_id,
+      agencVersion: this.store.agencVersion,
+      resume: true,
+      projectRootMarkers: this.projectRootMarkers,
+    });
+    const sessionsRoot = resolve(dirname(this.store.sessionDir));
+    const confined = relative(sessionsRoot, resolve(target.sessionDir));
+    if (
+      confined !== rollback.target_session_id ||
+      confined.startsWith("..")
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "reviewed rollback target resolves outside the project session root",
+      );
+    }
+    try {
+      const lineageOriginator = reviewedRollbackTargetOriginator(rollback);
+      target.open({
+        sessionId: rollback.target_session_id,
+        timestamp: new Date(rollback.recorded_at_ms).toISOString(),
+        cwd: this.store.cwd,
+        originator: lineageOriginator,
+        agencVersion: this.store.agencVersion,
+      });
+      const existing = target.readAll();
+      const metadata = existing.filter(
+        (item): item is Extract<RolloutItem, { readonly type: "session_meta" }> =>
+          item.type === "session_meta",
+      );
+      if (
+        metadata.length !== 1 ||
+        metadata[0]!.payload.sessionId !== rollback.target_session_id ||
+        metadata[0]!.payload.originator !== lineageOriginator
+      ) {
+        throw new CompactionTransactionError(
+          "commit_failed",
+          "reviewed rollback target lacks its authenticated durable lineage binding",
+        );
+      }
+      if (
+        existing.some(
+          (item) => item.type !== "session_meta" && item.type !== "response_item",
+        )
+      ) {
+        throw new CompactionTransactionError(
+          "commit_failed",
+          "reviewed rollback target already contains unrelated canonical work",
+        );
+      }
+      const projected = existing.flatMap((item) =>
+        item.type === "response_item" ? [item.payload] : []
+      );
+      if (
+        projected.length > rollback.source_history.length ||
+        projected.some(
+          (message, index) =>
+            canonicalizeJson(message) !==
+            canonicalizeJson(rollback.source_history[index]),
+        )
+      ) {
+        throw new CompactionTransactionError(
+          "commit_failed",
+          "reviewed rollback target conflicts with its authorized source history",
+        );
+      }
+      return target;
+    } catch (error) {
+      target.close();
+      throw error;
+    }
+  }
+
+  private completeReviewedRollbackTarget(
+    rollback: CompactionRollbackCommittedV1,
+    target: SessionStore,
+  ): void {
+    const projected = target.readAll().flatMap((item) =>
+      item.type === "response_item" ? [item.payload] : []
+    );
+    for (
+      let index = projected.length;
+      index < rollback.source_history.length;
+      index += 1
+    ) {
+      target.appendRollout(
+        {
+          type: "response_item",
+          payload: cloneProjectionMessage(rollback.source_history[index]!),
+        },
+        { durable: true },
+      );
+    }
+    const materialized = target.readAll().flatMap((item) =>
+      item.type === "response_item" ? [item.payload] : []
+    );
+    if (
+      canonicalizeJson(materialized) !==
+      canonicalizeJson(rollback.source_history)
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "reviewed rollback target projection is incomplete",
+      );
+    }
+  }
+
+  /** Append the proof-bearing release tombstone before any source pruning. */
+  beginCompactionSourceRelease(params: {
+    readonly attemptId: string;
+    readonly nowMs: number;
+  }): CompactionSourceReleaseV1 {
+    const scan = this.scanCompactionSourceRelease(
+      params.attemptId,
+      params.nowMs,
+    );
+    const pin = scan.pin;
+    const event: CompactionSourceReleaseV1 = {
+      format_version: COMPACTION_EVENT_FORMAT_VERSION,
+      minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+      attempt_id: params.attemptId,
+      recorded_at_ms: params.nowMs,
+      source_sha256: pin.sourceSha256,
+      source_session_id: pin.sessionId,
+      source_epoch: pin.epoch,
+      commit_sha256: pin.commitSha256!,
+      retention_deadline_ms: Math.max(
+        pin.retentionDeadlineMs!,
+        pin.rollbackExtendedUntilMs ?? 0,
+      ),
+      reference_scan_generation: scan.generation,
+    };
+    this.appendRollout(
+      { type: "compaction_source_release", payload: event },
+      { durable: true },
+    );
+    try {
+      this.compactionRetentionRepo.markReleasePending(event);
+    } catch (error) {
+      this.durablyCommittedCompactionsAwaitingReconstruction.add(pin.attemptId);
+      throw new CompactionReconstructionRequiredError(pin.attemptId, {
+        cause: error,
+      });
+    }
+    this.resumeCompactionSourceRelease({
+      attemptId: pin.attemptId,
+      nowMs: params.nowMs,
+    });
+    return event;
+  }
+
+  /** Resume bounded logical pruning after a durable release tombstone. */
+  resumeCompactionSourceRelease(params: {
+    readonly attemptId: string;
+    readonly nowMs: number;
+    readonly maxRecords?: number;
+  }): boolean {
+    const pin = this.compactionRetentionRepo.require(params.attemptId);
+    if (pin.state === "released") return true;
+    if (pin.state !== "release_pending") {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        `compaction source pruning requires release_pending, got ${pin.state}`,
+      );
+    }
+    if (pin.referenceScanGeneration === undefined) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "compaction source release is missing its authoritative scan generation",
+      );
+    }
+    if (this.compactionRetentionRepo.listActiveReferences(pin.attemptId).length !== 0) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "compaction source acquired a reference during release",
+      );
+    }
+    this.store.syncCanonicalTail();
+    const bytes = readFileSync(this.rolloutPath);
+    const journal = validateCanonicalJournalBytes(bytes, {
+      expectedRunId: pin.sessionId,
+      expectedEpoch: pin.epoch,
+      maxSourceBytes: MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
+    });
+    const sourceMatches = compactionPinSourceMatchesJournal(pin, journal, bytes);
+    if (
+      !sourceMatches &&
+      !(
+        pin.pruneCursor === pin.activeHistoryRefs.length &&
+        compactionPhysicalPruneComplete(pin, journal, bytes)
+      )
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "release-pending source changed before bounded pruning completed",
+      );
+    }
+    const requestedLimit = params.maxRecords ?? COMPACTION_PRUNE_RECORDS_PER_PAGE;
+    const limit = Math.min(
+      COMPACTION_PRUNE_RECORDS_PER_PAGE,
+      Math.max(1, Math.floor(requestedLimit)),
+    );
+    const nextCursor = Math.min(
+      pin.activeHistoryRefs.length,
+      pin.pruneCursor + limit,
+    );
+    this.compactionRetentionRepo.advancePruneCursor({
+      attemptId: pin.attemptId,
+      cursor: nextCursor,
+      referenceScanGeneration: pin.referenceScanGeneration,
+    });
+    if (nextCursor < pin.activeHistoryRefs.length) return false;
+    if (sourceMatches) {
+      this.pruneCompactionPhysicalSource(pin, journal, bytes);
+      this.afterCompactionSourcePruneRewriteForTestingOnly?.();
+    }
+    this.compactionRetentionRepo.markReleased({
+      attemptId: pin.attemptId,
+      releasedAtMs: params.nowMs,
+      sourceBinding: pin.sourceBinding,
+      sourceSha256: pin.sourceSha256,
+      completedCursor: pin.activeHistoryRefs.length,
+      referenceScanGeneration: pin.referenceScanGeneration,
+    });
+    return true;
+  }
+
+  private pruneCompactionPhysicalSource(
+    pin: CompactionPinRecord,
+    journal: StrictCanonicalJournal,
+    bytes: Buffer,
+  ): void {
+    const sourceRefsByLine = new Map(
+      pin.activeHistoryRefs.map((ref) => [ref.first_sequence, ref]),
+    );
+    const retained = journal.records.filter((record) => {
+        if (
+          record.item.type !== "response_item" &&
+          record.item.type !== "compacted"
+        ) {
+          return true;
+        }
+        const sourceRef = sourceRefsByLine.get(record.lineNumber);
+        return sourceRef === undefined ||
+          sourceRef.sha256 !== compactionPhysicalRecordDigest(record, bytes);
+      });
+    if (retained.length === journal.records.length) return;
+    this.store.rewriteRolloutItemsAtomically(
+      retained.map((record) => record.item),
+      retained.map((record) =>
+        bytes.subarray(
+          record.byteOffset,
+          record.byteOffset + record.encodedByteLength + 1,
+        ).toString("utf8"),
+      ),
+    );
+  }
+
+  /** Explicit durable references used by checkpoint/branch/provenance owners. */
+  addCompactionSourceReference(params: {
+    readonly attemptId: string;
+    readonly kind: Exclude<
+      CompactionReferenceKind,
+      "active_history" | "rollback_window" | "rollback_extension"
+    >;
+    readonly referenceId: string;
+    readonly recordedAtMs: number;
+  }): void {
+    this.compactionRetentionRepo.addReference({
+      attemptId: params.attemptId,
+      kind: params.kind,
+      referenceId: params.referenceId,
+      createdAtMs: params.recordedAtMs,
+    });
+  }
+
+  releaseCompactionSourceReference(params: {
+    readonly attemptId: string;
+    readonly kind: CompactionReferenceKind;
+    readonly referenceId: string;
+    readonly recordedAtMs: number;
+  }): void {
+    this.compactionRetentionRepo.releaseReference({
+      attemptId: params.attemptId,
+      kind: params.kind,
+      referenceId: params.referenceId,
+      releasedAtMs: params.recordedAtMs,
+    });
+  }
+
+  /** Bounded release/GC pass used at startup, before admission, and by operators. */
+  runCompactionRetentionMaintenance(
+    nowMs: number,
+    limit = COMPACTION_RECONCILIATION_PAGE_SIZE,
+  ): { readonly released: number; readonly deletedPins: number } {
+    const boundedLimit = Math.min(
+      COMPACTION_RECONCILIATION_PAGE_SIZE,
+      Math.max(1, Math.floor(limit)),
+    );
+    const candidates = this.compactionRetentionRepo.listReleaseCandidates(
+      this.sessionId,
+      nowMs,
+      boundedLimit,
+    );
+    let released = 0;
+    for (const candidate of candidates) {
+      let complete: boolean;
+      if (candidate.state === "release_pending") {
+        complete = this.resumeCompactionSourceRelease({
+            attemptId: candidate.attemptId,
+            nowMs,
+          });
+      } else {
+        this.beginCompactionSourceRelease({
+            attemptId: candidate.attemptId,
+            nowMs,
+          });
+        complete = this.compactionRetentionRepo.require(candidate.attemptId)
+          .state === "released";
+      }
+      if (complete) released += 1;
+    }
+    return {
+      released,
+      deletedPins: this.compactionRetentionRepo.deleteReleasedHistory(
+        boundedLimit,
+      ),
+    };
+  }
+
+  private scanCompactionSourceRelease(
+    attemptId: string,
+    nowMs: number,
+  ): { readonly pin: CompactionPinRecord; readonly generation: number } {
+    const pin = this.compactionRetentionRepo.require(attemptId);
+    const references = this.compactionRetentionRepo.listActiveReferences(attemptId);
+    if (references.length > 0) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        `compaction source has active ${references[0]!.kind} reference ${references[0]!.referenceId}`,
+      );
+    }
+    this.store.syncCanonicalTail();
+    const bytes = readFileSync(this.rolloutPath);
+    const journal = validateCanonicalJournalBytes(bytes, {
+      expectedRunId: pin.sessionId,
+      expectedEpoch: pin.epoch,
+      maxSourceBytes: MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
+    });
+    if (!compactionPinSourceMatchesJournal(pin, journal, bytes)) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "release scan cannot prove the pinned active-history records",
+      );
+    }
+    const intentIndex = uniqueCompactionRecordIndex(
+      journal,
+      attemptId,
+      "compaction_intent",
+    );
+    const commitIndex = uniqueCompactionRecordIndex(
+      journal,
+      attemptId,
+      "compaction_committed",
+    );
+    if (intentIndex >= commitIndex) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "release scan found an out-of-order compaction lifecycle",
+      );
+    }
+    const commit = journal.records[commitIndex]!.item;
+    if (
+      commit.type !== "compaction_committed" ||
+      pin.commitSha256 === undefined ||
+      digestWithDomain(COMPACTION_ACCOUNTING_DIGEST_DOMAIN, commit.payload) !==
+        pin.commitSha256
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "release scan cannot bind the canonical compaction commit",
+      );
+    }
+    const sourceLines = new Set(
+      pin.activeHistoryRefs.map((ref) => ref.first_sequence),
+    );
+    const overlappingPin = this.compactionRetentionRepo
+      .listActiveForSourceBinding(pin.sourceBinding)
+      .find(
+        (candidate) =>
+          candidate.attemptId !== pin.attemptId &&
+          candidate.activeHistoryRefs.some((ref) =>
+            sourceLines.has(ref.first_sequence),
+          ),
+      );
+    if (overlappingPin !== undefined) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        `descendant compaction ${overlappingPin.attemptId} still references source records`,
+      );
+    }
+    const eligible = this.compactionRetentionRepo.assertReleaseEligible(
+      attemptId,
+      nowMs,
+    );
+    return { pin: eligible, generation: journal.recordCount };
+  }
+
+  /** Whether this session must be reconstructed before it can accept a turn. */
+  get compactionReconstructionRequired(): boolean {
+    return this.durablyCommittedCompactionsAwaitingReconstruction.size > 0 ||
+      this.compactionRetentionRepo
+      .listSession(this.sessionId)
+      .some(
+        (pin) =>
+          pin.state === "committed_reference" &&
+          (pin.projectionState !== "complete" ||
+            pin.cleanupState !== "complete"),
+      );
+  }
+
+  assertCompactionProjectionReady(): void {
+    const unprojectedAttempt =
+      this.durablyCommittedCompactionsAwaitingReconstruction.values().next();
+    if (!unprojectedAttempt.done) {
+      throw new CompactionReconstructionRequiredError(unprojectedAttempt.value);
+    }
+    const poisoned = this.compactionRetentionRepo
+      .listSession(this.sessionId)
+      .find(
+        (pin) =>
+          pin.state === "committed_reference" &&
+          (pin.projectionState !== "complete" ||
+            pin.cleanupState !== "complete"),
+      );
+    if (poisoned !== undefined) {
+      throw new CompactionReconstructionRequiredError(poisoned.attemptId);
+    }
+  }
+
+  /** Called after canonical rollout reconstruction has installed commit state. */
+  acknowledgeCompactionReconstruction(attemptIds: readonly string[]): void {
+    for (const attemptId of new Set(attemptIds)) {
+      const pin = this.compactionRetentionRepo.get(attemptId);
+      if (pin?.sessionId !== this.sessionId) continue;
+      this.compactionRetentionRepo.markProjectionComplete(attemptId, Date.now());
+      this.durablyCommittedCompactionsAwaitingReconstruction.delete(attemptId);
+    }
+  }
+
+  private compactionSourcePrefixMatches(pin: CompactionPinRecord): boolean {
+    try {
+      this.store.syncCanonicalTail();
+      const bytes = readFileSync(this.rolloutPath);
+      const journal = validateCanonicalJournalBytes(bytes, {
+        expectedRunId: pin.sessionId,
+        expectedEpoch: pin.epoch,
+        maxSourceBytes: MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
+      });
+      return compactionPinSourceMatchesJournal(pin, journal, bytes);
+    } catch {
+      return false;
+    }
+  }
+
+  private reconcileCompactionsOnOpen(): void {
+    const startedAtMs = Date.now();
+    this.store.syncCanonicalTail();
+    const journalBytes = readFileSync(this.rolloutPath);
+    const journal = validateCanonicalJournalBytes(journalBytes, {
+      expectedRunId: this.sessionId,
+      expectedEpoch: this.runEpoch,
+      maxSourceBytes: MAX_RECOVERY_CANONICAL_SOURCE_BYTES,
+    });
+    const compactionItemsByAttempt = new Map<string, RolloutItem[]>();
+    for (const { item } of journal.records) {
+      if (
+        !item.type.startsWith("compaction_") ||
+        !("attempt_id" in item.payload)
+      ) {
+        continue;
+      }
+      const prior = compactionItemsByAttempt.get(item.payload.attempt_id);
+      if (prior === undefined) {
+        compactionItemsByAttempt.set(item.payload.attempt_id, [item]);
+      } else {
+        prior.push(item);
+      }
+    }
+    let pages = 0;
+    let exhausted = false;
+    while (pages < MAX_COMPACTION_RECONCILIATION_PAGES_PER_START) {
+      if (Date.now() - startedAtMs >= MAX_COMPACTION_RECONCILIATION_MS_PER_START) {
+        exhausted = true;
+        break;
+      }
+      const page = this.compactionRetentionRepo.listReconciliationPage(
+        this.sessionId,
+      );
+      if (page.length === 0) {
+        this.compactionRetentionRepo.resetReconciliationCursor(
+          this.sessionId,
+          Date.now(),
+        );
+        return;
+      }
+      pages += 1;
+      for (const listedPin of page) {
+        if (Date.now() - startedAtMs >= MAX_COMPACTION_RECONCILIATION_MS_PER_START) {
+          exhausted = true;
+          break;
+        }
+        this.reconcileCompactionPin(
+          listedPin,
+          compactionItemsByAttempt.get(listedPin.attemptId) ?? [],
+          journal,
+          journalBytes,
+        );
+        this.compactionRetentionRepo.persistReconciliationCursor(
+          this.sessionId,
+          listedPin,
+          Date.now(),
+        );
+      }
+      if (exhausted) break;
+      if (page.length < COMPACTION_RECONCILIATION_PAGE_SIZE) {
+        this.compactionRetentionRepo.resetReconciliationCursor(
+          this.sessionId,
+          Date.now(),
+        );
+        return;
+      }
+    }
+    const reason = exhausted
+      ? "startup_time_budget"
+      : "startup_page_budget";
+    this.compactionRetentionRepo.createDeferral({
+      sessionId: this.sessionId,
+      reason,
+      detail: { pages, startedAtMs },
+      createdAtMs: Date.now(),
+    });
+    throw new Error(
+      `compaction reconciliation deferred after ${pages} pages; resume before executable recovery`,
+    );
+  }
+
+  private reconcileCompactionPin(
+    listedPin: CompactionPinRecord,
+    items: readonly RolloutItem[],
+    journal: StrictCanonicalJournal,
+    journalBytes: Buffer,
+  ): void {
+    let pin = this.compactionRetentionRepo.require(listedPin.attemptId);
+    const intents = items.filter(
+      (item): item is Extract<RolloutItem, { readonly type: "compaction_intent" }> =>
+        item.type === "compaction_intent",
+    );
+    const failures = items.filter(
+      (item): item is Extract<RolloutItem, { readonly type: "compaction_failed" }> =>
+        item.type === "compaction_failed",
+    );
+    const commits = items.filter(
+      (item): item is Extract<RolloutItem, { readonly type: "compaction_committed" }> =>
+        item.type === "compaction_committed",
+    );
+    const rollbacks = items.filter(
+      (item): item is Extract<RolloutItem, { readonly type: "compaction_rollback_committed" }> =>
+        item.type === "compaction_rollback_committed",
+    );
+    const releases = items.filter(
+      (item): item is Extract<RolloutItem, { readonly type: "compaction_source_release" }> =>
+        item.type === "compaction_source_release",
+    );
+    if (
+      intents.length > 1 ||
+      failures.length > 1 ||
+      commits.length > 1 ||
+      rollbacks.length > 1 ||
+      releases.length > 1
+    ) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "canonical compaction lifecycle contains duplicate durable events",
+      );
+    }
+    const intent = intents[0];
+    const failure = failures[0];
+    const commit = commits[0];
+    const rollback = rollbacks[0];
+    const release = releases[0];
+    if (intent !== undefined && !compactionIntentMatchesPin(intent.payload, pin)) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "canonical compaction intent does not match its immutable retention pin",
+      );
+    }
+    if (pin.state === "preparing" && intent === undefined) {
+      if (commit !== undefined || failure !== undefined) {
+        this.compactionRetentionRepo.createDeferral({
+          sessionId: pin.sessionId,
+          attemptId: pin.attemptId,
+          reason: "source_proof_unavailable",
+          detail: "terminal compaction event exists without its intent",
+          createdAtMs: Date.now(),
+        });
+        return;
+      }
+      const sourceMatches = compactionPinSourceMatchesJournal(
+        pin,
+        journal,
+        journalBytes,
+      );
+      if (!sourceMatches) {
+        this.compactionRetentionRepo.createDeferral({
+          sessionId: pin.sessionId,
+          attemptId: pin.attemptId,
+          reason: "source_proof_unavailable",
+          detail: "orphan pin source prefix no longer matches",
+          createdAtMs: Date.now(),
+        });
+        return;
+      }
+      this.compactionRetentionRepo.releaseOrphanPreparing(
+        pin.attemptId,
+        Date.now(),
+        true,
+      );
+      return;
+    }
+    if (pin.state === "preparing" && intent !== undefined) {
+      pin = this.compactionRetentionRepo.bindIntent(
+        pin.attemptId,
+        intent.payload.recorded_at_ms,
+      );
+    }
+    if (commit !== undefined) {
+      if (
+        intent === undefined ||
+        !compactionCommitMatchesIntentAndPin(commit.payload, intent.payload, pin)
+      ) {
+        throw new CompactionTransactionError(
+          "commit_failed",
+          "canonical compaction commit does not match its durable intent and pin",
+        );
+      }
+      const intentIndex = uniqueCompactionRecordIndex(
+        journal,
+        pin.attemptId,
+        "compaction_intent",
+      );
+      const commitIndex = uniqueCompactionRecordIndex(
+        journal,
+        pin.attemptId,
+        "compaction_committed",
+      );
+      if (
+        intentIndex >= commitIndex ||
+        !compactionTailContainsOnlyIntentAdmission(
+          journal,
+          intent.payload,
+          commitIndex,
+        )
+      ) {
+        throw new CompactionTransactionError(
+          "commit_failed",
+          "canonical compaction admission lifecycle is incomplete or contaminated",
+        );
+      }
+      const commitSha256 = digestWithDomain(
+        COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
+        commit.payload,
+      );
+      if (
+        pin.state !== "intent_bound" &&
+        pin.commitSha256 !== commitSha256
+      ) {
+        throw new CompactionTransactionError(
+          "commit_failed",
+          "canonical compaction commit digest does not match its durable pin",
+        );
+      }
+      if (pin.state === "intent_bound") {
+        pin = this.compactionRetentionRepo.markCommitted(
+          commit.payload,
+          commitSha256,
+        );
+      }
+      if (rollback !== undefined) {
+        if (rollback.payload.rollback_mode === "reviewed_branch") {
+          this.materializeReviewedRollbackTarget(rollback.payload);
+        }
+        this.compactionRetentionRepo.recordRollbackReference({
+          attemptId: pin.attemptId,
+          mode: rollback.payload.rollback_mode,
+          targetSessionId: rollback.payload.target_session_id,
+          recordedAtMs: rollback.payload.recorded_at_ms,
+        });
+        pin = this.compactionRetentionRepo.require(pin.attemptId);
+      }
+      if (release !== undefined && pin.state === "committed_reference") {
+        pin = this.compactionRetentionRepo.markReleasePending(release.payload);
+      }
+      if (pin.state === "release_pending") {
+        this.resumeCompactionSourceRelease({
+          attemptId: pin.attemptId,
+          nowMs: release?.payload.recorded_at_ms ?? Date.now(),
+        });
+        return;
+      }
+      if (pin.cleanupState === "pending") {
+        // All cleanup targets are process-local caches. A restart reconstructs
+        // them from the committed rollout, so the cleanup is idempotently done.
+        this.compactionRetentionRepo.markCleanupComplete(pin.attemptId);
+      }
+      return;
+    }
+    if (failure !== undefined) {
+      this.compactionRetentionRepo.recordFailure({
+        attemptId: pin.attemptId,
+        sessionId: pin.sessionId,
+        historyDigest: failure.payload.history_digest,
+        configurationDigest: pin.configurationDigest,
+        recordedAtMs: failure.payload.recorded_at_ms,
+        sourceStillAuthoritative: compactionPinSourceMatchesJournal(
+          pin,
+          journal,
+          journalBytes,
+        ),
+        automatic: pin.automatic,
+      });
+      return;
+    }
+    if (pin.state === "intent_bound") {
+      const nowMs = Date.now();
+      const interrupted: CompactionFailedV1 = {
+        format_version: COMPACTION_EVENT_FORMAT_VERSION,
+        minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+        attempt_id: pin.attemptId,
+        recorded_at_ms: nowMs,
+        source_sha256: pin.sourceSha256,
+        history_digest: pin.historyDigest,
+        reason: "recovery_interrupted",
+        detail_digest: sha256Hex("startup reconciliation closed incomplete intent"),
+      };
+      try {
+        this.appendRollout(
+          { type: "compaction_failed", payload: interrupted },
+          { durable: true },
+        );
+        this.compactionRetentionRepo.recordFailure({
+          attemptId: pin.attemptId,
+          sessionId: pin.sessionId,
+          historyDigest: pin.historyDigest,
+          configurationDigest: pin.configurationDigest,
+          recordedAtMs: nowMs,
+          sourceStillAuthoritative: compactionPinSourceMatchesJournal(
+            pin,
+            journal,
+            journalBytes,
+          ),
+          automatic: pin.automatic,
+        });
+      } catch (error) {
+        this.compactionRetentionRepo.createDeferral({
+          sessionId: pin.sessionId,
+          attemptId: pin.attemptId,
+          reason: "failure_append_unavailable",
+          detail: error,
+          createdAtMs: nowMs,
+        });
+      }
+    }
   }
 
   /** Project a fsync-committed effect event into rebuildable M4 state. */
@@ -482,6 +2411,17 @@ export class RolloutStore {
           "compaction append",
         );
       }
+    } else if (item.type === "compaction_committed") {
+      this.assertLiveToolPairBoundary("transactional compaction commit");
+      this.assertValidToolPairHistory(
+        item.payload.replacement_history as readonly ToolPairMessage[],
+        "transactional compaction commit",
+      );
+    } else if (item.type === "compaction_rollback_committed") {
+      this.assertValidToolPairHistory(
+        item.payload.source_history as readonly ToolPairMessage[],
+        "transactional compaction rollback",
+      );
     }
     this.store.appendRollout(item, opts);
   }
@@ -541,6 +2481,13 @@ export class RolloutStore {
     meta: Parameters<SessionStore["open"]>[0],
   ): void {
     const items = this.store.readAll();
+    const sessionMeta = items.find((item) => item.type === "session_meta");
+    if (
+      sessionMeta?.type === "session_meta" &&
+      sessionMeta.payload.rolloutSchemaVersion > DURABLE_ROLLOUT_SCHEMA_V2
+    ) {
+      return;
+    }
     const projectionContext = this.checkpointProjectionContext("upgrade");
     const outcome = planLegacyDurableCheckpointUpgrade({
       items,
@@ -859,6 +2806,11 @@ export class RolloutStore {
   /** Fsync the existing canonical tail even when no batch is pending. */
   syncCanonicalTail(): void {
     this.store.syncCanonicalTail();
+  }
+
+  /** @internal Test seam for write-success/fsync-failure recovery. */
+  setFsyncImplForTest(impl: (fd: number) => void): void {
+    this.store.setFsyncImplForTest(impl);
   }
 
   close(): void {
@@ -1354,6 +3306,30 @@ function uniqueRecoveryEventId(
 
 function recoveryEvidenceKey(eventId: string, sequence: number): string {
   return `${sequence}\0${eventId}`;
+}
+
+function compactionErrorDetail(reason: unknown): string {
+  if (reason instanceof Error) {
+    return `${reason.name}:${reason.message}`;
+  }
+  return typeof reason === "string" ? reason : "unknown compaction error";
+}
+
+function runtimeMessageFromResponseItem(item: ResponseItem): RuntimeMessage {
+  const message = responseItemToLlmMessage(item);
+  return {
+    role: message.role === "developer" ? "user" : message.role,
+    ...(message.role === "developer" ? { originalRole: "developer" as const } : {}),
+    content: message.content,
+    ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
+    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.phase !== undefined ? { phase: message.phase } : {}),
+    ...(item.id !== undefined ? { uuid: item.id } : {}),
+    ...(message.runtimeOnly !== undefined
+      ? { runtimeOnly: message.runtimeOnly }
+      : {}),
+  };
 }
 
 function recoveryNoEffectProof(options: {

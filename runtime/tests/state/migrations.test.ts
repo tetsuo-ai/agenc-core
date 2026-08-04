@@ -57,7 +57,7 @@ describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-      20, 21, 22, 23,
+      20, 21, 22, 23, 24,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -83,6 +83,7 @@ describe("state migration registry", () => {
       "csv_job_scheduler",
       "workflow_handoff_artifacts",
       "set_based_cancellation_indexes",
+      "compaction_transaction",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -124,7 +125,66 @@ describe("state migration registry", () => {
       "021_csv_job_scheduler.ts",
       "022_workflow_handoff_artifacts.ts",
       "023_set_based_cancellation_indexes.ts",
+      "024_compaction_transaction.ts",
     ]);
+  });
+
+  it("adds compaction authority at v24 idempotently with immutable identity", () => {
+    const db = new Database(":memory:");
+    try {
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      expect(
+        db.prepare(
+          "SELECT version, name FROM schema_migrations WHERE version = 24",
+        ).get(),
+      ).toEqual({ version: 24, name: "compaction_transaction" });
+      expect(
+        db.prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'table' AND name LIKE 'compaction_%'
+           ORDER BY name`,
+        ).all().map((row) => (row as { name: string }).name),
+      ).toEqual([
+        "compaction_failure_guards",
+        "compaction_reconciliation_cursors",
+        "compaction_recovery_deferrals",
+        "compaction_retention_pins",
+        "compaction_retention_references",
+      ]);
+      db.prepare(
+        `INSERT INTO compaction_retention_pins (
+           attempt_id, format_version, session_id, epoch, source_binding,
+           first_sequence, last_sequence, source_sha256, source_bytes,
+           history_digest, source_manifest_json, selected_history_indexes_json,
+           policy_digest, configuration_digest, accounting_ref, automatic,
+           admission_required, planned_provider_calls, state,
+           reference_count, created_at_ms, cleanup_state, projection_state,
+           prune_cursor
+         ) VALUES (
+           'attempt', 1, 'session', 1, 'binding', 1, 1, ?, 1, ?, '[{}]', '[0]',
+           ?, ?, ?, 0, 1, 1, 'preparing', 0, 0, 'not_started', 'not_committed', 0
+         )`,
+      ).run(...Array(5).fill("a".repeat(64)));
+      expect(() =>
+        db.prepare(
+          "UPDATE compaction_retention_pins SET source_binding = 'other' WHERE attempt_id = 'attempt'",
+        ).run(),
+      ).toThrow(/identity is immutable/i);
+      db.prepare(
+        `INSERT INTO compaction_reconciliation_cursors (
+           cursor_name, created_at_ms, attempt_id, updated_at_ms
+         ) VALUES ('session', 0, '', 0)`,
+      ).run();
+      expect(() =>
+        db.prepare(
+          `UPDATE compaction_reconciliation_cursors
+           SET created_at_ms = -1 WHERE cursor_name = 'session'`,
+        ).run(),
+      ).toThrow();
+    } finally {
+      db.close();
+    }
   });
 
   it("adds workflow handoffs at v22 without changing legacy tool-output state", () => {

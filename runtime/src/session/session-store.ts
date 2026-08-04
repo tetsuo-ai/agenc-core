@@ -1578,11 +1578,25 @@ export class SessionStore {
    * refresh the metadata cached by future tail re-appends. This is the only
    * supported publication seam for the A3 legacy-to-v2 upgrade.
    */
-  rewriteRolloutItemsAtomically(items: ReadonlyArray<RolloutItem>): void {
+  rewriteRolloutItemsAtomically(
+    items: ReadonlyArray<RolloutItem>,
+    exactEncodedLines?: ReadonlyArray<string>,
+  ): void {
     if (this.pending.length > 0) {
       throw new Error("cannot atomically replace rollout with pending appends");
     }
-    const lines = items.map(serializeRolloutItem);
+    if (
+      exactEncodedLines !== undefined &&
+      exactEncodedLines.length !== items.length
+    ) {
+      throw new Error("exact rollout line count does not match item count");
+    }
+    const lines = exactEncodedLines === undefined
+      ? items.map(serializeRolloutItem)
+      : [...exactEncodedLines];
+    if (lines.some((line) => !line.endsWith("\n"))) {
+      throw new Error("exact rollout lines must include their newline terminator");
+    }
     const nextOffsetsBySeq = new Map<EventSeq, number>();
     let nextLastSeq: EventSeq = 0;
     let offset = 0;
@@ -1609,6 +1623,47 @@ export class SessionStore {
       if (item.type === "session_meta") latestMeta = item.payload;
     }
     this.lastSessionMeta = latestMeta ?? null;
+  }
+
+  /**
+   * Upgrade the legacy-visible first session_meta gate under this store's
+   * lifetime-exclusive rollout lease. Older runtimes inspect this first row
+   * before parsing any later item, so a C2 writer must publish schema 3 here
+   * before it can append a compaction intent.
+   */
+  upgradeCanonicalSchemaHeader(targetVersion: number): void {
+    if (
+      !Number.isSafeInteger(targetVersion) ||
+      targetVersion <= 0 ||
+      targetVersion > ROLLOUT_SCHEMA_VERSION
+    ) {
+      throw new Error(`unsupported rollout schema upgrade ${targetVersion}`);
+    }
+    this.syncCanonicalTail();
+    const bytes = readFileSync(this.rolloutPath);
+    const newline = bytes.indexOf(0x0a);
+    if (newline < 0) throw new Error("canonical rollout header is unterminated");
+    const headerText = new TextDecoder("utf-8", { fatal: true }).decode(
+      bytes.subarray(0, newline),
+    );
+    const header = parseRolloutLine(headerText);
+    if (header?.type !== "session_meta") {
+      throw new Error("canonical rollout does not begin with session_meta");
+    }
+    if (header.payload.rolloutSchemaVersion >= targetVersion) return;
+    const upgraded: RolloutItem = {
+      ...header,
+      payload: {
+        ...header.payload,
+        rolloutSchemaVersion: targetVersion,
+      },
+    };
+    const replacement = Buffer.concat([
+      Buffer.from(serializeRolloutItem(upgraded), "utf8"),
+      bytes.subarray(newline + 1),
+    ]);
+    this.rewriteRolloutAtomically(replacement);
+    this.lastSessionMeta = upgraded.payload;
   }
 
   /**

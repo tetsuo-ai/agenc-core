@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import { buildInitialTurnState } from "../session/turn-state.js";
 import {
   postSampleRecovery,
@@ -7,8 +7,10 @@ import {
 import { findToolTurnValidationIssue } from "../llm/tool-turn-validator.js";
 import { mkCtx, mkSession } from "../../tests/fixtures.js";
 import type { LLMMessage } from "../llm/types.js";
-import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
+import { createCompactionTransactionHarness } from "../helpers/compaction-transaction-harness.js";
+import { createToolResultIntegrity } from "../session/tool-result-integrity.js";
+import type { RuntimeMessage } from "../services/compact/types.js";
 
 function seedMessages(): LLMMessage[] {
   return [
@@ -78,13 +80,24 @@ describe("post-sample context-collapse recovery contract", () => {
   });
 
   test("withheld prompt-too-long routes through collapse once and then surfaces", async () => {
-    const ctx = mkCtx();
-    const { session, events } = mkSession();
-    const append = vi.fn();
-    session.rolloutStore = {
-      append,
-    } as unknown as Session["rolloutStore"];
-    const messages = seedMessages();
+    const messages = seedMessages().map((message, index) => ({
+      ...message,
+      content: index === 0 ? `start ${"x".repeat(8_000)}` : message.content,
+    }));
+    const harness = createCompactionTransactionHarness(
+      messages as RuntimeMessage[],
+      { compactionMode: "automatic" },
+    );
+    const ctx = {
+      ...mkCtx(),
+      provider: harness.provider,
+      modelInfo: {
+        ...mkCtx().modelInfo,
+        slug: "grok-4.5",
+        contextWindow: 64_000,
+      },
+    } as TurnContext;
+    const session = harness.session;
     const state = buildInitialTurnState(
       ctx,
       { role: "user", content: "continue" },
@@ -105,31 +118,21 @@ describe("post-sample context-collapse recovery contract", () => {
     await postSampleRecovery(state, ctx, session);
 
     expect(state.transition).toEqual({ reason: "collapse_drain_retry" });
-    expect(state.messagesForQuery[0]?.content).toContain("<compact>");
-    expect(state.messages[0]?.content).toContain("<compact>");
+    expect(state.messagesForQuery[0]?.runtimeOnly?.compactionHistory?.kind)
+      .toBe("boundary");
+    expect(state.messages[1]?.runtimeOnly?.compactionHistory?.kind)
+      .toBe("summary");
 
     state.transition = undefined;
     await postSampleRecovery(state, ctx, session);
 
     expect(state.transition).toBeUndefined();
-    expect(
-      events.some(
-        (event) =>
-          event.msg.type === "error" &&
-          event.msg.payload.cause === "prompt_too_long_exhausted",
-      ),
-    ).toBe(true);
-    expect(append).toHaveBeenCalledWith(
-      expect.objectContaining({
-        msg: expect.objectContaining({
-          type: "error",
-          payload: expect.objectContaining({
-            cause: "prompt_too_long_exhausted",
-          }),
-        }),
-      }),
-      expect.objectContaining({ durable: true }),
-    );
+    expect(harness.store.readAll().some((item) =>
+      item.type === "event_msg" &&
+      item.payload.msg.type === "error" &&
+      item.payload.msg.payload.cause === "prompt_too_long_exhausted"
+    )).toBe(true);
+    harness.close();
   });
 
   test("413 collapse preserves assistant tool calls paired with kept tool results", async () => {
@@ -138,8 +141,14 @@ describe("post-sample context-collapse recovery contract", () => {
       role: "user",
       content: "continue",
     });
+    const sessionId = "overflow-tool-pair";
+    const toolIntegrity = createToolResultIntegrity({
+      runId: sessionId,
+      toolCallId: "tc-collapse",
+      content: "ok",
+    });
     state.messagesForQuery = [
-      { role: "user", content: "old" },
+      { role: "user", content: `old ${"x".repeat(8_000)}` },
       { role: "assistant", content: "old answer" },
       { role: "user", content: "read file" },
       {
@@ -152,13 +161,43 @@ describe("post-sample context-collapse recovery contract", () => {
         toolCallId: "tc-collapse",
         toolName: "Read",
         content: "ok",
+        runtimeOnly: {
+          toolResultIntegrity: toolIntegrity,
+        },
       },
     ];
+    const harness = createCompactionTransactionHarness(
+      state.messagesForQuery as RuntimeMessage[],
+      { sessionId, compactionMode: "automatic" },
+    );
 
-    const recovered = await runContextCollapseOverflowRecovery({ state });
+    const recovered = await runContextCollapseOverflowRecovery({
+      state,
+      session: harness.session,
+    });
 
     expect(recovered).toEqual({ kind: "applied", reason: "context_collapse" });
     expect(findToolTurnValidationIssue(state.messagesForQuery)).toBeNull();
+    const commit = harness.store.readAll().findLast(
+      (item) => item.type === "compaction_committed",
+    );
+    expect(commit).toMatchObject({
+      type: "compaction_committed",
+      payload: {
+        summary: {
+          body: {
+            tool_pairs: [{
+              tool_call_id: "tc-collapse",
+              result_sha256: toolIntegrity.original.digest.replace(
+                /^sha256:/u,
+                "",
+              ),
+            }],
+          },
+        },
+      },
+    });
+    harness.close();
   });
 
   test("413 collapse preserves assistant call when kept tail starts with tool result", async () => {
@@ -167,8 +206,9 @@ describe("post-sample context-collapse recovery contract", () => {
       role: "user",
       content: "continue",
     });
+    const sessionId = "overflow-tool-edge";
     state.messagesForQuery = [
-      { role: "user", content: "old" },
+      { role: "user", content: `old ${"x".repeat(8_000)}` },
       {
         role: "assistant",
         content: "",
@@ -179,14 +219,29 @@ describe("post-sample context-collapse recovery contract", () => {
         toolCallId: "tc-edge",
         toolName: "Read",
         content: "ok",
+        runtimeOnly: {
+          toolResultIntegrity: createToolResultIntegrity({
+            runId: sessionId,
+            toolCallId: "tc-edge",
+            content: "ok",
+          }),
+        },
       },
       { role: "user", content: "latest" },
       { role: "assistant", content: "latest answer" },
     ];
+    const harness = createCompactionTransactionHarness(
+      state.messagesForQuery as RuntimeMessage[],
+      { sessionId, compactionMode: "automatic" },
+    );
 
-    const recovered = await runContextCollapseOverflowRecovery({ state });
+    const recovered = await runContextCollapseOverflowRecovery({
+      state,
+      session: harness.session,
+    });
 
     expect(recovered).toEqual({ kind: "applied", reason: "context_collapse" });
     expect(findToolTurnValidationIssue(state.messagesForQuery)).toBeNull();
+    harness.close();
   });
 });

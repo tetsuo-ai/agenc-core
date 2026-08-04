@@ -148,6 +148,8 @@ export interface RolloutReconstruction {
    * turn (backward compat). Always non-undefined (empty when none).
    */
   readonly resumableTurns: ReadonlyArray<ResumableTurn>;
+  /** Transactional commits whose canonical projection this replay installed. */
+  readonly activeCompactionAttemptIds: ReadonlyArray<string>;
   /** Any synthesized events (I-48, I-25 snapshot-mismatch). Callers
    *  emit these warnings into the live event log. */
   readonly synthesizedEvents: ReadonlyArray<RolloutItem>;
@@ -577,6 +579,30 @@ export function reconstructFromRollout(
   // TurnComplete/TurnAborted is an orphan.
   const seenStarted = new Set<string>();
   const seenTerminated = new Set<string>();
+  const reconstructionSessionId = rolloutItems.find(
+    (item): item is Extract<RolloutItem, { readonly type: "session_meta" }> =>
+      item.type === "session_meta",
+  )?.payload.sessionId;
+  const rollbackTargetsReconstructedSession = (
+    item: Extract<RolloutItem, { readonly type: "compaction_rollback_committed" }>,
+  ): boolean =>
+    reconstructionSessionId !== undefined &&
+    item.payload.target_session_id === reconstructionSessionId;
+  const compactionLineage: string[] = [];
+  for (const item of rolloutItems) {
+    if (item.type === "compaction_committed") {
+      compactionLineage.push(item.payload.attempt_id);
+    } else if (
+      item.type === "compaction_rollback_committed" &&
+      rollbackTargetsReconstructedSession(item)
+    ) {
+      const index = compactionLineage.lastIndexOf(item.payload.attempt_id);
+      if (index >= 0) compactionLineage.splice(index, 1);
+    }
+  }
+  const activeCompactionAttemptIds = compactionLineage.length === 0
+    ? []
+    : [compactionLineage.at(-1)!];
 
   // Reverse scan.
   for (let idx = rolloutItems.length - 1; idx >= 0; idx -= 1) {
@@ -592,6 +618,33 @@ export function reconstructFromRollout(
           item.payload.replacementHistory !== undefined
         ) {
           active.baseReplacementHistory = item.payload.replacementHistory;
+          rolloutSuffix = rolloutItems.slice(idx + 1);
+          rolloutSuffixStartIndex = idx + 1;
+        }
+        break;
+      }
+
+      case "compaction_committed": {
+        if (!active) active = emptySegment();
+        if (active.referenceContextItem.kind === "never_set") {
+          active.referenceContextItem = { kind: "cleared" };
+        }
+        if (active.baseReplacementHistory === undefined) {
+          active.baseReplacementHistory = item.payload.replacement_history;
+          rolloutSuffix = rolloutItems.slice(idx + 1);
+          rolloutSuffixStartIndex = idx + 1;
+        }
+        break;
+      }
+
+      case "compaction_rollback_committed": {
+        if (!rollbackTargetsReconstructedSession(item)) break;
+        if (!active) active = emptySegment();
+        if (active.referenceContextItem.kind === "never_set") {
+          active.referenceContextItem = { kind: "cleared" };
+        }
+        if (active.baseReplacementHistory === undefined) {
+          active.baseReplacementHistory = item.payload.source_history;
           rolloutSuffix = rolloutItems.slice(idx + 1);
           rolloutSuffixStartIndex = idx + 1;
         }
@@ -715,6 +768,10 @@ export function reconstructFromRollout(
 
       case "session_meta":
       case "session_state":
+      case "compaction_intent":
+      case "compaction_failed":
+      case "compaction_cleanup_pending":
+      case "compaction_source_release":
         break;
     }
 
@@ -1012,6 +1069,7 @@ export function reconstructFromRollout(
     history: state.history,
     orphanedTurnIds,
     resumableTurns,
+    activeCompactionAttemptIds,
     synthesizedEvents: synthesized,
     state,
     rolledBackTurnsConsumed: state.rolledBackTurns,

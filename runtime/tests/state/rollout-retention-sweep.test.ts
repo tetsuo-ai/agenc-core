@@ -22,6 +22,12 @@ import { StateRunDurabilityRepository } from "./run-durability.js";
 import { AgenCSessionSnapshotPolicy } from "./snapshot-policy.js";
 import { recoverCanonicalRunJournalForRun } from "./startup-run-journal-recovery.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
+import { CompactionRetentionRepository } from "../../src/state/compaction-retention.js";
+import {
+  COMPACTION_EVENT_FORMAT_VERSION,
+  COMPACTION_MINIMUM_READER_RUNTIME,
+  type CompactionIntentV1,
+} from "../../src/services/compact/transaction-types.js";
 
 let home = "";
 let cwd = "";
@@ -110,6 +116,70 @@ function mirrorRowCountForSource(sourcePath: string): number {
 }
 
 describe("pruneRolloutSessions", () => {
+  it("keeps a pinned source session until its durable release state", () => {
+    const sessionId = "thread-compaction-pinned";
+    const sourcePath = seedSession(sessionId, 60);
+    const retention = new CompactionRetentionRepository(driver);
+    const attemptId = "retention-pin-attempt";
+    const digest = "a".repeat(64);
+    const intent: CompactionIntentV1 = {
+      format_version: COMPACTION_EVENT_FORMAT_VERSION,
+      minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+      attempt_id: attemptId,
+      recorded_at_ms: NOW_MS - DAY_MS,
+      source: {
+        format_version: COMPACTION_EVENT_FORMAT_VERSION,
+        attempt_id: attemptId,
+        session_id: sessionId,
+        epoch: 1,
+        source_binding: `rollout:${sourcePath}#epoch:1`,
+        first_sequence: 2,
+        last_sequence: 2,
+        source_sha256: digest,
+        source_bytes: 1,
+        history_digest: digest,
+        active_history_refs: [
+          {
+            kind: "rollout_span",
+            ref_id: "source-message-0",
+            source_binding: `rollout:${sourcePath}#epoch:1`,
+            first_sequence: 2,
+            last_sequence: 2,
+            sha256: digest,
+            history_index: 0,
+            record_message_index: 0,
+            encoded_bytes: 1,
+          },
+        ],
+      },
+      policy_digest: digest,
+      configuration_digest: digest,
+      accounting_ref: digest,
+      automatic: false,
+      selected_history_indexes: [0],
+      admission_required: true,
+      planned_provider_calls: 1,
+    };
+    retention.createPreparingPin(intent);
+
+    const blocked = pruneRolloutSessions(driver, {
+      sessionsDir: join(driver.projectDir, "sessions"),
+      retention_days: 30,
+      now: () => NOW,
+    });
+    expect(blocked.prunedSessions).toBe(0);
+    expect(existsSync(sourcePath)).toBe(true);
+
+    retention.releaseOrphanPreparing(attemptId, NOW_MS, true);
+    const released = pruneRolloutSessions(driver, {
+      sessionsDir: join(driver.projectDir, "sessions"),
+      retention_days: 30,
+      now: () => NOW,
+    });
+    expect(released.prunedSessionIds).toEqual([sessionId]);
+    expect(existsSync(sourcePath)).toBe(false);
+  });
+
   it("deletes an old session + its mirror rows, keeps recent and active", () => {
     const oldPath = seedSession("thread-old", 60); // older than the window
     const recentPath = seedSession("thread-recent", 5); // inside the window

@@ -5,11 +5,7 @@
  * `0ca43335375beec6e58711b797d5b0c4bb5019b8`.
  */
 
-import {
-  createUserMessage,
-  moveSplitBeforeAgentInvocation,
-} from "./compact.js";
-import { getCompactUserSummaryMessage } from "./prompt.js";
+import { moveSplitBeforeAgentInvocation } from "./compact.js";
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { isRecord } from "../../utils/record.js";
 
@@ -57,34 +53,12 @@ export function preserveToolPairsFromIndex(
 }
 
 export async function trySessionMemoryCompaction(
-  messages: readonly RuntimeMessage[] = [],
-  context: CompactContext = {},
+  _messages: readonly RuntimeMessage[] = [],
+  _context: CompactContext = {},
 ): Promise<CompactionResult | null> {
-  if (!shouldUseSessionMemoryCompaction()) return null;
-  const sessionMemory = context.deps?.sessionMemory;
-  if (!sessionMemory?.getContent) return null;
-  if (await sessionMemory.isEmpty?.()) return null;
-  const content = (await sessionMemory.getContent())?.trim();
-  if (!content) return null;
-
-  const keepIndex = calculateMessagesToKeepIndex(messages);
-  const messagesToKeep = preserveToolPairsFromIndex(messages, keepIndex);
-  const boundaryMarker = createUserMessage({
-    content: `<compact>Conversation compacted using session memory at ${new Date().toISOString()}</compact>`,
-    isMeta: true,
-  });
-  const summaryMessage = createUserMessage({
-    content: getCompactUserSummaryMessage(content, true, undefined, true),
-    isMeta: true,
-  });
-  return {
-    boundaryMarker,
-    summaryMessages: [summaryMessage],
-    attachments: [],
-    hookResults: [],
-    messagesToKeep,
-    userDisplayMessage: "Conversation compacted with session memory",
-  };
+  // Session memory is recall-only. It must never create replacement history
+  // outside the canonical compaction transaction.
+  return null;
 }
 
 function isTruthy(value: string | undefined): boolean {

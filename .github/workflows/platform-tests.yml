@@ -1173,7 +1173,7 @@ jobs:
           $redProbeOutput = & node runtime/scripts/run-fnd-red-probes.mjs
           if ($LASTEXITCODE -ne 0) { throw "Windows red-probe audit failed" }
           $expectedRedProbeOutput = `
-            "red probes: files=2 expected-red=2 assertions=2 skipped=0 todo=0"
+            "red probes: files=1 expected-red=1 assertions=1 skipped=0 todo=0"
           if (($redProbeOutput | Out-String).Trim() -ne $expectedRedProbeOutput) {
             throw "Windows red-probe result contract failed: $redProbeOutput"
           }

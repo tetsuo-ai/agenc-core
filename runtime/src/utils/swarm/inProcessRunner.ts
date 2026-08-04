@@ -19,13 +19,7 @@ import {
   unregisterPermissionCallback,
 } from '../../tui/hooks/useSwarmPermissionPoller.js'
 import { getAutoCompactThreshold } from '../../services/compact/autoCompact.js'
-import {
-  buildPostCompactMessages,
-  compactConversation,
-  ERROR_MESSAGE_USER_ABORT,
-  // upstream-import: keep compact runtime target is owned by a later purge item
-} from '../../services/compact/compact.js'
-import { resetMicrocompactState } from '../../services/compact/microCompact.js'
+import { ERROR_MESSAGE_USER_ABORT } from '../../services/compact/compact.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import type { Tool, ToolUseContext } from '../../tools/Tool.js'
 import { appendTeammateMessage } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
@@ -1060,39 +1054,8 @@ export async function runInProcessTeammate(
         tokenCount >
         getAutoCompactThreshold(toolUseContext.options.mainLoopModel)
       ) {
-        logForDebugging(
-          `[inProcessRunner] ${identity.agentId} compacting history (${tokenCount} tokens)`,
-        )
-        // Build a minimal CompactContext so compaction does not trigger
-        // the main session's UI callbacks.
-        const compactedSummary = await compactConversation(allMessages, {
-          abortController: toolUseContext.abortController,
-          options: {
-            mainLoopModel: toolUseContext.options.mainLoopModel,
-            querySource: toolUseContext.options.querySource,
-          },
-        })
-        contextMessages = buildPostCompactMessages(compactedSummary)
-        // Reset microcompact state since full compact replaces all
-        // messages — old tool IDs are no longer relevant
-        resetMicrocompactState()
-        // Reset content replacement state — compact replaces all messages
-        // so old tool_use_ids are gone. Stale Map entries are harmless
-        // (UUID keys never match) but accumulate memory over long runs.
-        if (teammateReplacementState) {
-          teammateReplacementState = createContentReplacementState()
-        }
-        // Update allMessages in place with compacted version
-        allMessages.length = 0
-        allMessages.push(...contextMessages)
-
-        // Mirror compaction into task.messages — otherwise the AppState
-        // mirror grows unbounded (500 turns = 500+ messages, 10-50MB).
-        // Replace with the compacted messages, matching allMessages.
-        updateTaskState(
-          taskId,
-          task => ({ ...task, messages: [...contextMessages, userMessage] }),
-          setAppState,
+        throw new Error(
+          `in-process teammate ${identity.agentId} reached its context limit without an isolated canonical rollout owner; history was not changed`,
         )
       }
 

@@ -21,9 +21,6 @@ export interface HistoryReplacedEvent {
 }
 
 const SYNTHETIC_MODEL = "agenc";
-const COMPACT_BOUNDARY_PREFIX = "<compact>";
-const COMPACT_SUMMARY_PREFIX =
-  "This session is being continued from a previous conversation";
 
 export function createHistoryReplacedEvent(params: {
   readonly replacementHistory: readonly LLMMessage[];
@@ -58,9 +55,9 @@ function llmMessageToRuntimeTranscriptMessages(
   switch (message.role) {
     case "system":
     case "developer":
-      return [makeSystemMessage(contentToText(message.content), index)];
+      return [makeSystemMessage(message, index)];
     case "user":
-      return [makeUserMessage(message.content, index)];
+      return [makeUserMessage(message, index)];
     case "assistant": {
       const out: RuntimeTranscriptMessage[] = [];
       const content = assistantContent(message);
@@ -105,12 +102,13 @@ function llmMessageToRuntimeTranscriptMessages(
 }
 
 function makeUserMessage(
-  content: LLMMessage["content"],
+  source: LLMMessage,
   index: number,
 ): RuntimeTranscriptMessage {
-  const text = contentToText(content);
-  const isCompactBoundary = text.startsWith(COMPACT_BOUNDARY_PREFIX);
-  const isCompactSummary = text.startsWith(COMPACT_SUMMARY_PREFIX);
+  const content = source.content;
+  const marker = source.runtimeOnly?.compactionHistory;
+  const isCompactSummary = marker?.version === 1 && marker.kind === "summary";
+  const isCompactBoundary = marker?.version === 1 && marker.kind === "boundary";
   return {
     type: "user",
     message: {
@@ -119,6 +117,7 @@ function makeUserMessage(
     },
     ...(isCompactBoundary ? { isMeta: true } : {}),
     ...(isCompactSummary ? { isCompactSummary: true } : {}),
+    ...(marker === undefined ? {} : { compactionHistory: marker }),
     uuid: `history-user-${index}`,
     timestamp: new Date(0).toISOString(),
   };
@@ -153,12 +152,18 @@ function makeAssistantMessage(
   };
 }
 
-function makeSystemMessage(content: string, index: number): RuntimeTranscriptMessage {
+function makeSystemMessage(
+  source: LLMMessage,
+  index: number,
+): RuntimeTranscriptMessage {
+  const marker = source.runtimeOnly?.compactionHistory;
+  const isCompactBoundary = marker?.version === 1 && marker.kind === "boundary";
   return {
     type: "system",
     subtype: "informational",
-    content,
-    isMeta: false,
+    content: contentToText(source.content),
+    isMeta: isCompactBoundary,
+    ...(marker === undefined ? {} : { compactionHistory: marker }),
     timestamp: new Date(0).toISOString(),
     uuid: `history-system-${index}`,
     level: "info",

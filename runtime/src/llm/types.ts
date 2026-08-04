@@ -13,6 +13,7 @@ import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js"
 import type { ProviderTokenCountCapability } from "./token-accounting.js";
 import type { ToolResultIntegrity } from "../session/tool-result-integrity.js";
 import type { AgentInvocationChannelMetadata } from "../contracts/agent-invocation-envelope.js";
+import type { CompactionHistoryMarkerV1 } from "../session/compaction-history-marker.js";
 
 /**
  * Message role in a conversation
@@ -101,6 +102,8 @@ export interface LLMMessage {
     readonly toolResultIntegrity?: ToolResultIntegrity;
     /** Durable authority/channel identity for versioned agent invocation input. */
     readonly agentInvocation?: AgentInvocationChannelMetadata;
+    /** Commit-authenticated boundary/summary identity; never accepted from wire input. */
+    readonly compactionHistory?: CompactionHistoryMarkerV1;
   };
   /** For assistant messages that request tool execution */
   toolCalls?: LLMToolCall[];

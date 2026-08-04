@@ -21,6 +21,11 @@ import {
   isCanonicalEventPayload,
   isCanonicalRolloutPayload,
 } from "./recovery-journal-schema.js";
+import { COMPACTION_ACCOUNTING_DIGEST_DOMAIN } from "../services/compact/transaction-types.js";
+import {
+  canonicalizeJson,
+  digestWithDomain,
+} from "../services/compact/summary-v1.js";
 
 export type CanonicalJournalFormat =
   "empty" | "sequenced_v1" | "legacy_unsequenced_v1";
@@ -85,6 +90,20 @@ const KNOWN_CANONICAL_TYPES = new Set<string>([
   "compacted",
   "turn_context",
   "event_msg",
+  "compaction_intent",
+  "compaction_failed",
+  "compaction_committed",
+  "compaction_cleanup_pending",
+  "compaction_rollback_committed",
+  "compaction_source_release",
+]);
+const COMPACTION_CANONICAL_TYPES = new Set<string>([
+  "compaction_intent",
+  "compaction_failed",
+  "compaction_committed",
+  "compaction_cleanup_pending",
+  "compaction_rollback_committed",
+  "compaction_source_release",
 ]);
 const LEGACY_EVENT_TYPE_ALIASES = new Set<string>([
   "task_started",
@@ -118,6 +137,13 @@ export class StrictCanonicalJournalValidator {
   #format: CanonicalJournalFormat = "empty";
   #nextSequence = 1;
   #finished = false;
+  readonly #compactionAttempts = new Map<string, {
+    intent?: Readonly<Record<string, unknown>>;
+    terminal?: "failed" | "committed";
+    commitSha256?: string;
+    rollback?: true;
+    release?: true;
+  }>();
 
   constructor(options: StrictCanonicalJournalOptions = {}) {
     this.#options = Object.freeze({ ...options });
@@ -359,10 +385,7 @@ export class StrictCanonicalJournalValidator {
         facts,
       );
     }
-    if (
-      value.eventVersion !== undefined &&
-      value.eventVersion !== ROLLOUT_ITEM_VERSION
-    ) {
+    if (!supportedItemVersion(type, value.eventVersion)) {
       this.#fail(
         "unsupported_format_version",
         "canonical journal record version is not supported by this runtime",
@@ -380,7 +403,161 @@ export class StrictCanonicalJournalValidator {
         facts,
       );
     }
+    this.#validateCompactionState(item, facts);
     return item;
+  }
+
+  #validateCompactionState(
+    item: RolloutItem,
+    facts: RecoveryIntegrityFacts,
+  ): void {
+    if (!COMPACTION_CANONICAL_TYPES.has(item.type)) return;
+    const payload = item.payload as Readonly<Record<string, unknown>>;
+    const attemptId = payload.attempt_id;
+    if (typeof attemptId !== "string" || attemptId.length === 0) {
+      this.#fail("schema_invalid", "compaction event has no attempt id", facts);
+    }
+    const current = this.#compactionAttempts.get(attemptId) ?? {};
+    if (item.type === "compaction_intent") {
+      if (current.intent !== undefined || current.terminal !== undefined) {
+        this.#fail("identity_conflict", "duplicate or out-of-order compaction intent", facts);
+      }
+      const source = payload.source as Readonly<Record<string, unknown>>;
+      if (
+        (this.#options.expectedRunId !== undefined &&
+          source.session_id !== this.#options.expectedRunId) ||
+        (this.#options.expectedEpoch !== undefined &&
+          source.epoch !== this.#options.expectedEpoch)
+      ) {
+        this.#fail(
+          "identity_conflict",
+          "compaction intent source does not match the expected run epoch",
+          facts,
+        );
+      }
+      current.intent = payload;
+      this.#compactionAttempts.set(attemptId, current);
+      return;
+    }
+    if (current.intent === undefined) {
+      this.#fail("identity_conflict", "compaction terminal precedes its intent", facts);
+    }
+    if (item.type === "compaction_failed" || item.type === "compaction_committed") {
+      if (current.terminal !== undefined) {
+        this.#fail("identity_conflict", "compaction attempt has conflicting terminals", facts);
+      }
+      if (item.type === "compaction_committed") {
+        const source = payload.source as Readonly<Record<string, unknown>>;
+        const intentSource = current.intent.source as Readonly<Record<string, unknown>>;
+        for (const key of [
+          "attempt_id", "session_id", "epoch", "source_binding",
+          "first_sequence", "last_sequence", "source_sha256",
+          "source_bytes", "history_digest",
+        ] as const) {
+          if (source[key] !== intentSource[key]) {
+            this.#fail("identity_conflict", `compaction commit source conflicts at ${key}`, facts);
+          }
+        }
+        if (
+          canonicalizeJson(source.active_history_refs) !==
+          canonicalizeJson(intentSource.active_history_refs)
+        ) {
+          this.#fail(
+            "identity_conflict",
+            "compaction commit conflicts at active_history_refs",
+            facts,
+          );
+        }
+        for (const key of ["policy_digest", "configuration_digest"] as const) {
+          if (payload[key] !== current.intent[key]) {
+            this.#fail("identity_conflict", `compaction commit conflicts at ${key}`, facts);
+          }
+        }
+        const summaryDag = payload.summary_dag as Readonly<Record<string, unknown>>;
+        if (
+          summaryDag.planned_provider_calls !==
+          current.intent.planned_provider_calls
+        ) {
+          this.#fail(
+            "identity_conflict",
+            "compaction commit provider-call plan conflicts with its intent",
+            facts,
+          );
+        }
+      } else if (
+        payload.source_sha256 !==
+          (current.intent.source as Readonly<Record<string, unknown>>).source_sha256 ||
+        payload.history_digest !==
+          (current.intent.source as Readonly<Record<string, unknown>>).history_digest
+      ) {
+        this.#fail("identity_conflict", "compaction failure conflicts with its intent", facts);
+      }
+      current.terminal = item.type === "compaction_failed" ? "failed" : "committed";
+      if (item.type === "compaction_committed") {
+        current.commitSha256 = digestWithDomain(
+          COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
+          payload,
+        );
+      }
+      return;
+    }
+    if (current.terminal !== "committed") {
+      this.#fail("identity_conflict", "compaction post-commit event has no commit", facts);
+    }
+    if (payload.commit_sha256 !== current.commitSha256) {
+      this.#fail(
+        "identity_conflict",
+        "compaction post-commit event is not bound to its canonical commit",
+        facts,
+      );
+    }
+    const intentSource = current.intent.source as Readonly<Record<string, unknown>>;
+    if (
+      (item.type === "compaction_rollback_committed" ||
+        item.type === "compaction_source_release") &&
+      (payload.source_sha256 !== intentSource.source_sha256 ||
+        payload.source_session_id !== intentSource.session_id ||
+        payload.source_epoch !== intentSource.epoch)
+    ) {
+      this.#fail(
+        "identity_conflict",
+        "compaction post-commit event conflicts with its source authority",
+        facts,
+      );
+    }
+    if (
+      item.type === "compaction_rollback_committed" &&
+      payload.history_digest !== intentSource.history_digest
+    ) {
+      this.#fail(
+        "identity_conflict",
+        "compaction rollback history digest conflicts with its source authority",
+        facts,
+      );
+    }
+    if (item.type === "compaction_rollback_committed") {
+      if (current.rollback === true) {
+        this.#fail("identity_conflict", "duplicate compaction rollback", facts);
+      }
+      const sameSession = payload.rollback_mode === "same_session";
+      if (
+        (sameSession && payload.target_session_id !== intentSource.session_id) ||
+        (!sameSession && payload.target_session_id === intentSource.session_id)
+      ) {
+        this.#fail(
+          "identity_conflict",
+          "compaction rollback mode conflicts with its target session",
+          facts,
+        );
+      }
+      current.rollback = true;
+    }
+    if (item.type === "compaction_source_release") {
+      if (current.release === true) {
+        this.#fail("identity_conflict", "duplicate compaction source release", facts);
+      }
+      current.release = true;
+    }
   }
 
   #rejectUnsupportedEventType(
@@ -425,7 +602,11 @@ export class StrictCanonicalJournalValidator {
         );
       }
     }
-    if (payload.rolloutSchemaVersion !== ROLLOUT_SCHEMA_VERSION) {
+    if (
+      !Number.isSafeInteger(payload.rolloutSchemaVersion) ||
+      (payload.rolloutSchemaVersion as number) < 2 ||
+      (payload.rolloutSchemaVersion as number) > ROLLOUT_SCHEMA_VERSION
+    ) {
       this.#fail(
         "unsupported_format_version",
         "canonical rollout schema version is not supported by this runtime",
@@ -687,6 +868,18 @@ function decodeCanonicalUtf8(
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function supportedItemVersion(type: string, version: unknown): boolean {
+  if (COMPACTION_CANONICAL_TYPES.has(type)) {
+    return version === ROLLOUT_ITEM_VERSION;
+  }
+  if (version === undefined) return true;
+  return (
+    Number.isSafeInteger(version) &&
+    (version as number) >= 1 &&
+    (version as number) <= ROLLOUT_ITEM_VERSION
+  );
 }
 
 function boundedCeiling(

@@ -55,7 +55,7 @@ import type {
  * On open, if rollout.schemaVersion > runtime.ROLLOUT_SCHEMA_VERSION,
  * hard-fail with migration message (I-49).
  */
-export const ROLLOUT_SCHEMA_VERSION = 2;
+export const ROLLOUT_SCHEMA_VERSION = 3;
 
 // ─────────────────────────────────────────────────────────────────────
 // Event envelope: { eventId, id, msg, seq }
