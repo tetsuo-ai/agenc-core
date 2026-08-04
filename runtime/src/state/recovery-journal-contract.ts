@@ -561,13 +561,17 @@ export class StrictCanonicalJournalValidator {
             this.#fail("identity_conflict", `compaction commit source conflicts at ${key}`, facts);
           }
         }
-        if (
-          canonicalizeJson(source.active_history_refs) !==
-          canonicalizeJson(intentSource.active_history_refs)
-        ) {
+        const persistedManifestCommit =
+          source.active_history_refs_manifest !== undefined;
+        const sourceAuthorityMatches = persistedManifestCommit
+          ? canonicalizeJson(source.active_history_refs_manifest) ===
+            canonicalizeJson(intentSource.active_history_refs_manifest)
+          : canonicalizeJson(source.active_history_refs) ===
+            canonicalizeJson(intentSource.active_history_refs);
+        if (!sourceAuthorityMatches) {
           this.#fail(
             "identity_conflict",
-            "compaction commit conflicts at active_history_refs",
+            "compaction commit conflicts at active-history authority",
             facts,
           );
         }
@@ -576,16 +580,41 @@ export class StrictCanonicalJournalValidator {
             this.#fail("identity_conflict", `compaction commit conflicts at ${key}`, facts);
           }
         }
-        const summaryDag = payload.summary_dag as Readonly<Record<string, unknown>>;
-        if (
-          summaryDag.planned_provider_calls !==
-          current.intent.planned_provider_calls
-        ) {
-          this.#fail(
-            "identity_conflict",
-            "compaction commit provider-call plan conflicts with its intent",
+        if (persistedManifestCommit) {
+          const intentManifest = current.intent.source_history_manifest;
+          this.#assertPayloadManifestComplete(
+            current,
+            intentSource.active_history_refs_manifest,
             facts,
           );
+          this.#assertPayloadManifestComplete(current, intentManifest, facts);
+          this.#assertPayloadManifestComplete(
+            current,
+            payload.final_summary_manifest,
+            facts,
+          );
+          this.#assertPayloadManifestComplete(
+            current,
+            payload.summary_dag_manifest,
+            facts,
+          );
+          this.#assertPayloadManifestComplete(
+            current,
+            payload.replacement_history_manifest,
+            facts,
+          );
+        } else {
+          const summaryDag = payload.summary_dag as Readonly<Record<string, unknown>>;
+          if (
+            summaryDag.planned_provider_calls !==
+            current.intent.planned_provider_calls
+          ) {
+            this.#fail(
+              "identity_conflict",
+              "compaction commit provider-call plan conflicts with its intent",
+              facts,
+            );
+          }
         }
       } else if (
         payload.source_sha256 !==
@@ -597,10 +626,12 @@ export class StrictCanonicalJournalValidator {
       }
       current.terminal = item.type === "compaction_failed" ? "failed" : "committed";
       if (item.type === "compaction_committed") {
-        current.commitSha256 = digestWithDomain(
-          COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
-          payload,
-        );
+        if (payload.final_summary_manifest === undefined) {
+          current.commitSha256 = digestWithDomain(
+            COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
+            payload,
+          );
+        }
         current.retentionDeadlineMs = payload.rollback_retention_deadline_ms as number;
         current.retentionExtensionDigests = new Set();
       }
@@ -609,7 +640,8 @@ export class StrictCanonicalJournalValidator {
     if (current.terminal !== "committed") {
       this.#fail("identity_conflict", "compaction post-commit event has no commit", facts);
     }
-    if (payload.commit_sha256 !== current.commitSha256) {
+    if (current.commitSha256 !== undefined &&
+        payload.commit_sha256 !== current.commitSha256) {
       this.#fail(
         "identity_conflict",
         "compaction post-commit event is not bound to its canonical commit",
@@ -710,6 +742,45 @@ export class StrictCanonicalJournalValidator {
         );
       }
       current.release = true;
+    }
+  }
+
+  #assertPayloadManifestComplete(
+    current: {
+      readonly payloadChunks?: Map<CompactionPayloadKind, {
+        readonly payloadSha256: string;
+        readonly chunkCount: number;
+        readonly previousChunkSha256: string;
+        readonly fragmentUtf8Bytes: number;
+        readonly complete: boolean;
+      }>;
+    },
+    value: unknown,
+    facts: RecoveryIntegrityFacts,
+  ): void {
+    if (!isPlainRecord(value) ||
+        typeof value.payload_kind !== "string") {
+      this.#fail(
+        "schema_invalid",
+        "compaction payload manifest is missing",
+        facts,
+      );
+    }
+    const kind = value.payload_kind as CompactionPayloadKind;
+    const chunks = current.payloadChunks?.get(kind);
+    if (
+      chunks === undefined ||
+      !chunks.complete ||
+      chunks.payloadSha256 !== value.payload_sha256 ||
+      chunks.chunkCount !== value.chunk_count ||
+      chunks.previousChunkSha256 !== value.final_chunk_sha256 ||
+      chunks.fragmentUtf8Bytes !== value.canonical_utf8_bytes
+    ) {
+      this.#fail(
+        "identity_conflict",
+        `compaction ${kind} manifest has a missing or mismatched chunk chain`,
+        facts,
+      );
     }
   }
 

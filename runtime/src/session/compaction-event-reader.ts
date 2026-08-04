@@ -76,11 +76,14 @@ export type CompactionRolloutType = (typeof COMPACTION_EVENT_TYPES)[number];
 
 export type CompactionRolloutPayload =
   | CompactionIntentV1
+  | CompactionPersistedIntentV1
   | CompactionPayloadChunkV1
   | CompactionFailedV1
   | CompactionCommittedV1
+  | CompactionPersistedCommittedV1
   | CompactionCleanupPendingV1
   | CompactionRollbackCommittedV1
+  | CompactionPersistedRollbackCommittedV1
   | CompactionRetentionExtendedV1
   | CompactionSourceReleaseV1;
 
@@ -95,22 +98,33 @@ export function readCompactionRolloutPayload(
 ): CompactionRolloutPayload {
   switch (type) {
     case "compaction_intent":
-      return readIntent(value);
+      return hasOwnField(value, "source_history_manifest")
+        ? readCompactionPersistedIntentV1(value)
+        : readIntent(value);
     case "compaction_payload_chunk":
       return readPayloadChunk(value);
     case "compaction_failed":
       return readFailure(value);
     case "compaction_committed":
-      return readCommit(value);
+      return hasOwnField(value, "final_summary_manifest")
+        ? readCompactionPersistedCommittedV1(value)
+        : readCommit(value);
     case "compaction_cleanup_pending":
       return readCleanupPending(value);
     case "compaction_rollback_committed":
-      return readRollback(value);
+      return hasOwnField(value, "source_history_manifest")
+        ? readCompactionPersistedRollbackCommittedV1(value)
+        : readRollback(value);
     case "compaction_retention_extended":
       return readRetentionExtension(value);
     case "compaction_source_release":
       return readRelease(value);
   }
+}
+
+function hasOwnField(value: unknown, field: string): boolean {
+  return typeof value === "object" && value !== null &&
+    Object.prototype.hasOwnProperty.call(value, field);
 }
 
 export function readCompactionPersistedIntentV1(

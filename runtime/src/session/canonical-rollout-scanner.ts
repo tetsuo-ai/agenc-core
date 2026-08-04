@@ -3,19 +3,35 @@ import {
   closeSync,
   constants as fsConstants,
   fstatSync,
+  mkdtempSync,
   openSync,
   readSync,
+  rmSync,
 } from "node:fs";
 import type { BigIntStats } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Database from "better-sqlite3";
+import type BetterSqlite3 from "better-sqlite3";
 
 import type { AdmissionJournalEvent } from "../budget/admission-types.js";
 import {
+  COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
   MAX_COMPACTION_PIN_HISTORY_TOTAL,
   MAX_COMPACTION_PROVIDER_CALLS,
   MAX_COMPACTION_SOURCE_BYTES,
   MAX_COMPACTION_SOURCE_MESSAGES,
+  type CompactionActiveHistoryEntryV1,
+  type CompactionCommittedV1,
   type CompactionIntentV1,
+  type CompactionPayloadChunkV1,
+  type CompactionPayloadManifestV1,
+  type CompactionPersistedCommittedV1,
+  type CompactionPersistedIntentV1,
+  type CompactionPersistedRollbackCommittedV1,
+  type CompactionRollbackCommittedV1,
 } from "../services/compact/transaction-types.js";
+import { digestWithDomain } from "../services/compact/summary-v1.js";
 import { DiskCanonicalIdentityRegistry } from "../state/recovery-file.js";
 import {
   StrictCanonicalJournalValidator,
@@ -35,9 +51,125 @@ import {
   reduce,
   type ReducedSessionState,
 } from "./event-log-reducer.js";
+import {
+  hydrateActiveHistoryRefs,
+  reconstructCompactionPayloadV1,
+} from "../services/compact/payload-manifest.js";
+import {
+  readCompactionPersistedCommittedV1,
+  readCompactionPersistedIntentV1,
+  readCompactionPersistedRollbackCommittedV1,
+  readCompactionRolloutPayload,
+} from "./compaction-event-reader.js";
 
 const MAX_COMPACTION_LIFECYCLE_RECORDS =
   MAX_COMPACTION_PIN_HISTORY_TOTAL * 6;
+const COMPACTION_PAYLOAD_REGISTRY_CACHE_KIB = 1_024;
+
+/** Disk-backed payload spool keeps manifest replay bounded by one payload. */
+class DiskCompactionPayloadRegistry {
+  readonly #directory: string;
+  readonly #database: BetterSqlite3.Database;
+  readonly #insert: BetterSqlite3.Statement<[string, string, number, string]>;
+  readonly #select: BetterSqlite3.Statement<[string, string]>;
+  readonly #count: BetterSqlite3.Statement<[string, string]>;
+  #closed = false;
+
+  constructor() {
+    this.#directory = mkdtempSync(join(tmpdir(), "agenc-c2-payloads-"));
+    this.#database = new Database(join(this.#directory, "payloads.sqlite"));
+    this.#database.pragma("journal_mode = OFF");
+    this.#database.pragma("synchronous = OFF");
+    this.#database.pragma(
+      `cache_size = -${COMPACTION_PAYLOAD_REGISTRY_CACHE_KIB}`,
+    );
+    this.#database.exec(
+      `CREATE TABLE payload_chunks (
+         attempt_id TEXT NOT NULL,
+         payload_kind TEXT NOT NULL,
+         chunk_index INTEGER NOT NULL,
+         payload_json TEXT NOT NULL,
+         PRIMARY KEY (attempt_id, payload_kind, chunk_index)
+       ) WITHOUT ROWID;
+       BEGIN`,
+    );
+    this.#insert = this.#database.prepare(
+      `INSERT INTO payload_chunks
+         (attempt_id, payload_kind, chunk_index, payload_json)
+       VALUES (?, ?, ?, ?)`,
+    );
+    this.#select = this.#database.prepare(
+      `SELECT payload_json
+         FROM payload_chunks
+        WHERE attempt_id = ? AND payload_kind = ?
+        ORDER BY chunk_index`,
+    );
+    this.#count = this.#database.prepare(
+      `SELECT COUNT(*) AS chunk_count
+         FROM payload_chunks
+        WHERE attempt_id = ? AND payload_kind = ?`,
+    );
+  }
+
+  add(chunk: CompactionPayloadChunkV1): void {
+    this.#assertOpen();
+    this.#insert.run(
+      chunk.attempt_id,
+      chunk.payload_kind,
+      chunk.chunk_index,
+      JSON.stringify(chunk),
+    );
+  }
+
+  reconstruct(manifest: CompactionPayloadManifestV1): unknown {
+    this.#assertOpen();
+    const chunks = this.#select.all(
+      manifest.attempt_id,
+      manifest.payload_kind,
+    ).map((row) => {
+      const payloadJson = (row as { readonly payload_json: string }).payload_json;
+      const payload = JSON.parse(payloadJson) as unknown;
+      const parsed = readCompactionRolloutPayload(
+        "compaction_payload_chunk",
+        payload,
+      );
+      if (!("payload_kind" in parsed)) {
+        throw new Error("payload registry row did not decode as a chunk");
+      }
+      return parsed;
+    });
+    return reconstructCompactionPayloadV1(manifest, chunks);
+  }
+
+  hasComplete(manifest: CompactionPayloadManifestV1): boolean {
+    this.#assertOpen();
+    const row = this.#count.get(
+      manifest.attempt_id,
+      manifest.payload_kind,
+    ) as {
+      readonly chunk_count: number;
+    };
+    return row.chunk_count === manifest.chunk_count;
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    try {
+      this.#database.exec("COMMIT");
+    } finally {
+      try {
+        this.#database.close();
+      } finally {
+        rmSync(this.#directory, { recursive: true, force: true });
+      }
+    }
+  }
+
+  #assertOpen(): void {
+    if (this.#closed) throw new Error("compaction payload registry is closed");
+  }
+}
 
 interface MutableAdmissionState {
   queued: boolean;
@@ -49,7 +181,11 @@ interface MutableAdmissionState {
 }
 
 interface MutableAttemptScan {
-  readonly intent: CompactionIntentV1;
+  intent?: CompactionIntentV1;
+  persistedIntent?: CompactionPersistedIntentV1;
+  intentRecord?: StrictCanonicalJournalRecord;
+  sourceHistoryManifest?: CompactionPayloadManifestV1;
+  commitSha256?: string;
   readonly records: StrictCanonicalJournalRecord[];
   readonly calls: Map<number, MutableAdmissionState>;
   readonly eventIds: Set<string>;
@@ -67,6 +203,7 @@ export interface CanonicalCompactionAttemptScan {
   readonly records: readonly StrictCanonicalJournalRecord[];
   readonly admissionValid: boolean;
   readonly hasLaterCanonicalWork: boolean;
+  readonly sourceHistoryManifest?: CompactionPayloadManifestV1;
 }
 
 export interface CanonicalRolloutSourceRecord {
@@ -148,34 +285,160 @@ export function scanCanonicalRollout(
     let retainedLifecycleRecords = 0;
     let activeAdmissionAttempt: MutableAttemptScan | undefined;
     let latestCommittedAttempt: MutableAttemptScan | undefined;
+    let postCommitBookkeeping:
+      | "await_context"
+      | "await_meta"
+      | "complete"
+      | undefined;
     checkOperationalBudget();
     const identityRegistry = new DiskCanonicalIdentityRegistry();
+    const payloadRegistry = new DiskCompactionPayloadRegistry();
     let first: StrictCanonicalJournal;
     try {
       first = scanPass(fd, snapshot.size, {
         ...strictOptions(options, checkOperationalBudget),
         retainRecords: false,
         identityRegistry,
-        onRecord: (record) => {
-          if (latestCommittedAttempt !== undefined &&
-              !(record.item.type === "compaction_cleanup_pending" &&
-                record.item.payload.attempt_id ===
-                  latestCommittedAttempt.intent.attempt_id)) {
-            latestCommittedAttempt.laterWork = true;
-            latestCommittedAttempt = undefined;
+        onRecord: (physicalRecord) => {
+          let record = physicalRecord;
+          let item = record.item;
+          const persistedIntent = persistedIntentPayload(item);
+          const attemptId = item.type.startsWith("compaction_") &&
+              "attempt_id" in item.payload
+            ? item.payload.attempt_id
+            : undefined;
+
+          if (latestCommittedAttempt !== undefined) {
+            const committedAttemptId = latestCommittedAttempt.intent?.attempt_id;
+            if (item.type === "compaction_cleanup_pending" &&
+                item.payload.attempt_id === committedAttemptId) {
+              // Cleanup evidence is part of the commit transaction itself.
+            } else if (postCommitBookkeeping === "await_context" &&
+                latestCommittedAttempt.intent?.automatic === true &&
+                isCausalAutoCompactionBoundary(item)) {
+              postCommitBookkeeping = "await_meta";
+            } else if (postCommitBookkeeping === "await_meta" &&
+                item.type === "session_meta" &&
+                item.payload.sessionId === options.expectedRunId) {
+              postCommitBookkeeping = "complete";
+            } else {
+              latestCommittedAttempt.laterWork = true;
+              latestCommittedAttempt = undefined;
+              postCommitBookkeeping = undefined;
+            }
           }
-          if (trackHistory && record.item.type === "compaction_intent" &&
-              capturedAttemptIds.has(record.item.payload.attempt_id)) {
+          if (trackHistory && item.type === "compaction_intent" &&
+              attemptId !== undefined && capturedAttemptIds.has(attemptId)) {
             checkOperationalBudget();
             historyAtAttempts.set(
-              record.item.payload.attempt_id,
+              attemptId,
               Object.freeze(reducedState.history.slice()),
             );
+          }
+
+          if (item.type === "compaction_payload_chunk") {
+            if (activeAdmissionAttempt !== undefined) {
+              observeAdmission(record, activeAdmissionAttempt);
+            }
+            payloadRegistry.add(item.payload);
+            retainedLifecycleRecords += 1;
+            if (retainedLifecycleRecords > MAX_COMPACTION_LIFECYCLE_RECORDS) {
+              throw new RecoveryOperationalError(
+                "recovery_history_storage_limit",
+                "canonical compaction lifecycle exceeds its bounded retention budget",
+              );
+            }
+            const pending = attempts.get(item.payload.attempt_id);
+            const pendingIntent = pending?.persistedIntent;
+            if (pending !== undefined && pending.intent === undefined &&
+                pendingIntent !== undefined &&
+                payloadRegistry.hasComplete(
+                  pendingIntent.source.active_history_refs_manifest,
+                ) &&
+                payloadRegistry.hasComplete(
+                  pendingIntent.source_history_manifest,
+                )) {
+              const hydrated = hydratePersistedIntentRecord(
+                pending.intentRecord!,
+                pendingIntent,
+                payloadRegistry,
+              );
+              pending.intent = hydrated.intent;
+              pending.records.push(hydrated.record);
+              pending.sourceHistoryManifest = pendingIntent.source_history_manifest;
+              activeAdmissionAttempt = pending;
+            }
+            return;
+          }
+
+          if (persistedIntent !== undefined) {
+            attempts.set(persistedIntent.attempt_id, {
+              persistedIntent,
+              intentRecord: record,
+              sourceHistoryManifest: persistedIntent.source_history_manifest,
+              records: [],
+              calls: new Map(),
+              eventIds: new Set(),
+              reservationIds: new Set(),
+              latestCall: 0,
+              latestAdmissionSequence: 0,
+              contaminated: false,
+              terminal: false,
+              laterWork: false,
+            });
+            retainedLifecycleRecords += 1;
+            if (retainedLifecycleRecords > MAX_COMPACTION_LIFECYCLE_RECORDS) {
+              throw new RecoveryOperationalError(
+                "recovery_history_storage_limit",
+                "canonical compaction lifecycle exceeds its bounded retention budget",
+              );
+            }
+            return;
+          }
+
+          const incompleteAttempt = [...attempts.values()].find(
+            (attempt) => attempt.persistedIntent !== undefined &&
+              attempt.intent === undefined && !attempt.terminal,
+          );
+          if (incompleteAttempt !== undefined) {
+            throw new Error(
+              "canonical compaction intent is missing its required source payload bundle",
+            );
+          }
+
+          const persistedCommit = persistedCommitPayload(item);
+          if (persistedCommit !== undefined) {
+            const attempt = attempts.get(persistedCommit.attempt_id);
+            if (attempt?.intent === undefined) {
+              throw new Error("persisted compaction commit has no hydrated intent");
+            }
+            record = hydratePersistedCommitRecord(
+              record,
+              persistedCommit,
+              attempt.intent,
+              payloadRegistry,
+            );
+            item = record.item;
+            if (item.type !== "compaction_committed" ||
+                item.payload.summary_dag.planned_provider_calls !==
+                  attempt.intent.planned_provider_calls) {
+              throw new Error(
+                "canonical compaction commit provider-call plan conflicts with its intent",
+              );
+            }
+          }
+          const persistedRollback = persistedRollbackPayload(item);
+          if (persistedRollback !== undefined) {
+            record = hydratePersistedRollbackRecord(
+              record,
+              persistedRollback,
+              payloadRegistry,
+            );
+            item = record.item;
           }
           if (activeAdmissionAttempt !== undefined) {
             observeAdmission(record, activeAdmissionAttempt);
           }
-          const item = record.item;
           if (trackHistory) {
             checkOperationalBudget();
             const next = reduceStreamingHistory(reducedState, item);
@@ -234,9 +497,9 @@ export function scanCanonicalRollout(
               "canonical compaction lifecycle exceeds its bounded retention budget",
             );
           }
-          const attemptId = item.payload.attempt_id;
+          const lifecycleAttemptId = item.payload.attempt_id;
           if (item.type === "compaction_intent") {
-            attempts.set(attemptId, {
+            attempts.set(lifecycleAttemptId, {
               intent: item.payload,
               records: [record],
               calls: new Map(),
@@ -248,17 +511,29 @@ export function scanCanonicalRollout(
               terminal: false,
               laterWork: false,
             });
-            activeAdmissionAttempt = attempts.get(attemptId);
+            activeAdmissionAttempt = attempts.get(lifecycleAttemptId);
             return;
           }
-          const attempt = attempts.get(attemptId);
+          const attempt = attempts.get(lifecycleAttemptId);
           if (attempt === undefined) return;
+          if (attempt.commitSha256 !== undefined &&
+              "commit_sha256" in item.payload &&
+              item.payload.commit_sha256 !== attempt.commitSha256) {
+            throw new Error(
+              "canonical compaction post-commit event is not bound to its hydrated commit",
+            );
+          }
           attempt.records.push(record);
           if (item.type === "compaction_committed" ||
               item.type === "compaction_failed") {
             attempt.terminal = true;
             if (item.type === "compaction_committed") {
+              attempt.commitSha256 = digestWithDomain(
+                COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
+                item.payload,
+              );
               latestCommittedAttempt = attempt;
+              postCommitBookkeeping = "await_context";
             }
             if (activeAdmissionAttempt === attempt) {
               activeAdmissionAttempt = undefined;
@@ -267,13 +542,29 @@ export function scanCanonicalRollout(
         },
       });
     } finally {
-      identityRegistry.close();
+      try {
+        identityRegistry.close();
+      } finally {
+        payloadRegistry.close();
+      }
+    }
+
+    if (latestCommittedAttempt !== undefined &&
+        postCommitBookkeeping === "await_meta") {
+      latestCommittedAttempt.laterWork = true;
+    }
+    for (const attempt of attempts.values()) {
+      if (attempt.intent === undefined) {
+        throw new Error(
+          "canonical compaction intent did not reconstruct its source manifests",
+        );
+      }
     }
 
     checkOperationalBudget();
     const sourceLines = new Set(options.additionalSourceLines ?? []);
     for (const attempt of attempts.values()) {
-      for (const ref of attempt.intent.source.active_history_refs) {
+      for (const ref of attempt.intent!.source.active_history_refs) {
         sourceLines.add(ref.first_sequence);
       }
     }
@@ -314,10 +605,13 @@ export function scanCanonicalRollout(
       proof: withoutRecords(first),
       attempts: new Map(
         [...attempts].map(([attemptId, attempt]) => [attemptId, {
-          intent: attempt.intent,
+          intent: attempt.intent!,
           records: Object.freeze(attempt.records.slice()),
           admissionValid: validAdmission(attempt),
           hasLaterCanonicalWork: attempt.laterWork,
+          ...(attempt.sourceHistoryManifest !== undefined
+            ? { sourceHistoryManifest: attempt.sourceHistoryManifest }
+            : {}),
         }]),
       ),
       sourceRecords,
@@ -349,6 +643,185 @@ function reduceStreamingHistory(
     return state;
   }
   return reduce(state, item).state;
+}
+
+function hydratePersistedIntentRecord(
+  record: StrictCanonicalJournalRecord,
+  persisted: CompactionPersistedIntentV1,
+  payloadRegistry: DiskCompactionPayloadRegistry,
+): { readonly record: StrictCanonicalJournalRecord; readonly intent: CompactionIntentV1 } {
+  const activeEntries = payloadRegistry.reconstruct(
+    persisted.source.active_history_refs_manifest,
+  );
+  if (!Array.isArray(activeEntries)) {
+    throw new Error("active-history payload manifest did not reconstruct an array");
+  }
+  const { active_history_refs_manifest: _manifest, ...sourceBase } =
+    persisted.source;
+  const activeHistoryRefs = hydrateActiveHistoryRefs(
+    sourceBase,
+    activeEntries as readonly CompactionActiveHistoryEntryV1[],
+  );
+  const sourceHistory = payloadRegistry.reconstruct(
+    persisted.source_history_manifest,
+  );
+  // The inline rollback reader strictly validates projection messages and the
+  // source-history digest before the value can participate in reconstruction.
+  readCompactionRolloutPayload("compaction_rollback_committed", {
+    format_version: persisted.format_version,
+    minimum_reader_runtime: persisted.minimum_reader_runtime,
+    attempt_id: persisted.attempt_id,
+    recorded_at_ms: persisted.recorded_at_ms,
+    commit_sha256: "0".repeat(64),
+    source_sha256: persisted.source.source_sha256,
+    history_digest: persisted.source.history_digest,
+    source_session_id: persisted.source.session_id,
+    source_epoch: persisted.source.epoch,
+    rollback_mode: "same_session",
+    target_session_id: persisted.source.session_id,
+    source_history: sourceHistory,
+  });
+  const hydrated = readCompactionRolloutPayload("compaction_intent", {
+    format_version: persisted.format_version,
+    minimum_reader_runtime: persisted.minimum_reader_runtime,
+    attempt_id: persisted.attempt_id,
+    recorded_at_ms: persisted.recorded_at_ms,
+    source: { ...sourceBase, active_history_refs: activeHistoryRefs },
+    policy_digest: persisted.policy_digest,
+    configuration_digest: persisted.configuration_digest,
+    accounting_ref: persisted.accounting_ref,
+    automatic: persisted.automatic,
+    selected_history_indexes: persisted.selected_history_indexes,
+    admission_required: persisted.admission_required,
+    planned_provider_calls: persisted.planned_provider_calls,
+  });
+  if (!("source" in hydrated) ||
+      !("active_history_refs" in hydrated.source)) {
+    throw new Error("persisted compaction intent did not hydrate inline");
+  }
+  const intent = hydrated as CompactionIntentV1;
+  return {
+    record: {
+      ...record,
+      item: {
+        type: "compaction_intent",
+        payload: intent,
+        eventVersion: record.item.eventVersion,
+      },
+    },
+    intent,
+  };
+}
+
+function hydratePersistedCommitRecord(
+  record: StrictCanonicalJournalRecord,
+  persisted: CompactionPersistedCommittedV1,
+  intent: CompactionIntentV1,
+  payloadRegistry: DiskCompactionPayloadRegistry,
+): StrictCanonicalJournalRecord {
+  const hydrated = readCompactionRolloutPayload("compaction_committed", {
+    format_version: persisted.format_version,
+    minimum_reader_runtime: persisted.minimum_reader_runtime,
+    attempt_id: persisted.attempt_id,
+    recorded_at_ms: persisted.recorded_at_ms,
+    committed_at_ms: persisted.committed_at_ms,
+    rollback_retention_deadline_ms: persisted.rollback_retention_deadline_ms,
+    source: intent.source,
+    selected_history_indexes: persisted.selected_history_indexes,
+    policy_digest: persisted.policy_digest,
+    configuration_digest: persisted.configuration_digest,
+    summary: payloadRegistry.reconstruct(persisted.final_summary_manifest),
+    summary_dag: payloadRegistry.reconstruct(persisted.summary_dag_manifest),
+    accounting: persisted.accounting,
+    replacement_history: payloadRegistry.reconstruct(
+      persisted.replacement_history_manifest,
+    ),
+    cleanup_state: persisted.cleanup_state,
+  });
+  if (!("replacement_history" in hydrated)) {
+    throw new Error("persisted compaction commit did not hydrate inline");
+  }
+  return {
+    ...record,
+    item: {
+      type: "compaction_committed",
+      payload: hydrated as CompactionCommittedV1,
+      eventVersion: record.item.eventVersion,
+    },
+  };
+}
+
+function hydratePersistedRollbackRecord(
+  record: StrictCanonicalJournalRecord,
+  persisted: CompactionPersistedRollbackCommittedV1,
+  payloadRegistry: DiskCompactionPayloadRegistry,
+): StrictCanonicalJournalRecord {
+  const hydrated = readCompactionRolloutPayload("compaction_rollback_committed", {
+    format_version: persisted.format_version,
+    minimum_reader_runtime: persisted.minimum_reader_runtime,
+    attempt_id: persisted.attempt_id,
+    recorded_at_ms: persisted.recorded_at_ms,
+    commit_sha256: persisted.commit_sha256,
+    source_sha256: persisted.source_sha256,
+    history_digest: persisted.history_digest,
+    source_session_id: persisted.source_session_id,
+    source_epoch: persisted.source_epoch,
+    rollback_mode: persisted.rollback_mode,
+    target_session_id: persisted.target_session_id,
+    source_history: payloadRegistry.reconstruct(
+      persisted.source_history_manifest,
+    ),
+  });
+  if (!("source_history" in hydrated)) {
+    throw new Error("persisted compaction rollback did not hydrate inline");
+  }
+  return {
+    ...record,
+    item: {
+      type: "compaction_rollback_committed",
+      payload: hydrated as CompactionRollbackCommittedV1,
+      eventVersion: record.item.eventVersion,
+    },
+  };
+}
+
+function persistedIntentPayload(
+  item: RolloutItem,
+): CompactionPersistedIntentV1 | undefined {
+  if (item.type !== "compaction_intent") return undefined;
+  const payload = item.payload as unknown;
+  if (typeof payload !== "object" || payload === null ||
+      !("source_history_manifest" in payload)) return undefined;
+  return readCompactionPersistedIntentV1(payload);
+}
+
+function persistedCommitPayload(
+  item: RolloutItem,
+): CompactionPersistedCommittedV1 | undefined {
+  if (item.type !== "compaction_committed") return undefined;
+  const payload = item.payload as unknown;
+  if (typeof payload !== "object" || payload === null ||
+      !("final_summary_manifest" in payload)) return undefined;
+  return readCompactionPersistedCommittedV1(payload);
+}
+
+function persistedRollbackPayload(
+  item: RolloutItem,
+): CompactionPersistedRollbackCommittedV1 | undefined {
+  if (item.type !== "compaction_rollback_committed") return undefined;
+  const payload = item.payload as unknown;
+  if (typeof payload !== "object" || payload === null ||
+      !("source_history_manifest" in payload)) return undefined;
+  return readCompactionPersistedRollbackCommittedV1(payload);
+}
+
+function isCausalAutoCompactionBoundary(item: RolloutItem): boolean {
+  return item.type === "event_msg" &&
+    item.payload.msg.type === "context_compacted" &&
+    typeof item.payload.msg.payload.summary === "string" &&
+    /^auto-compact boundary \(turnId=[^)]+\)$/u.test(
+      item.payload.msg.payload.summary,
+    );
 }
 
 function strictOptions(
@@ -404,8 +877,12 @@ function observeAdmission(
   const item = record.item;
   if (
     (item.type === "compaction_committed" || item.type === "compaction_failed") &&
-    item.payload.attempt_id === attempt.intent.attempt_id
+    item.payload.attempt_id === attempt.intent?.attempt_id
   ) {
+    return;
+  }
+  if (item.type === "compaction_payload_chunk" &&
+      item.payload.attempt_id === attempt.intent?.attempt_id) {
     return;
   }
   if (item.type !== "event_msg" ||
@@ -423,6 +900,8 @@ function advanceAdmission(
   admission: AdmissionJournalEvent,
   envelope: Extract<RolloutItem, { type: "event_msg" }>["payload"],
 ): boolean {
+  const intent = attempt.intent;
+  if (intent === undefined) return false;
   if (
     admission.sequence <= attempt.latestAdmissionSequence ||
     admission.eventId.length === 0 ||
@@ -430,7 +909,7 @@ function advanceAdmission(
     envelope.eventId !== admission.eventId ||
     envelope.id !== admission.eventId
   ) return false;
-  const callNumber = admissionCallNumber(admission, attempt.intent);
+  const callNumber = admissionCallNumber(admission, intent);
   if (callNumber === undefined || callNumber < attempt.latestCall) return false;
   attempt.latestAdmissionSequence = admission.sequence;
   attempt.eventIds.add(admission.eventId);
@@ -441,11 +920,11 @@ function advanceAdmission(
   };
   if (
     admission.runId !== attempt.admissionRunId ||
-    admission.runId !== attempt.intent.attempt_id ||
+    admission.runId !== intent.attempt_id ||
     (scoped.parentRunId !== undefined &&
-      scoped.parentRunId !== attempt.intent.source.session_id) ||
+      scoped.parentRunId !== intent.source.session_id) ||
     (scoped.sessionId !== undefined &&
-      scoped.sessionId !== attempt.intent.source.session_id)
+      scoped.sessionId !== intent.source.session_id)
   ) return false;
   const state = attempt.calls.get(callNumber) ?? {
     queued: false,
@@ -522,10 +1001,12 @@ function advanceAdmissionState(
 }
 
 function validAdmission(attempt: MutableAttemptScan): boolean {
+  const intent = attempt.intent;
+  if (intent === undefined) return false;
   if (attempt.contaminated) return false;
-  if (attempt.calls.size === 0) return !attempt.intent.admission_required;
-  if (!attempt.intent.admission_required ||
-      attempt.calls.size !== attempt.intent.planned_provider_calls ||
+  if (attempt.calls.size === 0) return !intent.admission_required;
+  if (!intent.admission_required ||
+      attempt.calls.size !== intent.planned_provider_calls ||
       attempt.latestCall !== attempt.calls.size) return false;
   for (let call = 1; call <= attempt.latestCall; call += 1) {
     const state = attempt.calls.get(call);

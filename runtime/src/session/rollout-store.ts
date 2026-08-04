@@ -109,11 +109,17 @@ import {
   type CompactionFailedV1,
   type CompactionIntentV1,
   type CompactionPreparedSourceV1,
+  type CompactionPayloadBundleV1,
+  type CompactionPersistedCommittedV1,
+  type CompactionPersistedIntentV1,
+  type CompactionPersistedRollbackCommittedV1,
+  type CompactionPersistedSourceAuthorityV1,
   type CompactionProjectionMessageV1,
   type CompactionRollbackCommittedV1,
   type CompactionRetentionExtendedV1,
   type CompactionSourceReleaseV1,
   type CompactionSourceAuthorityV1,
+  type CompactionSourcePayloadBundlesV1,
   CompactionReconstructionRequiredError,
   CompactionTransactionError,
 } from "../services/compact/transaction-types.js";
@@ -128,7 +134,16 @@ import type { RuntimeMessage } from "../services/compact/types.js";
 import { HARD_MAX_RECOVERY_LINE_BYTES } from "../state/recovery-contract.js";
 import { responseItemToLlmMessage } from "./message-history-conversion.js";
 import { ROLLOUT_SCHEMA_VERSION } from "./event-log.js";
-import { readCompactionRolloutPayload } from "./compaction-event-reader.js";
+import {
+  readCompactionPersistedCommittedV1,
+  readCompactionPersistedIntentV1,
+  readCompactionPersistedRollbackCommittedV1,
+  readCompactionRolloutPayload,
+} from "./compaction-event-reader.js";
+import {
+  compactActiveHistoryEntries,
+  reconstructCompactionPayloadV1,
+} from "../services/compact/payload-manifest.js";
 import {
   scanCanonicalRollout,
   type CanonicalCompactionAttemptScan,
@@ -160,6 +175,14 @@ interface ReviewedRollbackTargetReservation {
   readonly target: SessionStore;
   opened: boolean;
 }
+
+type PersistedCompactionRolloutItem =
+  | { readonly type: "compaction_intent"; readonly payload: CompactionPersistedIntentV1 }
+  | { readonly type: "compaction_committed"; readonly payload: CompactionPersistedCommittedV1 }
+  | {
+      readonly type: "compaction_rollback_committed";
+      readonly payload: CompactionPersistedRollbackCommittedV1;
+    };
 
 export class DurableCheckpointUpgradeBlockedError extends Error {
   constructor(
@@ -266,6 +289,136 @@ function checkpointProjectionIdentity(
   hash.update("\0");
   hash.update(purpose);
   return hash.digest("hex");
+}
+
+function requireCompactionPayloadBundle(
+  bundle: CompactionPayloadBundleV1 | undefined,
+  params: {
+    readonly attemptId: string;
+    readonly payloadKind: CompactionPayloadBundleV1["manifest"]["payload_kind"];
+    readonly recordedAtMs: number;
+    readonly expectedValue?: unknown;
+    readonly failureStage: "intent_failed" | "commit_failed";
+  },
+): unknown {
+  if (
+    bundle === undefined ||
+    bundle.manifest.attempt_id !== params.attemptId ||
+    bundle.manifest.payload_kind !== params.payloadKind ||
+    bundle.chunks.length !== bundle.manifest.chunk_count ||
+    bundle.chunks.some(
+      (chunk) =>
+        chunk.attempt_id !== params.attemptId ||
+        chunk.payload_kind !== params.payloadKind ||
+        chunk.recorded_at_ms !== params.recordedAtMs,
+    )
+  ) {
+    throw new CompactionTransactionError(
+      params.failureStage,
+      `compaction ${params.payloadKind} payload bundle is missing or misbound`,
+    );
+  }
+  let value: unknown;
+  try {
+    value = reconstructCompactionPayloadV1(bundle.manifest, bundle.chunks);
+  } catch (error) {
+    throw new CompactionTransactionError(
+      params.failureStage,
+      `compaction ${params.payloadKind} payload bundle is invalid`,
+      { cause: error },
+    );
+  }
+  if (
+    params.expectedValue !== undefined &&
+    canonicalizeJson(value) !== canonicalizeJson(params.expectedValue)
+  ) {
+    throw new CompactionTransactionError(
+      params.failureStage,
+      `compaction ${params.payloadKind} payload bundle conflicts with its runtime value`,
+    );
+  }
+  return value;
+}
+
+function persistedCompactionSource(
+  source: CompactionSourceAuthorityV1,
+  activeHistoryRefsBundle: CompactionPayloadBundleV1,
+): CompactionPersistedSourceAuthorityV1 {
+  const { active_history_refs: _activeHistoryRefs, ...authority } = source;
+  return {
+    ...authority,
+    active_history_refs_manifest: activeHistoryRefsBundle.manifest,
+  };
+}
+
+function persistedCompactionIntent(
+  intent: CompactionIntentV1,
+  bundles: CompactionSourcePayloadBundlesV1,
+): CompactionPersistedIntentV1 {
+  const persisted = {
+    format_version: intent.format_version,
+    minimum_reader_runtime: intent.minimum_reader_runtime,
+    attempt_id: intent.attempt_id,
+    recorded_at_ms: intent.recorded_at_ms,
+    source: persistedCompactionSource(intent.source, bundles.active_history_refs),
+    source_history_manifest: bundles.source_history.manifest,
+    policy_digest: intent.policy_digest,
+    configuration_digest: intent.configuration_digest,
+    accounting_ref: intent.accounting_ref,
+    automatic: intent.automatic,
+    selected_history_indexes: intent.selected_history_indexes,
+    admission_required: true as const,
+    planned_provider_calls: intent.planned_provider_calls,
+  };
+  return readCompactionPersistedIntentV1(persisted);
+}
+
+function persistedCompactionCommit(
+  committed: CompactionCommittedV1,
+  bundles: NonNullable<CompactionCommitInputV1["payload_bundles"]>,
+  activeHistoryRefsManifest: CompactionPayloadBundleV1["manifest"],
+): CompactionPersistedCommittedV1 {
+  const { active_history_refs: _activeHistoryRefs, ...authority } = committed.source;
+  return readCompactionPersistedCommittedV1({
+    format_version: committed.format_version,
+    minimum_reader_runtime: committed.minimum_reader_runtime,
+    attempt_id: committed.attempt_id,
+    recorded_at_ms: committed.recorded_at_ms,
+    committed_at_ms: committed.committed_at_ms,
+    rollback_retention_deadline_ms: committed.rollback_retention_deadline_ms,
+    source: {
+      ...authority,
+      active_history_refs_manifest: activeHistoryRefsManifest,
+    },
+    selected_history_indexes: committed.selected_history_indexes,
+    policy_digest: committed.policy_digest,
+    configuration_digest: committed.configuration_digest,
+    final_summary_manifest: bundles.final_summary.manifest,
+    summary_dag_manifest: bundles.summary_dag.manifest,
+    accounting: committed.accounting,
+    replacement_history_manifest: bundles.replacement_history.manifest,
+    cleanup_state: committed.cleanup_state,
+  });
+}
+
+function persistedCompactionRollback(
+  rollback: CompactionRollbackCommittedV1,
+  sourceHistoryManifest: CompactionPayloadBundleV1["manifest"],
+): CompactionPersistedRollbackCommittedV1 {
+  return readCompactionPersistedRollbackCommittedV1({
+    format_version: rollback.format_version,
+    minimum_reader_runtime: rollback.minimum_reader_runtime,
+    attempt_id: rollback.attempt_id,
+    recorded_at_ms: rollback.recorded_at_ms,
+    commit_sha256: rollback.commit_sha256,
+    source_sha256: rollback.source_sha256,
+    history_digest: rollback.history_digest,
+    source_session_id: rollback.source_session_id,
+    source_epoch: rollback.source_epoch,
+    rollback_mode: rollback.rollback_mode,
+    target_session_id: rollback.target_session_id,
+    source_history_manifest: sourceHistoryManifest,
+  });
 }
 
 function compactionIntentMatchesPin(
@@ -445,6 +598,8 @@ export class RolloutStore {
   private readonly nowMilliseconds: () => number;
   private readonly durablyCommittedCompactionsAwaitingReconstruction =
     new Set<string>();
+  private readonly compactionSourcePayloadBundles =
+    new Map<string, CompactionSourcePayloadBundlesV1>();
   private liveToolPairProjection: ToolPairProjection | undefined;
   private liveToolPairValidator: StreamingToolPairValidator | undefined;
   private openedAt: string | undefined;
@@ -723,12 +878,59 @@ export class RolloutStore {
     );
   }
 
-  pinAndRecordIntent(intent: CompactionIntentV1): void {
+  pinAndRecordIntent(
+    intent: CompactionIntentV1,
+    payloadBundles: CompactionSourcePayloadBundlesV1,
+  ): void {
     readCompactionRolloutPayload("compaction_intent", intent);
-    assertCompactionItemFitsCanonicalLine({
-      type: "compaction_intent",
-      payload: intent,
+    if (payloadBundles === undefined) {
+      throw new CompactionTransactionError(
+        "intent_failed",
+        "compaction source payload bundles are required",
+      );
+    }
+    const activeHistoryRefs = requireCompactionPayloadBundle(
+      payloadBundles.active_history_refs,
+      {
+        attemptId: intent.attempt_id,
+        payloadKind: "active_history_refs",
+        recordedAtMs: intent.recorded_at_ms,
+        expectedValue: compactActiveHistoryEntries(
+          intent.source.active_history_refs,
+        ),
+        failureStage: "intent_failed",
+      },
+    );
+    void activeHistoryRefs;
+    const sourceHistory = requireCompactionPayloadBundle(
+      payloadBundles.source_history,
+      {
+        attemptId: intent.attempt_id,
+        payloadKind: "source_history",
+        recordedAtMs: intent.recorded_at_ms,
+        failureStage: "intent_failed",
+      },
+    );
+    // Reuse the strict inline rollback reader to validate every projection
+    // message and bind the manifest source history to the intent digest.
+    readCompactionRolloutPayload("compaction_rollback_committed", {
+      format_version: COMPACTION_EVENT_FORMAT_VERSION,
+      minimum_reader_runtime: COMPACTION_MINIMUM_READER_RUNTIME,
+      attempt_id: intent.attempt_id,
+      recorded_at_ms: intent.recorded_at_ms,
+      commit_sha256: "0".repeat(64),
+      source_sha256: intent.source.source_sha256,
+      history_digest: intent.source.history_digest,
+      source_session_id: intent.source.session_id,
+      source_epoch: intent.source.epoch,
+      rollback_mode: "same_session",
+      target_session_id: intent.source.session_id,
+      source_history: sourceHistory,
     });
+    const persistedIntent = persistedCompactionIntent(intent, payloadBundles);
+    assertCompactionItemFitsCanonicalLine(
+      { type: "compaction_intent", payload: persistedIntent } as unknown as RolloutItem,
+    );
     try {
       this.compactionRetentionRepo.createPreparingPin(
         intent,
@@ -748,14 +950,19 @@ export class RolloutStore {
     }
     // The pin is durable before this append. A failed append intentionally
     // leaves `preparing` for startup orphan reconciliation.
-    this.appendRollout(
-      { type: "compaction_intent", payload: intent },
+    this.appendPersistedCompactionRollout(
+      { type: "compaction_intent", payload: persistedIntent },
       { durable: true },
     );
+    this.appendCompactionPayloadBundles([
+      payloadBundles.active_history_refs,
+      payloadBundles.source_history,
+    ], true);
     this.compactionRetentionRepo.bindIntent(
       intent.attempt_id,
       intent.recorded_at_ms,
     );
+    this.compactionSourcePayloadBundles.set(intent.attempt_id, payloadBundles);
   }
 
   private compactionSourceProvenanceAttemptIds(
@@ -836,6 +1043,13 @@ export class RolloutStore {
   }
 
   commit(input: CompactionCommitInputV1): CompactionCommittedV1 {
+    const commitBundles = input.payload_bundles;
+    if (commitBundles === undefined) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "compaction commit payload bundles are required",
+      );
+    }
     verifyCompactionSummaryDigest(input.summary);
     if (
       input.summary.attempt_id !== input.intent.attempt_id ||
@@ -880,12 +1094,66 @@ export class RolloutStore {
       committed,
     );
     readCompactionRolloutPayload("compaction_committed", committed);
+    requireCompactionPayloadBundle(commitBundles.final_summary, {
+      attemptId: committed.attempt_id,
+      payloadKind: "final_summary",
+      recordedAtMs: committed.recorded_at_ms,
+      expectedValue: committed.summary,
+      failureStage: "commit_failed",
+    });
+    requireCompactionPayloadBundle(commitBundles.summary_dag, {
+      attemptId: committed.attempt_id,
+      payloadKind: "summary_dag",
+      recordedAtMs: committed.recorded_at_ms,
+      expectedValue: committed.summary_dag,
+      failureStage: "commit_failed",
+    });
+    requireCompactionPayloadBundle(commitBundles.replacement_history, {
+      attemptId: committed.attempt_id,
+      payloadKind: "replacement_history",
+      recordedAtMs: committed.recorded_at_ms,
+      expectedValue: committed.replacement_history,
+      failureStage: "commit_failed",
+    });
+    const sourceBundles = this.compactionSourcePayloadBundles.get(
+      committed.attempt_id,
+    );
+    if (sourceBundles === undefined) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "compaction source payload authority is unavailable",
+      );
+    }
+    const persistedCommit = persistedCompactionCommit(
+      committed,
+      commitBundles,
+      sourceBundles.active_history_refs.manifest,
+    );
     // This fsync is the sole commit point. SQLite projection follows and is
     // rebuildable from this event if the process dies between the two writes.
     const commitItem = { type: "compaction_committed", payload: committed } as const;
-    assertCompactionItemFitsCanonicalLine(commitItem);
+    const persistedCommitItem = {
+      type: "compaction_committed",
+      payload: persistedCommit,
+    } as const;
+    assertCompactionItemFitsCanonicalLine(
+      persistedCommitItem as unknown as RolloutItem,
+    );
+    this.assertLiveToolPairBoundary("transactional compaction commit");
+    this.assertValidToolPairHistory(
+      committed.replacement_history as readonly ToolPairMessage[],
+      "transactional compaction commit",
+    );
     try {
-      this.appendRollout(commitItem, { durable: true });
+      this.appendCompactionPayloadBundles([
+        commitBundles.final_summary,
+        commitBundles.summary_dag,
+        commitBundles.replacement_history,
+      ], false);
+      this.appendPersistedCompactionRollout(
+        persistedCommitItem,
+        { durable: true },
+      );
     } catch (appendError) {
       this.resolveAmbiguousCompactionCommitAppend(commitItem, appendError);
       throw appendError;
@@ -1258,16 +1526,33 @@ export class RolloutStore {
       source_history: sourceHistory,
     };
     readCompactionRolloutPayload("compaction_rollback_committed", event);
+    const sourceHistoryManifest = attempt?.sourceHistoryManifest ??
+      this.compactionSourcePayloadBundles.get(pin.attemptId)
+        ?.source_history.manifest;
+    if (sourceHistoryManifest === undefined) {
+      throw new CompactionTransactionError(
+        "commit_failed",
+        "rollback source-history manifest is unavailable",
+      );
+    }
+    const persistedRollback = persistedCompactionRollback(
+      event,
+      sourceHistoryManifest,
+    );
     assertCompactionItemFitsCanonicalLine({
       type: "compaction_rollback_committed",
-      payload: event,
-    });
+      payload: persistedRollback,
+    } as unknown as RolloutItem);
     const targetReservation = event.rollback_mode === "reviewed_branch"
       ? this.reserveReviewedRollbackTarget(event)
       : undefined;
     try {
-      this.appendRollout(
-        { type: "compaction_rollback_committed", payload: event },
+      this.assertValidToolPairHistory(
+        event.source_history as readonly ToolPairMessage[],
+        "transactional compaction rollback",
+      );
+      this.appendPersistedCompactionRollout(
+        { type: "compaction_rollback_committed", payload: persistedRollback },
         { durable: true },
       );
       this.afterCompactionRollbackAppendForTestingOnly?.();
@@ -2469,6 +2754,35 @@ export class RolloutStore {
       );
     }
     this.store.appendRollout(item, opts);
+  }
+
+  private appendPersistedCompactionRollout(
+    item: PersistedCompactionRolloutItem,
+    opts: AppendOptions,
+  ): void {
+    // Persisted manifest rows deliberately differ from the hydrated in-memory
+    // RolloutItem view. The strict persisted readers above are the sole cast
+    // boundary; SessionStore hydration restores the public runtime shape.
+    this.store.appendRollout(item as unknown as RolloutItem, opts);
+  }
+
+  private appendCompactionPayloadBundles(
+    bundles: readonly CompactionPayloadBundleV1[],
+    durableFinalChunk: boolean,
+  ): void {
+    const chunks = bundles.flatMap((bundle) => bundle.chunks);
+    if (chunks.length === 0) {
+      throw new CompactionTransactionError(
+        "intent_failed",
+        "compaction payload bundles must contain at least one chunk",
+      );
+    }
+    chunks.forEach((chunk, index) => {
+      this.store.appendRollout(
+        { type: "compaction_payload_chunk", payload: chunk },
+        { durable: durableFinalChunk && index === chunks.length - 1 },
+      );
+    });
   }
 
   readAll(): RolloutItem[] {

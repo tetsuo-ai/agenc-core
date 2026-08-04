@@ -293,6 +293,54 @@ describe("A3b raw checkpoint validation", () => {
 });
 
 describe("A3b shared ordered validator cutover", () => {
+  it("rejects durable tool results that reverse the assistant's declared order", () => {
+    const sessionId = "ordered-live-reversal-session";
+    const store = openRollout({
+      sessionId,
+      meta: {
+        sessionId,
+        timestamp: "2026-08-01T00:00:00.000Z",
+        cwd,
+        originator: "a3b-test",
+        agencVersion: "0.13.0",
+      },
+    });
+    store.appendRollout({
+      type: "response_item",
+      payload: {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "ordered-call-a", name: "FileRead", arguments: "{}" },
+          { id: "ordered-call-b", name: "Grep", arguments: "{}" },
+        ],
+      },
+    });
+    const reversedResult: ResponseItem = {
+      role: "tool",
+      content: "result b",
+      toolCallId: "ordered-call-b",
+      toolName: "Grep",
+      toolResultIntegrity: createToolResultIntegrity({
+        runId: sessionId,
+        toolCallId: "ordered-call-b",
+        content: "result b",
+      }),
+    };
+
+    expect(() =>
+      store.appendRollout({ type: "response_item", payload: reversedResult }),
+    ).toThrowError(
+      expect.objectContaining<ToolPairHistoryBlockedError>({
+        outcome: expect.objectContaining({
+          status: "invalid",
+          failure: expect.objectContaining({ code: "tool_result_out_of_order" }),
+        }),
+      }),
+    );
+    store.close();
+  });
+
   it("enforces exact resolved-ID uniqueness on live append and compaction", () => {
     const sessionId = "ordered-live-session";
     const meta = {

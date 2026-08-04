@@ -84,6 +84,21 @@ import {
   serializeRolloutItem,
   type RolloutItem,
 } from "./rollout-item.js";
+import type {
+  CompactionActiveHistoryEntryV1,
+  CompactionPayloadChunkV1,
+  CompactionPayloadKind,
+} from "../services/compact/transaction-types.js";
+import {
+  hydrateActiveHistoryRefs,
+  reconstructCompactionPayloadV1,
+} from "../services/compact/payload-manifest.js";
+import {
+  readCompactionPersistedCommittedV1,
+  readCompactionPersistedIntentV1,
+  readCompactionPersistedRollbackCommittedV1,
+  readCompactionRolloutPayload,
+} from "./compaction-event-reader.js";
 import { DegradedStore } from "./degraded-store.js";
 import {
   createTrajectoryExportSink,
@@ -752,6 +767,143 @@ function readBoundedCanonicalHeader(path: string): Buffer {
   } finally {
     closeSync(fd);
   }
+}
+
+function hydrateManifestCompactionItems(items: readonly RolloutItem[]): RolloutItem[] {
+  const chunks = new Map<
+    string,
+    Map<CompactionPayloadKind, CompactionPayloadChunkV1[]>
+  >();
+  for (const item of items) {
+    if (item.type !== "compaction_payload_chunk") continue;
+    const byKind = chunks.get(item.payload.attempt_id) ?? new Map();
+    const ordered = byKind.get(item.payload.payload_kind) ?? [];
+    ordered.push(item.payload);
+    byKind.set(item.payload.payload_kind, ordered);
+    chunks.set(item.payload.attempt_id, byKind);
+  }
+  const reconstruct = (
+    manifest: Parameters<typeof reconstructCompactionPayloadV1>[0],
+  ): unknown => reconstructCompactionPayloadV1(
+    manifest,
+    chunks.get(manifest.attempt_id)?.get(manifest.payload_kind) ?? [],
+  );
+  const hydratedIntents = new Map<string, Extract<
+    RolloutItem,
+    { readonly type: "compaction_intent" }
+  >["payload"]>();
+  return items.map((item) => {
+    if (item.type === "compaction_intent") {
+      const raw = item.payload as unknown;
+      if (typeof raw !== "object" || raw === null ||
+          !("source_history_manifest" in raw)) {
+        hydratedIntents.set(item.payload.attempt_id, item.payload);
+        return item;
+      }
+      const persisted = readCompactionPersistedIntentV1(raw);
+      const entries = reconstruct(
+        persisted.source.active_history_refs_manifest,
+      );
+      if (!Array.isArray(entries)) {
+        throw new Error("active-history payload manifest did not reconstruct an array");
+      }
+      const { active_history_refs_manifest: _manifest, ...sourceBase } =
+        persisted.source;
+      const sourceHistory = reconstruct(persisted.source_history_manifest);
+      readCompactionRolloutPayload("compaction_rollback_committed", {
+        format_version: persisted.format_version,
+        minimum_reader_runtime: persisted.minimum_reader_runtime,
+        attempt_id: persisted.attempt_id,
+        recorded_at_ms: persisted.recorded_at_ms,
+        commit_sha256: "0".repeat(64),
+        source_sha256: persisted.source.source_sha256,
+        history_digest: persisted.source.history_digest,
+        source_session_id: persisted.source.session_id,
+        source_epoch: persisted.source.epoch,
+        rollback_mode: "same_session",
+        target_session_id: persisted.source.session_id,
+        source_history: sourceHistory,
+      });
+      const payload = readCompactionRolloutPayload("compaction_intent", {
+        format_version: persisted.format_version,
+        minimum_reader_runtime: persisted.minimum_reader_runtime,
+        attempt_id: persisted.attempt_id,
+        recorded_at_ms: persisted.recorded_at_ms,
+        source: {
+          ...sourceBase,
+          active_history_refs: hydrateActiveHistoryRefs(
+            sourceBase,
+            entries as readonly CompactionActiveHistoryEntryV1[],
+          ),
+        },
+        policy_digest: persisted.policy_digest,
+        configuration_digest: persisted.configuration_digest,
+        accounting_ref: persisted.accounting_ref,
+        automatic: persisted.automatic,
+        selected_history_indexes: persisted.selected_history_indexes,
+        admission_required: persisted.admission_required,
+        planned_provider_calls: persisted.planned_provider_calls,
+      }) as Extract<RolloutItem, { type: "compaction_intent" }>["payload"];
+      hydratedIntents.set(persisted.attempt_id, payload);
+      return { ...item, payload };
+    }
+    if (item.type === "compaction_committed") {
+      const raw = item.payload as unknown;
+      if (typeof raw !== "object" || raw === null ||
+          !("final_summary_manifest" in raw)) return item;
+      const persisted = readCompactionPersistedCommittedV1(raw);
+      const intent = hydratedIntents.get(persisted.attempt_id);
+      if (intent === undefined) {
+        throw new Error("manifest compaction commit has no hydrated intent");
+      }
+      const payload = readCompactionRolloutPayload("compaction_committed", {
+        format_version: persisted.format_version,
+        minimum_reader_runtime: persisted.minimum_reader_runtime,
+        attempt_id: persisted.attempt_id,
+        recorded_at_ms: persisted.recorded_at_ms,
+        committed_at_ms: persisted.committed_at_ms,
+        rollback_retention_deadline_ms: persisted.rollback_retention_deadline_ms,
+        source: intent.source,
+        selected_history_indexes: persisted.selected_history_indexes,
+        policy_digest: persisted.policy_digest,
+        configuration_digest: persisted.configuration_digest,
+        summary: reconstruct(persisted.final_summary_manifest),
+        summary_dag: reconstruct(persisted.summary_dag_manifest),
+        accounting: persisted.accounting,
+        replacement_history: reconstruct(persisted.replacement_history_manifest),
+        cleanup_state: persisted.cleanup_state,
+      }) as Extract<RolloutItem, { type: "compaction_committed" }>["payload"];
+      return { ...item, payload };
+    }
+    if (item.type === "compaction_rollback_committed") {
+      const raw = item.payload as unknown;
+      if (typeof raw !== "object" || raw === null ||
+          !("source_history_manifest" in raw)) return item;
+      const persisted = readCompactionPersistedRollbackCommittedV1(raw);
+      const payload = readCompactionRolloutPayload(
+        "compaction_rollback_committed",
+        {
+          format_version: persisted.format_version,
+          minimum_reader_runtime: persisted.minimum_reader_runtime,
+          attempt_id: persisted.attempt_id,
+          recorded_at_ms: persisted.recorded_at_ms,
+          commit_sha256: persisted.commit_sha256,
+          source_sha256: persisted.source_sha256,
+          history_digest: persisted.history_digest,
+          source_session_id: persisted.source_session_id,
+          source_epoch: persisted.source_epoch,
+          rollback_mode: persisted.rollback_mode,
+          target_session_id: persisted.target_session_id,
+          source_history: reconstruct(persisted.source_history_manifest),
+        },
+      ) as Extract<
+        RolloutItem,
+        { type: "compaction_rollback_committed" }
+      >["payload"];
+      return { ...item, payload };
+    }
+    return item;
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2018,7 +2170,7 @@ export class SessionStore {
     if (malformed > 0) {
       // Intentional: caller can surface as warning.
     }
-    return items;
+    return hydrateManifestCompactionItems(items);
   }
 
   close(): void {

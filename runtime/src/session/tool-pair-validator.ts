@@ -91,6 +91,7 @@ export type ToolPairIntegrityFailureCode =
   | "tool_result_id_missing"
   | "tool_result_without_call"
   | "tool_result_unknown_id"
+  | "tool_result_out_of_order"
   | "tool_result_duplicate"
   | "tool_result_name_mismatch"
   | "tool_result_missing"
@@ -447,6 +448,18 @@ export class StreamingToolPairValidator {
             : "tool_result_unknown_id",
           this.index,
           `tool result references unknown ${formatIdentityForLog(message.toolCallId)}`,
+        ),
+      );
+    }
+    const expectedToolCallId = this.openCalls.keys().next().value as
+      | string
+      | undefined;
+    if (message.toolCallId !== expectedToolCallId) {
+      return this.finishFailure(
+        invalid(
+          "tool_result_out_of_order",
+          this.index,
+          `tool result ${formatIdentityForLog(message.toolCallId)} is out of order; expected ${formatIdentityForLog(expectedToolCallId ?? "")}`,
         ),
       );
     }

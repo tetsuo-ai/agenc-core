@@ -447,7 +447,7 @@ export interface CompactionCommitInputV1 {
   readonly accounting: CompactionAccountingObservationV1;
   readonly replacement_history: readonly CompactionProjectionMessageV1[];
   readonly committed_at_ms: number;
-  readonly payload_bundles?: CompactionCommitPayloadBundlesV1;
+  readonly payload_bundles: CompactionCommitPayloadBundlesV1;
 }
 
 export interface CompactionSourcePayloadBundlesV1 {
@@ -479,7 +479,7 @@ export interface CompactionTransactionAdapter {
   failureCount(historyDigest: string, configurationDigest: string): number;
   pinAndRecordIntent(
     intent: CompactionIntentV1,
-    payloadBundles?: CompactionSourcePayloadBundlesV1,
+    payloadBundles: CompactionSourcePayloadBundlesV1,
   ): void;
   recordFailure(failure: CompactionFailedV1): void;
   commit(input: CompactionCommitInputV1): CompactionCommittedV1;

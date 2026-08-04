@@ -55,8 +55,8 @@ describe("StateToolPairProjection", () => {
           { id: "call-b", name: "grep" },
         ],
       },
-      { role: "tool", content: "b", toolCallId: "call-b", toolName: "grep" },
       { role: "tool", content: "a", toolCallId: "call-a", toolName: "read" },
+      { role: "tool", content: "b", toolCallId: "call-b", toolName: "grep" },
       { role: "assistant", content: "done" },
     ]);
 
@@ -73,7 +73,7 @@ describe("StateToolPairProjection", () => {
       callId: "call-a",
       toolName: "read",
       assistantIndex: 0,
-      resultIndex: 2,
+      resultIndex: 1,
     });
     expect(
       driver
@@ -154,6 +154,22 @@ describe("StateToolPairProjection", () => {
     ).toMatchObject({
       status: "invalid",
       failure: { code: "tool_result_unknown_id" },
+    });
+    expect(
+      validate([
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "call-a", name: "read" },
+            { id: "call-b", name: "grep" },
+          ],
+        },
+        { role: "tool", content: "b", toolCallId: "call-b" },
+      ]),
+    ).toMatchObject({
+      status: "invalid",
+      failure: { code: "tool_result_out_of_order" },
     });
     expect(
       validate([

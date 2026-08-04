@@ -40,6 +40,7 @@ import { getCompactPrompt } from "../../../src/services/compact/prompt.js";
 import { RolloutStore } from "../../../src/session/rollout-store.js";
 import { reduceAll } from "../../../src/session/event-log-reducer.js";
 import { readCompactionRolloutPayload } from "../../../src/session/compaction-event-reader.js";
+import type { RolloutItem } from "../../../src/session/rollout-item.js";
 import type { Session } from "../../../src/session/session.js";
 import type { LLMMessage, LLMProvider, LLMResponse } from "../../../src/llm/types.js";
 import { ExecutionAdmissionKernel } from "../../../src/budget/execution-admission-kernel.js";
@@ -237,7 +238,7 @@ describe("transactional compaction production path", () => {
       expect(provider.chat).toHaveBeenCalledOnce();
       expect(result.transaction).toBeDefined();
       const lifecycle = store.readAll().filter((item) =>
-        item.type.startsWith("compaction_"),
+        isCompactionLifecycleItem(item),
       );
       expect(lifecycle.map((item) => item.type)).toEqual([
         "compaction_intent",
@@ -271,7 +272,7 @@ describe("transactional compaction production path", () => {
         /finish reason was length/i,
       );
       const lifecycle = store.readAll().filter((item) =>
-        item.type.startsWith("compaction_"),
+        isCompactionLifecycleItem(item),
       );
       expect(lifecycle.map((item) => item.type)).toEqual([
         "compaction_intent",
@@ -295,7 +296,7 @@ describe("transactional compaction production path", () => {
       );
       expect(provider.chat).toHaveBeenCalledOnce();
       expect(
-        store.readAll().filter((item) => item.type.startsWith("compaction_")),
+        store.readAll().filter(isCompactionLifecycleItem),
       ).toMatchObject([
         { type: "compaction_intent" },
         { type: "compaction_failed", payload: { reason: "no_shrink" } },
@@ -319,7 +320,7 @@ describe("transactional compaction production path", () => {
         /under-reported output tokens/i,
       );
       expect(provider.chat).toHaveBeenCalledOnce();
-      expect(store.readAll().filter((item) => item.type.startsWith("compaction_")))
+      expect(store.readAll().filter(isCompactionLifecycleItem))
         .toMatchObject([
           { type: "compaction_intent" },
           { type: "compaction_failed", payload: { reason: "output_limit_exceeded" } },
@@ -653,7 +654,6 @@ async function runRealTransaction(
     rmSync(admissionCwd, { recursive: true, force: true });
   }
 }
-
 function failingCommitAdapter(
   store: RolloutStore,
 ): CompactionTransactionAdapter {
@@ -668,4 +668,9 @@ function failingCommitAdapter(
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+}
+
+function isCompactionLifecycleItem(item: RolloutItem): boolean {
+  return item.type.startsWith("compaction_") &&
+    item.type !== "compaction_payload_chunk";
 }

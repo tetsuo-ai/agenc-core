@@ -230,6 +230,7 @@ const ROLLOUT_LEGACY_TYPE_ALIASES: Readonly<Record<string, string>> =
  * Stamps `eventVersion` when absent (I-26).
  */
 export function serializeRolloutItem(item: RolloutItem): string {
+  rejectInlineCompactionWriter(item);
   const defaultEventVersion = isCompactionRolloutType(item.type)
     ? ROLLOUT_ITEM_VERSION
     : LEGACY_ROLLOUT_ITEM_VERSION;
@@ -238,6 +239,33 @@ export function serializeRolloutItem(item: RolloutItem): string {
       ? { ...item, eventVersion: defaultEventVersion }
       : item;
   return `${JSON.stringify(redactSecretsInValue(stamped))}\n`;
+}
+
+function rejectInlineCompactionWriter(item: RolloutItem): void {
+  const payload = item.payload as unknown;
+  if (typeof payload !== "object" || payload === null) return;
+  const record = payload as Readonly<Record<string, unknown>>;
+  if (item.type === "compaction_intent") {
+    const source = record.source;
+    if (typeof source === "object" && source !== null &&
+        Object.hasOwn(source, "active_history_refs")) {
+      throw new Error(
+        "inline compaction_intent writers are disabled; persist payload manifests",
+      );
+    }
+  }
+  if (item.type === "compaction_committed" &&
+      Object.hasOwn(record, "replacement_history")) {
+    throw new Error(
+      "inline compaction_committed writers are disabled; persist payload manifests",
+    );
+  }
+  if (item.type === "compaction_rollback_committed" &&
+      Object.hasOwn(record, "source_history")) {
+    throw new Error(
+      "inline compaction_rollback_committed writers are disabled; persist payload manifests",
+    );
+  }
 }
 
 /**

@@ -21,7 +21,17 @@ import {
   COMPACTION_SUMMARY_DAG_DIGEST_DOMAIN,
   type CompactionIntentV1,
   type CompactionCommittedV1,
+  type CompactionActiveHistoryEntryV1,
+  type CompactionCommitPayloadBundlesV1,
+  type CompactionCommitInputV1,
+  type CompactionPayloadBundleV1,
+  type CompactionPayloadChunkV1,
+  type CompactionPayloadKind,
+  type CompactionPersistedCommittedV1,
+  type CompactionPersistedIntentV1,
   type CompactionPreparedSourceV1,
+  type CompactionProjectionMessageV1,
+  type CompactionSourcePayloadBundlesV1,
   type CompactionSummaryDagV1,
   type CompactionSummaryRefV1,
   type CompactionSummaryV1,
@@ -32,7 +42,15 @@ import {
   digestWithDomain,
 } from "../../src/services/compact/summary-v1.js";
 import { readCompactionRolloutPayload } from "../../src/session/compaction-event-reader.js";
+import { serializeRolloutItem } from "../../src/session/rollout-item.js";
 import { compactionMapReduceTopology } from "../../src/services/compact/plan.js";
+import {
+  compactActiveHistoryEntries,
+  createCompactionPayloadBundleV1,
+  hydrateActiveHistoryRefs,
+  reconstructCompactionPayloadV1,
+} from "../../src/services/compact/payload-manifest.js";
+import type { RuntimeMessage } from "../../src/services/compact/types.js";
 import { validateCanonicalJournalBytes } from "../../src/state/recovery-journal-contract.js";
 import { reconstructFromRollout } from "../../src/session/rollout-reconstruction.js";
 import { SessionStore } from "../../src/session/session-store.js";
@@ -80,6 +98,126 @@ describe("RolloutStore transactional compaction", () => {
       store.close();
     }
   });
+
+  it("rejects dynamically omitted source and commit payload bundles", () => {
+    const store = openStore("manifest-bundles-required");
+    try {
+      const transaction = commitSmallCompaction(store, "required-bundles-attempt");
+      const committedItem = store.readAll().find(
+        (item) => item.type === "compaction_committed",
+      );
+      if (committedItem?.type !== "compaction_committed") {
+        throw new Error("test compaction commit is missing");
+      }
+      const dynamicPin = store.pinAndRecordIntent as unknown as (
+        intent: CompactionIntentV1,
+        bundles?: CompactionSourcePayloadBundlesV1,
+      ) => void;
+      expect(() => dynamicPin(transaction.intent)).toThrow(
+        /source payload bundles are required/i,
+      );
+      expect(() => store.commit({
+        intent: transaction.intent,
+        summary: committedItem.payload.summary,
+        summary_dag: committedItem.payload.summary_dag,
+        accounting: committedItem.payload.accounting,
+        replacement_history: committedItem.payload.replacement_history,
+        committed_at_ms: committedItem.payload.committed_at_ms,
+        payload_bundles: undefined,
+      } as unknown as CompactionCommitInputV1)).toThrow(
+        /commit payload bundles are required/i,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("writes only manifest-backed compaction payloads in canonical order", () => {
+    const store = openStore("manifest-only-layout");
+    try {
+      commitSmallCompaction(store, "manifest-only-attempt");
+      const rows = readTestRolloutRows(store.rolloutPath);
+      const intentIndex = rows.findIndex((row) => row.type === "compaction_intent");
+      const commitIndex = rows.findIndex((row) => row.type === "compaction_committed");
+      const firstAdmissionIndex = rows.findIndex((row) => row.type === "event_msg");
+      const sourceChunkIndexes = rows.flatMap((row, index) =>
+        row.type === "compaction_payload_chunk" &&
+          ["active_history_refs", "source_history"].includes(
+            (row.payload as CompactionPayloadChunkV1).payload_kind,
+          )
+          ? [index]
+          : []
+      );
+      const commitChunkIndexes = rows.flatMap((row, index) =>
+        row.type === "compaction_payload_chunk" &&
+          ["final_summary", "summary_dag", "replacement_history"].includes(
+            (row.payload as CompactionPayloadChunkV1).payload_kind,
+          )
+          ? [index]
+          : []
+      );
+      expect(sourceChunkIndexes.every((index) =>
+        index > intentIndex && index < firstAdmissionIndex
+      )).toBe(true);
+      expect(commitChunkIndexes.every((index) => index < commitIndex)).toBe(true);
+
+      const persistedIntent = rows[intentIndex]!.payload as CompactionPersistedIntentV1;
+      const persistedCommit = rows[commitIndex]!
+        .payload as CompactionPersistedCommittedV1;
+      expect(persistedIntent.source).not.toHaveProperty("active_history_refs");
+      expect(persistedIntent.source).toHaveProperty("active_history_refs_manifest");
+      expect(persistedCommit).not.toHaveProperty("summary");
+      expect(persistedCommit).not.toHaveProperty("summary_dag");
+      expect(persistedCommit).not.toHaveProperty("replacement_history");
+      expect(persistedCommit).toHaveProperty("final_summary_manifest");
+
+      const hydratedCommit = store.readAll().find(
+        (item) => item.type === "compaction_committed",
+      );
+      if (hydratedCommit?.type !== "compaction_committed") {
+        throw new Error("hydrated test commit is missing");
+      }
+      expect(hydratedCommit.payload.replacement_history).toHaveLength(2);
+      expect(() => serializeRolloutItem(hydratedCommit)).toThrow(
+        /persist payload manifests/i,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  for (const damage of ["missing", "duplicate", "commit-before-payload"] as const) {
+    it(`fails closed on a ${damage} compaction payload chain`, () => {
+      const fixture = committedStructuredFixture(`payload-${damage}`, 1, 8);
+      const rows = readTestRolloutRows(fixture.rolloutPath);
+      const sourceIndex = rows.findIndex((row) =>
+        row.type === "compaction_payload_chunk" &&
+        (row.payload as CompactionPayloadChunkV1).payload_kind === "source_history"
+      );
+      if (sourceIndex < 0) throw new Error("source-history chunk is missing");
+      if (damage === "missing") {
+        rows.splice(sourceIndex, 1);
+      } else if (damage === "duplicate") {
+        rows.splice(sourceIndex, 0, rows[sourceIndex]!);
+      } else {
+        const commitIndex = rows.findIndex((row) => row.type === "compaction_committed");
+        const replacementIndex = rows.findIndex((row) =>
+          row.type === "compaction_payload_chunk" &&
+          (row.payload as CompactionPayloadChunkV1).payload_kind ===
+            "replacement_history"
+        );
+        if (commitIndex < 0 || replacementIndex < 0) {
+          throw new Error("commit payload rows are missing");
+        }
+        const [commitRow] = rows.splice(commitIndex, 1);
+        rows.splice(replacementIndex, 0, commitRow!);
+      }
+      writeTestRolloutRows(fixture.rolloutPath, rows);
+      expect(() =>
+        openStore(fixture.sessionId, { resume: true }, fixture.cwd)
+      ).toThrow(/payload|chunk|manifest|hydrated intent/i);
+    });
+  }
 
   it("pins only physical records that constitute current active history", () => {
     const store = openStore("active-manifest");
@@ -183,6 +321,63 @@ describe("RolloutStore transactional compaction", () => {
       expect(
         store.readAll().at(-1),
       ).toMatchObject({ type: "compaction_rollback_committed" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("allows same-session rollback across exact automatic turn bookkeeping", () => {
+    const store = openStore("automatic-bookkeeping-rollback");
+    try {
+      const transaction = commitSmallCompaction(
+        store,
+        "automatic-bookkeeping-attempt",
+        undefined,
+        [],
+        true,
+      );
+      store.markProjectionComplete(transaction.intent.attempt_id);
+      store.markCleanupComplete(transaction.intent.attempt_id);
+      appendAutomaticCompactionBoundary(store, "turn-bookkeeping");
+      store.store.reAppendSessionMetadata();
+
+      const rollback = store.rollbackCompaction({
+        attemptId: transaction.intent.attempt_id,
+        nowMs: transaction.committedAtMs + 1,
+      });
+      expect(rollback.rollback_mode).toBe("same_session");
+      expect(rollback.source_history.map((message) => message.content)).toEqual([
+        "source one",
+        "source two",
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("requires a reviewed branch after semantic work beyond automatic bookkeeping", () => {
+    const store = openStore("automatic-bookkeeping-newer-work");
+    try {
+      const transaction = commitSmallCompaction(
+        store,
+        "automatic-newer-work-attempt",
+        undefined,
+        [],
+        true,
+      );
+      store.markProjectionComplete(transaction.intent.attempt_id);
+      store.markCleanupComplete(transaction.intent.attempt_id);
+      appendAutomaticCompactionBoundary(store, "turn-newer-work");
+      store.store.reAppendSessionMetadata();
+      store.appendRollout(
+        { type: "response_item", payload: { role: "user", content: "new work" } },
+        { durable: true },
+      );
+
+      expect(() => store.rollbackCompaction({
+        attemptId: transaction.intent.attempt_id,
+        nowMs: transaction.committedAtMs + 1,
+      })).toThrow(/reviewed branch/i);
     } finally {
       store.close();
     }
@@ -525,18 +720,13 @@ describe("RolloutStore transactional compaction", () => {
     } finally {
       store.close();
     }
-    const journal = readFileSync(rolloutPath, "utf8");
-    expect(journal).toContain('"content":"source summary"');
-    writeFileSync(
+    mutatePayloadChunk(
       rolloutPath,
-      journal.replace(
-        '"content":"source summary"',
-        '"content":"source tampery"',
-      ),
-      "utf8",
+      "replacement_history",
+      (fragment) => fragment.replace("source summary", "source tampery"),
     );
     expect(() => openStore("commit-tamper", { resume: true }, cwd)).toThrow(
-      /commit digest does not match/i,
+      /payload chunk|digest|manifest/i,
     );
   });
 
@@ -556,18 +746,46 @@ describe("RolloutStore transactional compaction", () => {
     } finally {
       store.close();
     }
-    const journal = readFileSync(rolloutPath, "utf8");
-    const rollbackCopy = journal.lastIndexOf('"content":"source one"');
-    expect(rollbackCopy).toBeGreaterThan(0);
-    const tampered =
-      journal.slice(0, rollbackCopy) +
-      journal.slice(rollbackCopy).replace(
-        '"content":"source one"',
-        '"content":"source uno"',
-      );
-    writeFileSync(rolloutPath, tampered, "utf8");
+    mutatePayloadChunk(
+      rolloutPath,
+      "source_history",
+      (fragment) => fragment.replace("source one", "source uno"),
+    );
     expect(() => openStore("rollback-tamper", { resume: true }, cwd)).toThrow(
-      /compaction_rollback_committed payload does not match the runtime schema/i,
+      /payload chunk|digest|manifest/i,
+    );
+  });
+
+  it("binds a persisted rollback to the hydrated canonical commit digest", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-c2-workspace-"));
+    temporaryWorkspaces.push(cwd);
+    const sessionId = "rollback-commit-binding";
+    const store = openStore(sessionId, {}, cwd);
+    const rolloutPath = store.rolloutPath;
+    try {
+      const transaction = commitSmallCompaction(store, "rollback-binding-attempt");
+      store.markProjectionComplete(transaction.intent.attempt_id);
+      store.markCleanupComplete(transaction.intent.attempt_id);
+      store.rollbackCompaction({
+        attemptId: transaction.intent.attempt_id,
+        nowMs: transaction.committedAtMs + 1,
+      });
+    } finally {
+      store.close();
+    }
+    const rows = readTestRolloutRows(rolloutPath);
+    const rollbackIndex = rows.findIndex(
+      (row) => row.type === "compaction_rollback_committed",
+    );
+    if (rollbackIndex < 0) throw new Error("test rollback row is missing");
+    const rollback = rows[rollbackIndex]!.payload as { readonly commit_sha256: string };
+    rows[rollbackIndex] = {
+      ...rows[rollbackIndex]!,
+      payload: { ...rollback, commit_sha256: "f".repeat(64) },
+    };
+    writeTestRolloutRows(rolloutPath, rows);
+    expect(() => openStore(sessionId, { resume: true }, cwd)).toThrow(
+      /not bound to its hydrated commit/i,
     );
   });
 
@@ -623,7 +841,7 @@ describe("RolloutStore transactional compaction", () => {
       }
       rewriteCommittedLeaves(rolloutPath, corruption);
       expect(() => openStore(sessionId, { resume: true }, cwd)).toThrow(
-        /compaction_committed payload does not match the runtime schema/i,
+        /malformed compaction rollout event|runtime schema/i,
       );
     });
   }
@@ -634,7 +852,7 @@ describe("RolloutStore transactional compaction", () => {
       chainedDag(commit, commit.summary_dag.leaf_plan.map((leaf) => leaf.source_ref))
     );
     expect(() => openStore(fixture.sessionId, { resume: true }, fixture.cwd)).toThrow(
-      /compaction_committed payload does not match the runtime schema/i,
+      /malformed compaction rollout event|runtime schema/i,
     );
   });
 
@@ -644,7 +862,7 @@ describe("RolloutStore transactional compaction", () => {
       overfanDag(commit, commit.summary_dag.leaf_plan.map((leaf) => leaf.source_ref))
     );
     expect(() => openStore(fixture.sessionId, { resume: true }, fixture.cwd)).toThrow(
-      /compaction_committed payload does not match the runtime schema/i,
+      /malformed compaction rollout event|runtime schema/i,
     );
   });
 
@@ -655,7 +873,7 @@ describe("RolloutStore transactional compaction", () => {
       return { dag: { ...dag, planned_provider_calls: 2 } };
     });
     expect(() => openStore(fixture.sessionId, { resume: true }, fixture.cwd)).toThrow(
-      /compaction_committed payload does not match the runtime schema/i,
+      /malformed compaction rollout event|runtime schema/i,
     );
   });
 
@@ -667,11 +885,10 @@ describe("RolloutStore transactional compaction", () => {
       '"planned_provider_calls":2',
     );
     expect(mismatched).not.toBe(journal);
+    writeFileSync(fixture.rolloutPath, mismatched, "utf8");
+    removeStateDatabase(fixture.cwd);
     expect(() =>
-      validateCanonicalJournalBytes(Buffer.from(mismatched, "utf8"), {
-        expectedRunId: fixture.sessionId,
-        expectedEpoch: 1,
-      })
+      openStore(fixture.sessionId, { resume: true }, fixture.cwd)
     ).toThrow(/provider-call plan conflicts with its intent/i);
   });
 
@@ -807,7 +1024,7 @@ describe("RolloutStore transactional compaction", () => {
             COMPACTION_ROLLBACK_RETENTION_MS,
         }),
       ).not.toThrow();
-      expect(readFileSync(store.rolloutPath, "utf8")).not.toContain("source one");
+      expect(physicalResponseContents(store.rolloutPath)).not.toContain("source one");
     } finally {
       store.close();
     }
@@ -1042,7 +1259,7 @@ describe("RolloutStore transactional compaction", () => {
           nowMs: releaseAt,
         }),
       ).toThrow(/crash after physical prune/i);
-      expect(readFileSync(store.rolloutPath, "utf8")).not.toContain("source one");
+      expect(physicalResponseContents(store.rolloutPath)).not.toContain("source one");
       expect(
         store.resumeCompactionSourceRelease({
           attemptId: transaction.intent.attempt_id,
@@ -1183,7 +1400,7 @@ function commitStructuredCompaction(
     admission_required: true,
     planned_provider_calls: topology.calls,
   };
-  store.pinAndRecordIntent(intent);
+  store.pinAndRecordIntent(intent, sourcePayloadBundles(prepared, intent));
   appendCompactionAdmissionLifecycle(store, intent);
   const leaves = prepared.source.active_history_refs.map((_ref, index) =>
     leafForActiveRange(
@@ -1203,16 +1420,19 @@ function commitStructuredCompaction(
     leaf_plan: leaves.map((sourceRef) => ({ source_ref: sourceRef, tool_pairs: [] })),
     intermediate_summaries: tree.intermediates,
   } as const;
-  store.commit({
-    intent,
-    summary: tree.final,
-    summary_dag: {
+  const summaryDag = {
       ...dagWithoutDigest,
       dag_sha256: digestWithDomain(
         COMPACTION_SUMMARY_DAG_DIGEST_DOMAIN,
         dagWithoutDigest,
       ),
-    },
+    };
+  const replacementHistory = replacementForSummary(attemptId, tree.final);
+  const committedAtMs = Date.now();
+  store.commit({
+    intent,
+    summary: tree.final,
+    summary_dag: summaryDag,
     accounting: {
       accounting_ref: intent.accounting_ref,
       source_tokens: 8_000,
@@ -1222,8 +1442,15 @@ function commitStructuredCompaction(
       source: "provider_exact",
       confidence: "exact",
     },
-    replacement_history: replacementForSummary(attemptId, tree.final),
-    committed_at_ms: Date.now(),
+    replacement_history: replacementHistory,
+    committed_at_ms: committedAtMs,
+    payload_bundles: commitPayloadBundles({
+      attemptId,
+      recordedAtMs: committedAtMs,
+      summary: tree.final,
+      summaryDag,
+      replacementHistory,
+    }),
   });
   return { intent };
 }
@@ -1323,35 +1550,22 @@ function rewriteCommittedDag(
     readonly summary?: CompactionSummaryV1;
   },
 ): void {
-  const lines = readFileSync(rolloutPath, "utf8").trimEnd().split("\n");
-  const commitIndex = lines.findIndex((line) =>
-    (JSON.parse(line) as { readonly type?: string }).type === "compaction_committed"
-  );
-  if (commitIndex < 0) throw new Error("test rollout has no compaction commit");
-  const item = JSON.parse(lines[commitIndex]!) as {
-    readonly type: "compaction_committed";
-    readonly payload: CompactionCommittedV1;
-    readonly eventVersion?: number;
-  };
-  const rewritten = rewrite(item.payload);
-  const withoutDigest = rewritten.dag;
-  const summary = rewritten.summary ?? item.payload.summary;
-  lines[commitIndex] = JSON.stringify({
-    ...item,
-    payload: {
-      ...item.payload,
+  rewriteManifestCommit(rolloutPath, (commit) => {
+    const rewritten = rewrite(commit);
+    const withoutDigest = rewritten.dag;
+    const summary = rewritten.summary ?? commit.summary;
+    return {
       summary,
-      summary_dag: {
+      summaryDag: {
         ...withoutDigest,
         dag_sha256: digestWithDomain(
           COMPACTION_SUMMARY_DAG_DIGEST_DOMAIN,
           withoutDigest,
         ),
       },
-      replacement_history: replacementForSummary(item.payload.attempt_id, summary),
-    },
+      replacementHistory: replacementForSummary(commit.attempt_id, summary),
+    };
   });
-  writeFileSync(rolloutPath, `${lines.join("\n")}\n`, "utf8");
 }
 
 function chainedDag(
@@ -1455,73 +1669,250 @@ function rewriteCommittedLeaves(
   rolloutPath: string,
   corruption: "foreign" | "out-of-range" | "gap" | "overlap",
 ): void {
-  const lines = readFileSync(rolloutPath, "utf8").trimEnd().split("\n");
-  const commitIndex = lines.findIndex((line) =>
-    (JSON.parse(line) as { readonly type?: string }).type ===
-      "compaction_committed"
-  );
-  if (commitIndex < 0) throw new Error("test rollout has no compaction commit");
-  const item = JSON.parse(lines[commitIndex]!) as {
-    readonly type: "compaction_committed";
-    readonly payload: CompactionCommittedV1;
-    readonly eventVersion?: number;
-  };
-  const commit = item.payload;
-  const all = leafForActiveRange(commit, 0, commit.source.active_history_refs.length);
-  const first = leafForActiveRange(commit, 0, 1);
-  const second = leafForActiveRange(commit, 1, commit.source.active_history_refs.length);
-  const leaves: readonly RolloutSpanRefV1[] = corruption === "foreign"
-    ? [{ ...all, source_binding: `${all.source_binding}:foreign` }]
-    : corruption === "out-of-range"
-      ? [{ ...all, first_sequence: commit.source.first_sequence - 1 }]
-      : corruption === "gap"
-        ? [first]
-        : [all, { ...second, ref_id: `${second.ref_id}:overlap` }];
-  const summary = createCompactionSummaryV1({
-    stage: "final",
-    attemptId: commit.attempt_id,
-    policyDigest: commit.policy_digest,
-    accountingRef: commit.accounting.accounting_ref,
-    sourceRefs: leaves,
-    body: commit.summary.body,
-  });
-  const dagWithoutDigest = {
-    reduction_fan_in: commit.summary_dag.reduction_fan_in,
-    maximum_levels: 1,
-    planned_provider_calls: 1,
-    leaf_plan: leaves.map((sourceRef) => ({
-      source_ref: sourceRef,
-      tool_pairs: [],
-    })),
-    intermediate_summaries: [],
-  } as const;
-  const replacementHistory = commit.replacement_history.map((message) => ({
-    ...message,
-    ...(message.compactionHistory === undefined
-      ? {}
-      : {
-          compactionHistory: {
-            ...message.compactionHistory,
-            summary_sha256: summary.summary_sha256,
-          },
-        }),
-  }));
-  lines[commitIndex] = JSON.stringify({
-    ...item,
-    payload: {
-      ...commit,
+  rewriteManifestCommit(rolloutPath, (commit) => {
+    const all = leafForActiveRange(
+      commit,
+      0,
+      commit.source.active_history_refs.length,
+    );
+    const first = leafForActiveRange(commit, 0, 1);
+    const second = leafForActiveRange(
+      commit,
+      1,
+      commit.source.active_history_refs.length,
+    );
+    const leaves: readonly RolloutSpanRefV1[] = corruption === "foreign"
+      ? [{ ...all, source_binding: `${all.source_binding}:foreign` }]
+      : corruption === "out-of-range"
+        ? [{ ...all, first_sequence: commit.source.first_sequence - 1 }]
+        : corruption === "gap"
+          ? [first]
+          : [all, { ...second, ref_id: `${second.ref_id}:overlap` }];
+    const summary = createCompactionSummaryV1({
+      stage: "final",
+      attemptId: commit.attempt_id,
+      policyDigest: commit.policy_digest,
+      accountingRef: commit.accounting.accounting_ref,
+      sourceRefs: leaves,
+      body: commit.summary.body,
+    });
+    const dagWithoutDigest = {
+      reduction_fan_in: commit.summary_dag.reduction_fan_in,
+      maximum_levels: 1,
+      planned_provider_calls: 1,
+      leaf_plan: leaves.map((sourceRef) => ({
+        source_ref: sourceRef,
+        tool_pairs: [],
+      })),
+      intermediate_summaries: [],
+    } as const;
+    const replacementHistory = commit.replacement_history.map((message) => ({
+      ...message,
+      ...(message.compactionHistory === undefined
+        ? {}
+        : {
+            compactionHistory: {
+              ...message.compactionHistory,
+              summary_sha256: summary.summary_sha256,
+            },
+          }),
+    }));
+    return {
       summary,
-      summary_dag: {
+      summaryDag: {
         ...dagWithoutDigest,
         dag_sha256: digestWithDomain(
           COMPACTION_SUMMARY_DAG_DIGEST_DOMAIN,
           dagWithoutDigest,
         ),
       },
-      replacement_history: replacementHistory,
-    },
+      replacementHistory,
+    };
   });
-  writeFileSync(rolloutPath, `${lines.join("\n")}\n`, "utf8");
+}
+
+interface TestRolloutRow {
+  readonly type: string;
+  readonly payload: unknown;
+  readonly eventVersion?: number;
+}
+
+function mutatePayloadChunk(
+  rolloutPath: string,
+  payloadKind: CompactionPayloadKind,
+  mutate: (fragment: string) => string,
+): void {
+  const rows = readTestRolloutRows(rolloutPath);
+  const chunkIndex = rows.findIndex((row) =>
+    row.type === "compaction_payload_chunk" &&
+    (row.payload as CompactionPayloadChunkV1).payload_kind === payloadKind
+  );
+  if (chunkIndex < 0) {
+    throw new Error(`test rollout has no ${payloadKind} payload chunk`);
+  }
+  const row = rows[chunkIndex]!;
+  const chunk = row.payload as CompactionPayloadChunkV1;
+  const changed = mutate(chunk.canonical_json_fragment);
+  if (changed === chunk.canonical_json_fragment) {
+    throw new Error(`test mutation did not change ${payloadKind}`);
+  }
+  rows[chunkIndex] = {
+    ...row,
+    payload: { ...chunk, canonical_json_fragment: changed },
+  };
+  writeTestRolloutRows(rolloutPath, rows);
+}
+
+function rewriteManifestCommit(
+  rolloutPath: string,
+  rewrite: (commit: CompactionCommittedV1) => {
+    readonly summary: CompactionSummaryV1;
+    readonly summaryDag: CompactionSummaryDagV1;
+    readonly replacementHistory: CompactionCommittedV1["replacement_history"];
+  },
+): void {
+  let rows = readTestRolloutRows(rolloutPath);
+  const persistedCommit = rows.find((row) => row.type === "compaction_committed")
+    ?.payload as CompactionPersistedCommittedV1 | undefined;
+  if (persistedCommit === undefined) {
+    throw new Error("test rollout has no persisted compaction commit");
+  }
+  const commit = hydrateTestCommit(rows, persistedCommit);
+  const rewritten = rewrite(commit);
+  const bundles = commitPayloadBundles({
+    attemptId: commit.attempt_id,
+    recordedAtMs: commit.recorded_at_ms,
+    summary: rewritten.summary,
+    summaryDag: rewritten.summaryDag,
+    replacementHistory: rewritten.replacementHistory,
+  });
+  rows = replaceTestPayloadBundle(rows, bundles.final_summary);
+  rows = replaceTestPayloadBundle(rows, bundles.summary_dag);
+  rows = replaceTestPayloadBundle(rows, bundles.replacement_history);
+  const commitIndex = rows.findIndex((row) => row.type === "compaction_committed");
+  if (commitIndex < 0) throw new Error("test rollout lost its compaction commit");
+  const commitRow = rows[commitIndex]!;
+  rows[commitIndex] = {
+    ...commitRow,
+    payload: {
+      ...persistedCommit,
+      final_summary_manifest: bundles.final_summary.manifest,
+      summary_dag_manifest: bundles.summary_dag.manifest,
+      replacement_history_manifest: bundles.replacement_history.manifest,
+    },
+  };
+  writeTestRolloutRows(rolloutPath, rows);
+}
+
+function hydrateTestCommit(
+  rows: readonly TestRolloutRow[],
+  persisted: CompactionPersistedCommittedV1,
+): CompactionCommittedV1 {
+  const {
+    active_history_refs_manifest: activeHistoryManifest,
+    ...sourceWithoutRefs
+  } = persisted.source;
+  const activeHistoryEntries = reconstructTestPayload(
+    rows,
+    activeHistoryManifest,
+  ) as readonly CompactionActiveHistoryEntryV1[];
+  const {
+    final_summary_manifest: finalSummaryManifest,
+    summary_dag_manifest: summaryDagManifest,
+    replacement_history_manifest: replacementHistoryManifest,
+    source: _persistedSource,
+    ...commitWithoutPayloads
+  } = persisted;
+  return {
+    ...commitWithoutPayloads,
+    source: {
+      ...sourceWithoutRefs,
+      active_history_refs: hydrateActiveHistoryRefs(
+        sourceWithoutRefs,
+        activeHistoryEntries,
+      ),
+    },
+    summary: reconstructTestPayload(
+      rows,
+      finalSummaryManifest,
+    ) as CompactionSummaryV1,
+    summary_dag: reconstructTestPayload(
+      rows,
+      summaryDagManifest,
+    ) as CompactionSummaryDagV1,
+    replacement_history: reconstructTestPayload(
+      rows,
+      replacementHistoryManifest,
+    ) as CompactionCommittedV1["replacement_history"],
+  };
+}
+
+function reconstructTestPayload(
+  rows: readonly TestRolloutRow[],
+  manifest: CompactionPayloadBundleV1["manifest"],
+): unknown {
+  const chunks = rows
+    .filter((row) =>
+      row.type === "compaction_payload_chunk" &&
+      (row.payload as CompactionPayloadChunkV1).attempt_id === manifest.attempt_id &&
+      (row.payload as CompactionPayloadChunkV1).payload_kind === manifest.payload_kind
+    )
+    .map((row) => row.payload as CompactionPayloadChunkV1);
+  return reconstructCompactionPayloadV1(manifest, chunks);
+}
+
+function replaceTestPayloadBundle(
+  rows: readonly TestRolloutRow[],
+  bundle: CompactionPayloadBundleV1,
+): TestRolloutRow[] {
+  const firstChunkIndex = rows.findIndex((row) =>
+    row.type === "compaction_payload_chunk" &&
+    (row.payload as CompactionPayloadChunkV1).attempt_id ===
+      bundle.manifest.attempt_id &&
+    (row.payload as CompactionPayloadChunkV1).payload_kind ===
+      bundle.manifest.payload_kind
+  );
+  if (firstChunkIndex < 0) {
+    throw new Error(`test rollout has no ${bundle.manifest.payload_kind} bundle`);
+  }
+  const retained = rows.filter((row) =>
+    row.type !== "compaction_payload_chunk" ||
+    (row.payload as CompactionPayloadChunkV1).attempt_id !==
+      bundle.manifest.attempt_id ||
+    (row.payload as CompactionPayloadChunkV1).payload_kind !==
+      bundle.manifest.payload_kind
+  );
+  const inserted = bundle.chunks.map((chunk) => ({
+    type: "compaction_payload_chunk",
+    payload: chunk,
+    eventVersion: 2,
+  }));
+  retained.splice(firstChunkIndex, 0, ...inserted);
+  return retained;
+}
+
+function readTestRolloutRows(rolloutPath: string): TestRolloutRow[] {
+  return readFileSync(rolloutPath, "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line) as TestRolloutRow);
+}
+
+function writeTestRolloutRows(
+  rolloutPath: string,
+  rows: readonly TestRolloutRow[],
+): void {
+  writeFileSync(
+    rolloutPath,
+    `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+    "utf8",
+  );
+}
+
+function physicalResponseContents(rolloutPath: string): readonly unknown[] {
+  return readTestRolloutRows(rolloutPath)
+    .filter((row) => row.type === "response_item")
+    .map((row) => (row.payload as { readonly content?: unknown }).content);
 }
 
 function leafForActiveRange(
@@ -1567,6 +1958,7 @@ function commitSmallCompaction(
   attemptId: string,
   beforeCommit?: () => void,
   replacementTail: readonly CompactionCommittedV1["replacement_history"][number][] = [],
+  automatic = false,
 ): {
   readonly prepared: CompactionPreparedSourceV1;
   readonly intent: CompactionIntentV1;
@@ -1590,14 +1982,14 @@ function commitSmallCompaction(
     policy_digest: "1".repeat(64),
     configuration_digest: "2".repeat(64),
     accounting_ref: "3".repeat(64),
-    automatic: false,
+    automatic,
     selected_history_indexes: prepared.source.active_history_refs.map(
       (ref) => ref.history_index,
     ),
     admission_required: true,
     planned_provider_calls: 1,
   };
-  store.pinAndRecordIntent(intent);
+  store.pinAndRecordIntent(intent, sourcePayloadBundles(prepared, intent));
   appendCompactionAdmissionLifecycle(store, intent);
   const firstMessageRef = prepared.message_source_refs[0]!;
   const lastMessageRef = prepared.message_source_refs.at(-1)!;
@@ -1638,17 +2030,41 @@ function commitSmallCompaction(
     intermediate_summaries: [],
   } as const;
   const committedAtMs = Date.now();
+  const summaryDag = {
+    ...dagWithoutDigest,
+    dag_sha256: digestWithDomain(
+      COMPACTION_SUMMARY_DAG_DIGEST_DOMAIN,
+      dagWithoutDigest,
+    ),
+  };
+  const replacementHistory = [
+    {
+      role: "developer" as const,
+      content: "authenticated compaction boundary",
+      compactionHistory: {
+        version: 1 as const,
+        kind: "boundary" as const,
+        attempt_id: attemptId,
+        summary_sha256: summary.summary_sha256,
+      },
+    },
+    {
+      role: "user" as const,
+      content: "source summary",
+      compactionHistory: {
+        version: 1 as const,
+        kind: "summary" as const,
+        attempt_id: attemptId,
+        summary_sha256: summary.summary_sha256,
+      },
+    },
+    ...replacementTail,
+  ];
   beforeCommit?.();
   store.commit({
     intent,
     summary,
-    summary_dag: {
-      ...dagWithoutDigest,
-      dag_sha256: digestWithDomain(
-        COMPACTION_SUMMARY_DAG_DIGEST_DOMAIN,
-        dagWithoutDigest,
-      ),
-    },
+    summary_dag: summaryDag,
     accounting: {
       accounting_ref: intent.accounting_ref,
       source_tokens: 4_000,
@@ -1658,32 +2074,104 @@ function commitSmallCompaction(
       source: "provider_exact",
       confidence: "exact",
     },
-    replacement_history: [
-      {
-        role: "developer",
-        content: "authenticated compaction boundary",
-        compactionHistory: {
-          version: 1,
-          kind: "boundary",
-          attempt_id: attemptId,
-          summary_sha256: summary.summary_sha256,
-        },
-      },
-      {
-        role: "user",
-        content: "source summary",
-        compactionHistory: {
-          version: 1,
-          kind: "summary",
-          attempt_id: attemptId,
-          summary_sha256: summary.summary_sha256,
-        },
-      },
-      ...replacementTail,
-    ],
+    replacement_history: replacementHistory,
     committed_at_ms: committedAtMs,
+    payload_bundles: commitPayloadBundles({
+      attemptId,
+      recordedAtMs: committedAtMs,
+      summary,
+      summaryDag,
+      replacementHistory,
+    }),
   });
   return { prepared, intent, committedAtMs };
+}
+
+function sourcePayloadBundles(
+  prepared: CompactionPreparedSourceV1,
+  intent: CompactionIntentV1,
+): CompactionSourcePayloadBundlesV1 {
+  const activeHistoryEntries = compactActiveHistoryEntries(
+    prepared.source.active_history_refs,
+  );
+  const sourceHistory = prepared.messages.map(projectionMessage);
+  return {
+    active_history_refs: createCompactionPayloadBundleV1({
+      attemptId: intent.attempt_id,
+      recordedAtMs: intent.recorded_at_ms,
+      payloadKind: "active_history_refs",
+      value: activeHistoryEntries,
+      itemCount: activeHistoryEntries.length,
+    }),
+    source_history: createCompactionPayloadBundleV1({
+      attemptId: intent.attempt_id,
+      recordedAtMs: intent.recorded_at_ms,
+      payloadKind: "source_history",
+      value: sourceHistory,
+      itemCount: sourceHistory.length,
+    }),
+  };
+}
+
+function commitPayloadBundles(params: {
+  readonly attemptId: string;
+  readonly recordedAtMs: number;
+  readonly summary: CompactionCommittedV1["summary"];
+  readonly summaryDag: CompactionCommittedV1["summary_dag"];
+  readonly replacementHistory: CompactionCommittedV1["replacement_history"];
+}): CompactionCommitPayloadBundlesV1 {
+  return {
+    final_summary: createCompactionPayloadBundleV1({
+      attemptId: params.attemptId,
+      recordedAtMs: params.recordedAtMs,
+      payloadKind: "final_summary",
+      value: params.summary,
+      itemCount: 1,
+    }),
+    summary_dag: createCompactionPayloadBundleV1({
+      attemptId: params.attemptId,
+      recordedAtMs: params.recordedAtMs,
+      payloadKind: "summary_dag",
+      value: params.summaryDag,
+      itemCount: 1,
+    }),
+    replacement_history: createCompactionPayloadBundleV1({
+      attemptId: params.attemptId,
+      recordedAtMs: params.recordedAtMs,
+      payloadKind: "replacement_history",
+      value: params.replacementHistory,
+      itemCount: params.replacementHistory.length,
+    }),
+  };
+}
+
+function projectionMessage(message: RuntimeMessage): CompactionProjectionMessageV1 {
+  const role = message.originalRole ?? message.role ?? message.message?.role ?? "user";
+  if (!["system", "developer", "user", "assistant", "tool"].includes(role)) {
+    throw new Error(`unsupported test projection role ${role}`);
+  }
+  const content = message.content ?? message.message?.content ?? "";
+  if (typeof content !== "string" && !Array.isArray(content)) {
+    throw new Error("test projection content is not persistable");
+  }
+  return {
+    role: role as CompactionProjectionMessageV1["role"],
+    content: content as CompactionProjectionMessageV1["content"],
+    ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
+    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.uuid !== undefined ? { id: message.uuid } : {}),
+    ...(message.phase !== undefined ? { phase: message.phase } : {}),
+    ...(message.runtimeOnly?.toolResultIntegrity !== undefined
+      ? { toolResultIntegrity: { ...message.runtimeOnly.toolResultIntegrity } }
+      : {}),
+    ...(message.runtimeOnly?.agentInvocation !== undefined
+      ? { agentInvocation: { ...message.runtimeOnly.agentInvocation } }
+      : {}),
+    ...(message.runtimeOnly?.compactionHistory !== undefined
+      ? { compactionHistory: { ...message.runtimeOnly.compactionHistory } }
+      : {}),
+  };
 }
 
 function appendCompactionAdmissionLifecycle(
@@ -1733,6 +2221,32 @@ function appendCompactionAdmissionLifecycle(
       );
     }
   }
+}
+
+function appendAutomaticCompactionBoundary(
+  store: RolloutStore,
+  turnId: string,
+): void {
+  const sequence = store.readAll().reduce(
+    (maximum, item) =>
+      item.type === "event_msg"
+        ? Math.max(maximum, item.payload.seq ?? 0)
+        : maximum,
+    0,
+  ) + 1;
+  const eventId = `context-compacted:${turnId}`;
+  store.append(
+    {
+      id: eventId,
+      eventId,
+      seq: sequence,
+      msg: {
+        type: "context_compacted",
+        payload: { summary: `auto-compact boundary (turnId=${turnId})` },
+      },
+    },
+    { durable: true },
+  );
 }
 
 function seedOrdinalGuardPin(
