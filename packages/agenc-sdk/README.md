@@ -12,7 +12,7 @@ Node **>=26.5 <27** · ESM only · plain `tsc` build · no runtime dependencies.
 | `promptViaSubprocess()` | Same event-iterable interface over `agenc -p --output-format stream-json` with no daemon socket access from your process. |
 | `client.runStatus` / `runResult` / `replayRun` / `runEvidence` / `cancelRun` | Read durable run/admission state, replay or hash canonical journal evidence, or cancel a run tree. |
 | `client.reattachRun({ runId, afterSequence })` | Catch up from a durable cursor, suppress and report duplicate delivery, stop on any explicit replay gap, and fetch the durable terminal result after reconnect. |
-| `client.request(method, params)` | Raw typed JSON-RPC for all **45** public daemon methods (mirrored in `./protocol`). |
+| `client.request(method, params)` | Raw typed JSON-RPC for all **51** public daemon methods (mirrored in `./protocol`). |
 
 The protocol mirror preserves trusted `event.user_input_request.clientAction`
 objects, typed `elicitation.respond.clientResult` receipts,

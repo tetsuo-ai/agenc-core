@@ -17,7 +17,7 @@ export function buildFixture(caseId, pointIndex) {
     case "csv_scheduler_progress_scan":
       generated = buildCsvFixture(point);
       break;
-    case "patch_delete_parser_suffix_slicing":
+    case "patch_delete_parser_historical_comparison":
       generated = buildPatchFixture(point);
       break;
     default:
@@ -99,8 +99,6 @@ function buildPatchFixture(point) {
     },
     operations: {
       parsed_hunks: point.hunkCount,
-      remaining_suffix_references_copied:
-        (point.hunkCount * (point.hunkCount - 1)) / 2,
       source_lines: lines.length,
     },
     payload: { patch },

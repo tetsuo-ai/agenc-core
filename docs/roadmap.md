@@ -1,6 +1,6 @@
 # AgenC product roadmap
 
-**As of 2026-07-30.** Product line **0.13.0** (SDK package **0.3.0**). What is
+**As of 2026-08-04.** Product line **0.14.0** (SDK package **0.3.0**). What is
 shipped in-tree versus open backlog.
 
 This replaces the competitive parity plan. Superseded research and phase
@@ -13,7 +13,7 @@ shipped / open summary.
 
 ---
 
-## Shipped (in product as of 2026-07-30 / 0.13.0)
+## Shipped (in product as of 2026-08-04 / 0.14.0)
 
 ### Core coding agent
 
@@ -26,7 +26,7 @@ shipped / open summary.
   accessibility-ref actions, SSRF-proxy egress control (task 18)
 - Multi-agent v2: `spawn_agent`, `wait_agent`, `close_agent`, `assign_task`,
   `send_message`, `list_agents`
-- Background agents and durable run inspection over the 45-method daemon protocol
+- Background agents and durable run inspection over the 51-method daemon protocol
 - Embedding SDK `@tetsuo-ai/agenc-sdk` **0.3.0** (`connect`, `promptViaSubprocess`)
 - Legacy local agent-eval diagnostic + regression gate (`runtime/eval/tasks/`)
 - Versioned competitive/trust evaluation suite protocols (`runtime/eval/suites/`)
@@ -40,6 +40,16 @@ shipped / open summary.
 - Monochrome TUI workbench rails for project review, live agent progress, and
   daemon-backed todo visibility
 - Official Ledger Wallet CLI management and strict device-authenticity flow
+- Strict, bounded run recovery with corrupt-journal quarantine, restart-safe
+  checkpoints, and explicit review for operations whose outcome is unknown
+- Transactional conversation compaction with integrity-bound payloads,
+  restart reconciliation, and a retained rollback window
+- Versioned workflow DAGs with an event-driven scheduler, bounded handoff
+  artifacts, durable results, and CSV batch execution/review APIs
+- Persistent, bounded indexes for project-file search and full-corpus memory
+  recall, including atomic generation updates after filesystem changes
+- Provider-aware token accounting with native usage when complete and a
+  conservative bounded fallback when it is not
 
 ### Onboarding & distribution
 

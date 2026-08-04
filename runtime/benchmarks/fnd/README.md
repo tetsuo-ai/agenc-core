@@ -1,15 +1,17 @@
 # FND algorithm baselines
 
 This directory contains the FND-001 deterministic microbenchmark harness and
-the checked-in observation of AgenC's audited CSV scheduler and patch parser
-failure modes.
+the checked-in observations of AgenC's audited CSV scheduler and patch parser.
 
-The baseline is deliberately not a performance gate. Every case is classified
-as `known_failure_observation`, has `gateEnforced: false`, and has no threshold.
-Future fixes must add separate correctness/resource/asymptotic gates; they must
-not relabel these known-bad measurements as passing. Fixed observations leave
-this active plan instead. Their original evidence remains available at the
-artifact's recorded source revision and in Git history.
+The baseline is deliberately not a performance gate. Every case has
+`gateEnforced: false` and no threshold. Active failures are classified as
+`known_failure_observation`; the fixed patch-parser case is retained as
+`historical_reference_observation` so the release comparison replays the same
+bounded workload without implying that current production still performs the
+old suffix slicing. Its original evidence remains bound to the historical
+source revision and artifact commit named in the assessment. Fixed observations
+without an explicit comparison purpose leave this active plan instead of being
+relabelled as passing thresholds.
 
 The catastrophic-regex observation was retired by D1 when grep became pinned
 and fail-closed; its replacement regression coverage lives in

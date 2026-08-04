@@ -76,6 +76,21 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function differentWindowsToolchainProfile() {
+  const contract = releaseToolchain.hostedRunners["win-x64"];
+  const activeProfile = contract.imageProfiles[0];
+  const profile = contract.imageProfiles.find(
+    (candidate) =>
+      candidate.imageVersion !== activeProfile.imageVersion &&
+      candidate.visualStudioVersion !== activeProfile.visualStudioVersion,
+  );
+  assert.ok(
+    profile,
+    "Windows cross-profile fixture requires a reviewed Visual Studio mismatch",
+  );
+  return { contract, profile };
+}
+
 const fixtureLibatomic = Buffer.from("libatomic");
 const fixtureLibatomicLicense = Buffer.from("GCC Runtime Library Exception");
 const fixtureNodeBootstrapContract = {
@@ -1351,8 +1366,10 @@ test("full release manifest accepts the combined workflow download and exact pla
     const crossProfileWindowsArtifact = crossProfileManifest.artifacts.find(
       (artifact) => artifact.platform === "win" && artifact.arch === "x64",
     );
-    const windowsContract = releaseToolchain.hostedRunners["win-x64"];
-    const otherWindowsProfile = windowsContract.imageProfiles[1];
+    const {
+      contract: windowsContract,
+      profile: otherWindowsProfile,
+    } = differentWindowsToolchainProfile();
     crossProfileWindowsArtifact.nativeToolchain.runnerImageVersion =
       otherWindowsProfile.imageVersion;
     crossProfileWindowsArtifact.nativeToolchain.builder =
@@ -1650,8 +1667,8 @@ test("manifest generation rejects detached macOS and Windows toolchain evidence"
     ["win", "x64", "sdk-version", (meta) => { meta.nativeToolchain.windowsSdkVersion = "10.0.22621.0"; }, /Windows SDK does not match/],
     ["win", "x64", "compiler-version", (meta) => { meta.nativeToolchain.cc = "Microsoft (R) C/C++ Optimizing Compiler Version 19.43 for x64"; }, /C compiler does not match/],
     ["win", "x64", "cross-profile", (meta) => {
-      const contract = releaseToolchain.hostedRunners["win-x64"];
-      const otherProfile = contract.imageProfiles[1];
+      const { contract, profile: otherProfile } =
+        differentWindowsToolchainProfile();
       meta.nativeToolchain.runnerImageVersion = otherProfile.imageVersion;
       meta.nativeToolchain.builder =
         `github-hosted:${contract.runnerLabel}:${contract.imageOS}:` +

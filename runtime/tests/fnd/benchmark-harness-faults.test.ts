@@ -935,7 +935,7 @@ describe("FND benchmark harness fault contracts", () => {
         args: [
           CASE_WORKER_PATH,
           "--case",
-          "patch_delete_parser_suffix_slicing",
+          "patch_delete_parser_historical_comparison",
           "--point",
           "0",
           "--temporary-root",

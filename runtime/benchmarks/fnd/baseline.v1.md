@@ -1,34 +1,34 @@
 # FND algorithm baseline v1
 
-This artifact records bounded observations of known failures. Every row is
-informational: no current result is a passing performance threshold or gate.
+This artifact records bounded current and historical-reference observations.
+Every row is informational: no result is a performance threshold or gate.
 Generated inputs are synthetic and created only for the benchmark process.
 
-- JSON SHA-256: `b59ad2e81d5d16cf5bccfe9892e8becd08f6855b1b9158a46a81c4a312dbd3ca`
-- Source revision: `f6f3105db5daba0023073240aa3cecd815fbe7af`
-- Production tree: `runtime/src` at Git object `14bc1742a431230bc8aa81dec458f88d3d0899da`
+- JSON SHA-256: `696b9534fba13177bc135247c7c91c53be4a3e0dfd23001cb3180981c765701b`
+- Source revision: `dc10a164573d5556797f4bd8c913f71774afc923`
+- Production tree: `runtime/src` at Git object `5c6f4997cf7451f43ca27591825f591f2278af5d`
 - Loaded production closure: `42` module bindings across `2` cases
-- Plan SHA-256: `f845a0595da15849f819d413b42f995107befacfc67ef78a2bf96338fda92025`
+- Plan SHA-256: `672538014498283c935efce76c0a5244abd280aadaeb5a03a9d835f041db2ebe`
 - Node/npm: `v26.5.0` / `11.17.0`
 - OS/CPU: `linux 7.0.0-28-generic x64` / `AMD Ryzen Threadripper PRO 9975WX 32-Cores` (64 logical)
 - RAM: `1081089331200` bytes
-- Source filesystem: type `61267`, block `4096` bytes
+- Source filesystem: type `16914836`, block `4096` bytes
 - Fixture filesystem: type `16914836`, block `4096` bytes
 - SQLite/ripgrep: `3.53.3` / `ripgrep 15.0.0 (rev 3a612f88b8)`
 
 | Case | Input | Status | Median ms | MAD ms | Worker peak RSS bytes | RSS lower-bound bytes |
 | --- | ---: | --- | ---: | ---: | ---: | ---: |
-| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 82.820 | 2.662 | 179113984 | 177811456 |
-| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 158.624 | 3.854 | 194273280 | 190390272 |
-| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 325.574 | 11.884 | 207568896 | 203595776 |
-| `patch_delete_parser_suffix_slicing` | `hunkCount=8000` | `completed` | 2.799 | 0.126 | 91176960 | 91176960 |
-| `patch_delete_parser_suffix_slicing` | `hunkCount=16000` | `completed` | 5.249 | 0.589 | 104910848 | 104386560 |
-| `patch_delete_parser_suffix_slicing` | `hunkCount=32000` | `completed` | 10.959 | 0.766 | 127172608 | 127172608 |
+| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 91.606 | 3.550 | 179056640 | 177917952 |
+| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 161.877 | 3.425 | 195129344 | 192167936 |
+| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 327.347 | 8.447 | 202129408 | 197955584 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=8000` | `completed` | 3.142 | 0.397 | 90628096 | 90628096 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=16000` | `completed` | 5.069 | 0.241 | 104878080 | 104878080 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=32000` | `completed` | 11.492 | 0.350 | 128126976 | 128126976 |
 
-## Known-failure policy
+## Assessment notes
 
 - `csv_scheduler_progress_scan`: Array.shift queue movement and full progress-map scans have quadratic operation counts; the prior audit observed about 35/112/392 ms at 8k/16k/32k items.
-- `patch_delete_parser_suffix_slicing`: Delete-only parsing repeatedly slices the unconsumed suffix; the prior audit observed about 28 ms/238 ms/2.98 s at 16k/32k/64k lines.
+- `patch_delete_parser_historical_comparison`: Historical comparison only: artifact commit 3431a40ea, bound to source revision 925f3ec2860abf48e0c6c0830d135da2587a4d69 (JSON SHA-256 8c72fc88fd10dfde2f91bd7cc3ce8028af552781b7b699db9931529cac0abd07), recorded a 355.764281 ms median for 32,000 delete hunks while the old parser repeatedly sliced the unconsumed suffix. Current production advances line indices without suffix slicing; this case replays the same generated workload and is not a performance threshold.
 
 ## Reproduce
 
@@ -36,7 +36,7 @@ Run on the same pinned runtime and machine state; compare medians, MAD,
 operation counts, and relative scaling rather than one wall-clock sample.
 
 ```sh
-npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --source-revision f6f3105db5daba0023073240aa3cecd815fbe7af --output /tmp/agenc-fnd-baseline.v1.json --markdown-output /tmp/agenc-fnd-baseline.v1.md
+npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --source-revision dc10a164573d5556797f4bd8c913f71774afc923 --output /tmp/agenc-fnd-baseline.v1.json --markdown-output /tmp/agenc-fnd-baseline.v1.md
 npm run check:fnd-benchmark-baseline --workspace=@tetsuo-ai/runtime
 ```
 

@@ -132,7 +132,7 @@ async function prepareCase(fixture, temporaryRoot) {
   switch (fixture.definition.id) {
     case "csv_scheduler_progress_scan":
       return prepareCsvCase(fixture, temporaryRoot);
-    case "patch_delete_parser_suffix_slicing":
+    case "patch_delete_parser_historical_comparison":
       return preparePatchCase(fixture);
     default:
       throw new Error(`unknown benchmark case ${fixture.definition.id}`);

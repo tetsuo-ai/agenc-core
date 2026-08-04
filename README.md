@@ -4,7 +4,7 @@
 > agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
 
 ![status](https://img.shields.io/badge/status-stable-brightgreen)
-![version](https://img.shields.io/badge/version-0.13.0-blue)
+![version](https://img.shields.io/badge/version-0.14.0-blue)
 ![node](https://img.shields.io/badge/node-26.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
@@ -15,8 +15,8 @@ agents, channel gateway, and remote phone bridge are all clients of that daemon.
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `@tetsuo-ai/agenc` `0.13.0` | `packages/agenc/` | Public launcher binary |
-| `@tetsuo-ai/runtime` `0.13.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
+| `@tetsuo-ai/agenc` `0.14.0` | `packages/agenc/` | Public launcher binary |
+| `@tetsuo-ai/runtime` `0.14.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
 | `@tetsuo-ai/agenc-sdk` `0.3.0` | `packages/agenc-sdk/` | Typed embedding SDK (daemon protocol) |
 
 Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
@@ -100,8 +100,8 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**Current version in tree: 0.13.0.** Runtime and launcher are versioned
-`0.13.0`; the embedding SDK package is `0.3.0`. The public launcher is
+**Current version in tree: 0.14.0.** Runtime and launcher are versioned
+`0.14.0`; the embedding SDK package is `0.3.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
 workspace is non-publishable (`"private": true`); the GitHub source repository
 is public so npm can issue verifiable provenance. Type-clean: **0**
@@ -109,9 +109,9 @@ is public so npm can issue verifiable provenance. Type-clean: **0**
 ([`LICENSE`](LICENSE)).
 
 Shipped in this line: unified Agent/Editor workspace with AI-assisted embedded
-Neovim, monochrome terminal workbench, multi-channel gateway, Browser tool,
-heartbeat, budget envelope (heartbeat/cron/hooks), personas (onboard identity),
-hooks webhooks, onboard acts 2–3, `agenc update`, remote pairing, Grok OAuth,
+Neovim, durable recovery and transactional compaction, scalable workflow and
+CSV scheduling, bounded project and memory indexes, provider-aware token
+accounting, multi-channel gateway, Browser tool, budget-bounded autonomy,
 Ledger verification, and the independently versioned SDK.
 
 ## Requirements

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export const BENCHMARK_SCHEMA_VERSION = 1;
 export const BENCHMARK_SUITE_ID = "agenc.fnd.algorithm-baseline.v1";
-export const BENCHMARK_ARTIFACT_KIND = "known-failure-observations";
+export const BENCHMARK_ARTIFACT_KIND = "algorithm-observations";
 export const BENCHMARK_PRODUCTION_TREE_PATH = "runtime/src";
 export const MAX_WORKER_OUTPUT_BYTES = 1_048_576;
 export const MAX_BASELINE_JSON_BYTES = 2_097_152;
@@ -29,8 +29,7 @@ export const BENCHMARK_EVIDENCE_PATHS = Object.freeze([
   "runtime/package.json",
 ]);
 
-const KNOWN_FAILURE_ASSESSMENT = Object.freeze({
-  classification: "known_failure_observation",
+const INFORMATIONAL_ASSESSMENT = Object.freeze({
   gateEnforced: false,
   threshold: null,
 });
@@ -60,13 +59,14 @@ export const BENCHMARK_PLAN = Object.freeze({
       expectedTermination: "completed",
       expectedOracleMatch: true,
       assessment: Object.freeze({
-        ...KNOWN_FAILURE_ASSESSMENT,
+        ...INFORMATIONAL_ASSESSMENT,
+        classification: "known_failure_observation",
         observation:
           "Array.shift queue movement and full progress-map scans have quadratic operation counts; the prior audit observed about 35/112/392 ms at 8k/16k/32k items.",
       }),
     }),
     Object.freeze({
-      id: "patch_delete_parser_suffix_slicing",
+      id: "patch_delete_parser_historical_comparison",
       family: "patch",
       implementation: "production_api",
       measurementKind: "parser_microbenchmark",
@@ -86,9 +86,10 @@ export const BENCHMARK_PLAN = Object.freeze({
       expectedTermination: "completed",
       expectedOracleMatch: true,
       assessment: Object.freeze({
-        ...KNOWN_FAILURE_ASSESSMENT,
+        ...INFORMATIONAL_ASSESSMENT,
+        classification: "historical_reference_observation",
         observation:
-          "Delete-only parsing repeatedly slices the unconsumed suffix; the prior audit observed about 28 ms/238 ms/2.98 s at 16k/32k/64k lines.",
+          "Historical comparison only: artifact commit 3431a40ea, bound to source revision 925f3ec2860abf48e0c6c0830d135da2587a4d69 (JSON SHA-256 8c72fc88fd10dfde2f91bd7cc3ce8028af552781b7b699db9931529cac0abd07), recorded a 355.764281 ms median for 32,000 delete hunks while the old parser repeatedly sliced the unconsumed suffix. Current production advances line indices without suffix slicing; this case replays the same generated workload and is not a performance threshold.",
       }),
     }),
   ]),
@@ -205,8 +206,8 @@ export function renderBaselineMarkdown(report, jsonDigest) {
   const lines = [
     "# FND algorithm baseline v1",
     "",
-    "This artifact records bounded observations of known failures. Every row is",
-    "informational: no current result is a passing performance threshold or gate.",
+    "This artifact records bounded current and historical-reference observations.",
+    "Every row is informational: no result is a performance threshold or gate.",
     "Generated inputs are synthetic and created only for the benchmark process.",
     "",
     `- JSON SHA-256: \`${jsonDigest}\``,
@@ -231,7 +232,7 @@ export function renderBaselineMarkdown(report, jsonDigest) {
       );
     }
   }
-  lines.push("", "## Known-failure policy", "");
+  lines.push("", "## Assessment notes", "");
   for (const benchmarkCase of report.cases) {
     lines.push(
       `- \`${benchmarkCase.id}\`: ${benchmarkCase.assessment.observation}`,
@@ -286,7 +287,7 @@ function validateCaseReport(value, definition, index) {
   );
   requireEqual(
     value.assessment.classification,
-    "known_failure_observation",
+    definition.assessment.classification,
     `${label}.assessment.classification`,
   );
   requireEqual(

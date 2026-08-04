@@ -1,6 +1,6 @@
 # Daemon reference
 
-The local **app-server** control plane for AgenC **0.13.0**. One daemon per
+The local **app-server** control plane for AgenC **0.14.0**. One daemon per
 `AGENC_HOME`. Clients (TUI, print CLI, gateway, remote, SDK, background
 agents) attach over a local socket and speak JSON-RPC.
 
@@ -120,10 +120,12 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 | `initialize` | Handshake + capability advertisement |
 | `request.cancel` | Cancel an in-flight request |
 | `agent.create` / `agent.list` / `agent.attach` / `agent.stop` / `agent.logs` | Background agents |
-| `run.status` / `run.result` / `run.replay` / `run.evidence` / `run.cancel` | Durable run state, canonical journal replay/evidence, terminal result, and tree cancellation |
+| `run.start` / `run.status` / `run.result` / `run.replay` / `run.evidence` / `run.cancel` | Start a verified-change run; inspect durable state, journal replay/evidence, terminal result, or tree cancellation |
+| `csvJob.review.list` / `csvJob.review.show` / `csvJob.review.resolve` | Inspect and settle durable CSV batch-review items |
 | `session.create` / `session.list` / `session.attach` / `session.detach` | Session lifecycle |
 | `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` | Session control |
 | `session.cancelTurn` | Abort current turn |
+| `session.resolveToolCall` | Resolve a tool call whose durable outcome requires review |
 | `session.mcp.addServer` | Attach MCP server to a session |
 | `message.send` / `message.stream` | Prompt turns |
 | `thread/realtime/*` | Realtime voice/thread methods |
@@ -135,6 +137,13 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 | `health.ping` / `health.ready` / `health.stats` | Liveness and stats |
 | `daemon.reload` | Reload configuration |
 | `auth.login` / `auth.whoami` / `auth.logout` | Auth backend |
+
+`session.resolveToolCall` accepts two strict protocol-1.0 request shapes. The
+earlier `{ sessionId, toolCallId?, reviewer? }` shape can settle only a legacy
+in-flight tool call with no durable effect record. Durable effect records
+require `toolCallId`, `disposition`, `evidenceRef`, and `evidenceSha256`; an
+earlier-shape request leaves them unchanged in `remaining`. Partial mixtures of
+the two shapes are invalid.
 
 `session.list` is page-bounded: `limit` defaults to 50 and is capped at 100.
 Pass the returned opaque `nextCursor` back with the same `agentId` filter; a

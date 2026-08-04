@@ -1,6 +1,6 @@
 # Onboarding AgenC (operator guide)
 
-**Current release: 0.13.0.** This is the live product guide for first-run and
+**Current release: 0.14.0.** This is the live product guide for first-run and
 the multi-act setup path. Superseded implementation notes remain available in
 Git history and are not product truth.
 
