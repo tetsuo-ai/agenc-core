@@ -12,7 +12,7 @@ import {
   ExecutionAdmissionRepository,
   NANO_USD_PER_USD,
 } from "../../src/state/execution-admission.js";
-import { SET_BASED_CANCELLATION_SCHEMA_VERSION } from "../../src/state/migrations/023_set_based_cancellation_indexes.js";
+import { compactionTransactionMigration } from "../../src/state/migrations/024_compaction_transaction.js";
 import { STATE_DB_MIGRATIONS } from "../../src/state/migrations/index.js";
 import { cancelAgentRunTree } from "../../src/state/run-cancellation.js";
 import { ThreadSpawnEdgeRepository } from "../../src/state/spawn-edges.js";
@@ -183,7 +183,7 @@ describe("execution admission schema migration", () => {
         db
           .prepare("SELECT MAX(version) AS version FROM schema_migrations")
           .get(),
-      ).toEqual({ version: SET_BASED_CANCELLATION_SCHEMA_VERSION });
+      ).toEqual({ version: compactionTransactionMigration.version });
     } finally {
       db.close();
     }

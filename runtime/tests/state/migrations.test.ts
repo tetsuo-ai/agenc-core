@@ -9,6 +9,7 @@ import {
   type SqlMigration,
 } from "./migrations/index.js";
 import { TOOL_PAIR_PROJECTION_SCHEMA_VERSION } from "./migrations/020_tool_pair_projection_schema.js";
+import { setBasedCancellationIndexesMigration } from "./migrations/023_set_based_cancellation_indexes.js";
 import { applyMigrations } from "./sqlite-driver.js";
 import { StateSchemaMismatchError } from "./errors.js";
 
@@ -132,6 +133,28 @@ describe("state migration registry", () => {
   it("adds compaction authority at v24 idempotently with immutable identity", () => {
     const db = new Database(":memory:");
     try {
+      applyMigrations(
+        db,
+        STATE_DB_MIGRATIONS.filter(
+          (migration) =>
+            migration.version <= setBasedCancellationIndexesMigration.version,
+        ),
+      );
+      expect(
+        db.prepare(
+          "SELECT version, name FROM schema_migrations WHERE version = ?",
+        ).get(setBasedCancellationIndexesMigration.version),
+      ).toEqual({
+        version: setBasedCancellationIndexesMigration.version,
+        name: setBasedCancellationIndexesMigration.name,
+      });
+      expect(
+        db.prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'table' AND name = 'compaction_retention_pins'`,
+        ).get(),
+      ).toBeUndefined();
+
       applyMigrations(db, STATE_DB_MIGRATIONS);
       applyMigrations(db, STATE_DB_MIGRATIONS);
       expect(

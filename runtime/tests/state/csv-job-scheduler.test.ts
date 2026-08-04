@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runtimeRootPath } from "../helpers/source-path.ts";
 import { MAX_CSV_JOB_REGISTRATION_HOLD_MS } from "../../src/contracts/csv-job-contract.js";
 import { CsvAgentJobsRepository } from "./csv-agent-jobs.js";
-import { SET_BASED_CANCELLATION_SCHEMA_VERSION } from "./migrations/023_set_based_cancellation_indexes.js";
+import { compactionTransactionMigration } from "./migrations/024_compaction_transaction.js";
 import { STATE_DB_MIGRATIONS } from "./migrations/index.js";
 import {
   STATE_PRE_V21_BACKUP_FILENAME,
@@ -598,7 +598,7 @@ describe("CSV scheduler migration", () => {
           "SELECT MAX(version) AS version FROM schema_migrations",
         )
         .get()?.version,
-    ).toBe(SET_BASED_CANCELLATION_SCHEMA_VERSION);
+    ).toBe(compactionTransactionMigration.version);
     expect(
       driver
         .prepareState<[], { readonly name: string }>(
