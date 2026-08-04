@@ -67,6 +67,10 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
+import {
+  MAX_RECOVERY_CANONICAL_LINE_BYTES,
+  RECOVERY_SCAN_CHUNK_BYTES,
+} from "../state/recovery-contract.js";
 import { monotonicMs } from "./_deps/utils.js";
 import {
   ROLLOUT_SCHEMA_VERSION,
@@ -719,6 +723,34 @@ export function rewriteAtomically(
     }
   } catch {
     /* best-effort */
+  }
+}
+
+/** Read exactly the first newline-terminated canonical row with a hard cap. */
+function readBoundedCanonicalHeader(path: string): Buffer {
+  const fd = openSync(path, fsConstants.O_RDONLY);
+  const chunk = Buffer.allocUnsafe(RECOVERY_SCAN_CHUNK_BYTES);
+  const parts: Buffer[] = [];
+  let totalBytes = 0;
+  let position = 0;
+  try {
+    for (;;) {
+      const bytesRead = readSync(fd, chunk, 0, chunk.byteLength, position);
+      if (bytesRead === 0) {
+        throw new Error("canonical rollout header is unterminated");
+      }
+      const newline = chunk.subarray(0, bytesRead).indexOf(0x0a);
+      const selectedBytes = newline < 0 ? bytesRead : newline + 1;
+      totalBytes += selectedBytes;
+      if (totalBytes - 1 > MAX_RECOVERY_CANONICAL_LINE_BYTES) {
+        throw new Error("canonical rollout header exceeds its line limit");
+      }
+      parts.push(Buffer.from(chunk.subarray(0, selectedBytes)));
+      if (newline >= 0) return Buffer.concat(parts);
+      position += bytesRead;
+    }
+  } finally {
+    closeSync(fd);
   }
 }
 
@@ -1646,6 +1678,161 @@ export class SessionStore {
   }
 
   /**
+   * Stream an exact physical-row deletion into a durable inode replacement.
+   * This keeps compaction retention bounded by one canonical line instead of
+   * loading the complete rollout into memory.
+   */
+  rewriteRolloutExcludingPhysicalLinesAtomically(
+    exclusions: readonly {
+      readonly lineNumber: number;
+      readonly encodedBytes: number;
+      readonly sha256: string;
+    }[],
+    digestDomain: string,
+  ): void {
+    if (!this.opened || this.closed) {
+      throw new Error("streaming rollout rewrite requires an open store");
+    }
+    if (this.pending.length > 0) {
+      throw new Error("cannot stream-rewrite rollout with pending appends");
+    }
+    const byLine = new Map<number, (typeof exclusions)[number]>();
+    for (const exclusion of exclusions) {
+      const existing = byLine.get(exclusion.lineNumber);
+      if (existing !== undefined &&
+          (existing.encodedBytes !== exclusion.encodedBytes ||
+            existing.sha256 !== exclusion.sha256)) {
+        throw new Error("conflicting physical-row exclusion authority");
+      }
+      byLine.set(exclusion.lineNumber, exclusion);
+    }
+    if (byLine.size === 0) return;
+
+    const temporaryPath = `${this.rolloutPath}.tmp`;
+    try { unlinkSync(temporaryPath); } catch { /* no stale temporary */ }
+    const sourceFd = openSync(this.rolloutPath, fsConstants.O_RDONLY);
+    let targetFd: number;
+    try {
+      targetFd = openSync(
+        temporaryPath,
+        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
+        0o600,
+      );
+    } catch (error) {
+      closeSync(sourceFd);
+      throw error;
+    }
+    const matched = new Set<number>();
+    const nextOffsetsBySeq = new Map<EventSeq, number>();
+    let nextLastSeq: EventSeq = 0;
+    let latestMeta: SessionMetaLine | undefined;
+    let outputOffset = 0;
+    let lineNumber = 0;
+    let pending = Buffer.alloc(0);
+    const chunk = Buffer.allocUnsafe(RECOVERY_SCAN_CHUNK_BYTES);
+    const writePhysical = (physical: Buffer): void => {
+      lineNumber += 1;
+      const exclusion = byLine.get(lineNumber);
+      const content = physical.subarray(0, physical.byteLength - 1);
+      const item = parseRolloutLine(
+        new TextDecoder("utf-8", { fatal: true }).decode(content),
+      );
+      if (item === null) throw new Error("canonical rollout rewrite found a blank row");
+      if (exclusion !== undefined) {
+        const digest = createHash("sha256")
+          .update(digestDomain, "utf8")
+          .update(physical)
+          .digest("hex");
+        if (physical.byteLength !== exclusion.encodedBytes ||
+            digest !== exclusion.sha256 ||
+            (item.type !== "response_item" && item.type !== "compacted")) {
+          throw new Error("physical-row exclusion no longer matches canonical source");
+        }
+        matched.add(lineNumber);
+        return;
+      }
+      let written = 0;
+      while (written < physical.byteLength) {
+        const count = writeSync(
+          targetFd,
+          physical,
+          written,
+          physical.byteLength - written,
+        );
+        if (count <= 0) throw new Error("short write during streaming rollout rewrite");
+        written += count;
+      }
+      if (item.type === "event_msg" && item.payload.seq !== undefined) {
+        nextOffsetsBySeq.set(item.payload.seq, outputOffset);
+        nextLastSeq = Math.max(nextLastSeq, item.payload.seq);
+      }
+      if (item.type === "session_meta") latestMeta = item.payload;
+      outputOffset += physical.byteLength;
+    };
+    let rewriteFailed = false;
+    let rewriteError: unknown;
+    try {
+      for (;;) {
+        const bytesRead = readSync(sourceFd, chunk, 0, chunk.byteLength, null);
+        if (bytesRead === 0) break;
+        const available = pending.byteLength === 0
+          ? chunk.subarray(0, bytesRead)
+          : Buffer.concat([pending, chunk.subarray(0, bytesRead)]);
+        let start = 0;
+        for (;;) {
+          const newline = available.indexOf(0x0a, start);
+          if (newline < 0) break;
+          writePhysical(available.subarray(start, newline + 1));
+          start = newline + 1;
+        }
+        pending = Buffer.from(available.subarray(start));
+        if (pending.byteLength > MAX_RECOVERY_CANONICAL_LINE_BYTES) {
+          throw new Error("canonical row exceeds the streaming rewrite line limit");
+        }
+      }
+      if (pending.byteLength !== 0) {
+        throw new Error("canonical rollout ends with an unterminated row");
+      }
+      if (matched.size !== byLine.size) {
+        throw new Error("streaming rewrite did not find every authorized source row");
+      }
+      fsyncSync(targetFd);
+    } catch (error) {
+      rewriteFailed = true;
+      rewriteError = error;
+    } finally {
+      closeSync(sourceFd);
+      closeSync(targetFd);
+    }
+    if (rewriteFailed) {
+      // Windows refuses to unlink an open file, so cleanup must happen only
+      // after both descriptors are closed.
+      try { unlinkSync(temporaryPath); } catch { /* best effort */ }
+      throw rewriteError;
+    }
+    try {
+      renameSync(temporaryPath, this.rolloutPath);
+    } catch (error) {
+      try { unlinkSync(temporaryPath); } catch { /* best effort */ }
+      throw error;
+    }
+    try {
+      const directoryFd = openSync(dirname(this.rolloutPath), fsConstants.O_RDONLY);
+      try { fsyncSync(directoryFd); } finally { closeSync(directoryFd); }
+    } catch {
+      /* best effort on filesystems that cannot fsync directories */
+    }
+    this.fileSize = outputOffset;
+    this.offsetsBySeq.clear();
+    for (const [sequence, offset] of nextOffsetsBySeq) {
+      this.offsetsBySeq.set(sequence, offset);
+    }
+    this.boundIndexMap(this.offsetsBySeq);
+    this.lastSeqWritten = nextLastSeq;
+    this.lastSessionMeta = latestMeta ?? null;
+  }
+
+  /**
    * Upgrade the legacy-visible first session_meta gate under this store's
    * lifetime-exclusive rollout lease. Older runtimes inspect this first row
    * before parsing any later item, so a C2 writer must publish schema 3 here
@@ -1660,11 +1847,9 @@ export class SessionStore {
       throw new Error(`unsupported rollout schema upgrade ${targetVersion}`);
     }
     this.syncCanonicalTail();
-    const bytes = readFileSync(this.rolloutPath);
-    const newline = bytes.indexOf(0x0a);
-    if (newline < 0) throw new Error("canonical rollout header is unterminated");
+    const physicalHeader = readBoundedCanonicalHeader(this.rolloutPath);
     const headerText = new TextDecoder("utf-8", { fatal: true }).decode(
-      bytes.subarray(0, newline),
+      physicalHeader.subarray(0, physicalHeader.byteLength - 1),
     );
     const header = parseRolloutLine(headerText);
     if (header?.type !== "session_meta") {
@@ -1678,9 +1863,16 @@ export class SessionStore {
         rolloutSchemaVersion: targetVersion,
       },
     };
+    // Legacy upgrades are one-time migrations. Keep the common current-schema
+    // C2 path header-bounded; the A3 migration path still owns its full atomic
+    // rewrite and exact typed-index rebuild.
+    const bytes = readFileSync(this.rolloutPath);
+    if (!bytes.subarray(0, physicalHeader.byteLength).equals(physicalHeader)) {
+      throw new Error("canonical rollout header changed during schema upgrade");
+    }
     const replacement = Buffer.concat([
       Buffer.from(serializeRolloutItem(upgraded), "utf8"),
-      bytes.subarray(newline + 1),
+      bytes.subarray(physicalHeader.byteLength),
     ]);
     this.rewriteRolloutAtomically(replacement);
     this.lastSessionMeta = upgraded.payload;

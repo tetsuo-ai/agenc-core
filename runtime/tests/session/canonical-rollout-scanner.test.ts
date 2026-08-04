@@ -75,6 +75,37 @@ describe("canonical rollout compaction scanner", () => {
       compactionSourceDigestDomain: COMPACTION_SOURCE_DIGEST_DOMAIN,
     })).toThrow(/scan deadline/i);
   });
+
+  it("reconstructs and physically maps a large active history", () => {
+    const store = createStore("large-active-history");
+    const rolloutPath = store.rolloutPath;
+    try {
+      for (let index = 0; index < 5_000; index += 1) {
+        store.appendRollout({
+          type: "response_item",
+          payload: {
+            role: index % 2 === 0 ? "user" : "assistant",
+            content: `active-${index}-${"x".repeat(256)}`,
+          },
+        });
+      }
+      store.flushDurable();
+    } finally {
+      store.close();
+    }
+
+    const scan = scanCanonicalRollout(rolloutPath, {
+      expectedRunId: "large-active-history",
+      expectedEpoch: 1,
+      maximumScanMilliseconds: 30_000,
+      compactionSourceDigestDomain: COMPACTION_SOURCE_DIGEST_DOMAIN,
+      captureActiveHistory: true,
+    });
+    expect(scan.activeHistory?.messages).toHaveLength(5_000);
+    expect(scan.activeHistory?.positions).toHaveLength(5_000);
+    expect(scan.sourceRecords.size).toBe(5_000);
+    expect(scan.activeHistory?.messages.at(-1)?.content).toContain("active-4999");
+  });
 });
 
 function createStore(sessionId: string): RolloutStore {

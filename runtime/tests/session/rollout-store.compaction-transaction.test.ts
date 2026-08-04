@@ -125,6 +125,29 @@ describe("RolloutStore transactional compaction", () => {
     }
   });
 
+  it("fails preparation at the bounded scanner deadline", () => {
+    let deadlineArmed = false;
+    let tick = 0;
+    const store = openStore("prepare-scan-deadline", {
+      nowMilliseconds: () => deadlineArmed ? (tick += 20_000) : Date.now(),
+    });
+    try {
+      for (let index = 0; index < 100; index += 1) {
+        store.appendRollout({
+          type: "response_item",
+          payload: { role: "user", content: `deadline-source-${index}` },
+        });
+      }
+      store.flushDurable();
+      deadlineArmed = true;
+      expect(() => store.prepareSource("deadline-attempt", [])).toThrow(
+        /scan deadline/i,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   it("writes rollback before projection and forces newer work to a reviewed branch", () => {
     const store = openStore("rollback");
     try {

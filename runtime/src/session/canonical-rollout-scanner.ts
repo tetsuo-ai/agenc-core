@@ -12,6 +12,8 @@ import type { AdmissionJournalEvent } from "../budget/admission-types.js";
 import {
   MAX_COMPACTION_PIN_HISTORY_TOTAL,
   MAX_COMPACTION_PROVIDER_CALLS,
+  MAX_COMPACTION_SOURCE_BYTES,
+  MAX_COMPACTION_SOURCE_MESSAGES,
   type CompactionIntentV1,
 } from "../services/compact/transaction-types.js";
 import { DiskCanonicalIdentityRegistry } from "../state/recovery-file.js";
@@ -27,6 +29,12 @@ import {
   RecoveryOperationalError,
 } from "../state/recovery-contract.js";
 import type { RolloutItem } from "./rollout-item.js";
+import type { ResponseItem } from "./rollout-item.js";
+import {
+  emptyReducedState,
+  reduce,
+  type ReducedSessionState,
+} from "./event-log-reducer.js";
 
 const MAX_COMPACTION_LIFECYCLE_RECORDS =
   MAX_COMPACTION_PIN_HISTORY_TOTAL * 6;
@@ -51,12 +59,14 @@ interface MutableAttemptScan {
   admissionRunId?: string;
   contaminated: boolean;
   terminal: boolean;
+  laterWork: boolean;
 }
 
 export interface CanonicalCompactionAttemptScan {
   readonly intent: CompactionIntentV1;
   readonly records: readonly StrictCanonicalJournalRecord[];
   readonly admissionValid: boolean;
+  readonly hasLaterCanonicalWork: boolean;
 }
 
 export interface CanonicalRolloutSourceRecord {
@@ -67,10 +77,22 @@ export interface CanonicalRolloutSourceRecord {
   readonly committedAttemptId?: string;
 }
 
+export interface CanonicalActiveHistoryPosition {
+  readonly lineNumber: number;
+  readonly recordMessageIndex: number;
+}
+
+export interface CanonicalActiveHistoryScan {
+  readonly messages: readonly ResponseItem[];
+  readonly positions: readonly CanonicalActiveHistoryPosition[];
+}
+
 export interface CanonicalRolloutScan {
   readonly proof: Omit<StrictCanonicalJournal, "records">;
   readonly attempts: ReadonlyMap<string, CanonicalCompactionAttemptScan>;
   readonly sourceRecords: ReadonlyMap<number, CanonicalRolloutSourceRecord>;
+  readonly activeHistory?: CanonicalActiveHistoryScan;
+  readonly historyAtAttempts: ReadonlyMap<string, readonly ResponseItem[]>;
 }
 
 export interface CanonicalRolloutScanOptions
@@ -82,6 +104,8 @@ export interface CanonicalRolloutScanOptions
   readonly maximumScanMilliseconds: number;
   readonly additionalSourceLines?: readonly number[];
   readonly compactionSourceDigestDomain: string;
+  readonly captureActiveHistory?: boolean;
+  readonly captureHistoryAtAttemptIds?: readonly string[];
 }
 
 /**
@@ -104,15 +128,27 @@ export function scanCanonicalRollout(
       );
     }
   };
+  checkOperationalBudget();
   const fd = openSync(rolloutPath, fsConstants.O_RDONLY);
   try {
     const snapshot = fstatSync(fd, { bigint: true });
     if (!snapshot.isFile()) {
       throw new Error("canonical rollout source is not a regular file");
     }
+    checkOperationalBudget();
     const attempts = new Map<string, MutableAttemptScan>();
+    const capturedAttemptIds = new Set(options.captureHistoryAtAttemptIds ?? []);
+    const trackHistory = options.captureActiveHistory === true ||
+      capturedAttemptIds.size > 0;
+    let reducedState = emptyReducedState();
+    let activePositions: CanonicalActiveHistoryPosition[] = [];
+    const activeLineBytes = new Map<number, number>();
+    let activeSourceBytes = 0;
+    const historyAtAttempts = new Map<string, readonly ResponseItem[]>();
     let retainedLifecycleRecords = 0;
     let activeAdmissionAttempt: MutableAttemptScan | undefined;
+    let latestCommittedAttempt: MutableAttemptScan | undefined;
+    checkOperationalBudget();
     const identityRegistry = new DiskCanonicalIdentityRegistry();
     let first: StrictCanonicalJournal;
     try {
@@ -121,10 +157,74 @@ export function scanCanonicalRollout(
         retainRecords: false,
         identityRegistry,
         onRecord: (record) => {
+          if (latestCommittedAttempt !== undefined &&
+              !(record.item.type === "compaction_cleanup_pending" &&
+                record.item.payload.attempt_id ===
+                  latestCommittedAttempt.intent.attempt_id)) {
+            latestCommittedAttempt.laterWork = true;
+            latestCommittedAttempt = undefined;
+          }
+          if (trackHistory && record.item.type === "compaction_intent" &&
+              capturedAttemptIds.has(record.item.payload.attempt_id)) {
+            checkOperationalBudget();
+            historyAtAttempts.set(
+              record.item.payload.attempt_id,
+              Object.freeze(reducedState.history.slice()),
+            );
+          }
           if (activeAdmissionAttempt !== undefined) {
             observeAdmission(record, activeAdmissionAttempt);
           }
           const item = record.item;
+          if (trackHistory) {
+            checkOperationalBudget();
+            const next = reduceStreamingHistory(reducedState, item);
+            if (item.type === "response_item") {
+              activePositions.push({
+                lineNumber: record.lineNumber,
+                recordMessageIndex: 0,
+              });
+              if (!activeLineBytes.has(record.lineNumber)) {
+                activeLineBytes.set(record.lineNumber, record.encodedByteLength + 1);
+                activeSourceBytes += record.encodedByteLength + 1;
+              }
+            } else if (
+              (item.type === "compacted" &&
+                item.payload.replacementHistory !== undefined) ||
+              item.type === "compaction_committed" ||
+              (item.type === "compaction_rollback_committed" &&
+                item.payload.target_session_id === options.expectedRunId)
+            ) {
+              checkOperationalBudget();
+              activePositions = next.history.map((_, recordMessageIndex) => ({
+                lineNumber: record.lineNumber,
+                recordMessageIndex,
+              }));
+              activeLineBytes.clear();
+              activeLineBytes.set(record.lineNumber, record.encodedByteLength + 1);
+              activeSourceBytes = record.encodedByteLength + 1;
+            } else if (next.history.length < activePositions.length) {
+              activePositions = activePositions.slice(0, next.history.length);
+              const retainedLines = new Set(
+                activePositions.map((position) => position.lineNumber),
+              );
+              for (const lineNumber of activeLineBytes.keys()) {
+                if (!retainedLines.has(lineNumber)) activeLineBytes.delete(lineNumber);
+              }
+              activeSourceBytes = [...activeLineBytes.values()].reduce(
+                (total, bytes) => total + bytes,
+                0,
+              );
+            }
+            reducedState = next;
+            if (reducedState.history.length > MAX_COMPACTION_SOURCE_MESSAGES ||
+                activeSourceBytes > MAX_COMPACTION_SOURCE_BYTES) {
+              throw new RecoveryOperationalError(
+                "recovery_history_storage_limit",
+                "canonical active history exceeds its bounded compaction scan budget",
+              );
+            }
+          }
           if (!item.type.startsWith("compaction_") ||
               !("attempt_id" in item.payload)) return;
           retainedLifecycleRecords += 1;
@@ -146,6 +246,7 @@ export function scanCanonicalRollout(
               latestAdmissionSequence: 0,
               contaminated: false,
               terminal: false,
+              laterWork: false,
             });
             activeAdmissionAttempt = attempts.get(attemptId);
             return;
@@ -156,6 +257,9 @@ export function scanCanonicalRollout(
           if (item.type === "compaction_committed" ||
               item.type === "compaction_failed") {
             attempt.terminal = true;
+            if (item.type === "compaction_committed") {
+              latestCommittedAttempt = attempt;
+            }
             if (activeAdmissionAttempt === attempt) {
               activeAdmissionAttempt = undefined;
             }
@@ -166,10 +270,16 @@ export function scanCanonicalRollout(
       identityRegistry.close();
     }
 
+    checkOperationalBudget();
     const sourceLines = new Set(options.additionalSourceLines ?? []);
     for (const attempt of attempts.values()) {
       for (const ref of attempt.intent.source.active_history_refs) {
         sourceLines.add(ref.first_sequence);
+      }
+    }
+    if (options.captureActiveHistory === true) {
+      for (const position of activePositions) {
+        sourceLines.add(position.lineNumber);
       }
     }
     const sourceRecords = new Map<number, CanonicalRolloutSourceRecord>();
@@ -180,6 +290,7 @@ export function scanCanonicalRollout(
       identityPolicy: "trusted_replay",
       onRecord: (record) => {
         if (!sourceLines.has(record.lineNumber)) return;
+        checkOperationalBudget();
         const physical = readPhysicalRecord(fd, record);
         const item = record.item;
         sourceRecords.set(record.lineNumber, {
@@ -198,6 +309,7 @@ export function scanCanonicalRollout(
     });
     assertMatchingProof(first, second);
     assertPinnedSnapshot(fd, snapshot);
+    checkOperationalBudget();
     return {
       proof: withoutRecords(first),
       attempts: new Map(
@@ -205,13 +317,38 @@ export function scanCanonicalRollout(
           intent: attempt.intent,
           records: Object.freeze(attempt.records.slice()),
           admissionValid: validAdmission(attempt),
+          hasLaterCanonicalWork: attempt.laterWork,
         }]),
       ),
       sourceRecords,
+      ...(options.captureActiveHistory === true
+        ? { activeHistory: {
+            messages: Object.freeze(reducedState.history.slice()),
+            positions: Object.freeze(activePositions.slice()),
+          } }
+        : {}),
+      historyAtAttempts,
     };
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * Preserve the shared replay semantics while avoiding the reducer's immutable
+ * O(n) history copy for every ordinary response row. This scanner exclusively
+ * owns the state, so appending that one row in place makes a large uncompacted
+ * history linear without changing any externally observable reducer value.
+ */
+function reduceStreamingHistory(
+  state: ReducedSessionState,
+  item: RolloutItem,
+): ReducedSessionState {
+  if (item.type === "response_item") {
+    state.history.push(item.payload);
+    return state;
+  }
+  return reduce(state, item).state;
 }
 
 function strictOptions(
@@ -238,7 +375,9 @@ function scanPass(
   size: bigint,
   options: StrictCanonicalJournalOptions,
 ): StrictCanonicalJournal {
+  options.checkOperationalBudget?.();
   const validator = new StrictCanonicalJournalValidator(options);
+  options.checkOperationalBudget?.();
   const chunk = Buffer.allocUnsafe(RECOVERY_SCAN_CHUNK_BYTES);
   let offset = 0;
   while (BigInt(offset) < size) {
