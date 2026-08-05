@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openFndFixtureCatalog } from "../helpers/fnd-fixtures.js";
-import { KNOWN_EVENT_TYPES } from "../../src/session/event-log.js";
+import {
+  KNOWN_EVENT_TYPES,
+  ROLLOUT_SCHEMA_VERSION,
+} from "../../src/session/event-log.js";
 import { backfillPinnedRolloutContent } from "./backfill.js";
 import { CanonicalJournalIntegrityError } from "./recovery-contract.js";
 import {
@@ -74,6 +77,29 @@ describe("strict canonical journal contract", () => {
       );
     },
   );
+
+  it("accepts a legacy v1 rollout written by a 0.13 runtime", () => {
+    // Exact session_meta shape 0.13.0 wrote on disk. Rejecting it bricked
+    // daemon startup for every upgrader; only NEWER versions are unreadable.
+    const journal = validateCanonicalJournalText(
+      `${legacySessionMeta(1)}${validEvent(1, "turn_started")}`,
+    );
+    expect(journal.recordCount).toBe(2);
+    expect(journal.records[0]?.item.type).toBe("session_meta");
+  });
+
+  it("rejects a rollout schema version newer than this runtime", () => {
+    expect(() =>
+      validateCanonicalJournalText(
+        `${legacySessionMeta(ROLLOUT_SCHEMA_VERSION + 1)}${validEvent(
+          1,
+          "turn_started",
+        )}`,
+      ),
+    ).toThrow(
+      expect.objectContaining({ reasonCode: "unsupported_format_version" }),
+    );
+  });
 
   it("retains exact byte facts across CRLF and chunk boundaries", () => {
     const first = validEvent(1, "turn_started").trimEnd();
@@ -501,6 +527,23 @@ describe("strict pinned rollout projection", () => {
     }
   });
 });
+
+function legacySessionMeta(rolloutSchemaVersion: number): string {
+  return `${JSON.stringify({
+    type: "session_meta",
+    payload: {
+      sessionId: "conv-legacy013",
+      timestamp: "2026-08-03T06:47:50.000Z",
+      cwd: "/home/user/project",
+      originator: "agenc-cli",
+      agencVersion: "0.13.0",
+      model: "grok-4.5",
+      modelProvider: "grok",
+      rolloutSchemaVersion,
+    },
+    eventVersion: 1,
+  })}\n`;
+}
 
 function validEvent(
   sequence: number,

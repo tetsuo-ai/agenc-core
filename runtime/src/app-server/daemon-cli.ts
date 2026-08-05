@@ -1451,6 +1451,15 @@ async function runAgenCDaemonForeground(
           `expired=${recovery.expired} detached=${recovery.detachedQueued}\n`,
       );
     }
+    // A failed project is excluded from admission, not fatal: the daemon
+    // must keep serving every other project (a legacy or damaged journal
+    // in one old workspace used to brick startup globally).
+    for (const failure of recovery.failures) {
+      io.stderr.write(
+        `agenc: execution admission recovery excluded ${failure.projectDir} ` +
+          `(${failure.stateDbPath}): ${failure.message}\n`,
+      );
+    }
   } catch (error) {
     io.stderr.write(
       `agenc: execution admission recovery failed: ${formatCleanupError(error)}\n`,

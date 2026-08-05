@@ -852,14 +852,19 @@ export class StrictCanonicalJournalValidator {
         );
       }
     }
+    // I-49: only rollouts NEWER than this runtime are unreadable. Legacy
+    // v1 sessions (0.13 and earlier) must stay recoverable — session-store
+    // accepts them and upgrades in place, so recovery must not refuse them.
     if (
       !Number.isSafeInteger(payload.rolloutSchemaVersion) ||
-      (payload.rolloutSchemaVersion as number) < 2 ||
+      (payload.rolloutSchemaVersion as number) < 1 ||
       (payload.rolloutSchemaVersion as number) > ROLLOUT_SCHEMA_VERSION
     ) {
       this.#fail(
         "unsupported_format_version",
-        "canonical rollout schema version is not supported by this runtime",
+        `canonical rollout schema version ${String(
+          payload.rolloutSchemaVersion,
+        )} is not supported by this runtime (supported: 1..${ROLLOUT_SCHEMA_VERSION})`,
         facts,
       );
     }

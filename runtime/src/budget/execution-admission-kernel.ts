@@ -136,6 +136,14 @@ export interface ExecutionAdmissionRecoverySummary {
   readonly heldUnknown: number;
   readonly expired: number;
   readonly detachedQueued: number;
+  /** Project databases whose recovery failed and was excluded from startup. */
+  readonly failures: readonly ExecutionAdmissionRecoveryFailure[];
+}
+
+export interface ExecutionAdmissionRecoveryFailure {
+  readonly projectDir: string;
+  readonly stateDbPath: string;
+  readonly message: string;
 }
 
 export interface ExecutionAdmissionCancellationSummary {
@@ -203,7 +211,15 @@ export class ExecutionAdmissionKernel {
     return this.#pending.size;
   }
 
-  /** Open and recover every existing project DB before daemon readiness. */
+  /**
+   * Open and recover every existing project DB before daemon readiness.
+   *
+   * A project whose recovery fails is excluded (unregistered and reported in
+   * `failures`) instead of aborting daemon startup: one damaged or legacy
+   * journal must not prevent the daemon from serving every other project.
+   * The excluded workspace is never served partially recovered — its next
+   * bind re-runs recovery and surfaces the same failure to that caller.
+   */
   initializeExistingState(): ExecutionAdmissionRecoverySummary {
     this.#assertOpen();
     const totals = {
@@ -213,25 +229,36 @@ export class ExecutionAdmissionKernel {
       expired: 0,
       detachedQueued: 0,
     };
+    const failures: ExecutionAdmissionRecoveryFailure[] = [];
     for (const paths of discoverStateDatabasePaths(this.#agencHome)) {
-      const binding = this.#registerPaths(paths, paths.projectDir, false);
-      const report = binding.repository.recover({
-        now: this.#timestamp(),
-        activeOwnerIds: new Set(),
-      });
-      totals.databases += 1;
-      totals.requeued += report.requeuedJobIds.length;
-      totals.heldUnknown += report.heldUnknownReservationIds.length;
-      totals.expired += report.cancelledExpiredJobIds.length;
-      totals.detachedQueued += report.detachedQueuedJobIds.length;
-      recoverExecutionAdmissionCanonicalJournals(
-        binding.driver,
-        binding.repository,
-      );
-      this.#hydrateQueued(binding);
-      this.#publishNewJournal(binding);
+      try {
+        const binding = this.#registerPaths(paths, paths.projectDir, false);
+        const report = binding.repository.recover({
+          now: this.#timestamp(),
+          activeOwnerIds: new Set(),
+        });
+        recoverExecutionAdmissionCanonicalJournals(
+          binding.driver,
+          binding.repository,
+        );
+        this.#hydrateQueued(binding);
+        this.#publishNewJournal(binding);
+        totals.databases += 1;
+        totals.requeued += report.requeuedJobIds.length;
+        totals.heldUnknown += report.heldUnknownReservationIds.length;
+        totals.expired += report.cancelledExpiredJobIds.length;
+        totals.detachedQueued += report.detachedQueuedJobIds.length;
+      } catch (error) {
+        const binding = this.#byStatePath.get(paths.stateDbPath);
+        if (binding !== undefined) this.#unregisterBinding(binding);
+        failures.push({
+          projectDir: paths.projectDir,
+          stateDbPath: paths.stateDbPath,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    return totals;
+    return { ...totals, failures };
   }
 
   bindClient(
@@ -853,6 +880,25 @@ export class ExecutionAdmissionKernel {
       this.#publishNewJournal(binding);
     }
     return binding;
+  }
+
+  #unregisterBinding(binding: WorkspaceBinding): void {
+    this.#byStatePath.delete(binding.paths.stateDbPath);
+    for (const alias of binding.aliases) {
+      if (this.#byWorkspace.get(alias) === binding) {
+        this.#byWorkspace.delete(alias);
+      }
+    }
+    for (const [runId, statePath] of this.#runStatePath) {
+      if (statePath === binding.paths.stateDbPath) {
+        this.#runStatePath.delete(runId);
+      }
+    }
+    try {
+      binding.driver.close();
+    } catch {
+      // The driver may already be unusable; exclusion must still complete.
+    }
   }
 
   #bindRunWorkspace(runId: string, binding: WorkspaceBinding): void {

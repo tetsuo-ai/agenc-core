@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,8 +8,13 @@ import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { upsertAgentRun } from "../../src/state/agent-runs.js";
+import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
+import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { ThreadSpawnEdgeRepository } from "../../src/state/spawn-edges.js";
-import { openStateDatabases } from "../../src/state/sqlite-driver.js";
+import {
+  STATE_DATABASE_FILENAME,
+  openStateDatabases,
+} from "../../src/state/sqlite-driver.js";
 
 const LIMITS = {
   global: 1,
@@ -328,6 +333,107 @@ describe("ExecutionAdmissionKernel recovery", () => {
       outputTokens: 0,
       costUsd: 0,
     });
+  });
+
+  it("excludes a project with an unreadable state database instead of aborting startup", async () => {
+    await leaveDetachedQueue("healthy-run");
+    const poisonedDir = join(home, "projects", "poisoned-project");
+    mkdirSync(poisonedDir, { recursive: true });
+    writeFileSync(
+      join(poisonedDir, STATE_DATABASE_FILENAME),
+      "this is not a sqlite database\n",
+    );
+
+    const after = kernel("poisoned-db-restart");
+    const recovery = after.initializeExistingState();
+
+    expect(recovery).toMatchObject({ databases: 1, detachedQueued: 1 });
+    expect(recovery.failures).toHaveLength(1);
+    expect(recovery.failures[0]?.projectDir).toBe(poisonedDir);
+    expect(recovery.failures[0]?.message.length).toBeGreaterThan(0);
+
+    const client = bind(after, "healthy-run");
+    const lease = await acquire(client);
+    expect(lease.request.step.runId).toBe("healthy-run");
+    client.reconcile(lease.reservation.reservationId, {
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+    });
+  });
+
+  it("excludes a project whose canonical journal is damaged instead of aborting startup", async () => {
+    await leaveDetachedQueue("healthy-run");
+
+    // A second project whose SQLite state is valid but whose bound rollout
+    // journal is garbage: the exact shape that used to brick daemon startup.
+    const poisonedCwd = mkdtempSync(join(tmpdir(), "agenc-kernel-poisoned-"));
+    try {
+      mkdirSync(join(poisonedCwd, ".git"));
+      const poisonedDriver = openStateDatabases({
+        cwd: poisonedCwd,
+        agencHome: home,
+      });
+      const poisonedRunId = "poisoned-journal-run";
+      const admissions = new ExecutionAdmissionRepository(poisonedDriver, {
+        now: () => new Date("2026-08-03T00:00:00.000Z"),
+        id: () => "poisoned-admission-id",
+        ownerId: "crashed-daemon",
+        ownerPid: process.pid,
+      });
+      admissions.enqueue({
+        step: { runId: poisonedRunId, stepId: "step-1" },
+        kind: "model_turn",
+        estimate: { maxInputTokens: 1, maxOutputTokens: 1, maxCostUsd: 0 },
+        model: "test-model",
+        provider: "test-provider",
+        workspaceId: "poisoned-workspace",
+        sessionId: poisonedRunId,
+        parentScopeId: poisonedRunId,
+        autonomous: false,
+      });
+      const sessionsDir = join(
+        poisonedDriver.projectDir,
+        "sessions",
+        poisonedRunId,
+      );
+      mkdirSync(sessionsDir, { recursive: true });
+      const sourcePath = join(sessionsDir, `rollout-${poisonedRunId}.jsonl`);
+      writeFileSync(sourcePath, "{malformed json\n", { mode: 0o600 });
+      const durability = new StateRunDurabilityRepository(poisonedDriver);
+      durability.ensureInitialEpoch({
+        runId: poisonedRunId,
+        openedAt: "2026-08-03T00:00:00.000Z",
+      });
+      durability.bindJournalSource({
+        runId: poisonedRunId,
+        epoch: 1,
+        childRunId: poisonedRunId,
+        sessionId: poisonedRunId,
+        sourcePath,
+        boundAt: "2026-08-03T00:00:00.000Z",
+      });
+      const poisonedProjectDir = poisonedDriver.projectDir;
+      poisonedDriver.close();
+
+      const after = kernel("poisoned-journal-restart");
+      const recovery = after.initializeExistingState();
+
+      expect(recovery).toMatchObject({ databases: 1, detachedQueued: 1 });
+      expect(recovery.failures).toHaveLength(1);
+      expect(recovery.failures[0]?.projectDir).toBe(poisonedProjectDir);
+
+      const client = bind(after, "healthy-run");
+      const lease = await acquire(client);
+      expect(lease.request.step.runId).toBe("healthy-run");
+      client.reconcile(lease.reservation.reservationId, {
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      });
+    } finally {
+      rmSync(poisonedCwd, { recursive: true, force: true });
+    }
   });
 
   it("hydrates a detached queue before the first client binds", async () => {
