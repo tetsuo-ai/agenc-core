@@ -18,6 +18,7 @@ import {
 } from "./daemon-autostart.js";
 import {
   createNodeDaemonCliHost,
+  readAgenCDaemonSpawnStderrTail,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonSocketPath,
 } from "./daemon-cli.js";
@@ -656,10 +657,9 @@ async function createReconnectableDaemonTuiClient(options: {
           );
         }
       }
-      const error =
-        lastError instanceof Error
-          ? lastError
-          : new Error(String(lastError ?? "Daemon connection is closed"));
+      const error = withDaemonStartupLogContext(
+        lastError ?? new Error("Daemon connection is closed"),
+      );
       setConnectionState({ status: "disconnected", message: error.message });
       throw error;
     };
@@ -1471,7 +1471,46 @@ function resolveAgenCDaemonRequestTimeoutMs(
   return timeoutMs;
 }
 
+/**
+ * A raw "connect ECONNREFUSED <sock>" tells the operator nothing about WHY
+ * the daemon is not listening. The daemon's spawn stderr usually does
+ * (startup recovery failures land there), so attach its tail to any
+ * connection-shaped failure surfaced to callers.
+ */
+function withDaemonStartupLogContext(error: unknown): Error {
+  const base = error instanceof Error ? error : new Error(String(error));
+  if (!/ECONNREFUSED|ENOENT/.test(base.message)) return base;
+  if (base.message.includes("daemon startup log:")) return base;
+  const stderrTail = readAgenCDaemonSpawnStderrTail();
+  if (stderrTail.length === 0) return base;
+  return new Error(`${base.message} (daemon startup log: ${stderrTail})`, {
+    cause: base,
+  });
+}
+
 async function requestDaemon<Method extends AgenCDaemonMethod>(
+  method: Method,
+  params: JsonObject,
+  socketPath: string,
+  timeoutMs: number,
+  authCookie: string | Promise<string>,
+  signal?: AbortSignal,
+): Promise<AgenCDaemonResultByMethod[Method]> {
+  try {
+    return await requestDaemonInner(
+      method,
+      params,
+      socketPath,
+      timeoutMs,
+      authCookie,
+      signal,
+    );
+  } catch (error) {
+    throw withDaemonStartupLogContext(error);
+  }
+}
+
+async function requestDaemonInner<Method extends AgenCDaemonMethod>(
   method: Method,
   params: JsonObject,
   socketPath: string,

@@ -4,6 +4,7 @@ import { Box, Text } from "../ink.js";
 import { stringWidth } from "../ink/stringWidth.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useShortcutDisplay } from "../keybindings/useShortcutDisplay.js";
+import { useAppState } from "../state/AppState.js";
 import { useWorkbenchState } from "./state.js";
 import { useBufferStore } from "./buffer/useBufferStore.js";
 
@@ -73,6 +74,15 @@ export function WorkbenchFooter(): React.ReactElement {
     "Global",
     "ctrl+o",
   );
+  // The workbench frame clips the classic footer notification lane (its
+  // bottom-anchored layout drops rows from the top), which made failed
+  // submits look silently swallowed. Surface the current notification in
+  // the always-visible hint row instead.
+  const currentNotification = useAppState((s) => s.notifications.current);
+  const footerNotification =
+    currentNotification !== null && "text" in currentNotification
+      ? currentNotification
+      : null;
   const bufferOwnsKeys =
     workbench.activeSurfaceMode === "buffer" &&
     workbench.focusedPane === "surface";
@@ -104,9 +114,15 @@ export function WorkbenchFooter(): React.ReactElement {
       borderTop
       borderTopColor="lineSoft"
     >
-      <Text color="inactive" wrap="truncate-end">
-        {fitFooterHints(hints, Math.max(1, columns - 6))}
-      </Text>
+      {footerNotification !== null ? (
+        <Text color={footerNotification.color ?? "text"} wrap="truncate-end">
+          {footerNotification.text}
+        </Text>
+      ) : (
+        <Text color="inactive" wrap="truncate-end">
+          {fitFooterHints(hints, Math.max(1, columns - 6))}
+        </Text>
+      )}
     </Box>
   );
 }

@@ -5306,6 +5306,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
                 ? err_slash_prompt.message
                 : String(err_slash_prompt);
             showTransientResult(message_slash_prompt, { display: "error" });
+            addNotification({
+              key: "prompt-submit-failed",
+              text: `Message not sent: ${message_slash_prompt}`,
+              color: "error",
+              priority: "immediate",
+              timeoutMs: 10_000,
+            });
             setPendingSubmission(false);
             const rolledBack =
               admissionToken !== null &&
@@ -5527,6 +5534,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             showTransientResult(message_0, {
               display: "error",
             });
+            addNotification({
+              key: "prompt-submit-failed",
+              text: `Message not sent: ${message_0}`,
+              color: "error",
+              priority: "immediate",
+              timeoutMs: 10_000,
+            });
             setPendingSubmission(false);
             const rolledBack =
               admissionToken !== null &&
@@ -5618,6 +5632,17 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         showTransientResult(message_0, {
           display: "error",
         });
+        // The transient box auto-clears after 3s and is skipped entirely
+        // while a local-JSX overlay is pinned, so a failed submit used to
+        // look like the composer silently ate the prompt. The footer
+        // notification lane renders regardless of overlays.
+        addNotification({
+          key: "prompt-submit-failed",
+          text: `Message not sent: ${message_0}`,
+          color: "error",
+          priority: "immediate",
+          timeoutMs: 10_000,
+        });
         // Submit threw before turn_started arrived — clear the
         // pending-submission spinner so the UI doesn't lie about
         // waiting for a turn that will never start.
@@ -5642,6 +5667,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       appStateStore,
       setToolJSX,
       showTransientResult,
+      addNotification,
       commandRegistry,
       submitToSession,
       workbenchEnabled,
