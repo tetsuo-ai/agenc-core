@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.14.0**; embedding SDK
+Version in tree: **runtime / launcher 0.14.1**; embedding SDK
 **0.3.0**. Default provider **grok**; fresh-config session model **grok-4.5**
 (same as provider-map / managed-OpenRouter paid defaults — see [providers.md](reference/providers.md)).
 
@@ -92,6 +92,7 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.14.1.md](releases/0.14.1.md) | AgenC 0.14.1: emergency patch unbricking 0.13 to 0.14 daemon upgrades and surfacing failed submits |
 | [releases/0.14.0.md](releases/0.14.0.md) | AgenC 0.14.0: durable recovery, scalable workflows, faster search and editing, and stronger execution safety |
 | [releases/0.13.0.md](releases/0.13.0.md) | AgenC 0.13.0: unified Agent/Editor workspace, safe AI-assisted Neovim editing, and first-class Ledger verification |
 | [releases/0.12.0.md](releases/0.12.0.md) | AgenC 0.12.0: monochrome terminal workbench, reliable delegated-agent admission, and zero-skip native gates |
@@ -124,7 +125,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.14.0) |
+| [`../README.md`](../README.md) | Product README (0.14.1) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |
