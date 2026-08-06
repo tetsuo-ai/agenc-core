@@ -1,6 +1,6 @@
 # AgenC product roadmap
 
-**As of 2026-08-05.** Product line **0.14.1** (SDK package **0.3.0**). What is
+**As of 2026-08-05.** Product line **0.14.2** (SDK package **0.3.0**). What is
 shipped in-tree versus open backlog.
 
 This replaces the competitive parity plan. Superseded research and phase
@@ -13,7 +13,7 @@ shipped / open summary.
 
 ---
 
-## Shipped (in product as of 2026-08-05 / 0.14.1)
+## Shipped (in product as of 2026-08-05 / 0.14.2)
 
 ### Core coding agent
 

@@ -3605,7 +3605,87 @@ function readPersistedWorkspaceRoot(quarantinePath: string): string {
   }
 }
 
-function discoverPersistedWorkspaceRoots(agencHome: string): readonly string[] {
+type PersistedWorkspaceRootDiscovery =
+  | {
+      readonly kind: "verified";
+      readonly workspaceRoot: string;
+    }
+  | {
+      readonly kind: "unresolved";
+      readonly directoryName: string;
+      readonly persistedWorkspaceRoot: string;
+    };
+
+function inspectPersistedWorkspaceRoot(
+  directory: string,
+  directoryName: string,
+): PersistedWorkspaceRootDiscovery | null {
+  const quarantinePath = join(directory, directoryName, "quarantine-v1.json");
+  if (!existsSync(quarantinePath)) return null;
+  const persistedWorkspaceRoot = readPersistedWorkspaceRoot(quarantinePath);
+  const persistedKey = createHash("sha256")
+    .update(persistedWorkspaceRoot)
+    .digest("hex")
+    .slice(0, 32);
+  if (!persistedWorkspaceRootWithinBounds(resolve(persistedWorkspaceRoot))) {
+    throw new Error(
+      `workspace quarantine path identity changed: ${directoryName}`,
+    );
+  }
+  const workspaceRoot = canonicalPersistedWorkspaceRoot(persistedWorkspaceRoot);
+  if (workspaceRoot === null) {
+    let observedKey: string | null = null;
+    try {
+      observedKey = createHash("sha256")
+        .update(canonicalizePathSync(persistedWorkspaceRoot))
+        .digest("hex")
+        .slice(0, 32);
+    } catch {
+      // Preserve the persisted spelling as the only available identity. A
+      // later operation that may overlap it will still fail closed below.
+    }
+    if (directoryName !== persistedKey && directoryName !== observedKey) {
+      throw new Error(
+        `workspace quarantine root does not match its directory: ${directoryName}`,
+      );
+    }
+    return {
+      kind: "unresolved",
+      directoryName,
+      persistedWorkspaceRoot,
+    };
+  }
+  const runtimeKey = createHash("sha256")
+    .update(workspaceRoot)
+    .digest("hex")
+    .slice(0, 32);
+  if (directoryName !== persistedKey && directoryName !== runtimeKey) {
+    throw new Error(
+      `workspace quarantine root does not match its directory: ${directoryName}`,
+    );
+  }
+  if (runtimeKey !== directoryName) {
+    const legacyDirectory = join(directory, directoryName);
+    const runtimeDirectory = join(directory, runtimeKey);
+    if (existsSync(runtimeDirectory)) {
+      throw new Error(
+        `workspace quarantine normalization collides with existing state: ${runtimeKey}`,
+      );
+    }
+    renameSync(legacyDirectory, runtimeDirectory);
+    const descriptor = openSync(directory, "r");
+    try {
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+  return { kind: "verified", workspaceRoot };
+}
+
+function discoverPersistedWorkspaceRoots(
+  agencHome: string,
+): PersistedWorkspaceRootDiscovery[] {
   const directory = join(agencHome, "workspace-mutations");
   const entries = (() => {
     try {
@@ -3624,7 +3704,7 @@ function discoverPersistedWorkspaceRoots(agencHome: string): readonly string[] {
     );
   }
 
-  const roots = new Set<string>();
+  const roots: PersistedWorkspaceRootDiscovery[] = [];
   for (const entry of entries) {
     if (!/^[a-f0-9]{32}$/u.test(entry.name)) continue;
     const quarantinePath = join(directory, entry.name, "quarantine-v1.json");
@@ -3632,47 +3712,39 @@ function discoverPersistedWorkspaceRoots(agencHome: string): readonly string[] {
     if (!entry.isDirectory()) {
       throw new Error(`unsafe workspace quarantine directory: ${entry.name}`);
     }
-    const persistedWorkspaceRoot = readPersistedWorkspaceRoot(quarantinePath);
-    const persistedKey = createHash("sha256")
-      .update(persistedWorkspaceRoot)
-      .digest("hex")
-      .slice(0, 32);
-    const workspaceRoot = canonicalPersistedWorkspaceRoot(
-      persistedWorkspaceRoot,
-    );
-    if (workspaceRoot === null) {
-      throw new Error(
-        `workspace quarantine path identity changed: ${entry.name}`,
-      );
-    }
-    const runtimeKey = createHash("sha256")
-      .update(workspaceRoot)
-      .digest("hex")
-      .slice(0, 32);
-    if (entry.name !== persistedKey && entry.name !== runtimeKey) {
-      throw new Error(
-        `workspace quarantine root does not match its directory: ${entry.name}`,
-      );
-    }
-    if (runtimeKey !== entry.name) {
-      const legacyDirectory = join(directory, entry.name);
-      const runtimeDirectory = join(directory, runtimeKey);
-      if (existsSync(runtimeDirectory)) {
-        throw new Error(
-          `workspace quarantine normalization collides with existing state: ${runtimeKey}`,
-        );
-      }
-      renameSync(legacyDirectory, runtimeDirectory);
-      const descriptor = openSync(directory, "r");
-      try {
-        fsyncSync(descriptor);
-      } finally {
-        closeSync(descriptor);
-      }
-    }
-    roots.add(workspaceRoot);
+    const root = inspectPersistedWorkspaceRoot(directory, entry.name);
+    if (root !== null) roots.push(root);
   }
-  return [...roots];
+  return roots;
+}
+
+function persistedWorkspaceAuthorityFailure(
+  error: unknown,
+): WorkspaceMutationCoordinatorError {
+  return new WorkspaceMutationCoordinatorError(
+    "EDITOR_LEASE_EXPIRED",
+    `Cannot verify persisted Editor authority: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+  );
+}
+
+function unresolvedPersistedWorkspaceRootMayOverlap(
+  target: string,
+  persistedWorkspaceRoot: string,
+): boolean {
+  const persistedIdentity = normalizePathIdentity(persistedWorkspaceRoot);
+  if (workspaceRootsOverlap(target, persistedIdentity)) return true;
+  try {
+    return workspaceRootsOverlap(
+      target,
+      canonicalizePathSync(persistedWorkspaceRoot),
+    );
+  } catch {
+    // If the current identity cannot be observed, retain the original
+    // fail-closed behavior because the record cannot be proven unrelated.
+    return true;
+  }
 }
 
 export class WorkspaceMutationCoordinatorRegistry {
@@ -3680,7 +3752,7 @@ export class WorkspaceMutationCoordinatorRegistry {
   readonly #probedQuarantineKeys = new Set<string>();
   readonly #persistedWorkspaceRootsByHome = new Map<
     string,
-    readonly string[]
+    PersistedWorkspaceRootDiscovery[]
   >();
   readonly #persistedWorkspaceRootScanFailures = new Map<string, Error>();
   readonly #toolOperations = new Map<string, WorkspaceToolOperationToken>();
@@ -3935,19 +4007,49 @@ export class WorkspaceMutationCoordinatorRegistry {
         persistedRoots = discoverPersistedWorkspaceRoots(agencHome);
         this.#persistedWorkspaceRootsByHome.set(agencHome, persistedRoots);
       } catch (error) {
-        const failure = new WorkspaceMutationCoordinatorError(
-          "EDITOR_LEASE_EXPIRED",
-          `Cannot verify persisted Editor authority: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+        const failure = persistedWorkspaceAuthorityFailure(error);
         this.#persistedWorkspaceRootScanFailures.set(agencHome, failure);
         throw failure;
       }
     }
-    for (const workspaceRoot of persistedRoots) {
-      if (workspaceRootsOverlap(target, workspaceRoot)) {
-        this.#getOrCreateCanonical(workspaceRoot);
+    const directory = join(agencHome, "workspace-mutations");
+    for (let index = 0; index < persistedRoots.length; index += 1) {
+      let discovered = persistedRoots[index];
+      if (discovered === undefined) continue;
+      if (discovered.kind === "unresolved") {
+        if (
+          !unresolvedPersistedWorkspaceRootMayOverlap(
+            target,
+            discovered.persistedWorkspaceRoot,
+          )
+        ) {
+          continue;
+        }
+        try {
+          const refreshed = inspectPersistedWorkspaceRoot(
+            directory,
+            discovered.directoryName,
+          );
+          if (refreshed === null) {
+            persistedRoots.splice(index, 1);
+            index -= 1;
+            continue;
+          }
+          persistedRoots[index] = refreshed;
+          discovered = refreshed;
+        } catch (error) {
+          throw persistedWorkspaceAuthorityFailure(error);
+        }
+        if (discovered.kind === "unresolved") {
+          throw persistedWorkspaceAuthorityFailure(
+            new Error(
+              `workspace quarantine path identity changed: ${discovered.directoryName}`,
+            ),
+          );
+        }
+      }
+      if (workspaceRootsOverlap(target, discovered.workspaceRoot)) {
+        this.#getOrCreateCanonical(discovered.workspaceRoot);
       }
     }
   }

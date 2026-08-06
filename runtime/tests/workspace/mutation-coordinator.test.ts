@@ -349,6 +349,63 @@ describe("WorkspaceMutationCoordinator", () => {
     },
   );
 
+  it("keeps a deleted persisted workspace quarantine scoped to overlapping workspaces", async () => {
+    const parent = await tempDirectory("agenc-coherence-deleted-parent-");
+    const unrelatedWorkspace = await tempDirectory(
+      "agenc-coherence-deleted-unrelated-",
+    );
+    const agencHome = await tempDirectory("agenc-coherence-deleted-home-");
+    const deletedWorkspace = join(parent, "deleted-workspace");
+    const dirtyPath = join(deletedWorkspace, "dirty.ts");
+    await mkdir(deletedWorkspace);
+    const quarantinePath = workspaceMutationStatePath(
+      deletedWorkspace,
+      agencHome,
+      "quarantine-v1.json",
+    );
+    await mkdir(dirname(quarantinePath), { recursive: true });
+    const content = "unsaved deleted workspace content\n";
+    await writeFile(
+      quarantinePath,
+      `${JSON.stringify({
+        version: 1,
+        workspaceRoot: deletedWorkspace,
+        entries: [
+          {
+            path: dirtyPath,
+            contentSha256: sha256(content),
+            contentBytes: Buffer.byteLength(content),
+            changedtick: 1,
+            epoch: 1,
+            editorInstanceId: "deleted-workspace-editor",
+            authority: "editor_dirty",
+          },
+        ],
+        proposalCommitments: [],
+        proposalReceipts: [],
+        mutationIntents: [],
+        topologyIntents: [],
+        changeSequence: 0,
+        changes: [],
+      })}\n`,
+      "utf8",
+    );
+    await rm(deletedWorkspace, { recursive: true });
+    const registry = new WorkspaceMutationCoordinatorRegistry({ agencHome });
+
+    const operation = registry.beginToolOperation(
+      unrelatedWorkspace,
+      "exec_command",
+    );
+    registry.endToolOperation(operation);
+    expect(() => registry.hasProtectedEditorAuthority(parent)).toThrow(
+      /path identity changed/u,
+    );
+
+    await mkdir(deletedWorkspace);
+    expect(registry.hasProtectedEditorAuthority(deletedWorkspace)).toBe(true);
+  });
+
   it.runIf(process.platform !== "win32")(
     "rejects persisted authority when its workspace path is retargeted",
     async () => {

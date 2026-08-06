@@ -165,6 +165,11 @@ describe("exec_command tool", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("shell_workspace_file_write_disallowed");
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: "tool:system.exec-command:workspace-write-policy",
+    });
     expect(execCommand).not.toHaveBeenCalled();
   });
 
@@ -293,6 +298,11 @@ describe("exec_command tool", () => {
       wall_time_seconds: 0.012,
       exit_code: 2,
       output: "compiler failed\n",
+    });
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_committed",
+      evidenceKind: "provider_receipt",
+      evidenceRef: "tool:system.exec-command:process-exit",
     });
   });
 

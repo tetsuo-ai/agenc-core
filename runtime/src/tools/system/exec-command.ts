@@ -29,6 +29,7 @@ import {
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { nonEmptyString as asString } from "../../utils/stringUtils.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
 import {
   permissionProfileForRuntimeContext,
@@ -263,7 +264,53 @@ function errorResult(error: unknown): ToolResult {
       ...(error instanceof UnifiedExecError ? { code: error.code } : {}),
     }),
     isError: true,
+    ...(error instanceof UnifiedExecError || error instanceof SandboxExecutionError
+      ? {
+          effectDisposition: confirmedNoEffectDisposition(
+            "tool:system.exec-command:pre-spawn-error",
+            message,
+          ),
+        }
+      : {}),
   };
+}
+
+function confirmedNoEffectDisposition(
+  evidenceRef: string,
+  evidenceMaterial: string,
+) {
+  return createToolEffectDispositionEvidence({
+    disposition: "confirmed_no_effect",
+    evidenceKind: "boundary_not_crossed",
+    evidenceRef,
+    evidenceMaterial,
+  });
+}
+
+function processObservationDisposition(
+  cmd: string,
+  cwd: string,
+  output: Awaited<
+    ReturnType<UnifiedExecProcessManagerLike["execCommand"]>
+  >,
+) {
+  const stillAlive =
+    output.exitCode === null && output.process_id !== undefined;
+  return createToolEffectDispositionEvidence({
+    disposition: "confirmed_committed",
+    evidenceKind: "provider_receipt",
+    evidenceRef: stillAlive
+      ? "tool:system.exec-command:process-yield"
+      : "tool:system.exec-command:process-exit",
+    evidenceMaterial: JSON.stringify({
+      cmd,
+      cwd,
+      exitCode: output.exitCode,
+      processId: output.process_id ?? null,
+      timedOut: output.timedOut,
+      durationMs: output.durationMs,
+    }),
+  });
 }
 
 export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
@@ -386,9 +433,14 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
       const cmd = asString(args.cmd) ?? asString(args.command);
       if (!cmd) {
+        const message = "cmd must be a non-empty string";
         return {
-          content: safeStringify({ error: "cmd must be a non-empty string" }),
+          content: safeStringify({ error: message }),
           isError: true,
+          effectDisposition: confirmedNoEffectDisposition(
+            "tool:system.exec-command:invalid-input",
+            message,
+          ),
         };
       }
       const workdir = asString(args.workdir) ?? asString(args.cwd);
@@ -431,25 +483,31 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
               ),
           );
           if (!allowed) {
+            const message = `workdir is outside allowed workspace paths: ${workdir}`;
             return {
-              content: safeStringify({
-                error: `workdir is outside allowed workspace paths: ${workdir}`,
-              }),
+              content: safeStringify({ error: message }),
               isError: true,
+              effectDisposition: confirmedNoEffectDisposition(
+                "tool:system.exec-command:workdir-validation",
+                message,
+              ),
             };
           }
         }
       }
 
       if (isMcpShellPlaceholderCommand(cmd)) {
+        const message =
+          "MCP tools are not shell commands. Load the tool with system.searchTools if needed, then call the mcp.<server>.<tool> tool directly with JSON arguments. Do not simulate MCP results with exec_command.";
         return {
-          content: safeStringify({
-            error:
-              "MCP tools are not shell commands. Load the tool with system.searchTools if needed, then call the mcp.<server>.<tool> tool directly with JSON arguments. Do not simulate MCP results with exec_command.",
-          }),
+          content: safeStringify({ error: message }),
           isError: true,
           metadata: buildRecoverableToolFailureMetadata(
             "mcp_tool_not_shell_command",
+          ),
+          effectDisposition: confirmedNoEffectDisposition(
+            "tool:system.exec-command:mcp-routing",
+            message,
           ),
         };
       }
@@ -464,15 +522,18 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           workspaceRoot: config?.cwd ?? config?.allowedPaths?.[0],
         });
         if (workspaceWriteDecision.blocked) {
+          const message =
+            workspaceWriteDecision.message ??
+            "Shell workspace write policy blocked the command.";
           return {
-            content: safeStringify({
-              error:
-                workspaceWriteDecision.message ??
-                "Shell workspace write policy blocked the command.",
-            }),
+            content: safeStringify({ error: message }),
             isError: true,
             metadata: buildRecoverableToolFailureMetadata(
               "shell_workspace_write_policy",
+            ),
+            effectDisposition: confirmedNoEffectDisposition(
+              "tool:system.exec-command:workspace-write-policy",
+              message,
             ),
           };
         }
@@ -537,6 +598,11 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           content: formatUnifiedExecToolContent(output),
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output),
+          effectDisposition: processObservationDisposition(
+            cmd,
+            workdir ?? config?.cwd ?? process.cwd(),
+            output,
+          ),
           metadata: {
             command: cmd,
             cwd: workdir ?? config?.cwd ?? process.cwd(),
