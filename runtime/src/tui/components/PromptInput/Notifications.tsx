@@ -27,7 +27,7 @@ import { formatDuration } from '../../../utils/format.js';
 import { setEnvHookNotifier } from '../../../utils/hooks/fileChangedWatcher.js';
 import { toIDEDisplayName } from '../../../utils/ide.js';
 import { getMessagesAfterCompactBoundary } from '../../../utils/messages.js';
-import { usesAnthropicAccountFlow } from '../../../utils/model/providers.js';
+import { isRegistryOwnedNonAnthropicModel, usesAnthropicAccountFlow } from '../../../utils/model/providers.js';
 import { tokenCountFromLastAPIResponse } from '../../../utils/tokens.js';
 import { AutoUpdaterWrapper } from '../AutoUpdaterWrapper.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
@@ -148,7 +148,7 @@ export function Notifications(t0: Props) {
   const hasRemoteAuthSession = hasRemoteAuthSessionSync(remoteAuthEnv);
   const remoteSubscriptionTier = remoteAuthSessionSubscriptionTierSync(remoteAuthEnv);
   const hasRemoteManagedKeys = hasEntitledRemoteAuthSessionSync(remoteAuthEnv);
-  const shouldShowRemoteAuthPlan = usesAnthropicAccountFlow() && hasRemoteAuthSession && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing');
+  const shouldShowRemoteAuthPlan = usesAnthropicAccountFlow() && !isRegistryOwnedNonAnthropicModel(mainLoopModel) && hasRemoteAuthSession && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing');
   let t8;
   if ($[9] === Symbol.for("react.memo_cache_sentinel")) {
     t8 = getExternalEditor();
@@ -288,7 +288,7 @@ function NotificationContent({
             ({apiKeyHelperSlow})
           </Text>
         </Box>}
-      {usesAnthropicAccountFlow() && !hasRemoteAuthSession && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
+      {usesAnthropicAccountFlow() && !isRegistryOwnedNonAnthropicModel(mainLoopModel) && !hasRemoteAuthSession && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
           <Text color="error" wrap="truncate">
             {isEnvTruthy(process.env.AGENC_REMOTE) ? 'Authentication error · Try again' : 'Not logged in · Run /login'}
           </Text>

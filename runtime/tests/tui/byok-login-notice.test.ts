@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
   getAPIProvider,
+  isRegistryOwnedNonAnthropicModel,
   usesAnthropicAccountFlow,
 } from "../../src/utils/model/providers.js";
 import type { VerificationStatus } from "../../src/tui/hooks/useApiKeyVerification.js";
@@ -24,9 +25,11 @@ import type { VerificationStatus } from "../../src/tui/hooks/useApiKeyVerificati
 function loginNoticeVisible(
   apiKeyStatus: VerificationStatus,
   hasRemoteAuthSession = false,
+  mainLoopModel = "",
 ): boolean {
   return (
     usesAnthropicAccountFlow() &&
+    !isRegistryOwnedNonAnthropicModel(mainLoopModel) &&
     !hasRemoteAuthSession &&
     (apiKeyStatus === "invalid" || apiKeyStatus === "missing")
   );
@@ -112,5 +115,22 @@ describe("byok-login-notice", () => {
     expect(usesAnthropicAccountFlow()).toBe(true);
     expect(loginNoticeVisible("missing", true)).toBe(false);
     expect(loginNoticeVisible("invalid", true)).toBe(false);
+  });
+
+  test("config-selected grok session (no provider env vars): login notice is suppressed", () => {
+    // config.toml `model_provider = "grok"` with OAuth credentials sets no env
+    // var, so getAPIProvider() still reports firstParty; the registry-owned
+    // session model is what proves the session is not on the Anthropic flow.
+    expect(getAPIProvider()).toBe("firstParty");
+    expect(isRegistryOwnedNonAnthropicModel("grok-4.5")).toBe(true);
+    expect(loginNoticeVisible("missing", false, "grok-4.5")).toBe(false);
+    expect(loginNoticeVisible("invalid", false, "grok-4.5")).toBe(false);
+  });
+
+  test("registry ownership: anthropic and unknown models stay on the notice path", () => {
+    expect(isRegistryOwnedNonAnthropicModel("gpt-5")).toBe(true);
+    expect(isRegistryOwnedNonAnthropicModel("claude-opus-5")).toBe(false);
+    expect(isRegistryOwnedNonAnthropicModel("")).toBe(false);
+    expect(loginNoticeVisible("missing", false, "claude-opus-5")).toBe(true);
   });
 });

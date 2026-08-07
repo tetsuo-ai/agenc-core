@@ -1,3 +1,7 @@
+import {
+  REGISTERED_MODEL_CATALOG,
+  resolveRegisteredModelCatalogEntry,
+} from '../../llm/registry/model-catalog.js'
 import { shouldUseProviderCodeTransport } from '../../services/api/providerConfig.js'
 import { isEnvTruthy } from '../envUtils.js'
 
@@ -37,6 +41,31 @@ export function getAPIProvider(): APIProvider {
 
 export function usesAnthropicAccountFlow(): boolean {
   return getAPIProvider() === 'firstParty'
+}
+
+/**
+ * True when `model` is registry-owned by a built-in non-Anthropic provider
+ * (grok, openai, ...; the registered catalog carries no Anthropic entries).
+ * getAPIProvider() only sees env vars, so a session whose provider comes from
+ * config.toml (e.g. grok via OAuth credentials, no XAI_API_KEY set) still
+ * reports 'firstParty'; auth-status UI must not tell such a session it is
+ * "not logged in" for lacking an Anthropic key.
+ */
+export function isRegistryOwnedNonAnthropicModel(model: string): boolean {
+  const trimmed = model.trim()
+  if (trimmed.length === 0) return false
+  const providers = new Set(
+    REGISTERED_MODEL_CATALOG.map(entry => entry.provider),
+  )
+  for (const provider of providers) {
+    if (
+      resolveRegisteredModelCatalogEntry({ provider, model: trimmed }) !==
+      undefined
+    ) {
+      return true
+    }
+  }
+  return false
 }
 
 /**

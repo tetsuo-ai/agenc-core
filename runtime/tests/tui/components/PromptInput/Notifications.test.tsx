@@ -101,6 +101,10 @@ vi.mock('../../../utils/messages.js', () => ({
 
 vi.mock('../../../utils/model/providers.js', () => ({
   usesAnthropicAccountFlow: () => harness.usesAnthropicAccountFlow,
+  // The harness drives auth-flow visibility through usesAnthropicAccountFlow;
+  // the registry gate stays inert so existing cases keep exercising the
+  // Anthropic-flow copy paths.
+  isRegistryOwnedNonAnthropicModel: () => false,
 }))
 
 vi.mock('../../../utils/tokens.js', () => ({
