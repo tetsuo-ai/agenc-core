@@ -5312,6 +5312,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               color: "error",
               priority: "immediate",
               timeoutMs: 10_000,
+              // The remediation lives at the tail of these messages
+              // (sandbox setup commands, failing paths); truncating to one
+              // line hides exactly the part the user needs.
+              wrap: true,
             });
             setPendingSubmission(false);
             const rolledBack =
@@ -5540,6 +5544,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               color: "error",
               priority: "immediate",
               timeoutMs: 10_000,
+              // The remediation lives at the tail of these messages
+              // (sandbox setup commands, failing paths); truncating to one
+              // line hides exactly the part the user needs.
+              wrap: true,
             });
             setPendingSubmission(false);
             const rolledBack =
@@ -5642,6 +5650,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           color: "error",
           priority: "immediate",
           timeoutMs: 10_000,
+          // The remediation lives at the tail of these messages (sandbox
+          // setup commands, failing paths); truncating to one line hides
+          // exactly the part the user needs.
+          wrap: true,
         });
         // Submit threw before turn_started arrived — clear the
         // pending-submission spinner so the UI doesn't lie about

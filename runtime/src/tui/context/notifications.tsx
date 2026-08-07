@@ -25,6 +25,12 @@ type BaseNotification = {
 type TextNotification = BaseNotification & {
   text: string;
   color?: keyof Theme;
+  /**
+   * Render the text wrapped across lines instead of truncated to one.
+   * For notifications whose tail carries the actionable part (a remediation
+   * command, a failing path), truncation hides exactly what the user needs.
+   */
+  wrap?: boolean;
 };
 type JSXNotification = BaseNotification & {
   jsx: React.ReactNode;

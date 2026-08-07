@@ -15,6 +15,7 @@ const harness = vi.hoisted(() => ({
             color?: string
             key: string
             text?: string
+            wrap?: boolean
             jsx?: React.ReactNode
           },
       queue: [] as unknown[],
@@ -368,6 +369,43 @@ afterEach(() => {
 })
 
 describe('Notifications', () => {
+  test('wraps opted-in notifications so the remediation tail stays readable', async () => {
+    // Terminal is 120 columns; this message is deliberately longer so a
+    // truncating render would drop the trailing remediation.
+    const remediation = 'run `agenc doctor --apparmor-profile` and reload'
+    harness.appState.notifications.current = {
+      color: 'error',
+      key: 'prompt-submit-failed',
+      text: `Message not sent: [sandbox_probe_failed] required sandbox blocked startup: probe failed because the kernel refused the namespace. ${remediation}`,
+      wrap: true,
+    }
+    const rendered = await renderNotifications({})
+
+    try {
+      expect(rendered.output()).toContain('Message not sent:')
+      expect(rendered.output()).toContain(remediation)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('still truncates notifications that do not opt into wrapping', async () => {
+    const tail = 'TAIL_MARKER_THAT_MUST_BE_TRUNCATED_AWAY'
+    harness.appState.notifications.current = {
+      color: 'error',
+      key: 'plain-long',
+      text: `Message not sent: ${'x'.repeat(200)} ${tail}`,
+    }
+    const rendered = await renderNotifications({})
+
+    try {
+      expect(rendered.output()).toContain('Message not sent:')
+      expect(rendered.output()).not.toContain(tail)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('renders status rows and wires env hook notifications', async () => {
     harness.appState.notifications.current = {
       color: 'success',

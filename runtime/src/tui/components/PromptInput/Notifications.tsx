@@ -272,7 +272,7 @@ function NotificationContent({
       <IdeStatusIndicator ideSelection={ideSelection} mcpClients={mcpClients} />
       {notifications.current && ('jsx' in notifications.current ? <Text wrap="truncate" key={notifications.current.key}>
             {notifications.current.jsx}
-          </Text> : <Text color={notifications.current.color} dimColor={!notifications.current.color} wrap="truncate">
+          </Text> : <Text color={notifications.current.color} dimColor={!notifications.current.color} wrap={notifications.current.wrap === true ? "wrap" : "truncate"}>
             {notifications.current.text}
           </Text>)}
       {isInOverageMode && !isTeamOrEnterprise && <Box>
