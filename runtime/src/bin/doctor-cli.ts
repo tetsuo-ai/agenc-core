@@ -180,7 +180,12 @@ export async function runAgenCDoctorCli(
       const wrapper = await findActiveGeneratedWrapper();
       if (wrapper === null) {
         process.stderr.write(
-          "agenc: --apparmor-profile requires a verified standalone-installer wrapper for this exact runtime\n",
+          "agenc: --apparmor-profile requires a verified standalone-installer wrapper for this exact runtime\n" +
+            "agenc: the profile grants the user-namespace exception to one exact binary path, so it is only\n" +
+            "agenc: generated for the byte-verified wrapper the standalone installer manages. This runtime was\n" +
+            "agenc: started from a source checkout or npm install, which has no such wrapper.\n" +
+            "agenc: To sandbox on this machine, install the standalone build and run the command there, or see\n" +
+            "agenc: your distribution's documentation for kernel.apparmor_restrict_unprivileged_userns.\n",
         );
         return 1;
       }

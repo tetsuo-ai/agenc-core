@@ -4542,7 +4542,7 @@ export const BROWSER_TEXT_FIXTURE = {
       column: 56
     },
     {
-      marker: "1–5 pick · ⇧⇥ cycle · esc",
+      marker: "⇧⇥ cycle",
       row: 14,
       column: 80
     },
@@ -4605,7 +4605,7 @@ export const BROWSER_TEXT_FIXTURE = {
       column: 38
     },
     {
-      marker: "switching mode · keys 1–5",
+      marker: "switching mode · ⇧⇥",
       row: 33,
       column: 5,
       family: "accent"

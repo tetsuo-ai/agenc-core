@@ -108,6 +108,11 @@ describe('v2 primitives', () => {
     expect(output).toContain('read-only · propose plans')
     expect(output).toContain('bypassPermissions')
     expect(output).toContain('shift+tab')
+    // The switcher is a timed toast with no digit-pick or esc handler; the
+    // header must not advertise keys that do nothing.
+    expect(output).toContain('⇧⇥ cycle')
+    expect(output).not.toContain('pick')
+    expect(output).not.toContain('esc')
   })
 
   it('hides unavailable cycle targets', async () => {

@@ -323,7 +323,9 @@ export function ModeSwitcher({
           <ThemedText color="inactive" wrap="truncate-end">{`current · ${currentMode}`}</ThemedText>
         </Box>
         <Box flexGrow={1} />
-        <ThemedText color="inactive" wrap="truncate-end">1–5 pick · ⇧⇥ cycle · esc</ThemedText>
+        {/* Only advertise keys that are actually handled: the switcher is a
+            timed toast, and no digit-pick or esc-dismiss handler exists. */}
+        <ThemedText color="inactive" wrap="truncate-end">⇧⇥ cycle</ThemedText>
       </ThemedBox>
       <Box flexDirection="column">
         {modes.map((mode, index) => {
