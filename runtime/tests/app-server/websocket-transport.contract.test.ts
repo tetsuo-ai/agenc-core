@@ -709,6 +709,50 @@ describe("AgenC websocket app-server transport", () => {
     await server.close();
   });
 
+  it("falls back to an ephemeral port when the default port is held and fallback is opted in", async () => {
+    const occupant = new AgenCWebSocketServer({});
+    const occupied = await occupant.listen();
+
+    const errors: Error[] = [];
+    const server = new AgenCWebSocketServer({
+      port: occupied.port,
+      fallbackToEphemeralPortOnAddrInUse: true,
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
+    const address = await server.listen();
+    expect(address.port).not.toBe(occupied.port);
+    expect(address.port).toBeGreaterThan(0);
+    expect(server.listenAddress).toEqual(address);
+    // A recovered collision must not surface through onError.
+    expect(errors).toEqual([]);
+
+    const client = new WebSocket(address.url);
+    await once(client, "open");
+    client.close();
+    await nextClose(client);
+    await server.close();
+    await occupant.close();
+  });
+
+  it("keeps a held port fatal when fallback is not opted in", async () => {
+    const occupant = new AgenCWebSocketServer({});
+    const occupied = await occupant.listen();
+
+    const server = new AgenCWebSocketServer({ port: occupied.port });
+    await expect(server.listen()).rejects.toMatchObject({
+      code: "EADDRINUSE",
+    });
+    expect(server.listenAddress).toBeNull();
+    // The failed listen must leave the transport reusable for a retry.
+    const retry = new AgenCWebSocketServer({ port: 0 });
+    const retryAddress = await retry.listen();
+    expect(retryAddress.port).toBeGreaterThan(0);
+    await retry.close();
+    await occupant.close();
+  });
+
   it("is reachable through the public runtime barrel", () => {
     expect(PublicAgenCWebSocketServer).toBe(AgenCWebSocketServer);
     expect(publicEncodeJsonPayload).toBe(encodeJsonPayload);

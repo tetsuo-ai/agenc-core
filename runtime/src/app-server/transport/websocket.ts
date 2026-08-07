@@ -63,6 +63,11 @@ export interface AgenCWebSocketMessageContext {
 export interface AgenCWebSocketServerOptions {
   readonly host?: string;
   readonly port?: number;
+  // An implicit default port may already be held by another daemon (isolated
+  // HOME or a second user on the same machine); opting in lets listen() retry
+  // once on an ephemeral port instead of failing daemon startup. Explicitly
+  // configured ports never fall back.
+  readonly fallbackToEphemeralPortOnAddrInUse?: boolean;
   readonly path?: string;
   readonly maxPayloadBytes?: number;
   readonly ready?: () => boolean;
@@ -171,24 +176,40 @@ export class AgenCWebSocketServer {
     httpServer.on("upgrade", (request, socket, head) => {
       this.#handleUpgrade(request, socket, head);
     });
-    httpServer.on("error", (error) => {
-      this.#options.onError?.(error, null);
-    });
     webSocketServer.on("connection", (socket, request) => {
       this.#acceptConnection(socket, request);
     });
 
-    try {
-      await new Promise<void>((resolve, reject) => {
+    const listenOnce = (port: number) =>
+      new Promise<void>((resolve, reject) => {
         const onError = (error: Error) => {
           httpServer.off("error", onError);
           reject(error);
         };
         httpServer.once("error", onError);
-        httpServer.listen(this.port, this.host, () => {
+        httpServer.listen(port, this.host, () => {
           httpServer.off("error", onError);
           resolve();
         });
+      });
+
+    try {
+      try {
+        await listenOnce(this.port);
+      } catch (error) {
+        if (
+          this.port === 0 ||
+          this.#options.fallbackToEphemeralPortOnAddrInUse !== true ||
+          (error as NodeJS.ErrnoException).code !== "EADDRINUSE"
+        ) {
+          throw error;
+        }
+        await listenOnce(0);
+      }
+      // Attached after the listen attempts so a recoverable EADDRINUSE on the
+      // implicit default port does not surface through onError.
+      httpServer.on("error", (error) => {
+        this.#options.onError?.(error, null);
       });
       this.#listenAddress = listenAddressFor(httpServer, this.host, this.path);
       return this.#listenAddress;

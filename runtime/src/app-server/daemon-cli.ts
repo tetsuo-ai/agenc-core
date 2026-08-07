@@ -351,6 +351,11 @@ export interface AgenCDaemonWebSocketListenOptions {
   readonly host: string;
   readonly port: number;
   readonly path: string;
+  // True only when the port is the implicit fixed default: an AGENC_HOME env
+  // override already selects an ephemeral port, but HOME-based isolation and
+  // multi-user machines resolve the same default and would otherwise collide
+  // fatally with the long-lived daemon that holds it.
+  readonly fallbackToEphemeralPortOnAddrInUse: boolean;
 }
 
 export function defaultAgenCDaemonPidPath(userHome = homedir()): string {
@@ -385,28 +390,26 @@ export function resolveAgenCDaemonWebSocketListenOptions(
   const path =
     env[AGENC_DAEMON_WEBSOCKET_PATH_ENV]?.trim() ||
     AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH;
-  return {
-    host,
-    port: resolveAgenCDaemonWebSocketPort(env),
-    path,
-  };
-}
-
-function resolveAgenCDaemonWebSocketPort(
-  env: NodeJS.ProcessEnv = process.env,
-): number {
-  const configured = env[AGENC_DAEMON_WEBSOCKET_PORT_ENV]?.trim();
-  if (configured !== undefined && configured.length > 0) {
-    return parseAgenCDaemonWebSocketPort(configured);
+  const configuredPort = env[AGENC_DAEMON_WEBSOCKET_PORT_ENV]?.trim();
+  if (configuredPort !== undefined && configuredPort.length > 0) {
+    return {
+      host,
+      port: parseAgenCDaemonWebSocketPort(configuredPort),
+      path,
+      fallbackToEphemeralPortOnAddrInUse: false,
+    };
   }
-
   // The fixed portal endpoint is only safe for the default daemon home. Test
   // and isolated homes must not collide with the user's long-lived daemon.
   if ((env.AGENC_HOME?.trim() ?? "").length > 0) {
-    return 0;
+    return { host, port: 0, path, fallbackToEphemeralPortOnAddrInUse: false };
   }
-
-  return AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT;
+  return {
+    host,
+    port: AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT,
+    path,
+    fallbackToEphemeralPortOnAddrInUse: true,
+  };
 }
 
 function parseAgenCDaemonWebSocketPort(value: string): number {
@@ -2033,6 +2036,16 @@ async function runAgenCDaemonForeground(
     }
     await socketServer.listen();
     const webSocketAddress = await webSocketServer.listen();
+    if (
+      webSocketListenOptions.fallbackToEphemeralPortOnAddrInUse &&
+      webSocketAddress.port !== webSocketListenOptions.port
+    ) {
+      io.stderr.write(
+        `agenc: daemon websocket port ${webSocketListenOptions.port} is in ` +
+          `use by another process; listening on ephemeral port ` +
+          `${webSocketAddress.port} instead\n`,
+      );
+    }
     io.stderr.write(
       `AgenC daemon websocket listening on ${webSocketAddress.url}\n`,
     );

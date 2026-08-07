@@ -619,18 +619,31 @@ describe("AgenC daemon CLI", () => {
       host: AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST,
       port: AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT,
       path: AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH,
+      // Only the implicit fixed default may fall back on EADDRINUSE: a
+      // HOME-isolated or second-user daemon resolves this same port and must
+      // not die because the long-lived default daemon already holds it.
+      fallbackToEphemeralPortOnAddrInUse: true,
     });
     expect(
       resolveAgenCDaemonWebSocketListenOptions({
         AGENC_HOME: "/tmp/agenc-isolated-home",
-      }).port,
-    ).toBe(0);
+      }),
+    ).toMatchObject({ port: 0, fallbackToEphemeralPortOnAddrInUse: false });
     expect(
       resolveAgenCDaemonWebSocketListenOptions({
         AGENC_HOME: "/tmp/agenc-isolated-home",
         [AGENC_DAEMON_WEBSOCKET_PORT_ENV]: "0",
       }).port,
     ).toBe(0);
+    expect(
+      resolveAgenCDaemonWebSocketListenOptions({
+        [AGENC_DAEMON_WEBSOCKET_PORT_ENV]: "7891",
+      }),
+    ).toMatchObject({
+      port: 7891,
+      // An explicitly configured port must stay fatal on collision.
+      fallbackToEphemeralPortOnAddrInUse: false,
+    });
     expect(
       resolveAgenCDaemonWebSocketListenOptions({
         AGENC_HOME: "/tmp/agenc-isolated-home",
