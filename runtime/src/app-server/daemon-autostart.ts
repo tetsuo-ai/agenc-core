@@ -82,6 +82,15 @@ export interface AgenCDaemonAutostartOptions {
   readonly findOrphanDaemonPids?: (
     targetHome: string,
   ) => Promise<readonly number[]> | readonly number[];
+  /**
+   * Daemons serving this home from any install, used to reap the ones the pid
+   * file cannot track. Defaults to a /proc scan; when `findOrphanDaemonPids`
+   * is stubbed without this, reaping is skipped so orphan-path tests keep
+   * their exact kill expectations.
+   */
+  readonly findSupersededDaemonPids?: (
+    targetHome: string,
+  ) => Promise<readonly number[]> | readonly number[];
   readonly terminateOrphanDaemonPid?: (pid: number) => Promise<void> | void;
 }
 
@@ -230,6 +239,14 @@ export async function ensureAgenCDaemonAutostart(
     throw new AgenCDaemonAutostartError("AgenC daemon pid file was not written");
   }
 
+  await reapSupersededAgenCDaemons({
+    daemonHome,
+    keepPid: pid,
+    host,
+    options,
+    io,
+  });
+
   const target = { pid, pidPath };
   const ready = await waitForAgenCDaemonReady(target, host, options);
   if (ready === "exited") {
@@ -302,6 +319,54 @@ async function recoverPidlessAgenCDaemon(params: {
   return null;
 }
 
+/**
+ * Terminate daemons serving `daemonHome` that are not the tracked `keepPid`.
+ *
+ * A home has exactly one pid file, so a second live daemon for it is
+ * untracked by construction: nothing will ever stop it, and it competes for
+ * the same state and the fixed websocket port. Upgrades produced these
+ * routinely, because a superseded daemon runs from a version-stamped runtime
+ * directory that no longer matches the current entrypoint.
+ */
+async function reapSupersededAgenCDaemons(params: {
+  readonly daemonHome: string;
+  readonly keepPid: number;
+  readonly host: AgenCDaemonCliHost;
+  readonly options: AgenCDaemonAutostartOptions;
+  readonly io: AgenCDaemonCliIo;
+}): Promise<readonly number[]> {
+  // Tests that stub orphan discovery drive that path explicitly; don't invent
+  // extra kills underneath them unless they opt in.
+  if (
+    params.options.findSupersededDaemonPids === undefined &&
+    params.options.findOrphanDaemonPids !== undefined
+  ) {
+    return [];
+  }
+  const superseded = [
+    ...await Promise.resolve(
+      params.options.findSupersededDaemonPids?.(params.daemonHome) ??
+        findPidlessAgenCDaemonPids(
+          params.host,
+          params.daemonHome,
+          "any-install",
+        ),
+    ),
+  ].filter((pid) => pid !== params.keepPid && params.host.isPidRunning(pid));
+  if (superseded.length === 0) return [];
+
+  params.io.stderr.write(
+    `agenc: stopping ${superseded.length} superseded daemon(s) for this home ` +
+      `(pid ${superseded.join(", ")})\n`,
+  );
+  await Promise.all(
+    superseded.map((pid) =>
+      terminatePidlessAgenCDaemonPid(pid, params.host, params.options),
+    ),
+  );
+  return superseded;
+}
+
 async function terminatePidlessAgenCDaemonPid(
   pid: number,
   host: AgenCDaemonCliHost,
@@ -339,11 +404,37 @@ async function isAgenCDaemonSocketPresent(socketPath: string): Promise<boolean> 
   }
 }
 
+/**
+ * True when `value` looks like an agenc runtime entrypoint from any install.
+ * Superseded daemons live under a version-stamped runtime directory
+ * (`.../.agenc/runtime/<version>/.../bin/agenc`), so their entrypoint never
+ * equals the current one — matching on shape is what makes them visible.
+ */
+function isAgenCDaemonEntrypointPath(value: string): boolean {
+  const base = value.split(/[\\/]/u).pop() ?? "";
+  return base === "agenc" || base === "agenc.js" || base === "agenc-main.js";
+}
+
+/**
+ * Find daemon processes serving `daemonHome` that the pid file does not track.
+ *
+ * `entrypointMatch: "exact"` restricts the result to daemons running this very
+ * runtime build — the only ones safe to ADOPT, since adopting a daemon from
+ * another build reintroduces the missing-chunk hang that runtime-info skew
+ * detection exists to prevent.
+ *
+ * `entrypointMatch: "any-install"` also returns daemons from other installs or
+ * versions of agenc. Those are only ever TERMINATED: a home has exactly one
+ * pid file, so a second daemon serving it is untracked by construction, and
+ * before this it survived every upgrade and accumulated indefinitely.
+ */
 async function findPidlessAgenCDaemonPids(
   host: AgenCDaemonCliHost,
   daemonHome: string,
+  entrypointMatch: "exact" | "any-install" = "exact",
 ): Promise<readonly number[]> {
-  if (process.platform !== "linux" || host.entrypointPath.length === 0) {
+  if (process.platform !== "linux") return [];
+  if (entrypointMatch === "exact" && host.entrypointPath.length === 0) {
     return [];
   }
   let entries: readonly import("node:fs").Dirent[];
@@ -353,7 +444,8 @@ async function findPidlessAgenCDaemonPids(
     return [];
   }
 
-  const expectedEntrypoint = resolve(host.entrypointPath);
+  const expectedEntrypoint =
+    host.entrypointPath.length > 0 ? resolve(host.entrypointPath) : null;
   const expectedHome = resolve(daemonHome);
   const pids: number[] = [];
   for (const entry of entries) {
@@ -370,7 +462,13 @@ async function findPidlessAgenCDaemonPids(
     const argv = await readProcList(join(procDir, "cmdline"));
     const entrypointIndex = argv.findIndex((value) => {
       try {
-        return resolve(value) === expectedEntrypoint;
+        if (expectedEntrypoint !== null && resolve(value) === expectedEntrypoint) {
+          return true;
+        }
+        return (
+          entrypointMatch === "any-install" &&
+          isAgenCDaemonEntrypointPath(value)
+        );
       } catch {
         return false;
       }

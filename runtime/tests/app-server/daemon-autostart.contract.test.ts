@@ -296,6 +296,67 @@ port = 0
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("reaps superseded same-home daemons while keeping the tracked one", async () => {
+    // The accumulation case: upgrades leave daemons running from
+    // version-stamped runtime directories that the pid file cannot track.
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(5300);
+    host.runningPids.add(5401);
+    host.runningPids.add(5402);
+    await writeAgenCDaemonPid(pidPath, 5300);
+    const terminated: number[] = [];
+
+    try {
+      await expect(
+        ensureAgenCDaemonAutostart({
+          host,
+          isReady: ({ pid }) => pid === 5300,
+          findSupersededDaemonPids: () => [5300, 5401, 5402],
+          terminateOrphanDaemonPid: (pid) => {
+            terminated.push(pid);
+            host.runningPids.delete(pid);
+          },
+        }),
+      ).resolves.toMatchObject({ pid: 5300, status: "already-running" });
+
+      // The tracked daemon survives; only the untrackable ones are stopped.
+      expect(terminated.sort()).toEqual([5401, 5402]);
+      expect(host.runningPids.has(5300)).toBe(true);
+      await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(5300);
+      expect(host.spawnedPids).toEqual([]);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps orphan-path kill expectations when only orphan discovery is stubbed", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(5300);
+    await writeAgenCDaemonPid(pidPath, 5300);
+    const terminated: number[] = [];
+
+    try {
+      await expect(
+        ensureAgenCDaemonAutostart({
+          host,
+          isReady: ({ pid }) => pid === 5300,
+          findOrphanDaemonPids: () => [9001],
+          terminateOrphanDaemonPid: (pid) => {
+            terminated.push(pid);
+          },
+        }),
+      ).resolves.toMatchObject({ pid: 5300, status: "already-running" });
+
+      expect(terminated).toEqual([]);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("adopts a pidless daemon when its socket is present", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
