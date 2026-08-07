@@ -268,6 +268,22 @@ const userFacingModeOrder: readonly PermissionMode[] = [
   'bypassPermissions',
 ]
 
+/**
+ * The modes the switcher displays, in display order. The digit-pick handler
+ * in PromptInput indexes into this same list, so display and picking can
+ * never drift apart.
+ */
+export function visibleUserFacingModes(
+  bypassAvailable: boolean,
+  autoAvailable: boolean,
+): readonly PermissionMode[] {
+  return userFacingModeOrder.filter(
+    mode =>
+      (mode !== 'bypassPermissions' || bypassAvailable) &&
+      (mode !== 'auto' || autoAvailable),
+  )
+}
+
 function modeDescription(mode: PermissionMode): string {
   switch (mode) {
     case 'default':
@@ -300,11 +316,7 @@ export function ModeSwitcher({
   readonly autoAvailable?: boolean
   readonly spacious?: boolean
 }): React.ReactNode {
-  const modes = userFacingModeOrder.filter(
-    mode =>
-      (mode !== 'bypassPermissions' || bypassAvailable) &&
-      (mode !== 'auto' || autoAvailable),
-  )
+  const modes = visibleUserFacingModes(bypassAvailable, autoAvailable)
 
   return (
     <Box flexDirection="row" justifyContent="center" width="100%">
@@ -323,9 +335,7 @@ export function ModeSwitcher({
           <ThemedText color="inactive" wrap="truncate-end">{`current · ${currentMode}`}</ThemedText>
         </Box>
         <Box flexGrow={1} />
-        {/* Only advertise keys that are actually handled: the switcher is a
-            timed toast, and no digit-pick or esc-dismiss handler exists. */}
-        <ThemedText color="inactive" wrap="truncate-end">⇧⇥ cycle</ThemedText>
+        <ThemedText color="inactive" wrap="truncate-end">{`1–${modes.length} pick · ⇧⇥ cycle · esc`}</ThemedText>
       </ThemedBox>
       <Box flexDirection="column">
         {modes.map((mode, index) => {

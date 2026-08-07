@@ -4034,7 +4034,7 @@ const DESIGN_STATES: readonly DesignState[] = [
       <Frame
         viewport={viewport}
         permissionMode="acceptEdits"
-        contextLeft={<ThemedText color="agenc">switching mode · ⇧⇥</ThemedText>}
+        contextLeft={<ThemedText color="agenc">switching mode · keys 1–5</ThemedText>}
         contextRight={<KeyHint k="esc" label="cancel" />}
         statusLeftItems={[
           <StatusSegment key="model" label="model" value="haiku-4.5" color="agenc" />,

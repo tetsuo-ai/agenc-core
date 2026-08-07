@@ -108,11 +108,8 @@ describe('v2 primitives', () => {
     expect(output).toContain('read-only · propose plans')
     expect(output).toContain('bypassPermissions')
     expect(output).toContain('shift+tab')
-    // The switcher is a timed toast with no digit-pick or esc handler; the
-    // header must not advertise keys that do nothing.
-    expect(output).toContain('⇧⇥ cycle')
-    expect(output).not.toContain('pick')
-    expect(output).not.toContain('esc')
+    // The advertised digit range must match the number of visible modes.
+    expect(output).toContain('1–5 pick · ⇧⇥ cycle · esc')
   })
 
   it('hides unavailable cycle targets', async () => {
@@ -129,6 +126,8 @@ describe('v2 primitives', () => {
     expect(output).toContain('auto-accept file edits')
     expect(output).not.toContain('auto-approve everything')
     expect(output).not.toContain('bypassPermissions')
+    // The advertised digit range shrinks with the hidden modes.
+    expect(output).toContain('1–3 pick')
   })
 
   it('renders body overlays without requiring modal content in chat flow', async () => {

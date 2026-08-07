@@ -162,10 +162,12 @@ import {
 } from "../../../utils/model/model.js";
 import { setAutoModeActive } from "../../../utils/permissions/autoModeState.js";
 import {
-  cyclePermissionMode,
   getNextPermissionMode,
 } from "../../../utils/permissions/getNextPermissionMode.js";
-import { transitionPermissionMode } from "../../../utils/permissions/permissionSetup.js";
+import {
+  isAutoModeGateEnabled,
+  transitionPermissionMode,
+} from "../../../utils/permissions/permissionSetup.js";
 import { getPlatform } from "../../../utils/platform.js";
 import type { PromptInputContext } from "../../input/inputContext.js";
 import { editPromptInEditor } from "../../../utils/promptEditor.js";
@@ -227,7 +229,7 @@ import { ThinkingToggle } from "../ThinkingToggle.js";
 import { BackgroundTasksPanel } from "../tasks/BackgroundTasksPanel.js";
 import { shouldHideTasksFooter } from "../tasks/taskStatusUtils.js";
 import { TeamsDialog } from "../teams/TeamsDialog.js";
-import { ModeSwitcher } from "../v2/primitives.js";
+import { ModeSwitcher, visibleUserFacingModes } from "../v2/primitives.js";
 import { ConfiguredPromptTextInput } from "./ConfiguredPromptTextInput.js";
 import {
   detectModeEntry,
@@ -2662,47 +2664,8 @@ function PromptInput({
     }
   }, [helpOpen]);
 
-  // Handler for chat:cycleMode - cycle through permission modes
-  const handleCycleMode = useCallback(() => {
-    // When viewing a teammate, cycle their mode instead of the leader's
-    if (isAgentSwarmsEnabled() && viewedTeammate && viewingAgentTaskId) {
-      const teammateContext: ToolPermissionContext = {
-        ...toolPermissionContext,
-        mode: viewedTeammate.permissionMode,
-      };
-      // Pass undefined for teamContext (unused but kept for API compatibility)
-      const nextMode = getNextPermissionMode(teammateContext, undefined);
-      const teammateTaskId = viewingAgentTaskId;
-      setAppState((prev) => {
-        const task = prev.tasks[teammateTaskId];
-        if (!task || task.type !== "in_process_teammate") {
-          return prev;
-        }
-        if (task.permissionMode === nextMode) {
-          return prev;
-        }
-        return {
-          ...prev,
-          tasks: {
-            ...prev.tasks,
-            [teammateTaskId]: {
-              ...task,
-              permissionMode: nextMode,
-            },
-          },
-        };
-      });
-      if (helpOpen) {
-        setHelpOpen(false);
-      }
-      return;
-    }
-
-    // Compute the next mode without triggering side effects first
-    logForDebugging(
-      `[auto-mode] handleCycleMode: currentMode=${toolPermissionContext.mode} isAutoModeAvailable=${toolPermissionContext.isAutoModeAvailable} showAutoModeOptIn=${showAutoModeOptIn} timeoutPending=${!!autoModeOptInTimeoutRef.current}`,
-    );
-    const nextMode = getNextPermissionMode(toolPermissionContext, teamContext);
+  // Shows the mode-switcher toast and (re)arms its auto-dismiss timer.
+  const showModeSwitcherToast = useCallback(() => {
     setShowModeSwitcher(true);
     if (modeSwitcherTimeoutRef.current) {
       clearTimeout(modeSwitcherTimeoutRef.current);
@@ -2716,6 +2679,51 @@ function PromptInput({
       setShowModeSwitcher,
       modeSwitcherTimeoutRef,
     );
+  }, []);
+
+  const dismissModeSwitcherToast = useCallback(() => {
+    if (modeSwitcherTimeoutRef.current) {
+      clearTimeout(modeSwitcherTimeoutRef.current);
+      modeSwitcherTimeoutRef.current = null;
+    }
+    setShowModeSwitcher(false);
+  }, []);
+
+  // Applies one specific permission mode. Shared by shift+tab cycling and
+  // digit picks in the mode-switcher toast.
+  const selectPermissionMode = useCallback((targetMode: PermissionMode) => {
+    // When viewing a teammate, set their mode instead of the leader's
+    if (isAgentSwarmsEnabled() && viewedTeammate && viewingAgentTaskId) {
+      const teammateTaskId = viewingAgentTaskId;
+      setAppState((prev) => {
+        const task = prev.tasks[teammateTaskId];
+        if (!task || task.type !== "in_process_teammate") {
+          return prev;
+        }
+        if (task.permissionMode === targetMode) {
+          return prev;
+        }
+        return {
+          ...prev,
+          tasks: {
+            ...prev.tasks,
+            [teammateTaskId]: {
+              ...task,
+              permissionMode: targetMode,
+            },
+          },
+        };
+      });
+      if (helpOpen) {
+        setHelpOpen(false);
+      }
+      return;
+    }
+
+    logForDebugging(
+      `[auto-mode] selectPermissionMode: currentMode=${toolPermissionContext.mode} targetMode=${targetMode} isAutoModeAvailable=${toolPermissionContext.isAutoModeAvailable} showAutoModeOptIn=${showAutoModeOptIn} timeoutPending=${!!autoModeOptInTimeoutRef.current}`,
+    );
+    showModeSwitcherToast();
 
     // Check if user is entering auto mode for the first time. Gated on the
     // persistent settings flag (hasAutoModeOptIn) rather than the broader
@@ -2725,7 +2733,7 @@ function PromptInput({
     let isEnteringAutoModeFirstTime = false;
     if (feature("TRANSCRIPT_CLASSIFIER")) {
       isEnteringAutoModeFirstTime =
-        nextMode === "auto" &&
+        targetMode === "auto" &&
         toolPermissionContext.mode !== "auto" &&
         !hasAutoModeOptIn() &&
         !viewingAgentTaskId; // Only show for primary agent, not subagents
@@ -2769,10 +2777,19 @@ function PromptInput({
       }
     }
 
-    // Dismiss auto mode opt-in dialog if showing or pending (user is cycling away).
-    // Do NOT revert to previousModeBeforeAuto here — shift+tab means "advance the
-    // carousel", not "decline". Reverting causes a ping-pong loop: auto reverts to
-    // the prior mode, whose next mode is auto again, forever.
+    // Re-selecting auto while its opt-in dialog is pending: the dialog owns
+    // the decision; applying the transition here would bypass the consent.
+    if (
+      targetMode === "auto" &&
+      (showAutoModeOptIn || autoModeOptInTimeoutRef.current)
+    ) {
+      return;
+    }
+
+    // Dismiss auto mode opt-in dialog if showing or pending (user is moving away).
+    // Do NOT revert to previousModeBeforeAuto here — cycling or picking means
+    // "select another mode", not "decline". Reverting causes a ping-pong loop:
+    // auto reverts to the prior mode, whose next mode is auto again, forever.
     // The dialog's own decline button (handleAutoModeOptInDecline) handles revert.
     if (feature("TRANSCRIPT_CLASSIFIER")) {
       if (showAutoModeOptIn || autoModeOptInTimeoutRef.current) {
@@ -2782,18 +2799,21 @@ function PromptInput({
           autoModeOptInTimeoutRef.current = null;
         }
         setPreviousModeBeforeAuto(null);
-        // Fall through — mode is 'auto', cyclePermissionMode below goes to 'default'.
+        // Fall through — the transition below applies the picked target.
       }
     }
 
-    // Now that we know this is NOT the first-time auto mode path,
-    // call cyclePermissionMode to apply side effects (e.g. strip
-    // dangerous permissions, activate classifier)
-    const { nextMode: preparedNextMode, context: preparedContext } =
-      cyclePermissionMode(toolPermissionContext, teamContext);
+    // Now that we know this is NOT the first-time auto mode path, apply the
+    // transition side effects (e.g. strip dangerous permissions, activate
+    // classifier) for the picked target.
+    const preparedContext = transitionPermissionMode(
+      toolPermissionContext.mode,
+      targetMode,
+      toolPermissionContext,
+    );
 
     // Track when user enters plan mode
-    if (preparedNextMode === "plan") {
+    if (targetMode === "plan") {
       saveGlobalConfig((current) => ({
         ...current,
         lastPlanModeUse: Date.now(),
@@ -2808,18 +2828,18 @@ function PromptInput({
       ...prev,
       toolPermissionContext: {
         ...preparedContext,
-        mode: preparedNextMode,
+        mode: targetMode,
       },
     }));
     setToolPermissionContext({
       ...preparedContext,
-      mode: preparedNextMode,
+      mode: targetMode,
     });
 
     // If this is a teammate, update config.json so team lead sees the change
-    syncTeammateMode(preparedNextMode, teamContext?.teamName);
+    syncTeammateMode(targetMode, teamContext?.teamName);
 
-    // Close help tips if they're open when mode is cycled
+    // Close help tips if they're open when mode is selected
     if (helpOpen) {
       setHelpOpen(false);
     }
@@ -2832,7 +2852,55 @@ function PromptInput({
     setToolPermissionContext,
     helpOpen,
     showAutoModeOptIn,
+    showModeSwitcherToast,
   ]);
+
+  // Handler for chat:cycleMode - cycle through permission modes
+  const handleCycleMode = useCallback(() => {
+    // When viewing a teammate, cycle from their mode instead of the leader's
+    if (isAgentSwarmsEnabled() && viewedTeammate && viewingAgentTaskId) {
+      const teammateContext: ToolPermissionContext = {
+        ...toolPermissionContext,
+        mode: viewedTeammate.permissionMode,
+      };
+      // Pass undefined for teamContext (unused but kept for API compatibility)
+      selectPermissionMode(getNextPermissionMode(teammateContext, undefined));
+      return;
+    }
+    selectPermissionMode(
+      getNextPermissionMode(toolPermissionContext, teamContext),
+    );
+  }, [
+    toolPermissionContext,
+    teamContext,
+    viewedTeammate,
+    viewingAgentTaskId,
+    selectPermissionMode,
+  ]);
+
+  // Digit picks and esc-dismiss for the mode-switcher toast. Active only
+  // while the toast is visible; digits index into the same visible-mode
+  // order the ModeSwitcher renders, so display and picking cannot drift.
+  useInput(
+    (input, key) => {
+      if (key.escape) {
+        dismissModeSwitcherToast();
+        return;
+      }
+      if (!/^[1-9]$/u.test(input)) return;
+      const modes = visibleUserFacingModes(
+        effectiveToolPermissionContext.isBypassPermissionsModeAvailable,
+        effectiveToolPermissionContext.isAutoModeAvailable,
+      );
+      const targetMode = modes[Number.parseInt(input, 10) - 1];
+      if (targetMode === undefined) return;
+      // The live gate can lag the startup availability flag; picking auto
+      // without the gate would make transitionPermissionMode throw.
+      if (targetMode === "auto" && !isAutoModeGateEnabled()) return;
+      selectPermissionMode(targetMode);
+    },
+    { isActive: showModeSwitcher },
+  );
 
   // Handler for auto mode opt-in dialog acceptance
   const handleAutoModeOptInAccept = useCallback(() => {
