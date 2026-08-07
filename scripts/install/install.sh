@@ -2605,6 +2605,28 @@ fi
 
 # --- done --------------------------------------------------------------------
 
+# Ubuntu 24.04+ restricts the unprivileged user namespace bubblewrap needs, so
+# the sandbox is dead on arrival and the first message fails with an error that
+# is easy to mistake for a bug. Say so at install time, while the wrapper this
+# profile must attach to is exactly the one just installed.
+apparmor_userns_restricted() {
+  [ "$OS" = "linux" ] || return 1
+  restrict_path=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+  [ -r "$restrict_path" ] || return 1
+  [ "$(cat "$restrict_path" 2>/dev/null)" = "1" ] || return 1
+  # Already installed: nothing to prompt.
+  [ ! -e /etc/apparmor.d/agenc-native-userns ]
+}
+
+if apparmor_userns_restricted; then
+  printf '\n  Note: this system restricts the user namespace AgenC'"'"'s sandbox needs,\n' >&2
+  printf '  so sandboxed commands will fail until you install its AppArmor profile:\n\n' >&2
+  printf '    agenc doctor --apparmor-profile |\n' >&2
+  printf '      sudo tee /etc/apparmor.d/agenc-native-userns >/dev/null\n' >&2
+  printf '    sudo apparmor_parser -r /etc/apparmor.d/agenc-native-userns\n\n' >&2
+  printf '  Then run `agenc doctor` to confirm. See docs/install.md for details.\n' >&2
+fi
+
 log "install complete"
 # Brand "agenc" wordmark — quadrant-block rendering of assets/agenc-wordmark.svg
 # (the letterforms, not the icon; 2x2 sub-cell blocks for smoother curves).
