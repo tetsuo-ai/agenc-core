@@ -2070,6 +2070,9 @@ async function runAgenCDaemonForeground(
             commit: distVersion.commit,
             buildTime: distVersion.buildTime,
             startedAt: new Date().toISOString(),
+            // Records the port actually bound, which is not the default when
+            // another daemon already holds it and the listener fell back.
+            webSocketUrl: webSocketAddress.url,
           });
           cleanup.register("daemon-runtime-info", async () => {
             removeDaemonRuntimeInfo(runtimeInfoPath);

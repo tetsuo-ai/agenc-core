@@ -21,6 +21,10 @@ import QRCode from "qrcode";
 import WebSocket from "ws";
 
 import { remoteAuthSessionTokenSync } from "../auth/session-state.js";
+import {
+  readDaemonRuntimeInfo,
+  resolveAgenCDaemonRuntimeInfoPath,
+} from "../app-server/daemon-runtime-info.js";
 
 const DEFAULT_BACKEND = "https://id.agenc.ag";
 const REMOTE_LOGIN_REQUIRED_MESSAGE =
@@ -51,7 +55,8 @@ export function formatAgenCRemoteCliHelpText(): string {
     "",
     "Environment:",
     "  AGENC_BACKEND_URL   Identity backend (default https://id.agenc.ag).",
-    "  AGENC_DAEMON_URL    Local daemon (default ws://127.0.0.1:7766).",
+    "  AGENC_DAEMON_URL    Local daemon (default: the URL the running daemon",
+    "                      recorded, else ws://127.0.0.1:7766).",
   ].join("\n");
 }
 
@@ -84,7 +89,16 @@ function backendUrl(): string {
 }
 function daemonUrl(): string {
   const env = process.env.AGENC_DAEMON_URL;
-  return env && env.trim() ? env.trim() : "ws://127.0.0.1:7766";
+  if (env && env.trim()) return env.trim();
+  // The running daemon records the port it actually bound, which is not the
+  // default when that port was already taken and the listener fell back.
+  // Falling back to the fixed default keeps older daemons reachable.
+  const recorded = readDaemonRuntimeInfo(
+    resolveAgenCDaemonRuntimeInfoPath(resolveAgencHome()),
+  )?.webSocketUrl;
+  return recorded !== undefined && recorded.length > 0
+    ? recorded
+    : "ws://127.0.0.1:7766";
 }
 
 function readPairFile(): PairFile | null {

@@ -59,6 +59,14 @@ export interface DaemonRuntimeInfo {
   readonly commit: string;
   readonly buildTime: string;
   readonly startedAt: string;
+  /**
+   * The websocket URL this daemon actually bound. Optional: readers must
+   * tolerate its absence (older daemons, and any daemon whose websocket
+   * listener is unavailable). Clients that would otherwise assume the fixed
+   * default port need this, because a daemon whose default port was taken
+   * falls back to an ephemeral one.
+   */
+  readonly webSocketUrl?: string;
 }
 
 const AGENC_DAEMON_RUNTIME_INFO_FILENAME = "daemon-runtime.json";
@@ -124,6 +132,10 @@ export function readDaemonRuntimeInfo(
       commit: parsed.commit,
       buildTime: parsed.buildTime,
       startedAt: parsed.startedAt,
+      ...(typeof parsed.webSocketUrl === "string" &&
+        parsed.webSocketUrl.length > 0
+        ? { webSocketUrl: parsed.webSocketUrl }
+        : {}),
     };
   } catch {
     return null;
