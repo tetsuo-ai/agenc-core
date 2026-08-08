@@ -1,7 +1,7 @@
 # Autonomy reference
 
 Operator and developer guide for **cost-bounded autonomous surfaces** in
-AgenC **0.14.2**: daemon-owned execution admission, heartbeat, cron delivery,
+AgenC **0.15.0**: daemon-owned execution admission, heartbeat, cron delivery,
 and hooks HTTP.
 
 Design background: [`../design/execution-admission-kernel.md`](../design/execution-admission-kernel.md).

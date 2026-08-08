@@ -1,6 +1,6 @@
 # AgenC in 5 minutes (your agent in 15)
 
-**Current version in tree: 0.14.2.** Standalone and npm installations resolve
+**Current version in tree: 0.15.0.** Standalone and npm installations resolve
 the same reviewed immutable runtime contract.
 
 Prerequisites: `tar` and a way to reach a model — BYOK
@@ -129,6 +129,6 @@ Coming from another assistant?
 
 ## Not shipped (do not expect these yet)
 
-Signal, WhatsApp, and email channels are not in 0.14.2.
+Signal, WhatsApp, and email channels are not in 0.15.0.
 Telegram, Discord, Slack, WebChat, and stdio **are** shipped via
 `agenc gateway`.
