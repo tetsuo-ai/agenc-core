@@ -18,6 +18,7 @@ vi.mock("../../services/lsp/fileNotifications.js", () => ({
   notifyLspFileChanged: vi.fn(),
 }));
 
+import type { ToolResult } from "../types.js";
 import { createFileWriteTool } from "./file-write.js";
 import {
   clearSessionReadState,
@@ -191,6 +192,138 @@ describe("Write tool", () => {
     );
     // The original content must be untouched.
     await expect(readFile(target, "utf8")).resolves.toBe("alpha\nbeta\n");
+  });
+
+  describe("pre-mutation refusals settle as confirmed_no_effect", () => {
+    // Regression: the effect boundary is marked crossed before `execute` runs,
+    // so a guard refusal reached the settlement supervisor as an errored
+    // side-effecting call with no disposition. That poisoned the live effect
+    // and blocked every later side-effecting and interactive dispatch for the
+    // rest of the session. Guards that provably wrote nothing must say so.
+    const expectNoEffect = (result: ToolResult) => {
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+      });
+      expect(result.effectDisposition?.evidenceSha256).toMatch(
+        /^[0-9a-f]{64}$/u,
+      );
+    };
+
+    test("read-before-write refusal", async () => {
+      const target = join(root, "unread.txt");
+      await writeFile(target, "alpha\n", "utf8");
+
+      const tool = createFileWriteTool({ allowedPaths: [root] });
+      expectNoEffect(
+        await tool.execute({
+          file_path: target,
+          content: "DIFFERENT\n",
+          __agencSessionId: sessionId,
+        }),
+      );
+      await expect(readFile(target, "utf8")).resolves.toBe("alpha\n");
+    });
+
+    test("modified-since-read refusal", async () => {
+      const target = join(root, "drifted.txt");
+      await writeFile(target, "alpha\n", "utf8");
+      recordSessionRead(sessionId, target, "stale snapshot\n");
+
+      const tool = createFileWriteTool({ allowedPaths: [root] });
+      expectNoEffect(
+        await tool.execute({
+          file_path: target,
+          content: "DIFFERENT\n",
+          __agencSessionId: sessionId,
+        }),
+      );
+      await expect(readFile(target, "utf8")).resolves.toBe("alpha\n");
+    });
+
+    test("path outside allowed directories", async () => {
+      const tool = createFileWriteTool({ allowedPaths: [root] });
+      expectNoEffect(
+        await tool.execute({
+          file_path: join(tmpdir(), "agenc-outside-allowed.txt"),
+          content: "nope\n",
+          __agencSessionId: sessionId,
+        }),
+      );
+    });
+
+    test("target resolves to a directory", async () => {
+      const dir = join(root, "a-directory");
+      await mkdir(dir);
+
+      const tool = createFileWriteTool({ allowedPaths: [root] });
+      expectNoEffect(
+        await tool.execute({
+          file_path: dir,
+          content: "nope\n",
+          __agencSessionId: sessionId,
+        }),
+      );
+    });
+
+    test("notebook redirect", async () => {
+      const tool = createFileWriteTool({ allowedPaths: [root] });
+      expectNoEffect(
+        await tool.execute({
+          file_path: join(root, "book.ipynb"),
+          content: "nope\n",
+          __agencSessionId: sessionId,
+        }),
+      );
+    });
+
+    test("content over the size cap", async () => {
+      const tool = createFileWriteTool({
+        allowedPaths: [root],
+        maxWriteBytes: 4,
+      });
+      expectNoEffect(
+        await tool.execute({
+          file_path: join(root, "too-big.txt"),
+          content: "far too much content\n",
+          __agencSessionId: sessionId,
+        }),
+      );
+      await expect(stat(join(root, "too-big.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    });
+
+    test("invalid arguments", async () => {
+      const tool = createFileWriteTool({ allowedPaths: [root] });
+      expectNoEffect(await tool.execute({ file_path: "", content: "x" }));
+      expectNoEffect(
+        await tool.execute({ file_path: join(root, "x.txt"), content: 42 }),
+      );
+    });
+
+    test("a failure raised mid-write does NOT claim no-effect", async () => {
+      // The write transaction is under way, so the outcome is genuinely
+      // unknown and must stay poisonable. Asserting the negative keeps the
+      // fix from being widened into "never poison on Write".
+      const target = join(root, "mid-write-failure.txt");
+      const tool = createFileWriteTool({
+        allowedPaths: [root],
+        __testAfterPreWriteCheck: async () => {
+          throw new Error("disk exploded mid-write");
+        },
+      });
+
+      const result = await tool.execute({
+        file_path: target,
+        content: "half a file\n",
+        __agencSessionId: sessionId,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition).toBeUndefined();
+    });
   });
 
   test("authorizes overwrite after a partial session read", async () => {

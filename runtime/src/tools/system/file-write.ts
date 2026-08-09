@@ -59,6 +59,7 @@ import {
   isAgentNamespacePath,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
 import {
   prepareWorkspaceMutation,
@@ -118,6 +119,50 @@ const NOTEBOOK_REDIRECT_MESSAGE =
  */
 const SESSION_ID_MISSING_ERROR =
   "Write was invoked without a session id for an existing file. The runtime injects this automatically; if you are calling the tool from a unit test, pass __testBypassSessionGuard:true to opt out of read-before-write enforcement.";
+
+/**
+ * Brand a guard refusal that happens strictly before any byte is written.
+ *
+ * The effect boundary is marked crossed the moment dispatch hands control to
+ * `tool.execute` (tools/execution.ts), so every refusal below — argument
+ * validation, path admission, read-before-write, drift detection, size caps —
+ * reaches the settlement supervisor as an errored side-effecting call. Without
+ * an authoritative disposition the supervisor cannot tell "refused before
+ * touching the file" from "may have half-written it", so it poisons the live
+ * effect and blocks all further side-effecting and interactive dispatch for the
+ * rest of the session (budget/admitted-tool-call.ts).
+ *
+ * These paths provably wrote nothing, so they carry `confirmed_no_effect` and
+ * settle cleanly. Mirrors `preMutationErrorResult` in file-edit.ts.
+ *
+ * Deliberately NOT used for failures raised once the write transaction is
+ * under way: a partially committed write is genuinely unknown, and poisoning
+ * is the correct outcome there.
+ */
+function preMutationErrorResult(message: string): ToolResult {
+  return {
+    ...errorResult(message),
+    effectDisposition: createToolEffectDispositionEvidence({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: `tool:${FILE_WRITE_TOOL_NAME}:pre-mutation`,
+      evidenceMaterial: message,
+    }),
+  };
+}
+
+/** Attach pre-mutation no-effect evidence to an already-built refusal. */
+function asPreMutationRefusal(result: ToolResult): ToolResult {
+  return {
+    ...result,
+    effectDisposition: createToolEffectDispositionEvidence({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: `tool:${FILE_WRITE_TOOL_NAME}:admission-rejected`,
+      evidenceMaterial: String(result.content ?? ""),
+    }),
+  };
+}
 
 /**
  * Test-only opt-out of the read-before-write session guard. Production
@@ -274,24 +319,24 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
 
       const filePath = asNonEmptyString(args.file_path);
       if (!filePath) {
-        return errorResult("file_path must be a non-empty string");
+        return preMutationErrorResult("file_path must be a non-empty string");
       }
       const content = asString(args.content);
       if (content === undefined) {
-        return errorResult("content must be a string");
+        return preMutationErrorResult("content must be a string");
       }
 
       const cwdArg = asNonEmptyString(args.cwd);
       const cwd = cwdArg ?? allowedPaths[0] ?? process.cwd();
       if (isAgentNamespacePath(filePath)) {
-        return errorResult(agentNamespacePathHint(filePath, cwd));
+        return preMutationErrorResult(agentNamespacePathHint(filePath, cwd));
       }
 
       // Notebook redirect — AgenC routes `.ipynb` to NotebookEdit
       // instead of allowing a raw text write that would corrupt the
       // notebook's JSON envelope.
       if (filePath.toLowerCase().endsWith(".ipynb")) {
-        return errorResult(NOTEBOOK_REDIRECT_MESSAGE);
+        return preMutationErrorResult(NOTEBOOK_REDIRECT_MESSAGE);
       }
 
       const absoluteInput = resolve(cwd, filePath);
@@ -302,7 +347,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         rawArgs,
       );
       if (!safe.safe) {
-        return errorResult(
+        return preMutationErrorResult(
           `file_path is outside allowed directories: ${filePath}` +
             (safe.reason ? ` (${safe.reason})` : ""),
         );
@@ -328,14 +373,16 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       try {
         const result = await stat(absolutePath);
         if (result.isDirectory()) {
-          return errorResult(`file_path resolves to a directory: ${filePath}`);
+          return preMutationErrorResult(
+            `file_path resolves to a directory: ${filePath}`,
+          );
         }
         existed = true;
         existingStat = { mtimeMs: result.mtimeMs };
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code;
         if (code !== "ENOENT") {
-          return errorResult(
+          return preMutationErrorResult(
             code
               ? `${code}: stat failed for ${filePath}`
               : `stat failed for ${filePath}`,
@@ -350,7 +397,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       // `Edit`'s gate.
       if (existed && sessionId !== undefined) {
         if (!hasSessionRead(sessionId, absolutePath)) {
-          return errorResult(READ_REQUIRED_MESSAGE);
+          return preMutationErrorResult(READ_REQUIRED_MESSAGE);
         }
 
         // Modification-since-read drift check. A FULL read carries the
@@ -382,14 +429,14 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
             existingContentForUi = onDisk;
           } catch (err) {
             const code = (err as NodeJS.ErrnoException)?.code;
-            return errorResult(
+            return preMutationErrorResult(
               code
                 ? `${code}: failed to re-read ${filePath} before overwrite`
                 : `failed to re-read ${filePath} before overwrite`,
             );
           }
           if (onDisk !== normalizeNewlines(snapshotContent as string)) {
-            return errorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
+            return preMutationErrorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
           }
         } else {
           // Partial-read fallback: reject only when the on-disk mtime
@@ -402,7 +449,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
             Number.isFinite(recordedTs) &&
             existingStat.mtimeMs > recordedTs
           ) {
-            return errorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
+            return preMutationErrorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
           }
           // Populate the UI snapshot from disk best-effort.
           try {
@@ -424,7 +471,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         // overwriting and clobbering concurrent external modifications.
         // Tests opt out explicitly via __testBypassSessionGuard:true.
         if (!shouldBypassSessionGuard(rawArgs)) {
-          return errorResult(SESSION_ID_MISSING_ERROR);
+          return preMutationErrorResult(SESSION_ID_MISSING_ERROR);
         }
         if (existingStat !== null) {
           try {
@@ -438,7 +485,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
 
       const data = Buffer.from(content, "utf-8");
       if (data.length > maxWriteBytes) {
-        return errorResult(
+        return preMutationErrorResult(
           `Content size ${data.length} bytes exceeds limit of ${maxWriteBytes} bytes`,
         );
       }
@@ -455,7 +502,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
           ...(toolCallId !== undefined ? { toolCallId } : {}),
         });
         const rejection = workspaceMutationAdmissionToolResult(admission);
-        if (rejection !== null) return rejection;
+        if (rejection !== null) return asPreMutationRefusal(rejection);
         await executeWorkspaceFileMutation({
           admission,
           path: absolutePath,
