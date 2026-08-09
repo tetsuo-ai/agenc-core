@@ -1,0 +1,127 @@
+import assert from 'node:assert/strict'
+import { test } from 'vitest'
+
+// MACRO is replaced at build time but not in test mode. Registration of a
+// bundled skill with `files` resolves the extraction directory (and thus
+// MACRO.VERSION) at module load, so the stub must exist before the dynamic
+// imports below pull in bundledSkills.ts.
+;(globalThis as Record<string, unknown>).MACRO = {
+  VERSION: '99.0.0',
+  DISPLAY_VERSION: '0.0.0-test',
+  BUILD_TIME: new Date().toISOString(),
+  ISSUES_EXPLAINER: 'report the issue at https://github.com/tetsuo-ai/agenc-core/issues',
+  PACKAGE_URL: '@tetsuo-ai/agenc',
+  NATIVE_PACKAGE_URL: undefined,
+}
+
+import type { ToolUseContext } from '../tools/Tool.js'
+
+const EXPECTED_FILES = [
+  'boards/esp32.md',
+  'boards/arduino.md',
+  'boards/raspberry-pi.md',
+  'boards/rp2040.md',
+  'boards/orange-pi.md',
+  'boards/radxa.md',
+  'boards/stm32.md',
+  'toolchains/platformio.md',
+  'toolchains/arduino-cli.md',
+  'toolchains/esp-idf.md',
+  'toolchains/micropython.md',
+  'workflows/end-to-end.md',
+  'safety.md',
+]
+
+test('bundled iot-builder skill registers with board detection and safety workflow', async () => {
+  const { getBundledSkills } = await import('./bundledSkills.js')
+  const skill = getBundledSkills().find(
+    (command) => command.name === 'iot-builder',
+  )
+  assert.ok(skill, 'iot-builder skill is registered as a bundled skill')
+  assert.equal(skill.source, 'bundled')
+  assert.equal(skill.userInvocable, true)
+  assert.equal(skill.isHidden, false)
+  assert.equal(skill.type, 'prompt')
+  assert.equal(skill.argumentHint, '[board or project goal]')
+
+  assert.ok(skill.description && skill.description.length > 0)
+  assert.ok(skill.whenToUse && skill.whenToUse.length > 0)
+  assert.match(skill.whenToUse!, /ESP32/)
+  assert.match(skill.whenToUse!, /Arduino/)
+  assert.match(skill.whenToUse!, /STM32/)
+
+  const blocks = await skill.getPromptForCommand('', {} as ToolUseContext)
+  const text = blocks
+    .map((block) => (block.type === 'text' ? block.text : ''))
+    .join('\n')
+
+  assert.match(text, /Identify the board/, 'teaches board detection')
+  assert.match(
+    text,
+    /arduino-cli board list/,
+    'includes real detection commands',
+  )
+  assert.match(text, /PlatformIO/, 'covers toolchain selection')
+  assert.match(text, /pio device monitor/, 'covers the serial monitor step')
+  assert.match(
+    text,
+    /Electrical safety/,
+    'carries the mandatory safety checklist',
+  )
+  assert.match(text, /dialout/, 'covers Linux serial permissions')
+  assert.match(
+    text,
+    /Base directory for this skill/,
+    'instructs the agent to use the extracted reference files',
+  )
+})
+
+test('iot-builder definition ships the board, toolchain, workflow, and safety references', async () => {
+  const { IOT_BUILDER_SKILL } = await import('./bundled/iotBuilder.js')
+  assert.equal(IOT_BUILDER_SKILL.name, 'iot-builder')
+  assert.ok(IOT_BUILDER_SKILL.description.length > 0)
+  assert.ok(IOT_BUILDER_SKILL.whenToUse!.length > 0)
+
+  const files = IOT_BUILDER_SKILL.files
+  assert.ok(files, 'skill ships extractable reference files')
+  for (const path of EXPECTED_FILES) {
+    assert.ok(
+      files[path] && files[path].length > 500,
+      `files['${path}'] exists and is non-trivial`,
+    )
+  }
+
+  assert.match(files['boards/esp32.md']!, /GPIO0/, 'ESP32 strapping pins')
+  assert.match(files['boards/arduino.md']!, /arduino:avr:uno/, 'Uno FQBN')
+  assert.match(
+    files['boards/raspberry-pi.md']!,
+    /gpiodetect/,
+    'libgpiod on Raspberry Pi',
+  )
+  assert.match(files['boards/rp2040.md']!, /BOOTSEL/, 'RP2040 UF2 flow')
+  assert.match(files['boards/orange-pi.md']!, /RK3588S/, 'Orange Pi 5 SoC')
+  assert.match(files['boards/radxa.md']!, /rsetup/, 'Radxa overlay tooling')
+  assert.match(
+    files['boards/stm32.md']!,
+    /st-flash write firmware\.bin 0x8000000/,
+    'ST-Link flash command',
+  )
+  assert.match(
+    files['toolchains/platformio.md']!,
+    /board = esp32dev/,
+    'PlatformIO ESP32 board id',
+  )
+  assert.match(
+    files['toolchains/arduino-cli.md']!,
+    /arduino-cli compile --fqbn/,
+    'Arduino CLI compile flow',
+  )
+  assert.match(files['toolchains/esp-idf.md']!, /idf\.py set-target/)
+  assert.match(files['toolchains/micropython.md']!, /mpremote/)
+  assert.match(files['workflows/end-to-end.md']!, /espota/, 'OTA upload')
+  assert.match(
+    files['safety.md']!,
+    /flyback/,
+    'inductive-load safety guidance',
+  )
+})

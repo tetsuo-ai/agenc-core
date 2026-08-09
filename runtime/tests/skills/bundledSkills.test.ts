@@ -1,10 +1,22 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
+// MACRO is replaced at build time but not in test mode. Bundled skills with
+// `files` resolve their extraction directory (MACRO.VERSION) at registration,
+// i.e. at module load of bundledSkills.ts — stub before the dynamic import.
+;(globalThis as Record<string, unknown>).MACRO = {
+  VERSION: '99.0.0',
+  DISPLAY_VERSION: '0.0.0-test',
+  BUILD_TIME: new Date().toISOString(),
+  ISSUES_EXPLAINER: 'report the issue at https://github.com/tetsuo-ai/agenc-core/issues',
+  PACKAGE_URL: '@tetsuo-ai/agenc',
+  NATIVE_PACKAGE_URL: undefined,
+}
+
 import type { ToolUseContext } from '../tools/Tool.js'
-import { getBundledSkills } from './bundledSkills.js'
 
 test('bundled agenc-marketplace-kit-installer skill registers with the safe install runbook', async () => {
+  const { getBundledSkills } = await import('./bundledSkills.js')
   const skill = getBundledSkills().find(
     (command) => command.name === 'agenc-marketplace-kit-installer',
   )
