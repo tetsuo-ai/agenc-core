@@ -139,6 +139,52 @@ function mergeAvailableSkills(
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * Bundled skills registered in the runtime (browser-automation, iot-builder,
+ * ...). They are invocable slash commands but not part of the local skill
+ * loader, so merge them into the listing with a `bundled` source tag.
+ *
+ * Dynamic literal import (esbuild-discoverable) with a catch: in tests the
+ * build-time MACRO global is absent and bundled registration throws at module
+ * load — the listing then just omits bundled skills instead of failing.
+ */
+async function bundledSkillsFromRegistry(): Promise<AvailableSkillSnapshot[]> {
+  try {
+    const loaded = (await import(
+      "../skills/bundledSkills.js"
+    )) as unknown as Record<string, unknown>;
+    const getBundledSkills = loaded.getBundledSkills;
+    if (typeof getBundledSkills !== "function") return [];
+    const commands = (getBundledSkills as () => unknown)();
+    if (!Array.isArray(commands)) return [];
+    return commands.flatMap((command): AvailableSkillSnapshot[] => {
+      if (
+        !isRecord(command) ||
+        typeof command.name !== "string" ||
+        command.name.length === 0
+      ) {
+        return [];
+      }
+      return [
+        {
+          name: command.name,
+          description: optionalString(command.description),
+          loadedFrom: "bundled",
+          userInvocable: optionalBoolean(command.userInvocable),
+          disableModelInvocation: optionalBoolean(
+            command.disableModelInvocation,
+          ),
+          aliases: Array.isArray(command.aliases)
+            ? command.aliases.map(String)
+            : undefined,
+        },
+      ];
+    });
+  } catch {
+    return [];
+  }
+}
+
 function formatSourceTag(skill: AvailableSkillSnapshot): string {
   if (skill.name.startsWith(".")) return " [system]";
   const source = skill.loadedFrom ?? skill.scope;
@@ -302,7 +348,10 @@ export async function collectSkillsSnapshot(
         disableModelInvocation: skill.disableModelInvocation,
         aliases: skill.aliases,
       })),
-      mcpSkillsFromAppState(appStateBridge),
+      [
+        ...(await bundledSkillsFromRegistry()),
+        ...mcpSkillsFromAppState(appStateBridge),
+      ],
     ),
     effectiveSkillRoots: normalizeRoots(pluginView.effectiveSkillRoots()).sort(
       (a, b) => a.localeCompare(b),

@@ -39,7 +39,7 @@ Existing directories only (missing roots skipped). Project walk: cwd up to home.
 `getSkillsPath` (settings source → path) also maps policy/user/project to
 managed / config-home / `.agenc/skills`.
 
-Slash: `/skills` — list roots, manage project skills.
+Slash: `/skills` — list roots, manage project skills; also lists bundled skills (tagged `[bundled]`).
 
 ### Bundled skills
 
