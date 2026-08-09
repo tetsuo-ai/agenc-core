@@ -47,6 +47,7 @@ Slash: `/skills` — list roots, manage project skills.
 | --- | --- |
 | `browser-automation` | Snapshot → act → re-snapshot workflow for the LIVE `Browser` tool ([browser.md](../browser.md)) |
 | `agenc-marketplace-kit-installer` | Marketplace kit install helper |
+| `iot-builder` | IoT/embedded project builder: board detection, toolchain selection (PlatformIO, Arduino CLI, ESP-IDF, MicroPython, SBC cross-compile), build → flash → serial-monitor loop, and an electrical-safety checklist. Extracts per-board and per-toolchain reference files on first invoke |
 
 ### `SKILL.md` frontmatter (high level)
 
