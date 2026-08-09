@@ -436,7 +436,27 @@ export async function runAdmittedModelCall(
     }
     accountingFailureReason = "token_accounting_unavailable";
   }
-  const maxInputTokens = accountingResult?.inputTokens ?? 0;
+  const countedInputTokens = accountingResult?.inputTokens ?? 0;
+  // Provider-native server tools (web_search, x_search, code_interpreter,
+  // file_search, mcp) execute on the provider side and feed their results back
+  // into the same turn's context. Token accounting can only count the messages
+  // this process sends, so the counted total systematically under-states the
+  // real input for these turns: an observed web_search reserved 2,565 tokens
+  // and reported 10,104, and reservations of ~2.6k against reported 48k-53k
+  // are routine. Reconciliation then sees actualTokens > reserved_tokens,
+  // flags provider_overrun, and sets blocked_by_provider_overrun on the
+  // allocation, which cancels every later step in the run. A single search
+  // takes down the whole session.
+  //
+  // The provider cannot feed back more than the context window, so that is the
+  // true upper bound for these turns. Reserve it instead of the uncountable
+  // estimate. This only widens the reservation; the authoritative reported
+  // usage is still what gets charged at reconciliation.
+  const maxInputTokens =
+    hasUnboundedPaidServerTool(accountingOptions) &&
+    contextWindowTokens > countedInputTokens
+      ? contextWindowTokens
+      : countedInputTokens;
   const unboundedPaidServerTool =
     hasHardCostCap && hasUnboundedPaidServerTool(accountingOptions);
   const maximumCost = maximumTokenCostUsd(

@@ -465,6 +465,78 @@ describe("runAdmittedModelCall", () => {
     });
   });
 
+  test("reserves the context window for provider-native server tool turns", async () => {
+    // Regression: provider-native server tools run on the provider side and
+    // feed their results back into the same turn's context, so the counted
+    // input systematically under-states the real usage. Reserving the counted
+    // value made reconciliation see actualTokens > reserved_tokens, flag
+    // provider_overrun, and set blocked_by_provider_overrun on the allocation,
+    // which cancels every later step in the run. Observed live: a web_search
+    // turn reserved 2,565 and reported 10,104; reservations near 2.6k against
+    // 48k-53k reported were routine, and one search took down the session.
+    const state = harness({});
+    (state.provider as unknown as {
+      tokenCountCapability?: ProviderTokenCountCapability;
+    }).tokenCountCapability = {
+      capabilityVersion: "server-tool-count-v1",
+      adapterRevision: "server-tool-adapter-v1",
+      configurationRevision: "server-tool-config-v1",
+      countTokens: async () => ({
+        inputTokens: 40,
+        complete: true as const,
+        confidence: "exact" as const,
+        countedComponents: ["messages" as const, "provider_framing" as const],
+      }),
+    };
+
+    await callOptions(
+      state,
+      {
+        maxOutputTokens: 200,
+        contextWindowTokens: 90_000,
+        toolRouting: { allowedToolNames: ["web_search"] },
+      },
+      async () => response(),
+    );
+
+    // The provider cannot feed back more than the context window, so that is
+    // the honest upper bound for the turn, not the 40 counted tokens.
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ maxInputTokens: 90_000 }),
+      undefined,
+    );
+  });
+
+  test("reserves only the counted input when no server tool is routed", async () => {
+    // The widened reservation must stay scoped to provider-native server
+    // tools; ordinary turns keep the tight counted bound.
+    const state = harness({});
+    (state.provider as unknown as {
+      tokenCountCapability?: ProviderTokenCountCapability;
+    }).tokenCountCapability = {
+      capabilityVersion: "plain-count-v1",
+      adapterRevision: "plain-adapter-v1",
+      configurationRevision: "plain-config-v1",
+      countTokens: async () => ({
+        inputTokens: 40,
+        complete: true as const,
+        confidence: "exact" as const,
+        countedComponents: ["messages" as const, "provider_framing" as const],
+      }),
+    };
+
+    await callOptions(
+      state,
+      { maxOutputTokens: 200, contextWindowTokens: 90_000 },
+      async () => response(),
+    );
+
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ maxInputTokens: 40 }),
+      undefined,
+    );
+  });
+
   test("requires an authoritative bounded provider for token-only hard caps", async () => {
     const state = harness({ maxTokens: 1_000, authoritative: false });
 
