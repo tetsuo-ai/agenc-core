@@ -1,4 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
+import { logForDebugging } from "src/utils/debug.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -4496,9 +4497,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           ),
         );
       })
-      .catch(() => {
-        // Palette degrades to built-ins only; command loading errors are
-        // already logged by the loaders themselves.
+      .catch((error) => {
+        // Palette degrades to built-ins only on load failure — never silently:
+        // a rejected load leaves every dynamic command (skills, rails,
+        // plugins) reporting "Unknown command" on submit.
+        logForDebugging(
+          `dynamic TUI command load failed; palette degraded to built-ins: ${
+            error instanceof Error ? (error.stack ?? error.message) : String(error)
+          }`,
+          { level: "warn" },
+        );
       });
     return () => {
       cancelled = true;
@@ -5681,6 +5689,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       showTransientResult,
       addNotification,
       commandRegistry,
+      commands,
       submitToSession,
       workbenchEnabled,
       workspaceEditorBlockers.agent,

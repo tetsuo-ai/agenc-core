@@ -25,6 +25,7 @@ import {
 import { clearPluginRegistrationCaches } from "./plugins/registration/manager.js";
 import type { AgenCConfig } from "./config/schema.js";
 import { isRecord } from "./utils/record.js";
+import { logForDebugging } from "./utils/debug.js";
 
 export type LocalCommandResult =
   | { type: "text"; value: string }
@@ -401,7 +402,16 @@ async function callCommandSource(
     const fn = loaded[exportName];
     if (typeof fn !== "function") return [];
     return commandArray(await fn(...args));
-  } catch {
+  } catch (error) {
+    // Never let one source break the palette, but never fail silently either:
+    // a rejected module load (e.g. bundled skills throwing at registration)
+    // otherwise vanishes and the commands are "unknown" with no trace.
+    logForDebugging(
+      `command source ${exportName} failed to load: ${
+        error instanceof Error ? (error.stack ?? error.message) : String(error)
+      }`,
+      { level: "warn" },
+    );
     return [];
   }
 }
