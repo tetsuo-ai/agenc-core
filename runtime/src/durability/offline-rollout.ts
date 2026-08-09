@@ -537,6 +537,26 @@ function descriptorOperationPath(
       // pathname that can be replaced during offline mutation.
     }
   }
+  // darwin: realpathSync("/dev/fd/N") resolves back to "/dev/fd/N" rather than
+  // the target, so the alias comparison above can never match and the daemon
+  // refuses to recover any existing project state. Fall back to the canonical
+  // pathname only after proving through the retained descriptor that it is the
+  // same directory inode, which is the property the alias check was buying.
+  if (process.platform !== "win32") {
+    try {
+      const viaDescriptor = fstatSync(fd);
+      const viaPath = lstatSync(canonicalPath);
+      if (
+        viaPath.isDirectory() &&
+        viaDescriptor.dev === viaPath.dev &&
+        viaDescriptor.ino === viaPath.ino
+      ) {
+        return canonicalPath;
+      }
+    } catch {
+      // Fall through to the unavailable error below.
+    }
+  }
   return undefined;
 }
 
