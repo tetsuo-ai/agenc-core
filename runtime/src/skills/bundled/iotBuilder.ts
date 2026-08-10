@@ -251,7 +251,25 @@ permission error whose real fix was a re-login.
 **Never end a turn announcing what you are about to do.** Either run the
 commands, or state that you are stopping and why. "I'll now write the
 firmware" followed by nothing is the most common way this work stalls, and
-it looks identical to a crash from the outside.`;
+it looks identical to a crash from the outside.
+
+## 8. Keep HARDWARE.md current — it is your memory
+
+A project is a SET of things: a board plus sensors, a display, actuators,
+a power path, sometimes several boards. Track them all in one HARDWARE.md
+inventory (format in boards/identify.md), each entry tagged
+\`[measured: cmd]\`, \`[vendor: src]\`, \`[user-reported]\` or \`[ASSUMED]\`.
+
+Update it the MOMENT a fact changes state, before using that fact. Sessions
+end: context fills, runs die, chats get restarted. That is survivable when
+the inventory is on disk and costs the whole day's work when it lives only
+in the conversation. Treat "what do we know about this hardware" as a file
+you maintain, not something you hold in your head.
+
+When several boards are involved, name them (board-main, board-sensor) and
+use those names in platformio.ini env names, ports and log prefixes. "The
+board" is ambiguous the moment there are two, and a command sent to the
+wrong port fails silently.`;
 
 const BOARD_IDENTIFY = `# Identifying an unknown board
 
@@ -438,27 +456,66 @@ candidates:
 That last one turns a pin sweep into a binary search. One question per round,
 tied to a specific hypothesis.
 
-## Rung 6 — write down what you concluded, with provenance
+## Rung 6 — HARDWARE.md: the inventory, and your memory across sessions
 
-Create HARDWARE.md in the project and tag every fact with how it was
-established. Later turns then build on facts instead of re-deriving them,
-and an assumption stays visibly an assumption:
+A project is almost never one board. It is a board plus sensors, a display,
+actuators, a power path — and sometimes several boards talking to each
+other. Identification applies to every one of them, and each is at a
+different level of certainty at any moment. Keep them all in one
+HARDWARE.md, as an INVENTORY, not a single spec.
+
+**Write it as you learn, not at the end.** This file is also the answer to
+losing a session: context windows fill, runs die, chats get restarted. A
+session that ends with HARDWARE.md current costs nothing to resume — the
+next one reads facts instead of re-deriving them. A session that kept
+everything in the conversation loses all of it. Update the file the moment
+a fact changes state, before doing anything else with it.
+
+Every entry carries provenance, and only four tags are allowed:
+\`[measured: <command>]\`, \`[vendor: <source>]\`, \`[user-reported]\`,
+\`[ASSUMED]\`. Anything ASSUMED or unverified must be restated as an
+assumption every time you report on it. Never silently promote it.
 
 \`\`\`markdown
-# Hardware
-- Chip: ESP32-S3 rev 0.2        [measured: esptool flash-id]
-- Flash: 16 MB, XM25QU64A       [measured: esptool flash-id]
-- PSRAM: 8 MB octal             [measured: espefuse summary]
-- Framework of stock firmware: Arduino core   [measured: strings backup.bin]
+# Hardware inventory
+
+## Targets
+### board-main — ESP32-S3-Touch-AMOLED-1.8 rev V1
 - Port: /dev/ttyACM0            [measured: /dev/serial/by-id]
-- Board: LilyGO T-Display-S3    [ASSUMED — matches specs, NOT verified]
-- Display: ST7789 170x320       [ASSUMED — depends on board, unverified]
-- LCD power pin 15, backlight 38 [UNVERIFIED — from vendor docs, untested]
+- Chip: ESP32-S3 rev v0.2, 16 MB flash, 8 MB octal PSRAM
+                                [measured: esptool flash-id + build both ways]
+- Identified by: AliExpress listing title   [user-reported]
+- Display: SH8601 QSPI AMOLED   [confirmed: vendor V1 factory image lit it]
+- Touch: FT3168 I2C             [vendor: waveshare wiki, rev V1]
+- Firmware now: vendor factory image  [measured: write-flash 0x0, hash ok]
+
+### board-sensor — Arduino Nano (second target, not yet connected)
+- Role: battery-powered sensor node, talks to board-main over ESP-NOW
+- Port: not connected           [pending]
+
+## Components on board-main
+| Part | Bus / address | Pins | Status |
+| --- | --- | --- | --- |
+| QMI8658 IMU | I2C | ? | [vendor] not probed |
+| ES8311 audio | I2C | ? | [measured: strings in factory image] |
+| AXP2101 PMIC | I2C | ? | [measured: strings in factory image] |
+| PCF85063 RTC | I2C | ? | [vendor] UNVERIFIED |
+
+## External components
+| Part | Interface | Wiring | Status |
+| --- | --- | --- | --- |
+| BME280 | I2C 0x76 | SDA=8 SCL=9, 3.3V | [measured: I2C scan] |
+| Relay | GPIO 12 | via 2N2222 + flyback | [ASSUMED] not built yet |
+
+## Open questions
+- QMI8658 I2C address unconfirmed — needs a bus scan
+- Whether the RTC shares the touch bus
 \`\`\`
 
-Anything tagged ASSUMED or UNVERIFIED must be either confirmed by a probe or
-stated as an assumption when you report to the user. Do not silently promote
-it to fact — that is the failure mode this whole file exists to prevent.
+With several boards, give each a stable name (board-main, board-sensor) and
+use it everywhere: platformio.ini env names, serial ports, log prefixes. "The
+board" stops meaning anything the moment there are two, and a command aimed
+at the wrong port is silent and confusing.
 
 ## Where to look, in order of reliability
 

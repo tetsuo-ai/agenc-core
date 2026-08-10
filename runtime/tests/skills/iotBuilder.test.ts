@@ -94,6 +94,16 @@ test('bundled iot-builder skill registers with board detection and safety workfl
   )
   assert.match(
     text,
+    /Keep HARDWARE\.md current — it is your memory/,
+    'the always-read prompt makes the inventory the cross-session memory',
+  )
+  assert.match(
+    text,
+    /A project is a SET of things/,
+    'the always-read prompt treats a project as multiple components',
+  )
+  assert.match(
+    text,
     /arduino-cli board list/,
     'includes real detection commands',
   )
@@ -146,6 +156,16 @@ test('iot-builder definition ships the board, toolchain, workflow, and safety re
   assert.match(identify, /RDDID/, 'display controller identification')
   assert.match(identify, /HARDWARE\.md/, 'provenance convention')
   assert.match(identify, /ASSUMED/, 'assumptions stay tagged as assumptions')
+  // A project is a set of parts, often several boards — and the inventory on
+  // disk is what makes a lost session survivable.
+  assert.match(identify, /INVENTORY, not a single spec/, 'multi-component')
+  assert.match(identify, /board-main/, 'named targets when there are several')
+  assert.match(identify, /External components/, 'parts beyond the board itself')
+  assert.match(
+    identify,
+    /losing a session|chats get restarted/,
+    'the inventory is the cross-session memory',
+  )
 
   // Traps measured on a real ESP32-S3R8, each after a wrong conclusion.
   const esp32 = files['boards/esp32.md']!
