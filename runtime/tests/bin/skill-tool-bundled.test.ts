@@ -52,7 +52,7 @@ describe("Skill tool with runtime-registered bundled skills", () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("<command-name>iot-builder</command-name>");
-    expect(result.content).toContain("Identify the board");
+    expect(result.content).toContain("Identify the hardware");
   });
 
   it("still reports genuinely unknown names, listing bundled ones as available", async () => {
