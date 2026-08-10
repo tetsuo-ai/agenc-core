@@ -1340,3 +1340,139 @@ function reconstructCommand(kept: ParseEntry[], originalCmd: string): string {
 
   return result.trim() || originalCmd
 }
+
+// ---------------------------------------------------------------------------
+// Search/read classification for transcript collapsing.
+//
+// Lives here rather than in BashTool.tsx so every shell-running tool can share
+// it. exec_command did not, so it declared no isSearchOrReadCommand and never
+// collapsed — every `ls`, `cat`, `which` and `id` the agent ran was rendered
+// in full, which is most of the noise in a hardware-debugging transcript.
+// ---------------------------------------------------------------------------
+
+const BASH_SEARCH_COMMANDS = new Set([
+  "find",
+  "grep",
+  "rg",
+  "ag",
+  "ack",
+  "locate",
+  "which",
+  "whereis",
+]);
+
+// Read/view commands for collapsible display (cat, head, etc.)
+const BASH_READ_COMMANDS = new Set([
+  "cat",
+  "head",
+  "tail",
+  "less",
+  "more",
+  // Analysis commands
+  "wc",
+  "stat",
+  "file",
+  "strings",
+  // Data processing — commonly used to parse/transform file content in pipes
+  "jq",
+  "awk",
+  "cut",
+  "sort",
+  "uniq",
+  "tr",
+]);
+
+// Directory-listing commands for collapsible display (ls, tree, du).
+// Split from BASH_READ_COMMANDS so the summary says "Listed N directories"
+// instead of the misleading "Read N files".
+const BASH_LIST_COMMANDS = new Set(["ls", "tree", "du"]);
+
+// Commands that are semantic-neutral in any position — pure output/status commands
+// that don't change the read/search nature of the overall pipeline.
+// e.g. `ls dir && echo "---" && ls dir2` is still a read-only compound command.
+export const BASH_SEMANTIC_NEUTRAL_COMMANDS = new Set([
+  "echo",
+  "printf",
+  "true",
+  "false",
+  ":", // bash no-op
+]);
+
+export function isSearchOrReadBashCommand(command: string): {
+  isSearch: boolean;
+  isRead: boolean;
+  isList: boolean;
+} {
+  let partsWithOperators: string[];
+  try {
+    partsWithOperators = splitCommandWithOperators(command);
+  } catch {
+    // If we can't parse the command due to malformed syntax,
+    // it's not a search/read command
+    return {
+      isSearch: false,
+      isRead: false,
+      isList: false,
+    };
+  }
+  if (partsWithOperators.length === 0) {
+    return {
+      isSearch: false,
+      isRead: false,
+      isList: false,
+    };
+  }
+  let hasSearch = false;
+  let hasRead = false;
+  let hasList = false;
+  let hasNonNeutralCommand = false;
+  let skipNextAsRedirectTarget = false;
+  for (const part of partsWithOperators) {
+    if (skipNextAsRedirectTarget) {
+      skipNextAsRedirectTarget = false;
+      continue;
+    }
+    if (part === ">" || part === ">>" || part === ">&") {
+      skipNextAsRedirectTarget = true;
+      continue;
+    }
+    if (part === "||" || part === "&&" || part === "|" || part === ";") {
+      continue;
+    }
+    const baseCommand = part.trim().split(/\s+/)[0];
+    if (!baseCommand) {
+      continue;
+    }
+    if (BASH_SEMANTIC_NEUTRAL_COMMANDS.has(baseCommand)) {
+      continue;
+    }
+    hasNonNeutralCommand = true;
+    const isPartSearch = BASH_SEARCH_COMMANDS.has(baseCommand);
+    const isPartRead = BASH_READ_COMMANDS.has(baseCommand);
+    const isPartList = BASH_LIST_COMMANDS.has(baseCommand);
+    if (!isPartSearch && !isPartRead && !isPartList) {
+      return {
+        isSearch: false,
+        isRead: false,
+        isList: false,
+      };
+    }
+    if (isPartSearch) hasSearch = true;
+    if (isPartRead) hasRead = true;
+    if (isPartList) hasList = true;
+  }
+
+  // Only neutral commands (e.g., just "echo foo") -- not collapsible
+  if (!hasNonNeutralCommand) {
+    return {
+      isSearch: false,
+      isRead: false,
+      isList: false,
+    };
+  }
+  return {
+    isSearch: hasSearch,
+    isRead: hasRead,
+    isList: hasList,
+  };
+}

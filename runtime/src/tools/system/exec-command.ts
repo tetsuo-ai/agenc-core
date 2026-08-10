@@ -23,6 +23,7 @@ import {
   SandboxExecutionError,
   type SandboxExecutionSurface,
 } from "../../sandbox/execution-broker.js";
+import { isSearchOrReadBashCommand } from "../../utils/bash/commands.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
@@ -341,6 +342,15 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     // The generic executor must not invent a second deadline.
     timeoutBehavior: "tool",
     recoveryCategory: "side-effecting",
+    // Transcript collapsing keys off this. BashTool has declared it since
+    // forever; exec_command never did, so every `ls`, `cat`, `which` and `id`
+    // the agent ran was rendered in full instead of folding into a one-line
+    // "Read N files" summary. On a hardware-debugging session that is most of
+    // the transcript — and most of the context budget. Same classifier as
+    // Bash, so a build or an upload still renders in full: those are the ones
+    // worth looking at.
+    isSearchOrReadCommand: (input: { cmd?: string; command?: string }) =>
+      isSearchOrReadBashCommand(input?.cmd ?? input?.command ?? ""),
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
     interruptBehavior: () => "cancel",

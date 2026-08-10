@@ -30,6 +30,8 @@ import type { AgentId } from "../../types/ids.js";
 import type { AssistantMessage } from "../../types/message.js";
 import { parseForSecurity } from "../../utils/bash/ast.js";
 import {
+  BASH_SEMANTIC_NEUTRAL_COMMANDS,
+  isSearchOrReadBashCommand,
   splitCommand_DEPRECATED,
   splitCommandWithOperators,
 } from "../../utils/bash/commands.js";
@@ -114,53 +116,6 @@ const PROGRESS_THRESHOLD_MS = 2000; // Show progress after 2 seconds
 const ASSISTANT_BLOCKING_BUDGET_MS = 15_000;
 
 // Search commands for collapsible display (grep, find, etc.)
-const BASH_SEARCH_COMMANDS = new Set([
-  "find",
-  "grep",
-  "rg",
-  "ag",
-  "ack",
-  "locate",
-  "which",
-  "whereis",
-]);
-
-// Read/view commands for collapsible display (cat, head, etc.)
-const BASH_READ_COMMANDS = new Set([
-  "cat",
-  "head",
-  "tail",
-  "less",
-  "more",
-  // Analysis commands
-  "wc",
-  "stat",
-  "file",
-  "strings",
-  // Data processing — commonly used to parse/transform file content in pipes
-  "jq",
-  "awk",
-  "cut",
-  "sort",
-  "uniq",
-  "tr",
-]);
-
-// Directory-listing commands for collapsible display (ls, tree, du).
-// Split from BASH_READ_COMMANDS so the summary says "Listed N directories"
-// instead of the misleading "Read N files".
-const BASH_LIST_COMMANDS = new Set(["ls", "tree", "du"]);
-
-// Commands that are semantic-neutral in any position — pure output/status commands
-// that don't change the read/search nature of the overall pipeline.
-// e.g. `ls dir && echo "---" && ls dir2` is still a read-only compound command.
-const BASH_SEMANTIC_NEUTRAL_COMMANDS = new Set([
-  "echo",
-  "printf",
-  "true",
-  "false",
-  ":", // bash no-op
-]);
 
 // Commands that typically produce no stdout on success
 const BASH_SILENT_COMMANDS = new Set([
@@ -192,84 +147,6 @@ const BASH_SILENT_COMMANDS = new Set([
  * position, as they're pure output/status commands that don't affect the read/search
  * nature of the pipeline (e.g. `ls dir && echo "---" && ls dir2` is still a read).
  */
-function isSearchOrReadBashCommand(command: string): {
-  isSearch: boolean;
-  isRead: boolean;
-  isList: boolean;
-} {
-  let partsWithOperators: string[];
-  try {
-    partsWithOperators = splitCommandWithOperators(command);
-  } catch {
-    // If we can't parse the command due to malformed syntax,
-    // it's not a search/read command
-    return {
-      isSearch: false,
-      isRead: false,
-      isList: false,
-    };
-  }
-  if (partsWithOperators.length === 0) {
-    return {
-      isSearch: false,
-      isRead: false,
-      isList: false,
-    };
-  }
-  let hasSearch = false;
-  let hasRead = false;
-  let hasList = false;
-  let hasNonNeutralCommand = false;
-  let skipNextAsRedirectTarget = false;
-  for (const part of partsWithOperators) {
-    if (skipNextAsRedirectTarget) {
-      skipNextAsRedirectTarget = false;
-      continue;
-    }
-    if (part === ">" || part === ">>" || part === ">&") {
-      skipNextAsRedirectTarget = true;
-      continue;
-    }
-    if (part === "||" || part === "&&" || part === "|" || part === ";") {
-      continue;
-    }
-    const baseCommand = part.trim().split(/\s+/)[0];
-    if (!baseCommand) {
-      continue;
-    }
-    if (BASH_SEMANTIC_NEUTRAL_COMMANDS.has(baseCommand)) {
-      continue;
-    }
-    hasNonNeutralCommand = true;
-    const isPartSearch = BASH_SEARCH_COMMANDS.has(baseCommand);
-    const isPartRead = BASH_READ_COMMANDS.has(baseCommand);
-    const isPartList = BASH_LIST_COMMANDS.has(baseCommand);
-    if (!isPartSearch && !isPartRead && !isPartList) {
-      return {
-        isSearch: false,
-        isRead: false,
-        isList: false,
-      };
-    }
-    if (isPartSearch) hasSearch = true;
-    if (isPartRead) hasRead = true;
-    if (isPartList) hasList = true;
-  }
-
-  // Only neutral commands (e.g., just "echo foo") -- not collapsible
-  if (!hasNonNeutralCommand) {
-    return {
-      isSearch: false,
-      isRead: false,
-      isList: false,
-    };
-  }
-  return {
-    isSearch: hasSearch,
-    isRead: hasRead,
-    isList: hasList,
-  };
-}
 
 /**
  * Checks if a bash command is expected to produce no stdout on success.

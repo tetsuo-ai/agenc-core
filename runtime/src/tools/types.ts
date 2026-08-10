@@ -196,6 +196,18 @@ export interface Tool {
   /** Orchestrator hint: `true` → orchestrator.classifyToolApproval
    *  treats the tool as read-only under `granular` policy. */
   readonly isReadOnly?: boolean;
+  /**
+   * Transcript hint: classify this call as a search/read/list so the TUI can
+   * fold runs of them into one summary line instead of rendering each in
+   * full. Absent means "never collapse". BashTool has always declared this;
+   * exec_command did not, which is why every `ls`/`cat`/`which` it ran filled
+   * the transcript — and the context budget — verbatim.
+   */
+  readonly isSearchOrReadCommand?: (input: never) => {
+    isSearch: boolean;
+    isRead: boolean;
+    isList?: boolean;
+  };
   /** Orchestrator hint: `true` → under `on_request` policy the tool
    *  always requires user approval. */
   readonly requiresApproval?: boolean;
