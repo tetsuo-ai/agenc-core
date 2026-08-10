@@ -1476,6 +1476,26 @@ export function formatStructuredToolResult(
   eventType: string,
   payload: Record<string, unknown>,
 ): readonly { readonly type: "text"; readonly text: string }[] {
+  // Skill loads return the ENTIRE skill prompt as the tool result — 12k+
+  // characters of instructions for the model, not conversation. Rendering it
+  // verbatim buries the chat under the full skill text on every invocation
+  // (report: "the tui shows me the complete iot builder prompt"). Show a
+  // one-line receipt; the full text stays in the transcript view (ctrl+o)
+  // and, of course, in what the model received. Failed loads (unknown skill,
+  // not model-invocable) are short JSON errors with no <command-name> tag and
+  // still render verbatim.
+  if (toolName === "Skill") {
+    const raw = stringResult(payload.result);
+    const name = /<command-name>([^<]{1,120})<\/command-name>/.exec(raw)?.[1];
+    if (name !== undefined) {
+      return [
+        {
+          type: "text",
+          text: `Loaded skill ${name} (${raw.length} chars of instructions — hidden from chat)`,
+        },
+      ];
+    }
+  }
   if (eventType === "exec_command_end") {
     const stdout = typeof payload.stdout === "string" ? payload.stdout : "";
     const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
