@@ -69,10 +69,20 @@ export class LiveEffectMutationBlockedError extends Error {
   readonly code = "UNKNOWN_OUTCOME_MUTATION_BLOCKED" as const;
 
   constructor(readonly blocking: readonly LiveEffectIdentity[]) {
+    // Name the way out. This message is what the model sees, and without the
+    // remediation it concludes the session is unrecoverable and tells the user
+    // to restart the chat — observed verbatim on a live hardware session that
+    // then lost its whole working context. `/resolve` clears the gate through
+    // the running daemon; the operator never needed a new session.
     super(
       `live effect settlement is unresolved for ${blocking
         .map((effect) => `${effect.callId} (${effect.toolName})`)
-        .join(", ")}; side-effecting and interactive dispatch remain blocked`,
+        .join(", ")}; side-effecting and interactive dispatch remain blocked. ` +
+        `This is recoverable without restarting: run ` +
+        `\`/resolve ${blocking[0]?.callId ?? "<call-id>"} ` +
+        `<confirmed_committed|confirmed_no_effect|remains_unknown> ` +
+        `<evidence-ref> <evidence-sha256>\` to review the unknown outcome and ` +
+        `unblock the session.`,
     );
     this.name = "LiveEffectMutationBlockedError";
   }

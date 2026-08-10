@@ -208,6 +208,13 @@ them; do not invent FQBNs, board IDs, offsets, or pin numbers.
   Unrelated red herring while debugging this: apparmor="DENIED" lines for the
   lsusb profile reading /sys/.../uevent are stock Ubuntu confinement and have
   nothing to do with serial-port access.
+- "side-effecting and interactive dispatch remain blocked" mid-session: a
+  tool call died with an unknown outcome (commonly write_stdin against a
+  serial monitor that went away) and the M4 gate is refusing every later
+  build, upload and edit. This does NOT need a new session — do not tell the
+  user to restart. Run \`/resolve <call-id> <disposition> <evidence-ref>
+  <evidence-sha256>\`; use confirmed_no_effect when you can show the write
+  never reached the device, confirmed_committed when it did.
 - Port vanished after flash: native-USB boards (ESP32-S2/S3/C3, RP2040,
   Uno R4) re-enumerate; re-run pio device list / arduino-cli board list.
 - Always end an iteration by reporting what the serial output actually
