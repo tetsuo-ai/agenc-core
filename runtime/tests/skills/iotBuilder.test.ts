@@ -17,6 +17,7 @@ import { test } from 'vitest'
 import type { ToolUseContext } from '../tools/Tool.js'
 
 const EXPECTED_FILES = [
+  'boards/identify.md',
   'boards/esp32.md',
   'boards/arduino.md',
   'boards/raspberry-pi.md',
@@ -55,7 +56,26 @@ test('bundled iot-builder skill registers with board detection and safety workfl
     .map((block) => (block.type === 'text' ? block.text : ''))
     .join('\n')
 
-  assert.match(text, /Identify the board/, 'teaches board detection')
+  assert.match(
+    text,
+    /Identify the hardware — by measuring, not by recalling/,
+    'teaches board detection',
+  )
+  assert.match(
+    text,
+    /identifies the \*\*chip\*\*, not the \*\*board\*\*/,
+    'states what USB and esptool probes actually prove',
+  )
+  assert.match(
+    text,
+    /Never write a pin number, FQBN, flash offset or display driver from\nmemory/,
+    'forbids recalled hardware values in the always-read prompt',
+  )
+  assert.match(
+    text,
+    /read-flash 0 ALL backup\.bin/,
+    'mandates a backup before the first overwrite',
+  )
   assert.match(
     text,
     /arduino-cli board list/,
@@ -90,6 +110,20 @@ test('iot-builder definition ships the board, toolchain, workflow, and safety re
       `files['${path}'] exists and is non-trivial`,
     )
   }
+
+  // Identification must stay measurement-first: the ladder, the local board
+  // databases, the on-device probe, and provenance tagging. A real session
+  // burned its whole context because the agent recalled a board model from
+  // training data and presented it as a conclusion.
+  const identify = files['boards/identify.md']!
+  assert.match(identify, /read-flash 0 ALL/, 'backup before first overwrite')
+  assert.match(identify, /espefuse/, 'eFuse is the authority on PSRAM config')
+  assert.match(identify, /pins_arduino\.h/, 'real pin map source')
+  assert.match(identify, /platformio\/platforms/, 'local board manifests')
+  assert.match(identify, /esp_chip_info/, 'on-device probe sketch')
+  assert.match(identify, /RDDID/, 'display controller identification')
+  assert.match(identify, /HARDWARE\.md/, 'provenance convention')
+  assert.match(identify, /ASSUMED/, 'assumptions stay tagged as assumptions')
 
   assert.match(files['boards/esp32.md']!, /GPIO0/, 'ESP32 strapping pins')
   assert.match(files['boards/arduino.md']!, /arduino:avr:uno/, 'Uno FQBN')

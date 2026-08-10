@@ -21,22 +21,57 @@ end: Arduino (Uno/Nano/Mega/R4), ESP32/ESP8266, Raspberry Pi (SBC and
 Pico/RP2040), Orange Pi, Radxa, STM32, sensors, GPIO/I2C/SPI/UART, firmware,
 and serial monitoring. Follow the orchestration loop below in order.
 
-## 1. Identify the board
+## 1. Identify the hardware — by measuring, not by recalling
 
-If the user already named the board or project goal, use that. Otherwise ask
-ONE short question ("Which board are you using — e.g. Arduino Uno, ESP32
-DevKit, Raspberry Pi Pico?") before generating hardware-specific code. Pin
-maps, logic levels, and flash procedures differ per board; never guess.
+Read boards/identify.md before this step. It is the longest reference file
+here because this is where the most time gets lost.
 
-Probes to identify a connected board (run them yourself):
+Ask ONCE, briefly, what the board is. If the user answers with a specific
+model, use it. **Expect them not to know** — a board off a marketplace with
+no silkscreen model is the normal case, not the edge case. "I don't know" is
+not a dead end, it is the start of the ladder in identify.md.
+
+What the obvious probes actually tell you:
 
 \`\`\`
-arduino-cli board list            # USB-serial boards with known VID:PID
-pio device list                   # PlatformIO: serial ports + descriptions
-lsusb                             # VID:PID lookup (0403:6001 = FTDI, 10c4:ea60 = CP210x, 1a86:7523 = CH340, 303a:* = Espressif native USB)
-ls /dev/ttyUSB* /dev/ttyACM*      # candidate serial ports (Linux)
-esptool.py --port /dev/ttyUSB0 flash_id   # ESP32/ESP8266: chip model + flash size
+ls /dev/ttyUSB* /dev/ttyACM*      # candidate ports; native-USB boards are ttyACM
+lsusb                             # 0403:6001 FTDI, 10c4:ea60 CP210x, 1a86:7523 CH340, 303a:* Espressif native USB
+arduino-cli board list            # matches USB ids against installed cores
+pio device list                   # serial ports + descriptions
+esptool -p /dev/ttyACM0 flash-id  # chip model, revision, flash part + size
 \`\`\`
+
+Every one of those identifies the **chip**, not the **board**. On an
+Espressif native-USB board the descriptors read Manufacturer "Espressif",
+Product "USB JTAG/serial debug unit", Serial = the MAC — those strings live
+in the chip ROM and are byte-identical across every board using that chip.
+47 different boards in the local PlatformIO manifests share 303a:1001. Chip
+identity is free and certain; board identity is neither.
+
+That matters because what you actually need is almost never the board's
+name — it is its pin map, its display controller, its LED pin. Separate the
+two questions and only the second one has to be answered.
+
+**Never write a pin number, FQBN, flash offset or display driver from
+memory.** Quote it from a file you read: the installed core's
+variants/<board>/pins_arduino.h, a board manifest, or vendor documentation.
+Record where each fact came from — see identify.md for the HARDWARE.md
+convention. A recalled value presented as a measured one is the single most
+expensive mistake in this workflow.
+
+## 1b. Get a serial channel before you need it
+
+The serial monitor is the only instrument you have, and steps 3-6 put it
+last. Invert that when the board is uncertain: flash a minimal generic
+build first (esp32-s3-devkitc-1 and friends run on nearly any board of that
+chip), confirm build → flash → monitor works end to end, and only then use
+that live channel to interrogate the hardware. A probe sketch that prints
+esp_chip_info(), flash and PSRAM size, an I2C scan and a display-controller
+ID turns "which board is this?" from a question into a measurement.
+identify.md has the sketch.
+
+Getting the channel working first is also the cheapest possible test of the
+whole toolchain, and it never depends on knowing the board.
 
 ## 2. Pick the toolchain
 
@@ -88,6 +123,14 @@ Generate the real config, not a placeholder: platformio.ini with the exact
 board id, the correct FQBN, ESP-IDF partition CSV, or the device-tree
 overlay line for SBCs — whatever the board guide requires.
 
+Back up before the FIRST write to a board you did not flash yourself. A
+board that shipped with a factory demo has no other copy of it, and the
+dump doubles as identification evidence (see boards/identify.md):
+
+\`\`\`
+esptool -p /dev/ttyACM0 read-flash 0 ALL backup.bin
+\`\`\`
+
 Flash operations are destructive: ALWAYS confirm with the user before any
 flash erase or low-level write — esptool.py erase_flash / write_flash,
 st-flash erase / write, STM32_Programmer_CLI -w, dfu-util -D, rkdeveloptool
@@ -118,6 +161,9 @@ The prompt you received is prefixed with "Base directory for this skill:
 file there and Grep it for exact pin numbers, FQBNs, board IDs, and error
 signatures:
 
+- boards/identify.md — the ladder for a board nobody can name: what USB
+  actually proves, the local board databases, mining the stock firmware,
+  the probe sketch, and the HARDWARE.md provenance convention
 - boards/esp32.md, boards/arduino.md, boards/raspberry-pi.md,
   boards/rp2040.md, boards/orange-pi.md, boards/radxa.md, boards/stm32.md
 - toolchains/platformio.md, toolchains/arduino-cli.md, toolchains/esp-idf.md,
@@ -166,6 +212,184 @@ them; do not invent FQBNs, board IDs, offsets, or pin numbers.
   Uno R4) re-enumerate; re-run pio device list / arduino-cli board list.
 - Always end an iteration by reporting what the serial output actually
   showed, and what you will change next.`;
+
+const BOARD_IDENTIFY = `# Identifying an unknown board
+
+The user usually cannot name their board, and the ecosystem's own advice
+("count the pins, read the silkscreen, pick a generic profile") is where
+this normally stops. You can do better, because identification is a search
+over a finite set with cheap experiments — not a recall problem.
+
+Work the ladder in order. Stop as soon as the remaining ambiguity no longer
+affects the task: a WiFi or I2C-sensor project needs nothing board-specific,
+so a generic profile for the right chip is a complete answer.
+
+## Rung 0 — what the host already knows (free, no connection)
+
+\`\`\`
+ls -l /dev/serial/by-id/                   # symlinks carry vendor strings
+lsusb -v -d <vid>:<pid> 2>/dev/null | head -40
+cat /sys/bus/usb/devices/*/{idVendor,idProduct,manufacturer,product,serial}
+journalctl -k --since "-10 min" | grep -i usb   # enumeration, re-plug events
+\`\`\`
+
+Read the strings, but know their worth. A board behind a UART bridge
+(CP210x/CH340/FTDI) sometimes carries a real vendor string — occasionally
+decisive. A board using the ESP32's native USB does not: Manufacturer
+"Espressif", Product "USB JTAG/serial debug unit" and Serial = MAC come from
+chip ROM and are identical across every board built on that chip. Do not
+over-read them.
+
+## Rung 1 — chip truth (read-only, always works)
+
+\`\`\`
+esptool -p /dev/ttyACM0 flash-id     # chip model + revision, flash mfr/part/size
+esptool -p /dev/ttyACM0 read-mac
+espefuse -p /dev/ttyACM0 summary     # factory MAC, package, burned flash/PSRAM config
+\`\`\`
+
+espefuse is the authority on whether PSRAM is quad or octal, which is the
+setting that most often produces a board that builds fine and never boots.
+This rung is deterministic: whatever it says is true.
+
+## Rung 2 — enumerate candidates from local board databases
+
+Nobody queries these, and they are already on disk — hundreds of
+machine-readable board definitions, offline:
+
+\`\`\`
+ls ~/.platformio/platforms/*/boards/*.json | wc -l
+grep -l '"0x303A"' ~/.platformio/platforms/*/boards/*.json      # by USB hwid
+grep -l 'ESP32_S3R8N16' ~/.platformio/platforms/*/boards/*.json # by memory config
+arduino-cli board listall
+arduino-cli board details --fqbn <fqbn>
+\`\`\`
+
+Each manifest carries hwids, mcu, f_cpu, flash_mode, memory_type and the
+partition scheme. Filtering by hwid plus the memory configuration from rung 1
+turns "some ESP32-S3" into a reviewable list.
+
+Two honest limits. Filtering 303a:1001 leaves ~47 candidates, so this narrows
+but does not resolve. And the manifests describe the **chip configuration,
+not the peripherals** — the LilyGO T-Display-S3 manifest contains its name,
+mcu and partition table and says nothing whatsoever about the ST7789 panel
+that is the entire reason to buy that board.
+
+The real pin map lives in the installed core, not the manifest:
+
+\`\`\`
+find ~/.platformio/packages ~/.arduino15 -path '*variants*' -name pins_arduino.h | head
+\`\`\`
+
+That file is the truth that gets compiled. Quote pin numbers from it, with
+the path.
+
+## Rung 3 — interrogate the existing firmware (before you overwrite it)
+
+A board that arrived with a factory demo is carrying a description of
+itself. Back it up first — this is also your only restore point:
+
+\`\`\`
+esptool -p /dev/ttyACM0 read-flash 0 ALL backup.bin   # ALL autodetects size
+\`\`\`
+
+Then mine it. Driver and framework strings survive in the binary:
+
+\`\`\`
+strings -n 5 backup.bin | grep -iE 'st77|ili9|ssd13|gc9a|lvgl|tft_espi|lilygo|t-display|m5|waveshare|heltec'
+strings -n 5 backup.bin | grep -iE 'esp-idf|loopTask|app_main'   # IDF vs Arduino core
+\`\`\`
+
+Recovered from a real unknown board this way: chip, flash part number,
+that it ran the Arduino core, and its partition layout. Framework and
+display driver are exactly the facts the manifests lack.
+
+## Rung 4 — measure with a probe sketch
+
+Flash a disposable diagnostic and read the answers over serial. This is the
+rung that works when the board is in no database at all.
+
+\`\`\`cpp
+#include <Wire.h>
+#include "esp_chip_info.h"
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) {}
+  delay(2000);                       // native USB re-enumerates after reset
+  esp_chip_info_t info; esp_chip_info(&info);
+  Serial.printf("model=%d rev=%d cores=%d features=0x%x\\n",
+                info.model, info.revision, info.cores, info.features);
+  Serial.printf("flash=%u psram=%u mac=%llx\\n",
+                ESP.getFlashChipSize(), ESP.getPsramSize(), ESP.getEfuseMac());
+  // Sweep plausible I2C pin pairs; print every address that answers.
+  const int pairs[][2] = {{21,22},{8,9},{6,7},{17,18},{43,44}};
+  for (auto &p : pairs) {
+    Wire.begin(p[0], p[1]);
+    for (uint8_t a = 1; a < 127; a++) {
+      Wire.beginTransmission(a);
+      if (Wire.endTransmission() == 0)
+        Serial.printf("i2c sda=%d scl=%d addr=0x%02x\\n", p[0], p[1], a);
+    }
+  }
+}
+void loop() {}
+\`\`\`
+
+Common I2C answers: 0x3C/0x3D SSD1306 or SH1106 OLED, 0x27/0x3F PCF8574 LCD
+backpack, 0x68 MPU6050 or DS3231, 0x76/0x77 BMP/BME280, 0x5A touch.
+
+For an SPI panel, read its ID **before** initialising any driver: RDDID
+(0x04), then 0xD3 and 0xDA/0xDB/0xDC. Different controllers answer
+differently, which distinguishes ST7789 from ILI9341 without guessing.
+Candidate CS/DC/SCK/MOSI sets come from rung 2 — a finite sweep, not a shot
+in the dark.
+
+## Rung 5 — use the human as an observer, not an oracle
+
+They cannot name the board. They can see it. Ask questions that eliminate
+candidates:
+
+- Does it have a screen? Roughly what size and shape?
+- How many buttons besides reset, and where?
+- USB-C or micro-USB, and on which end?
+- Anything printed near the module or on the underside?
+- I just toggled a pin — did an LED light up?
+
+That last one turns a pin sweep into a binary search. One question per round,
+tied to a specific hypothesis.
+
+## Rung 6 — write down what you concluded, with provenance
+
+Create HARDWARE.md in the project and tag every fact with how it was
+established. Later turns then build on facts instead of re-deriving them,
+and an assumption stays visibly an assumption:
+
+\`\`\`markdown
+# Hardware
+- Chip: ESP32-S3 rev 0.2        [measured: esptool flash-id]
+- Flash: 16 MB, XM25QU64A       [measured: esptool flash-id]
+- PSRAM: 8 MB octal             [measured: espefuse summary]
+- Framework of stock firmware: Arduino core   [measured: strings backup.bin]
+- Port: /dev/ttyACM0            [measured: /dev/serial/by-id]
+- Board: LilyGO T-Display-S3    [ASSUMED — matches specs, NOT verified]
+- Display: ST7789 170x320       [ASSUMED — depends on board, unverified]
+- LCD power pin 15, backlight 38 [UNVERIFIED — from vendor docs, untested]
+\`\`\`
+
+Anything tagged ASSUMED or UNVERIFIED must be either confirmed by a probe or
+stated as an assumption when you report to the user. Do not silently promote
+it to fact — that is the failure mode this whole file exists to prevent.
+
+## Where to look, in order of reliability
+
+1. variants/<board>/pins_arduino.h in the installed core — the truth that
+   compiles
+2. Local board manifests (PlatformIO JSON, arduino-cli board details)
+3. Vendor repository and datasheet for the specific board
+4. Espressif/vendor docs for the chip (authoritative for the chip, silent
+   about the board)
+5. Never your own memory for pin numbers, offsets or FQBNs
+`;
 
 const BOARD_ESP32 = `# ESP32 family
 
@@ -1393,6 +1617,7 @@ export const IOT_BUILDER_SKILL: BundledSkillDefinition = {
     "When the user works with microcontrollers, single-board computers, or embedded hardware: Arduino (Uno R3/R4, Nano, Mega, Pro Mini), ESP32/ESP8266, Raspberry Pi (SBC GPIO or Pico/RP2040/RP2350), Orange Pi, Radxa Rock, STM32; sensors, actuators, GPIO, I2C, SPI, UART, 1-Wire, PWM; writing or porting firmware; flashing (esptool, UF2/BOOTSEL, ST-Link, dfu-util); serial monitoring and boot-loop debugging; PlatformIO, Arduino CLI/IDE, ESP-IDF, MicroPython/CircuitPython, Pico SDK; SBC device-tree overlays, libgpiod, cross-compiling for aarch64; or any wiring question where logic levels, current limits, or electrical safety matter.",
   argumentHint: "[board or project goal]",
   files: {
+    "boards/identify.md": BOARD_IDENTIFY,
     "boards/esp32.md": BOARD_ESP32,
     "boards/arduino.md": BOARD_ARDUINO,
     "boards/raspberry-pi.md": BOARD_RASPBERRY_PI,
