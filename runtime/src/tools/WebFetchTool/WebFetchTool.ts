@@ -109,6 +109,14 @@ export const WebFetchTool = buildTool({
   isReadOnly() {
     return true
   },
+  // An HTTP GET has no external effect to settle, so an unknown outcome here
+  // is not an unresolved mutation. Without this the registry default
+  // (side-effecting) applies — resolveToolRecoveryCategory takes isReadOnly as
+  // `_isReadOnly` and discards it — and one failed fetch poisons the session:
+  // assertNoLiveUnknownEffect then blocks every side-effecting and interactive
+  // tool for the rest of the run. Observed twice in one afternoon, each time
+  // stranding a live hardware-debugging session that could no longer flash.
+  recoveryCategory: 'idempotent',
   toAutoClassifierInput(input) {
     return input.prompt ? `${input.url}: ${input.prompt}` : input.url
   },

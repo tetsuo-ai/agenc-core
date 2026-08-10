@@ -401,6 +401,10 @@ export const WebSearchTool = buildTool({
   isReadOnly() {
     return true
   },
+  // Read-only: no external effect to settle, so an unknown outcome must not
+  // poison the session. See the note in WebFetchTool for what the
+  // side-effecting default costs.
+  recoveryCategory: 'idempotent',
   toAutoClassifierInput(input) {
     return input.query
   },
