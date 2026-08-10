@@ -140,10 +140,28 @@ them; do not invent FQBNs, board IDs, offsets, or pin numbers.
 - Boot loops (repeating boot banner or "rst:0x..." on ESP32): brownout from
   an undersized supply or USB cable, a peripheral dragging a strapping pin
   (GPIO0/2/12/15), or a panic in early init. Read the reset reason line.
-- Linux permissions: "Permission denied" on /dev/ttyUSB* means the user is
-  not in the dialout (Debian/Ubuntu) or uucp (Arch) group:
-  sudo usermod -aG dialout $USER  (then re-login). Do not chmod 666 the
-  device as a fix.
+- Linux permissions: "Permission denied" opening /dev/ttyUSB* OR /dev/ttyACM*
+  (native-USB boards land on ttyACM) means the PROCESS lacks the device's
+  group — dialout on Debian/Ubuntu, uucp on Arch. Read the device, not the
+  docs: ls -l /dev/ttyACM0 names the group that actually matters.
+  The trap that wastes the most time here: supplementary groups are fixed at
+  login. After sudo usermod -aG dialout $USER every already-running process
+  keeps its old set, and "id $USER" reads /etc/group so it cheerfully lists
+  dialout while nothing running has it. Believe neither until you compare:
+    id -nG            # groups THIS process actually carries
+    id -nG $USER      # what /etc/group claims
+  If those differ, the fix is a re-login or reboot. Nothing else works, and
+  no amount of retrying the failing command will change it.
+  Never "fix" this by chmod 666 or chown on the device node. It makes a
+  world-writable serial port, it does not survive a replug, and it is not
+  the actual problem. When a re-login is genuinely impossible, add a udev
+  rule scoped to that board's VID:PID granting a group the session already
+  has (check id -nG), e.g. in /etc/udev/rules.d/99-board.rules:
+    SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", GROUP="plugdev", MODE="0660"
+  then: sudo udevadm control --reload-rules && sudo udevadm trigger
+  Unrelated red herring while debugging this: apparmor="DENIED" lines for the
+  lsusb profile reading /sys/.../uevent are stock Ubuntu confinement and have
+  nothing to do with serial-port access.
 - Port vanished after flash: native-USB boards (ESP32-S2/S3/C3, RP2040,
   Uno R4) re-enumerate; re-run pio device list / arduino-cli board list.
 - Always end an iteration by reporting what the serial output actually
