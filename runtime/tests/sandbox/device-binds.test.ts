@@ -83,4 +83,29 @@ describe("sandbox device passthrough", () => {
     );
     expect(args).not.toContain("--dev-bind");
   });
+
+  it("expands a pattern so one setting covers every board plugged in", () => {
+    // /dev/null and /dev/zero are character devices on every Linux host, so
+    // /dev/[nz]* style patterns resolve without depending on a board.
+    const resolved = resolveSandboxDeviceBinds({
+      AGENC_SANDBOX_DEVICE_BINDS: "/dev/nul*",
+    });
+    expect(resolved).toContain("/dev/null");
+  });
+
+  it("keeps a pattern inside one path segment and inside /dev", () => {
+    expect(
+      resolveSandboxDeviceBinds({
+        AGENC_SANDBOX_DEVICE_BINDS: ["/dev/*/../etc/*", "/*/null"].join(":"),
+      }),
+    ).toEqual([]);
+  });
+
+  it("dedupes when a pattern and an exact path both match", () => {
+    expect(
+      resolveSandboxDeviceBinds({
+        AGENC_SANDBOX_DEVICE_BINDS: "/dev/null:/dev/nul*",
+      }),
+    ).toEqual(["/dev/null"]);
+  });
 });

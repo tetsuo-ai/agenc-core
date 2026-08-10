@@ -587,6 +587,18 @@ export function resolveSandboxDeviceBinds(
   if (typeof raw !== "string" || raw.trim().length === 0) return [];
   const seen = new Set<string>();
   const resolved: string[] = [];
+  const accept = (candidatePath: string): void => {
+    if (seen.has(candidatePath)) return;
+    let stats: fs.Stats;
+    try {
+      stats = fs.statSync(candidatePath);
+    } catch {
+      return;
+    }
+    if (!stats.isCharacterDevice() && !stats.isBlockDevice()) return;
+    seen.add(candidatePath);
+    resolved.push(candidatePath);
+  };
   for (const entry of raw.split(":")) {
     const candidate = entry.trim();
     if (candidate.length === 0) continue;
@@ -594,16 +606,36 @@ export function resolveSandboxDeviceBinds(
     const normalized = path.normalize(candidate);
     if (normalized.split(path.sep).includes("..")) continue;
     if (!normalized.startsWith("/dev/")) continue;
-    if (seen.has(normalized)) continue;
-    let stats: fs.Stats;
+    if (!normalized.includes("*")) {
+      accept(normalized);
+      continue;
+    }
+    // Pattern entry, e.g. /dev/ttyUSB* — one setting covers every board the
+    // user plugs in, now and later, instead of a path per device. Expanded at
+    // every sandbox launch, so a board connected mid-session is picked up by
+    // the next command with no reconfiguration. `*` matches within one path
+    // segment only; a pattern spanning directories is rejected outright.
+    const dir = path.dirname(normalized);
+    const base = path.basename(normalized);
+    if (dir.includes("*") || dir !== path.normalize(dir)) continue;
+    if (!dir.startsWith("/dev")) continue;
+    const matcher = new RegExp(
+      `^${base.split("*").map(escapeRegExpLiteral).join("[^/]*")}$`,
+      "u",
+    );
+    let names: string[];
     try {
-      stats = fs.statSync(normalized);
+      names = fs.readdirSync(dir);
     } catch {
       continue;
     }
-    if (!stats.isCharacterDevice() && !stats.isBlockDevice()) continue;
-    seen.add(normalized);
-    resolved.push(normalized);
+    for (const name of names.sort()) {
+      if (matcher.test(name)) accept(path.join(dir, name));
+    }
   }
   return resolved;
+}
+
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
