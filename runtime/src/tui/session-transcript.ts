@@ -2077,6 +2077,29 @@ export function adaptTranscriptEvents(
         pendingToolInputDeltas.clear();
         out.push(makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
         break;
+      case "execution_admission":
+        // A denied model turn is the ONLY admission outcome a person must see:
+        // the turn then "completes" in a few hundred ms with an empty
+        // lastAgentMessage, and without this line the chat shows nothing at
+        // all. Observed three times in one day as "why does the agent not
+        // respond?" — the third time with the provider reporting the
+        // conversation at ~106k tokens of a 500k window while the admission
+        // estimate claimed ~446k. Name the reason and the two ways out.
+        if (payload.event === "denied" && payload.kind === "model_turn") {
+          const reason =
+            typeof payload.reason === "string" ? payload.reason : "denied";
+          flushStreamingText(nextUuid);
+          out.push(
+            makeSystemMessage(
+              `Model turn denied by execution admission: ${reason}. ` +
+                `The agent could not reply. Run /compact to shrink the ` +
+                `conversation, or start a new session.`,
+              "error",
+              nextUuid(),
+            ),
+          );
+        }
+        break;
       case "user_message":
         // A submitted user message is a hard visible turn boundary. Some
         // daemon streams can miss or de-dupe lifecycle events between prompts,

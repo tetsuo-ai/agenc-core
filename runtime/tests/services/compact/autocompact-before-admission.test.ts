@@ -24,6 +24,11 @@ describe("auto-compaction fires before admission denies the turn", () => {
 
     expect(threshold).toBeLessThan(OBSERVED_DENIAL_FLOOR);
     expect(threshold).toBeLessThan(500_000 - AUTOCOMPACT_BUFFER_TOKENS);
+    // Third kill, measured: the last ADMITTED turn carried 423,740 tokens and
+    // the next message (445,857) was denied. A threshold that admits 423k
+    // without compacting leaves exactly one turn of slack — none in practice.
+    // Fire before the last observed surviving turn, not between it and death.
+    expect(threshold).toBeLessThanOrEqual(400_000);
   });
 
   it("never exceeds the fixed-buffer threshold it replaces", () => {

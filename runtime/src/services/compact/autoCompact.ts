@@ -47,7 +47,16 @@ export const AUTOCOMPACT_BUFFER_TOKENS = 13_000;
  * Taking the stricter of the two keeps compaction ahead of admission without
  * having to predict admission's exact number.
  */
-export const AUTOCOMPACT_MAX_WINDOW_FRACTION = 0.85;
+// 0.85 was not enough. Measured on the third session killed by
+// `context_window_exceeded` (grok-4.5, 500k window): the last admitted turn
+// carried 423,740 input tokens — one turn UNDER the 425k threshold — and the
+// very next user message weighed 445,857 + 32,000 reserved output and was
+// denied. Admission compares margin-inflated totals (input × 1.1 + 256 +
+// 32k output), so its effective ceiling sits ~75k below the catalog window.
+// 0.75 fires ~50k before the measured kill line, leaving room for BOTH one
+// more oversized turn AND the compaction request itself, whose input is the
+// full history it is trying to shrink.
+export const AUTOCOMPACT_MAX_WINDOW_FRACTION = 0.75;
 const WARNING_THRESHOLD_BUFFER_TOKENS = 20_000;
 const ERROR_THRESHOLD_BUFFER_TOKENS = 20_000;
 export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000;
