@@ -508,6 +508,52 @@ Flash modes: qio (fastest, 4 data lines) is the default for WROOM modules;
 dio for modules where flash pins are broken out; if a board boots only in
 dio, forcing qio crashes at boot ("flash read err, 1000").
 
+## S3 traps verified on hardware (ESP32-S3R8, 16 MB flash, native USB-JTAG)
+
+Each of these cost a wrong conclusion before it was measured. Every one is
+reproducible on a stock S3 devkit.
+
+**Toggling DTR/RTS on native USB-JTAG does NOT reset the board — it puts it
+in download mode.** A reader that pulses RTS to "reset before reading" then
+sees total silence and looks exactly like firmware that crashed on boot.
+Twice this produced a confident, wrong diagnosis. Open the port with
+dtr=False, rts=False and leave the lines alone; the board already reset
+after upload. To force a run: \`esptool -p PORT run\`.
+
+**eFuse FLASH_TYPE describes the FLASH, not the PSRAM.** \`espefuse summary\`
+on an S3R8 reports \`FLASH_TYPE = 4 data lines (quad)\` while the in-package
+PSRAM is octal. PSRAM_CAP/PSRAM_VENDOR give capacity and vendor, neither
+says quad vs octal. Reading FLASH_TYPE as the PSRAM mode leads straight to
+a build that will not boot.
+
+**The only reliable PSRAM test is to build both ways and look:**
+
+\`\`\`ini
+board_build.arduino.memory_type = qio_opi   ; octal
+board_build.psram = opi
+\`\`\`
+
+then print \`ESP.getPsramSize()\` and \`psramFound()\`. Measured on an S3R8:
+opi gives 8386295 bytes / YES; quad (qio_qspi + psram=enabled) gives 0 / NO
+with an otherwise identical build. Silent boot after changing memory_type is
+the classic symptom — but confirm it with a correct serial read first (see
+the DTR/RTS trap above).
+
+**GPIO 22-25 do not exist on the S3.** Including one in a pin sweep aborts
+the I2C driver with \`i2c_set_pin(875): scl gpio number error\` and takes the
+rest of the sweep with it. GPIO 26-32 are the flash bus; 33-37 are consumed
+by octal PSRAM on an S3R8. Driving any of them hangs the chip.
+
+**\`read-flash 0 ALL\` stalls over native USB-JTAG.** A full 16 MB read dies
+around the 1 MB mark ("Packet content transfer stopped"), at the same point
+regardless of --baud. Short reads on both sides of the stall succeed, so the
+flash is fine — it is a sustained-transfer limit. Read in chunks well under
+1 MB and concatenate.
+
+**Check whether a backup is worth taking before taking it.** \`strings\` on
+the first chunk tells you in seconds whether the flash still holds the
+factory image or something you flashed an hour ago.
+
 ## USB-serial adapters
 
 - WROOM devkits: on-board CP2102/CH340 -> /dev/ttyUSB0, works out of the box.

@@ -141,7 +141,30 @@ test('iot-builder definition ships the board, toolchain, workflow, and safety re
   assert.match(identify, /HARDWARE\.md/, 'provenance convention')
   assert.match(identify, /ASSUMED/, 'assumptions stay tagged as assumptions')
 
-  assert.match(files['boards/esp32.md']!, /GPIO0/, 'ESP32 strapping pins')
+  // Traps measured on a real ESP32-S3R8, each after a wrong conclusion.
+  const esp32 = files['boards/esp32.md']!
+  assert.match(esp32, /GPIO0/, 'ESP32 strapping pins')
+  assert.match(
+    esp32,
+    /Toggling DTR\/RTS on native USB-JTAG does NOT reset the board/,
+    'the reset trap that fakes a boot crash',
+  )
+  assert.match(
+    esp32,
+    /eFuse FLASH_TYPE describes the FLASH, not the PSRAM/,
+    'the eFuse field that gets misread as PSRAM mode',
+  )
+  assert.match(esp32, /8386295/, 'measured octal PSRAM size, not a guess')
+  assert.match(
+    esp32,
+    /GPIO 22-25 do not exist on the S3/,
+    'pins that abort an I2C sweep',
+  )
+  assert.match(
+    esp32,
+    /Packet content transfer stopped/,
+    'the literal error from a stalled full-flash read',
+  )
   assert.match(files['boards/arduino.md']!, /arduino:avr:uno/, 'Uno FQBN')
   assert.match(
     files['boards/raspberry-pi.md']!,
