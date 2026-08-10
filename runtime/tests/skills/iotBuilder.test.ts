@@ -29,6 +29,7 @@ const EXPECTED_FILES = [
   'toolchains/arduino-cli.md',
   'toolchains/esp-idf.md',
   'toolchains/micropython.md',
+  'workflows/when-stuck.md',
   'workflows/end-to-end.md',
   'safety.md',
 ]
@@ -75,6 +76,21 @@ test('bundled iot-builder skill registers with board detection and safety workfl
     text,
     /read-flash 0 ALL backup\.bin/,
     'mandates a backup before the first overwrite',
+  )
+  assert.match(
+    text,
+    /A clean build and a verified flash prove nothing/,
+    'the always-read prompt carries the hardware-verification rule',
+  )
+  assert.match(
+    text,
+    /Never re-run a failed command unchanged/,
+    'the always-read prompt carries bounded retry',
+  )
+  assert.match(
+    text,
+    /Never end a turn announcing what you are about to do/,
+    'the always-read prompt forbids announce-and-stop',
   )
   assert.match(
     text,
@@ -152,6 +168,22 @@ test('iot-builder definition ships the board, toolchain, workflow, and safety re
   )
   assert.match(files['toolchains/esp-idf.md']!, /idf\.py set-target/)
   assert.match(files['toolchains/micropython.md']!, /mpremote/)
+  // Failure recovery is what separates a skill that works on hardware from
+  // process advice. Measured against real sessions: the agent retried a denied
+  // command four ways for twenty minutes, told the user to restart over a
+  // recoverable lock, and called a black display "flashed successfully".
+  const stuck = files['workflows/when-stuck.md']!
+  assert.match(stuck, /prove NOTHING about behaviour/, 'flash success is not proof')
+  assert.match(stuck, /NEVER re-run a failed command unchanged/, 'retry discipline')
+  assert.match(stuck, /Two attempts per hypothesis/, 'bounded retry')
+  assert.match(stuck, /\/resolve/, 'the unblock path, not a restart')
+  assert.match(
+    stuck,
+    /what do you see/,
+    'human as the ground truth for visuals',
+  )
+  assert.match(stuck, /espefuse summary/, 'authority on flash/PSRAM mode')
+
   assert.match(files['workflows/end-to-end.md']!, /espota/, 'OTA upload')
   assert.match(
     files['safety.md']!,
