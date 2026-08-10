@@ -132,6 +132,7 @@ async function runLinuxSandboxOptions(
   const extraReadOnlyBindRoots = inferredInnerLauncherBindRoots(selfCommand);
   const extraWritableBindRoots =
     preparedProxy === null ? [] : [preparedProxy.socketDir];
+  const extraDeviceBindPaths = resolveSandboxDeviceBinds(deps.env ?? process.env);
   const proxyRoutedNetwork = options.allowNetworkForProxy;
   const seccompMode = networkSeccompMode(
     network,
@@ -158,6 +159,7 @@ async function runLinuxSandboxOptions(
         ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
         extraReadOnlyBindRoots,
         extraWritableBindRoots,
+        extraDeviceBindPaths,
         inheritedReadOnlyCwd: options.inheritedCwd,
       },
     );
@@ -201,6 +203,7 @@ async function runLinuxSandboxOptions(
           ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
           extraReadOnlyBindRoots,
           extraWritableBindRoots,
+          extraDeviceBindPaths,
           inheritedReadOnlyCwd: options.inheritedCwd,
         },
       );
@@ -555,4 +558,52 @@ function startProtectedCreateMonitor(
       return violation;
     },
   };
+}
+
+/**
+ * Host device nodes the operator has explicitly allowed into the sandbox,
+ * from `AGENC_SANDBOX_DEVICE_BINDS` (colon-separated, e.g.
+ * `/dev/ttyUSB0:/dev/ttyACM0`).
+ *
+ * `--dev /dev` gives the sandbox a fresh minimal devtmpfs, so a board on
+ * /dev/ttyUSB0 is visible in sysfs but impossible to open: esptool, a serial
+ * monitor and any flash step all fail from inside. That makes embedded work
+ * unworkable without a hole, so this is the supervised hole — opt-in per
+ * session, never on by default, and deliberately narrow:
+ *
+ * - absolute paths only, no `..` segments
+ * - must live under /dev/ (never /etc, /proc, a socket, a directory)
+ * - must exist AND be a character or block device on the host
+ * - the host's own permissions still apply inside; binding /dev/ttyUSB0 does
+ *   not grant the dialout membership needed to open it
+ *
+ * Anything failing those checks is dropped silently rather than failing the
+ * launch: a stale entry for an unplugged board must not stop every command.
+ */
+export function resolveSandboxDeviceBinds(
+  env: NodeJS.ProcessEnv,
+): readonly string[] {
+  const raw = env.AGENC_SANDBOX_DEVICE_BINDS;
+  if (typeof raw !== "string" || raw.trim().length === 0) return [];
+  const seen = new Set<string>();
+  const resolved: string[] = [];
+  for (const entry of raw.split(":")) {
+    const candidate = entry.trim();
+    if (candidate.length === 0) continue;
+    if (!path.isAbsolute(candidate)) continue;
+    const normalized = path.normalize(candidate);
+    if (normalized.split(path.sep).includes("..")) continue;
+    if (!normalized.startsWith("/dev/")) continue;
+    if (seen.has(normalized)) continue;
+    let stats: fs.Stats;
+    try {
+      stats = fs.statSync(normalized);
+    } catch {
+      continue;
+    }
+    if (!stats.isCharacterDevice() && !stats.isBlockDevice()) continue;
+    seen.add(normalized);
+    resolved.push(normalized);
+  }
+  return resolved;
 }

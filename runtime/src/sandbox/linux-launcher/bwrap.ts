@@ -27,6 +27,14 @@ export interface BwrapOptions {
   readonly seccompFd?: number;
   readonly extraReadOnlyBindRoots?: readonly string[];
   readonly extraWritableBindRoots?: readonly string[];
+  /**
+   * Host device nodes to `--dev-bind` into the sandbox after `--dev /dev`
+   * builds the minimal devtmpfs. Without this an ESP32 on /dev/ttyUSB0 is
+   * visible in sysfs but cannot be opened for flashing or serial from inside
+   * the sandbox — the whole point of an embedded workflow. Opt-in, absolute
+   * /dev/* paths only (see resolveSandboxDeviceBinds).
+   */
+  readonly extraDeviceBindPaths?: readonly string[];
   readonly inheritedReadOnlyCwd?: boolean;
 }
 
@@ -219,6 +227,14 @@ function createFilesystemArgs(
   appendProcMask(args, options);
 
   args.push("--dev", "/dev");
+
+  // Bind requested host device nodes over the minimal devtmpfs. --dev-bind is
+  // read-write on purpose: flashing and serial both need to open the tty for
+  // write. Only paths that passed resolveSandboxDeviceBinds (absolute, under
+  // /dev, character/block devices) reach here.
+  for (const devicePath of options.extraDeviceBindPaths ?? []) {
+    args.push("--dev-bind", devicePath, devicePath);
+  }
 
   if (options.inheritedReadOnlyCwd === true) {
     appendInheritedReadOnlyCwd(args);
