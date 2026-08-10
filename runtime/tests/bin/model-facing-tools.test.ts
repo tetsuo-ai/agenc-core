@@ -2935,27 +2935,10 @@ describe("model-facing tools", () => {
       const missing = await skill.execute({ skill: "missing-skill" });
 
       expect(missing.isError).toBe(true);
-      // `/skills` is the user-facing inventory and also lists the skills
-      // registered in the runtime registry (browser-automation, iot-builder,
-      // the kit installer). The Skill tool can only offer what the local
-      // loader resolves through renderSkill, and those are deliberately
-      // outside it — their scope/source are Exclude<..., "bundled"> — because
-      // they are Commands invoked as `/name` or `$name`. Advertising one here
-      // would hand the model a name it cannot then load.
-      //
-      // Discriminate by name, not by loadedFrom: the local loader ALSO tags
-      // its own repo-shipped skills (agenc-api, verify, simplify, ...)
-      // `bundled`, and those are renderable. The contract that matters is
-      // that the model is never shown a different set of LOADABLE skills
-      // than the user sees.
-      const { getBundledSkills } = await import("../skills/bundledSkills.js");
-      const registryNames = new Set(
-        getBundledSkills().map((command) => command.name),
-      );
+      // Full parity: every name `/skills` shows the user is a name the model
+      // can actually load, bundled ones included.
       expect(JSON.parse(missing.content).available).toEqual(
-        slashSnapshot.availableSkills
-          .filter((entry) => !registryNames.has(entry.name))
-          .map((entry) => entry.name),
+        slashSnapshot.availableSkills.map((entry) => entry.name),
       );
 
       const loaded = await skill.execute({ skill: "legacy-visible" });
@@ -2964,6 +2947,9 @@ describe("model-facing tools", () => {
         "<command-name>legacy-visible</command-name>",
       );
       expect(loaded.content).toContain("Use legacy-visible.");
+      // Loading a bundled skill through this tool is covered by
+      // tests/bin/skill-tool-bundled.test.ts — invoking one extracts its
+      // reference files, which needs the MACRO stub this file does not set.
     } finally {
       await rm(agencHome, { recursive: true, force: true });
       await rm(workspaceRoot, { recursive: true, force: true });

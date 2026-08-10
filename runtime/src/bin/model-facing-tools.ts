@@ -78,6 +78,7 @@ import {
   type AgentJobSpawnContext,
 } from "../agents/jobs/job-orchestrator.js";
 import { logError } from "../utils/log.js";
+import { isRecord } from "../utils/record.js";
 import { createCsvInputRootCapability } from "../agents/jobs/csv-reader.js";
 import {
   createCsvOutputRootCapability,
@@ -2697,16 +2698,43 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
           sessionId: sessionOrError.conversationId,
         })) ?? null;
       if (!rendered) {
+        // Bundled skills live in the runtime registry, not the local loader.
+        const bundled = await findBundledSkillCommand(skillName);
+        if (bundled?.getPromptForCommand !== undefined) {
+          if (bundled.disableModelInvocation === true) {
+            return json(
+              { error: `skill is not model-invocable: ${bundled.name}` },
+              true,
+            );
+          }
+          const blocks = await bundled.getPromptForCommand(
+            stringValue(args.args) ?? "",
+            {},
+          );
+          const text = blocks
+            .map((block) => (block.type === "text" ? (block.text ?? "") : ""))
+            .filter((part) => part.length > 0)
+            .join("\n");
+          return { content: formatLoadedSkillForModel(bundled.name, text) };
+        }
         const outcome =
           await sessionOrError.services.skillsManager.skillsForConfig(
             sessionOrError.services.configStore?.current?.() ?? {},
             null,
           );
+        // Bundled skills are loadable through the branch above, so they belong
+        // in the list the model is told about — otherwise it is shown a
+        // narrower world than `/skills` shows the user.
+        const bundledNames = (await listBundledSkillNames()).filter(
+          (name) => !(outcome.availableSkills ?? []).some((s) => s.name === name),
+        );
         return json(
           {
             error: `skill not found: ${skillName}`,
-            available:
-              outcome.availableSkills?.map((entry) => entry.name) ?? [],
+            available: [
+              ...(outcome.availableSkills?.map((entry) => entry.name) ?? []),
+              ...bundledNames,
+            ].sort((a, b) => a.localeCompare(b)),
           },
           true,
         );
@@ -2740,6 +2768,78 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
       return { content };
     },
   };
+}
+
+/**
+ * Look up a skill in the runtime's bundled registry (browser-automation,
+ * iot-builder, the kit installer).
+ *
+ * These ship compiled into the binary as Commands rather than through the
+ * local skill loader, so `resolveSkill`/`renderSkill` — which are typed to
+ * exclude the `bundled` source — never see them. Without this the model gets
+ * `Unknown skill: iot-builder` for a skill the runtime demonstrably has, is
+ * listed in `/skills`, and answers to `/iot-builder`.
+ *
+ * Dynamic literal import (esbuild-discoverable) with a catch: registration
+ * runs at module load and can throw where the build-time MACRO define is
+ * absent, and a broken registry must not take the Skill tool down with it.
+ */
+async function findBundledSkillCommand(name: string): Promise<
+  | {
+      readonly name: string;
+      readonly disableModelInvocation?: boolean;
+      readonly allowedTools?: readonly string[];
+      readonly model?: string;
+      readonly hooks?: unknown;
+      readonly context?: string;
+      readonly agent?: string;
+      readonly getPromptForCommand?: (
+        args: string,
+        context: unknown,
+      ) => Promise<ReadonlyArray<{ type?: string; text?: string }>>;
+    }
+  | null
+> {
+  try {
+    const loaded = (await import(
+      "../skills/bundledSkills.js"
+    )) as unknown as Record<string, unknown>;
+    const getBundledSkills = loaded.getBundledSkills;
+    if (typeof getBundledSkills !== "function") return null;
+    const commands = (getBundledSkills as () => unknown)();
+    if (!Array.isArray(commands)) return null;
+    return (
+      commands.find(
+        (command) => isRecord(command) && command.name === name,
+      ) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Names of every model-invocable skill in the bundled registry. */
+async function listBundledSkillNames(): Promise<string[]> {
+  try {
+    const loaded = (await import(
+      "../skills/bundledSkills.js"
+    )) as unknown as Record<string, unknown>;
+    const getBundledSkills = loaded.getBundledSkills;
+    if (typeof getBundledSkills !== "function") return [];
+    const commands = (getBundledSkills as () => unknown)();
+    if (!Array.isArray(commands)) return [];
+    return commands.flatMap((command) =>
+      isRecord(command) &&
+      typeof command.name === "string" &&
+      command.name.length > 0 &&
+      command.disableModelInvocation !== true &&
+      command.isHidden !== true
+        ? [command.name]
+        : [],
+    );
+  } catch {
+    return [];
+  }
 }
 
 function normalizeSkillName(name: string): string {
@@ -2817,6 +2917,11 @@ async function checkSkillPermissions(
 
   const skill =
     (await context.session.services.skillsManager.resolveSkill?.(skillName)) ??
+    // resolveSkill is typed to exclude the bundled source, so fall back to the
+    // runtime registry before declaring a shipped skill unknown. The bundled
+    // Command carries the same capability fields the auto-allow check reads,
+    // so it goes through the identical policy below — no special case.
+    (await findBundledSkillCommand(skillName)) ??
     null;
   if (skill === null) {
     return {
