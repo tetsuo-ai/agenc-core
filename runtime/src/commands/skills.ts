@@ -13,6 +13,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 import type { Session } from "../session/session.js";
+import { logForDebugging } from "../utils/debug.js";
 import { isRecord } from "../utils/record.js";
 import {
   safeExecute,
@@ -147,6 +148,9 @@ function mergeAvailableSkills(
  * Dynamic literal import (esbuild-discoverable) with a catch: in tests the
  * build-time MACRO global is absent and bundled registration throws at module
  * load — the listing then just omits bundled skills instead of failing.
+ * The catch logs for the same reason the other two command-loading catches
+ * do: in production a throwing registration would otherwise drop EVERY
+ * bundled skill from `/skills` with nothing to explain where they went.
  */
 async function bundledSkillsFromRegistry(): Promise<AvailableSkillSnapshot[]> {
   try {
@@ -161,7 +165,8 @@ async function bundledSkillsFromRegistry(): Promise<AvailableSkillSnapshot[]> {
       if (
         !isRecord(command) ||
         typeof command.name !== "string" ||
-        command.name.length === 0
+        command.name.length === 0 ||
+        command.isHidden === true
       ) {
         return [];
       }
@@ -180,7 +185,13 @@ async function bundledSkillsFromRegistry(): Promise<AvailableSkillSnapshot[]> {
         },
       ];
     });
-  } catch {
+  } catch (error) {
+    logForDebugging(
+      `bundled skills unavailable for /skills listing: ${
+        error instanceof Error ? (error.stack ?? error.message) : String(error)
+      }`,
+      { level: "warn" },
+    );
     return [];
   }
 }
@@ -367,9 +378,19 @@ export function formatSkillsSnapshot(
   const matchedSkills = snapshot.availableSkills.filter((skill) =>
     skillMatchesQuery(skill, options.query),
   );
+  // The default view is capped at DEFAULT_SKILLS_LIMIT. Bundled skills are
+  // always present and sort early alphabetically (agenc-*, batch,
+  // browser-automation, iot-builder, ...), so a straight slice of the sorted
+  // list hides exactly what the user is most likely looking for: the skills
+  // they wrote in this project. Rank non-bundled first for the capped view
+  // only — `/skills all` and `/skills <search>` still show the full
+  // alphabetical list, and ordering within each group is untouched.
   const shownSkills = options.showAll
     ? matchedSkills
-    : matchedSkills.slice(0, limit);
+    : [
+        ...matchedSkills.filter((skill) => skill.loadedFrom !== "bundled"),
+        ...matchedSkills.filter((skill) => skill.loadedFrom === "bundled"),
+      ].slice(0, limit);
   const hiddenCount = Math.max(0, matchedSkills.length - shownSkills.length);
   const lines: string[] = ["Skills:"];
   lines.push(

@@ -2935,8 +2935,27 @@ describe("model-facing tools", () => {
       const missing = await skill.execute({ skill: "missing-skill" });
 
       expect(missing.isError).toBe(true);
+      // `/skills` is the user-facing inventory and also lists the skills
+      // registered in the runtime registry (browser-automation, iot-builder,
+      // the kit installer). The Skill tool can only offer what the local
+      // loader resolves through renderSkill, and those are deliberately
+      // outside it — their scope/source are Exclude<..., "bundled"> — because
+      // they are Commands invoked as `/name` or `$name`. Advertising one here
+      // would hand the model a name it cannot then load.
+      //
+      // Discriminate by name, not by loadedFrom: the local loader ALSO tags
+      // its own repo-shipped skills (agenc-api, verify, simplify, ...)
+      // `bundled`, and those are renderable. The contract that matters is
+      // that the model is never shown a different set of LOADABLE skills
+      // than the user sees.
+      const { getBundledSkills } = await import("../skills/bundledSkills.js");
+      const registryNames = new Set(
+        getBundledSkills().map((command) => command.name),
+      );
       expect(JSON.parse(missing.content).available).toEqual(
-        slashSnapshot.availableSkills.map((entry) => entry.name),
+        slashSnapshot.availableSkills
+          .filter((entry) => !registryNames.has(entry.name))
+          .map((entry) => entry.name),
       );
 
       const loaded = await skill.execute({ skill: "legacy-visible" });

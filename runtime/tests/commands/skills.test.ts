@@ -56,6 +56,18 @@ function stubSession(opts: {
   } as unknown as Session;
 }
 
+// Bundled skills (browser-automation, iot-builder, the kit installer) are
+// registered in the runtime and are always part of the snapshot. These cases
+// are about how LOCAL and MCP skills merge, so drop the bundled rows here and
+// let tests/commands/skills-bundled-listing.test.ts own the bundled contract.
+function nonBundled(
+  snapshot: Awaited<ReturnType<typeof collectSkillsSnapshot>>,
+): ReadonlyArray<Record<string, unknown>> {
+  return snapshot.availableSkills.filter(
+    (skill) => skill.loadedFrom !== "bundled",
+  ) as ReadonlyArray<Record<string, unknown>>;
+}
+
 describe("skillsCommand", () => {
   it("collects sorted available skills, invoked skills, and plugin roots", async () => {
     const snapshot = await collectSkillsSnapshot(
@@ -65,30 +77,28 @@ describe("skillsCommand", () => {
         roots: new Set(["/z", "/a"]),
       }),
     );
-    expect(snapshot).toEqual({
-      invokedSkills: ["alpha", "zeta"],
-      availableSkills: [
-        {
-          name: "alpha",
-          description: undefined,
-          scope: undefined,
-          loadedFrom: undefined,
-          userInvocable: undefined,
-          disableModelInvocation: undefined,
-          aliases: undefined,
-        },
-        {
-          name: "zeta",
-          description: undefined,
-          scope: undefined,
-          loadedFrom: undefined,
-          userInvocable: undefined,
-          disableModelInvocation: undefined,
-          aliases: undefined,
-        },
-      ],
-      effectiveSkillRoots: ["/a", "/z"],
-    });
+    expect(snapshot.invokedSkills).toEqual(["alpha", "zeta"]);
+    expect(snapshot.effectiveSkillRoots).toEqual(["/a", "/z"]);
+    expect(nonBundled(snapshot)).toEqual([
+      {
+        name: "alpha",
+        description: undefined,
+        scope: undefined,
+        loadedFrom: undefined,
+        userInvocable: undefined,
+        disableModelInvocation: undefined,
+        aliases: undefined,
+      },
+      {
+        name: "zeta",
+        description: undefined,
+        scope: undefined,
+        loadedFrom: undefined,
+        userInvocable: undefined,
+        disableModelInvocation: undefined,
+        aliases: undefined,
+      },
+    ]);
   });
 
   it("merges MCP-derived skills from AppState into the snapshot", async () => {
@@ -128,7 +138,7 @@ describe("skillsCommand", () => {
       },
     );
 
-    expect(snapshot.availableSkills).toEqual([
+    expect(nonBundled(snapshot)).toEqual([
       {
         name: "local-review",
         description: "Local review skill",
