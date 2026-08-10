@@ -2522,7 +2522,7 @@ export class AgenCDaemonAgentManager {
       if (refreshed === undefined || !isActiveAgent(refreshed)) {
         throw new AgenCDaemonAgentLifecycleError(
           "AGENT_NOT_FOUND",
-          `AgenC daemon agent not found: ${session.agentId}`,
+          inactiveAgentMessage(session.agentId, refreshed),
         );
       }
       return {
@@ -2774,7 +2774,7 @@ export class AgenCDaemonAgentManager {
       if (refreshed === undefined || !isActiveAgent(refreshed)) {
         throw new AgenCDaemonAgentLifecycleError(
           "AGENT_NOT_FOUND",
-          `AgenC daemon agent not found: ${session.agentId}`,
+          inactiveAgentMessage(session.agentId, refreshed),
         );
       }
       if (isRecoveredRuntimeUnavailable(refreshed)) {
@@ -3108,6 +3108,39 @@ function isActiveAgent(agent: MutableAgent): boolean {
     agent.status !== "stopped" &&
     agent.status !== "error"
   );
+}
+
+/**
+ * Message for a send/attach against an agent that cannot take work.
+ *
+ * "not found" is only true when the registry has no such agent. When the agent
+ * IS present but inactive — status error/stopped/stopping — reporting it as
+ * missing sends the reader hunting for a lookup bug instead of the run that
+ * ended. Observed: a model turn was denied `context_window_exceeded`, the run
+ * went to `errored` 9ms later, and every subsequent send answered
+ * "agent not found", which is two layers below the cause and points away from
+ * it. The registry knows the status here; say it.
+ */
+function inactiveAgentMessage(
+  agentId: string,
+  agent: MutableAgent | undefined,
+): string {
+  if (agent === undefined) {
+    return `AgenC daemon agent not found: ${agentId}`;
+  }
+  return (
+    `AgenC daemon agent ${agentId} is no longer running (status: ${agent.status}). ` +
+    `Its run has ended and cannot accept new input — start a new session to continue. ` +
+    `Run \`agenc run status ${agentId}\` for why it ended.`
+  );
+}
+
+/** Test seam for {@link inactiveAgentMessage}; not part of the daemon API. */
+export function inactiveAgentMessageForTest(
+  agentId: string,
+  agent: { readonly status: string } | undefined,
+): string {
+  return inactiveAgentMessage(agentId, agent as MutableAgent | undefined);
 }
 
 function isRecoveredRuntimeUnavailable(agent: MutableAgent): boolean {
