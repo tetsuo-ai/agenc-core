@@ -103,7 +103,7 @@ safety.md (read it first). The non-negotiables:
 
 - Logic levels: ESP32/RP2040/RPi/Orange Pi/Radxa GPIO are 3.3V and NOT
   5V-tolerant. Classic AVR Arduinos are 5V. Mixing needs a level shifter.
-- Per-pin current limits are tens of milliamps (AVR ~20 mA, ESP32 ~12 mA,
+- Per-pin current limits are tens of milliamps (AVR ~20 mA, ESP32 ~20 mA,
   RP2040 ~12 mA, RPi ~16 mA). Drive loads through a transistor/MOSFET.
 - NEVER power motors, solenoids, or LED strips from the board's 5V/3V3 rail.
   Separate supply, common ground, flyback diode across every inductive load.
@@ -208,10 +208,20 @@ esptool.py --port /dev/ttyUSB0 --baud 460800 write_flash \\
   0x1000 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin
 \`\`\`
 
-Offsets: classic ESP32 Arduino builds use 0x1000 (bootloader), 0x8000
-(partitions), 0x10000 (app). ESP32-S2/S3/C3 bootloaders go at 0x0 (S2/S3
-0x0; C3/C6/H2 0x0 as well — check the build output .map/flasher_args.json,
-which always lists exact offsets).
+Offsets: the partition table is at 0x8000 and the app at 0x10000 on every
+chip, but the BOOTLOADER offset is chip-specific:
+
+| Chip | Bootloader offset |
+| --- | --- |
+| ESP32, ESP32-S2 | 0x1000 |
+| ESP32-S3, C2, C3, C6, H2 | 0x0 |
+| ESP32-P4 | 0x2000 |
+
+S2 is the trap: it is a newer chip but still uses 0x1000, like the classic
+ESP32. Flashing a bootloader to the wrong offset gives a chip that never
+boots. Never type these from memory — the build output's
+flasher_args.json (ESP-IDF) or the upload command PlatformIO/Arduino
+prints always lists the exact offsets for the target you just built.
 
 Erase when a board behaves erratically after many reflashes:
 
@@ -309,10 +319,13 @@ fix is lib install, not editing include paths.
 
 ## Uno R4 specifics
 
-- RA4M1 (Renesas): 3.3V GPIO levels are NOT applied — official logic level
-  is 5V-tolerant inputs on digital pins, but analog reference defaults 5V;
-  many AVR register-level sketches (PORTB manipulations, timer registers)
-  do NOT port. Use Arduino API calls.
+- RA4M1 (Renesas): the R4 runs the MCU at 5V, so header I/O is 5V logic
+  exactly like the R3 — a 3.3V sensor still needs a shifter on the MCU->
+  sensor direction. What changes is the silicon underneath: it is Cortex-M4,
+  not AVR, so register-level sketches (PORTB manipulation, TCCR timer
+  registers, avr/*.h includes) do NOT port. Use the Arduino API, and expect
+  analogRead to default to 10-bit against a 5V reference (analogReadResolution
+  raises it to 14-bit). A0 additionally has a real DAC.
 - Native USB (Leonardo-style): the serial port re-enumerates on upload and
   Serial may not exist until opened — while (!Serial) ; where appropriate.
 `;
@@ -996,23 +1009,39 @@ idf.py size                        # memory report; idf.py size-components
 
 ## Partitions
 
-Default single-app table is fine until OTA. Custom CSV (partitions.csv):
+Default single-app table is fine until OTA. Custom CSV (partitions.csv),
+sized for the common 4 MB flash:
 
 \`\`\`
 # Name,   Type, SubType,  Offset,   Size
-nvs,      data, nvs,      0x9000,   0x6000
+nvs,      data, nvs,      0x9000,   0x4000
 otadata,  data, ota,      0xd000,   0x2000
 phy_init, data, phy,      0xf000,   0x1000
-factory,  app,  factory,  0x10000,  1M
-ota_0,    app,  ota_0,    ,         1M
-ota_1,    app,  ota_1,    ,         1M
-storage,  data, spiffs,   ,         0x180000
+ota_0,    app,  ota_0,    0x10000,  1600K
+ota_1,    app,  ota_1,    ,         1600K
+storage,  data, spiffs,   ,         0x80000
 \`\`\`
+
+Two offsets that are NOT free choices: nvs is 0x4000 here, not the 0x6000
+of the single-app default table — otadata sits at 0xd000, so a 0x6000 nvs
+runs into it and gen_esp32part.py aborts with an overlap error. Every app
+partition must also start on a 0x10000 boundary.
 
 Enable in menuconfig: Partition Table -> Custom partition table CSV ->
 partitions.csv. OTA needs two ota_X app slots + the otadata partition (the
 bootloader reads otadata to pick the boot slot — without it an OTA build
-fails to link/boot correctly).
+fails to link/boot correctly). A \`factory\` partition is optional and
+independent of OTA: ESP-IDF's own partitions_two_ota.csv has one, but on
+4 MB flash factory + two 1M OTA slots leaves almost nothing for storage —
+drop factory unless you specifically want a fallback image.
+
+Check the arithmetic before flashing — the table must fit the real flash
+size, and this is the single most common ESP-IDF build failure:
+
+\`\`\`
+idf.py partition-table          # prints the parsed table, errors on overlap/overflow
+esptool.py --port /dev/ttyUSB0 flash_id    # confirms the ACTUAL flash size
+\`\`\`
 
 ## Gotchas
 
@@ -1270,7 +1299,7 @@ and stop there.
 | Platform | Per-pin source/sink | Notes |
 | --- | --- | --- |
 | AVR (Uno/Nano/Mega) | 20 mA recommended, 40 mA absolute max | 200 mA total through VCC/GND pins |
-| ESP32 | ~12 mA per GPIO (datasheet default drive), 40 mA absolute max | total ~1200 mA chip budget is thermal, not GPIO |
+| ESP32 | ~20 mA per GPIO at the default drive strength, 40 mA absolute max | drive strength is selectable (~5/10/20/40 mA) via gpio_set_drive_capability |
 | RP2040 | 2/4/8/12 mA selectable drive, 12 mA max | 50 mA total IOH recommended |
 | Raspberry Pi | ~16 mA per pin, ~50 mA TOTAL across all GPIO | the 3V3 rail itself feeds little extra |
 | STM32 | 8-20 mA per pin (FT pins 20 mA), 25 mA injected max | check datasheet |
@@ -1312,7 +1341,7 @@ transistor and glitches the MCU (random resets). Motors additionally want
 
 - I2C needs pull-ups (typically 4.7k to the bus voltage); most breakouts
   include them — but chaining 5 modules with pull-ups parallels them into
-  an too-strong pull-up; mention it when stacking many modules.
+  a too-strong pull-up; mention it when stacking many modules.
 - I2C: SDA/SCL must both go through the shifter when levels differ.
 - SPI is 5V-intolerant on 3.3V MCUs: shift MOSI/SCK/CS down; MISO from a
   3.3V slave is fine into 5V master usually, but a 5V slave's MISO into a
