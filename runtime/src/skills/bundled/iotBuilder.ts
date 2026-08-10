@@ -26,10 +26,17 @@ and serial monitoring. Follow the orchestration loop below in order.
 Read boards/identify.md before this step. It is the longest reference file
 here because this is where the most time gets lost.
 
-Ask ONCE, briefly, what the board is. If the user answers with a specific
-model, use it. **Expect them not to know** — a board off a marketplace with
-no silkscreen model is the normal case, not the edge case. "I don't know" is
-not a dead end, it is the start of the ladder in identify.md.
+Ask ONCE, briefly, what the board is — and if they don't know, **ask for
+the listing they bought it from**. That second question is the one that
+actually works: measured on a real session, a day of probing, flash dumps
+and eFuse reads never named the board, and the AliExpress title named it in
+ten minutes, which then led to the vendor wiki, the hardware revision, and
+an official factory image. Nothing you can read over USB competes with a
+page that states the product outright.
+
+Expect "I don't know" to the first question — a board off a marketplace with
+no silkscreen model is the normal case, not the edge case. It is not a dead
+end, it is the start of the ladder in identify.md.
 
 What the obvious probes actually tell you:
 
@@ -257,7 +264,47 @@ Work the ladder in order. Stop as soon as the remaining ambiguity no longer
 affects the task: a WiFi or I2C-sensor project needs nothing board-specific,
 so a generic profile for the right chip is a complete answer.
 
-## Rung 0 — what the host already knows (free, no connection)
+## Rung 0 — ask for the purchase listing FIRST
+
+Before any probe. If the user bought the board, they have the order page,
+and it names the product. This is the single highest-value question in the
+whole ladder and it costs one line:
+
+> "Do you still have the listing you bought it from? Paste the title."
+
+Measured against everything below it: a full day of probing, flash dumps,
+eFuse reads and firmware string-mining failed to name a board. The listing
+title named it in ten minutes — and from the name came the vendor wiki, TWO
+hardware revisions with different display controllers, and official factory
+images. Nothing on the wire can tell you what a seller's page states
+outright.
+
+Ask for it even when probes are already running. It costs nothing and it is
+the only source that can be authoritative about the PCB.
+
+### Then use the vendor's own images
+
+Once the model is known, check the vendor's GitHub/wiki for a factory or
+recovery image. Two payoffs:
+
+- **Restore.** A board bricked by wrong-driver experiments comes straight
+  back: \`esptool -p PORT write-flash 0x0 <factory>.bin\` for a full-flash
+  dump. Verified on a Waveshare AMOLED board — 16 MB written, hash
+  verified, display alive again after a replug.
+- **Disambiguate revisions without opening anything.** Vendors ship one
+  image per hardware revision. Fingerprint them:
+
+\`\`\`
+strings -n 5 vendor-v1.bin | grep -oiE 'sh8601|co5300|ft3168|cst820'
+strings -n 5 vendor-v2.bin | grep -oiE 'sh8601|co5300|ft3168|cst820'
+\`\`\`
+
+That printed SH8601 for V1 and CO5300 for V2 of the same product. Flashing
+one and asking the user whether the screen lit is then a two-option test
+with an immediate, unambiguous answer — far cheaper than deducing the panel
+from the outside.
+
+## Rung 0b — what the host already knows (free, no connection)
 
 \`\`\`
 ls -l /dev/serial/by-id/                   # symlinks carry vendor strings
@@ -1509,6 +1556,15 @@ State plainly which of these you have. "Flashed successfully" is not
 - Log what each attempt ruled OUT. That is the deliverable when you stop.
 
 ## Playbook
+
+**Flash succeeds, display stays black — and the board is a module you did
+not identify from a listing.** Suspect the CONTROLLER before the wiring. A
+real case: an ST7789 driver on a board whose panel is a QSPI AMOLED
+(SH8601). No pin, offset or backlight change can ever light that up, and
+the assumption survived a full day and several sessions because it was
+never restated as an assumption. Ask for the purchase listing, get the
+vendor's factory image, flash it, and ask the user if the screen lit. That
+settles panel + controller in minutes.
 
 **Flash succeeds, display stays black.** Most common real failure. In order:
 backlight/panel power pin not driven; wrong panel controller entirely

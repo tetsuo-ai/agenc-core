@@ -132,6 +132,12 @@ test('iot-builder definition ships the board, toolchain, workflow, and safety re
   // burned its whole context because the agent recalled a board model from
   // training data and presented it as a conclusion.
   const identify = files['boards/identify.md']!
+  // Rung 0 is asking for the purchase listing. Measured: a full day of
+  // probing never named the board; the listing title did, in ten minutes.
+  assert.match(identify, /Rung 0 — ask for the purchase listing FIRST/, 'listing first')
+  assert.match(identify, /write-flash 0x0/, 'vendor factory image restores a bricked board')
+  assert.match(identify, /sh8601\|co5300/, 'fingerprint vendor images to pick the revision')
+
   assert.match(identify, /read-flash 0 ALL/, 'backup before first overwrite')
   assert.match(identify, /espefuse/, 'eFuse is the authority on PSRAM config')
   assert.match(identify, /pins_arduino\.h/, 'real pin map source')
