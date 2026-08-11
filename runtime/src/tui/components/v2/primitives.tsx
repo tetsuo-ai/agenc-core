@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import React from 'react'
 import type { PermissionMode } from '../../../permissions/types.js'
-import { AURA_LIFECYCLE_GLYPHS, AURA_PLAN_GLYPHS, type Theme } from '../../../utils/theme.js'
+import { AURA_PLAN_GLYPHS, type Theme } from '../../../utils/theme.js'
 import { useModalOrTerminalSize } from '../../context/modalContext.js'
 import { useQueuedMessage } from '../../context/QueuedMessageContext.js'
 import { ContentWidthProvider, insetContentWidth, useContentWidth } from '../../context/contentWidthContext.js'
@@ -11,6 +11,7 @@ import wrapText from '../../ink/wrap-text.js'
 import { TerminalWriteContext } from '../../ink/useTerminalNotification.js'
 import ThemedBox from '../design-system/ThemedBox.js'
 import ThemedText from '../design-system/ThemedText.js'
+import { ToolStateGlyph } from '../ToolStateGlyph.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import {
   useAssistantMessageMetadata,
@@ -156,8 +157,6 @@ const toolColor: Record<ToolKind, ThemeColor> = {
   settle: 'success',
   stake: 'worker',
 }
-
-const toolGlyph: Readonly<Record<ToolState, string>> = AURA_LIFECYCLE_GLYPHS
 
 function capitalize(value: string): string {
   return value.length > 0 ? value.slice(0, 1).toUpperCase() + value.slice(1) : value
@@ -1414,7 +1413,7 @@ export function Tool({
           `● Run` intact and forces all shrinkage onto the args text below.
         */}
         <Box flexShrink={0}>
-          <ThemedText color={color}>{toolGlyph[state]}</ThemedText>
+          <ToolStateGlyph state={state} color={color} />
         </Box>
         <Box flexShrink={0}>
           <ThemedText color={toolColor[kind]} bold>

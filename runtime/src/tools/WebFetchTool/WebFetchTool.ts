@@ -117,6 +117,14 @@ export const WebFetchTool = buildTool({
   // tool for the rest of the run. Observed twice in one afternoon, each time
   // stranding a live hardware-debugging session that could no longer flash.
   recoveryCategory: 'idempotent',
+  // A fetch IS a read, and its result is a whole web page. Without this the
+  // transcript printed every fetched document in full (report: "the webchat is
+  // showing the complete fetch"), because only tools that declare themselves
+  // search/read get folded into the collapsed group summary the way Read and
+  // Grep are.
+  isSearchOrReadCommand() {
+    return { isSearch: false, isRead: true }
+  },
   toAutoClassifierInput(input) {
     return input.prompt ? `${input.url}: ${input.prompt}` : input.url
   },

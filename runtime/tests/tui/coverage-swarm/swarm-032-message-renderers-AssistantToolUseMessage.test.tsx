@@ -5,6 +5,7 @@ import type { Tool } from '../../tools/Tool.js'
 import type { AgenCToolUseBlockParam } from '../../types/message.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { Text } from '../ink.js'
+import { toolStaticGlyph } from '../components/ToolStateGlyph.js'
 import {
   AssistantToolUseMessage,
   getAssistantToolUsePendingText,
@@ -173,7 +174,7 @@ describe('AssistantToolUseMessage swarm 032 coverage', () => {
 
       expect(output).toContain(label)
       expect(output).toContain(expectedArg)
-      expect(output).toContain('●')
+      expect(output).toContain(toolStaticGlyph('done', false))
     }
   })
 
@@ -246,7 +247,7 @@ describe('AssistantToolUseMessage swarm 032 coverage', () => {
     expect(output).toContain('Search Tool')
     expect(output).toContain('queued/path.ts')
     expect(output).toContain('queued as node')
-    expect(output).toContain('○')
+    expect(output).toContain(toolStaticGlyph('queued', false))
   })
 
   it('falls back to empty non-object summaries and default progress detail', async () => {

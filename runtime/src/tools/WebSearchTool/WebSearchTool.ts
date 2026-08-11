@@ -405,6 +405,11 @@ export const WebSearchTool = buildTool({
   // poison the session. See the note in WebFetchTool for what the
   // side-effecting default costs.
   recoveryCategory: 'idempotent',
+  // A search is a search: fold the result list into the collapsed group
+  // summary instead of printing every hit, matching Grep and Glob.
+  isSearchOrReadCommand() {
+    return { isSearch: true, isRead: false }
+  },
   toAutoClassifierInput(input) {
     return input.query
   },

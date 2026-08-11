@@ -1748,7 +1748,35 @@ export function formatStructuredToolResult(
     }
   }
 
-  return [{ type: "text", text: stringResult(result) }];
+  return [{ type: "text", text: clampGenericToolResult(stringResult(result)) }];
+}
+
+/**
+ * Every branch above projects a tool's result down to the few lines worth
+ * reading. Tools with no branch fall through here and printed their raw result
+ * in full, which is how a single fetch or a chatty MCP call could bury a whole
+ * screen of conversation.
+ *
+ * This is the floor, not the mechanism: a tool whose output is routinely long
+ * should declare `isSearchOrReadCommand` so it folds into the collapsed group
+ * summary. The threshold is deliberately high — anything past it is already
+ * unreadable in a chat pane — so short results stay verbatim.
+ */
+const GENERIC_RESULT_MAX_CHARS = 2_000;
+const GENERIC_RESULT_HEAD_LINES = 12;
+
+export function clampGenericToolResult(text: string): string {
+  if (text.length <= GENERIC_RESULT_MAX_CHARS) return text;
+  const lines = text.split("\n");
+  if (lines.length <= GENERIC_RESULT_HEAD_LINES) {
+    return `${text.slice(0, GENERIC_RESULT_MAX_CHARS)}\n… +${
+      text.length - GENERIC_RESULT_MAX_CHARS
+    } more characters (ctrl+o for the full result)`;
+  }
+  const head = lines.slice(0, GENERIC_RESULT_HEAD_LINES).join("\n");
+  return `${head}\n… +${
+    lines.length - GENERIC_RESULT_HEAD_LINES
+  } more lines (ctrl+o for the full result)`;
 }
 
 /**

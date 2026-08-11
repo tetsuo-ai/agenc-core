@@ -2,6 +2,7 @@ import React from 'react'
 import { describe, expect, test } from 'vitest'
 
 import { Msg, Tool, WelcomeColdPanel } from '../../src/tui/components/v2/primitives.js'
+import { toolStaticGlyph } from '../../src/tui/components/ToolStateGlyph.js'
 import { Box, Text } from '../../src/tui/ink.js'
 import {
   ContentWidthProvider,
@@ -49,6 +50,8 @@ async function probeBodyWidth(node: React.ReactNode): Promise<number> {
   const row = out.split('\n').find(line => line.includes('#')) ?? ''
   return (row.match(/#/g) ?? []).length
 }
+
+const DONE = toolStaticGlyph('done', false)
 
 describe('Msg queued body wrap width (BUG 1)', () => {
   test('non-queued message body width is unchanged (marker inset only)', async () => {
@@ -203,7 +206,7 @@ async function firstToolRow(node: React.ReactNode, contentWidth: number): Promis
 describe('Tool call header under arg overflow (BUG A)', () => {
   test('a fitting arg keeps the canonical `● Run (cmd)` shape', async () => {
     const row = await firstToolRow(<Tool kind="bash" label="Run" args="short cmd" />, 90)
-    expect(row).toBe('● Run (short cmd)')
+    expect(row).toBe(`${DONE} Run (short cmd)`)
   })
 
   test('an overflowing bash arg keeps glyph/space/label/space/open-paren and the closing paren', async () => {
@@ -213,7 +216,7 @@ describe('Tool call header under arg overflow (BUG A)', () => {
     // Against the pre-fix code the row started `●Run  ` (glyph touching label, no
     // space; doubled space after label) and the `(` was missing entirely, so this
     // exact prefix is the revert-sensitive guard.
-    expect(row.startsWith('● Run (')).toBe(true)
+    expect(row.startsWith(`${DONE} Run (`)).toBe(true)
     // The opening paren is present and the args text was truncated in the middle
     // (the ellipsis appears between the open paren and the close paren).
     expect(row).toContain('…')
@@ -222,7 +225,7 @@ describe('Tool call header under arg overflow (BUG A)', () => {
     expect((row.match(/\(/g) ?? []).length).toBe(1)
     expect((row.match(/\)/g) ?? []).length).toBe(1)
     // Revert-sensitivity, negative form: the collapsed defects must be gone.
-    expect(row.startsWith('●Run')).toBe(false)
+    expect(row.startsWith(`${DONE}Run`)).toBe(false)
     expect(row).not.toContain('Run  ')
   })
 
@@ -231,19 +234,19 @@ describe('Tool call header under arg overflow (BUG A)', () => {
     async kind => {
       const expectedLabel = kind.charAt(0).toUpperCase() + kind.slice(1)
       const row = await firstToolRow(<Tool kind={kind} args={LONG_TOOL_ARGS} />, 90)
-      expect(row.startsWith(`● ${expectedLabel} (`)).toBe(true)
+      expect(row.startsWith(`${DONE} ${expectedLabel} (`)).toBe(true)
       expect(row.endsWith(')')).toBe(true)
       expect((row.match(/\(/g) ?? []).length).toBe(1)
       expect((row.match(/\)/g) ?? []).length).toBe(1)
-      // The collapsed `●Edit`/`●Read`/`●Grep` (no glyph space) must not reappear.
-      expect(row.startsWith(`●${expectedLabel}`)).toBe(false)
+      // The collapsed `<glyph>Edit` (no space after the glyph) must not reappear.
+      expect(row.startsWith(`${DONE}${expectedLabel}`)).toBe(false)
     },
   )
 
   test('the defect reproduces across narrow widths and the fix holds at each', async () => {
     for (const width of [70, 60, 50]) {
       const row = await firstToolRow(<Tool kind="bash" label="Run" args={LONG_TOOL_ARGS} />, width)
-      expect(row.startsWith('● Run (')).toBe(true)
+      expect(row.startsWith(`${DONE} Run (`)).toBe(true)
       expect(row.endsWith(')')).toBe(true)
     }
   })

@@ -4,6 +4,10 @@ import { describe, expect, test } from 'vitest'
 import type { AdvisorBlock } from '../../utils/advisor.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { AdvisorMessage } from '../message-renderers/AdvisorMessage.js'
+import {
+  toolStarFrames,
+  toolStaticGlyph,
+} from '../components/ToolStateGlyph.js'
 
 function normalize(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
@@ -52,7 +56,10 @@ describe('AdvisorMessage coverage swarm row 056', () => {
     )
 
     expect(output).toContain('Advising')
-    expect(output).toContain('◐')
+    // In flight: a star mid-sweep, whichever frame the static render caught.
+    expect(toolStarFrames(false).some((frame) => output.includes(frame))).toBe(
+      true,
+    )
     expect(output).not.toContain('using')
     expect(output).not.toContain('{}')
   })
@@ -73,7 +80,7 @@ describe('AdvisorMessage coverage swarm row 056', () => {
       ),
     )
 
-    expect(completed).toContain('●')
+    expect(completed).toContain(toolStaticGlyph('done', false))
     expect(completed).toContain('Advising using advisor-model')
     expect(completed).toContain(
       '{"files":["src/tui/message-renderers/AdvisorMessage.tsx"]}',
