@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 
 import { resolveAgenCTuiGlyphMode } from "../glyphs.js";
-import { Text } from "../ink.js";
+import { Box, Text } from "../ink.js";
 import type { Theme } from "../../utils/theme.js";
 
 export type ToolGlyphState = "queued" | "running" | "done" | "failed";
@@ -93,5 +93,28 @@ export function ToolStateGlyph({
     <Text color={color} dimColor={dim}>
       {glyph}
     </Text>
+  );
+}
+
+/**
+ * A one-line "this is happening right now" label: the running star followed by
+ * the text, dimmed like the rest of the progress chrome.
+ *
+ * Every in-flight thing in the transcript should say so the same way — a tool
+ * call, a permission wait, a classifier check, a wait on other agents — so the
+ * eye learns one mark instead of four.
+ */
+export function RunningLabel({
+  text,
+  color,
+}: {
+  readonly text: string;
+  readonly color?: keyof Theme;
+}): React.ReactElement {
+  return (
+    <Box flexDirection="row" gap={1}>
+      <ToolStateGlyph state="running" color={color} dim />
+      <Text dimColor>{text}</Text>
+    </Box>
   );
 }

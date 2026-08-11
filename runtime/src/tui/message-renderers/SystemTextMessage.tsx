@@ -5,6 +5,7 @@ import * as React from 'react';
 import { useState } from 'react';
 import sample from 'lodash-es/sample.js';
 import { BLACK_CIRCLE, REFERENCE_MARK, TEARDROP_ASTERISK } from '../../constants/figures.js';
+import { ToolStateGlyph } from '../components/ToolStateGlyph.js';
 import figures from 'figures';
 import { basename } from 'path';
 import { MessageResponse } from '../components/MessageResponse';
@@ -373,9 +374,19 @@ function CollabAgentSystemMessage({
   return (
     <Box flexDirection="row" marginTop={marginTop} backgroundColor={bg} width="100%">
       <Box minWidth={2}>
-        <Text color={color} dimColor={state === "info"}>
-          {BLACK_CIRCLE}
-        </Text>
+        {/*
+          A collab row that is still running ("Waiting for agents", "Spawned
+          …") gets the same sweeping star as a running tool call, so every
+          in-flight thing in the transcript reads the same way. Settled rows
+          keep the static mark.
+        */}
+        {state === "running" ? (
+          <ToolStateGlyph state="running" color={color} />
+        ) : (
+          <Text color={color} dimColor={state === "info"}>
+            {BLACK_CIRCLE}
+          </Text>
+        )}
       </Box>
       <Box flexDirection="column" width={width}>
         <Text color={color} bold={state === "running"}>

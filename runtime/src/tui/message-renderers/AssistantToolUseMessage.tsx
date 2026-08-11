@@ -14,6 +14,7 @@ import type { AgenCToolUseBlockParam } from '../../types/message.js';
 import { MessageResponse } from '../components/MessageResponse';
 import { useSelectedMessageBg } from '../components/messageActions';
 import { TuiErrorBoundary } from '../components/TuiErrorBoundary';
+import { RunningLabel } from '../components/ToolStateGlyph.js';
 import { HookProgressMessage } from './HookProgressMessage';
 import { Tool as V2Tool, DiffInline, type ToolKind, type ToolState } from '../components/v2/primitives.js';
 import { extractTag } from '../../utils/messages.js';
@@ -180,15 +181,17 @@ export function AssistantToolUseMessage({
   const progressDetail = !isResolved && !isQueued ? (
     isWaitingForPermission ? (
       <MessageResponse height={1}>
-        <Text dimColor={true}>{getAssistantToolUsePendingText('permission')}</Text>
+        <RunningLabel text={getAssistantToolUsePendingText('permission')} />
       </MessageResponse>
     ) : isClassifierChecking ? (
       <MessageResponse height={1}>
-        <Text dimColor={true}>
-          {isAutoClassifier
-            ? getAssistantToolUsePendingText('auto-classifier')
-            : getAssistantToolUsePendingText('bash-classifier')}
-        </Text>
+        <RunningLabel
+          text={
+            isAutoClassifier
+              ? getAssistantToolUsePendingText('auto-classifier')
+              : getAssistantToolUsePendingText('bash-classifier')
+          }
+        />
       </MessageResponse>
     ) : renderToolUseProgressMessage(
       tool,
