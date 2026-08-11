@@ -13,12 +13,17 @@ import { globbyStream } from "globby";
 
 import { buildProjectTreeRows } from "./buildTree.js";
 import {
+  collectGitBranch,
   collectGitStatus,
   listGitFiles,
   type GitStatusByPath,
 } from "./gitStatus.js";
 import { normalizeWorkspacePathForReferences } from "../pathReferences.js";
-import type { ProjectTreeRow, ProjectTreeSnapshot } from "../types.js";
+import type {
+  ProjectTreeGitBranch,
+  ProjectTreeRow,
+  ProjectTreeSnapshot,
+} from "../types.js";
 import {
   bindWorkspaceDirectoryMutation,
   captureWorkspaceFilePathTransactionGuard,
@@ -75,6 +80,7 @@ const EMPTY_SNAPSHOT: ProjectTreeSnapshot = Object.freeze({
   expandedPaths: [],
   fileCount: 0,
   directoryCount: 0,
+  git: null,
 });
 const DEFAULT_VIEWPORT_ROWS = 20;
 const WORKSPACE_TREE_IGNORE = [
@@ -104,6 +110,7 @@ export class ProjectTreeStore {
   #refreshIntervalMs: number;
   #paths: readonly string[] = [];
   #gitStatus: GitStatusByPath = new Map();
+  #gitBranch: ProjectTreeGitBranch | null = null;
   #expandedPaths = new Set<string>();
   #cursorPath: string | null = null;
   #activePath: string | null = null;
@@ -202,14 +209,16 @@ export class ProjectTreeStore {
     this.#loading = true;
     this.#emit();
     try {
-      const [paths, gitStatus] = await Promise.all([
+      const [paths, gitStatus, gitBranch] = await Promise.all([
         listWorkspacePaths(this.#cwd),
         collectGitStatus(this.#cwd),
+        collectGitBranch(this.#cwd),
       ]);
       if (version !== this.#refreshVersion) return;
       this.#autoExpandNewDirectories(paths);
       this.#paths = paths;
       this.#gitStatus = gitStatus;
+      this.#gitBranch = gitBranch;
       this.#cursorPath =
         this.#cursorPath ?? firstFilePath(paths) ?? paths[0] ?? null;
       this.#loading = false;
@@ -753,6 +762,7 @@ export class ProjectTreeStore {
       // project whose files sit inside a collapsed directory.
       fileCount: countFilePaths(this.#paths),
       directoryCount: collectDirectoryPaths(this.#paths).size,
+      git: this.#gitBranch,
     };
     for (const listener of this.#listeners) listener();
   }

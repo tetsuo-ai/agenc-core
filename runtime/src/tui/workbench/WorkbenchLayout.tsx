@@ -36,6 +36,8 @@ import type {
 import { WorkbenchFooter } from "./WorkbenchFooter.js";
 import { WorkbenchStatusBar } from "./WorkbenchStatusBar.js";
 import { DirtyBufferLeaveOverlay } from "./DirtyBufferLeaveOverlay.js";
+import { GitDetailOverlay } from "./GitDetailOverlay.js";
+import { useProjectTree } from "./project-tree/useProjectTree.js";
 import { WorkspaceTabs } from "./WorkspaceTabs.js";
 import { EditorProposalRail } from "./EditorProposalRail.js";
 import type { BufferIntegrationIntent } from "./buffer/providers/types.js";
@@ -96,6 +98,7 @@ export function WorkbenchLayout({
   const { columns, rows } = useTerminalSize();
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
+  const projectTree = useProjectTree();
   const layoutSize = layoutSizeForColumns(columns);
   const focusedPane = visibleWorkbenchPane(workbench);
   const editorOwnsKeys =
@@ -472,6 +475,25 @@ export function WorkbenchLayout({
             paddingX={1}
           >
             <DirtyBufferLeaveOverlay />
+          </Box>
+        ) : null}
+        {workbench.gitPanelOpen ? (
+          <Box
+            position="absolute"
+            left={0}
+            right={0}
+            top={3}
+            flexDirection="column"
+            opaque
+            borderColor="agenc"
+            borderBottom
+            paddingX={1}
+          >
+            <GitDetailOverlay
+              cwd={projectTree.cwd}
+              git={projectTree.git}
+              onClose={() => dispatch({ type: "toggleGitPanel", open: false })}
+            />
           </Box>
         ) : null}
       </Box>

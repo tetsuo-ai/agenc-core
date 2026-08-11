@@ -36,6 +36,7 @@ export interface AgenCTuiGlyphs {
   readonly treeSelectedRoot: string;
   readonly folderClosed: string;
   readonly folderOpen: string;
+  readonly gitBranch: string;
   readonly voiceCursorBars: string;
 }
 
@@ -73,6 +74,7 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
   treeSelectedRoot: ".>",
   folderClosed: "[+]",
   folderOpen: "[-]",
+  gitBranch: "Y",
   voiceCursorBars: " .:-=+*#@",
 };
 
@@ -110,6 +112,7 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   treeSelectedRoot: "╒═",
   folderClosed: "📁",
   folderOpen: "📂",
+  gitBranch: "⎇",
   voiceCursorBars: " ▁▂▃▄▅▆▇█",
 };
 

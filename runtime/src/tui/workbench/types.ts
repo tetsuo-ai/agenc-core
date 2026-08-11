@@ -161,6 +161,8 @@ export type WorkbenchState = {
   readonly editorComposerAttachmentIds: readonly string[];
   readonly attachments: readonly WorkbenchAttachment[];
   readonly pendingBlockedOverlay: WorkbenchBlockedOverlay;
+  /** Git detail panel opened from the WORKSPACE footer branch chip. */
+  readonly gitPanelOpen: boolean;
   readonly composerDraftRequest: {
     readonly id: number;
     readonly text: string;
@@ -199,6 +201,7 @@ export type WorkbenchState = {
 };
 
 export type WorkbenchCommand =
+  | { readonly type: "toggleGitPanel"; readonly open?: boolean }
   | { readonly type: "switchWorkspaceView"; readonly view: WorkspaceView }
   | {
       readonly type: "cycleWorkspaceView";
@@ -323,6 +326,25 @@ export type ProjectTreeSnapshot = {
   readonly fileCount: number;
   /** Collapse-independent directory count for the explorer footer. */
   readonly directoryCount?: number;
+  /**
+   * Branch of the repository the workspace sits in, refreshed on the same
+   * cycle as the per-file git states. `null` outside a repository; the branch
+   * name is absent on a detached HEAD, where `head` carries the short sha.
+   */
+  readonly git?: ProjectTreeGitBranch | null;
+};
+
+export type ProjectTreeGitBranch = {
+  /** Branch name, or null when HEAD is detached. */
+  readonly branch: string | null;
+  /** Short HEAD sha — the only identity a detached HEAD has. */
+  readonly head: string | null;
+  /** Upstream ref (`origin/main`), absent when the branch has no upstream. */
+  readonly upstream?: string;
+  readonly ahead?: number;
+  readonly behind?: number;
+  /** Paths with any working-tree or index change, from the same porcelain read. */
+  readonly dirtyCount: number;
 };
 
 export type SearchMatch = {

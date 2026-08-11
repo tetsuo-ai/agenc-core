@@ -45,6 +45,7 @@ export function getDefaultWorkbenchState(): WorkbenchState {
     editorComposerAttachmentIds: EMPTY_COMPOSER_ATTACHMENT_IDS,
     attachments: [],
     pendingBlockedOverlay: null,
+    gitPanelOpen: false,
     composerDraftRequest: null,
     surfaceMaximized: false,
     rail: null,
@@ -506,6 +507,11 @@ function reduceWorkbenchState(
           attemptedAction: command.attemptedAction,
           deferredCommand: command.deferredCommand,
         },
+      };
+    case "toggleGitPanel":
+      return {
+        ...state,
+        gitPanelOpen: command.open ?? !state.gitPanelOpen,
       };
     case "clearBlockedOverlay":
       return {

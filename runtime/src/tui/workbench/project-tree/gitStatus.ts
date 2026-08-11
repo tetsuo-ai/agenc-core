@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 
-import type { ProjectTreeGitState } from "../types.js";
+import type { ProjectTreeGitBranch, ProjectTreeGitState } from "../types.js";
 
 export type GitStatusByPath = ReadonlyMap<string, ProjectTreeGitState>;
 
@@ -46,6 +46,81 @@ export function collectGitStatus(cwd: string): Promise<Map<string, ProjectTreeGi
       },
     );
   });
+}
+
+/**
+ * Branch identity for the explorer footer, read on the same refresh as the
+ * per-file states so the panel never shows a branch from a previous checkout.
+ *
+ * `--porcelain=v2 --branch` returns the branch, the head sha and the upstream
+ * divergence in ONE call, so adding the footer costs no extra git invocation
+ * beyond the one this module already makes. Resolves to null outside a
+ * repository, which is how the footer decides to render nothing at all.
+ */
+export function collectGitBranch(
+  cwd: string,
+): Promise<ProjectTreeGitBranch | null> {
+  return new Promise((resolve) => {
+    execFile(
+      "git",
+      ["status", "--porcelain=v2", "--branch", "--untracked-files=all"],
+      { cwd, encoding: "utf8", timeout: 5_000 },
+      (error, stdout) => {
+        resolve(error ? null : parseGitBranchPorcelainV2(stdout));
+      },
+    );
+  });
+}
+
+export function parseGitBranchPorcelainV2(
+  raw: string,
+): ProjectTreeGitBranch | null {
+  let branch: string | null = null;
+  let head: string | null = null;
+  let upstream: string | undefined;
+  let ahead: number | undefined;
+  let behind: number | undefined;
+  let dirtyCount = 0;
+  let sawHeader = false;
+
+  for (const line of raw.split("\n")) {
+    if (line.length === 0) continue;
+    if (line.startsWith("# branch.")) {
+      sawHeader = true;
+      const [key, ...rest] = line.slice(2).split(" ");
+      const value = rest.join(" ");
+      // git spells a detached HEAD "(detached)" and an unborn branch
+      // "(initial)"; neither is a branch name a user could check out.
+      if (key === "branch.head") {
+        branch = value.startsWith("(") ? null : value;
+      } else if (key === "branch.oid") {
+        head = value.startsWith("(") ? null : value.slice(0, 7);
+      } else if (key === "branch.upstream") {
+        upstream = value;
+      } else if (key === "branch.ab") {
+        const match = /^\+(\d+) -(\d+)$/u.exec(value);
+        if (match !== null) {
+          ahead = Number(match[1]);
+          behind = Number(match[2]);
+        }
+      }
+      continue;
+    }
+    if (line.startsWith("#")) continue;
+    // Every remaining record is one changed path: 1/2 tracked, u unmerged,
+    // ? untracked, ! ignored (never emitted without --ignored).
+    if (/^[12u?]\s/u.test(line)) dirtyCount += 1;
+  }
+
+  if (!sawHeader) return null;
+  return {
+    branch,
+    head,
+    ...(upstream !== undefined ? { upstream } : {}),
+    ...(ahead !== undefined ? { ahead } : {}),
+    ...(behind !== undefined ? { behind } : {}),
+    dirtyCount,
+  };
 }
 
 export function listGitFiles(cwd: string): Promise<string[] | null> {

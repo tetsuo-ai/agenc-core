@@ -7,6 +7,7 @@ import React, {
 } from "react";
 
 import { selectAgenCTuiGlyphs } from "../../glyphs.js";
+import { GitBranchFooter } from "./GitBranchFooter.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { Box, Text } from "../../ink.js";
 import type { DOMElement } from "../../ink/dom.js";
@@ -957,7 +958,8 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
         height={2}
         flexShrink={0}
         paddingX={2}
-        alignItems="center"
+        flexDirection="column"
+        justifyContent="center"
         borderTop
         borderTopColor="lineSoft"
         backgroundColor="#000000"
@@ -965,6 +967,10 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
         <Text color="inactive" wrap="truncate-end">
           {itemCount} files · {directoryCount} dirs
         </Text>
+        <GitBranchFooter
+          git={snapshot.git}
+          onOpen={() => dispatch({ type: "toggleGitPanel" })}
+        />
       </Box>
     </Box>
   );
