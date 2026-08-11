@@ -750,8 +750,20 @@ export interface CollabAgentSpawnEndEvent {
   readonly status: AgentStatus;
 }
 
+/**
+ * The lifecycle statuses a collab agent can report on the wire.
+ *
+ * `idle` is not a `TaskStatus`: it is the relabel `registerAgentThreadTask`
+ * applies when a keep-alive worker finishes a turn but its lifecycle record
+ * stays non-terminal (tasks/agent-thread.ts). That relabel reaches this event,
+ * so the wire type has to admit it. It did not, and the value arrived here
+ * through a cast — a `collab_agent_status` carrying `"idle"` then failed
+ * canonical replay, which excluded the whole workspace from execution
+ * admission and made every later message fail with "canonical event_msg
+ * payload does not match the runtime schema".
+ */
 export type CollabAgentTaskStatus =
-  "pending" | "running" | "completed" | "failed" | "killed";
+  "pending" | "running" | "idle" | "completed" | "failed" | "killed";
 
 export interface CollabAgentStatusEvent {
   readonly callId: string;

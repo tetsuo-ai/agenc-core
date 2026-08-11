@@ -2700,9 +2700,37 @@ export class WorkspaceMutationCoordinator {
     return (
       this.#quarantineHydrationFailed ||
       this.#lease !== null ||
-      this.#buffers.size > 0 ||
+      this.#hasProtectedBuffer() ||
       this.#topologyTokens.size > 0
     );
+  }
+
+  /**
+   * A `disk_authoritative` buffer holds nothing an editor could lose: it says
+   * the file on disk IS the truth, which is exactly what `authorityForPath`
+   * reports for a path with no buffer entry at all. Counting those as
+   * protection meant a TUI that died without releasing its lease left its
+   * quarantine entries behind and, from the next daemon start on, every tool
+   * in that workspace was refused with "Tool 'exec_command' is blocked while
+   * this workspace has protected Editor authority" — with no live editor
+   * anywhere and nothing at risk.
+   *
+   * `editor_dirty` (unsaved editor content) and `stale_dirty` (quarantined,
+   * provenance unknown) still protect: a tool writing over either destroys
+   * state that exists nowhere else. A live lease is handled by the caller.
+   */
+  #hasProtectedBuffer(): boolean {
+    for (const state of this.#buffers.values()) {
+      // Hydration rewrites every persisted entry to `stale_dirty` and keeps
+      // what it actually was in `quarantinedFrom` — the same discriminator
+      // #synchronize uses to decide whether a quarantined path was dirty.
+      if (state.authority === "stale_dirty") {
+        if (state.quarantinedFrom !== "disk_authoritative") return true;
+        continue;
+      }
+      if (state.authority !== "disk_authoritative") return true;
+    }
+    return false;
   }
 
   #bufferConflictForTopologyTarget(

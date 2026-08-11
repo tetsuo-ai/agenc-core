@@ -438,6 +438,9 @@ const isAgentStatus: Validator<AgentStatusPayload> = (
 const isCollabTaskStatus = oneOf<readonly CollabTaskStatus[]>(
   "pending",
   "running",
+  // A keep-alive worker between turns. Emitted as a bare string by
+  // registerAgentThreadTask's relabel, unlike the AgentStatus object form.
+  "idle",
   "completed",
   "failed",
   "killed",

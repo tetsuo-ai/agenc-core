@@ -136,6 +136,12 @@ export interface ExecutionAdmissionRecoverySummary {
   readonly heldUnknown: number;
   readonly expired: number;
   readonly detachedQueued: number;
+  /**
+   * Persisted run rows skipped because the same run id is already bound to
+   * another workspace. Stale data, not a live conflict — see the hydration
+   * loop in `#registerPaths`.
+   */
+  readonly staleRunBindings: number;
   /** Project databases whose recovery failed and was excluded from startup. */
   readonly failures: readonly ExecutionAdmissionRecoveryFailure[];
 }
@@ -169,7 +175,18 @@ export class ExecutionAdmissionKernel {
   readonly #scheduler = new AsyncLock<void>(undefined);
   readonly #byStatePath = new Map<string, WorkspaceBinding>();
   readonly #byWorkspace = new Map<string, WorkspaceBinding>();
-  readonly #runStatePath = new Map<string, string>();
+  /**
+   * runId -> owning workspace. `live` marks a binding made by an actual
+   * admission (bindClient / attach) rather than one replayed from a
+   * persisted row, so a stale claim can be taken over and a real one
+   * cannot.
+   */
+  readonly #runStatePath = new Map<
+    string,
+    { readonly statePath: string; readonly live: boolean }
+  >();
+  /** Monotonic; `initializeExistingState` reports the delta for its own pass. */
+  #staleRunBindingSkips = 0;
   readonly #active = new Map<string, ActiveCapacity>();
   readonly #pending = new Map<string, PendingAdmission>();
   readonly #listeners = new Map<
@@ -230,6 +247,7 @@ export class ExecutionAdmissionKernel {
       detachedQueued: 0,
     };
     const failures: ExecutionAdmissionRecoveryFailure[] = [];
+    const staleRunBindingsBefore = this.#staleRunBindingSkips;
     for (const paths of discoverStateDatabasePaths(this.#agencHome)) {
       try {
         const binding = this.#registerPaths(paths, paths.projectDir, false);
@@ -258,7 +276,11 @@ export class ExecutionAdmissionKernel {
         });
       }
     }
-    return { ...totals, failures };
+    return {
+      ...totals,
+      staleRunBindings: this.#staleRunBindingSkips - staleRunBindingsBefore,
+      failures,
+    };
   }
 
   bindClient(
@@ -654,7 +676,7 @@ export class ExecutionAdmissionKernel {
    */
   sumReconciledUsageByRunId(runId: string): AdmissionRunUsageSummary {
     this.#assertOpen();
-    const statePath = this.#runStatePath.get(runId);
+    const statePath = this.#runStatePath.get(runId)?.statePath;
     const bound =
       statePath === undefined ? undefined : this.#byStatePath.get(statePath);
     if (bound !== undefined) {
@@ -864,7 +886,17 @@ export class ExecutionAdmissionKernel {
     this.#byStatePath.set(paths.stateDbPath, binding);
     for (const alias of binding.aliases) this.#byWorkspace.set(alias, binding);
     for (const runId of binding.repository.listBoundRunIds()) {
-      this.#bindRunWorkspace(runId, binding);
+      // Hydration replays persisted rows; it does not admit anything. A run id
+      // already owned by another workspace here is stale data — the same
+      // conversation opened once under a different cwd leaves its id in two
+      // project databases — and throwing would exclude this whole workspace
+      // from admission for the life of the daemon. The user sees only
+      // "Message not sent: execution admission deny:
+      // admission_run_workspace_conflict" on every turn, with no way back
+      // short of deleting state. Skip the row; live binds still throw.
+      if (!this.#tryBindRunWorkspace(runId, binding, false)) {
+        this.#staleRunBindingSkips += 1;
+      }
     }
     if (recover) {
       // A newly discovered workspace is recovered before its first admission.
@@ -889,8 +921,8 @@ export class ExecutionAdmissionKernel {
         this.#byWorkspace.delete(alias);
       }
     }
-    for (const [runId, statePath] of this.#runStatePath) {
-      if (statePath === binding.paths.stateDbPath) {
+    for (const [runId, bound] of this.#runStatePath) {
+      if (bound.statePath === binding.paths.stateDbPath) {
         this.#runStatePath.delete(runId);
       }
     }
@@ -901,12 +933,39 @@ export class ExecutionAdmissionKernel {
     }
   }
 
+  /** Live bind: a run genuinely executing against two workspaces is a fault. */
   #bindRunWorkspace(runId: string, binding: WorkspaceBinding): void {
-    const existing = this.#runStatePath.get(runId);
-    if (existing !== undefined && existing !== binding.paths.stateDbPath) {
+    if (!this.#tryBindRunWorkspace(runId, binding, true)) {
       throw new AdmissionDeniedError("admission_run_workspace_conflict");
     }
-    this.#runStatePath.set(runId, binding.paths.stateDbPath);
+  }
+
+  /**
+   * Returns false when `runId` already belongs to a different workspace and
+   * that claim cannot be taken over.
+   *
+   * A `live` bind outranks a hydrated one: the hydrated claim is a row left
+   * behind in some other project database, and the run being admitted right
+   * now is, by definition, running here. Two live binds are a genuine fault.
+   */
+  #tryBindRunWorkspace(
+    runId: string,
+    binding: WorkspaceBinding,
+    live: boolean,
+  ): boolean {
+    const existing = this.#runStatePath.get(runId);
+    if (
+      existing !== undefined &&
+      existing.statePath !== binding.paths.stateDbPath &&
+      (existing.live || !live)
+    ) {
+      return false;
+    }
+    this.#runStatePath.set(runId, {
+      statePath: binding.paths.stateDbPath,
+      live: live || (existing?.live ?? false),
+    });
+    return true;
   }
 
   #scheduleDrain(): void {

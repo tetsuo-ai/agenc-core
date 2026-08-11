@@ -260,9 +260,16 @@ describe("strict canonical journal contract", () => {
       ).toBe(true);
     }
 
+    // `idle` is the relabel registerAgentThreadTask applies to a keep-alive
+    // worker between turns (tasks/agent-thread.ts), and spawn.ts forwards it
+    // onto this event. It was missing here, so a real session that spawned a
+    // keep-alive agent wrote a record its own replay rejected: the workspace
+    // was then excluded from execution admission and every later message came
+    // back "canonical event_msg payload does not match the runtime schema".
     for (const status of [
       "pending",
       "running",
+      "idle",
       "completed",
       "failed",
       "killed",
@@ -277,6 +284,25 @@ describe("strict canonical journal contract", () => {
         `collab_agent_status rejected ${status}`,
       ).toBe(true);
     }
+
+    // The exact shape observed on disk: the full emitter payload, not just the
+    // required keys.
+    expect(
+      isCanonicalEventPayload("collab_agent_status", {
+        callId: "call-d402a742-12",
+        senderThreadId: "conv-msnc4pmz",
+        threadId: "1a57950f-c453-4551-a9a6-703fc2b1fe80",
+        agentPath: "/root/probe_usb_board",
+        agentNickname: "Molly",
+        agentRole: "worker",
+        agentRoleDisplayName: "Runner",
+        prompt: "identify the connected board",
+        model: "grok-4.5",
+        status: "idle",
+        toolUseCount: 7,
+        tokenCount: 1234,
+      }),
+    ).toBe(true);
 
     const completed = agentStatuses[3];
     expect(

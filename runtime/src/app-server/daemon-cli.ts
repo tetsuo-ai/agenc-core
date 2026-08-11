@@ -1446,12 +1446,14 @@ async function runAgenCDaemonForeground(
       recovery.requeued > 0 ||
       recovery.heldUnknown > 0 ||
       recovery.expired > 0 ||
-      recovery.detachedQueued > 0
+      recovery.detachedQueued > 0 ||
+      recovery.staleRunBindings > 0
     ) {
       io.stderr.write(
         `agenc: admission recovery databases=${recovery.databases} ` +
           `requeued=${recovery.requeued} held_unknown=${recovery.heldUnknown} ` +
-          `expired=${recovery.expired} detached=${recovery.detachedQueued}\n`,
+          `expired=${recovery.expired} detached=${recovery.detachedQueued} ` +
+          `stale_run_bindings=${recovery.staleRunBindings}\n`,
       );
     }
     // A failed project is excluded from admission, not fatal: the daemon

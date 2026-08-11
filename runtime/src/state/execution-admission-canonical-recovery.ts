@@ -1,3 +1,5 @@
+import { join, resolve, sep } from "node:path";
+
 import type { AdmissionJournalEvent } from "../budget/admission-types.js";
 import {
   withPinnedOfflineRolloutLease,
@@ -116,6 +118,7 @@ export function recoverExecutionAdmissionCanonicalJournals(
   for (const row of runs) {
     const bindings = retainedBindings(
       durability.listJournalBindings(row.run_id),
+      driver.projectDir,
     );
     if (bindings.length === 0) continue;
     if (bindings.length > maxSources) {
@@ -334,15 +337,41 @@ function withPinnedBindings<T>(
 
 function retainedBindings(
   bindings: readonly RunJournalBinding[],
+  projectDir: string,
 ): readonly RunJournalBinding[] {
   return bindings.filter(
     (binding) =>
+      isBindingInsideProject(binding, projectDir) &&
       !(
         !binding.active &&
         binding.gapReason !== undefined &&
         binding.retiredThroughSequence !== undefined &&
         binding.firstAvailableSequence === undefined
       ),
+  );
+}
+
+/**
+ * A binding may name a rollout in ANOTHER project: resuming one conversation
+ * from a second cwd rebinds it there and leaves this project pointing at a
+ * foreign path. Pinning it raises OfflineRolloutUnsafePathError, which is the
+ * correct containment answer, but it aborts recovery for the whole workspace —
+ * observed as every message failing with "unsafe offline canonical rollout …
+ * path is outside this project's sessions/archived_sessions roots".
+ *
+ * The foreign rollout is not ours to read under any circumstance, so there is
+ * nothing to recover from it and dropping the binding loses nothing this
+ * project owns. The guard in `pinOfflineRollout` stays as the backstop.
+ */
+function isBindingInsideProject(
+  binding: RunJournalBinding,
+  projectDir: string,
+): boolean {
+  const root = resolve(projectDir);
+  const source = resolve(binding.sourcePath);
+  return (
+    source.startsWith(join(root, "sessions") + sep) ||
+    source.startsWith(join(root, "archived_sessions") + sep)
   );
 }
 

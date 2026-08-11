@@ -266,6 +266,110 @@ describe("WorkspaceMutationCoordinator", () => {
     expect(secondRegistry.hasProtectedEditorAuthority(workspaceRoot)).toBe(true);
   });
 
+  // Regression: a TUI that died without releasing its lease left its quarantine
+  // entries on disk, all of them `disk_authoritative`. From the next daemon
+  // start on, every tool in that workspace was refused with "Tool
+  // 'exec_command' is blocked while this workspace has protected Editor
+  // authority", with no editor running and nothing at risk — a
+  // `disk_authoritative` entry says the file on disk is the truth.
+  it("does not treat leftover disk-authoritative entries as protection", async () => {
+    const parent = await tempDirectory("agenc-coherence-stale-disk-");
+    const agencHome = await tempDirectory("agenc-coherence-stale-disk-home-");
+    const workspaceRoot = join(parent, "workspace");
+    await mkdir(workspaceRoot);
+    const content = "saved content\n";
+    const quarantinePath = workspaceMutationStatePath(
+      workspaceRoot,
+      agencHome,
+      "quarantine-v1.json",
+    );
+    await mkdir(dirname(quarantinePath), { recursive: true });
+    await writeFile(
+      quarantinePath,
+      `${JSON.stringify({
+        version: 1,
+        workspaceRoot,
+        entries: [
+          {
+            path: `${workspaceRoot}/HARDWARE.md`,
+            contentSha256: sha256(content),
+            contentBytes: Buffer.byteLength(content),
+            changedtick: 2,
+            epoch: 2,
+            editorInstanceId: "tui-editor-that-was-killed",
+            authority: "disk_authoritative",
+          },
+        ],
+        proposalCommitments: [],
+        proposalReceipts: [],
+        mutationIntents: [],
+        topologyIntents: [],
+        changeSequence: 0,
+        changes: [],
+      })}\n`,
+      "utf8",
+    );
+
+    const registry = new WorkspaceMutationCoordinatorRegistry({ agencHome });
+    expect(
+      registry.getOrCreate(workspaceRoot).hasProtectedEditorPaths(),
+    ).toBe(false);
+    expect(registry.hasProtectedEditorAuthority(workspaceRoot)).toBe(false);
+    // The tool barrier is the thing the user actually hits.
+    expect(() =>
+      registry.beginToolOperation(workspaceRoot, "exec_command"),
+    ).not.toThrow();
+  });
+
+  // The other half: unsaved editor content still blocks, because a tool writing
+  // over it destroys state that exists nowhere else.
+  it("still protects a workspace with leftover editor-dirty entries", async () => {
+    const parent = await tempDirectory("agenc-coherence-stale-dirty-");
+    const agencHome = await tempDirectory("agenc-coherence-stale-dirty-home-");
+    const workspaceRoot = join(parent, "workspace");
+    await mkdir(workspaceRoot);
+    const content = "unsaved editor content\n";
+    const quarantinePath = workspaceMutationStatePath(
+      workspaceRoot,
+      agencHome,
+      "quarantine-v1.json",
+    );
+    await mkdir(dirname(quarantinePath), { recursive: true });
+    await writeFile(
+      quarantinePath,
+      `${JSON.stringify({
+        version: 1,
+        workspaceRoot,
+        entries: [
+          {
+            path: `${workspaceRoot}/buffer.ts`,
+            contentSha256: sha256(content),
+            contentBytes: Buffer.byteLength(content),
+            changedtick: 3,
+            epoch: 2,
+            editorInstanceId: "tui-editor-that-was-killed",
+            authority: "editor_dirty",
+          },
+        ],
+        proposalCommitments: [],
+        proposalReceipts: [],
+        mutationIntents: [],
+        topologyIntents: [],
+        changeSequence: 0,
+        changes: [],
+      })}\n`,
+      "utf8",
+    );
+
+    const registry = new WorkspaceMutationCoordinatorRegistry({ agencHome });
+    expect(registry.getOrCreate(workspaceRoot).hasProtectedEditorPaths()).toBe(
+      true,
+    );
+    expect(() =>
+      registry.beginToolOperation(workspaceRoot, "exec_command"),
+    ).toThrow(WorkspaceMutationCoordinatorError);
+  });
+
   it.runIf(process.platform === "linux")(
     "does not migrate persisted Darwin state across distinct normalization siblings",
     async () => {

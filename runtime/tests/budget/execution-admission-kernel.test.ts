@@ -614,6 +614,98 @@ describe("ExecutionAdmissionKernel recovery", () => {
         .some((event) => event.event === "denied"),
     ).toBe(false);
   });
+
+  // Regression: opening the TUI once from a stray cwd left the same run id in
+  // two project databases. On the next daemon start, hydrating the second one
+  // threw admission_run_workspace_conflict, which excluded that whole
+  // workspace from admission — every message in it came back
+  // "Message not sent: execution admission deny:
+  // admission_run_workspace_conflict", with no recovery short of deleting
+  // state. Persisted rows are stale data, not a live double-bind.
+  it("skips a stale cross-workspace run id instead of excluding the workspace", async () => {
+    const seeded = kernel("stale-binding-seed");
+    bind(seeded, "dup-run");
+    seeded.close();
+
+    const otherCwd = mkdtempSync(join(tmpdir(), "agenc-kernel-other-"));
+    mkdirSync(join(otherCwd, ".git"));
+    try {
+      const at = new Date().toISOString();
+      const driver = openStateDatabases({ cwd: otherCwd, agencHome: home });
+      driver
+        .prepareState<[string, null, string, string]>(
+          `INSERT INTO execution_admission_run_limits (
+             run_id, deadline_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?)`,
+        )
+        .run("dup-run", null, at, at);
+      driver.close();
+
+      const restarted = kernel("stale-binding-restart");
+      const summary = restarted.initializeExistingState();
+
+      expect(summary.failures).toEqual([]);
+      expect(summary.staleRunBindings).toBe(1);
+
+      // The workspace still admits work — the point of not excluding it.
+      const lease = await acquire(bind(restarted, "fresh-run"));
+      expect(lease.request.step.runId).toBe("fresh-run");
+    } finally {
+      rmSync(otherCwd, { recursive: true, force: true });
+    }
+  });
+
+  // Skipping the hydrated row is only half the fix: resuming the affected
+  // conversation live-binds the same id, and if the stale claim still owned it
+  // the user would be back to the same wall.
+  it("lets a live bind take over a run id claimed by a hydrated row", async () => {
+    const seeded = kernel("takeover-seed");
+    bind(seeded, "resumed-run");
+    seeded.close();
+
+    const otherCwd = mkdtempSync(join(tmpdir(), "agenc-kernel-takeover-"));
+    mkdirSync(join(otherCwd, ".git"));
+    try {
+      const at = new Date().toISOString();
+      const driver = openStateDatabases({ cwd: otherCwd, agencHome: home });
+      driver
+        .prepareState<[string, null, string, string]>(
+          `INSERT INTO execution_admission_run_limits (
+             run_id, deadline_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?)`,
+        )
+        .run("resumed-run", null, at, at);
+      driver.close();
+
+      const restarted = kernel("takeover-restart");
+      restarted.initializeExistingState();
+
+      const lease = await acquire(bind(restarted, "resumed-run"));
+      expect(lease.request.step.runId).toBe("resumed-run");
+    } finally {
+      rmSync(otherCwd, { recursive: true, force: true });
+    }
+  });
+
+  // A run genuinely trying to execute against two workspaces at once is still
+  // a fault; only the hydration path is forgiving.
+  it("still rejects a live bind of one run id to two workspaces", () => {
+    const value = kernel("live-conflict");
+    bind(value, "live-run");
+
+    const otherCwd = mkdtempSync(join(tmpdir(), "agenc-kernel-live-"));
+    mkdirSync(join(otherCwd, ".git"));
+    try {
+      expect(() =>
+        value.bindClient({
+          cwd: otherCwd,
+          scope: { runId: "live-run", sessionId: "live-run", autonomous: false },
+        }),
+      ).toThrowError(/admission_run_workspace_conflict/);
+    } finally {
+      rmSync(otherCwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("ExecutionAdmissionKernel active cancellation", () => {
