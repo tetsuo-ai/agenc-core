@@ -286,7 +286,7 @@ function AgentRailRow({
         <Box paddingLeft={2}>
           <AgentActivityTrack
             width={trackWidth}
-            seed={taskIdOf(task) ?? label}
+            toolCount={toolCount}
             reducedMotion={reducedMotion}
           />
           {showStats ? <Text color="inactive"> {stats}</Text> : null}

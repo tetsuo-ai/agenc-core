@@ -256,7 +256,7 @@ describe("AgentsRail", () => {
 
     expect(output).toContain("› stale running");
     expect(output).toContain("running");
-    expect(output).toMatch(/[◆◇]/u);
+    expect(output).toMatch(/·{4,}/u);
     expect(output).not.toContain("x stop");
   });
 
@@ -397,7 +397,7 @@ describe("AgentsRail lifecycle legibility", () => {
     ).output;
 
     expect(output).toContain("needs you");
-    expect(output).not.toMatch(/[◆◇]/u);
+    expect(output).not.toMatch(/·{4,}/u);
   });
 
   it("labels rows with the friendly title (+ role), never the raw prompt", async () => {

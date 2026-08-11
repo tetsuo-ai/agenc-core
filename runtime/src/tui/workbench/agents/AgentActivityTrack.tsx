@@ -2,77 +2,89 @@ import React, { useEffect, useState } from "react";
 
 import { Text } from "../../ink.js";
 
-const ACTIVITY_TRACK_FRAME_MS = 80;
+const ACTIVITY_PULSE_FRAME_MS = 450;
 const MIN_TRACK_WIDTH = 6;
 
 export type AgentActivityTrackFrame = {
-  readonly after: string;
-  readonly before: string;
-  readonly head: "◆" | "◇";
-  readonly tail: string;
+  /** Dots for work already done, drawn bright. */
+  readonly filled: string;
+  /** The dot about to be earned; pulses so the row reads as alive. */
+  readonly head: string;
+  /** Work not done yet, drawn grey. */
+  readonly rest: string;
+  /** Completed laps of the bar — real work beyond one bar's width. */
+  readonly laps: number;
 };
 
 /**
- * Pure frame builder for the indeterminate agent activity track. AgenC does
- * not receive a trustworthy completion percentage from a running agent, so a
- * moving scanline is honest where a fixed "58%" fill is not.
+ * Pure frame builder for the agent activity bar.
+ *
+ * The bar measures WORK DONE, not percent complete: AgenC receives no
+ * trustworthy completion estimate from a running agent, so one dot per tool
+ * call is a fact where a "58%" fill would be an invention. It fills left to
+ * right and wraps, and the `N tools` counter beside it makes the lap
+ * unambiguous. (The previous design walked a marker along the line for the
+ * same honesty reason; this keeps the honesty and adds real information.)
  */
 export function buildAgentActivityTrackFrame(
   width: number,
-  step: number,
+  toolCount: number,
+  pulseOn: boolean,
 ): AgentActivityTrackFrame {
   const trackWidth = Math.max(MIN_TRACK_WIDTH, Math.floor(width));
-  const headIndex = ((Math.floor(step) % trackWidth) + trackWidth) % trackWidth;
-  const tail = headIndex === 0 ? "" : headIndex === 1 ? "╺" : "╺━";
-  const before = "·".repeat(Math.max(0, headIndex - tail.length));
-  const after = "·".repeat(Math.max(0, trackWidth - headIndex - 1));
-  const head = Math.floor(step / 2) % 2 === 0 ? "◆" : "◇";
-  return { after, before, head, tail };
+  // A non-finite count would poison every downstream `repeat()` into "" and
+  // collapse the bar to zero cells — an invisible row rather than an empty one.
+  const done = Number.isFinite(toolCount)
+    ? Math.max(0, Math.floor(toolCount))
+    : 0;
+  const laps = Math.floor(done / trackWidth);
+  const filledCount = done % trackWidth;
+  // A dot is spent on the head, so it only exists while the bar has room.
+  const headCount = filledCount < trackWidth ? 1 : 0;
+  return {
+    filled: "·".repeat(filledCount),
+    head: headCount === 1 && pulseOn ? "·" : headCount === 1 ? " " : "",
+    rest: "·".repeat(Math.max(0, trackWidth - filledCount - headCount)),
+    laps,
+  };
 }
 
 export function AgentActivityTrack({
   reducedMotion,
-  seed,
+  toolCount = 0,
   width,
 }: {
   readonly reducedMotion: boolean;
-  readonly seed: string;
+  readonly toolCount?: number;
   readonly width: number;
 }): React.ReactElement {
-  const trackWidth = Math.max(MIN_TRACK_WIDTH, Math.floor(width));
-  const [step, setStep] = useState(() =>
-    reducedMotion ? Math.floor(trackWidth / 2) : phaseForSeed(seed, trackWidth),
-  );
+  const [pulseOn, setPulseOn] = useState(true);
 
   useEffect(() => {
     if (reducedMotion) return;
     const timer = setInterval(
-      () => setStep((value) => (value + 1) % trackWidth),
-      ACTIVITY_TRACK_FRAME_MS,
+      () => setPulseOn((value) => !value),
+      ACTIVITY_PULSE_FRAME_MS,
     );
     return () => clearInterval(timer);
-  }, [reducedMotion, trackWidth]);
+  }, [reducedMotion]);
 
   const frame = buildAgentActivityTrackFrame(
-    trackWidth,
-    reducedMotion ? Math.floor(trackWidth / 2) : step,
+    width,
+    toolCount,
+    reducedMotion ? true : pulseOn,
   );
 
   return (
     <Text wrap="truncate-end">
-      <Text color="lineSoft">{frame.before}</Text>
-      <Text color="inactive">{frame.tail}</Text>
-      <Text color="text">{frame.head}</Text>
-      <Text color="lineSoft">{frame.after}</Text>
+      <Text color="text">{frame.filled}</Text>
+      <Text color={frame.laps > 0 ? "inactive" : "text"}>{frame.head}</Text>
+      {/*
+        After a full lap the remaining dots brighten one step, so a second pass
+        over the bar is visibly a second pass instead of looking like the agent
+        started over.
+      */}
+      <Text color={frame.laps > 0 ? "inactive" : "lineSoft"}>{frame.rest}</Text>
     </Text>
   );
-}
-
-function phaseForSeed(seed: string, width: number): number {
-  let hash = 2166136261;
-  for (const character of seed) {
-    hash ^= character.codePointAt(0) ?? 0;
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0) % width;
 }
