@@ -1757,13 +1757,17 @@ export function formatStructuredToolResult(
  * in full, which is how a single fetch or a chatty MCP call could bury a whole
  * screen of conversation.
  *
- * This is the floor, not the mechanism: a tool whose output is routinely long
- * should declare `isSearchOrReadCommand` so it folds into the collapsed group
- * summary. The threshold is deliberately high — anything past it is already
- * unreadable in a chat pane — so short results stay verbatim.
+ * One line. A tool call is a receipt: the operator does not read a wall of
+ * fetched page or command output in the chat, and every extra line pushes the
+ * conversation off screen. The `… +N more` note keeps the volume visible and
+ * ctrl+o still has every byte.
+ *
+ * Text and code MODIFICATIONS are the deliberate exception and never reach
+ * here: Edit/MultiEdit/Write render their compact diff on the call row, which
+ * is the one tool output worth reading inline.
  */
-const GENERIC_RESULT_MAX_CHARS = 2_000;
-const GENERIC_RESULT_HEAD_LINES = 12;
+const GENERIC_RESULT_MAX_CHARS = 200;
+const GENERIC_RESULT_HEAD_LINES = 1;
 
 export function clampGenericToolResult(text: string): string {
   if (text.length <= GENERIC_RESULT_MAX_CHARS) return text;

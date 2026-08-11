@@ -349,8 +349,21 @@ export function ToolErrorView({
   );
 }
 
-/** Default number of stdout lines shown inline under a Run/Bash call row. */
-const BASH_PREVIEW_MAX_LINES = 5;
+/**
+ * Stdout lines shown inline under a SUCCEEDED Run/Bash call row.
+ *
+ * One. A tool call that worked is a receipt, not a document: the operator
+ * asked for the transcript to stop being a scroll of command output they never
+ * read ("run — what a lot of lines I see, nooo"). The `… +N lines` note keeps
+ * the volume visible and ctrl+o still has every byte.
+ *
+ * Failures keep more (BASH_PREVIEW_FAILURE_MAX_LINES): there the output IS the
+ * answer, and hiding the reason behind a keystroke would trade noise for a
+ * worse problem.
+ */
+const BASH_PREVIEW_MAX_LINES = 1;
+/** A failed command shows head + tail, so the trailing verdict survives. */
+const BASH_PREVIEW_FAILURE_MAX_LINES = 5;
 /** Width cap for an individual previewed line (keeps the gutter tidy). */
 const MAX_PREVIEW_LINE_WIDTH = 200;
 
@@ -605,7 +618,7 @@ export function BashOutputView({
   const stdoutCap = isFailure
     ? capPreviewLinesHeadTail(
         stdoutTrimmed,
-        BASH_PREVIEW_MAX_LINES,
+        BASH_PREVIEW_FAILURE_MAX_LINES,
         BASH_PREVIEW_FAILURE_HEAD_LINES,
         verbose,
       )
@@ -614,7 +627,7 @@ export function BashOutputView({
   const stderrCap = showStderr
     ? capPreviewLinesHeadTail(
         stderrTrimmed,
-        BASH_PREVIEW_MAX_LINES,
+        BASH_PREVIEW_FAILURE_MAX_LINES,
         BASH_PREVIEW_FAILURE_HEAD_LINES,
         verbose,
       )

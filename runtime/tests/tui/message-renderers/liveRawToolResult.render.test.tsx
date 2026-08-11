@@ -199,11 +199,12 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
     })
     const combined = `${row}\n${body}`
 
-    // Capped stdout: first 5 lines shown, rest collapsed.
+    // A succeeded command is a receipt: one line of stdout, the rest collapsed
+    // behind the count. (Failures keep head+tail so the verdict survives — see
+    // the non-zero-exit case below.)
     expect(body).toContain('out 0')
-    expect(body).toContain('out 4')
-    expect(body).not.toContain('out 5')
-    expect(body).toContain('+4 lines')
+    expect(body).not.toContain('out 1')
+    expect(body).toContain('+8 lines')
     // The [exec ...] trailer line must be stripped from the visible output.
     expect(combined).not.toContain('[exec exit_code')
     expect(combined).not.toContain('wall_time')

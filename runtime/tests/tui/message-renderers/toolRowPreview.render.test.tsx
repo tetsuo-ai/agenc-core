@@ -269,11 +269,11 @@ describe('live daemon TUI tool output (real createTuiTools render path)', () => 
     expect(row).toContain('cmake --build build')
 
     const combined = `${row}\n${body}`
-    // Capped stdout: first 5 lines shown, rest collapsed to "… +4 lines".
+    // A succeeded command is a receipt: one line of stdout, the rest collapsed
+    // behind the count. Failures still show head+tail (next case).
     expect(body).toContain('out 0')
-    expect(body).toContain('out 4')
-    expect(body).not.toContain('out 5')
-    expect(body).toContain('+4 lines')
+    expect(body).not.toContain('out 1')
+    expect(body).toContain('+8 lines')
     expect(countOccurrences(combined, 'out 0')).toBe(1)
   })
 
