@@ -229,7 +229,16 @@ describe("Write tool", () => {
     test("modified-since-read refusal", async () => {
       const target = join(root, "drifted.txt");
       await writeFile(target, "alpha\n", "utf8");
-      recordSessionRead(sessionId, target, "stale snapshot\n");
+      // The snapshot must predate the file's mtime for the drift guard to
+      // fire. Passing a bare string spreads into {0:'s',1:'t',...}, leaving
+      // `timestamp` undefined, and `mtime > undefined` is false — so the guard
+      // never ran and this test was writing the file it asserts is untouched.
+      const fileStats = await stat(target);
+      recordSessionRead(sessionId, target, {
+        content: "stale snapshot\n",
+        timestamp: fileStats.mtimeMs - 1,
+        viewKind: "full",
+      });
 
       const tool = createFileWriteTool({ allowedPaths: [root] });
       expectNoEffect(
