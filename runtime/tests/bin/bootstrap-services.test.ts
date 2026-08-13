@@ -463,7 +463,17 @@ describe("SessionStart bootstrap hooks", () => {
       modelsManager: {} as never,
       agencHome: home,
       workspaceRoot: workspace,
-      env: { HOME: home, SHELL: "/bin/sh" },
+      // The SessionStart hooks below shell out to `node -e ...`, and
+      // command-runner spawns with exactly this env (`env: command.env`, never
+      // merged with process.env). Without PATH the shell cannot resolve node,
+      // the hook produces no stdout, and the dispatch returns zero messages --
+      // which reads as "hooks never fired" rather than "the hook could not
+      // run at all".
+      env: {
+        HOME: home,
+        SHELL: "/bin/sh",
+        PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+      },
       conversationId: "session-sessionstart",
       model: "test-model",
       sessionConfiguration: sessionConfiguration as never,
