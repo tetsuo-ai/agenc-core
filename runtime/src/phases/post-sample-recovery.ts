@@ -22,6 +22,8 @@
  * @module
  */
 
+import { createHash } from "node:crypto";
+
 import { emitError, emitWarning } from "../session/event-log.js";
 import type { LLMMessage } from "../llm/types.js";
 import {
@@ -400,6 +402,36 @@ export async function postSampleRecovery(
       async onStreamingFallback(c) {
         const executor = c.state
           .streamingToolExecutor as StreamingToolExecutor | null;
+        // A streaming fallback discards the partial answer and asks the model
+        // for it again. That only helps when the next attempt differs, and
+        // sampling is not guaranteed to make it differ: an observed grok-4.6
+        // turn degenerated into repeating one token until it hit the output
+        // cap, and attempts 3 and 4 came back byte-for-byte identical --
+        // 36,879 characters each. The ladder then burned its remaining
+        // re-entries reproducing the same failure, ~2M prompt tokens for no
+        // output at all.
+        //
+        // Identical partials mean regeneration is deterministic here, so the
+        // retries left cannot produce anything new. Surface the failure on the
+        // repeat instead of paying for it five times.
+        const digest = partialAnswerDigest(c.state);
+        const previous = lastDiscardedPartial.get(c.state);
+        lastDiscardedPartial.set(c.state, digest);
+        if (previous !== undefined && previous === digest) {
+          tombstoneOrphans(c.state, {
+            reason: "streaming_fallback",
+            executor,
+          });
+          const reason =
+            "streaming fallback regenerated a byte-identical partial answer; " +
+            "retrying cannot change a deterministic result";
+          emitError(c.session.eventLog, c.session.nextInternalSubId(), {
+            cause: "streaming_fallback_deterministic",
+            message: reason,
+          });
+          lastDiscardedPartial.delete(c.state);
+          return { kind: "surface", reason };
+        }
         tombstoneOrphans(c.state, {
           reason: "streaming_fallback",
           executor,
@@ -471,6 +503,20 @@ export async function postSampleRecovery(
 // which stops emitting `pendingBudgetDecision` once the target is met or
 // progress stalls; this counter is only a runaway backstop sized far
 // above any realistic continuation count for a single turn.
+/**
+ * Digest of the partial answer a streaming fallback is about to discard, kept
+ * per turn so the next fallback can tell "the model produced something new"
+ * from "the model produced exactly what it produced last time".
+ */
+const lastDiscardedPartial = new WeakMap<TurnState, string>();
+
+function partialAnswerDigest(state: TurnState): string {
+  const text = state.assistantMessages
+    .map((message) => message.text ?? "")
+    .join(" ");
+  return `${state.assistantMessages.length}:${text.length}:${createHash("sha256").update(text).digest("hex")}`;
+}
+
 const MAX_BUDGET_CONTINUATIONS = 10_000;
 const budgetContinuationCounts = new WeakMap<TurnState, number>();
 
