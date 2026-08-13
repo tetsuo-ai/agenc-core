@@ -629,8 +629,11 @@ export function createAgenCVitestConfig(mode: AgenCVitestMode = "default") {
       // HTTPS trust case does real I/O and has been observed finishing at
       // 30,159ms against the 30,000ms bound -- 159ms over, on a run whose only
       // diff was a comment in this file. Neither lane is asserting speed.
+      // neovim retries a stalled startup once, so its budget has to clear two
+      // 60s bounds plus the test body; at 120_000 the retry could not finish
+      // and vitest would kill it with the opaque message again.
       testTimeout:
-        mode === "neovim" ? 120_000 : mode === "powershell" ? 90_000 : 30_000,
+        mode === "neovim" ? 240_000 : mode === "powershell" ? 90_000 : 30_000,
       deps: {
         interopDefault: true,
       },

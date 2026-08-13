@@ -71,14 +71,35 @@ let neovim: UsableNeovim;
  */
 const REAL_NEOVIM_STARTUP_TIMEOUT_MS = 60_000;
 
-function startEmbeddedNeovim(
+/**
+ * Retried once, because raising the bound did not fix this and could not.
+ *
+ * Across five hosted runs of this suite the failure landed on a different test
+ * every time -- whichever one happened to be starting when the runner stalled
+ * -- at 21s, 21s, 30s and then 61s as the bound was raised. A machine that
+ * needs over a minute to attach an embedded UI is not slow, it is wedged, and
+ * a stall that moves between tests is not a property of any of them. Raising
+ * the number again would only move the failure.
+ *
+ * One retry converts a probabilistic stall into a recoverable event while
+ * still failing outright if Neovim is genuinely broken: a real hang fails
+ * twice, costing one extra bound, and the second error is what surfaces.
+ */
+async function startEmbeddedNeovim(
   options: StartEmbeddedNeovimOptions,
 ): Promise<EmbeddedNeovimSession> {
-  return startEmbeddedNeovimProcess({
-    ...options,
-    startupTimeoutMs:
-      options.startupTimeoutMs ?? REAL_NEOVIM_STARTUP_TIMEOUT_MS,
-  });
+  const start = (): Promise<EmbeddedNeovimSession> =>
+    startEmbeddedNeovimProcess({
+      ...options,
+      startupTimeoutMs:
+        options.startupTimeoutMs ?? REAL_NEOVIM_STARTUP_TIMEOUT_MS,
+    });
+  try {
+    return await start();
+  } catch (error) {
+    if (!/startup timed out/iu.test(String(error))) throw error;
+    return await start();
+  }
 }
 
 beforeAll(async () => {
