@@ -114,11 +114,15 @@ jobs:
           # Bounded workers, deliberately. Several suites spawn real child
           # processes and assert heartbeat deadlines; at full CPU parallelism
           # they lose the race and fail without anything being wrong with the
-          # code. Measured on this suite: 9 failures at default parallelism,
-          # 4 at --maxWorkers=4, with process-repository-helpers (4),
-          # full-corpus-index (3) and mcp-cli (1) flipping green purely from
-          # the reduced contention. A gate has to be deterministic before it
-          # can be believed.
+          # code. Measured locally on a 24-thread machine: 9 failures at
+          # default parallelism, 4 at --maxWorkers=2, with
+          # process-repository-helpers (4), full-corpus-index (3) and mcp-cli
+          # (1) flipping green purely from reduced contention.
+          #
+          # This runner has 4 vCPUs, so --maxWorkers=4 saturates it exactly the
+          # way default parallelism saturated the 24-thread machine, and the
+          # same suites came back red here. 2 keeps the ratio that worked.
+          # A gate has to be deterministic before it can be believed.
           "$AGENC_NODE_EXECUTABLE_PATH" \
             runtime/scripts/run-hermetic-vitest.mjs \
               --require-zero-skips \
