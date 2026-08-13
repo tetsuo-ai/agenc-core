@@ -1,4 +1,5 @@
 import figures from 'figures'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { logError } from 'src/utils/log.js'
 import { callIdeRpc } from './mcp/client.js'
 import type { MCPServerConnection } from './mcp/types.js'
@@ -115,6 +116,18 @@ export class DiagnosticTrackingService {
   }
 
   private normalizeFileUri(fileUri: string): string {
+    // A file:// URI is percent-encoded; decode it back to a path rather than
+    // slicing the scheme off. Slicing leaves "%20" in place, so a workspace
+    // whose path contains a space never compares equal to the URI the IDE
+    // echoes back, and every diagnostic for that file logs a mismatch.
+    if (fileUri.startsWith('file://')) {
+      try {
+        return normalizePathForComparison(fileURLToPath(fileUri))
+      } catch {
+        // Malformed URI: fall through to prefix stripping below.
+      }
+    }
+
     // Remove our protocol prefixes
     const protocolPrefixes = [
       'file://',
@@ -185,7 +198,7 @@ export class DiagnosticTrackingService {
     try {
       const result = await callIdeRpc(
         'getDiagnostics',
-        { uri: `file://${filePath}` },
+        { uri: pathToFileURL(filePath).href },
         mcpClient,
       )
       const diagnosticFile = this.parseDiagnosticResult(result)[0]
