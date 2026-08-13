@@ -27,6 +27,15 @@ function plainExec(...stdoutLines: string[]): string {
   return `${stdoutLines.join('\n')}\n\n[exec exit_code=0 wall_time=0.03s tokens=10]`
 }
 
+/**
+ * A non-zero exit, where the preview keeps several lines instead of the single
+ * line a success shows. Needed whenever an assertion has to see a colored row
+ * and a plain row in the SAME render.
+ */
+function failingExec(...stdoutLines: string[]): string {
+  return `${stdoutLines.join('\n')}\n\n[exec exit_code=1 wall_time=0.03s tokens=10]`
+}
+
 // The dim `  ⎿  ` continuation gutter prefixes the FIRST content row and is
 // ALWAYS dim (correctly). Strip it so the body-color assertions look only at the
 // stdout line content, not the intentionally-dim gutter. Rows without the gutter
@@ -79,7 +88,7 @@ describe('BashOutputView ANSI consistency (BUG 2: no half-dim/half-raw lines)', 
   })
 
   test('REVERT-SENSITIVITY: colored line is uniform program color, plain line is uniform dim', async () => {
-    const content = plainExec(
+    const content = failingExec(
       '\x1b[31mERR\x1b[39m the rest of the colored line',
       'a totally plain line',
     )

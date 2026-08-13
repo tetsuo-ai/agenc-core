@@ -667,7 +667,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(boot.agencHome).toBe(home);
       expect(boot.workspaceRoot).toBe(workspace);
       expect(boot.resolvedProvider).toBe("grok");
-      expect(boot.model).toBe("grok-4.5");
+      expect(boot.model).toBe("grok-4.6");
       expect(boot.registry.tools.some((tool) => tool.name === extraTool.name)).toBe(
         true,
       );
@@ -702,7 +702,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         "grok",
         expect.objectContaining({
           apiKey: "test-key",
-          model: "grok-4.5",
+          model: "grok-4.6",
           tools: expect.any(Array),
         }),
       );
@@ -2406,7 +2406,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         "grok",
         expect.objectContaining({
           apiKey: "saved-xai-key",
-          model: "grok-4.5",
+          model: "grok-4.6",
         }),
       );
       expect(vendSpy).not.toHaveBeenCalled();
@@ -2544,7 +2544,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         "grok",
         expect.objectContaining({
           apiKey: "saved-default-xai-key",
-          model: "grok-4.5",
+          model: "grok-4.6",
         }),
       );
     } finally {

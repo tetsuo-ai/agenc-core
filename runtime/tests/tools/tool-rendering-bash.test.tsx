@@ -259,8 +259,11 @@ describe("BashOutputView — stdout nests behind the ⎿ gutter in the secondary
 
   test("multi-line stdout renders behind a single ⎿ continuation gutter, indented into a content column (not flush at the glyph column)", () => {
     const node = BashOutputView({
+      // Exit 1: the failure cap keeps several lines, so this exercises what it
+      // says it does — MULTIPLE lines nested behind ONE gutter. On the success
+      // path the cap is a single line, which would make the nesting vacuous.
       content:
-        "<bash-stdout>INFO: 3\nWARN: 2\nERROR: 2</bash-stdout>[exit_code=0]",
+        "<bash-stdout>INFO: 3\nWARN: 2\nERROR: 2</bash-stdout>[exit_code=1]",
     });
     const flat = flattenBash(node);
 
@@ -304,8 +307,9 @@ describe("BashOutputView — stdout nests behind the ⎿ gutter in the secondary
   });
 
   test("the `… +N lines` truncation summary inherits the gutter/indent and stays dim", () => {
-    // 7 lines with a 5-line cap → 2 remaining, surfaced as "… +2 lines" under
-    // the same gutter. (No new interactivity is added for the truncation.)
+    // 7 lines with the success path's single-line cap → 6 remaining, surfaced
+    // as "… +6 lines" under the same gutter. (No new interactivity is added
+    // for the truncation.)
     const body = Array.from({ length: 7 }, (_, i) => `row ${i}`).join("\n");
     const node = BashOutputView({
       content: `<bash-stdout>${body}</bash-stdout>[exit_code=0]`,
@@ -314,7 +318,7 @@ describe("BashOutputView — stdout nests behind the ⎿ gutter in the secondary
     const more = flat.find(
       (child) =>
         typeof child.props?.children === "string" &&
-        (child.props.children as string).startsWith("… +2"),
+        (child.props.children as string).startsWith("… +6"),
     );
     expect(more).toBeDefined();
     expect(more!.props.dimColor).toBe(true);
@@ -459,24 +463,25 @@ describe("BashOutputView — failure cap keeps the trailing verdict/exception (h
   });
 
   test("SUCCESS path is unchanged: head-only cap, trailing lines truncated away", () => {
-    // Same 11-line body but exit 0 → the head-only behavior is preserved. The
-    // verdict-shaped LAST line must NOT survive (it's beyond the 5-line head),
-    // and the elision reports 11 - 5 = 6 remaining.
+    // Same 11-line body but exit 0 → head-only, and the success cap is a
+    // single line. The verdict-shaped LAST line must NOT survive, which is the
+    // whole contrast with the failure path above: a failure keeps its trailing
+    // verdict, a success does not. Elision reports 11 - 1 = 10 remaining.
     const node = BashOutputView({
       content: `<bash-stdout>${FAILING_UNITTEST_BODY}</bash-stdout>[exit_code=0]`,
     });
     const flat = flattenBash(node);
 
-    // The first 5 lines survive head-only...
+    // The first line survives head-only...
     expect(findText(flat, "F....")).toBe(true);
     expect(
       findText(flat, "FAIL: test_add_fractions (tests.test_fraction.FractionTest)"),
-    ).toBe(true);
+    ).toBe(false);
     // ...and the trailing verdict is truncated away (head-only, unchanged).
     expect(findText(flat, "FAILED (failures=1)")).toBe(false);
     expect(findText(flat, "Ran 5 tests in 0.001s")).toBe(false);
-    // Head-only elision: 11 - 5 = 6 remaining.
-    expect(findMore(flat)).toBe("… +6 lines");
+    // Head-only elision: 11 - 1 = 10 remaining.
+    expect(findMore(flat)).toBe("… +10 lines");
   });
 });
 
@@ -501,21 +506,23 @@ describe("BashOutputView — compact marker and transcript expansion", () => {
     allTexts(node).find((text) => text.startsWith("… +"));
 
   test("a truncated success output marker stays compact", () => {
-    // 12 lines, exit 0 → head-only cap → 7 hidden. The persistent footer owns
-    // the transcript-expand shortcut, so the message does not repeat it.
+    // 12 lines, exit 0 → single-line head cap → 11 hidden. The persistent
+    // footer owns the transcript-expand shortcut, so the message does not
+    // repeat it.
     const body = Array.from({ length: 12 }, (_, i) => `row-${i + 1}`).join("\n");
     const node = BashOutputView({
       content: `<bash-stdout>${body}</bash-stdout>[exit_code=0]`,
     });
     const more = findMoreLine(node);
-    expect(more).toBe("… +7 lines");
+    expect(more).toBe("… +11 lines");
     expect(more).not.toContain("for full output");
   });
 
   test("the affordance is ABSENT when the output is not truncated (K === 0)", () => {
-    // 3 lines, under the 5-line cap → no elision marker, so no affordance.
+    // A single line, exactly the success cap → nothing elided, so no marker
+    // and no affordance.
     const node = BashOutputView({
-      content: "<bash-stdout>a\nb\nc</bash-stdout>[exit_code=0]",
+      content: "<bash-stdout>a</bash-stdout>[exit_code=0]",
     });
     const texts = allTexts(node);
     expect(texts.some((text) => text.startsWith("… +"))).toBe(false);
