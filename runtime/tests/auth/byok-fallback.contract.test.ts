@@ -74,7 +74,7 @@ describe("BYOK fallback", () => {
         "grok",
         expect.objectContaining({
           apiKey: "configured-byok-key",
-          model: "grok-4.5",
+          model: "grok-4.6",
         }),
       );
       expect(calls).toEqual(["getSubscriptionTier:conv-config-byok"]);
