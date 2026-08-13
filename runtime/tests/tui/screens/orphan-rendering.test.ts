@@ -1,8 +1,12 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
-const repoRoot = new URL("../../../../", import.meta.url).pathname;
+// `.pathname` stays percent-encoded. This file's assertions are absence checks
+// and directory scans, so an unusable root made `existsSync` return false and
+// the scans return nothing: the suite passed while checking nothing at all.
+const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 const startupHelper = ["repl", "Startup", "Gates"].join("");
 const inputHelper = ["repl", "Input", "Suppression"].join("");
 const workerPendingHelper = ["Worker", "Pending", "Permission"].join("");
