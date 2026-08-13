@@ -1584,8 +1584,13 @@ export function runSupervisedProcess(
         });
     };
 
+    let residualVerdictPending = false;
     const maybeFinish = (): void => {
       if (!closed) return;
+      // The residual verdict is decided asynchronously after close. Finishing
+      // while it is in flight would resolve the run with no stop reason at
+      // all, turning a real leak into a clean exit.
+      if (residualVerdictPending) return;
       if (stopReason !== undefined && isProcessTreeAlive(child)) return;
       finish(false);
     };
@@ -1685,7 +1690,9 @@ export function runSupervisedProcess(
       // Give the tree the same bounded settle window the kill paths already
       // use. A genuinely leaked process outlives it and is still reported, so
       // the containment guarantee is unchanged; only the race is removed.
+      residualVerdictPending = true;
       void waitForProcessTreeExit(child, RESIDUAL_SETTLE_MS).then((exited) => {
+        residualVerdictPending = false;
         if (!exited && stopReason === undefined) {
           requestStop("residual_process");
         }
