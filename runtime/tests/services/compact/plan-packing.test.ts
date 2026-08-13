@@ -23,7 +23,11 @@ const SOURCE_BINDING = "rollout:/packing-regression#epoch:1";
 const DIGEST = "a".repeat(64);
 const CONTEXT_WINDOW_TOKENS = 65_536;
 const OUTPUT_RESERVE_TOKENS = 256;
-const UNIT_TEXT_BYTES = 53_000;
+// Sized so one semantic unit nearly fills a chunk under the accounting
+// fallback's bytes-per-token divisor. Calibrated in bytes, not tokens: the
+// packing geometry this test pins (one unit per chunk, 63 chunks, 3 levels)
+// only holds while a unit stays just under the per-chunk budget.
+const UNIT_TEXT_BYTES = 106_000;
 const NEAR_MAXIMUM_CHUNKS = MAX_COMPACTION_CHUNKS - 1;
 const STRUCTURED_TRANSCRIPT_VERSION = 1;
 const STRUCTURED_TRANSCRIPT_KIND = "untrusted_compaction_transcript";

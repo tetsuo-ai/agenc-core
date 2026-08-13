@@ -181,7 +181,13 @@ describe("transactional compaction adversarial contracts", () => {
     });
 
     await withTransactionalStore("semantic-fit-plus1", async (store) => {
-      const source = createSingleToolUnit(store.sessionId, `${"x".repeat(8_192)}x`);
+      // Overflow by more than one estimated token. A single extra byte only
+      // crosses the bound when the estimator treats bytes as tokens; with a
+      // bytes-per-token divisor it rounds away and the unit still fits.
+      const source = createSingleToolUnit(
+        store.sessionId,
+        `${"x".repeat(8_192)}${"x".repeat(64)}`,
+      );
       appendSource(store, source.messages);
       const provider = createProvider((payload) => validBody(source.toolPairs, payload));
 
