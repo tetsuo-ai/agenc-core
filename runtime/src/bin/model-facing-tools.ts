@@ -2808,11 +2808,29 @@ async function findBundledSkillCommand(name: string): Promise<
     if (typeof getBundledSkills !== "function") return null;
     const commands = (getBundledSkills as () => unknown)();
     if (!Array.isArray(commands)) return null;
-    return (
-      commands.find(
-        (command) => isRecord(command) && command.name === name,
-      ) ?? null
+    const bundled = commands.find(
+      (command) => isRecord(command) && command.name === name,
     );
+    if (bundled !== undefined) return bundled;
+    // Skills contributed by plugins shipped in the runtime package (e.g.
+    // zeroday-hunter) register through the built-in plugin registry, not the
+    // bundled-skills array. Without this fallback the Skill tool rejects them
+    // as unknown even though /skills lists them.
+    const builtin = (await import(
+      "../plugins/builtin/index.js"
+    )) as unknown as Record<string, unknown>;
+    const getBuiltinSkills = builtin.getBuiltinPluginSkillCommands;
+    if (typeof getBuiltinSkills === "function") {
+      const pluginCommands = (getBuiltinSkills as () => unknown)();
+      if (Array.isArray(pluginCommands)) {
+        return (
+          pluginCommands.find(
+            (command) => isRecord(command) && command.name === name,
+          ) ?? null
+        );
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -2828,15 +2846,31 @@ async function listBundledSkillNames(): Promise<string[]> {
     if (typeof getBundledSkills !== "function") return [];
     const commands = (getBundledSkills as () => unknown)();
     if (!Array.isArray(commands)) return [];
-    return commands.flatMap((command) =>
-      isRecord(command) &&
-      typeof command.name === "string" &&
-      command.name.length > 0 &&
-      command.disableModelInvocation !== true &&
-      command.isHidden !== true
-        ? [command.name]
-        : [],
-    );
+    const invocable = (list: unknown): string[] =>
+      Array.isArray(list)
+        ? list.flatMap((command) =>
+            isRecord(command) &&
+            typeof command.name === "string" &&
+            command.name.length > 0 &&
+            command.disableModelInvocation !== true &&
+            command.isHidden !== true
+              ? [command.name]
+              : [],
+          )
+        : [];
+    const names = new Set(invocable(commands));
+    // Also surface skills from plugins shipped in the runtime package, so an
+    // unknown-skill error lists them as available alongside the bundled ones.
+    const builtin = (await import(
+      "../plugins/builtin/index.js"
+    )) as unknown as Record<string, unknown>;
+    const getBuiltinSkills = builtin.getBuiltinPluginSkillCommands;
+    if (typeof getBuiltinSkills === "function") {
+      for (const name of invocable((getBuiltinSkills as () => unknown)())) {
+        names.add(name);
+      }
+    }
+    return [...names];
   } catch {
     return [];
   }

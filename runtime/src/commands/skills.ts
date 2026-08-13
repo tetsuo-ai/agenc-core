@@ -159,8 +159,22 @@ async function bundledSkillsFromRegistry(): Promise<AvailableSkillSnapshot[]> {
     )) as unknown as Record<string, unknown>;
     const getBundledSkills = loaded.getBundledSkills;
     if (typeof getBundledSkills !== "function") return [];
-    const commands = (getBundledSkills as () => unknown)();
-    if (!Array.isArray(commands)) return [];
+    const bundledCommands = (getBundledSkills as () => unknown)();
+    // Skills contributed by plugins shipped in the runtime package register
+    // through a separate registry; fold them in so /skills lists exactly what
+    // the Skill tool can load — the parity the model relies on.
+    const builtin = (await import(
+      "../plugins/builtin/index.js"
+    )) as unknown as Record<string, unknown>;
+    const getBuiltinSkills = builtin.getBuiltinPluginSkillCommands;
+    const builtinCommands =
+      typeof getBuiltinSkills === "function"
+        ? (getBuiltinSkills as () => unknown)()
+        : [];
+    const commands = [
+      ...(Array.isArray(bundledCommands) ? bundledCommands : []),
+      ...(Array.isArray(builtinCommands) ? builtinCommands : []),
+    ];
     return commands.flatMap((command): AvailableSkillSnapshot[] => {
       if (
         !isRecord(command) ||

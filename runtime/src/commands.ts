@@ -425,7 +425,7 @@ async function loadProductionCommandSources(
   const loadBundledSkills = () =>
     import("./skills/bundledSkills.js") as unknown as Promise<Record<string, unknown>>;
   const loadBuiltinPlugins = () =>
-    import("./plugins/builtinPlugins.js") as unknown as Promise<Record<string, unknown>>;
+    import("./plugins/builtin/index.js") as unknown as Promise<Record<string, unknown>>;
 
   const [
     skillDirCommands,

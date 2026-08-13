@@ -176,3 +176,6 @@ TASK-SYSTEM-PLAN.md
 **/test-results/
 
 __pycache__/
+
+# Build artifact: repo plugins/ copied into the package by sync-shipped-plugins.
+runtime/plugins/
