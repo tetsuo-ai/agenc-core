@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 const files = [
@@ -22,7 +23,10 @@ const files = [
   "runtime/src/tui/components/teams/TeamsDialog.tsx",
 ];
 
-const repoRoot = new URL("../../../", import.meta.url).pathname;
+// `.pathname` keeps the URL percent-encoded, so a checkout path containing a
+// space resolves to a literal "%20" that readFileSync cannot open. Converting
+// the URL back to a path is what makes this work outside CI.
+const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
 describe("moved-source marker cleanup", () => {
   test("audited live TUI render files start with real source", () => {

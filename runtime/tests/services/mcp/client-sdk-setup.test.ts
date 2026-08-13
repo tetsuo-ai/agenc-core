@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, test, vi } from 'vitest'
@@ -805,8 +806,11 @@ test('connectToServer creates stdio clients with lifecycle handlers and cleanup'
   })
   assert.equal(result.instructions, 'instructions for stdio-demo')
   assert.equal(fakeClients[0]?.handlers.length, 3)
+  // Build the expected URI the way a file URI is built, not by interpolation:
+  // a checkout path containing a space (or #, ?, or non-ASCII) percent-encodes,
+  // so `file://${cwd}` only matches on paths that happen to need no encoding.
   assert.deepEqual(await fakeClients[0]!.handlers[0]!.handler(), {
-    roots: [{ uri: `file://${process.cwd()}` }],
+    roots: [{ uri: pathToFileURL(process.cwd()).href }],
   })
   assert.deepEqual(await fakeClients[0]!.handlers[1]!.handler({}), {
     role: 'assistant',
