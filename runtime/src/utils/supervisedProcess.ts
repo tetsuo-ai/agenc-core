@@ -86,6 +86,12 @@ export interface SupervisedProcessResult {
 const DEFAULT_TERMINATE_GRACE_MS = 500;
 const DEFAULT_SETTLE_BACKSTOP_MS = 1_000;
 const PROCESS_TREE_POLL_INTERVAL_MS = 20;
+/**
+ * How long a descendant may still be exiting when the target closes before the
+ * run is called residual. Short enough that a real leak is still reported
+ * promptly, long enough to cover the reap window on a loaded runner.
+ */
+const RESIDUAL_SETTLE_MS = 250;
 const PROCESS_TABLE_TIMEOUT_MS = 2_000;
 const MAX_PROCESS_TABLE_BYTES = 4 * 1024 * 1024;
 const MAX_PROCESS_TABLE_RECORDS = 32_768;
@@ -1655,14 +1661,36 @@ export function runSupervisedProcess(
       exitCode = code;
       exitSignal = signal;
       closed = true;
-      if (stopReason === undefined) {
-        if (linuxSubreaperBoundaries.get(child)?.residual === true) {
-          stopReason = "residual_process";
-        } else if (isProcessTreeAlive(child)) {
+      if (stopReason !== undefined) {
+        maybeFinish();
+        return;
+      }
+      if (linuxSubreaperBoundaries.get(child)?.residual === true) {
+        stopReason = "residual_process";
+        maybeFinish();
+        return;
+      }
+      if (!isProcessTreeAlive(child)) {
+        maybeFinish();
+        return;
+      }
+      // A descendant that is still winding down at the exact instant the
+      // target closes is not a containment failure. `close` can fire while a
+      // short-lived helper is between _exit and reap, and on a slow runner the
+      // cgroup stays populated for a few more milliseconds — long enough for
+      // an instantaneous check to call a clean run residual. Observed in CI as
+      // `exit=0, signal=null, stop=residual_process` on ordinary `git commit`
+      // calls, which then surfaced as WorkflowGitError with empty stderr.
+      //
+      // Give the tree the same bounded settle window the kill paths already
+      // use. A genuinely leaked process outlives it and is still reported, so
+      // the containment guarantee is unchanged; only the race is removed.
+      void waitForProcessTreeExit(child, RESIDUAL_SETTLE_MS).then((exited) => {
+        if (!exited && stopReason === undefined) {
           requestStop("residual_process");
         }
-      }
-      maybeFinish();
+        maybeFinish();
+      });
     });
   });
 }
