@@ -619,7 +619,13 @@ export function createAgenCVitestConfig(mode: AgenCVitestMode = "default") {
       // Default mode strips ambient credentials/state and installs the public
       // network tripwire before test modules load. Live mode has no setup.
       ...discovery,
-      testTimeout: 30000,
+      // The real-Neovim lane boots an actual editor per test on hosted runners
+      // whose speed varies by more than an order of magnitude. At the shared
+      // 30s the per-test timeout fires BEFORE the suite's own startup bound,
+      // replacing "Embedded Neovim startup timed out" with an opaque "Test
+      // timed out" and hiding which stage was slow. The startup bound has to
+      // stay the tighter of the two to remain the diagnostic.
+      testTimeout: mode === "neovim" ? 120_000 : 30_000,
       deps: {
         interopDefault: true,
       },
