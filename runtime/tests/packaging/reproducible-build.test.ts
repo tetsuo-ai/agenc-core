@@ -395,7 +395,7 @@ describe("reproducible install and release contract", () => {
       "startEmbeddedNeovim as startEmbeddedNeovimProcess",
     );
     expect(neovimLifecycleSuite).toContain(
-      "const REAL_NEOVIM_STARTUP_TIMEOUT_MS = 20_000;",
+      "const REAL_NEOVIM_STARTUP_TIMEOUT_MS = 60_000;",
     );
     expect(neovimLifecycleSuite).toContain(
       "options.startupTimeoutMs ?? REAL_NEOVIM_STARTUP_TIMEOUT_MS",
@@ -514,17 +514,18 @@ describe("reproducible install and release contract", () => {
       "Windows FND/native capability lane passed 90 tests in 10 files with zero skipped",
     );
 
+    // Six lanes: default-suite plus the five hosted capability lanes.
     expect(
       workflow.match(
         /actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/g,
       ),
-    ).toHaveLength(5);
+    ).toHaveLength(6);
     expect(
       workflow.match(
         /actions\/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e/g,
       ),
     ).toHaveLength(4);
-    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(8);
+    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(9);
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toContain("cache: npm");
     expect(workflow).not.toContain("--passWithNoTests");

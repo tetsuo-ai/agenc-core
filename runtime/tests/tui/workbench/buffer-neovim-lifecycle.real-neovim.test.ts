@@ -64,14 +64,12 @@ let neovim: UsableNeovim;
  * attach the embedded UI, and it took down a DIFFERENT test on each attempt --
  * one that had passed in 718ms on the run before. A fixed bound turns runner
  * variance into red PRs on healthy changes, which trains reviewers to ignore
- * the only gate this repository has. Overridable so the hosted lanes can buy
- * headroom without weakening the local default.
+ * the only gate this repository has. Kept as a pinned literal rather than made
+ * configurable: reproducible-build.test.ts asserts this exact line so the
+ * hosted lanes cannot drift, and an env override would reintroduce precisely
+ * the drift that contract exists to prevent.
  */
-const REAL_NEOVIM_STARTUP_TIMEOUT_MS = ((): number => {
-  const raw = process.env.AGENC_REAL_NEOVIM_STARTUP_TIMEOUT_MS;
-  const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 20_000;
-})();
+const REAL_NEOVIM_STARTUP_TIMEOUT_MS = 60_000;
 
 function startEmbeddedNeovim(
   options: StartEmbeddedNeovimOptions,
