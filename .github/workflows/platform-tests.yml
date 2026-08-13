@@ -16,6 +16,113 @@ env:
   NPM_VERSION: "11.17.0"
 
 jobs:
+  # The default vitest suite -- ~18,700 tests -- had no gating job at all. Every
+  # other lane here runs a hosted capability slice (kernel sandbox, native,
+  # Neovim, PowerShell), so a change could break the unit suite outright and
+  # still show nine green checks. Four merged PRs did exactly that.
+  default-suite:
+    name: default-suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Bind the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "tetsuo-ai/agenc-core"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Install digest-pinned Node and npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["file"])')"
+          node_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["sha256"])')"
+          node_bytes="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["bytes"])')"
+          npm_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["file"])')"
+          npm_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["url"])')"
+          npm_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["sha256"])')"
+
+          test "$node_file" = "node-v${NODE_VERSION}-linux-x64.tar.gz"
+          test "$npm_file" = "npm-${NPM_VERSION}.tgz"
+          [[ "$node_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$npm_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$node_bytes" =~ ^[1-9][0-9]*$ ]]
+          test "$npm_url" = "https://registry.npmjs.org/npm/-/${npm_file}"
+
+          node_archive="$RUNNER_TEMP/$node_file"
+          npm_archive="$RUNNER_TEMP/$npm_file"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "https://nodejs.org/dist/v${NODE_VERSION}/${node_file}" \
+            --output "$node_archive"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "$npm_url" --output "$npm_archive"
+
+          test "$(sha256sum "$node_archive" | awk '{print $1}')" = "$node_sha"
+          test "$(sha256sum "$npm_archive" | awk '{print $1}')" = "$npm_sha"
+          test "$(stat --format='%s' "$node_archive")" = "$node_bytes"
+
+          node_root="$RUNNER_TEMP/node-distribution"
+          mkdir -p "$node_root"
+          tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
+
+          bundled_npm_cli="$node_root/lib/node_modules/npm/bin/npm-cli.js"
+          "$node_root/bin/node" "$bundled_npm_cli" install --global \
+            "$npm_archive" --prefix "$node_root" \
+            --ignore-scripts --no-audit --no-fund
+          npm_cli="$node_root/lib/node_modules/npm/bin/npm-cli.js"
+          test "$("$node_root/bin/node" --version)" = "v${NODE_VERSION}"
+          test "$("$node_root/bin/node" "$npm_cli" --version)" = "$NPM_VERSION"
+
+          echo "$node_root/bin" >> "$GITHUB_PATH"
+          {
+            echo "AGENC_NODE_EXECUTABLE_PATH=$node_root/bin/node"
+            echo "AGENC_NPM_CLI_PATH=$npm_cli"
+            echo "npm_config_nodedir=$node_root"
+          } >> "$GITHUB_ENV"
+
+      - name: Install the reviewed dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci \
+            --ignore-scripts --no-audit --no-fund
+          npm_config_build_from_source=true \
+            "$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" rebuild \
+              better-sqlite3 esbuild node-pty
+          test "$(node --version)" = "v${NODE_VERSION}"
+          test "$(npm --version)" = "$NPM_VERSION"
+
+      - name: Typecheck the runtime and its type-checked tests
+        shell: bash
+        working-directory: runtime
+        run: |
+          set -euo pipefail
+          "$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" run typecheck
+
+      - name: Run the default test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$AGENC_NODE_EXECUTABLE_PATH" \
+            runtime/scripts/run-hermetic-vitest.mjs \
+              --require-zero-skips \
+              run \
+              --allowOnly=false
+
+      - name: Assert the suite left the checkout clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
   linux-kernel-sandbox:
     name: linux-kernel-sandbox
     runs-on: ubuntu-24.04
@@ -773,6 +880,13 @@ jobs:
 
       - name: Run the exact real-Neovim lifecycle suite
         shell: bash
+        env:
+          # Hosted runners boot a real Neovim at wildly different speeds: the
+          # same test has taken 718ms on one attempt and blown a 20s bound on
+          # the next. The bound is there to catch a hung editor, so give the
+          # hosted lanes headroom rather than let runner variance redden
+          # healthy PRs.
+          AGENC_REAL_NEOVIM_STARTUP_TIMEOUT_MS: "60000"
         run: |
           set -euo pipefail
           results="$RUNNER_TEMP/neovim-test-results.json"
