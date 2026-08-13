@@ -1,8 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
-const repoRoot = new URL("../../../", import.meta.url).pathname;
+// `.pathname` stays percent-encoded, so a checkout path containing a space
+// resolves to a literal "%20" that no filesystem call can open.
+const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
 function readRepoFile(relativePath: string): string {
   return readFileSync(`${repoRoot}${relativePath}`, "utf8");
