@@ -111,18 +111,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Bounded workers, deliberately. Several suites spawn real child
-          # processes and assert heartbeat deadlines; at full CPU parallelism
-          # they lose the race and fail without anything being wrong with the
-          # code. Measured locally on a 24-thread machine: 9 failures at
-          # default parallelism, 4 at --maxWorkers=2, with
-          # process-repository-helpers (4), full-corpus-index (3) and mcp-cli
-          # (1) flipping green purely from reduced contention.
+          # Bounded workers. Several suites spawn real child processes and
+          # assert heartbeat deadlines; at full CPU parallelism they lose the
+          # race with nothing wrong in the code. Measured locally on a
+          # 24-thread machine: 9 failures at default parallelism, 4 at
+          # --maxWorkers=4.
           #
-          # This runner has 4 vCPUs, so --maxWorkers=4 saturates it exactly the
-          # way default parallelism saturated the 24-thread machine, and the
-          # same suites came back red here. 2 keeps the ratio that worked.
-          # A gate has to be deterministic before it can be believed.
+          # Tried --maxWorkers=2 here on the 4-vCPU runner expecting the same
+          # ratio to help. It did not: 33 failures at both 2 and 4, with only
+          # the set churning. Whatever makes this runner red is not CPU
+          # contention, so the cap stays at the value that is cheap and is
+          # known to help locally.
           "$AGENC_NODE_EXECUTABLE_PATH" \
             runtime/scripts/run-hermetic-vitest.mjs \
               --require-zero-skips \
