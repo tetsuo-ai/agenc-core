@@ -141,6 +141,25 @@ describe("conservative complete-request fallback", () => {
     );
   });
 
+  test("estimates tokens, not raw prompt bytes", () => {
+    // A byte count used as a token count denies `context_window_exceeded` at
+    // roughly a quarter of the real window. Observed on grok-4.6 (500k
+    // window): 403,222 reserved against 79,048 actually reported.
+    const body = "export function handler(request) { return request.body; }\n";
+    const content = body.repeat(2_000);
+    const promptBytes = new TextEncoder().encode(content).byteLength;
+
+    const { inputTokens } = estimateTokenAccountingRequest(
+      accountingRequest(content),
+    );
+
+    // Still an upper bound: comfortably above the ~4 bytes/token an ASCII
+    // code prompt really costs.
+    expect(inputTokens).toBeGreaterThan(promptBytes / 4);
+    // But no longer the raw byte count.
+    expect(inputTokens).toBeLessThan(promptBytes * 0.75);
+  });
+
   test("uses a whole-request ceiling and never loses short-message framing", () => {
     const counts = [0, 1, 2, 100].map((messageCount) => {
       const request = accountingRequest("", {

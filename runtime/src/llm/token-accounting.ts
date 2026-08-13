@@ -26,8 +26,11 @@ export const TOKEN_ACCOUNTING_METRICS_MAX_PARTITIONS = 4_096;
 export const TOKEN_FALLBACK_MARGIN_RATIO = 0.1;
 export const TOKEN_FALLBACK_MARGIN_TOKENS = 256;
 
+// v2 divides the serialized prompt by a bytes-per-token ratio; v1 reserved its
+// raw byte count. Every reported result carries this, so the two calibrations
+// stay distinguishable in reconciliation and telemetry.
 export const TOKEN_ACCOUNTING_CALIBRATION_VERSION =
-  "token-accounting-fallback-v1";
+  "token-accounting-fallback-v2";
 export const TOKEN_ACCOUNTING_REQUEST_VERSION = 1;
 
 const TOKEN_ACCOUNTING_DIGEST_DOMAIN = "agenc-token-accounting-request-v1\0";
@@ -43,6 +46,29 @@ const TOKEN_ACCOUNTING_TOOL_CHOICE_FRAME_TOKENS = 8;
 const TOKEN_ACCOUNTING_MEDIA_FRAME_TOKENS = 64;
 const TOKEN_ACCOUNTING_MINIMUM_INPUT_TOKENS = 1;
 const TOKEN_ACCOUNTING_UTF8_WORST_CASE_BYTES_PER_TOKEN = 1;
+
+/**
+ * Bytes-per-token divisor the local fallback estimates with.
+ *
+ * The theoretical worst case is 1 byte per token, and the fallback used to
+ * reserve the serialized prompt's raw byte count — that is what 1 means. Only
+ * a pathological input reaches it: every byte its own token. Real prompts are
+ * JSON-framed code and prose, where every catalogued tokenizer averages 3.2
+ * bytes per token or more, so the raw byte count over-reserves by ~4x.
+ *
+ * That is not a harmless over-reservation. `admitted-model-call` compares this
+ * result against the context window, so a 4x estimate denies
+ * `context_window_exceeded` at roughly a quarter of the real window and kills
+ * the run. Observed on grok-4.6 (catalogued at 500k): reservations climbed
+ * 383,853 → 403,222 across four consecutive iterations while the provider
+ * reported 74,634 → 79,048 actual prompt tokens, and the next call was denied
+ * with the real context at 16% of the window.
+ *
+ * 2 keeps a conservative floor — still below every catalogued ratio, so the
+ * estimate stays an upper bound — without gating admission on a bound no
+ * tokenizer can reach.
+ */
+const TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN = 2;
 const TOKEN_ACCOUNTING_MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const TOKEN_ACCOUNTING_METRICS_OVERFLOW_MODEL = "other";
 const TOKEN_ACCOUNTING_METRICS_OVERFLOW_PROVIDER = "other";
@@ -930,7 +956,10 @@ function conservativeFallbackResult(
     request.provider,
     request.options.promptCacheKey,
   );
-  const promptBytes = normalizedUtf8UpperBound(stableStringify(promptIdentity));
+  const promptTokens = estimateUtf8TokenUnits(
+    stableStringify(promptIdentity),
+    TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN,
+  );
   const frameTokens =
     TOKEN_ACCOUNTING_REQUEST_FRAME_TOKENS +
     request.messages.length * TOKEN_ACCOUNTING_MESSAGE_FRAME_TOKENS +
@@ -941,7 +970,7 @@ function conservativeFallbackResult(
       ? 0
       : TOKEN_ACCOUNTING_TOOL_CHOICE_FRAME_TOKENS) +
     inspection.mediaCount * TOKEN_ACCOUNTING_MEDIA_FRAME_TOKENS;
-  const beforeMargin = safeTokenSum(promptBytes, frameTokens);
+  const beforeMargin = safeTokenSum(promptTokens, frameTokens);
   const safetyMarginTokens = safetyMarginForTokens(beforeMargin);
   const inputTokens = Math.max(
     TOKEN_ACCOUNTING_MINIMUM_INPUT_TOKENS,

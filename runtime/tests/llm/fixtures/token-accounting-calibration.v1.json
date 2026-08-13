@@ -1,5 +1,5 @@
 {
-  "version": "token-accounting-fallback-v1",
+  "version": "token-accounting-fallback-v2",
   "description": "Offline, non-secret calibration cases. Official observations are copied from the linked provider documentation; tokenizer ceiling cases exercise pathological UTF-8 inputs without claiming a live provider measurement.",
   "sources": {
     "gemini-official-text": "https://ai.google.dev/api/tokens",
