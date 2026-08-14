@@ -1002,13 +1002,20 @@ async function dockerSmoke({ sources, metadata, work, buildkitHostNetwork }) {
     const inspect = JSON.parse(
       run("docker", ["image", "inspect", tag], { capture: true, env: dockerEnv }),
     )[0];
+    // The reported image id depends on the daemon's image store: the classic
+    // graphdriver store returns the config digest, the containerd store returns
+    // the image manifest digest. Both name the build validated above, and the
+    // manifest digest commits to the config digest, so either one pins it.
+    const acceptedIds = [firstOci.configDigest, firstOci.imageManifestDigest];
     if (
-      inspect?.Id !== firstOci.configDigest ||
+      !acceptedIds.includes(inspect?.Id) ||
       inspect?.Config?.User !== "10001:10001" ||
       inspect?.Architecture !== architecture
     ) {
       throw new Error(
-        `Docker image identity mismatch: user=${inspect?.Config?.User}, architecture=${inspect?.Architecture}`,
+        `Docker image identity mismatch: id=${inspect?.Id} is neither the config digest ` +
+          `${firstOci.configDigest} nor the manifest digest ${firstOci.imageManifestDigest}; ` +
+          `user=${inspect?.Config?.User}, architecture=${inspect?.Architecture}`,
       );
     }
     for (const [name, expected] of Object.entries(expectedLabels)) {
