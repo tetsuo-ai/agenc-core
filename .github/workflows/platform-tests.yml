@@ -21,9 +21,14 @@ jobs:
   # Neovim, PowerShell), so a change could break the unit suite outright and
   # still show nine green checks. Four merged PRs did exactly that.
   default-suite:
-    name: default-suite
+    name: default-suite ${{ matrix.shard }}/4
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      # Four shards so a failing one still reports the other three.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -132,23 +137,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Bounded workers. Several suites spawn real child processes and
-          # assert heartbeat deadlines; at full CPU parallelism they lose the
-          # race with nothing wrong in the code. Measured locally on a
-          # 24-thread machine: 9 failures at default parallelism, 4 at
-          # --maxWorkers=4.
+          # Sharded, with a low worker cap per shard.
           #
-          # Tried --maxWorkers=2 here on the 4-vCPU runner expecting the same
-          # ratio to help. It did not: 33 failures at both 2 and 4, with only
-          # the set churning. Whatever makes this runner red is not CPU
-          # contention, so the cap stays at the value that is cheap and is
-          # known to help locally.
+          # Several suites spawn real child processes and assert heartbeat
+          # deadlines. On one 4-vCPU runner they lose that race: --maxWorkers=4
+          # saturates the box, and dropping to 2 on a single runner only
+          # doubled the wall clock without helping, because the whole suite
+          # still had to fit in one machine.
+          #
+          # Four shards give each one the full runner for a quarter of the
+          # files, so 2 workers against 4 vCPUs is genuine headroom rather than
+          # a slower queue. Wall clock stays comparable because the shards run
+          # side by side.
           "$AGENC_NODE_EXECUTABLE_PATH" \
             runtime/scripts/run-hermetic-vitest.mjs \
               --require-zero-skips \
               run \
               --allowOnly=false \
-              --maxWorkers=4
+              --shard=${{ matrix.shard }}/4 \
+              --maxWorkers=2
 
       - name: Assert the suite left the checkout clean
         shell: bash
