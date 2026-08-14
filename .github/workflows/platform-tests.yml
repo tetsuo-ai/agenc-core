@@ -100,6 +100,27 @@ jobs:
           test "$(node --version)" = "v${NODE_VERSION}"
           test "$(npm --version)" = "$NPM_VERSION"
 
+      - name: Put the pinned ripgrep on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The agent/markdown config loader shells out to ripgrep, resolving a
+          # vendored copy under dist/ first and falling back to `rg` on PATH.
+          # A source-tree test run has no vendored copy, and this runner has no
+          # system rg, so every markdown scan silently returned nothing and 13
+          # AgentTool tests failed with empty definition lists while the files
+          # sat on disk. `npm ci --ignore-scripts` does install the pinned
+          # platform package -- the binary ships inside it -- so the only thing
+          # missing was making it findable.
+          #
+          # Digest is the one runtime/scripts/run-hermetic-test-boundary.mjs
+          # pins for this architecture; a mismatch must fail the job, not warn.
+          rg_dir="$PWD/node_modules/@vscode/ripgrep-linux-x64/bin"
+          test -x "$rg_dir/rg"
+          expected="193906679498de4d939345b937fa24e0e69a03c244bd70c859f5e41232713f21"
+          test "$(sha256sum "$rg_dir/rg" | awk '{print $1}')" = "$expected"
+          echo "$rg_dir" >> "$GITHUB_PATH"
+
       - name: Typecheck the runtime and its type-checked tests
         shell: bash
         working-directory: runtime
