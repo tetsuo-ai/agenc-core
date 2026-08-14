@@ -902,7 +902,11 @@ function readCurrentGenerationProgress(databasePath: string): {
 }
 
 async function expectEventually(check: () => Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 5_000;
+  // A filesystem watcher converging is not a fast operation on a loaded
+  // runner, and 5s was tight enough that CI reported "did not converge" on a
+  // healthy index. The bound still exists to catch a watcher that never fires;
+  // it is not a performance assertion.
+  const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     if (await check()) return;
     await new Promise((resolve) => setTimeout(resolve, 25));

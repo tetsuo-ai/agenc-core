@@ -1421,7 +1421,10 @@ token_cap = 123
       await rm(agencHome, { recursive: true, force: true });
       updateRuntimeConfig.mockRestore();
     }
-  });
+    // Starts a real daemon and reloads its config; on a loaded runner that
+    // does not fit in the shared 30s default. DEFAULT_DAEMON_READY_TIMEOUT_MS
+    // is already >= 30s on its own, so the test bound has to clear it.
+  }, 90_000);
 
   it("reload reuses a fixed MCP listener, revokes old sessions, and keeps direct tools fail-closed", async () => {
     const agencHome = await tempAgencHome();

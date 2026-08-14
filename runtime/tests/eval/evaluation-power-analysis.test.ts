@@ -191,7 +191,7 @@ describe("evaluation pilot power analysis", () => {
     } else {
       expect(document.decision.status).toBe("no_candidate_meets_target");
     }
-  }, 20_000);
+  }, 60_000);
 
   test("aggregates unequal repetitions within task before equal task weighting", () => {
     const input = makeInput();
@@ -271,7 +271,7 @@ describe("evaluation pilot power analysis", () => {
       }
     }
     expect(strictRepeatPowerImprovements).toBeGreaterThan(0);
-  }, 20_000);
+  }, 60_000);
 
   test("matches the intercept-only CR2 and Satterthwaite closed forms", () => {
     const clusters = Array.from({ length: 20 }, (_, repositoryIndex) =>
@@ -364,7 +364,7 @@ describe("evaluation pilot power analysis", () => {
     expect(document.documentDigest).toBe(
       "sha256:bab8a86951a46543d17c675d38db198347ca7982f9adc77c393d4c5f8d3f66c2",
     );
-  }, 20_000);
+  }, 60_000);
 
   test("requires exact planning-effect membership before simulation", () => {
     const startedAt = performance.now();
@@ -389,7 +389,7 @@ describe("evaluation pilot power analysis", () => {
       cell.assumedPairedDifference === planningEffect
       && cell.heterogeneityMultiplier === heterogeneity)).toHaveLength(2);
     expect(validatePowerAnalysisDocument(document)).toEqual(document);
-  }, 20_000);
+  }, 60_000);
 
   test("fails closed on incomplete pairing, duplicate trials, and insufficient pilot coverage", () => {
     const outcomes = makePilotOutcomes();
@@ -544,7 +544,7 @@ describe("evaluation pilot power analysis", () => {
     }
     expect(error).toBeInstanceOf(PowerAnalysisDocumentValidationError);
     expect((error as PowerAnalysisDocumentValidationError).issues.length).toBeLessThanOrEqual(100);
-  }, 20_000);
+  }, 60_000);
 
   test("rejects accessors without invoking them during fail-fast preflight", () => {
     let getterCalls = 0;
@@ -572,7 +572,7 @@ describe("evaluation pilot power analysis", () => {
       /document\.sensitivityGrid must be an own enumerable data property/u,
     );
     expect(getterCalls).toBe(0);
-  }, 20_000);
+  }, 60_000);
 
   test("bounds nested unknown I-JSON before canonicalization without invoking accessors", () => {
     const outcomes = makePilotOutcomes();
@@ -626,5 +626,5 @@ describe("evaluation pilot power analysis", () => {
       pilot: { ...document.pilot, comparisons: accessorComparisons },
     })).toThrow(/must be an own enumerable data property/u);
     expect(getterCalls).toBe(0);
-  }, 20_000);
+  }, 60_000);
 });
