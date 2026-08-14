@@ -497,6 +497,42 @@ Only load once.
       const deduped = definitions.allAgents.filter(
         agent => agent.agentType === 'deduped-agent',
       )
+      // TEMPORARY CI INSTRUMENTATION — remove once the failure is understood.
+      if (deduped.length !== 1) {
+        const { existsSync, lstatSync, readdirSync } = await import('node:fs')
+        const safe = (fn: () => unknown): unknown => {
+          try {
+            return fn()
+          } catch (error) {
+            return `ERR:${(error as Error).message}`
+          }
+        }
+        console.error(
+          'AGENTTOOL_DIAG ' +
+            JSON.stringify({
+              platform: process.platform,
+              cwd: process.cwd(),
+              tmpdir: tmpdir(),
+              home: process.env.HOME,
+              configDir: process.env.AGENC_CONFIG_DIR,
+              root,
+              allowedSources: await getAllowedSettingSourcesForTesting(),
+              allAgents: definitions.allAgents.map(a => ({
+                type: a.agentType,
+                source: a.source,
+              })),
+              projectFileExists: safe(() => existsSync(projectFile)),
+              projectDirEntries: safe(() => readdirSync(projectDir)),
+              userDirEntries: safe(() => readdirSync(userDir)),
+              linkIsSymlink: safe(() =>
+                lstatSync(join(userDir, 'dupe.md')).isSymbolicLink(),
+              ),
+              linkTargetReadable: safe(() =>
+                existsSync(join(userDir, 'dupe.md')),
+              ),
+            }),
+        )
+      }
       expect(deduped).toHaveLength(1)
       expect(deduped[0]?.source).toBe('projectSettings')
     } finally {
