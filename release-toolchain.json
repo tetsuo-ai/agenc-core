@@ -259,17 +259,23 @@
         {
           "archive": "debian",
           "suite": "bookworm",
-          "components": ["main"]
+          "components": [
+            "main"
+          ]
         },
         {
           "archive": "debian",
           "suite": "bookworm-updates",
-          "components": ["main"]
+          "components": [
+            "main"
+          ]
         },
         {
           "archive": "debian-security",
           "suite": "bookworm-security",
-          "components": ["main"]
+          "components": [
+            "main"
+          ]
         }
       ]
     },
@@ -297,7 +303,9 @@
     "rpmContentInventory": {
       "schemaVersion": 1,
       "format": "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
-      "signatureKeyIds": ["15af5dac6d745a60"],
+      "signatureKeyIds": [
+        "15af5dac6d745a60"
+      ],
       "sha256": {
         "x64": "20da0fd525fe8dbe596068bb896b949fe84c5ede3c2829e9481f6c2c97de0a5e",
         "arm64": "98d1259fca66152fb91e739a15a4fa7f76b0a222369cb34ba853d7d72f02239f"
@@ -373,6 +381,19 @@
       "imageOS": "win25-vs2026",
       "runnerArch": "X64",
       "imageProfiles": [
+        {
+          "imageVersion": "20260810.198.2",
+          "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/9669462631cac120f4f558e7dadd31a14d1f1a41/images/windows/Windows2025-VS2026-Readme.md",
+          "inventorySha256": "066f1b0e3f63605a3425bf65a3b9cc9f92d580661d420df81dba69daccf7b01f",
+          "inventoryBytes": 33783,
+          "visualStudioVersion": "18.8.12023.21",
+          "visualStudioInstallPath": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+          "msvcToolsVersion": "14.51.36231",
+          "msvcCompilerVersion": "19.51.36252",
+          "msvcCompilerSha256": "c94cdac6a780142920110e5cb8b7339817029eead696e0e97700b45e03216a00",
+          "msvcLinkerSha256": "f233b8e337cec96a69868a8cde676808bfa81152493968d0b27b7cd0daac15be",
+          "windowsSdkVersion": "10.0.26100.0"
+        },
         {
           "imageVersion": "20260803.193.1",
           "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/e9ca9012a4fd7387f3fea134a2e8f5056da94827/images/windows/Windows2025-VS2026-Readme.md",

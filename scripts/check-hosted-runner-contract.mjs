@@ -14,7 +14,10 @@ const RELEASE_INDEX_URL =
   "https://api.github.com/repos/actions/runner-images/releases?per_page=100&page=1";
 const HASH_RE = /^[0-9a-f]{64}$/u;
 const COMMIT_RE = /^[0-9a-f]{40}$/u;
-const IMAGE_VERSION_RE = /^\d{8}\.\d{3,4}\.1$/u;
+// The trailing component is GitHub's image revision, not always 1: a respin
+// of win25-vs2026/20260810.198 ships as 20260810.198.2 and its own inventory
+// readme records that. Accept any revision and keep pinning the exact one.
+const IMAGE_VERSION_RE = /^\d{8}\.\d{3,4}\.\d+$/u;
 
 const TARGET_CONTRACTS = Object.freeze({
   "darwin-arm64": Object.freeze({
@@ -199,7 +202,12 @@ function runnerReleaseVersion(tag, prefix) {
   const match = /^(\d{8})\.(\d{3,4})$/u.exec(suffix);
   if (!match) fail(`official runner release tag is invalid: ${tag}`);
   return {
-    imageVersion: `${suffix}.1`,
+    // GitHub respins an image without cutting a new release, so the deployed
+    // revision is not always `.1`: win25-vs2026/20260810.198 ships
+    // 20260810.198.2. The release tag identifies the build; the trailing
+    // revision is GitHub's, not ours, so match on the build and let the
+    // pinned profile carry whichever revision the fleet actually serves.
+    imageVersionPrefix: `${suffix}.`,
     date: Number(match[1]),
     build: Number(match[2]),
   };
@@ -271,17 +279,17 @@ export function requiredHostedRunnerReleases(contracts, releases) {
       ),
     ].sort(compareReleaseVersion);
     for (const release of active) {
-      const profile = contracts[target].imageProfiles.find(
-        ({ imageVersion }) => imageVersion === release.imageVersion,
+      const profile = contracts[target].imageProfiles.find(({ imageVersion }) =>
+        imageVersion.startsWith(release.imageVersionPrefix),
       );
       if (!profile) {
         fail(
-          `${target} is missing active official runner image ${release.imageVersion} (${release.tag})`,
+          `${target} is missing active official runner image ${release.imageVersionPrefix}* (${release.tag})`,
         );
       }
       if (inventoryCommit(profile, target) !== release.commit) {
         fail(
-          `${target} ${release.imageVersion} inventory commit does not match the official release`,
+          `${target} ${profile.imageVersion} inventory commit does not match the official release`,
         );
       }
     }

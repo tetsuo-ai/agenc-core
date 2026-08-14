@@ -225,6 +225,6 @@ test("rejects a newer official rollout image missing from reviewed profiles", as
       toolchain,
       fetchImpl: fixtureFetch(toolchain, releases),
     }),
-    /darwin-x64 is missing active official runner image 20260803\.0400\.1/u,
+    /darwin-x64 is missing active official runner image 20260803\.0400\.\*/u,
   );
 });
