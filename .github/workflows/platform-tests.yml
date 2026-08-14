@@ -33,6 +33,12 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          # The FND benchmark provenance resolves the revision its baseline was
+          # measured at with `git cat-file -e <rev>^{commit}`, which needs that
+          # commit present. A depth-1 clone has only the tip, so the check threw
+          # "benchmark source revision is not a local Git commit" the moment the
+          # earlier binding assertion stopped failing first and let it run.
+          fetch-depth: 0
 
       - name: Bind the checkout
         shell: bash

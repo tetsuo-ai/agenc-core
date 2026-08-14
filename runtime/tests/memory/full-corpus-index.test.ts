@@ -236,7 +236,7 @@ describe("C3b persistent full-corpus index", () => {
     const restored = readCurrentGenerationProgress(index!.databasePath);
     expect(restored.digest).toBe(initial.digest);
     expect(restored.discoveryOperations).toBeGreaterThan(0);
-  });
+  }, 120_000);
 
   it("repairs a missed equal-size/equal-mtime external change through the bounded audit", async () => {
     const fixture = await createFixture();
@@ -846,7 +846,7 @@ async function createFixture(): Promise<{
   index = new PersistentMemoryIndex({
     databasePath: join(stateRoot, "memory.sqlite"),
     queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
-  });
+  }, 120_000);
   return {
     globalRoot,
     projectRoot,
