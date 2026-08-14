@@ -20,6 +20,40 @@ jobs:
   # other lane here runs a hosted capability slice (kernel sandbox, native,
   # Neovim, PowerShell), so a change could break the unit suite outright and
   # still show nine green checks. Four merged PRs did exactly that.
+  # TEMPORARY. Not for merge: emits the observed Windows toolchain so the new
+  # official image can be pinned in release-toolchain.json. The release lane
+  # refuses to run while an active image is unpinned, and the MSVC compiler and
+  # linker digests it needs can only be read on the runner itself.
+  windows-image-probe:
+    name: windows-image-probe
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 10
+    env:
+      AGENC_RELEASE_SLUG: win-x64
+      AGENC_RUNNER_LABEL: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Validate the reviewed Windows image and native toolchain
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          scripts/validate-hosted-windows-runner.ps1 `
+            -ReportPath "$env:RUNNER_TEMP/agenc-hosted-toolchain-$env:AGENC_RELEASE_SLUG.json"
+      - name: Print the observed Windows toolchain report
+        if: always()
+        shell: pwsh
+        run: |
+          $report = "$env:RUNNER_TEMP/agenc-hosted-toolchain-$env:AGENC_RELEASE_SLUG.json"
+          if (Test-Path -LiteralPath $report -PathType Leaf) {
+            Write-Host "AGENC_WINDOWS_IMAGE_REPORT_BEGIN"
+            Get-Content -LiteralPath $report -Raw
+            Write-Host "AGENC_WINDOWS_IMAGE_REPORT_END"
+          } else {
+            Write-Host "validator produced no report at $report"
+          }
+
   default-suite:
     name: default-suite ${{ matrix.shard }}/4
     runs-on: ubuntu-24.04
