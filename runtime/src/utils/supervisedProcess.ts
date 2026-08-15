@@ -86,6 +86,20 @@ export interface SupervisedProcessResult {
 const DEFAULT_TERMINATE_GRACE_MS = 500;
 const DEFAULT_SETTLE_BACKSTOP_MS = 1_000;
 const PROCESS_TREE_POLL_INTERVAL_MS = 20;
+/**
+ * How long a descendant still visible when the leader closes is given to finish
+ * exiting before it counts as residue.
+ *
+ * The leader's `close` fires once its own stdio is done and it has been reaped,
+ * which says nothing about a helper it spawned moments earlier: that helper can
+ * still be in the process table while it tears itself down. On a loaded machine
+ * that gap widens enough to be observed routinely, so an instantaneous look
+ * reports residue for a tree that is already on its way out. A real leak -- a
+ * detached descendant that outlives its leader -- is still there when this
+ * window closes, so the distinction costs nothing but a bounded wait, and only
+ * in the rare case where anything is alive at close at all.
+ */
+const RESIDUAL_SETTLE_WINDOW_MS = 250;
 const PROCESS_TABLE_TIMEOUT_MS = 2_000;
 const MAX_PROCESS_TABLE_BYTES = 4 * 1024 * 1024;
 const MAX_PROCESS_TABLE_RECORDS = 32_768;
@@ -1655,14 +1669,41 @@ export function runSupervisedProcess(
       exitCode = code;
       exitSignal = signal;
       closed = true;
-      if (stopReason === undefined) {
-        if (linuxSubreaperBoundaries.get(child)?.residual === true) {
-          stopReason = "residual_process";
-        } else if (isProcessTreeAlive(child)) {
-          requestStop("residual_process");
-        }
+      if (stopReason !== undefined) {
+        maybeFinish();
+        return;
       }
-      maybeFinish();
+      // An authoritative boundary already decided; no need to observe again.
+      if (linuxSubreaperBoundaries.get(child)?.residual === true) {
+        stopReason = "residual_process";
+        maybeFinish();
+        return;
+      }
+      if (!isProcessTreeAlive(child)) {
+        maybeFinish();
+        return;
+      }
+      // Something is alive right now. Let it settle before calling it residue:
+      // finishing early would let a genuine leak report a clean exit, and
+      // deciding now reports a leak for a helper that is already exiting.
+      const settleDeadline = Date.now() + RESIDUAL_SETTLE_WINDOW_MS;
+      const settleTimer = setInterval(() => {
+        if (stopReason !== undefined) {
+          clearInterval(settleTimer);
+          return;
+        }
+        if (!isProcessTreeAlive(child)) {
+          clearInterval(settleTimer);
+          maybeFinish();
+          return;
+        }
+        if (Date.now() >= settleDeadline) {
+          clearInterval(settleTimer);
+          requestStop("residual_process");
+          maybeFinish();
+        }
+      }, PROCESS_TREE_POLL_INTERVAL_MS);
+      settleTimer.unref?.();
     });
   });
 }
