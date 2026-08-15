@@ -1133,6 +1133,51 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     };
   }
 
+  test("resolve_system_tool accepts the platform's stock tools, including hardlinked ones", () => {
+    // Regression: the resolver required nlink === 1, but macOS ships
+    // /usr/bin/unzip and /usr/bin/zipinfo as two names for a single inode, so
+    // the stock unzip reports nlink 2 and no user can change it (/usr/bin is
+    // immutable under SIP). Every macOS install therefore failed at provenance
+    // verification, because the pinned gh archive is a zip on darwin while
+    // Linux takes the tar branch and never exercised this path.
+    const script = readFileSync(INSTALL_SH, "utf8");
+    const start = script.indexOf("resolve_system_tool() {");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = script.indexOf("\n}\n", start);
+    expect(end).toBeGreaterThan(start);
+    const probe = join(work, "resolve-system-tool.sh");
+    writeFileSync(
+      probe,
+      `${script.slice(start, end + 3)}\nresolve_system_tool "$@"\n`,
+    );
+
+    // Every stock system tool the installer depends on must resolve on the
+    // host it is running on, whatever its link count happens to be.
+    for (const tool of ["tar", "unzip"]) {
+      const candidates = [`/usr/bin/${tool}`, `/bin/${tool}`].filter(
+        (candidate) => {
+          if (!existsSync(candidate)) return false;
+          const stats = lstatSync(candidate);
+          return stats.isFile() && stats.uid === 0;
+        },
+      );
+      // A host without a root-owned copy of the tool has nothing to assert.
+      if (candidates.length === 0) continue;
+
+      const result = spawnSync("sh", [probe, ...candidates], {
+        encoding: "utf8",
+      });
+      expect(
+        result.status,
+        `${tool} must resolve; the installer needs it for official provenance ` +
+          `verification (link counts: ${candidates
+            .map((c) => `${c}=${lstatSync(c).nlink}`)
+            .join(", ")})`,
+      ).toBe(0);
+      expect(candidates).toContain(result.stdout.trim());
+    }
+  });
+
   test("fresh install: downloads, verifies, extracts, writes marker + working wrapper", () => {
     const home = join(work, "home");
     mkdirSync(home, { recursive: true });

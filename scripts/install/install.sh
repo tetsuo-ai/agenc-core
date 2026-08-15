@@ -350,6 +350,18 @@ case "$NODE_MODULE_ABI" in
   ''|*[!0-9]*) fail "Node.js reported an invalid native module ABI: ${NODE_MODULE_ABI}" ;;
 esac
 resolve_system_tool() {
+  # Deliberately does NOT require nlink === 1, unlike the checks covering
+  # artifacts this installer downloads into its own private tree. macOS ships
+  # /usr/bin/unzip and /usr/bin/zipinfo as two names for a single inode, so a
+  # stock system tool legitimately reports nlink 2 and no user can change it:
+  # /usr/bin is immutable under SIP. Requiring a single link therefore made
+  # every macOS install fail once the pinned gh archive is a zip.
+  #
+  # The guarantee is preserved by the checks that remain: the file is
+  # root-owned, not group/other writable, and every parent directory up to the
+  # root is likewise root-owned and not group/other writable. An extra hard
+  # link cannot be created inside such a tree by a non-root user, and a link
+  # made elsewhere still cannot alter the root-owned inode's contents.
   node -e '
     const { lstatSync, realpathSync, statSync } = require("node:fs");
     const { dirname, isAbsolute } = require("node:path");
@@ -358,7 +370,7 @@ resolve_system_tool() {
       try {
         const path = realpathSync(candidate);
         const file = lstatSync(path);
-        if (!file.isFile() || file.isSymbolicLink() || file.nlink !== 1 ||
+        if (!file.isFile() || file.isSymbolicLink() ||
             (file.mode & 0o111) === 0 || (file.mode & 0o022) !== 0 || file.uid !== 0) continue;
         let parent = dirname(path);
         let trusted = true;
