@@ -87,17 +87,23 @@ const DEFAULT_TERMINATE_GRACE_MS = 500;
 const DEFAULT_SETTLE_BACKSTOP_MS = 1_000;
 const PROCESS_TREE_POLL_INTERVAL_MS = 20;
 /**
- * How long a descendant still visible when the leader closes is given to finish
- * exiting before it counts as residue.
+ * How long a Linux-cgroup member still visible when the leader closes is given
+ * to finish exiting before it counts as residue.
  *
  * The leader's `close` fires once its own stdio is done and it has been reaped,
  * which says nothing about a helper it spawned moments earlier: that helper can
- * still be in the process table while it tears itself down. On a loaded machine
+ * still populate the cgroup while it tears itself down. On a loaded machine
  * that gap widens enough to be observed routinely, so an instantaneous look
- * reports residue for a tree that is already on its way out. A real leak -- a
- * detached descendant that outlives its leader -- is still there when this
- * window closes, so the distinction costs nothing but a bounded wait, and only
- * in the rare case where anything is alive at close at all.
+ * reports residue for a tree that is already on its way out. A real leak is
+ * still inside the cgroup when this window closes -- containment guarantees it
+ * cannot slip away unseen -- so the distinction costs nothing but a bounded
+ * wait, paid only when anything is alive at close at all.
+ *
+ * This window applies ONLY to the cgroup boundary. The other containment
+ * paths either report residue authoritatively (Linux subreaper, Windows job)
+ * or can observe it only in the instant of close (the darwin POSIX gate
+ * settles its own process group during teardown), so they classify
+ * synchronously; waiting there erases the signal instead of de-noising it.
  */
 const RESIDUAL_SETTLE_WINDOW_MS = 250;
 const PROCESS_TABLE_TIMEOUT_MS = 2_000;
@@ -1679,18 +1685,37 @@ export function runSupervisedProcess(
         maybeFinish();
         return;
       }
+      // The settle window below is safe only where liveness at close and
+      // liveness moments later answer the same question. That holds for the
+      // Linux cgroup boundary alone: it is authoritative containment, so a
+      // member seen at close that is gone shortly after really did finish
+      // exiting on its own. Every other path must classify in the instant of
+      // close. The darwin POSIX gate settles its own process group as it
+      // tears down, so there the residue is visible ONLY at that instant --
+      // waiting out the gate's cleanup reads a genuine leak as a clean tree
+      // (observed: the red-probe audit exiting 0 over a lingering
+      // descendant). Windows job objects likewise decide synchronously.
+      if (!linuxCgroupBoundaries.has(child)) {
+        if (isProcessTreeAlive(child)) {
+          requestStop("residual_process");
+        }
+        maybeFinish();
+        return;
+      }
       if (!isProcessTreeAlive(child)) {
         maybeFinish();
         return;
       }
-      // Something is alive right now. Let it settle before calling it residue:
-      // finishing early would let a genuine leak report a clean exit, and
-      // deciding now reports a leak for a helper that is already exiting.
+      // A cgroup member is alive right now. Let it settle before calling it
+      // residue: git and similar leaders routinely outlive a helper by a few
+      // scheduler quanta, and on a loaded machine that gap is observed
+      // routinely. Deciding at this instant reports a leak for a helper that
+      // is already exiting, which surfaced as exit=0 commits classified
+      // residual_process under CI contention.
       //
       // The timer stays REFERENCED deliberately. After `close`, a standalone
       // runner may have nothing else on its event loop; an unref'd timer then
-      // never fires and the process exits without any verdict at all (observed
-      // as the darwin red-probe audit exiting 0 over a genuine leak). The
+      // never fires and the process exits without any verdict at all. The
       // reference is bounded by the deadline below, so it can prolong the
       // process by at most the settle window plus one poll.
       const settleDeadline = Date.now() + RESIDUAL_SETTLE_WINDOW_MS;
@@ -1701,11 +1726,9 @@ export function runSupervisedProcess(
           return;
         }
         if (!isProcessTreeAlive(child)) {
-          // One quiet look is not enough: on darwin the boundary is rebuilt
-          // from a /bin/ps snapshot, and a single failed snapshot reports an
-          // empty tree. Demand two consecutive quiet polls so a transient
-          // observation failure cannot turn a live descendant into a clean
-          // exit; a tree that is genuinely done stays quiet for both.
+          // Two consecutive quiet polls, so a single anomalous read of
+          // cgroup.procs cannot turn a live member into a clean exit; a tree
+          // that is genuinely done stays quiet for both.
           quietPolls += 1;
           if (quietPolls >= 2) {
             clearInterval(settleTimer);
