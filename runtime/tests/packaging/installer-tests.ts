@@ -2935,7 +2935,25 @@ test("official standalone paths pin gh and bind Sigstore verification to the sou
   expect(powershell).toContain('$env:DO_NOT_TRACK = "1"');
   expect(powershell).toContain('$env:GH_SPINNER_DISABLED = "1"');
   expect(shell).not.toContain("command -v gh");
-  expect(shell).toContain("file.nlink !== 1");
+  // Single-link is required of every artifact the installer downloads into its
+  // own private tree: it creates those files, so a second link is a genuine
+  // TOCTOU signal and must keep failing closed.
+  expect(shell.match(/nlink !== 1n/gu)).toHaveLength(4);
+  // It is deliberately NOT required of stock system tools. macOS and Linux both
+  // ship /usr/bin/unzip and /usr/bin/zipinfo as two names for one inode, so a
+  // legitimate system unzip reports nlink 2 and no user can change it under
+  // SIP. Requiring one link here failed every macOS install at provenance
+  // verification, since the pinned gh archive is a zip on darwin. Root
+  // ownership plus a fully root-owned, non-group/other-writable parent chain
+  // is what buys the guarantee; re-adding a link count would break macOS again.
+  const resolver = shell.slice(
+    shell.indexOf("resolve_system_tool() {"),
+    shell.indexOf("\n}\n", shell.indexOf("resolve_system_tool() {")),
+  );
+  // Matches a link-count rejection, not the comment explaining why there is none.
+  expect(resolver).not.toMatch(/nlink\s*!==/u);
+  expect(resolver).toContain("file.uid !== 0");
+  expect(resolver).toContain("metadata.uid !== 0");
   expect(shell).toContain("(file.mode & 0o022) !== 0");
   expect(powershell).not.toContain("Get-Command gh");
 });
