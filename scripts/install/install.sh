@@ -108,8 +108,17 @@ ui_init() {
   # Same locale gate as the closing wordmark: block glyphs only where the
   # terminal can render them, ASCII everywhere else.
   case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
-    *[Uu][Tt][Ff]*8*) UI_OK="✔"; UI_WORK="⋯"; UI_STYLE=unicode ;;
-    *) UI_OK="+"; UI_WORK="-"; UI_STYLE=ascii ;;
+    *[Uu][Tt][Ff]*8*) UI_OK="✔"; UI_WORK="⋯"; UI_WARN="⚠"; UI_STYLE=unicode ;;
+    *) UI_OK="+"; UI_WORK="-"; UI_WARN="!"; UI_STYLE=ascii ;;
+  esac
+}
+
+# Renders a path the way a person would write it: $HOME as ~, everything else
+# verbatim. Never assume a location -- AGENC_HOME and --prefix both move these.
+ui_path() {
+  case "$1" in
+    "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;;
+    *) printf '%s' "$1" ;;
   esac
 }
 
@@ -2582,7 +2591,8 @@ elif [ "$RECOVERY_STATE" = "missing" ]; then
     fail "runtime archive validation or installation failed"
   # AGENC_HOME holds auth tokens, the daemon cookie, and transcripts.
   chmod 700 "$AGENC_HOME_DIR"
-  step "runtime ${VERSION} installed at ${INSTALL_DIR}" "Runtime installed" "~/.agenc/runtime/${VERSION}"
+  step "runtime ${VERSION} installed at ${INSTALL_DIR}" "Runtime installed" \
+    "$(ui_path "${AGENC_HOME_DIR}/runtime/${VERSION}")"
 else
   fail "runtime crash recovery returned an invalid state"
 fi
@@ -2620,7 +2630,7 @@ ACTIVATION_RESULT="$(node "$RUNTIME_INSTALLER_JS" activate "$WRAPPER_TMP" "$WRAP
 rm -f "$WRAPPER_TMP"
 case "$ACTIVATION_RESULT" in
   retained\ *) log "kept newer active wrapper (${ACTIVATION_RESULT#retained }): ${WRAPPER}" ;;
-  activated) step "installed wrapper: ${WRAPPER}" "Wrapper installed" "${WRAPPER}" ;;
+  activated) step "installed wrapper: ${WRAPPER}" "Wrapper installed" "$(ui_path "$WRAPPER")" ;;
   *) fail "wrapper activation returned an invalid result" ;;
 esac
 
@@ -2742,7 +2752,12 @@ apparmor_userns_restricted() {
 }
 
 if apparmor_userns_restricted; then
-  printf '\n  Note: this system restricts the user namespace AgenC'"'"'s sandbox needs,\n' >&2
+  if [ "$UI" = 1 ]; then
+    printf '\n  %s%s%s  This system restricts the user namespace AgenC'"'"'s sandbox needs,\n' \
+      "$UI_YELLOW" "$UI_WARN" "$UI_RESET" >&2
+  else
+    printf '\n  Note: this system restricts the user namespace AgenC'"'"'s sandbox needs,\n' >&2
+  fi
   printf '  so sandboxed commands will fail until you install its AppArmor profile:\n\n' >&2
   printf '    agenc doctor --apparmor-profile |\n' >&2
   printf '      sudo tee /etc/apparmor.d/agenc-native-userns >/dev/null\n' >&2
@@ -2756,8 +2771,9 @@ fi
 # the single sentence logs have always ended on.
 if [ "$UI" = 1 ]; then
   if [ "$INSTALL_DAEMON" = 1 ]; then ui_daemon="running"; else ui_daemon="not installed (--no-daemon)"; fi
-  printf '\n  %sbinary%s   %s\n' "$UI_DIM" "$UI_RESET" "$WRAPPER" >&2
-  printf '  %sruntime%s  %s\n' "$UI_DIM" "$UI_RESET" "$INSTALL_DIR" >&2
+  printf '\n  %sbinary%s   %s\n' "$UI_DIM" "$UI_RESET" "$(ui_path "$WRAPPER")" >&2
+  printf '  %sruntime%s  %s\n' "$UI_DIM" "$UI_RESET" \
+    "$(ui_path "${AGENC_HOME_DIR}/runtime/${VERSION}")" >&2
   printf '  %sdaemon%s   %s\n' "$UI_DIM" "$UI_RESET" "$ui_daemon" >&2
 else
   log "install complete"
