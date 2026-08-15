@@ -1686,24 +1686,40 @@ export function runSupervisedProcess(
       // Something is alive right now. Let it settle before calling it residue:
       // finishing early would let a genuine leak report a clean exit, and
       // deciding now reports a leak for a helper that is already exiting.
+      //
+      // The timer stays REFERENCED deliberately. After `close`, a standalone
+      // runner may have nothing else on its event loop; an unref'd timer then
+      // never fires and the process exits without any verdict at all (observed
+      // as the darwin red-probe audit exiting 0 over a genuine leak). The
+      // reference is bounded by the deadline below, so it can prolong the
+      // process by at most the settle window plus one poll.
       const settleDeadline = Date.now() + RESIDUAL_SETTLE_WINDOW_MS;
+      let quietPolls = 0;
       const settleTimer = setInterval(() => {
         if (stopReason !== undefined) {
           clearInterval(settleTimer);
           return;
         }
         if (!isProcessTreeAlive(child)) {
-          clearInterval(settleTimer);
-          maybeFinish();
+          // One quiet look is not enough: on darwin the boundary is rebuilt
+          // from a /bin/ps snapshot, and a single failed snapshot reports an
+          // empty tree. Demand two consecutive quiet polls so a transient
+          // observation failure cannot turn a live descendant into a clean
+          // exit; a tree that is genuinely done stays quiet for both.
+          quietPolls += 1;
+          if (quietPolls >= 2) {
+            clearInterval(settleTimer);
+            maybeFinish();
+          }
           return;
         }
+        quietPolls = 0;
         if (Date.now() >= settleDeadline) {
           clearInterval(settleTimer);
           requestStop("residual_process");
           maybeFinish();
         }
       }, PROCESS_TREE_POLL_INTERVAL_MS);
-      settleTimer.unref?.();
     });
   });
 }
