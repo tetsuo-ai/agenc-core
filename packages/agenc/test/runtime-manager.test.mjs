@@ -2075,3 +2075,50 @@ test("isInstalled rejects a symlinked marker even when its bytes match", async (
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+test("resolveTrustedSystemTar accepts the platform's stock tar, whatever its link count", async (t) => {
+  // Regression guard, mirroring the shell installer's resolve_system_tool
+  // (tetsuo-ai/agenc-core#1727). Stock system tools legitimately ship as
+  // several names for one inode -- macOS and Ubuntu both hardlink
+  // unzip/zipinfo, and some distributions link tar/gtar -- and /usr/bin is
+  // immutable under SIP, so a link-count requirement here would strand the
+  // launcher with no user-side fix the day a platform ships a hardlinked tar.
+  if (process.platform !== "linux" && process.platform !== "darwin") {
+    t.skip("POSIX stock-tar resolution only");
+    return;
+  }
+  const { resolveTrustedSystemTar } = await import("../lib/runtime-manager.mjs");
+  const candidates = ["/usr/bin/tar", "/bin/tar"].filter((path) => {
+    if (!existsSync(path)) return false;
+    const stats = statSync(path, { bigint: true });
+    return stats.isFile() && stats.uid === 0n;
+  });
+  if (candidates.length === 0) {
+    t.skip("host has no root-owned stock tar to assert against");
+    return;
+  }
+  const linkCounts = candidates
+    .map((path) => `${path}=${statSync(path, { bigint: true }).nlink}`)
+    .join(", ");
+  const trusted = resolveTrustedSystemTar();
+  assert.ok(
+    trusted.path.length > 0,
+    `stock tar must resolve whatever its link count (${linkCounts})`,
+  );
+
+  // Source contract: the system-tool assertion carries no link-count
+  // rejection, while the checks covering files this launcher downloads into
+  // its own private tree keep theirs -- there a second link is a genuine
+  // TOCTOU signal and must keep failing closed.
+  const source = readFileSync(
+    fileURLToPath(new URL("../lib/runtime-manager.mjs", import.meta.url)),
+    "utf8",
+  );
+  const resolver = source.slice(
+    source.indexOf("function assertRootOwnedSystemExecutable"),
+    source.indexOf("export function resolveTrustedSystemTar"),
+  );
+  assert.ok(resolver.length > 0, "resolver body must be locatable");
+  assert.equal(/\.nlink\s*!==/u.test(resolver), false);
+  assert.equal(source.match(/\.nlink !== 1n/gu)?.length, 2);
+});

@@ -1057,9 +1057,19 @@ async function download(
 function assertRootOwnedSystemExecutable(path) {
   const canonical = realpathSync.native(path);
   const executable = lstatSync(canonical, { bigint: true });
+  // Deliberately no link-count requirement, matching the shell installer's
+  // resolve_system_tool. Stock system tools legitimately ship as several names
+  // for one inode (macOS and Ubuntu both hardlink unzip/zipinfo; some
+  // distributions link tar/gtar), and no user can change that under SIP.
+  // Root ownership plus the fully root-owned, non-group/other-writable
+  // ancestor chain below is what buys the guarantee: a non-root user can
+  // neither add a link inside such a tree nor alter the root-owned inode
+  // through a link made elsewhere. The nlink !== 1n checks on files this
+  // launcher downloads into its own private tree stay, because there a second
+  // link is a genuine TOCTOU signal.
   if (
     !executable.isFile() || executable.isSymbolicLink() ||
-    executable.nlink !== 1n || executable.uid !== 0n ||
+    executable.uid !== 0n ||
     (executable.mode & 0o022n) !== 0n
   ) {
     throw new Error(`agenc: operating-system tar is not a trusted regular file: ${canonical}`);
