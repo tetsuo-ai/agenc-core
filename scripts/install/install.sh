@@ -21,6 +21,7 @@
 #                           (env: AGENC_INSTALL_REPO, default tetsuo-ai/agenc-releases)
 #   --prefix <dir>          wrapper install prefix (default: ~/.local)
 #   --no-daemon             skip user-service installation
+#   --verbose               plain per-phase log instead of the progress display
 #   AGENC_HOME              runtime install root (default: ~/.agenc)
 #
 # Test seams (used by runtime/tests/packaging/install-sh.test.ts):
@@ -79,6 +80,58 @@ PROVENANCE_PREDICATE_TYPE="https://slsa.dev/provenance/v1"
 log() { printf 'agenc-install: %s\n' "$*" >&2; }
 fail() { log "ERROR: $*"; exit 1; }
 
+# --- progress presentation ---------------------------------------------------
+#
+# A person watching a terminal wants one live line and a short result per phase;
+# a log wants the full sentence, unchanged and greppable. So the pretty form is
+# strictly a stderr-TTY affordance: with stderr redirected -- CI, `2>file`, the
+# packaging tests -- every message below stays byte-identical to the plain log
+# it has always been. `--verbose` opts a TTY back into that same plain log.
+#
+# Only the happy-path phase lines route through step(). Warnings and failures
+# keep calling log() directly, so they stand out against the checkmarks instead
+# of being dressed up as one.
+VERBOSE=0
+UI=0
+ui_color() { :; }
+ui_init() {
+  if [ "$VERBOSE" = 0 ] && [ -t 2 ] && [ "${TERM:-dumb}" != "dumb" ]; then UI=1; fi
+  [ "$UI" = 1 ] || return 0
+  if [ -z "${NO_COLOR:-}" ]; then
+    UI_DIM="$(printf '\033[2m')"; UI_BOLD="$(printf '\033[1m')"
+    UI_GREEN="$(printf '\033[32m')"; UI_CYAN="$(printf '\033[36m')"
+    UI_YELLOW="$(printf '\033[33m')"; UI_RESET="$(printf '\033[0m')"
+  else
+    UI_DIM=""; UI_BOLD=""; UI_GREEN=""; UI_CYAN=""; UI_YELLOW=""; UI_RESET=""
+  fi
+  UI_CLR="$(printf '\033[2K\r')"
+  # Same locale gate as the closing wordmark: block glyphs only where the
+  # terminal can render them, ASCII everywhere else.
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *[Uu][Tt][Ff]*8*) UI_OK="✔"; UI_WORK="⋯"; UI_STYLE=unicode ;;
+    *) UI_OK="+"; UI_WORK="-"; UI_STYLE=ascii ;;
+  esac
+}
+
+# step <plain-log-sentence> [pretty-label] [detail]
+# Plain mode emits exactly the sentence this phase has always logged.
+step() {
+  if [ "$UI" = 1 ]; then
+    printf '%s  %s%s%s %s %s%s%s\n' \
+      "$UI_CLR" "$UI_GREEN" "$UI_OK" "$UI_RESET" "${2:-$1}" "$UI_DIM" "${3:-}" "$UI_RESET" >&2
+  else
+    log "$1"
+  fi
+}
+
+# Transient "working on it" line, overwritten by the step() that follows it.
+# Nothing is emitted in plain mode: a log does not need a line it cannot see
+# being erased.
+step_begin() {
+  [ "$UI" = 1 ] || return 0
+  printf '%s  %s%s%s %s' "$UI_CLR" "$UI_CYAN" "$UI_WORK" "$UI_RESET" "$1" >&2
+}
+
 BOOTSTRAP_WORK=""
 INSTALL_TMP_ROOT=""
 WORK=""
@@ -98,10 +151,13 @@ while [ $# -gt 0 ]; do
     --repo) REPO="${2:?--repo needs a value}"; shift 2 ;;
     --prefix) PREFIX="${2:?--prefix needs a value}"; PREFIX_EXPLICIT=1; shift 2 ;;
     --no-daemon) INSTALL_DAEMON=0; shift ;;
+    --verbose) VERBOSE=1; shift ;;
     -h|--help) sed -n '2,30p' "$0" 2>/dev/null; exit 0 ;;
     *) fail "unknown option: $1 (see --help)" ;;
   esac
 done
+
+ui_init
 
 # --- prerequisites -----------------------------------------------------------
 
@@ -323,7 +379,8 @@ EOF
     fail "pinned Node.js bootstrap identity is invalid"
   PATH="${BOOTSTRAP_NODE%/node}:${PATH}"
   export PATH
-  log "using private Node.js ${SUPPORTED_NODE_VERSION} bootstrap for ${OS}-${ARCH}"
+  step "using private Node.js ${SUPPORTED_NODE_VERSION} bootstrap for ${OS}-${ARCH}" \
+    "Node.js ${SUPPORTED_NODE_VERSION} bootstrap" "${OS}-${ARCH}"
 }
 
 if [ "$PIN_VERSION" = "0.7.2" ]; then
@@ -496,8 +553,30 @@ function canonicalLocalFileUrlToPath(value, platform = process.platform) {
   return path;
 }
 
+// Progress is reported from the byte counter that already exists for the size
+// contract, so the bar shows transferred bytes against the manifest's declared
+// exact size -- not an estimate, and not a second measurement that could
+// disagree with the one enforcement uses. It renders only when the shell saw a
+// stderr TTY (AGENC_INSTALL_PROGRESS=1) and only when that exact size is known;
+// a redirected stderr therefore stays byte-identical to the plain log.
+const progressStyle = process.env.AGENC_INSTALL_PROGRESS ?? "";
+const progressEnabled = progressStyle === "unicode" || progressStyle === "ascii";
+function renderProgress(count, total, done) {
+  const ratio = total > 0 ? Math.min(count / total, 1) : 0;
+  const cells = 24;
+  const filled = Math.round(ratio * cells);
+  const [full, empty] = progressStyle === "ascii" ? ["#", "-"] : ["█", "░"];
+  const bar = full.repeat(filled) + empty.repeat(cells - filled);
+  const mib = (value) => (value / 1048576).toFixed(1);
+  const line = `  ${progressStyle === "ascii" ? "-" : "⋯"} Downloading runtime ${bar} ${String(Math.round(ratio * 100)).padStart(3)}%` +
+    `  ${mib(count)}/${mib(total)} MiB`;
+  process.stderr.write(`\u001b[2K\r${line}${done ? "\n" : ""}`);
+}
+
 function byteLimiter() {
   let count = 0;
+  let lastRender = 0;
+  const reportable = progressEnabled && exact !== undefined;
   return new Transform({
     transform(chunk, _encoding, callback) {
       count += chunk.length;
@@ -506,6 +585,15 @@ function byteLimiter() {
       } else if (exact !== undefined && count > exact) {
         callback(new Error(`download exceeds declared ${exact} bytes`));
       } else {
+        if (reportable) {
+          // Throttled: a 60 MiB artifact arrives in thousands of chunks, and
+          // redrawing on each one costs more than the download.
+          const now = Date.now();
+          if (now - lastRender >= 80) {
+            lastRender = now;
+            renderProgress(count, exact, false);
+          }
+        }
         callback(null, chunk);
       }
     },
@@ -513,6 +601,9 @@ function byteLimiter() {
       if (exact !== undefined && count !== exact) {
         callback(new Error(`download byte count mismatch (expected ${exact}, got ${count})`));
       } else {
+        // Leave the line at 100% for the shell's step() to overwrite; clearing
+        // it here would flicker between the two writers.
+        if (reportable) renderProgress(count, exact, false);
         callback();
       }
     },
@@ -784,7 +875,8 @@ verify_official_provenance() {
   chmod 700 "$GH_BIN" || return 1
 
   if [ -n "$BUILD_BUNDLE_URL" ]; then
-    log "verifying native-build provenance for ${ARTIFACT_URL}"
+    if [ "$UI" = 1 ]; then step_begin "Verifying native-build provenance"
+    else log "verifying native-build provenance for ${ARTIFACT_URL}"; fi
     GH_CONFIG_DIR="$GH_CONFIG_ROOT" GH_TOKEN= GITHUB_TOKEN= GH_ENTERPRISE_TOKEN= \
       GITHUB_ENTERPRISE_TOKEN= GH_PROMPT_DISABLED=true GH_NO_UPDATE_NOTIFIER=1 \
       GH_TELEMETRY=0 DO_NOT_TRACK=1 GH_SPINNER_DISABLED=1 GH_DEBUG= GH_PAGER= PAGER= \
@@ -801,7 +893,8 @@ verify_official_provenance() {
       --deny-self-hosted-runners >/dev/null || return 1
   fi
 
-  log "verifying tag-promotion provenance for ${ARTIFACT_URL}"
+  if [ "$UI" = 1 ]; then step_begin "Verifying tag-promotion provenance"
+  else log "verifying tag-promotion provenance for ${ARTIFACT_URL}"; fi
   GH_CONFIG_DIR="$GH_CONFIG_ROOT" GH_TOKEN= GITHUB_TOKEN= GH_ENTERPRISE_TOKEN= \
     GITHUB_ENTERPRISE_TOKEN= GH_PROMPT_DISABLED=true GH_NO_UPDATE_NOTIFIER=1 \
     GH_TELEMETRY=0 DO_NOT_TRACK=1 GH_SPINNER_DISABLED=1 GH_DEBUG= GH_PAGER= PAGER= \
@@ -835,9 +928,10 @@ verify_official_provenance() {
   rm -f "$BUNDLE" "$BUILD_BUNDLE" "$GH_ARCHIVE"
   rm -rf "$GH_ROOT" "$GH_CONFIG_ROOT"
   if [ -n "$BUILD_BUNDLE_URL" ]; then
-    log "native-build and tag-promotion provenance verified"
+    step "native-build and tag-promotion provenance verified" \
+      "Provenance verified" "native-build + tag-promotion"
   else
-    log "tag-promotion provenance verified"
+    step "tag-promotion provenance verified" "Provenance verified" "tag-promotion"
   fi
 }
 
@@ -927,7 +1021,8 @@ if [ "$MANIFEST_TRUST" = "official" ]; then
   [ "$MANIFEST_URL" = "$EXPECTED_MANIFEST_URL" ] || fail "official manifest URL is not canonical"
 fi
 
-log "fetching release manifest: ${MANIFEST_URL}"
+step_begin "Fetching release manifest"
+step "fetching release manifest: ${MANIFEST_URL}" "Release manifest" "${REPO}"
 MANIFEST_FILE="$WORK/manifest.json"
 fetch_to "$MANIFEST_URL" "$MANIFEST_FILE" "$MAX_MANIFEST_BYTES" "" "$MANIFEST_TRUST" || \
   fail "could not fetch bounded manifest: ${MANIFEST_URL}"
@@ -2442,12 +2537,25 @@ RECOVERY_STATE="$(node "$RUNTIME_INSTALLER_JS" recover - "$INSTALL_DIR" "$BIN_RE
   fail "runtime crash recovery failed"
 
 if [ "$RECOVERY_STATE" = "ready" ]; then
-  log "runtime ${VERSION} already installed (verified marker) — skipping download"
+  step "runtime ${VERSION} already installed (verified marker) — skipping download" \
+    "Runtime ${VERSION} already installed" "verified marker"
 elif [ "$RECOVERY_STATE" = "missing" ]; then
-  log "downloading runtime ${VERSION} (${OS}-${ARCH}/abi${ARTIFACT_ABI})..."
+  if [ "$UI" = 1 ]; then
+    step_begin "Downloading runtime ${VERSION}"
+  else
+    log "downloading runtime ${VERSION} (${OS}-${ARCH}/abi${ARTIFACT_ABI})..."
+  fi
   TARBALL="$WORK/runtime.tar.gz"
+  # Scoped to this one call: the runtime artifact is the only download whose
+  # size a person waits on, and the only one whose exact size the manifest pins.
+  AGENC_INSTALL_PROGRESS="${UI_STYLE:-}" \
   fetch_to "$ARTIFACT_URL" "$TARBALL" "$MAX_ARTIFACT_BYTES" "$ARTIFACT_BYTES" "$MANIFEST_TRUST" || \
     fail "bounded download failed: ${ARTIFACT_URL}"
+  # UI only: the plain log already announced this download in one line, and a
+  # second "done" line would change bytes that logs and tests depend on.
+  if [ "$UI" = 1 ]; then
+    step "" "Runtime ${VERSION} downloaded" "${OS}-${ARCH}/abi${ARTIFACT_ABI}"
+  fi
 
   ACTUAL_SHA="$(sha256_of "$TARBALL")" || fail "sha256 computation failed"
   if [ "$ACTUAL_SHA" != "$ARTIFACT_SHA" ]; then
@@ -2458,7 +2566,8 @@ elif [ "$RECOVERY_STATE" = "missing" ]; then
   if [ "$ACTUAL_BYTES" != "$ARTIFACT_BYTES" ]; then
     fail "byte count mismatch for runtime tarball (expected ${ARTIFACT_BYTES}, got ${ACTUAL_BYTES}). Refusing to install."
   fi
-  log "checksum verified"
+  step "checksum verified" "Checksum verified" \
+    "sha256 $(printf '%.12s' "$ARTIFACT_SHA")…"
 
   verify_official_provenance ||
     fail "official runtime provenance verification failed"
@@ -2473,7 +2582,7 @@ elif [ "$RECOVERY_STATE" = "missing" ]; then
     fail "runtime archive validation or installation failed"
   # AGENC_HOME holds auth tokens, the daemon cookie, and transcripts.
   chmod 700 "$AGENC_HOME_DIR"
-  log "runtime ${VERSION} installed at ${INSTALL_DIR}"
+  step "runtime ${VERSION} installed at ${INSTALL_DIR}" "Runtime installed" "~/.agenc/runtime/${VERSION}"
 else
   fail "runtime crash recovery returned an invalid state"
 fi
@@ -2511,7 +2620,7 @@ ACTIVATION_RESULT="$(node "$RUNTIME_INSTALLER_JS" activate "$WRAPPER_TMP" "$WRAP
 rm -f "$WRAPPER_TMP"
 case "$ACTIVATION_RESULT" in
   retained\ *) log "kept newer active wrapper (${ACTIVATION_RESULT#retained }): ${WRAPPER}" ;;
-  activated) log "installed wrapper: ${WRAPPER}" ;;
+  activated) step "installed wrapper: ${WRAPPER}" "Wrapper installed" "${WRAPPER}" ;;
   *) fail "wrapper activation returned an invalid result" ;;
 esac
 
@@ -2555,7 +2664,8 @@ Environment=NODE_ENV=production
 WantedBy=default.target
 EOF
   if systemctl --user daemon-reload && systemctl --user enable --now agenc-daemon.service; then
-    log "daemon installed and started (systemd user service agenc-daemon)"
+    step "daemon installed and started (systemd user service agenc-daemon)" \
+      "Daemon running" "systemd user service"
   else
     log "WARNING: could not enable the systemd user service — start manually: agenc daemon start"
   fi
@@ -2600,7 +2710,8 @@ install_daemon_darwin() {
 EOF
   if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null \
      || launchctl load -w "$PLIST" 2>/dev/null; then
-    log "daemon installed and started (launchd dev.agenc.daemon)"
+    step "daemon installed and started (launchd dev.agenc.daemon)" \
+      "Daemon running" "launchd agent"
   else
     log "WARNING: could not load the launchd agent — start manually: agenc daemon start"
   fi
@@ -2639,7 +2750,18 @@ if apparmor_userns_restricted; then
   printf '  Then run `agenc doctor` to confirm. See docs/install.md for details.\n' >&2
 fi
 
-log "install complete"
+# Where things landed. The banner below already says "AgenC <version> installed",
+# welcomes, and lists next steps, so this adds only the paths -- the one thing
+# the collapsed phase lines no longer leave on screen. Redirected stderr keeps
+# the single sentence logs have always ended on.
+if [ "$UI" = 1 ]; then
+  if [ "$INSTALL_DAEMON" = 1 ]; then ui_daemon="running"; else ui_daemon="not installed (--no-daemon)"; fi
+  printf '\n  %sbinary%s   %s\n' "$UI_DIM" "$UI_RESET" "$WRAPPER" >&2
+  printf '  %sruntime%s  %s\n' "$UI_DIM" "$UI_RESET" "$INSTALL_DIR" >&2
+  printf '  %sdaemon%s   %s\n' "$UI_DIM" "$UI_RESET" "$ui_daemon" >&2
+else
+  log "install complete"
+fi
 # Brand "agenc" wordmark — quadrant-block rendering of assets/agenc-wordmark.svg
 # (the letterforms, not the icon; 2x2 sub-cell blocks for smoother curves).
 # Unicode blocks only on UTF-8 locales, with a plain-text fallback; brand
