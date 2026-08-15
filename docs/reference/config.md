@@ -1,6 +1,6 @@
 # Config reference
 
-Operator config for AgenC **0.16.0**. Sources of truth:
+Operator config for AgenC **0.16.1**. Sources of truth:
 
 | Concern | Path |
 | --- | --- |
