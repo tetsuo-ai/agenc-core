@@ -10,6 +10,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { probeLandlock, resolveLandlockRun } from "./landlock-run.js";
 import { realpathSync, statSync } from "node:fs";
 import path, { basename, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -528,21 +529,46 @@ function probeLinuxSandbox(options: {
       "Install AgenC with its executable sandbox helper outside the workspace, then run `agenc doctor` again.",
     );
   }
-  const bwrap = findSystemBubblewrapInPath(options.env.PATH, options.cwd);
-  if (bwrap === null) {
+  // When any bubblewrap rung fails, the helper falls back to Landlock at
+  // spawn time for the policies an allow-list can express. The probe mirrors
+  // that decision so startup readiness matches what commands will actually
+  // do; the per-policy refusals stay with the helper, which sees the policy.
+  const landlockFallback = (
+    bwrapReason: string,
+    bwrapRemediation: string,
+    isolationProgram?: string,
+  ): SandboxExecutionStatus => {
+    const launcher = resolveLandlockRun();
+    if (launcher !== undefined && probeLandlock(launcher) === "full") {
+      return {
+        kind: "ready",
+        mode: options.mode,
+        platform: options.platform,
+        helperPath: helper.path,
+        isolationProgram: launcher,
+        reason: `${bwrapReason}; the Landlock fallback is active`,
+        landlock: "full",
+      };
+    }
     return unavailableStatus(
       options,
+      bwrapReason,
+      bwrapRemediation,
+      helper.path,
+      isolationProgram,
+    );
+  };
+  const bwrap = findSystemBubblewrapInPath(options.env.PATH, options.cwd);
+  if (bwrap === null) {
+    return landlockFallback(
       "bubblewrap was not found in a trusted system directory",
       "Install bubblewrap with the OS package manager, then run `agenc doctor` again.",
-      helper.path,
     );
   }
   if (!systemBubblewrapSupportsBindFd(bwrap, options.env)) {
-    return unavailableStatus(
-      options,
+    return landlockFallback(
       "bubblewrap does not support descriptor-based read-only binds",
       "Upgrade bubblewrap to a version that supports --ro-bind-fd, then run `agenc doctor` again.",
-      helper.path,
       bwrap,
     );
   }
@@ -572,11 +598,9 @@ function probeLinuxSandbox(options: {
     const detail = boundedDiagnostic(
       result.error?.message ?? result.stderr ?? `exit status ${String(result.status)}`,
     );
-    return unavailableStatus(
-      options,
+    return landlockFallback(
       `probe: bubblewrap could not create the required namespaces${detail ? ` (${detail})` : ""}`,
       linuxSandboxProbeRemediation(detail),
-      helper.path,
       bwrap,
     );
   }

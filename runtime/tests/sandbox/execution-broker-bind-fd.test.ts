@@ -71,16 +71,30 @@ describe("Linux sandbox bubblewrap readiness", () => {
         agencLinuxSandboxExe: helper,
       });
 
-      expect(status).toEqual({
-        kind: "unavailable",
-        mode: "workspace_write",
-        platform: "linux",
-        reason: "bubblewrap does not support descriptor-based read-only binds",
-        remediation:
-          "Upgrade bubblewrap to a version that supports --ro-bind-fd, then run `agenc doctor` again.",
-        helperPath: realpathSync(helper),
-        isolationProgram: bwrap,
-      });
+      // Contract update with the Landlock fallback: a bind-fd rejection no
+      // longer terminates the probe. The ONLY post-rejection spawn permitted
+      // is the Landlock enforcement probe -- never bubblewrap's namespace
+      // probe -- and on a kernel that enforces, the status becomes ready
+      // through the fallback while still naming the bubblewrap defect.
+      if (status.kind === "ready") {
+        expect(status.landlock).toBe("full");
+        expect(status.reason).toContain(
+          "bubblewrap does not support descriptor-based read-only binds",
+        );
+        expect(status.reason).toContain("Landlock fallback is active");
+        expect(status.helperPath).toBe(realpathSync(helper));
+      } else {
+        expect(status).toEqual({
+          kind: "unavailable",
+          mode: "workspace_write",
+          platform: "linux",
+          reason: "bubblewrap does not support descriptor-based read-only binds",
+          remediation:
+            "Upgrade bubblewrap to a version that supports --ro-bind-fd, then run `agenc doctor` again.",
+          helperPath: realpathSync(helper),
+          isolationProgram: bwrap,
+        });
+      }
       expect(probeMocks.findBubblewrap).toHaveBeenCalledWith(
         env.PATH,
         workspace,
@@ -89,7 +103,11 @@ describe("Linux sandbox bubblewrap readiness", () => {
         bwrap,
         env,
       );
-      expect(probeMocks.spawnSync).not.toHaveBeenCalled();
+      // bubblewrap's namespace probe must still never run after the
+      // rejection; the only permitted spawn is the Landlock probe.
+      for (const call of probeMocks.spawnSync.mock.calls) {
+        expect(String(call[0])).toContain("agenc-landlock-run");
+      }
     },
   );
 });

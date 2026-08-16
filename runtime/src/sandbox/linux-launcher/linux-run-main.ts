@@ -18,8 +18,15 @@ import {
 } from "./config.js";
 import {
   networkSeccompMode,
+  openNetworkSeccompProgramFile,
   type NetworkSeccompMode,
 } from "./landlock.js";
+import { planLandlockConfinement } from "./landlock-exec.js";
+import {
+  landlockLaunchArgs,
+  probeLandlock,
+  resolveLandlockRun,
+} from "../landlock-run.js";
 import {
   preferredBubblewrapLauncher,
   spawnBubblewrap,
@@ -172,9 +179,20 @@ async function runLinuxSandboxOptions(
     }
     const launcher = (deps.preferredLauncher ?? preferredBubblewrapLauncher)();
     if (launcher === null) {
-      throw new Error(
-        "AgenC could not find bubblewrap on PATH; install bubblewrap or configure agenc-linux-sandbox to a valid helper",
-      );
+      // Bubblewrap is unusable. Before failing, try the Landlock rung: a
+      // kernel allow-list needing no namespaces, carrying the same network
+      // seccomp program bwrap would have applied. The plan refuses loudly
+      // when the policy needs something an allow-list cannot express, so
+      // this path never runs weaker confinement than the caller asked for.
+      return await runUnderLandlockFallback({
+        options,
+        fileSystem,
+        seccompMode: bwrapSeccompMode,
+        extraReadOnlyBindRoots,
+        extraDeviceBindPaths,
+        hostCommandCwd,
+        env,
+      });
     }
     if (options.inheritedCwd && launcher.supportsBindFd !== true) {
       throw new Error(
@@ -235,6 +253,81 @@ async function runLinuxSandboxOptions(
   } finally {
     preparedProxy?.cleanup();
     if (inheritedCwdFd !== undefined) fs.closeSync(inheritedCwdFd);
+  }
+}
+
+async function runUnderLandlockFallback(input: {
+  readonly options: LinuxSandboxLauncherOptions;
+  readonly fileSystem: FileSystemSandboxPolicy;
+  readonly seccompMode: NetworkSeccompMode | null;
+  readonly extraReadOnlyBindRoots: readonly string[];
+  readonly extraDeviceBindPaths: readonly string[];
+  readonly hostCommandCwd: string;
+  readonly env: NodeJS.ProcessEnv;
+}): Promise<number> {
+  const unavailable =
+    "AgenC could not find bubblewrap on PATH; install bubblewrap or " +
+    "configure agenc-linux-sandbox to a valid helper";
+  const launcherPath = resolveLandlockRun();
+  if (launcherPath === undefined || probeLandlock(launcherPath) !== "full") {
+    throw new Error(
+      `${unavailable}; the Landlock fallback is also unavailable on this kernel`,
+    );
+  }
+  const plan = planLandlockConfinement({
+    fileSystem: input.fileSystem,
+    sandboxPolicyCwd: input.options.sandboxPolicyCwd,
+    allowNetworkForProxy: input.options.allowNetworkForProxy,
+    inheritedCwd: input.options.inheritedCwd,
+    extraReadOnlyBindRoots: input.extraReadOnlyBindRoots,
+    extraDeviceBindPaths: input.extraDeviceBindPaths,
+  });
+  if (plan.kind === "refused") {
+    throw new Error(
+      "bubblewrap is unavailable and the Landlock fallback cannot express " +
+        `this policy: ${plan.reason}`,
+    );
+  }
+  // Proxy mode was refused above, so the bwrap-equivalent seccomp decision
+  // applies directly; the launcher installs the program itself, so no inner
+  // helper stage runs inside the sandbox.
+  const program =
+    input.seccompMode === null
+      ? null
+      : openNetworkSeccompProgramFile(input.seccompMode);
+  try {
+    const args = [
+      ...landlockLaunchArgs({
+        readOnly: plan.readOnly,
+        readWrite: plan.readWrite,
+        ...(program === null ? {} : { seccompFd: program.stdioFd }),
+      }),
+      ...input.options.command,
+    ];
+    const child = spawn(launcherPath, args, {
+      cwd: input.hostCommandCwd,
+      env: input.env,
+      stdio:
+        program === null
+          ? "inherit"
+          : ["inherit", "inherit", "inherit", program.fd],
+    });
+    // Same post-hoc guarantee as the bubblewrap path: creating a protected
+    // metadata target during the run fails the run even when the command
+    // itself exits 0.
+    const protectedMonitor = startProtectedCreateMonitor([
+      ...plan.protectedCreateTargets,
+    ]);
+    let protectedCreateViolation = false;
+    try {
+      const exitCode = await waitForChildWithSignalRelay(child);
+      protectedCreateViolation = protectedMonitor.stop();
+      return protectedCreateViolation && exitCode === 0 ? 1 : exitCode;
+    } finally {
+      if (!protectedCreateViolation) protectedMonitor.stop();
+    }
+  } finally {
+    program?.cleanup();
   }
 }
 

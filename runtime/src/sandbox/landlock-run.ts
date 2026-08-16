@@ -81,10 +81,12 @@ export function resolveLandlockRun(): string | undefined {
 
   const moduleDirectory = dirname(fileURLToPath(import.meta.url));
   // The build compiles the launcher to the dist ROOT; this module may be
-  // bundled into a root chunk or under dist/bin, so probe both geometries.
+  // bundled into a root chunk, under dist/bin, or into the sandbox helper at
+  // dist/sandbox/linux-launcher, so probe all three geometries.
   const bundledCandidates = [
     join(moduleDirectory, LANDLOCK_RUN_NAME),
     resolve(moduleDirectory, "..", LANDLOCK_RUN_NAME),
+    resolve(moduleDirectory, "..", "..", LANDLOCK_RUN_NAME),
   ];
   const bundled = bundledCandidates.find(isExecutableFile);
   if (bundled !== undefined) {
@@ -95,6 +97,7 @@ export function resolveLandlockRun(): string | undefined {
   const sourceCandidates = [
     resolve(moduleDirectory, "../../native/agenc-landlock-run.c"),
     resolve(moduleDirectory, "../native/agenc-landlock-run.c"),
+    resolve(moduleDirectory, "../../../native/agenc-landlock-run.c"),
   ];
   const sourcePath = sourceCandidates.find((candidate) => {
     try {
