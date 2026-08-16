@@ -212,6 +212,22 @@ export const LARGE_CONTEXT_WINDOW_TOKENS = 200_000;
  * back to the 0.20 default. Out-of-range / unparseable values are
  * ignored so a bad env var can never disable the guard.
  */
+/**
+ * Optional inline-size threshold for the offload, in bytes
+ * (`AGENC_TOOL_RESULT_OFFLOAD_BYTES`). When set and lower than the
+ * model-aware cap, results above it are offloaded even though they would
+ * have fit inline: the full output is persisted either way, so the only
+ * effect is how much of the context window one tool result may occupy.
+ * Unset or invalid keeps today's behavior (offload only above the cap).
+ */
+function resolveOffloadThresholdBytes(): number | undefined {
+  const raw = process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES;
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined;
+  return parsed;
+}
+
 function resolveSingleResultWindowFraction(): number {
   const raw = process.env.AGENC_MAX_TOOL_RESULT_WINDOW_FRACTION;
   if (raw === undefined || raw.trim() === "") {
@@ -489,20 +505,36 @@ function buildOffloadReferenceMessage(args: {
     `[full output (~${formatFileSize(originalBytes)} / ~${originalTokens} tokens) ` +
     `saved to ${filepath} — read that file (or a byte/line range with ` +
     `offset+limit) to see more, or narrow your query / run a more specific ` +
-    `search. Head preview follows:]\n`;
-  const footer = `\n[…truncated — full output at ${filepath}]\n`;
+    `search. Head and tail preview follows:]\n`;
+  // The tail routinely carries the verdict — a test run's summary line, an
+  // exit status, the actual error — so the preview keeps BOTH ends and
+  // marks the omitted middle, instead of hoping the head was the useful
+  // part.
+  const middle = `\n[… middle omitted — full output at ${filepath}]\n`;
   const headerBytes = Buffer.byteLength(header, "utf8");
-  const footerBytes = Buffer.byteLength(footer, "utf8");
-  const room = Math.max(0, maxBytes - headerBytes - footerBytes);
-  // Trim the head preview to fit, cutting on a UTF-8 boundary.
-  let head = Buffer.from(content, "utf8").subarray(0, room).toString("utf8");
-  // Prefer a clean line boundary for the preview when one is reasonably
-  // close to the end (mirrors generatePreview in toolResultStorage).
+  const middleBytes = Buffer.byteLength(middle, "utf8");
+  const room = Math.max(0, maxBytes - headerBytes - middleBytes);
+  const contentBuffer = Buffer.from(content, "utf8");
+  const headRoom = Math.floor(room * 0.6);
+  const tailRoom = room - headRoom;
+  // Trim both previews to fit, cutting on UTF-8 boundaries, preferring a
+  // clean line boundary when one is reasonably close (mirrors
+  // generatePreview in toolResultStorage).
+  let head = contentBuffer.subarray(0, headRoom).toString("utf8");
   const lastNewline = head.lastIndexOf("\n");
-  if (lastNewline > room * 0.5) {
+  if (lastNewline > headRoom * 0.5) {
     head = head.slice(0, lastNewline);
   }
-  return `${header}${head}${footer}`;
+  let tail = contentBuffer
+    .subarray(Math.max(0, contentBuffer.length - tailRoom))
+    .toString("utf8");
+  // A byte cut can open mid-code-point; drop the replacement-char prefix.
+  while (tail.startsWith("\uFFFD")) tail = tail.slice(1);
+  const firstNewline = tail.indexOf("\n");
+  if (firstNewline !== -1 && firstNewline < tailRoom * 0.5) {
+    tail = tail.slice(firstNewline + 1);
+  }
+  return `${header}${head}${middle}${tail}`;
 }
 
 /**
@@ -536,18 +568,28 @@ async function offloadOrCapToolResult(args: {
   const { content, toolUseId, maxBytes, bytesPerToken, contextWindowTokens } =
     args;
   const originalBytes = Buffer.byteLength(content, "utf8");
-  if (originalBytes <= maxBytes) {
+  // The offload may fire below the wire cap when the operator sets the
+  // inline threshold; the wire cap itself is unchanged, and the persist
+  // failure fallback below still truncates at the cap, never the
+  // threshold, so a storage problem cannot shrink what stays inline
+  // relative to today.
+  const offloadThreshold = resolveOffloadThresholdBytes();
+  const trigger =
+    offloadThreshold === undefined
+      ? maxBytes
+      : Math.min(maxBytes, offloadThreshold);
+  if (originalBytes <= trigger) {
     return { content, truncated: false, originalBytes };
   }
 
-  // Over the cap: OFFLOAD the full output, then return a reference.
+  // Over the trigger: OFFLOAD the full output, then return a reference.
   const persisted = await persistToolResult(content, toolUseId);
   if (!isPersistError(persisted)) {
     const reference = buildOffloadReferenceMessage({
       content,
       filepath: persisted.filepath,
       originalBytes,
-      maxBytes,
+      maxBytes: trigger,
       bytesPerToken,
     });
     return {

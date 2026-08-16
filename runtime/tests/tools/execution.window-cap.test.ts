@@ -20,7 +20,7 @@
 
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import {
   capToolResult,
   computeEffectiveMaxResultBytes,
@@ -313,12 +313,18 @@ describe("runToolUse — model-aware OFFLOAD (Technique D)", () => {
     const persisted = readFileSync(persistedPath, "utf8");
     expect(persisted).toBe(body);
 
-    // (c) The full content is recoverable from the path (head preview is
-    // a strict prefix of the persisted full output).
+    // (c) The preview keeps BOTH ends of the persisted output: the head is
+    // a strict prefix, the tail a strict suffix, and the omitted middle is
+    // marked with the path.
     const headStart = out.content.indexOf("\n") + 1;
-    const head = out.content.slice(headStart).split("\n[…truncated")[0];
-    expect(head.length).toBeGreaterThan(0);
-    expect(persisted.startsWith(head)).toBe(true);
+    const [head, tailWithMarkerTail] = out.content
+      .slice(headStart)
+      .split(/\n\[… middle omitted[^\]]*\]\n/u);
+    expect(head!.length).toBeGreaterThan(0);
+    expect(persisted.startsWith(head!)).toBe(true);
+    expect(tailWithMarkerTail).toBeDefined();
+    expect(tailWithMarkerTail!.length).toBeGreaterThan(0);
+    expect(persisted.endsWith(tailWithMarkerTail!)).toBe(true);
   });
 
   test("(d) tool_use/tool_result pairing stays valid — the result keeps the callId", async () => {
@@ -378,5 +384,87 @@ describe("runToolUse — model-aware OFFLOAD (Technique D)", () => {
     });
     expect(out2.content).toBe(underCeiling);
     expect(out2.content).not.toContain("saved to");
+  });
+});
+
+describe("runToolUse — operator inline-offload threshold", () => {
+  const ENV = "AGENC_TOOL_RESULT_OFFLOAD_BYTES";
+  afterEach(() => {
+    delete process.env[ENV];
+  });
+
+  test("a result under the cap offloads once the operator threshold is set", async () => {
+    process.env[ENV] = "65536";
+    const body = makeGenericText(120_000); // well under the 400 KB ceiling
+    const callId = `c-thresh-${randomUUID()}`;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: echoTool("dump-thresh", body),
+      invocation: makeInvocation(callId, "dump-thresh"),
+      contextWindowTokens: 500_000,
+    });
+    expect(out.isError).toBe(false);
+    // Inline message bounded by the THRESHOLD, not the cap.
+    expect(Buffer.byteLength(out.content, "utf8")).toBeLessThanOrEqual(65_536);
+    expect(out.content).toContain("saved to");
+    const persisted = readFileSync(getToolResultPath(callId, false), "utf8");
+    expect(persisted).toBe(body);
+  });
+
+  test("the same result stays inline without the threshold", async () => {
+    const body = makeGenericText(120_000);
+    const callId = `c-nothresh-${randomUUID()}`;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: echoTool("dump-nothresh", body),
+      invocation: makeInvocation(callId, "dump-nothresh"),
+      contextWindowTokens: 500_000,
+    });
+    expect(out.isError).toBe(false);
+    expect(out.content).toBe(body);
+    expect(out.content).not.toContain("saved to");
+  });
+
+  test("an invalid threshold is ignored", async () => {
+    process.env[ENV] = "not-a-number";
+    const body = makeGenericText(120_000);
+    const callId = `c-badthresh-${randomUUID()}`;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: echoTool("dump-badthresh", body),
+      invocation: makeInvocation(callId, "dump-badthresh"),
+      contextWindowTokens: 500_000,
+    });
+    expect(out.content).toBe(body);
+  });
+
+  test("a threshold above the cap changes nothing: the cap still wins", async () => {
+    process.env[ENV] = String(10_000_000);
+    const body = makeGenericText(420_000);
+    const callId = `c-hithresh-${randomUUID()}`;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: echoTool("dump-hithresh", body),
+      invocation: makeInvocation(callId, "dump-hithresh"),
+      contextWindowTokens: 500_000,
+    });
+    expect(Buffer.byteLength(out.content, "utf8")).toBeLessThanOrEqual(400_000);
+    expect(out.content).toContain("saved to");
+  });
+
+  test("the tail of the preview carries the end of the output", async () => {
+    process.env[ENV] = "32768";
+    const verdict = "FINAL-VERDICT: 3 failed, 17 passed";
+    const body = `${makeGenericText(90_000)}\n${verdict}\n`;
+    const callId = `c-tail-${randomUUID()}`;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool: echoTool("dump-tail", body),
+      invocation: makeInvocation(callId, "dump-tail"),
+      contextWindowTokens: 500_000,
+    });
+    expect(out.content).toContain("saved to");
+    // The reason head-only previews were wrong: the verdict survives.
+    expect(out.content).toContain(verdict);
   });
 });

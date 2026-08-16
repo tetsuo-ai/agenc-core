@@ -4,7 +4,7 @@
 
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { createHash } from 'node:crypto'
-import { mkdir } from 'fs/promises'
+import { chmod, mkdir } from 'fs/promises'
 import { join } from 'path'
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import {
@@ -132,7 +132,10 @@ function safeToolResultPathSegment(value: string): string {
  */
 export async function ensureToolResultsDir(): Promise<void> {
   try {
-    await mkdir(getToolResultsDir(), { recursive: true })
+    // Private like the rest of AGENC_HOME's sensitive stores: 0700 on the
+    // leaf (recursive mode is umask-filtered, so chmod seals it).
+    await mkdir(getToolResultsDir(), { recursive: true, mode: 0o700 })
+    await chmod(getToolResultsDir(), 0o700)
   } catch {
     // Directory may already exist
   }
