@@ -86,8 +86,21 @@ function getSessionDir(): string {
 
 /**
  * Get the tool results directory for this session (projectDir/sessionId/tool-results)
+ *
+ * Prefers the AMBIENT session's rollout store, whose sessionDir names the
+ * conversation actually running the tool. The bootstrap globals below are a
+ * process-wide identity: correct in single-session processes, but in the
+ * multi-session daemon they name the daemon's boot identity, which sent
+ * offloaded artifacts to an orphan store no consumer could associate with
+ * the conversation — outside both trusted artifact roots the rollout
+ * store's recovery validates against.
  */
 export function getToolResultsDir(): string {
+  const session = peekAmbientRuntimeSession()
+  const sessionDir = session?.rolloutStore?.store.sessionDir
+  if (sessionDir !== undefined && sessionDir.length > 0) {
+    return join(sessionDir, TOOL_RESULTS_SUBDIR)
+  }
   return join(getSessionDir(), TOOL_RESULTS_SUBDIR)
 }
 

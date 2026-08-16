@@ -213,6 +213,17 @@ export const LARGE_CONTEXT_WINDOW_TOKENS = 200_000;
  * ignored so a bad env var can never disable the guard.
  */
 /**
+ * Byte bound for the offload REFERENCE message itself. A reference is a
+ * pointer, not a payload: sizing the preview to fill the wire cap produced
+ * ~400 KB reference messages that history compaction cleared before the
+ * model ever used them -- observed live as the model reading only
+ * "[Old tool result content cleared]" where the pointer used to be. A small
+ * reference keeps its context cost trivial and survives compaction rules,
+ * while still carrying the path plus actionable head and tail slices.
+ */
+const OFFLOAD_REFERENCE_MAX_BYTES = 4_000;
+
+/**
  * Optional inline-size threshold for the offload, in bytes
  * (`AGENC_TOOL_RESULT_OFFLOAD_BYTES`). When set and lower than the
  * model-aware cap, results above it are offloaded even though they would
@@ -564,6 +575,8 @@ async function offloadOrCapToolResult(args: {
   readonly truncated: boolean;
   readonly originalBytes: number;
   readonly persistedPath?: string;
+  /** Set when the offload was attempted and persistence failed (the error). */
+  readonly persistFailed?: string;
 }> {
   const { content, toolUseId, maxBytes, bytesPerToken, contextWindowTokens } =
     args;
@@ -589,7 +602,7 @@ async function offloadOrCapToolResult(args: {
       content,
       filepath: persisted.filepath,
       originalBytes,
-      maxBytes: trigger,
+      maxBytes: Math.min(trigger, OFFLOAD_REFERENCE_MAX_BYTES),
       bytesPerToken,
     });
     return {
@@ -602,6 +615,10 @@ async function offloadOrCapToolResult(args: {
 
   // Persist failed → fall back to the legacy blind truncation so the hard
   // model-aware cap is still enforced (the wire message can never overflow).
+  // The failure surfaces to the caller: an offload that silently degrades is
+  // how the daemon-session breakage stayed invisible — the fallback passes
+  // sub-cap content through untouched, so nothing downstream could tell an
+  // offload was ever attempted.
   const capped = capToolResult(content, maxBytes, {
     bytesPerToken,
     contextWindowTokens,
@@ -610,6 +627,7 @@ async function offloadOrCapToolResult(args: {
     content: capped.capped,
     truncated: capped.truncated,
     originalBytes: capped.originalBytes,
+    persistFailed: persisted.error,
   };
 }
 
@@ -2302,6 +2320,16 @@ export async function runToolUse(
         subId,
         "tool_result_truncated",
         `tool ${toolNameDisplay(invocation.toolName)} output ${capped.originalBytes}B ${disposition} (I-15)`,
+      );
+    }
+    if (capped.persistFailed !== undefined && opts.eventLog) {
+      emitWarningEvent(
+        opts.eventLog,
+        subId,
+        "tool_result_offload_failed",
+        `tool ${toolNameDisplay(invocation.toolName)} output ` +
+          `${capped.originalBytes}B could not be offloaded ` +
+          `(${capped.persistFailed}); kept inline under the wire cap`,
       );
     }
 

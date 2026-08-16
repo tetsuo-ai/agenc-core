@@ -214,8 +214,20 @@ describe("runToolUse — end-to-end model-aware cap", () => {
       invocation: makeInvocation("c-text-fixed", "dump-fixed"),
       contextWindowTokens: LOCAL_WINDOW,
     });
+    // The wire message is now a compact offload REFERENCE (bounded to a few
+    // KB), never the cap-sized payload: cap-sized references were cleared by
+    // history compaction before the model could use the pointer. The
+    // magnitude the cap governs still shows in what was persisted.
     const tokens = estimateTokens(out.content, TEXT_BYTES_PER_TOKEN);
-    expect(tokens).toBeGreaterThan(90_000);
+    expect(tokens).toBeLessThanOrEqual(1_000);
+    expect(out.content).toContain("saved to");
+    const persisted = readFileSync(
+      getToolResultPath("c-text-fixed", false),
+      "utf8",
+    );
+    expect(estimateTokens(persisted, TEXT_BYTES_PER_TOKEN)).toBeGreaterThan(
+      90_000,
+    );
   });
 
   test("131K window: a 420 KB JSON result is capped tighter (~half the text bytes)", async () => {
@@ -235,11 +247,20 @@ describe("runToolUse — end-to-end model-aware cap", () => {
       contextWindowTokens: LOCAL_WINDOW,
     });
 
-    const textBytes = Buffer.byteLength(textOut.content, "utf8");
-    const jsonBytes = Buffer.byteLength(jsonOut.content, "utf8");
-    // JSON byte cap ≈ half the text byte cap (same token target, 2 B/tok).
-    expect(jsonBytes).toBeLessThan(textBytes);
-    expect(jsonBytes).toBeCloseTo(textBytes / 2, -3);
+    // Both overflow their caps and come back as compact references; the
+    // JSON-tighter relationship is the CAP's property, asserted directly.
+    expect(textOut.content).toContain("saved to");
+    expect(jsonOut.content).toContain("saved to");
+    const textCap = computeEffectiveMaxResultBytes({
+      content: textBody,
+      contextWindowTokens: LOCAL_WINDOW,
+    });
+    const jsonCap = computeEffectiveMaxResultBytes({
+      content: jsonBody,
+      contextWindowTokens: LOCAL_WINDOW,
+    });
+    expect(jsonCap).toBeLessThan(textCap);
+    expect(jsonCap).toBeCloseTo(textCap / 2, -3);
   });
 
   test("200K window (or undefined): cap stays 400 KB — Claude untouched", async () => {
@@ -251,12 +272,21 @@ describe("runToolUse — end-to-end model-aware cap", () => {
       invocation: makeInvocation("c-large", "dump-large"),
       contextWindowTokens: LARGE_WINDOW,
     });
-    // Truncated to the 400 KB ceiling, not the window-relative value.
+    // Over the 400 KB ceiling: offloaded with a compact reference. The
+    // ceiling (not the window-relative value) is what triggered — pinned by
+    // the cap function — and the full body is preserved on disk.
     expect(Buffer.byteLength(largeOut.content, "utf8")).toBeLessThanOrEqual(
       DEFAULT_MAX_TOOL_RESULT_BYTES,
     );
-    expect(Buffer.byteLength(largeOut.content, "utf8")).toBeGreaterThan(
-      Math.floor(LOCAL_WINDOW * 0.2 * TEXT_BYTES_PER_TOKEN),
+    expect(largeOut.content).toContain("saved to");
+    expect(
+      computeEffectiveMaxResultBytes({
+        content: body,
+        contextWindowTokens: LARGE_WINDOW,
+      }),
+    ).toBe(DEFAULT_MAX_TOOL_RESULT_BYTES);
+    expect(readFileSync(getToolResultPath("c-large", false), "utf8")).toBe(
+      body,
     );
 
     const noWindowOut = await runToolUse("{}", {
@@ -265,9 +295,12 @@ describe("runToolUse — end-to-end model-aware cap", () => {
       invocation: makeInvocation("c-nowin", "dump-nowin"),
       // contextWindowTokens omitted → fixed 400 KB cap.
     });
-    expect(Buffer.byteLength(noWindowOut.content, "utf8")).toBeGreaterThan(
-      Math.floor(LOCAL_WINDOW * 0.2 * TEXT_BYTES_PER_TOKEN),
-    );
+    // Same compact-reference contract with no window: the fixed ceiling is
+    // the trigger, the wire message is the bounded reference.
+    expect(noWindowOut.content).toContain("saved to");
+    expect(
+      computeEffectiveMaxResultBytes({ content: body }),
+    ).toBe(DEFAULT_MAX_TOOL_RESULT_BYTES);
   });
 });
 
