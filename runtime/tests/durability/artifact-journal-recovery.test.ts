@@ -92,6 +92,18 @@ function openStore(cwd: string, runId: string, resume = false): RolloutStore {
   return rollout;
 }
 
+/**
+ * The store-scoped tool-results directory persistToolResult targets when the
+ * ambient session carries this rollout store — the same trusted artifact
+ * root its recovery validates. The module-level getToolResultsDir() helper
+ * resolves the process-global fallback when called OUTSIDE the ambient
+ * context, which is exactly the daemon-session divergence the session-aware
+ * persistence fixed.
+ */
+function sessionToolResultsDir(rollout: RolloutStore): string {
+  return join(rollout.store.sessionDir, "tool-results");
+}
+
 function sessionFor(rollout: RolloutStore): Session {
   const eventLog = new EventLog();
   return {
@@ -188,7 +200,7 @@ describe("M4 artifact journal recovery", () => {
         },
       });
       expect(
-        readFileSync(getToolResultPath("call-normal", false), "utf8"),
+        readFileSync(join(sessionToolResultsDir(rollout), "call-normal.txt"), "utf8"),
       ).toBe("durable bytes");
       rollout.close();
     },
@@ -269,7 +281,7 @@ describe("M4 artifact journal recovery", () => {
         "artifact_committed",
       ]);
       expect(
-        readFileSync(getToolResultPath("call-conflict", false), "utf8"),
+        readFileSync(join(sessionToolResultsDir(rollout), "call-conflict.txt"), "utf8"),
       ).toBe("first bytes");
       rollout.close();
     },
@@ -287,7 +299,7 @@ describe("M4 artifact journal recovery", () => {
       );
       if ("error" in result) throw new Error(result.error);
 
-      expect(dirname(result.filepath)).toBe(getToolResultsDir());
+      expect(dirname(result.filepath)).toBe(sessionToolResultsDir(rollout));
       expect(readFileSync(result.filepath, "utf8")).toBe("contained bytes");
       expect(artifactEvents(rollout)[0]).toMatchObject({
         msg: {
