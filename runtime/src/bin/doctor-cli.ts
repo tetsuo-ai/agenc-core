@@ -132,6 +132,15 @@ export function formatDiagnosticText(
   if (info.sandbox.reason) {
     lines.push(`    reason:   ${info.sandbox.reason}`);
   }
+  if (info.sandbox.landlock !== undefined) {
+    const label =
+      info.sandbox.landlock === "full"
+        ? "fully enforced"
+        : info.sandbox.landlock === "partial"
+          ? "partially enforced (older kernel ABI)"
+          : "unavailable";
+    lines.push(`    landlock: ${label}`);
+  }
 
   if (info.multipleInstallations.length > 0) {
     lines.push("");

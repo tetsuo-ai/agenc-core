@@ -54,6 +54,7 @@ import {
   SandboxExecutionBroker,
   type SandboxExecutionStatus,
 } from '../sandbox/execution-broker.js'
+import { probeLandlock } from '../sandbox/landlock-run.js'
 import { getManagedFilePath } from './settings/managedPath.js'
 import { CUSTOMIZATION_SURFACES } from './settings/types.js'
 import {
@@ -944,13 +945,18 @@ export async function getSandboxDoctorStatus(opts?: {
     : rawMode === 'danger-full-access'
       ? 'danger_full_access'
       : 'workspace_write'
-  return new SandboxExecutionBroker({
+  const status = await new SandboxExecutionBroker({
     mode,
     cwd: opts?.cwd ?? getCwd() ?? process.cwd(),
     env,
     allowGpu: config?.sandbox?.allow_gpu === true,
     ...(opts?.probe !== undefined ? { probe: opts.probe } : {}),
   }).status()
+  if (process.platform !== 'linux') return status
+  // Report the Landlock rung alongside the bubblewrap status: on hosts where
+  // the user namespace is restricted, this is the confinement the kernel can
+  // still enforce without any profile or privilege.
+  return { ...status, landlock: probeLandlock() }
 }
 
 export function buildSandboxWarning(

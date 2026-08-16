@@ -25,7 +25,8 @@
   ],
   "agencExecutableFiles": [
     "dist/agenc-process-broker",
-    "dist/agenc-process-job-broker.exe"
+    "dist/agenc-process-job-broker.exe",
+    "dist/agenc-landlock-run"
   ],
   "scripts": {
     "build": "node scripts/sync-shipped-plugins.mjs && node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints && npm run check:sdk-generated-types && node ../scripts/canonicalize-package-modes.mjs .",

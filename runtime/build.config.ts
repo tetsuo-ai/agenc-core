@@ -45,6 +45,14 @@ const processBrokerDist = resolve(
   runtimeRoot,
   'dist/agenc-process-broker',
 );
+const landlockRunSource = resolve(
+  runtimeRoot,
+  'native/agenc-landlock-run.c',
+);
+const landlockRunDist = resolve(
+  runtimeRoot,
+  'dist/agenc-landlock-run',
+);
 const windowsProcessBrokerSource = resolve(
   runtimeRoot,
   'native/agenc-process-job-broker.cs',
@@ -163,6 +171,44 @@ function compileLinuxProcessBroker(): void {
     );
   }
   chmodSync(processBrokerDist, 0o755);
+}
+
+function compileLinuxLandlockRun(): void {
+  if (process.platform !== 'linux') return;
+  const compiler = process.env.CC?.trim() || 'cc';
+  const result = spawnSync(
+    compiler,
+    [
+      '-O2',
+      '-std=c11',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-D_FORTIFY_SOURCE=2',
+      '-fstack-protector-strong',
+      '-Wl,-z,relro,-z,now',
+      '-o',
+      landlockRunDist,
+      landlockRunSource,
+    ],
+    {
+      cwd: runtimeRoot,
+      env: {
+        ...process.env,
+        LANG: 'C',
+        LC_ALL: 'C',
+      },
+      encoding: 'utf8',
+    },
+  );
+  if (result.error !== undefined || result.status !== 0) {
+    throw new Error(
+      'Linux landlock-run build failed' +
+        (result.error === undefined ? '' : `: ${result.error.message}`) +
+        (result.stderr ? `\n${result.stderr.trim()}` : ''),
+    );
+  }
+  chmodSync(landlockRunDist, 0o755);
 }
 
 function compileWindowsProcessBroker(): void {
@@ -462,6 +508,7 @@ const agencRuntimeAssets = {
     build.onEnd(() => {
       copyYoloClassifierPrompts();
       compileLinuxProcessBroker();
+      compileLinuxLandlockRun();
       compileWindowsProcessBroker();
     });
   },

@@ -78,6 +78,13 @@ export interface SandboxExecutionStatus {
   readonly remediation?: string;
   readonly helperPath?: string;
   readonly isolationProgram?: string;
+  /**
+   * Functional Landlock enforcement on this host (Linux only), from the
+   * vendored launcher's `--probe`. Report-only today: it names the
+   * confinement rung available when bubblewrap's user namespace is
+   * restricted, ahead of the execution path learning to use it.
+   */
+  readonly landlock?: "full" | "partial" | "unusable";
 }
 
 export interface SandboxSpawnCommand {
