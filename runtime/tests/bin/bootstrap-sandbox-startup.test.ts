@@ -27,6 +27,11 @@ describe("production sandbox startup boundary", () => {
           AGENC_HOME: home,
           HOME: home,
           PATH: join(workspace, "untrusted-bin"),
+          // Pin the pre-fallback contract: with the Landlock fallback
+          // disabled, a bubblewrap-less host must still fail closed before
+          // provider setup. The fallback-active boot is covered by the
+          // broker probe suite.
+          AGENC_DISABLE_LANDLOCK_FALLBACK: "1",
         },
         argv: ["node", "agenc"],
         requireSandboxReadyAtStartup: true,

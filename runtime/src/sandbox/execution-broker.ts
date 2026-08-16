@@ -538,7 +538,10 @@ function probeLinuxSandbox(options: {
     bwrapRemediation: string,
     isolationProgram?: string,
   ): SandboxExecutionStatus => {
-    const launcher = resolveLandlockRun();
+    // Operational kill-switch: with the fallback disabled, the original
+    // fail-closed bubblewrap contract holds verbatim.
+    const disabled = options.env.AGENC_DISABLE_LANDLOCK_FALLBACK === "1";
+    const launcher = disabled ? undefined : resolveLandlockRun();
     if (launcher !== undefined && probeLandlock(launcher) === "full") {
       return {
         kind: "ready",

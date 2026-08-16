@@ -268,6 +268,9 @@ async function runUnderLandlockFallback(input: {
   const unavailable =
     "AgenC could not find bubblewrap on PATH; install bubblewrap or " +
     "configure agenc-linux-sandbox to a valid helper";
+  if (input.env.AGENC_DISABLE_LANDLOCK_FALLBACK === "1") {
+    throw new Error(unavailable);
+  }
   const launcherPath = resolveLandlockRun();
   if (launcherPath === undefined || probeLandlock(launcherPath) !== "full") {
     throw new Error(
