@@ -14,6 +14,18 @@
  * Compiled on demand from source with the trusted-compiler pattern used by
  * runtime/native/agenc-process-broker.c; nothing beyond libc and the stable
  * kernel UAPI below.
+ *
+ * AgenC EXTENSION over the upstream contract (everything else is verbatim):
+ *   --seccomp <fd>   read one classic-BPF seccomp program (sock_filter[])
+ *                    fully from the inherited descriptor and install it with
+ *                    prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER) after the
+ *                    Landlock restrict, before exec. This mirrors
+ *                    bubblewrap's `--seccomp FD` so the same network filter
+ *                    AgenC hands bwrap confines the no-userns fallback too.
+ *                    Fatal (exit 125) on a missing, empty, oversized,
+ *                    misaligned, or unloadable program: the caller asked for
+ *                    network confinement, so running without it is not an
+ *                    acceptable degradation.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -91,6 +103,26 @@ struct landlock_path_beneath_attr {
  */
 #define EXIT_LAUNCHER_FAILURE 125
 
+/*
+ * Classic-BPF seccomp UAPI, self-defined like the Landlock structs above.
+ * Layouts are verbatim from <linux/filter.h> / <linux/seccomp.h>.
+ */
+struct sock_filter_local {
+  uint16_t code;
+  uint8_t jt;
+  uint8_t jf;
+  uint32_t k;
+};
+
+struct sock_fprog_local {
+  unsigned short len;
+  struct sock_filter_local *filter;
+};
+
+#define SECCOMP_MODE_FILTER_LOCAL 2
+#define BPF_MAXINSNS_LOCAL 4096
+#define SECCOMP_PROGRAM_MAX_BYTES (BPF_MAXINSNS_LOCAL * sizeof(struct sock_filter_local))
+
 static const char NOT_ENFORCED_MESSAGE[] =
   "landlock is not enforced by this kernel (ABI unsupported or disabled)";
 
@@ -116,6 +148,7 @@ struct cli {
   size_t ro_count;
   const char **rw;
   size_t rw_count;
+  int seccomp_fd; /* -1 when no --seccomp was given */
   char **command; /* NULL-terminated tail of main's argv */
 };
 
@@ -138,6 +171,20 @@ static int parse(int argc, char **argv, struct cli *cli) {
       }
       cli->probe = 1;
       index += 1;
+    } else if (strcmp(arg, "--seccomp") == 0) {
+      if (index + 1 >= argc) {
+        return fail_usage(arg, " requires a descriptor number");
+      }
+      if (cli->seccomp_fd >= 0) {
+        return fail_usage("--seccomp may be given only once", NULL);
+      }
+      char *end = NULL;
+      long fd = strtol(argv[index + 1], &end, 10);
+      if (end == NULL || *end != '\0' || fd < 0 || fd > 1024) {
+        return fail_usage("--seccomp descriptor must be a small non-negative integer", NULL);
+      }
+      cli->seccomp_fd = (int)fd;
+      index += 2;
     } else if (strcmp(arg, "--ro") == 0 || strcmp(arg, "--rw") == 0) {
       if (index + 1 >= argc) {
         return fail_usage(arg, " requires a path");
@@ -241,8 +288,51 @@ static int restrict_self(const struct cli *cli, int *partial) {
   return 0;
 }
 
+/*
+ * Read one classic-BPF program fully from `fd` and install it as this
+ * thread's seccomp filter. no_new_privs is already set by restrict_self().
+ * Every failure is fatal: the caller asked for this confinement.
+ */
+static int install_seccomp_program(int fd) {
+  static uint8_t bytes[SECCOMP_PROGRAM_MAX_BYTES];
+  size_t total = 0;
+  for (;;) {
+    if (total == sizeof bytes) {
+      /* One more byte distinguishes exactly-full from oversized. */
+      uint8_t overflow;
+      ssize_t extra = read(fd, &overflow, 1);
+      if (extra == 0) break;
+      if (extra < 0 && errno == EINTR) continue;
+      return fail("seccomp program exceeds the classic-BPF instruction limit", NULL);
+    }
+    ssize_t got = read(fd, bytes + total, sizeof bytes - total);
+    if (got < 0) {
+      if (errno == EINTR) continue;
+      return fail("cannot read seccomp program", strerror(errno));
+    }
+    if (got == 0) break;
+    total += (size_t)got;
+  }
+  close(fd);
+  if (total == 0) {
+    return fail("seccomp program is empty", NULL);
+  }
+  if (total % sizeof(struct sock_filter_local) != 0) {
+    return fail("seccomp program is not a whole number of BPF instructions", NULL);
+  }
+  struct sock_fprog_local program = {
+    .len = (unsigned short)(total / sizeof(struct sock_filter_local)),
+    .filter = (struct sock_filter_local *)bytes,
+  };
+  if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER_LOCAL, &program) != 0) {
+    return fail("cannot install seccomp program", strerror(errno));
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
   struct cli cli = { 0 };
+  cli.seccomp_fd = -1;
   int code = parse(argc, argv, &cli);
   if (code != 0) return code;
 
@@ -265,6 +355,10 @@ int main(int argc, char **argv) {
   int partial = 0;
   code = restrict_self(&cli, &partial);
   if (code != 0) return code;
+  if (cli.seccomp_fd >= 0) {
+    code = install_seccomp_program(cli.seccomp_fd);
+    if (code != 0) return code;
+  }
   if (partial) {
     /* Older ABI: some handled accesses are not governed (e.g. truncate
      * before ABI 3). Still confined for everything the kernel supports —

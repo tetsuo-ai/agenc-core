@@ -1,5 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { accessSync, constants as fsConstants, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  accessSync,
+  closeSync,
+  constants as fsConstants,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -7,11 +16,13 @@ import { afterAll, describe, expect, test } from "vitest";
 import {
   classifyLandlockRunOutcome,
   landlockGrantArgs,
+  landlockLaunchArgs,
   LANDLOCK_RUN_FAILURE_EXIT,
   LANDLOCK_RUN_PARTIAL_NOTICE,
   probeLandlock,
   resolveLandlockRun,
 } from "../../src/sandbox/landlock-run.js";
+import { createNetworkSeccompProgram } from "../../src/sandbox/linux-launcher/landlock.js";
 
 function hasTrustedCompiler(): boolean {
   return ["/usr/bin/cc", "/bin/cc"].some((candidate) => {
@@ -196,3 +207,116 @@ describe.runIf(canRunLive)("agenc-landlock-run (live kernel)", () => {
     ).toMatchObject({ kind: "launcher-failure" });
   });
 });
+
+const PYTHON = "/usr/bin/python3";
+const canRunSeccompLive =
+  canRunLive &&
+  (() => {
+    try {
+      accessSync(PYTHON, fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+function runWithSeccomp(
+  program: Buffer | undefined,
+  command: readonly string[],
+  extra?: { readonly readWrite?: readonly string[] },
+) {
+  const launcher = resolveLandlockRun();
+  expect(launcher).toBeDefined();
+  const dir = mkWorkDir();
+  let stdioFd: number | undefined;
+  if (program !== undefined) {
+    const programPath = join(dir, "net.bpf");
+    writeFileSync(programPath, program);
+    stdioFd = openSync(programPath, "r");
+  }
+  try {
+    return spawnSync(
+      launcher!,
+      [
+        ...landlockLaunchArgs({
+          readOnly: ["/"],
+          ...(extra?.readWrite !== undefined ? { readWrite: extra.readWrite } : {}),
+          ...(stdioFd !== undefined ? { seccompFd: 3 } : {}),
+        }),
+        ...command,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 15_000,
+        stdio:
+          stdioFd !== undefined
+            ? ["ignore", "pipe", "pipe", stdioFd]
+            : ["ignore", "pipe", "pipe"],
+      },
+    );
+  } finally {
+    if (stdioFd !== undefined) closeSync(stdioFd);
+  }
+}
+
+describe.runIf(canRunSeccompLive)(
+  "agenc-landlock-run --seccomp (live kernel)",
+  () => {
+    const SOCKET_PROBE = [
+      PYTHON,
+      "-c",
+      "import socket\n" +
+        "try:\n" +
+        "  socket.socket(socket.AF_INET)\n" +
+        "  print('inet-open')\n" +
+        "except PermissionError:\n" +
+        "  print('inet-denied')\n" +
+        "socket.socket(socket.AF_UNIX)\n" +
+        "print('unix-open')",
+    ] as const;
+
+    test("without a program, AF_INET sockets open", () => {
+      const run = runWithSeccomp(undefined, [...SOCKET_PROBE]);
+      expect(run.status).toBe(0);
+      expect(run.stdout).toContain("inet-open");
+    });
+
+    test("the same BPF program AgenC hands bwrap denies AF_INET and keeps AF_UNIX", () => {
+      const program = createNetworkSeccompProgram("restricted");
+      const run = runWithSeccomp(program, [...SOCKET_PROBE]);
+      expect(run.status).toBe(0);
+      expect(run.stdout).toContain("inet-denied");
+      expect(run.stdout).toContain("unix-open");
+    });
+
+    test("filesystem and network confinement hold in one run", () => {
+      const program = createNetworkSeccompProgram("restricted");
+      const dir = mkWorkDir();
+      const target = join(dir, "combined.txt");
+      const run = runWithSeccomp(program, [
+        "/bin/sh",
+        "-c",
+        `if echo x > ${target} 2>/dev/null; then echo write-open; else echo write-denied; fi; ` +
+          `${PYTHON} -c "import socket\ntry:\n  socket.socket(socket.AF_INET)\n  print('inet-open')\nexcept PermissionError:\n  print('inet-denied')"`,
+      ]);
+      expect(run.status).toBe(0);
+      expect(run.stdout).toContain("write-denied");
+      expect(run.stdout).toContain("inet-denied");
+    });
+
+    test("a malformed program fails closed as a launcher failure", () => {
+      const run = runWithSeccomp(Buffer.from("abcdefg"), ["/bin/true"]);
+      expect(run.status).toBe(LANDLOCK_RUN_FAILURE_EXIT);
+      expect(
+        classifyLandlockRunOutcome({ status: run.status, stderr: run.stderr }),
+      ).toMatchObject({ kind: "launcher-failure" });
+      expect(run.stderr).toContain("whole number of BPF instructions");
+    });
+
+    test("an empty program fails closed", () => {
+      const run = runWithSeccomp(Buffer.alloc(0), ["/bin/true"]);
+      expect(run.status).toBe(LANDLOCK_RUN_FAILURE_EXIT);
+      expect(run.stderr).toContain("seccomp program is empty");
+    });
+  },
+);

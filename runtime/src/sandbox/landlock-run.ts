@@ -182,6 +182,26 @@ export function landlockGrantArgs(grants: {
   return args;
 }
 
+/**
+ * Full launch argv (grants plus the optional seccomp descriptor), ending with
+ * the `--` separator so callers append the command directly. The descriptor
+ * mirrors bubblewrap's `--seccomp FD` contract: the same classic-BPF network
+ * program AgenC hands bwrap confines the no-userns fallback identically, and
+ * the launcher fails closed (exit 125) on a missing or malformed program.
+ */
+export function landlockLaunchArgs(options: {
+  readonly readOnly?: readonly string[];
+  readonly readWrite?: readonly string[];
+  readonly seccompFd?: number;
+}): string[] {
+  const args = landlockGrantArgs(options);
+  if (options.seccompFd !== undefined) {
+    args.push("--seccomp", String(options.seccompFd));
+  }
+  args.push("--");
+  return args;
+}
+
 export type LandlockRunOutcome =
   | { readonly kind: "launcher-failure"; readonly fatalLine: string }
   | { readonly kind: "command-outcome" };
