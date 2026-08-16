@@ -1793,10 +1793,13 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     const registry = mkRegistry([tool]);
     const session = mkSession({ log, registry });
 
+    // Distinct arguments per call: six identical calls would (correctly)
+    // trip the repeat-tool advisory and append a seventh message, which is
+    // not this test's subject.
     const calls: LLMToolCall[] = Array.from({ length: 6 }, (_, idx) => ({
       id: `c-${idx}`,
       name: "FileRead",
-      arguments: "{}",
+      arguments: JSON.stringify({ path: `f-${idx}` }),
     }));
     const state = mkState({ toolCalls: calls });
 
@@ -1806,6 +1809,44 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(state.messages.length).toBe(6);
     // Peak in-flight must not exceed 2 when env cap is 2
     expect(peak).toBeLessThanOrEqual(2);
+  });
+
+  test("a run of identical calls appends one escalating repeat advisory", async () => {
+    const tool: Tool = {
+      name: "FileRead",
+      description: "read-only",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "same answer" }),
+    };
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({ log, registry });
+
+    const repeated: LLMToolCall = {
+      id: "c-0",
+      name: "FileRead",
+      arguments: JSON.stringify({ path: "/tmp/f" }),
+    };
+    // Three single-call batches, as a looping model would produce them.
+    let lastState: TurnState | undefined;
+    for (let i = 0; i < 3; i += 1) {
+      const state = mkState({
+        toolCalls: [{ ...repeated, id: `c-${i}` }],
+      });
+      lastState = await executeTools(state, mkCtx(), session);
+    }
+
+    // The third batch carries its result plus exactly one advisory.
+    expect(lastState!.messages.length).toBe(2);
+    const advisory = lastState!.messages.at(-1)! as {
+      role: string;
+      content: string;
+      runtimeOnly?: { excludeFromDurableHistory?: boolean };
+    };
+    expect(advisory.role).toBe("user");
+    expect(advisory.content).toContain("<system-reminder>");
+    expect(advisory.content).toContain('"FileRead" 3 times in a row');
+    expect(advisory.runtimeOnly?.excludeFromDurableHistory).toBe(true);
   });
 
   test("progress event fires on eventLog when tool calls __onProgress", async () => {

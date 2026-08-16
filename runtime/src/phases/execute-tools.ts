@@ -54,6 +54,7 @@ import type { ToolDispatchResult } from "../tool-registry.js";
 import type { Tool } from "../tools/types.js";
 import { emitError as emitErrorEvent } from "../session/event-log.js";
 import { emitWarning as emitWarningEvent } from "../session/event-log.js";
+import { appendRepeatToolAdvisory } from "./repeat-tool-advisory.js";
 import type { Session } from "../session/session.js";
 import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
 import type { PermissionAuditEventInput } from "../permissions/permission-audit-log.js";
@@ -969,6 +970,10 @@ export async function executeTools(
     }
   }
   appendHookAdditionalContexts(state, session, additionalContexts);
+  // Advisory loop-breaker: after the batch's results are on the record,
+  // count consecutive identical calls and remind the model at escalating
+  // run lengths. Purely additive context — never blocks or rewrites a call.
+  appendRepeatToolAdvisory(state, session, normalizedToolCalls);
   if (preventContinuation) {
     state.needsFollowUp = false;
     state.preventContinuation = true;
