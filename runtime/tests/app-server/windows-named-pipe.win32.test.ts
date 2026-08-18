@@ -6,13 +6,12 @@ import { join, resolve } from "node:path";
 import { expect, test } from "vitest";
 
 import { connect as connectSdk } from "../../../packages/agenc-sdk/src/socket.js";
+import { createAgenCJsonLineDaemonClient } from "../../src/app-server/agent-cli.js";
+import { resolveAgenCDaemonSocketPath } from "../../src/app-server/daemon-cli.js";
 import {
-  createAgenCJsonLineDaemonClient,
-} from "../../src/app-server/agent-cli.js";
-import {
-  resolveAgenCDaemonSocketPath,
-} from "../../src/app-server/daemon-cli.js";
-import { JSON_RPC_VERSION } from "../../src/app-server/protocol/index.js";
+  AGENC_DAEMON_PROTOCOL_VERSION,
+  JSON_RPC_VERSION,
+} from "../../src/app-server/protocol/index.js";
 import {
   AgenCUnixSocketServer,
   canConnectToUnixSocket,
@@ -41,7 +40,12 @@ test("the authenticated daemon client round-trips over a private Windows named p
         await connection.send({
           jsonrpc: JSON_RPC_VERSION,
           id: message.id ?? null,
-          result: { accepted: true },
+          result: {
+            type: "initialized",
+            protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+            protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+            capabilities: {},
+          },
         });
         return;
       }
@@ -73,6 +77,9 @@ test("the authenticated daemon client round-trips over a private Windows named p
       requestTimeoutMs: 2_000,
     });
     try {
+      expect(sdkClient.serverProtocolVersion).toBe(
+        AGENC_DAEMON_PROTOCOL_VERSION,
+      );
       await expect(sdkClient.listAgents()).resolves.toEqual({ agents: [] });
     } finally {
       await sdkClient.close();
