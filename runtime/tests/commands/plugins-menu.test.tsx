@@ -241,8 +241,13 @@ describe("interactive /plugins menu", () => {
         "alpha disabled in config.toml",
       );
       await waitFor(
-        () => harness.compact().includes("restart"),
-        "restart notice in the menu frame",
+        () => setAppState.mock.calls.length > 0,
+        "plugin refresh state update",
+        harness.frame,
+      );
+      await waitFor(
+        () => harness.compact().includes("restarttoapply"),
+        "post-operation restart notice in the menu frame",
         harness.frame,
       );
       // needsRefresh flows through the same AppState path the manager owns.

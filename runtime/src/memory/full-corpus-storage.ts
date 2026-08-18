@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
 
 import {
+  MAX_MEMORY_FILES_PER_ROOT,
   MEMORY_FTS_TOKENIZER,
   MEMORY_INDEX_SCHEMA_VERSION,
 } from "./full-corpus-contract.js";
@@ -14,7 +15,7 @@ const INDEX_DIRECTORY_MODE = 0o700;
 const INDEX_FILE_MODE = 0o600;
 const SQLITE_BUSY_TIMEOUT_MS = 5_000;
 const MEMORY_INDEX_SCHEMA_SIGNATURE =
-  "agenc-memory-index-schema-v1-generational-fts5-sliced-audit-owners";
+  "agenc-memory-index-schema-v2-generational-fts5-reader-pins-bounded-counts";
 
 export interface OpenMemoryIndexDatabaseResult {
   readonly database: BetterSqlite3.Database;
@@ -202,7 +203,13 @@ function initializeSchema(
           completed_at_ms INTEGER,
           elapsed_active_ms INTEGER NOT NULL,
           discovery_operations INTEGER NOT NULL,
-          entry_count INTEGER NOT NULL,
+          discovered_file_count INTEGER NOT NULL CHECK(
+            discovered_file_count >= 0 AND
+            discovered_file_count <= ${MAX_MEMORY_FILES_PER_ROOT}
+          ),
+          entry_count INTEGER NOT NULL CHECK(
+            entry_count >= 0 AND entry_count <= ${MAX_MEMORY_FILES_PER_ROOT}
+          ),
           indexed_bytes INTEGER NOT NULL,
           digest TEXT,
           change_cursor INTEGER NOT NULL,
@@ -231,6 +238,10 @@ function initializeSchema(
           error TEXT,
           PRIMARY KEY(root_id, generation_id, relative_path)
         ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS memory_discovered_pending_order
+          ON memory_index_discovered_files(
+            root_id, generation_id, state, CAST(relative_path AS BLOB)
+          );
         CREATE TABLE IF NOT EXISTS memory_index_entries(
           root_id TEXT NOT NULL,
           generation_id INTEGER NOT NULL REFERENCES memory_index_generations(id) ON DELETE CASCADE,
@@ -276,6 +287,16 @@ function initializeSchema(
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS memory_index_owner_lease
           ON memory_index_owners(lease_expires_at_ms, root_id);
+        CREATE TABLE IF NOT EXISTS memory_index_reader_pins(
+          pin_id TEXT NOT NULL,
+          generation_id INTEGER NOT NULL REFERENCES memory_index_generations(id) ON DELETE CASCADE,
+          lease_expires_at_ms INTEGER NOT NULL,
+          PRIMARY KEY(pin_id, generation_id)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS memory_reader_pin_generation_lease
+          ON memory_index_reader_pins(generation_id, lease_expires_at_ms);
+        CREATE INDEX IF NOT EXISTS memory_reader_pin_expiry
+          ON memory_index_reader_pins(lease_expires_at_ms, pin_id, generation_id);
       `);
       database.exec(
         `CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  hardenGitWorktreeMutationArgs,
   resolveGitMetadataRoot,
   worktreeCheckoutPermissions,
   worktreeMutationPermissions,
@@ -20,6 +21,17 @@ afterEach(() => {
 });
 
 describe("worktree mutation metadata permissions", () => {
+  it("disables optional maintenance before controlled Git transactions", () => {
+    const args = hardenGitWorktreeMutationArgs(["commit", "-m", "snapshot"]);
+
+    const legacyGc = args.indexOf("gc.auto=0");
+    expect(args[legacyGc - 1]).toBe("-c");
+    expect(legacyGc).toBeLessThan(args.indexOf("commit"));
+    const maintenance = args.indexOf("maintenance.auto=false");
+    expect(args[maintenance - 1]).toBe("-c");
+    expect(maintenance).toBeLessThan(args.indexOf("commit"));
+  });
+
   it("grants a bare repository common directory instead of a nonexistent nested .git", () => {
     const bareRoot = mkdtempSync(join(tmpdir(), "agenc-bare-repo-"));
     roots.push(bareRoot);

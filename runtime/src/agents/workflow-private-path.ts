@@ -1,13 +1,15 @@
 /** Owner-only Windows path initialization and verification for workflow bytes. */
 
 import { execFileSync } from "node:child_process";
-import { win32 } from "node:path";
-
-const WINDOWS_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
+import {
+  resolveTrustedWindowsSystemExecutable,
+  resolveTrustedWindowsSystemPaths,
+} from "../utils/windows-system-path.js";
 const WINDOWS_SECURITY_TIMEOUT_MS = 30_000;
 const WINDOWS_SECURITY_MAX_OUTPUT_BYTES = 1_048_576;
 const WINDOWS_PRIVATE_PATH_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
+# Keep this direct-.NET only: module autoload can exhaust the bounded probe.
 $target = [System.IO.Path]::GetFullPath($env:AGENC_WORKFLOW_PRIVATE_PATH)
 $role = $env:AGENC_WORKFLOW_PRIVATE_ROLE
 $initialize = $env:AGENC_WORKFLOW_PRIVATE_INITIALIZE -eq '1'
@@ -15,10 +17,12 @@ if (@('directory', 'file') -notcontains $role) { throw 'invalid role' }
 if ($target.StartsWith('\\') -or $target.StartsWith('\\?\') -or $target.StartsWith('\\.\')) {
   throw 'network and device paths are unsupported'
 }
-$item = Get-Item -LiteralPath $target -Force
-if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+$attributes = [System.IO.File]::GetAttributes($target)
+if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
   throw 'reparse points are unsupported'
 }
+$isDirectory = ($attributes -band [System.IO.FileAttributes]::Directory) -ne 0
+if ($isDirectory -ne ($role -eq 'directory')) { throw 'path role does not match its type' }
 $drive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($target))
 if ($drive.DriveFormat -ne 'NTFS') { throw 'NTFS is required' }
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -40,9 +44,18 @@ if ($initialize) {
     [System.Security.AccessControl.AccessControlType]::Allow
   )
   [void]$acl.AddAccessRule($rule)
-  Set-Acl -LiteralPath $target -AclObject $acl
+  if ($isDirectory) {
+    [System.IO.Directory]::SetAccessControl($target, $acl)
+  } else {
+    [System.IO.File]::SetAccessControl($target, $acl)
+  }
 }
-$verified = Get-Acl -LiteralPath $target
+$aclSections = [System.Security.AccessControl.AccessControlSections]::Owner -bor [System.Security.AccessControl.AccessControlSections]::Access
+if ($isDirectory) {
+  $verified = [System.IO.Directory]::GetAccessControl($target, $aclSections)
+} else {
+  $verified = [System.IO.File]::GetAccessControl($target, $aclSections)
+}
 if (-not $verified.AreAccessRulesProtected) { throw 'inherited ACL is unsupported' }
 if ($verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) {
   throw 'path owner is not the current user'
@@ -83,15 +96,16 @@ export function assertWindowsPrivatePathSecurity(
   initialize: boolean,
 ): void {
   if (process.platform !== "win32") return;
-  const workingDirectory = win32.join(WINDOWS_SYSTEM_ROOT, "System32");
-  const executable = win32.join(
-    workingDirectory,
-    "WindowsPowerShell",
-    "v1.0",
-    "powershell.exe",
-  );
   let output: Buffer;
   try {
+    const windowsPaths = resolveTrustedWindowsSystemPaths();
+    const { systemRoot, system32: workingDirectory } = windowsPaths;
+    const executable = resolveTrustedWindowsSystemExecutable(windowsPaths, [
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    ]);
     output = execFileSync(
       executable,
       [
@@ -117,13 +131,14 @@ export function assertWindowsPrivatePathSecurity(
           PATH: workingDirectory,
           PATHEXT: ".EXE",
           PSMODULEPATH: "",
-          SYSTEMROOT: WINDOWS_SYSTEM_ROOT,
+          SYSTEMDRIVE: "",
+          SYSTEMROOT: systemRoot,
           TEMP: workingDirectory,
           TMP: workingDirectory,
           USERDOMAIN: "",
           USERNAME: "",
           USERPROFILE: workingDirectory,
-          WINDIR: WINDOWS_SYSTEM_ROOT,
+          WINDIR: systemRoot,
         },
         maxBuffer: WINDOWS_SECURITY_MAX_OUTPUT_BYTES,
         timeout: WINDOWS_SECURITY_TIMEOUT_MS,

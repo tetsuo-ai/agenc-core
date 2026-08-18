@@ -1121,8 +1121,19 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
   });
 
   it("cascades an active deadline to queued and future descendants", async () => {
-    const value = kernel("deadline");
-    const deadlineAt = new Date(Date.now() + 150).toISOString();
+    vi.useFakeTimers();
+    let clock = new Date("2026-07-18T00:00:00.000Z");
+    const value = new ExecutionAdmissionKernel({
+      agencHome: home,
+      limits: LIMITS,
+      ownerId: "deadline",
+      ownerPid: process.pid,
+      queueAgingMs: 10,
+      now: () => clock,
+    });
+    kernels.add(value);
+    const deadlineMs = clock.getTime() + 150;
+    const deadlineAt = new Date(deadlineMs).toISOString();
     const parent = bind(value, "deadline-run", { deadlineAt });
     const child = parent.forSession({
       runId: "deadline-child",
@@ -1137,7 +1148,12 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
       (error: unknown) => error,
     );
 
-    expect(await waitForAbort(lease.signal)).toMatchObject({
+    const activeOutcome = waitForAbort(lease.signal);
+    clock = new Date(deadlineMs);
+    await vi.advanceTimersByTimeAsync(150);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(await activeOutcome).toMatchObject({
       name: "AdmissionDeniedError",
       reason: "deadline_expired",
       decision: "cancelled",

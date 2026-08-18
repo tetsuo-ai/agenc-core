@@ -58,6 +58,17 @@ export class McpStdioServerTransport {
       throw new Error("AgenC MCP stdio transport is already closed");
     }
 
+    // A CLI peer can close its pipe while the runtime is still importing.
+    // Readable's `end` event is not replayed to listeners attached afterward,
+    // so constructing readline for an already-ended stream would leave the
+    // foreground server waiting forever. Treat the observable terminal state
+    // exactly like readline's close path before installing any listeners.
+    if (this.#options.input.readableEnded || this.#options.input.destroyed) {
+      this.#closed = true;
+      this.#notifyCloseAfterQueue();
+      return;
+    }
+
     const reader = createInterface({
       input: this.#options.input,
       crlfDelay: Infinity,

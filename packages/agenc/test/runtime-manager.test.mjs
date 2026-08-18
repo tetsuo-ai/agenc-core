@@ -19,7 +19,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { after, before, test } from "node:test";
 import { gzipSync } from "node:zlib";
@@ -2121,4 +2121,128 @@ test("resolveTrustedSystemTar accepts the platform's stock tar, whatever its lin
   assert.ok(resolver.length > 0, "resolver body must be locatable");
   assert.equal(/\.nlink\s*!==/u.test(resolver), false);
   assert.equal(source.match(/\.nlink !== 1n/gu)?.length, 2);
+});
+
+test("Windows system tools prove GLOBALROOT identity before using DOS process paths", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL("../lib/runtime-manager.mjs", import.meta.url)),
+    "utf8",
+  );
+  const helperStart = source.indexOf("function trustedWindowsSystemPaths(");
+  const helperEnd = source.indexOf(
+    "export function resolveAgenCHome",
+    helperStart,
+  );
+  assert.ok(
+    helperStart >= 0 && helperEnd > helperStart,
+    "Windows path helper must be locatable",
+  );
+  const helperSource = source.slice(helperStart, helperEnd);
+  const loadHelper = new Function(
+    "realpathSync",
+    "win32",
+    "WINDOWS_SYSTEM_ROOT",
+    "WINDOWS_INVALID_FILE_ID",
+    "WINDOWS_RESERVED_DEVICE_BASENAME",
+    `${helperSource}\nreturn { trustedWindowsSystemPaths, trustedWindowsSystemExecutable };`,
+  );
+  const namespaceRoot = String.raw`\\?\GLOBALROOT\SystemRoot`;
+  const canonicalized = [];
+  const {
+    trustedWindowsSystemExecutable,
+    trustedWindowsSystemPaths,
+  } = loadHelper(
+    {
+      native: () => {
+        throw new Error("default canonicalizer must not run");
+      },
+    },
+    win32,
+    namespaceRoot,
+    0xffff_ffff_ffff_ffffn,
+    /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu,
+  );
+  const paths = trustedWindowsSystemPaths((path) => {
+    canonicalized.push(path);
+    return String.raw`C:\Windows`;
+  });
+  assert.deepEqual(canonicalized, [namespaceRoot]);
+  assert.deepEqual(paths, {
+    systemRoot: String.raw`C:\Windows`,
+    system32: String.raw`C:\Windows\System32`,
+    powershellRoot: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0`,
+    namespaceSystemRoot: namespaceRoot,
+  });
+
+  const identity = {
+    dev: 17n,
+    ino: 29n,
+    isFile: () => true,
+    isSymbolicLink: () => false,
+  };
+  const closed = [];
+  const filesystem = {
+    lstat: () => identity,
+    open: (path) => path.startsWith("C:") ? 12 : 11,
+    fstat: () => identity,
+    close: (descriptor) => closed.push(descriptor),
+  };
+  assert.equal(
+    trustedWindowsSystemExecutable(
+      paths,
+      ["System32", "tar.exe"],
+      filesystem,
+    ),
+    String.raw`C:\Windows\System32\tar.exe`,
+  );
+  assert.deepEqual(closed, [12, 11]);
+  assert.throws(
+    () => trustedWindowsSystemExecutable(
+      paths,
+      ["System32", "CON.exe"],
+      filesystem,
+    ),
+    /segments are invalid/u,
+  );
+  const replaced = { ...identity, ino: 31n };
+  assert.throws(
+    () => trustedWindowsSystemExecutable(
+      paths,
+      ["System32", "taskkill.exe"],
+      {
+        ...filesystem,
+        lstat: (path) => path.startsWith("C:") ? replaced : identity,
+        fstat: (descriptor) => descriptor === 12 ? replaced : identity,
+        close: () => {},
+      },
+    ),
+    /identity mismatch/u,
+  );
+
+  const resolverStart = source.indexOf(
+    "export function resolveTrustedSystemTar",
+  );
+  const resolverEnd = source.indexOf("function extractTarGz", resolverStart);
+  const resolver = source.slice(resolverStart, resolverEnd);
+  assert.ok(resolver.length > 0, "Windows tar resolver body must be locatable");
+  assert.match(resolver, /trustedWindowsSystemExecutable\(windowsPaths, \[/u);
+  assert.match(resolver, /const signature = spawnSync\(\s*powershell,/u);
+  assert.doesNotMatch(resolver, /spawnSync\(\s*namespace/iu);
+  assert.match(resolver, /cwd: powershellRoot/u);
+  assert.match(resolver, /SystemRoot: systemRoot/u);
+  assert.match(resolver, /WINDIR: systemRoot/u);
+  for (const inheritedKey of [
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOGONSERVER",
+    "SYSTEMDRIVE",
+    "USERDOMAIN",
+    "USERNAME",
+  ]) {
+    assert.match(
+      resolver,
+      new RegExp(`${inheritedKey}: ""`, "u"),
+      `${inheritedKey} must not be backfilled from the caller environment`,
+    );
+  }
 });

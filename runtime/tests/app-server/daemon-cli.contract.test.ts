@@ -1385,17 +1385,18 @@ token_cap = 123
       expect(io.stdoutText()).toContain(
         "AgenC daemon reloaded configuration (pid 4100)",
       );
-      await expect(client.request("auth.whoami")).resolves.toMatchObject({
+      const reloadedWhoami = await client.request("auth.whoami");
+      expect(reloadedWhoami).toMatchObject({
         authenticated: false,
         provider: "remote",
-        identity: {
-          daemon: {
-            transport: "daemon",
-            verifiedBy: "peerUid",
-            peerUid: 1000,
-          },
-        },
       });
+      expectSameUserDaemonSocketIdentity(
+        (
+          reloadedWhoami as {
+            readonly identity?: { readonly daemon?: unknown };
+          }
+        ).identity?.daemon,
+      );
       expect(io.stderrText()).toMatch(
         /AgenC MCP server listening on http:\/\/127\.0\.0\.1:\d+\/mcp/,
       );
@@ -1566,16 +1567,17 @@ workspace = ${JSON.stringify(process.cwd())}
         authCookie,
         timeoutMs: 1000,
       });
-      await expect(client.request("auth.whoami")).resolves.toEqual({
+      const beforeFailedReloadWhoami = await client.request("auth.whoami");
+      expect(beforeFailedReloadWhoami).toMatchObject({
         authenticated: false,
-        identity: {
-          daemon: {
-            transport: "daemon",
-            verifiedBy: "peerUid",
-            peerUid: 1000,
-          },
-        },
       });
+      expectSameUserDaemonSocketIdentity(
+        (
+          beforeFailedReloadWhoami as {
+            readonly identity?: { readonly daemon?: unknown };
+          }
+        ).identity?.daemon,
+      );
       expect(
         io.stderrText().match(/AgenC MCP server listening/g) ?? [],
       ).toHaveLength(1);
@@ -1600,16 +1602,18 @@ workspace = ${JSON.stringify(process.cwd())}
       ).resolves.toBe(1);
 
       expect(io.stderrText()).toContain("agenc: daemon reload failed");
-      await expect(client.request("auth.whoami")).resolves.toEqual({
+      const afterFailedReloadWhoami = await client.request("auth.whoami");
+      expect(afterFailedReloadWhoami).toMatchObject({
         authenticated: false,
-        identity: {
-          daemon: {
-            transport: "daemon",
-            verifiedBy: "peerUid",
-            peerUid: 1000,
-          },
-        },
       });
+      expectSameUserDaemonSocketIdentity(
+        (
+          afterFailedReloadWhoami as {
+            readonly identity?: { readonly daemon?: unknown };
+          }
+        ).identity?.daemon,
+      );
+      expect(afterFailedReloadWhoami).toEqual(beforeFailedReloadWhoami);
       expect(
         io.stderrText().match(/AgenC MCP server listening/g) ?? [],
       ).toHaveLength(1);

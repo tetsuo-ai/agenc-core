@@ -187,7 +187,11 @@ describe("red-probe forced containment", () => {
   it("enforces the aggregate child-output limit", () => {
     const fixtureRoot = createFixture({
       source: canonicalProbe(
-        ["writeSync(1, Buffer.alloc(32_768, 120));"],
+        [
+          "const overflowChunk = Buffer.alloc(256, 120);",
+          "let overflowBytes = 0;",
+          "while (overflowBytes < 32_768) overflowBytes += writeSync(1, overflowChunk);",
+        ],
         ['import { writeSync } from "node:fs";'],
       ),
       timeoutMs: 5_000,

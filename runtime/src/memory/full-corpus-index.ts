@@ -22,6 +22,7 @@ import {
   join,
   relative,
   resolve,
+  sep,
 } from "node:path";
 import { performance } from "node:perf_hooks";
 
@@ -88,6 +89,10 @@ const DIGEST_LENGTH_PREFIX_BYTES = 8;
 const EMPTY_MEMORY_GENERATION_DIGEST = "00".repeat(SHA256_DIGEST_BYTES);
 const MEMORY_INDEX_OWNER_HEARTBEAT_MS = 60_000;
 const MEMORY_INDEX_OWNER_LEASE_MS = 180_000;
+const MEMORY_INDEX_READER_PIN_HEARTBEAT_MS = 10_000;
+const MEMORY_INDEX_READER_PIN_LEASE_MS = 60_000;
+const MEMORY_INDEX_INCREMENTAL_CONTENTION_REASON =
+  "memory index update is waiting for an active reader or writer";
 const CHANGE_KIND_VALUES = new Set(["create", "update", "delete", "rename"]);
 
 type MemoryIndexGenerationState =
@@ -139,6 +144,11 @@ export interface PersistentMemoryIndexOptions {
   readonly queryPool?: MemoryQueryProcessPool;
   readonly now?: () => number;
   readonly backgroundRefresh?: boolean;
+  readonly resourceLimitsForTesting?: {
+    readonly maxDatabaseBytes?: number;
+    readonly maxFilesPerRoot?: number;
+  };
+  readonly beforeIncrementalReadForTesting?: () => void | Promise<void>;
 }
 
 interface RootRow {
@@ -160,6 +170,7 @@ interface GenerationRow {
   readonly completed_at_ms: number | null;
   readonly elapsed_active_ms: number;
   readonly discovery_operations: number;
+  readonly discovered_file_count: number;
   readonly entry_count: number;
   readonly indexed_bytes: number;
   readonly digest: string | null;
@@ -244,6 +255,23 @@ interface BuildSliceBudget {
   operations: number;
 }
 
+interface PinnedGenerationSnapshots {
+  readonly pinId: string;
+  readonly snapshots: readonly {
+    readonly root: BoundRoot;
+    readonly generation: GenerationRow;
+  }[];
+  readonly freshness: readonly MemoryIndexGenerationStatus[];
+  readonly unavailableReason?: string;
+}
+
+interface ReaderPinHeartbeat {
+  readonly timer: ReturnType<typeof setInterval>;
+  readonly pinned: PinnedGenerationSnapshots;
+  readonly lost: () => boolean;
+  readonly markLost: () => void;
+}
+
 interface IncrementalChangeRow {
   readonly sequence: number;
   readonly relative_path: string;
@@ -281,9 +309,13 @@ export class PersistentMemoryIndex {
   readonly #auditTimers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #backgroundRefreshes = new Map<string, AbortController>();
   readonly #activeQueryRoots = new Map<string, number>();
+  readonly #readerPinHeartbeats = new Set<ReaderPinHeartbeat>();
   readonly #sliceLocks = new Set<string>();
   readonly #ftsAvailable: boolean;
   readonly #backgroundRefreshEnabled: boolean;
+  readonly #maxDatabaseBytes: number;
+  readonly #maxFilesPerRoot: number;
+  readonly #beforeIncrementalReadForTesting?: () => void | Promise<void>;
   readonly #builderOwner = randomUUID();
   #ownerHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   #closed = false;
@@ -293,6 +325,36 @@ export class PersistentMemoryIndex {
     this.#queryPool = options.queryPool ?? new MemoryQueryProcessPool();
     this.#now = options.now ?? Date.now;
     this.#backgroundRefreshEnabled = options.backgroundRefresh ?? true;
+    if (
+      options.resourceLimitsForTesting?.maxDatabaseBytes !== undefined &&
+      (!Number.isSafeInteger(
+        options.resourceLimitsForTesting.maxDatabaseBytes,
+      ) ||
+        options.resourceLimitsForTesting.maxDatabaseBytes < 1 ||
+        options.resourceLimitsForTesting.maxDatabaseBytes >
+          MAX_MEMORY_INDEX_BYTES)
+    ) {
+      throw new RangeError("memory index test database byte limit is invalid");
+    }
+    this.#maxDatabaseBytes =
+      options.resourceLimitsForTesting?.maxDatabaseBytes ??
+      MAX_MEMORY_INDEX_BYTES;
+    if (
+      options.resourceLimitsForTesting?.maxFilesPerRoot !== undefined &&
+      (!Number.isSafeInteger(
+        options.resourceLimitsForTesting.maxFilesPerRoot,
+      ) ||
+        options.resourceLimitsForTesting.maxFilesPerRoot < 1 ||
+        options.resourceLimitsForTesting.maxFilesPerRoot >
+          MAX_MEMORY_FILES_PER_ROOT)
+    ) {
+      throw new RangeError("memory index test file-count limit is invalid");
+    }
+    this.#maxFilesPerRoot =
+      options.resourceLimitsForTesting?.maxFilesPerRoot ??
+      MAX_MEMORY_FILES_PER_ROOT;
+    this.#beforeIncrementalReadForTesting =
+      options.beforeIncrementalReadForTesting;
     const { database, ftsAvailable } = openMemoryIndexDatabase(
       this.databasePath,
     );
@@ -328,6 +390,17 @@ export class PersistentMemoryIndex {
       controller.abort(new DOMException("Memory index closed", "AbortError"));
     }
     this.#backgroundRefreshes.clear();
+    for (const heartbeat of this.#readerPinHeartbeats) {
+      heartbeat.markLost();
+      clearInterval(heartbeat.timer);
+      try {
+        this.#releaseReaderPin(heartbeat.pinned);
+      } catch {
+        // An orderly close discards the query result, so its pin can be
+        // released immediately. SQLite contention falls back to lease expiry.
+      }
+    }
+    this.#readerPinHeartbeats.clear();
     for (const buildKey of activeBuilds) {
       if (buildKey.startsWith(`${this.databasePath}:`)) {
         activeBuilds.delete(buildKey);
@@ -471,6 +544,14 @@ export class PersistentMemoryIndex {
   ): Promise<MemoryFullCorpusQueryResult> {
     throwIfAborted(signal);
     validateRootSpecsBeforeIo(rootSpecs);
+    if (this.#closed) {
+      return {
+        kind: "unavailable",
+        candidates: [],
+        freshness: rootSpecs.map((spec) => unavailableRootStatus(spec)),
+        reason: "memory index closed while query was in progress",
+      };
+    }
     if (!this.#ftsAvailable) {
       return {
         kind: "unavailable",
@@ -484,27 +565,32 @@ export class PersistentMemoryIndex {
       return { kind: "complete", candidates: [], freshness: [] };
     }
     const roots = await bindRoots(rootSpecs, signal);
-    const snapshots = roots
-      .map((root) => this.#currentGeneration(root))
-      .filter(
-        (
-          snapshot,
-        ): snapshot is { root: BoundRoot; generation: GenerationRow } =>
-          snapshot !== null,
-      );
-    const freshness = roots.map((root) => this.#rootStatus(root));
-    if (snapshots.length === 0) {
+    if (this.#closed) {
       return {
         kind: "unavailable",
         candidates: [],
-        freshness,
-        reason: "no complete full-corpus memory generation is available",
+        freshness: rootSpecs.map((spec) => unavailableRootStatus(spec)),
+        reason: "memory index closed while query was in progress",
       };
     }
-    for (const { root } of snapshots) this.#acquireQueryRoot(root.rootId);
+    const pinned = this.#pinCurrentGenerations(roots);
+    if (pinned.snapshots.length === 0) {
+      return {
+        kind: "unavailable",
+        candidates: [],
+        freshness: pinned.freshness,
+        reason:
+          pinned.unavailableReason ??
+          "no complete full-corpus memory generation is available",
+      };
+    }
+    for (const { root } of pinned.snapshots) {
+      this.#acquireQueryRoot(root.rootId);
+    }
+    const heartbeat = this.#startReaderPinHeartbeat(pinned);
     try {
       const rankedByRoot = await Promise.all(
-        snapshots.map(async ({ root, generation }) => ({
+        pinned.snapshots.map(async ({ root, generation }) => ({
           role: root.role,
           candidates: await this.#queryPool.query(
             {
@@ -519,53 +605,74 @@ export class PersistentMemoryIndex {
           ),
         })),
       );
+      if (this.#closed) {
+        throw new MemoryIndexQueryResourceLimitedError(
+          "memory index closed while query was in progress",
+        );
+      }
+      if (heartbeat.lost()) {
+        throw new MemoryIndexQueryResourceLimitedError(
+          "memory query reader snapshot lease expired before completion",
+        );
+      }
       const project = rankedByRoot
         .filter((result) => result.role === "project")
         .flatMap((result) => result.candidates);
       const global = rankedByRoot
         .filter((result) => result.role === "global")
         .flatMap((result) => result.candidates);
-      const recent = this.#readRecentCandidates(snapshots);
+      const recent = this.#readRecentCandidates(pinned.snapshots);
+      if (heartbeat.lost() || !this.#readerPinIsLive(pinned)) {
+        throw new MemoryIndexQueryResourceLimitedError(
+          "memory query reader snapshot lease expired before completion",
+        );
+      }
       const candidates = fuseMemoryRanks({ project, global, recent });
       return {
-        kind: freshness.every(
+        kind: pinned.freshness.every(
           (status) =>
-            status.state === "complete" && status.watcherHealth === "healthy",
+            status.state === "complete" &&
+            status.watcherHealth === "healthy",
         )
           ? "complete"
           : "stale",
         candidates,
-        freshness,
+        freshness: pinned.freshness,
       };
     } catch (error) {
       if (signal.aborted) throw abortReason(signal);
+      if (this.#closed) {
+        return {
+          kind: "unavailable",
+          candidates: [],
+          freshness: pinned.freshness,
+          reason: "memory index closed while query was in progress",
+        };
+      }
       return {
         kind:
           error instanceof MemoryIndexQueryResourceLimitedError
             ? "query_resource_limited"
             : "unavailable",
         candidates: [],
-        freshness,
+        freshness: pinned.freshness,
         reason: error instanceof Error ? error.message : String(error),
       };
     } finally {
-      for (const { root } of snapshots) this.#releaseQueryRoot(root.rootId);
+      this.#stopReaderPinHeartbeat(heartbeat);
+      for (const { root } of pinned.snapshots) {
+        this.#releaseQueryRoot(root.rootId);
+      }
+      if (!this.#closed) this.#releaseReaderPin(pinned);
     }
   }
 
   readHeader(candidate: MemoryRankCandidate): MemoryHeader | null {
-    const row = this.#db
-      .prepare<[string, string], EntryRow>(
-        `SELECT e.*
-           FROM memory_index_roots r
-           JOIN memory_index_entries e
-             ON e.root_id = r.root_id
-            AND e.generation_id = r.current_generation_id
-          WHERE e.root_id = ? AND e.memory_id = ?`,
-      )
-      .get(candidate.rootId, candidate.memoryId);
-    if (row === undefined) return null;
-    return entryRowToMemoryHeader(row);
+    try {
+      return rankCandidateToMemoryHeader(candidate);
+    } catch {
+      return null;
+    }
   }
 
   recordChange(input: {
@@ -771,13 +878,22 @@ export class PersistentMemoryIndex {
     const now = this.#now();
     const cutoff = now - MEMORY_INDEX_ROOT_IDLE_TTL_MS;
     const rows = this.#db
-      .prepare<[number, number, string, number, number], RootRow>(
+      .prepare<
+        [number, number, number, string, number, number],
+        RootRow
+      >(
         `SELECT * FROM memory_index_roots
           WHERE last_used_at_ms <= ?
             AND NOT EXISTS (
               SELECT 1 FROM memory_index_generations g
                WHERE g.root_id = memory_index_roots.root_id
                  AND g.state = 'staging'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM memory_index_reader_pins p
+              JOIN memory_index_generations g ON g.id = p.generation_id
+               WHERE g.root_id = memory_index_roots.root_id
+                 AND p.lease_expires_at_ms > ?
             )
             AND NOT EXISTS (
               SELECT 1 FROM memory_index_owners o
@@ -796,6 +912,7 @@ export class PersistentMemoryIndex {
       )
       .all(
         cutoff,
+        now,
         now,
         this.#builderOwner,
         now,
@@ -1024,7 +1141,11 @@ export class PersistentMemoryIndex {
         false,
       ).catch(() => null);
       if (status === null || status.state !== "refresh_pending") return;
-      await yieldToEventLoop();
+      if (status.reason === MEMORY_INDEX_INCREMENTAL_CONTENTION_REASON) {
+        await waitForIncrementalRetry(controller.signal);
+      } else {
+        await yieldToEventLoop();
+      }
     }
   }
 
@@ -1083,10 +1204,11 @@ export class PersistentMemoryIndex {
           return {
             ...this.#rootStatus(root),
             state: "refresh_pending",
-            reason: "another daemon owns the memory index writer lease",
+            reason: MEMORY_INDEX_INCREMENTAL_CONTENTION_REASON,
           };
         }
         try {
+          await this.#beforeIncrementalReadForTesting?.();
           const status = await this.#applyIncrementalChanges(
             root,
             current.generation,
@@ -1248,17 +1370,57 @@ export class PersistentMemoryIndex {
         state: "refresh_pending",
       };
     }
-    this.#db
+    const databaseBytesBefore = databaseBytes(this.#db);
+    const applied = this.#db
       .transaction(() => {
+        const now = this.#now();
+        const ownership = this.#db
+          .prepare<
+            [number, string, string, number, number],
+            { present: number }
+          >(
+            `SELECT 1 AS present
+               FROM memory_index_generations g
+               JOIN memory_index_roots r ON r.current_generation_id = g.id
+              WHERE g.id = ? AND g.root_id = ? AND g.state = 'complete'
+                AND g.builder_owner = ?
+                AND g.builder_lease_expires_at_ms > ?
+                AND NOT EXISTS (
+                  SELECT 1 FROM memory_index_reader_pins p
+                   WHERE p.generation_id = g.id
+                     AND p.lease_expires_at_ms > ?
+                )`,
+          )
+          .get(
+            generation.id,
+            root.rootId,
+            this.#builderOwner,
+            now,
+            now,
+          );
+        if (ownership === undefined) return false;
+        this.#db
+          .prepare(
+            `UPDATE memory_index_generations
+                SET builder_lease_expires_at_ms = ?
+              WHERE id = ? AND builder_owner = ?`,
+          )
+          .run(
+            now + MEMORY_INDEX_BUILD_LEASE_MS,
+            generation.id,
+            this.#builderOwner,
+          );
         for (const change of prepared) {
-          if (change.indexed === undefined) continue;
           if (change.indexed === null) {
             this.#removeStagingPath(
               root.rootId,
               generation.id,
               change.relativePath,
             );
-          } else {
+          }
+        }
+        for (const change of prepared) {
+          if (change.indexed !== null && change.indexed !== undefined) {
             this.#upsertIndexedEntry(
               root,
               generation.id,
@@ -1292,7 +1454,7 @@ export class PersistentMemoryIndex {
           )
           .run(
             lastSequence,
-            this.#now(),
+            now,
             Math.ceil(Math.max(0, performance.now() - startedAt)),
             generation.id,
           );
@@ -1300,14 +1462,30 @@ export class PersistentMemoryIndex {
           .prepare(
             "UPDATE memory_index_roots SET last_used_at_ms = ? WHERE root_id = ?",
           )
-          .run(this.#now(), root.rootId);
+          .run(now, root.rootId);
         this.#db
           .prepare(
             "DELETE FROM memory_index_change_log WHERE root_id = ? AND sequence <= ?",
           )
           .run(root.rootId, lastSequence);
+        if (
+          databaseBytes(this.#db) >
+          Math.max(this.#maxDatabaseBytes, databaseBytesBefore)
+        ) {
+          throw new MemoryIndexBoundaryError(
+            "memory index database byte limit crossed",
+          );
+        }
+        return true;
       })
       .immediate();
+    if (!applied) {
+      return {
+        ...this.#rootStatus(root),
+        state: "refresh_pending",
+        reason: MEMORY_INDEX_INCREMENTAL_CONTENTION_REASON,
+      };
+    }
     if (incrementalReadFailed) {
       return {
         ...this.#rootStatus(root),
@@ -1331,9 +1509,13 @@ export class PersistentMemoryIndex {
           `INSERT INTO memory_index_generations(
              root_id, state, generation_token, started_at_ms,
              completed_at_ms, elapsed_active_ms, entry_count, indexed_bytes,
-             discovery_operations, digest, change_cursor, change_overflow, error,
-             builder_owner, builder_lease_expires_at_ms
-           ) VALUES (?, 'staging', ?, ?, NULL, 0, 0, 0, 0, NULL, ?, 0, NULL, NULL, NULL)`,
+             discovery_operations, discovered_file_count, digest, change_cursor,
+             change_overflow, error, builder_owner,
+             builder_lease_expires_at_ms
+           ) VALUES (
+             ?, 'staging', ?, ?, NULL, 0, 0, 0, 0, 0, NULL, ?, 0, NULL,
+             NULL, NULL
+           )`,
         )
         .run(root.rootId, randomUUID(), this.#now(), changeCursor)
         .lastInsertRowid,
@@ -1416,12 +1598,12 @@ export class PersistentMemoryIndex {
       );
     }
     while (
-      databaseBytes(this.#db) > MAX_MEMORY_INDEX_BYTES &&
+      databaseBytes(this.#db) > this.#maxDatabaseBytes &&
       this.#evictLeastRecentlyUsedRoot(root.rootId)
     ) {
       // Evict only inactive, non-building roots before rejecting this build.
     }
-    if (databaseBytes(this.#db) > MAX_MEMORY_INDEX_BYTES) {
+    if (databaseBytes(this.#db) > this.#maxDatabaseBytes) {
       throw new MemoryIndexBoundaryError(
         "memory index database byte limit crossed",
       );
@@ -1547,25 +1729,16 @@ export class PersistentMemoryIndex {
         entry.name.endsWith(".md") &&
         basename(entry.name) !== "MEMORY.md"
       ) {
-        const result = this.#db
-          .prepare(
-            `INSERT OR IGNORE INTO memory_index_discovered_files(
-               root_id, generation_id, relative_path, state, error
-             ) VALUES (?, ?, ?, 'pending', NULL)`,
+        budget.newEntries += this.#db
+          .transaction(() =>
+            this.#insertDiscoveredFile(
+              root.rootId,
+              generation.id,
+              relativePath,
+              false,
+            ),
           )
-          .run(root.rootId, generation.id, relativePath);
-        budget.newEntries += result.changes;
-        const count = this.#db
-          .prepare<[string, number], { count: number }>(
-            `SELECT COUNT(*) AS count FROM memory_index_discovered_files
-              WHERE root_id = ? AND generation_id = ?`,
-          )
-          .get(root.rootId, generation.id)!.count;
-        if (count > MAX_MEMORY_FILES_PER_ROOT) {
-          throw new MemoryIndexBoundaryError(
-            "memory file count per root exceeds limit",
-          );
-        }
+          .immediate();
       }
     }
     return true;
@@ -1658,6 +1831,17 @@ export class PersistentMemoryIndex {
           WHERE root_id = ? AND generation_id = ? AND memory_id = ?`,
       )
       .get(root.rootId, generationId, indexed.memoryId);
+    if (prior === undefined) {
+      const generation = this.#generationById(generationId);
+      if (
+        generation === null ||
+        generation.entry_count >= this.#maxFilesPerRoot
+      ) {
+        throw new MemoryIndexBoundaryError(
+          "memory file count per root exceeds limit",
+        );
+      }
+    }
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO memory_index_entries(
@@ -1793,15 +1977,12 @@ export class PersistentMemoryIndex {
               change.relative_path,
             );
           } else if (change.relative_path.endsWith(".md")) {
-            this.#db
-              .prepare(
-                `INSERT INTO memory_index_discovered_files(
-                   root_id, generation_id, relative_path, state, error
-                 ) VALUES (?, ?, ?, 'pending', NULL)
-                 ON CONFLICT(root_id, generation_id, relative_path)
-                 DO UPDATE SET state = 'pending', error = NULL`,
-              )
-              .run(root.rootId, generation.id, change.relative_path);
+            this.#insertDiscoveredFile(
+              root.rootId,
+              generation.id,
+              change.relative_path,
+              true,
+            );
           }
         }
         this.#db
@@ -1816,7 +1997,7 @@ export class PersistentMemoryIndex {
 
   #publishGeneration(root: BoundRoot, generationId: number): void {
     const integrity = this.#generationIntegrity(root.rootId, generationId);
-    if (databaseBytes(this.#db) > MAX_MEMORY_INDEX_BYTES) {
+    if (databaseBytes(this.#db) > this.#maxDatabaseBytes) {
       throw new MemoryIndexBoundaryError(
         "memory index database byte limit crossed",
       );
@@ -1836,8 +2017,21 @@ export class PersistentMemoryIndex {
               WHERE root_id = ? AND generation_id = ? AND state = 'pending'`,
           )
           .get(root.rootId, generationId)!.count;
+        const generation = this.#generationById(generationId);
+        if (generation === null) {
+          throw new Error("memory staging generation disappeared");
+        }
+        const discoveredFiles = this.#db
+          .prepare<[string, number], { count: number }>(
+            `SELECT COUNT(*) AS count FROM memory_index_discovered_files
+              WHERE root_id = ? AND generation_id = ?`,
+          )
+          .get(root.rootId, generationId)!.count;
         if (pendingDirectories !== 0 || pendingFiles !== 0) {
           throw new Error("memory index generation is not converged");
+        }
+        if (discoveredFiles !== generation.discovered_file_count) {
+          throw new Error("memory discovered-file count is inconsistent");
         }
         this.#db
           .prepare(
@@ -1853,7 +2047,8 @@ export class PersistentMemoryIndex {
           .prepare(
             `UPDATE memory_index_generations
                 SET state = 'complete', completed_at_ms = ?, entry_count = ?,
-                    indexed_bytes = ?, digest = ?, error = NULL
+                    indexed_bytes = ?, digest = ?, discovered_file_count = 0,
+                    error = NULL
               WHERE id = ? AND state = 'staging'`,
           )
           .run(
@@ -1973,6 +2168,147 @@ export class PersistentMemoryIndex {
       );
     });
     return recent.slice(0, MAX_MEMORY_RECENT_UNION);
+  }
+
+  #pinCurrentGenerations(
+    roots: readonly BoundRoot[],
+  ): PinnedGenerationSnapshots {
+    const pinId = randomUUID();
+    const now = this.#now();
+    const leaseExpiresAt = now + MEMORY_INDEX_READER_PIN_LEASE_MS;
+    return this.#db
+      .transaction(() => {
+        this.#deleteExpiredReaderPins(now);
+        const snapshots = roots
+          .map((root) => this.#currentGeneration(root))
+          .filter(
+            (
+              snapshot,
+            ): snapshot is { root: BoundRoot; generation: GenerationRow } =>
+              snapshot !== null,
+          );
+        const busyRootIds = new Set(
+          snapshots
+            .filter(
+              ({ generation }) =>
+                generation.builder_owner !== null &&
+                generation.builder_lease_expires_at_ms !== null &&
+                generation.builder_lease_expires_at_ms > now,
+            )
+            .map(({ root }) => root.rootId),
+        );
+        if (busyRootIds.size > 0) {
+          return {
+            pinId,
+            snapshots: [],
+            freshness: roots.map((root) => {
+              const status = this.#rootStatus(root);
+              return busyRootIds.has(root.rootId)
+                ? {
+                    ...status,
+                    state: "refresh_pending" as const,
+                    reason: "memory index update is in progress",
+                  }
+                : status;
+            }),
+            unavailableReason:
+              "memory index update is in progress; retry the query",
+          };
+        }
+        const insertPin = this.#db.prepare(
+          `INSERT INTO memory_index_reader_pins(
+             pin_id, generation_id, lease_expires_at_ms
+           ) VALUES (?, ?, ?)`,
+        );
+        for (const { generation } of snapshots) {
+          insertPin.run(pinId, generation.id, leaseExpiresAt);
+        }
+        return {
+          pinId,
+          snapshots,
+          freshness: roots.map((root) => this.#rootStatus(root)),
+        };
+      })
+      .immediate();
+  }
+
+  #startReaderPinHeartbeat(
+    pinned: PinnedGenerationSnapshots,
+  ): ReaderPinHeartbeat {
+    let lost = false;
+    const timer = setInterval(() => {
+      if (this.#closed) {
+        lost = true;
+        return;
+      }
+      try {
+        const result = this.#db
+          .prepare(
+            `UPDATE memory_index_reader_pins
+                SET lease_expires_at_ms = ?
+              WHERE pin_id = ?`,
+          )
+          .run(
+            this.#now() + MEMORY_INDEX_READER_PIN_LEASE_MS,
+            pinned.pinId,
+          );
+        if (result.changes !== pinned.snapshots.length) lost = true;
+      } catch {
+        // The generous lease tolerates transient writer contention. A crashed
+        // owner stops renewing and is rejected by the terminal pin check.
+      }
+    }, MEMORY_INDEX_READER_PIN_HEARTBEAT_MS);
+    timer.unref();
+    const heartbeat: ReaderPinHeartbeat = {
+      timer,
+      pinned,
+      lost: () => lost,
+      markLost: () => {
+        lost = true;
+      },
+    };
+    this.#readerPinHeartbeats.add(heartbeat);
+    return heartbeat;
+  }
+
+  #stopReaderPinHeartbeat(heartbeat: ReaderPinHeartbeat): void {
+    clearInterval(heartbeat.timer);
+    this.#readerPinHeartbeats.delete(heartbeat);
+  }
+
+  #readerPinIsLive(pinned: PinnedGenerationSnapshots): boolean {
+    if (this.#closed || !this.#db.open) return false;
+    const row = this.#db
+      .prepare<[string, number], { count: number }>(
+        `SELECT COUNT(*) AS count FROM memory_index_reader_pins
+          WHERE pin_id = ? AND lease_expires_at_ms > ?`,
+      )
+      .get(pinned.pinId, this.#now())!;
+    return row.count === pinned.snapshots.length;
+  }
+
+  #releaseReaderPin(pinned: PinnedGenerationSnapshots): void {
+    if (!this.#db.open) return;
+    this.#db
+      .transaction(() => {
+        this.#db
+          .prepare("DELETE FROM memory_index_reader_pins WHERE pin_id = ?")
+          .run(pinned.pinId);
+        for (const rootId of new Set(
+          pinned.snapshots.map(({ root }) => root.rootId),
+        )) {
+          this.#deleteOldGenerations(rootId);
+        }
+      })
+      .immediate();
+  }
+
+  #deleteExpiredReaderPins(now: number): void {
+    this.#db
+      .prepare(
+        "DELETE FROM memory_index_reader_pins WHERE lease_expires_at_ms <= ?",
+      )
+      .run(now);
   }
 
   #upsertRoot(root: BoundRoot): void {
@@ -2124,6 +2460,46 @@ export class PersistentMemoryIndex {
         )
         .get(rootId, generationId) ?? null
     );
+  }
+
+  #insertDiscoveredFile(
+    rootId: string,
+    generationId: number,
+    relativePath: string,
+    resetPending: boolean,
+  ): number {
+    const inserted = this.#db
+      .prepare(
+        `INSERT OR IGNORE INTO memory_index_discovered_files(
+           root_id, generation_id, relative_path, state, error
+         ) VALUES (?, ?, ?, 'pending', NULL)`,
+      )
+      .run(rootId, generationId, relativePath).changes;
+    if (inserted === 1) {
+      const counted = this.#db
+        .prepare(
+          `UPDATE memory_index_generations
+              SET discovered_file_count = discovered_file_count + 1
+            WHERE id = ? AND root_id = ? AND state = 'staging'
+              AND discovered_file_count < ?`,
+        )
+        .run(generationId, rootId, this.#maxFilesPerRoot).changes;
+      if (counted !== 1) {
+        throw new MemoryIndexBoundaryError(
+          "memory file count per root exceeds limit",
+        );
+      }
+    }
+    if (resetPending) {
+      this.#db
+        .prepare(
+          `UPDATE memory_index_discovered_files
+              SET state = 'pending', error = NULL
+            WHERE root_id = ? AND generation_id = ? AND relative_path = ?`,
+        )
+        .run(rootId, generationId, relativePath);
+    }
+    return inserted;
   }
 
   #markDiscoveredComplete(
@@ -2279,24 +2655,38 @@ export class PersistentMemoryIndex {
 
   #claimBuildLease(generationId: number): boolean {
     const now = this.#now();
-    const result = this.#db
-      .prepare(
-        `UPDATE memory_index_generations
-            SET builder_owner = ?, builder_lease_expires_at_ms = ?
-          WHERE id = ? AND state IN ('staging', 'complete')
-            AND (
-              builder_owner IS NULL OR builder_owner = ? OR
-              builder_lease_expires_at_ms IS NULL OR builder_lease_expires_at_ms <= ?
-            )`,
-      )
-      .run(
-        this.#builderOwner,
-        now + MEMORY_INDEX_BUILD_LEASE_MS,
-        generationId,
-        this.#builderOwner,
-        now,
-      );
-    return result.changes === 1;
+    return this.#db
+      .transaction(() => {
+        this.#deleteExpiredReaderPins(now);
+        const result = this.#db
+          .prepare(
+            `UPDATE memory_index_generations
+                SET builder_owner = ?, builder_lease_expires_at_ms = ?
+              WHERE id = ? AND state IN ('staging', 'complete')
+                AND (
+                  builder_owner IS NULL OR builder_owner = ? OR
+                  builder_lease_expires_at_ms IS NULL OR
+                  builder_lease_expires_at_ms <= ?
+                )
+                AND (
+                  state = 'staging' OR NOT EXISTS (
+                    SELECT 1 FROM memory_index_reader_pins p
+                     WHERE p.generation_id = memory_index_generations.id
+                       AND p.lease_expires_at_ms > ?
+                  )
+                )`,
+          )
+          .run(
+            this.#builderOwner,
+            now + MEMORY_INDEX_BUILD_LEASE_MS,
+            generationId,
+            this.#builderOwner,
+            now,
+            now,
+          );
+        return result.changes === 1;
+      })
+      .immediate();
   }
 
   #releaseBuildLease(generationId: number): void {
@@ -2315,7 +2705,7 @@ export class PersistentMemoryIndex {
         this.#db
           .prepare(
             `UPDATE memory_index_generations
-                SET state = 'failed', error = ?
+                SET state = 'failed', error = ?, discovered_file_count = 0
               WHERE id = ? AND state = 'staging'`,
           )
           .run(
@@ -2366,13 +2756,22 @@ export class PersistentMemoryIndex {
   #evictLeastRecentlyUsedRoot(excludedRootId: string): boolean {
     const now = this.#now();
     const rows = this.#db
-      .prepare<[string, number, string, number, number], RootRow>(
+      .prepare<
+        [string, number, number, string, number, number],
+        RootRow
+      >(
         `SELECT * FROM memory_index_roots
           WHERE root_id <> ?
             AND NOT EXISTS (
               SELECT 1 FROM memory_index_generations g
                WHERE g.root_id = memory_index_roots.root_id
                  AND g.state = 'staging'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM memory_index_reader_pins p
+              JOIN memory_index_generations g ON g.id = p.generation_id
+               WHERE g.root_id = memory_index_roots.root_id
+                 AND p.lease_expires_at_ms > ?
             )
             AND NOT EXISTS (
               SELECT 1 FROM memory_index_owners o
@@ -2391,6 +2790,7 @@ export class PersistentMemoryIndex {
       )
       .all(
         excludedRootId,
+        now,
         now,
         this.#builderOwner,
         now,
@@ -2428,7 +2828,19 @@ export class PersistentMemoryIndex {
               LIMIT 1`,
           )
           .get(rootId, now);
-        if (foreignOwner !== undefined || activeGeneration !== undefined) {
+        const activeReader = this.#db
+          .prepare<[string, number], { present: number }>(
+            `SELECT 1 AS present FROM memory_index_reader_pins p
+              JOIN memory_index_generations g ON g.id = p.generation_id
+             WHERE g.root_id = ? AND p.lease_expires_at_ms > ?
+             LIMIT 1`,
+          )
+          .get(rootId, now);
+        if (
+          foreignOwner !== undefined ||
+          activeGeneration !== undefined ||
+          activeReader !== undefined
+        ) {
           return;
         }
         this.#db
@@ -2495,14 +2907,20 @@ export class PersistentMemoryIndex {
   }
 
   #deleteOldGenerations(rootId: string): void {
+    const now = this.#now();
     const old = this.#db
-      .prepare<[string, number], { id: number }>(
-        `SELECT id FROM memory_index_generations
-          WHERE root_id = ? AND state IN ('complete', 'superseded', 'failed')
-          ORDER BY CASE state WHEN 'complete' THEN 0 ELSE 1 END, id DESC
+      .prepare<[string, number, number], { id: number }>(
+        `SELECT g.id FROM memory_index_generations g
+          WHERE g.root_id = ?
+            AND g.state IN ('complete', 'superseded', 'failed')
+            AND NOT EXISTS (
+              SELECT 1 FROM memory_index_reader_pins p
+               WHERE p.generation_id = g.id AND p.lease_expires_at_ms > ?
+            )
+          ORDER BY CASE g.state WHEN 'complete' THEN 0 ELSE 1 END, g.id DESC
           LIMIT -1 OFFSET ?`,
       )
-      .all(rootId, MAX_COMPLETE_GENERATIONS_PER_ROOT);
+      .all(rootId, now, MAX_COMPLETE_GENERATIONS_PER_ROOT);
     for (const { id } of old) {
       this.#db
         .prepare("DELETE FROM memory_fts WHERE generation_id = ?")
@@ -2514,6 +2932,7 @@ export class PersistentMemoryIndex {
   }
 
   #recoverInterruptedEnumeration(): void {
+    const now = this.#now();
     this.#db
       .transaction(() => {
         this.#db
@@ -2526,7 +2945,16 @@ export class PersistentMemoryIndex {
           .prepare(
             "DELETE FROM memory_index_owners WHERE lease_expires_at_ms <= ?",
           )
-          .run(this.#now());
+          .run(now);
+        this.#deleteExpiredReaderPins(now);
+        const roots = this.#db
+          .prepare<[], { root_id: string }>(
+            "SELECT root_id FROM memory_index_roots ORDER BY root_id",
+          )
+          .all();
+        for (const { root_id: rootId } of roots) {
+          this.#deleteOldGenerations(rootId);
+        }
       })
       .immediate();
   }
@@ -2766,6 +3194,7 @@ function entryRowToRankCandidate(
 ): MemoryRankCandidate {
   return {
     memoryId: row.memory_id,
+    generationId: row.generation_id,
     canonicalPath: row.canonical_path,
     title: row.title,
     description: row.description,
@@ -2775,19 +3204,39 @@ function entryRowToRankCandidate(
     fingerprint: row.fingerprint,
     rootId: row.root_id,
     rootRole,
+    headerSnapshot: {
+      relativePath: row.relative_path,
+      fileDev: row.file_dev,
+      fileIno: row.file_ino,
+      fileMode: row.file_mode,
+      fileMtimeNs: row.file_mtime_ns,
+      fileCtimeNs: row.file_ctime_ns,
+      rootDev: row.root_dev,
+      rootIno: row.root_ino,
+      rootMode: row.root_mode,
+      rootSize: row.root_size,
+      rootMtimeNs: row.root_mtime_ns,
+      rootCtimeNs: row.root_ctime_ns,
+    },
   };
 }
 
-function entryRowToMemoryHeader(row: EntryRow): MemoryHeader {
+function rankCandidateToMemoryHeader(
+  candidate: MemoryRankCandidate,
+): MemoryHeader {
+  const snapshot = candidate.headerSnapshot;
   const storedRootIdentity: FileIdentity = {
-    dev: BigInt(row.root_dev),
-    ino: BigInt(row.root_ino),
-    mode: BigInt(row.root_mode),
-    size: BigInt(row.root_size),
-    mtimeNs: BigInt(row.root_mtime_ns),
-    ctimeNs: BigInt(row.root_ctime_ns),
+    dev: BigInt(snapshot.rootDev),
+    ino: BigInt(snapshot.rootIno),
+    mode: BigInt(snapshot.rootMode),
+    size: BigInt(snapshot.rootSize),
+    mtimeNs: BigInt(snapshot.rootMtimeNs),
+    ctimeNs: BigInt(snapshot.rootCtimeNs),
   };
-  const rootPath = dirnameFromRelative(row.canonical_path, row.relative_path);
+  const rootPath = dirnameFromRelative(
+    candidate.canonicalPath,
+    snapshot.relativePath,
+  );
   let rootIdentity = storedRootIdentity;
   try {
     const current = lstatSync(rootPath, { bigint: true });
@@ -2803,22 +3252,22 @@ function entryRowToMemoryHeader(row: EntryRow): MemoryHeader {
     identity: rootIdentity,
   };
   return {
-    filename: row.relative_path,
-    relativePath: row.relative_path,
-    filePath: row.canonical_path,
-    pathBytes: Buffer.from(row.canonical_path, "utf8"),
-    mtimeMs: row.mtime_ms,
-    title: row.title,
-    description: row.description || null,
-    type: parseMemoryType(row.memory_type),
+    filename: snapshot.relativePath,
+    relativePath: snapshot.relativePath,
+    filePath: candidate.canonicalPath,
+    pathBytes: Buffer.from(candidate.canonicalPath, "utf8"),
+    mtimeMs: candidate.mtimeMs,
+    title: candidate.title,
+    description: candidate.description || null,
+    type: parseMemoryType(candidate.type),
     root,
     identity: {
-      dev: BigInt(row.file_dev),
-      ino: BigInt(row.file_ino),
-      mode: BigInt(row.file_mode),
-      size: BigInt(row.file_size),
-      mtimeNs: BigInt(row.file_mtime_ns),
-      ctimeNs: BigInt(row.file_ctime_ns),
+      dev: BigInt(snapshot.fileDev),
+      ino: BigInt(snapshot.fileIno),
+      mode: BigInt(snapshot.fileMode),
+      size: BigInt(candidate.size),
+      mtimeNs: BigInt(snapshot.fileMtimeNs),
+      ctimeNs: BigInt(snapshot.fileCtimeNs),
     },
   };
 }
@@ -2828,7 +3277,7 @@ function dirnameFromRelative(
   relativePath: string,
 ): string {
   let root = canonicalPath;
-  for (const segment of relativePath.split(/[/\\]/u)) {
+  for (const segment of platformRelativePathSegments(relativePath)) {
     if (segment.length > 0) root = dirname(root);
   }
   return root;
@@ -2864,16 +3313,24 @@ function decodeAuditCursor(cursor: string | null): MemoryAuditCursor {
 }
 
 function validatePortableRelativePath(path: string): void {
+  const segments = platformRelativePathSegments(path);
   if (
     path.length === 0 ||
     isAbsolute(path) ||
-    path.split(/[/\\]/u).some((segment) => segment === "..")
+    segments.some(
+      (segment) =>
+        segment.length === 0 || segment === "." || segment === "..",
+    )
   ) {
     throw new MemoryIndexBoundaryError("memory relative path is invalid");
   }
   if (Buffer.byteLength(path, "utf8") > MAX_MEMORY_PATH_UTF8_BYTES) {
     throw new MemoryIndexBoundaryError("memory path exceeds limit");
   }
+}
+
+function platformRelativePathSegments(path: string): string[] {
+  return sep === "\\" ? path.split(/[/\\]/u) : path.split("/");
 }
 
 function sliceExhausted(budget: BuildSliceBudget): boolean {
@@ -2989,4 +3446,20 @@ function errnoCode(error: unknown): string | undefined {
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolvePromise) => setImmediate(resolvePromise));
+}
+
+function waitForIncrementalRetry(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolvePromise) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolvePromise();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolvePromise();
+    }, MEMORY_WATCH_DEBOUNCE_MS);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
 }

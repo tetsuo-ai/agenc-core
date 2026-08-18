@@ -57,8 +57,8 @@ describe("state migration registry", () => {
 
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-      20, 21, 22, 23, 24,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -85,6 +85,8 @@ describe("state migration registry", () => {
       "workflow_handoff_artifacts",
       "set_based_cancellation_indexes",
       "compaction_transaction",
+      "csv_output_writer_identity",
+      "csv_output_orphan_accounting",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -127,7 +129,240 @@ describe("state migration registry", () => {
       "022_workflow_handoff_artifacts.ts",
       "023_set_based_cancellation_indexes.ts",
       "024_compaction_transaction.ts",
+      "025_csv_output_writer_identity.ts",
+      "026_csv_output_orphan_accounting.ts",
     ]);
+  });
+
+  it("adds durable CSV writer anchor state without backfilling legacy intents", () => {
+    const db = new Database(":memory:");
+    try {
+      applyMigrations(
+        db,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version <= 24),
+      );
+      expect(
+        db
+          .prepare("PRAGMA table_info(csv_output_intents)")
+          .all()
+          .map((column) => (column as { readonly name: string }).name),
+      ).not.toContain("temporary_birthtime_ns");
+      const insertLegacyJob = db.prepare(
+        `INSERT INTO csv_agent_jobs (
+           id, name, status, instruction, execution_gate,
+           input_headers_json, input_csv_path, output_csv_path,
+           requested_max_concurrency, import_id, import_state,
+           identity_format_version, max_items, max_result_bytes,
+           max_result_bytes_per_job, created_at, updated_at
+         ) VALUES (
+           ?, ?, 'cancelled', 'x', 'ready', '["value"]', '/in', '',
+           1, ?, 'visible', 1, 1, 1024, 1024, 1, 1
+         )`,
+      );
+      insertLegacyJob.run("legacy-output-job", "legacy", "legacy-import");
+      db.prepare(
+        `INSERT INTO csv_output_intents (
+           intent_id, job_id, root_path, target_path, temporary_path,
+           temporary_dev, temporary_ino, reserved_bytes, state,
+           owner_generation, owner_pid, created_at, updated_at
+         ) VALUES (
+           'legacy-output-intent', 'legacy-output-job', '/root',
+           '/root/output.csv', '/root/.output.agenc-csv.tmp', '7', '11',
+           64, 'abandoned', 'legacy-owner', 42, 1, 1
+         )`,
+      ).run();
+      db.prepare(
+        `UPDATE csv_storage_quota SET output_staging_files = 7,
+           output_staging_bytes = 4096 WHERE singleton = 1`,
+      ).run();
+
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      const columns = db
+        .prepare("PRAGMA table_info(csv_output_intents)")
+        .all()
+        .map((column) => (column as { readonly name: string }).name);
+      expect(columns).toContain("temporary_birthtime_ns");
+      expect(columns).toContain("writer_anchor_state");
+      expect(columns).toContain("terminal_kind");
+      expect(columns).toContain("quota_released");
+      expect(columns).toContain("target_original_sha256");
+      expect(
+        db
+          .prepare(
+            `SELECT output_staging_files, output_staging_bytes
+             FROM csv_storage_quota WHERE singleton = 1`,
+          )
+          .get(),
+      ).toEqual({ output_staging_files: 1, output_staging_bytes: 64 });
+      expect(
+        db
+          .prepare(
+            `SELECT temporary_birthtime_ns, writer_anchor_state,
+                    target_anchor_state, target_original_sha256,
+                    quota_released, terminal_kind
+             FROM csv_output_intents
+             WHERE intent_id = 'legacy-output-intent'`,
+          )
+          .get(),
+      ).toEqual({
+        temporary_birthtime_ns: null,
+        writer_anchor_state: "legacy",
+        target_anchor_state: "legacy",
+        target_original_sha256: null,
+        quota_released: 0,
+        terminal_kind: null,
+      });
+      db.prepare(
+        `UPDATE csv_output_intents SET state = 'abandoned', quota_released = 1,
+           terminal_kind = 'orphaned_unverifiable_writer_identity'
+         WHERE intent_id = 'legacy-output-intent'`,
+      ).run();
+      expect(
+        db
+          .prepare(
+            `SELECT terminal_kind FROM csv_output_intents
+             WHERE intent_id = 'legacy-output-intent'`,
+          )
+          .get(),
+      ).toEqual({
+        terminal_kind: "orphaned_unverifiable_writer_identity",
+      });
+      insertLegacyJob.run(
+        "legacy-target-job",
+        "legacy-target",
+        "legacy-target-import",
+      );
+      db.prepare(
+        `INSERT INTO csv_output_intents (
+           intent_id, job_id, root_path, target_path, temporary_path,
+           reserved_bytes, state, owner_generation, owner_pid,
+           quota_released, terminal_kind, created_at, updated_at
+         ) VALUES (
+           'legacy-target-intent', 'legacy-target-job', '/root',
+           '/root/target.csv', '/root/.target.agenc-csv.tmp', 0,
+           'abandoned', 'legacy-target-owner', 43, 1,
+           'orphaned_target_replacement_conflict', 1, 1
+         )`,
+      ).run();
+      expect(
+        db
+          .prepare(
+            `SELECT terminal_kind FROM csv_output_intents
+             WHERE intent_id = 'legacy-target-intent'`,
+          )
+          .get(),
+      ).toEqual({
+        terminal_kind: "orphaned_target_replacement_conflict",
+      });
+      expect(() =>
+        db
+          .prepare(
+            `UPDATE csv_output_intents SET terminal_kind = 'unbounded_other'
+             WHERE intent_id = 'legacy-target-intent'`,
+          )
+          .run(),
+      ).toThrow(/CHECK constraint failed|invalid CSV output terminal/u);
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO csv_output_intents (
+               intent_id, job_id, root_path, target_path, temporary_path,
+               reserved_bytes, state, owner_generation, owner_pid,
+               created_at, updated_at
+             ) VALUES (
+               'duplicate-intent', 'legacy-output-job', '/root', '/root/a.csv',
+               '/root/.a.agenc-csv.tmp', 0, 'abandoned', 'duplicate-owner',
+               44, 1, 1
+             )`,
+          )
+          .run(),
+      ).toThrow(/already has output intent evidence/u);
+      expect(
+        db
+          .prepare(
+            "SELECT version, name FROM schema_migrations WHERE version = 25",
+          )
+          .get(),
+      ).toEqual({ version: 25, name: "csv_output_writer_identity" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("promotes v25 terminal outputs into durable bounded orphan accounting", () => {
+    const db = new Database(":memory:");
+    try {
+      applyMigrations(
+        db,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version <= 25),
+      );
+      db.prepare(
+        `INSERT INTO csv_agent_jobs (
+           id, name, status, instruction, execution_gate,
+           input_headers_json, input_csv_path, output_csv_path,
+           requested_max_concurrency, import_id, import_state,
+           identity_format_version, max_items, max_result_bytes,
+           max_result_bytes_per_job, created_at, updated_at
+         ) VALUES (
+           'v25-terminal-job', 'v25-terminal-job', 'failed', 'x', 'ready',
+           '["value"]', '/in', '', 1, 'v25-terminal-import', 'visible',
+           1, 1, 1024, 1024, 1, 1
+         )`,
+      ).run();
+      db.prepare(
+        `INSERT INTO csv_output_intents (
+           intent_id, job_id, root_path, target_path, temporary_path,
+           temporary_dev, temporary_ino, temporary_birthtime_ns,
+           writer_anchor_state, target_anchor_state, reserved_bytes, state,
+           owner_generation, owner_pid, last_error, quota_released,
+           terminal_kind, created_at, updated_at
+         ) VALUES (
+           'v25-terminal-intent', 'v25-terminal-job', '/root',
+           '/root/output.csv', '/root/.output.agenc-csv.tmp', '7', '11', '13',
+           'releasing', 'absent', 64, 'abandoned', 'old-owner', 42,
+           'legacy retained artifact', 1,
+           'orphaned_unverifiable_writer_identity', 1, 1
+         )`,
+      ).run();
+      db.prepare(
+        `UPDATE csv_storage_quota SET output_staging_files = 0,
+           output_staging_bytes = 0 WHERE singleton = 1`,
+      ).run();
+
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+
+      expect(
+        db
+          .prepare(
+            `SELECT intent_id, reserved_bytes, cleanup_eligible, state
+             FROM csv_output_orphans WHERE intent_id = 'v25-terminal-intent'`,
+          )
+          .get(),
+      ).toEqual({
+        intent_id: "v25-terminal-intent",
+        reserved_bytes: 64,
+        cleanup_eligible: 0,
+        state: "retained",
+      });
+      expect(
+        db
+          .prepare(
+            `SELECT output_staging_files, output_staging_bytes,
+                    output_orphan_files, output_orphan_bytes
+             FROM csv_storage_quota WHERE singleton = 1`,
+          )
+          .get(),
+      ).toEqual({
+        output_staging_files: 0,
+        output_staging_bytes: 0,
+        output_orphan_files: 1,
+        output_orphan_bytes: 64,
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it("adds compaction authority at v24 idempotently with immutable identity", () => {
@@ -141,33 +376,42 @@ describe("state migration registry", () => {
         ),
       );
       expect(
-        db.prepare(
-          "SELECT version, name FROM schema_migrations WHERE version = ?",
-        ).get(setBasedCancellationIndexesMigration.version),
+        db
+          .prepare(
+            "SELECT version, name FROM schema_migrations WHERE version = ?",
+          )
+          .get(setBasedCancellationIndexesMigration.version),
       ).toEqual({
         version: setBasedCancellationIndexesMigration.version,
         name: setBasedCancellationIndexesMigration.name,
       });
       expect(
-        db.prepare(
-          `SELECT name FROM sqlite_master
+        db
+          .prepare(
+            `SELECT name FROM sqlite_master
            WHERE type = 'table' AND name = 'compaction_retention_pins'`,
-        ).get(),
+          )
+          .get(),
       ).toBeUndefined();
 
       applyMigrations(db, STATE_DB_MIGRATIONS);
       applyMigrations(db, STATE_DB_MIGRATIONS);
       expect(
-        db.prepare(
-          "SELECT version, name FROM schema_migrations WHERE version = 24",
-        ).get(),
+        db
+          .prepare(
+            "SELECT version, name FROM schema_migrations WHERE version = 24",
+          )
+          .get(),
       ).toEqual({ version: 24, name: "compaction_transaction" });
       expect(
-        db.prepare(
-          `SELECT name FROM sqlite_master
+        db
+          .prepare(
+            `SELECT name FROM sqlite_master
            WHERE type = 'table' AND name LIKE 'compaction_%'
            ORDER BY name`,
-        ).all().map((row) => (row as { name: string }).name),
+          )
+          .all()
+          .map((row) => (row as { name: string }).name),
       ).toEqual([
         "compaction_failure_guards",
         "compaction_reconciliation_cursors",
@@ -190,9 +434,11 @@ describe("state migration registry", () => {
          )`,
       ).run(...Array(5).fill("a".repeat(64)));
       expect(() =>
-        db.prepare(
-          "UPDATE compaction_retention_pins SET source_binding = 'other' WHERE attempt_id = 'attempt'",
-        ).run(),
+        db
+          .prepare(
+            "UPDATE compaction_retention_pins SET source_binding = 'other' WHERE attempt_id = 'attempt'",
+          )
+          .run(),
       ).toThrow(/identity is immutable/i);
       db.prepare(
         `INSERT INTO compaction_reconciliation_cursors (
@@ -200,10 +446,12 @@ describe("state migration registry", () => {
          ) VALUES ('session', 0, '', 0)`,
       ).run();
       expect(() =>
-        db.prepare(
-          `UPDATE compaction_reconciliation_cursors
+        db
+          .prepare(
+            `UPDATE compaction_reconciliation_cursors
            SET created_at_ms = -1 WHERE cursor_name = 'session'`,
-        ).run(),
+          )
+          .run(),
       ).toThrow();
     } finally {
       db.close();

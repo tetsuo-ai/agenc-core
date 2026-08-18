@@ -21,9 +21,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
+
+import {
+  resolveTrustedWindowsSystemExecutable,
+  resolveTrustedWindowsSystemPaths,
+  type TrustedWindowsSystemPaths,
+} from "./windows-system-path.js";
 
 export type SupervisedProcessStopReason =
   | "timeout"
@@ -1239,7 +1245,7 @@ function resolveWindowsJobBroker(): string {
       for (const profile of compilerProfiles) {
         try {
           execFileSync(
-            compiler,
+            compiler.executable,
             [
               "/nologo",
               "/target:exe",
@@ -1252,7 +1258,11 @@ function resolveWindowsJobBroker(): string {
             {
               cwd: sourceRoot,
               env: {
-                ...process.env,
+                ...trustedWindowsToolEnvironment(
+                  compiler.systemPaths,
+                  `${dirname(compiler.executable)};${compiler.systemPaths.system32}`,
+                  buildRoot,
+                ),
                 DOTNET_CLI_TELEMETRY_OPTOUT: "1",
                 DOTNET_NOLOGO: "1",
               },
@@ -1272,7 +1282,7 @@ function resolveWindowsJobBroker(): string {
           return outputPath;
         } catch (error) {
           rmSync(outputPath, { force: true });
-          errors.push(`${compiler}: ${toError(error).message}`);
+          errors.push(`${compiler.executable}: ${toError(error).message}`);
         }
       }
     }
@@ -1286,74 +1296,70 @@ function resolveWindowsJobBroker(): string {
   );
 }
 
-function trustedWindowsCSharpCompilerCandidates(): string[] {
-  const candidates: string[] = [];
-  const programFilesX86 = process.env["ProgramFiles(x86)"];
-  const programFiles = process.env.ProgramFiles;
-  const visualStudioRoots = [programFilesX86, programFiles].filter(
-    (value): value is string => Boolean(value),
-  );
-  if (programFilesX86) {
-    const vswhere = resolve(
-      programFilesX86,
-      "Microsoft Visual Studio/Installer/vswhere.exe",
-    );
-    if (isTrustedWindowsTool(vswhere, visualStudioRoots)) {
-      try {
-        const output = execFileSync(
-          vswhere,
-          [
-            "-latest",
-            "-products",
-            "*",
-            "-requires",
-            "Microsoft.Component.MSBuild",
-            "-find",
-            "MSBuild\\**\\Bin\\Roslyn\\csc.exe",
-          ],
-          {
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-            windowsHide: true,
-          },
-        );
-        for (const line of output.split(/\r?\n/u)) {
-          const candidate = line.trim();
-          if (candidate && isTrustedWindowsTool(candidate, visualStudioRoots)) {
-            candidates.push(candidate);
-          }
-        }
-      } catch {
-        // The fixed .NET Framework compiler candidates remain available.
-      }
-    }
-  }
-
-  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-  if (systemRoot) {
-    for (const relativePath of [
-      "Microsoft.NET/Framework64/v4.0.30319/csc.exe",
-      "Microsoft.NET/Framework/v4.0.30319/csc.exe",
-    ]) {
-      const candidate = resolve(systemRoot, relativePath);
-      if (isTrustedWindowsTool(candidate, [systemRoot])) {
-        candidates.push(candidate);
-      }
-    }
-  }
-  return [...new Set(candidates)];
+interface TrustedWindowsCompiler {
+  readonly executable: string;
+  readonly systemPaths: TrustedWindowsSystemPaths;
 }
 
-function isTrustedWindowsTool(
-  path: string,
-  trustedRoots: readonly string[],
-): boolean {
-  if (!isRegularNonSymlinkFile(path)) return false;
-  const resolvedPath = resolve(path);
-  return trustedRoots.some((root) => {
-    const rel = relative(resolve(root), resolvedPath);
-    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-  });
+interface TrustedWindowsTaskkill {
+  readonly executable: string;
+  readonly workingDirectory: string;
+  readonly environment: NodeJS.ProcessEnv;
+}
+
+function trustedWindowsToolEnvironment(
+  paths: TrustedWindowsSystemPaths,
+  searchPath: string,
+  privateDirectory: string,
+): NodeJS.ProcessEnv {
+  return {
+    APPDATA: privateDirectory,
+    COMSPEC: win32.join(paths.system32, "cmd.exe"),
+    HOME: "",
+    HOMEDRIVE: "",
+    HOMEPATH: "",
+    LOCALAPPDATA: privateDirectory,
+    LOGONSERVER: "",
+    PATH: searchPath,
+    PATHEXT: ".COM;.EXE",
+    PSMODULEPATH: "",
+    SYSTEMDRIVE: "",
+    SystemRoot: paths.systemRoot,
+    TEMP: privateDirectory,
+    TMP: privateDirectory,
+    USERDOMAIN: "",
+    USERNAME: "",
+    USERPROFILE: privateDirectory,
+    WINDIR: paths.systemRoot,
+  };
+}
+
+function trustedWindowsCSharpCompilerCandidates(): TrustedWindowsCompiler[] {
+  let systemPaths: TrustedWindowsSystemPaths;
+  try {
+    systemPaths = resolveTrustedWindowsSystemPaths();
+  } catch {
+    return [];
+  }
+
+  const candidates: TrustedWindowsCompiler[] = [];
+  for (const segments of [
+    ["Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe"],
+    ["Microsoft.NET", "Framework", "v4.0.30319", "csc.exe"],
+  ] as const) {
+    try {
+      candidates.push({
+        executable: resolveTrustedWindowsSystemExecutable(
+          systemPaths,
+          segments,
+        ),
+        systemPaths,
+      });
+    } catch {
+      // A missing or identity-ambiguous compiler is not a trusted candidate.
+    }
+  }
+  return candidates;
 }
 
 function isRegularNonSymlinkFile(path: string): boolean {
@@ -1985,7 +1991,7 @@ async function terminateWindowsProcessTree(
   pid: number,
   options: TerminateProcessTreeOptions,
 ): Promise<void> {
-  const taskkill = windowsTaskkillPath();
+  const taskkill = trustedWindowsTaskkill();
   const label = options.label ?? "process";
   if (taskkill === undefined) {
     throw new Error(
@@ -2022,7 +2028,7 @@ async function terminateWindowsProcessTree(
 }
 
 function runWindowsTaskkill(
-  taskkill: string,
+  taskkill: TrustedWindowsTaskkill,
   pid: number,
   force: boolean,
   timeoutMs: number,
@@ -2037,9 +2043,14 @@ function runWindowsTaskkill(
     let killer: ChildProcess;
     try {
       killer = spawn(
-        taskkill,
+        taskkill.executable,
         ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])],
-        { stdio: "ignore", windowsHide: true },
+        {
+          cwd: taskkill.workingDirectory,
+          env: taskkill.environment,
+          stdio: "ignore",
+          windowsHide: true,
+        },
       );
     } catch (error) {
       reject(toError(error));
@@ -2516,15 +2527,20 @@ export function signalProcessTree(
       return;
     }
   }
-  const taskkill = windowsTaskkillPath();
+  const taskkill = trustedWindowsTaskkill();
   if (taskkill === undefined) {
     safeKill(child, signal);
     return;
   }
   const killer = spawn(
-    taskkill,
+    taskkill.executable,
     ["/PID", String(child.pid), "/T", ...(signal === "SIGKILL" ? ["/F"] : [])],
-    { stdio: "ignore", windowsHide: true },
+    {
+      cwd: taskkill.workingDirectory,
+      env: taskkill.environment,
+      stdio: "ignore",
+      windowsHide: true,
+    },
   );
   let handled = false;
   const fallback = (): void => {
@@ -2562,11 +2578,24 @@ function signalOwnedDescendants(
   }
 }
 
-function windowsTaskkillPath(): string | undefined {
-  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-  if (systemRoot === undefined) return undefined;
-  const taskkill = join(systemRoot, "System32", "taskkill.exe");
-  return existsSync(taskkill) ? taskkill : undefined;
+function trustedWindowsTaskkill(): TrustedWindowsTaskkill | undefined {
+  try {
+    const systemPaths = resolveTrustedWindowsSystemPaths();
+    return {
+      executable: resolveTrustedWindowsSystemExecutable(systemPaths, [
+        "System32",
+        "taskkill.exe",
+      ]),
+      workingDirectory: systemPaths.system32,
+      environment: trustedWindowsToolEnvironment(
+        systemPaths,
+        systemPaths.system32,
+        systemPaths.system32,
+      ),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function safeKill(

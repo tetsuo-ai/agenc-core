@@ -116,6 +116,7 @@ export const CROSS_REPO_TEST_INCLUDE = Object.freeze([
 
 /** Native integration tests executed only by their matching hosted builder. */
 export const NATIVE_TEST_INCLUDE = Object.freeze([
+  "tests/agents/jobs/csv-output.native.test.ts",
   "tests/app-server/windows-named-pipe.win32.test.ts",
   "tests/durability/atomic-artifact.win32.test.ts",
   "tests/fnd/process-repository-helpers.native.test.ts",

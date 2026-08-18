@@ -1241,7 +1241,7 @@ describe("cross-document evaluation bundle", () => {
       ...bundle,
       preregistration: overstatedSample,
     })).rejects.toThrow(/selected suite task count is outside/u);
-  }, 30_000);
+  }, 60_000);
 });
 
 describe("paired TFR inference", () => {

@@ -1197,6 +1197,7 @@ jobs:
           node runtime/scripts/run-hermetic-vitest.mjs \
             --require-zero-skips \
             run \
+            tests/agents/jobs/csv-output.native.test.ts \
             tests/fnd/benchmark-harness-faults.test.ts \
             tests/fnd/bounded-file-io.test.ts \
             tests/fnd/fnd-fixtures.test.ts \
@@ -1216,6 +1217,7 @@ jobs:
           if (!resultsPath) throw new Error("missing macOS-native results path");
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
           const expectedFiles = [
+            "tests/agents/jobs/csv-output.native.test.ts",
             "tests/fnd/benchmark-harness-faults.test.ts",
             "tests/fnd/bounded-file-io.test.ts",
             "tests/fnd/fnd-fixtures.test.ts",
@@ -1224,12 +1226,12 @@ jobs:
             "tests/tools/runtimes/runtime.darwin.test.ts",
           ];
           const exactCounts = {
-            numTotalTestSuites: 10,
-            numPassedTestSuites: 10,
+            numTotalTestSuites: 11,
+            numPassedTestSuites: 11,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 82,
-            numPassedTests: 82,
+            numTotalTests: 85,
+            numPassedTests: 85,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1256,7 +1258,7 @@ jobs:
               `macOS-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("macOS FND/native capability lane passed 82 tests in 6 files with zero skipped");
+          console.log("macOS FND/native capability lane passed 85 tests in 7 files with zero skipped");
           NODE
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
@@ -1414,6 +1416,7 @@ jobs:
           & node runtime/scripts/run-hermetic-vitest.mjs `
             --require-zero-skips `
             run `
+            tests/agents/jobs/csv-output.native.test.ts `
             tests/app-server/windows-named-pipe.win32.test.ts `
             tests/durability/atomic-artifact.win32.test.ts `
             tests/fnd/benchmark-harness-faults.test.ts `
@@ -1438,6 +1441,7 @@ jobs:
           if (!resultsPath) throw new Error("missing Windows-native results path");
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
           const expectedFiles = [
+            "tests/agents/jobs/csv-output.native.test.ts",
             "tests/app-server/windows-named-pipe.win32.test.ts",
             "tests/durability/atomic-artifact.win32.test.ts",
             "tests/fnd/benchmark-harness-faults.test.ts",
@@ -1450,12 +1454,12 @@ jobs:
             "tests/workspace/bound-helper-transport.win32.test.ts",
           ];
           const exactCounts = {
-            numTotalTestSuites: 17,
-            numPassedTestSuites: 17,
+            numTotalTestSuites: 18,
+            numPassedTestSuites: 18,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 90,
-            numPassedTests: 90,
+            numTotalTests: 93,
+            numPassedTests: 93,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1478,7 +1482,7 @@ jobs:
               `Windows-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("Windows FND/native capability lane passed 90 tests in 10 files with zero skipped");
+          console.log("Windows FND/native capability lane passed 93 tests in 11 files with zero skipped");
           '@ | node --input-type=module - $results
           if ($LASTEXITCODE -ne 0) { throw "Windows native result contract failed" }
           if (-not [string]::IsNullOrWhiteSpace(

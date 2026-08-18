@@ -1162,9 +1162,9 @@ describe("BufferSurface", () => {
         .mockResolvedValue(true);
 
       stdin.write("\x07");
-      await sleep();
-
-      expect(openExternalEditor).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() =>
+        expect(openExternalEditor).toHaveBeenCalledTimes(1),
+      );
       expect(store.getText()).toBe("const value = 1;\n");
       expect(store.getSnapshot().dirty).toBe(false);
     } finally {

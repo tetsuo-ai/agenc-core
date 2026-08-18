@@ -8,6 +8,14 @@
 
 import { execFile } from "node:child_process";
 import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  realpathSync,
+} from "node:fs";
+import {
   chmod,
   lstat,
   mkdir,
@@ -33,7 +41,18 @@ const REGISTRY_SYMBOL = Symbol.for("@tetsuo-ai/agenc.sqlite-lock-registry");
 const MAX_BUSY_RETRY_MS = 50;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const UNSUPPORTED_FILE_ID_64 = 0xffff_ffff_ffff_ffffn;
+const WINDOWS_PATH_TRANSPORT_MAX_CHARS = 16_384;
+const WINDOWS_PATH_TRANSPORT_MAX_ENTRIES = 128;
 const WINDOWS_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
+const WINDOWS_EXECUTABLE_FILESYSTEM = {
+  lstat: (path) => lstatSync(path, { bigint: true }),
+  open: (path) => openSync(
+    path,
+    fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+  ),
+  fstat: (descriptor) => fstatSync(descriptor, { bigint: true }),
+  close: closeSync,
+};
 const LOCAL_FILESYSTEM_TYPES = new Set([
   "apfs", "bcachefs", "btrfs", "exfat", "ext2", "ext3", "ext4", "f2fs",
   "hfs", "hfsplus", "jfs", "msdos", "nilfs2", "ntfs", "ntfs3", "overlay",
@@ -57,7 +76,15 @@ const DARWIN_ACL_KNOWN_TOKENS = new Set([
 
 const WINDOWS_SECURITY_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
-$entries = @(ConvertFrom-Json -InputObject $env:AGENC_LOCK_PATHS_JSON)
+# Keep this direct-.NET only: module autoload can exhaust the shared lock deadline.
+$transport = [string]$env:AGENC_LOCK_PATHS
+if ([string]::IsNullOrEmpty($transport) -or $transport.Length -gt ${WINDOWS_PATH_TRANSPORT_MAX_CHARS}) {
+  throw 'invalid protected-path transport'
+}
+$entries = [string[]]$transport.Split([char]10)
+if ($entries.Count -lt 1 -or $entries.Count -gt ${WINDOWS_PATH_TRANSPORT_MAX_ENTRIES}) {
+  throw 'invalid protected-path transport'
+}
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $trusted = @(
   $currentSid,
@@ -65,26 +92,49 @@ $trusted = @(
   'S-1-5-32-544',
   'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 )
-$leafMutationMask = [int64]852310
-$ancestorMutationMask = [int64]852306
+# Specific mutation rights plus GENERIC_WRITE and GENERIC_ALL.
+$leafMutationMask = [int64]1343029590
+$ancestorMutationMask = [int64]1343029586
 foreach ($entry in $entries) {
-  $requested = [string]$entry.path
-  $role = [string]$entry.role
+  $separator = $entry.IndexOf([char]58)
+  if ($separator -lt 1 -or $separator -eq ($entry.Length - 1)) {
+    throw 'invalid protected-path transport'
+  }
+  $role = $entry.Substring(0, $separator)
   if (@('leafDirectory', 'ancestorDirectory', 'file') -notcontains $role) {
     throw "invalid protected-path role: $role"
   }
+  $encodedPath = $entry.Substring($separator + 1)
+  if (($encodedPath.Length % 4) -ne 0) { throw 'invalid protected-path transport' }
+  $pathBytes = [System.Convert]::FromBase64String($encodedPath)
+  if (($pathBytes.Length % 2) -ne 0) { throw 'invalid protected-path transport' }
+  if ([System.Convert]::ToBase64String($pathBytes) -cne $encodedPath) {
+    throw 'non-canonical protected-path transport'
+  }
+  $pathCharacters = [char[]]::new([int]($pathBytes.Length / 2))
+  for ($index = 0; $index -lt $pathCharacters.Length; $index += 1) {
+    $byteOffset = $index * 2
+    $lowByte = [int]$pathBytes[$byteOffset]
+    $highByte = [int]$pathBytes[$byteOffset + 1]
+    $pathCharacters[$index] = [char]($lowByte -bor ($highByte -shl 8))
+  }
+  $requested = [string]::new($pathCharacters)
   $mutationMask = if ($role -eq 'ancestorDirectory') {
     $ancestorMutationMask
   } else {
     $leafMutationMask
   }
-  $full = [System.IO.Path]::GetFullPath([string]$requested)
+  $full = [System.IO.Path]::GetFullPath($requested)
   if ($full.StartsWith('\\') -or $full.StartsWith('\\?\') -or $full.StartsWith('\\.\')) {
     throw "network and device paths are unsupported: $full"
   }
-  $item = Get-Item -LiteralPath $full -Force
-  if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+  $attributes = [System.IO.File]::GetAttributes($full)
+  if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw "reparse points are unsupported: $full"
+  }
+  $isDirectory = ($attributes -band [System.IO.FileAttributes]::Directory) -ne 0
+  if ($isDirectory -ne ($role -ne 'file')) {
+    throw "protected-path role does not match its type: $full"
   }
   $drive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($full))
   if (@(2, 3, 6) -notcontains [int]$drive.DriveType) {
@@ -93,12 +143,16 @@ foreach ($entry in $entries) {
   if ($drive.DriveFormat -ne 'NTFS') {
     throw "filesystem cannot enforce the required ACL contract: $full"
   }
-  $acl = Get-Acl -LiteralPath $full
+  $aclSections = [System.Security.AccessControl.AccessControlSections]::Owner -bor [System.Security.AccessControl.AccessControlSections]::Access
+  if ($isDirectory) {
+    $acl = [System.IO.Directory]::GetAccessControl($full, $aclSections)
+  } else {
+    $acl = [System.IO.File]::GetAccessControl($full, $aclSections)
+  }
   if (-not $acl.AreAccessRulesCanonical) {
     throw "non-canonical ACL is unsupported: $full"
   }
-  $bytes = [byte[]]::new($acl.BinaryLength)
-  $acl.GetSecurityDescriptorBinaryForm($bytes, 0)
+  $bytes = $acl.GetSecurityDescriptorBinaryForm()
   $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new($bytes, 0)
   if ($null -eq $raw.DiscretionaryAcl) {
     throw "null DACL is unsupported: $full"
@@ -125,7 +179,8 @@ foreach ($entry in $entries) {
       }
     }
     $sid = $rule.IdentityReference.Value
-    if ($trusted -notcontains $sid -and (([int64]$rule.FileSystemRights -band $mutationMask) -ne 0)) {
+    $rights = ([int64]$rule.FileSystemRights) -band [int64]4294967295
+    if ($trusted -notcontains $sid -and (($rights -band $mutationMask) -ne 0)) {
       throw "untrusted mutation ACE on lock path: $full"
     }
   }
@@ -378,31 +433,124 @@ async function assertDarwinPathSecurity(path, role, context) {
   throwIfExpired(context, path);
 }
 
-function trustedWindowsPowerShellPath() {
-  // GLOBALROOT enters the true system object-manager namespace instead of a
-  // session-specific or environment-selected DOS path. Never resolve this
-  // executable through PATH, SystemRoot, WINDIR, or another caller-controlled
-  // value.
+function trustedWindowsPowerShellPath(
+  canonicalize = realpathSync.native,
+  filesystem = WINDOWS_EXECUTABLE_FILESYSTEM,
+) {
+  // Derive a CreateProcess-compatible DOS spelling from GLOBALROOT, then prove
+  // both spellings still name the same regular system file before launch.
+  const systemRoot = canonicalize(WINDOWS_SYSTEM_ROOT);
+  if (!/^[a-z]:\\/iu.test(systemRoot) || win32.normalize(systemRoot) !== systemRoot) {
+    throw new Error("trusted Windows SystemRoot did not resolve to a canonical local DOS path");
+  }
+  const workingDirectory = win32.join(systemRoot, "System32");
+  const executable = win32.join(
+    workingDirectory,
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  const namespaceExecutable = win32.join(
+    WINDOWS_SYSTEM_ROOT,
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  verifyWindowsExecutableAliases(namespaceExecutable, executable, filesystem);
   return {
-    systemRoot: WINDOWS_SYSTEM_ROOT,
-    workingDirectory: win32.join(WINDOWS_SYSTEM_ROOT, "System32"),
-    executable: win32.join(
-      WINDOWS_SYSTEM_ROOT,
-      "System32",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    ),
+    systemRoot,
+    workingDirectory,
+    executable,
   };
 }
 
-function windowsPowerShellEnvironment(paths) {
-  const { systemRoot, workingDirectory } = trustedWindowsPowerShellPath();
+function verifyWindowsExecutableAliases(namespaceExecutable, executable, filesystem) {
+  let namespaceDescriptor;
+  let candidateDescriptor;
+  let operationError;
+  try {
+    const namespaceBefore = filesystem.lstat(namespaceExecutable);
+    const candidateBefore = filesystem.lstat(executable);
+    assertRegularWindowsExecutable(namespaceBefore, "GLOBALROOT path");
+    assertRegularWindowsExecutable(candidateBefore, "DOS path");
+    namespaceDescriptor = filesystem.open(namespaceExecutable);
+    candidateDescriptor = filesystem.open(executable);
+    const namespaceOpened = filesystem.fstat(namespaceDescriptor);
+    const candidateOpened = filesystem.fstat(candidateDescriptor);
+    const namespaceAfter = filesystem.lstat(namespaceExecutable);
+    const candidateAfter = filesystem.lstat(executable);
+    assertRegularWindowsExecutable(namespaceOpened, "GLOBALROOT descriptor");
+    assertRegularWindowsExecutable(candidateOpened, "DOS descriptor");
+    assertRegularWindowsExecutable(namespaceAfter, "GLOBALROOT path");
+    assertRegularWindowsExecutable(candidateAfter, "DOS path");
+    for (const identity of [
+      namespaceBefore,
+      candidateBefore,
+      namespaceOpened,
+      candidateOpened,
+      namespaceAfter,
+      candidateAfter,
+    ]) {
+      if (
+        identity.dev <= 0n || identity.ino <= 0n ||
+        identity.dev === UNSUPPORTED_FILE_ID_64 || identity.ino === UNSUPPORTED_FILE_ID_64
+      ) {
+        throw new Error("trusted Windows system executable identity is unavailable");
+      }
+    }
+    if (
+      !sameFileIdentity(namespaceBefore, namespaceOpened) ||
+      !sameFileIdentity(namespaceOpened, namespaceAfter) ||
+      !sameFileIdentity(candidateBefore, candidateOpened) ||
+      !sameFileIdentity(candidateOpened, candidateAfter) ||
+      !sameFileIdentity(namespaceOpened, candidateOpened)
+    ) {
+      throw new Error("trusted Windows system executable identity mismatch");
+    }
+  } catch (error) {
+    operationError = error;
+  }
+  const closeErrors = [];
+  for (const descriptor of [candidateDescriptor, namespaceDescriptor]) {
+    if (descriptor === undefined) continue;
+    try { filesystem.close(descriptor); } catch (error) { closeErrors.push(error); }
+  }
+  if (operationError !== undefined) {
+    if (closeErrors.length > 0) {
+      throw new AggregateError(
+        [operationError, ...closeErrors],
+        "trusted Windows executable validation and cleanup both failed",
+      );
+    }
+    throw operationError;
+  }
+  if (closeErrors.length === 1) throw closeErrors[0];
+  if (closeErrors.length > 1) {
+    throw new AggregateError(
+      closeErrors,
+      "trusted Windows executable descriptor cleanup failed",
+    );
+  }
+}
+
+function assertRegularWindowsExecutable(identity, spelling) {
+  if (!identity.isFile() || identity.isSymbolicLink()) {
+    throw new Error(`trusted Windows ${spelling} executable is not a regular non-link file`);
+  }
+}
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function windowsPowerShellEnvironment(paths, trustedPaths = trustedWindowsPowerShellPath()) {
+  const { systemRoot, workingDirectory } = trustedPaths;
   // libuv fills a fixed set of "required" Windows variables from the parent
   // when they are absent. Define every one so poisoned caller state cannot be
   // silently inherited into the validation helper.
   return {
-    AGENC_LOCK_PATHS_JSON: JSON.stringify(paths),
+    AGENC_LOCK_PATHS: windowsPathTransport(paths),
     APPDATA: "",
     COMSPEC: "",
     HOMEDRIVE: "",
@@ -423,10 +571,42 @@ function windowsPowerShellEnvironment(paths) {
   };
 }
 
+function windowsPathTransport(entries) {
+  if (
+    !Array.isArray(entries) ||
+    entries.length < 1 ||
+    entries.length > WINDOWS_PATH_TRANSPORT_MAX_ENTRIES
+  ) {
+    throw new Error("agenc: Windows protected-path transport has an invalid entry count");
+  }
+  const records = [];
+  let transportChars = 0;
+  for (const entry of entries) {
+    const path = entry?.path;
+    const role = entry?.role;
+    if (
+      typeof path !== "string" ||
+      path.length === 0 ||
+      path.length > WINDOWS_PATH_TRANSPORT_MAX_CHARS ||
+      (role !== "leafDirectory" && role !== "ancestorDirectory" && role !== "file")
+    ) {
+      throw new Error("agenc: Windows protected-path transport entry is invalid");
+    }
+    const record = `${role}:${Buffer.from(path, "utf16le").toString("base64")}`;
+    transportChars += record.length + (records.length === 0 ? 0 : 1);
+    if (transportChars > WINDOWS_PATH_TRANSPORT_MAX_CHARS) {
+      throw new Error("agenc: Windows protected-path transport exceeds its limit");
+    }
+    records.push(record);
+  }
+  return records.join("\n");
+}
+
 async function assertWindowsPathSecurity(entries, context) {
   const displayPath = entries.at(-1)?.path ?? "unknown";
   throwIfExpired(context, displayPath);
-  const { workingDirectory, executable } = trustedWindowsPowerShellPath();
+  const trustedPaths = trustedWindowsPowerShellPath();
+  const { workingDirectory, executable } = trustedPaths;
   let result;
   try {
     result = await execFileUtf8(
@@ -440,7 +620,7 @@ async function assertWindowsPathSecurity(entries, context) {
       ],
       {
         cwd: workingDirectory,
-        env: windowsPowerShellEnvironment(entries),
+        env: windowsPowerShellEnvironment(entries, trustedPaths),
         maxBuffer: 1024 * 1024,
         windowsHide: true,
       },

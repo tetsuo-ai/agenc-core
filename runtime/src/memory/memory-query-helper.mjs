@@ -5,7 +5,7 @@ import process from "node:process";
 
 import Database from "better-sqlite3";
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const FRAME_HEADER_BYTES = 4;
 const MAX_REQUEST_BYTES = 1_048_576;
 const MAX_RESULT_BYTES = 1_048_576;
@@ -27,13 +27,24 @@ for await (const chunk of process.stdin) {
 
 if (process.exitCode === undefined) {
   try {
-    writeResponse(runQuery(decodeRequest(input)));
+    const request = decodeRequest(input);
+    try {
+      writeResponse(runQuery(request));
+    } catch (error) {
+      writeResponse(
+        errorResponse(
+          sqliteCapabilityError(error)
+            ? "capability_unavailable"
+            : "query_failed",
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+      process.exitCode = 1;
+    }
   } catch (error) {
     writeResponse(
       errorResponse(
-        sqliteCapabilityError(error)
-          ? "capability_unavailable"
-          : "query_failed",
+        "invalid_request",
         error instanceof Error ? error.message : String(error),
       ),
     );
@@ -84,6 +95,7 @@ function runQuery(request) {
     const rows = database
       .prepare(
         `SELECT e.memory_id AS memoryId,
+                e.generation_id AS generationId,
                 e.canonical_path AS canonicalPath,
                 e.title,
                 e.description,
@@ -92,6 +104,18 @@ function runQuery(request) {
                 e.file_size AS size,
                 e.fingerprint,
                 e.root_id AS rootId,
+                e.relative_path AS relativePath,
+                e.file_dev AS fileDev,
+                e.file_ino AS fileIno,
+                e.file_mode AS fileMode,
+                e.file_mtime_ns AS fileMtimeNs,
+                e.file_ctime_ns AS fileCtimeNs,
+                e.root_dev AS rootDev,
+                e.root_ino AS rootIno,
+                e.root_mode AS rootMode,
+                e.root_size AS rootSize,
+                e.root_mtime_ns AS rootMtimeNs,
+                e.root_ctime_ns AS rootCtimeNs,
                 bm25(memory_fts, 0.0, 0.0, 0.0, ${TITLE_WEIGHT}, ${DESCRIPTION_WEIGHT}) AS bm25Score
            FROM memory_fts
            JOIN memory_index_entries e
@@ -110,10 +134,41 @@ function runQuery(request) {
     return {
       protocolVersion: PROTOCOL_VERSION,
       kind: "ok",
-      candidates: rows.map((row) => ({
-        ...row,
-        rootRole: request.rootRole,
-      })),
+      candidates: rows.map((row) => {
+        const {
+          relativePath,
+          fileDev,
+          fileIno,
+          fileMode,
+          fileMtimeNs,
+          fileCtimeNs,
+          rootDev,
+          rootIno,
+          rootMode,
+          rootSize,
+          rootMtimeNs,
+          rootCtimeNs,
+          ...candidate
+        } = row;
+        return {
+          ...candidate,
+          rootRole: request.rootRole,
+          headerSnapshot: {
+            relativePath,
+            fileDev,
+            fileIno,
+            fileMode,
+            fileMtimeNs,
+            fileCtimeNs,
+            rootDev,
+            rootIno,
+            rootMode,
+            rootSize,
+            rootMtimeNs,
+            rootCtimeNs,
+          },
+        };
+      }),
     };
   } finally {
     database.close();

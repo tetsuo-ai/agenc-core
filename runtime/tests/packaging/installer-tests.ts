@@ -2871,10 +2871,11 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
 });
 
 test("standalone installers embed the exact same archive/install validator", () => {
+  const powershellInstaller = readFileSync(INSTALL_PS1, "utf8");
   const shell = readFileSync(INSTALL_SH, "utf8").match(
     /<<'AGENC_RUNTIME_INSTALLER'[\s\S]*?\n(const \{ spawnSync \}[\s\S]*?)\nAGENC_RUNTIME_INSTALLER/,
   )?.[1];
-  const powershell = readFileSync(INSTALL_PS1, "utf8").match(
+  const powershell = powershellInstaller.match(
     /\$RuntimeInstaller = @'\n([\s\S]*?)\n'@/,
   )?.[1];
   expect(shell).toBeTruthy();
@@ -2884,6 +2885,24 @@ test("standalone installers embed the exact same archive/install validator", () 
   expect(shell).not.toContain("function windowsAccountLockRegistry");
   expect(shell).not.toContain("/run/user/");
   expect(shell).not.toContain("process.env.LOCALAPPDATA");
+  expect(shell).toContain("function trustedWindowsTarExecutable(");
+  expect(shell).toContain("const namespaceOpened = filesystem.fstat(");
+  expect(shell).toContain("const candidateAfter = filesystem.lstat(executable)");
+  expect(shell).toContain("!sameWindowsExecutableIdentity(namespaceOpened, candidateOpened)");
+  expect(shell).toMatch(/spawnSync\(\s*verifiedExtractionTool,/u);
+  expect(shell).not.toMatch(/spawnSync\(\s*extractionTool,/u);
+  expect(shell).toContain("SystemRoot: systemRoot");
+  expect(shell).toContain("WINDIR: systemRoot");
+  expect(shell).toContain("verifiedExtractionWorkingDirectory = system32");
+  expect(shell).toContain("cwd: verifiedExtractionWorkingDirectory");
+  expect(shell).toContain("{ env: verifiedExtractionEnvironment }");
+  expect(powershellInstaller).toContain(
+    "const systemRoot = realpathSync.native(namespaceRoot);",
+  );
+  expect(powershellInstaller).toContain("process.stdout.write(candidateTar);");
+  expect(powershellInstaller).not.toContain(
+    '$tarPath = if ($actualWindows) {\n  "\\\\?\\GLOBALROOT\\SystemRoot\\System32\\tar.exe"',
+  );
 });
 
 test("official standalone paths pin gh and bind Sigstore verification to the source workflow", () => {

@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 
-export const MEMORY_INDEX_SCHEMA_VERSION = 1;
+export const MEMORY_INDEX_SCHEMA_VERSION = 2;
 export const MEMORY_INDEX_POLICY_ID = "agenc-memory-index-v1";
 export const MEMORY_INDEX_DIRECTORY = "derived-indexes";
 export const MEMORY_INDEX_FILENAME = "memory-v1.sqlite";
@@ -72,6 +72,7 @@ export interface MemoryFingerprintMetadata {
 
 export interface MemoryRankCandidate {
   readonly memoryId: string;
+  readonly generationId: number;
   readonly canonicalPath: string;
   readonly title: string;
   readonly description: string;
@@ -81,7 +82,23 @@ export interface MemoryRankCandidate {
   readonly fingerprint: string;
   readonly rootId: string;
   readonly rootRole: MemoryIndexRootRole;
+  readonly headerSnapshot: MemoryRankCandidateHeaderSnapshot;
   readonly bm25Score?: number;
+}
+
+export interface MemoryRankCandidateHeaderSnapshot {
+  readonly relativePath: string;
+  readonly fileDev: string;
+  readonly fileIno: string;
+  readonly fileMode: string;
+  readonly fileMtimeNs: string;
+  readonly fileCtimeNs: string;
+  readonly rootDev: string;
+  readonly rootIno: string;
+  readonly rootMode: string;
+  readonly rootSize: string;
+  readonly rootMtimeNs: string;
+  readonly rootCtimeNs: string;
 }
 
 export interface MemoryFusedCandidate extends MemoryRankCandidate {

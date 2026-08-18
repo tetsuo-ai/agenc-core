@@ -242,6 +242,12 @@ function snapshotRegularFile(
       `${options.label} is not a regular file`,
     );
   }
+  if (status.nlink === 0n) {
+    throw new BoundedFileIoError(
+      "changed",
+      `${options.label} was unlinked while it was inspected`,
+    );
+  }
   if (status.nlink !== 1n) {
     throw new BoundedFileIoError(
       "hard_link",

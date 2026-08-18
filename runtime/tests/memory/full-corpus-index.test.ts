@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
@@ -22,6 +23,8 @@ import {
 import { MemoryQueryProcessPool } from "../../src/memory/memory-query-pool.js";
 import {
   MEMORY_INDEX_BUILD_LEASE_MS,
+  MEMORY_INDEX_SCHEMA_VERSION,
+  MAX_MEMORY_FILES_PER_ROOT,
   MAX_MEMORY_INDEX_ROOTS,
   MEMORY_INDEX_ROOT_IDLE_TTL_MS,
 } from "../../src/memory/full-corpus-contract.js";
@@ -43,6 +46,39 @@ afterEach(async () => {
 });
 
 describe("C3b persistent full-corpus index", () => {
+  it.skipIf(process.platform === "win32")(
+    "preserves a POSIX backslash filename through helper validation and header materialization",
+    async () => {
+      const fixture = await createFixture();
+      const relativePath = "folder\\note.md";
+      const memoryPath = join(fixture.globalRoot, relativePath);
+      await writeMemory(
+        memoryPath,
+        "Backslash filename",
+        "posixbackslashterm",
+      );
+      await index!.refresh(
+        fixture.rootSpecs,
+        new AbortController().signal,
+        { explicit: true },
+      );
+
+      const result = await index!.query(
+        fixture.rootSpecs,
+        ["posixbackslashterm"],
+        new AbortController().signal,
+      );
+      expect(result).toMatchObject({ kind: "complete" });
+      expect(result.candidates).toHaveLength(1);
+      expect(result.candidates[0]).toMatchObject({ canonicalPath: memoryPath });
+      expect(index!.readHeader(result.candidates[0]!)).toMatchObject({
+        relativePath,
+        filePath: memoryPath,
+        root: { canonicalPath: fixture.globalRoot },
+      });
+    },
+  );
+
   it("retrieves a uniquely relevant memory older than the newest 200", async () => {
     const fixture = await createFixture();
     const oldPath = join(fixture.globalRoot, "old-browser-recovery.md");
@@ -200,6 +236,138 @@ describe("C3b persistent full-corpus index", () => {
     expect(replacement.candidates).toHaveLength(1);
   }, 120_000);
 
+  it("uses indexed pending order without repeated discovered-file counts", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-counts-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await Promise.all(
+      Array.from({ length: 64 }, (_, ordinal) =>
+        writeMemory(
+          join(memoryRoot, `${ordinal.toString().padStart(3, "0")}.md`),
+          `Memory ${ordinal}`,
+          "bounded count term",
+        ),
+      ),
+    );
+
+    const originalPrepare = Database.prototype.prepare;
+    let discoveredFileCountReads = 0;
+    const prepareSpy = vi
+      .spyOn(Database.prototype, "prepare")
+      .mockImplementation(function (this: Database.Database, source: string) {
+        const normalized = source.replace(/\s+/g, " ").trim();
+        if (
+          normalized ===
+          "SELECT COUNT(*) AS count FROM memory_index_discovered_files WHERE root_id = ? AND generation_id = ?"
+        ) {
+          discoveredFileCountReads += 1;
+        }
+        return originalPrepare.call(this, source);
+      });
+    try {
+      index = new PersistentMemoryIndex({
+        databasePath: join(stateRoot, "memory.sqlite"),
+        backgroundRefresh: false,
+        queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      });
+      await expect(
+        index.refresh(
+          [{ path: memoryRoot, role: "global" }],
+          new AbortController().signal,
+          { explicit: true },
+        ),
+      ).resolves.toMatchObject({ kind: "complete" });
+    } finally {
+      prepareSpy.mockRestore();
+    }
+    expect(discoveredFileCountReads).toBe(1);
+
+    const inspection = new Database(index!.databasePath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      const plan = inspection
+        .prepare<[string, number], { detail: string }>(
+          `EXPLAIN QUERY PLAN
+           SELECT relative_path FROM memory_index_discovered_files
+            WHERE root_id = ? AND generation_id = ? AND state = 'pending'
+            ORDER BY CAST(relative_path AS BLOB)
+            LIMIT 1`,
+        )
+        .all("root", 1)
+        .map(({ detail }) => detail);
+      expect(plan).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(
+            "USING COVERING INDEX memory_discovered_pending_order",
+          ),
+        ]),
+      );
+      expect(plan.some((detail) => detail.includes("USE TEMP B-TREE"))).toBe(
+        false,
+      );
+    } finally {
+      inspection.close();
+    }
+  });
+
+  it("enforces the discovered-file boundary for replayed watcher changes", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-replay-limit-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    const roots = [{ path: memoryRoot, role: "global" as const }];
+    const clock = vi.spyOn(performance, "now");
+    clock.mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(30_001);
+    try {
+      await expect(
+        index.refresh(roots, new AbortController().signal),
+      ).resolves.toMatchObject({ kind: "refresh_pending" });
+    } finally {
+      clock.mockRestore();
+    }
+
+    const fixture = new Database(databasePath);
+    try {
+      fixture
+        .prepare(
+          "UPDATE memory_index_directory_work SET state = 'complete'",
+        )
+        .run();
+      fixture
+        .prepare(
+          "UPDATE memory_index_generations SET discovered_file_count = ? WHERE state = 'staging'",
+        )
+        .run(MAX_MEMORY_FILES_PER_ROOT);
+    } finally {
+      fixture.close();
+    }
+    index.recordChange({
+      rootPath: memoryRoot,
+      relativePath: "replayed.md",
+      kind: "create",
+    });
+    const result = await index.refresh(
+      roots,
+      new AbortController().signal,
+    );
+    expect(result.kind).toBe("degraded");
+    expect(result.roots[0]).toMatchObject({
+      state: "failed",
+      reason: "memory file count per root exceeds limit",
+    });
+  });
+
   it("keeps generation counts and the commutative digest exact across incremental replacement", async () => {
     const fixture = await createFixture();
     const memoryPath = join(fixture.globalRoot, "digest.md");
@@ -236,6 +404,236 @@ describe("C3b persistent full-corpus index", () => {
     const restored = readCurrentGenerationProgress(index!.databasePath);
     expect(restored.digest).toBe(initial.digest);
     expect(restored.discoveryOperations).toBeGreaterThan(0);
+  });
+
+  it("updates one file at a compacted page ceiling and rolls back growth without advancing its cursor", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-page-cap-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    const targetPath = join(memoryRoot, "target.md");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await writeMemory(targetPath, "Page cap", "pagecapterm alpha");
+    await Promise.all(
+      Array.from({ length: 128 }, (_, ordinal) =>
+        writeMemory(
+          join(memoryRoot, `filler-${ordinal.toString().padStart(3, "0")}.md`),
+          `Filler ${ordinal}`,
+          `unrelated filler ${ordinal}`,
+        ),
+      ),
+    );
+    const roots = [{ path: memoryRoot, role: "global" as const }];
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    const generationId = readCurrentGenerationId(databasePath);
+    const before = readCurrentGenerationProgress(databasePath);
+    index.close();
+    index = undefined;
+
+    const ceilingDatabase = new Database(databasePath);
+    let pageCeiling = 0;
+    let byteCeiling = 0;
+    try {
+      ceilingDatabase.pragma("wal_checkpoint(TRUNCATE)");
+      ceilingDatabase.exec("VACUUM");
+      expect(
+        ceilingDatabase.pragma("freelist_count", { simple: true }),
+      ).toBe(0);
+      pageCeiling = Number(
+        ceilingDatabase.pragma("page_count", { simple: true }),
+      );
+      byteCeiling =
+        pageCeiling *
+        Number(ceilingDatabase.pragma("page_size", { simple: true }));
+    } finally {
+      ceilingDatabase.close();
+    }
+
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      resourceLimitsForTesting: { maxDatabaseBytes: byteCeiling },
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    await writeMemory(targetPath, "Page cap", "pagecapterm bravo");
+    index.recordChange({
+      rootPath: memoryRoot,
+      relativePath: "target.md",
+      kind: "update",
+    });
+    await expect(
+      index.refresh(roots, new AbortController().signal),
+    ).resolves.toMatchObject({ kind: "complete" });
+    expect(readCurrentGenerationId(databasePath)).toBe(generationId);
+    const after = readCurrentGenerationProgress(databasePath);
+    expect(after).toMatchObject({
+      entryCount: before.entryCount,
+      indexedBytes: before.indexedBytes,
+      discoveryOperations: before.discoveryOperations,
+    });
+    expect(after.digest).not.toBe(before.digest);
+
+    const inspection = new Database(databasePath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      expect(Number(inspection.pragma("page_count", { simple: true }))).toBe(
+        pageCeiling,
+      );
+      expect(
+        (
+          inspection
+            .prepare(
+              `SELECT COUNT(*) AS count FROM memory_index_generations
+                WHERE state IN ('staging', 'superseded')`,
+            )
+            .get() as { count: number }
+        ).count,
+      ).toBe(0);
+    } finally {
+      inspection.close();
+    }
+
+    const committedState = readGenerationChangeState(
+      databasePath,
+      generationId,
+    );
+    await writeMemory(targetPath, "Page cap", `pagecapterm ${"x".repeat(50_000)}`);
+    index.recordChange({
+      rootPath: memoryRoot,
+      relativePath: "target.md",
+      kind: "update",
+    });
+    await expect(
+      index.refresh(roots, new AbortController().signal),
+    ).resolves.toMatchObject({
+      kind: "degraded",
+      roots: [{ state: "failed" }],
+    });
+    expect(readCurrentGenerationProgress(databasePath)).toEqual(after);
+    const rejectedState = readGenerationChangeState(
+      databasePath,
+      generationId,
+    );
+    expect(rejectedState.changeCursor).toBe(committedState.changeCursor);
+    expect(rejectedState.pendingChanges).toBeGreaterThan(0);
+    expect(readDatabasePageCount(databasePath)).toBe(pageCeiling);
+  });
+
+  it("rejects the exact 512-to-513 incremental create and recovers after a deletion", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-file-cap-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    const roots = [{ path: memoryRoot, role: "global" as const }];
+    const fileLimit = 512;
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    for (let start = 0; start < fileLimit; start += 128) {
+      await Promise.all(
+        Array.from(
+          { length: Math.min(128, fileLimit - start) },
+          (_, offset) => {
+            const ordinal = start + offset;
+            return writeMemory(
+              join(
+                memoryRoot,
+                `existing-${ordinal.toString().padStart(3, "0")}.md`,
+              ),
+              `Existing ${ordinal}`,
+              `bounded existing ${ordinal}`,
+            );
+          },
+        ),
+      );
+    }
+    const options = {
+      databasePath,
+      backgroundRefresh: false,
+      resourceLimitsForTesting: { maxFilesPerRoot: fileLimit },
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    } as const;
+    index = new PersistentMemoryIndex(options);
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    const generationId = readCurrentGenerationId(databasePath);
+    expect(readIndexedEntryCounts(databasePath, generationId)).toEqual({
+      entries: fileLimit,
+      ftsEntries: fileLimit,
+    });
+    const initialState = readGenerationChangeState(
+      databasePath,
+      generationId,
+    );
+    index.close();
+    index = undefined;
+
+    const createdPath = join(memoryRoot, "created-at-cap.md");
+    await writeMemory(createdPath, "Created at cap", "filecapterm");
+    index = new PersistentMemoryIndex(options);
+    index.recordChange({
+      rootPath: memoryRoot,
+      relativePath: "created-at-cap.md",
+      kind: "create",
+    });
+    await expect(
+      index.refresh(roots, new AbortController().signal),
+    ).resolves.toMatchObject({
+      kind: "degraded",
+      roots: [
+        {
+          state: "failed",
+          reason: "memory file count per root exceeds limit",
+        },
+      ],
+    });
+    expect(readCurrentGenerationId(databasePath)).toBe(generationId);
+    expect(readIndexedEntryCounts(databasePath, generationId)).toEqual({
+      entries: fileLimit,
+      ftsEntries: fileLimit,
+    });
+    expect(readGenerationChangeState(databasePath, generationId)).toEqual({
+      changeCursor: initialState.changeCursor,
+      pendingChanges: 1,
+    });
+    index.close();
+    index = undefined;
+
+    await unlink(join(memoryRoot, "existing-000.md"));
+    index = new PersistentMemoryIndex(options);
+    index.recordChange({
+      rootPath: memoryRoot,
+      relativePath: "existing-000.md",
+      kind: "delete",
+    });
+    await expect(
+      index.refresh(roots, new AbortController().signal),
+    ).resolves.toMatchObject({ kind: "complete" });
+    expect(readCurrentGenerationId(databasePath)).toBe(generationId);
+    expect(readIndexedEntryCounts(databasePath, generationId)).toEqual({
+      entries: fileLimit,
+      ftsEntries: fileLimit,
+    });
+    expect(readGenerationChangeState(databasePath, generationId)).toMatchObject(
+      { pendingChanges: 0 },
+    );
+    const recovered = await index.query(
+      roots,
+      ["filecapterm"],
+      new AbortController().signal,
+    );
+    expect(recovered.candidates).toHaveLength(1);
+    expect(recovered.candidates[0]?.canonicalPath).toBe(createdPath);
   });
 
   it("repairs a missed equal-size/equal-mtime external change through the bounded audit", async () => {
@@ -368,13 +766,15 @@ describe("C3b persistent full-corpus index", () => {
     await mkdir(stateRoot, { recursive: true });
     const incomplete = new Database(databasePath);
     incomplete.exec("CREATE TABLE unrelated(value TEXT)");
-    incomplete.pragma("user_version = 1");
+    incomplete.pragma(`user_version = ${MEMORY_INDEX_SCHEMA_VERSION}`);
     incomplete.close();
 
     index = new PersistentMemoryIndex({ databasePath });
     expect(index.ftsAvailable).toBe(true);
     expect(
-      (await readdir(stateRoot)).some((name) => name.includes(".schema-1-")),
+      (await readdir(stateRoot)).some((name) =>
+        name.includes(`.schema-${MEMORY_INDEX_SCHEMA_VERSION}-`),
+      ),
     ).toBe(true);
   });
 
@@ -675,7 +1075,478 @@ describe("C3b persistent full-corpus index", () => {
     expect(index.cleanupUnusedRoots()).toBe(1);
   });
 
-  it("observes an external update through the debounced watcher and atomically replaces the generation", async () => {
+  it("fails closed without leaking its reader heartbeat when close races an awaiting helper", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-query-close-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await writeMemory(
+      join(memoryRoot, "query.md"),
+      "Closing query",
+      "querycloseterm",
+    );
+    let now = 1_000;
+    const queryPool = new MemoryQueryProcessPool({ helperEntrypoint });
+    let markStarted!: () => void;
+    let releaseQuery!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseQuery = resolve;
+    });
+    vi.spyOn(queryPool, "query").mockImplementation(async () => {
+      markStarted();
+      await blocked;
+      return [];
+    });
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      now: () => now,
+      queryPool,
+    });
+    const roots = [{ path: memoryRoot, role: "project" as const }];
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    const generationId = readCurrentGenerationId(databasePath);
+    const inFlight = index.query(
+      roots,
+      ["querycloseterm"],
+      new AbortController().signal,
+    );
+    await started;
+    expect(readReaderPinState(databasePath, generationId).pinCount).toBe(1);
+
+    const clearCallsBeforeClose = clearIntervalSpy.mock.calls.length;
+    index.close();
+    index = undefined;
+    expect(clearIntervalSpy.mock.calls).toHaveLength(clearCallsBeforeClose + 1);
+    expect(readReaderPinState(databasePath, generationId).pinCount).toBe(0);
+    releaseQuery();
+    await expect(inFlight).resolves.toMatchObject({
+      kind: "unavailable",
+      candidates: [],
+      reason: "memory index closed while query was in progress",
+    });
+    clearIntervalSpy.mockRestore();
+  });
+
+  it("defers an incremental second writer while a queued query pins the generation", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-query-race-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    const memoryPath = join(memoryRoot, "query.md");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await writeMemory(memoryPath, "Query race", "querygenerationterm alpha");
+
+    const queryPool = new MemoryQueryProcessPool({ helperEntrypoint });
+    const runQuery = queryPool.query.bind(queryPool);
+    let markStarted!: () => void;
+    let releaseQuery!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseQuery = resolve;
+    });
+    let queryCalls = 0;
+    vi.spyOn(queryPool, "query").mockImplementation(
+      async (request, signal) => {
+        queryCalls += 1;
+        if (queryCalls === 1) {
+          markStarted();
+          await blocked;
+        }
+        return await runQuery(request, signal);
+      },
+    );
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool,
+    });
+    const writer = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    const roots = [{ path: memoryRoot, role: "project" as const }];
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    const selectedGeneration = readCurrentGenerationId(databasePath);
+
+    const inFlight = index.query(
+      roots,
+      ["querygenerationterm"],
+      new AbortController().signal,
+    );
+    await started;
+    try {
+      expect(readReaderPinState(databasePath, selectedGeneration)).toEqual({
+        generationPresent: true,
+        pinCount: 1,
+      });
+      await writeMemory(
+        memoryPath,
+        "Query race updated",
+        "querygenerationterm bravo",
+      );
+      writer.recordChange({
+        rootPath: memoryRoot,
+        relativePath: "query.md",
+        kind: "update",
+      });
+      await expect(
+        writer.refresh(roots, new AbortController().signal),
+      ).resolves.toMatchObject({
+        kind: "refresh_pending",
+        roots: [
+          {
+            reason:
+              "memory index update is waiting for an active reader or writer",
+          },
+        ],
+      });
+      expect(readCurrentGenerationId(databasePath)).toBe(selectedGeneration);
+      expect(readReaderPinState(databasePath, selectedGeneration)).toEqual({
+        generationPresent: true,
+        pinCount: 1,
+      });
+      releaseQuery();
+      const result = await inFlight;
+      expect(result.candidates).toHaveLength(1);
+      expect(result.candidates[0]).toMatchObject({
+        canonicalPath: memoryPath,
+        description: "querygenerationterm alpha",
+        generationId: selectedGeneration,
+      });
+      expect(index.readHeader(result.candidates[0]!)).toMatchObject({
+        title: "Query race",
+        description: "querygenerationterm alpha",
+      });
+      expect(queryCalls).toBe(1);
+      expect(readReaderPinState(databasePath, selectedGeneration)).toEqual({
+        generationPresent: true,
+        pinCount: 0,
+      });
+
+      await expectEventually(async () => {
+        const postPinRefresh = await writer.refresh(
+          roots,
+          new AbortController().signal,
+        );
+        if (postPinRefresh.kind === "complete") return true;
+        expect(postPinRefresh.kind).toBe("refresh_pending");
+        expect(postPinRefresh.roots[0]).toMatchObject({
+          generationId: selectedGeneration,
+          state: "refresh_pending",
+        });
+        expect([
+          undefined,
+          "memory index build slice is already active",
+          "memory index update is waiting for an active reader or writer",
+        ]).toContain(postPinRefresh.roots[0]?.reason);
+        expect(readCurrentGenerationId(databasePath)).toBe(selectedGeneration);
+        return false;
+      });
+      expect(readCurrentGenerationId(databasePath)).toBe(selectedGeneration);
+      const updated = await writer.query(
+        roots,
+        ["querygenerationterm"],
+        new AbortController().signal,
+      );
+      expect(updated.candidates[0]).toMatchObject({
+        description: "querygenerationterm bravo",
+        generationId: selectedGeneration,
+      });
+    } finally {
+      releaseQuery();
+      writer.close();
+    }
+  });
+
+  it("atomically refuses every requested root while one current generation has a writer lease", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-writer-race-"));
+    const stateRoot = join(temporaryRoot, "state");
+    const globalRoot = join(temporaryRoot, "global-memory");
+    const projectRoot = join(temporaryRoot, "project-memory");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    await mkdir(stateRoot, { recursive: true });
+    await mkdir(globalRoot, { recursive: true });
+    await mkdir(projectRoot, { recursive: true });
+    await writeMemory(
+      join(globalRoot, "global.md"),
+      "Leased global",
+      "writerfirstterm",
+    );
+    await writeMemory(
+      join(projectRoot, "project.md"),
+      "Available project",
+      "writerfirstterm",
+    );
+    const roots = [
+      { path: globalRoot, role: "global" as const },
+      { path: projectRoot, role: "project" as const },
+    ];
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    const leasedGeneration = readGenerationIdForRoot(
+      databasePath,
+      globalRoot,
+    );
+    const otherGeneration = readGenerationIdForRoot(
+      databasePath,
+      projectRoot,
+    );
+    let markWriterStarted!: () => void;
+    let releaseWriter!: () => void;
+    const writerStarted = new Promise<void>((resolve) => {
+      markWriterStarted = resolve;
+    });
+    const writerBlocked = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    const writer = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      beforeIncrementalReadForTesting: async () => {
+        markWriterStarted();
+        await writerBlocked;
+      },
+    });
+    await writeMemory(
+      join(globalRoot, "global.md"),
+      "Leased global updated",
+      "writerfirstterm updated",
+    );
+    writer.recordChange({
+      rootPath: globalRoot,
+      relativePath: "global.md",
+      kind: "update",
+    });
+    const writerRefresh = writer.refresh(
+      roots,
+      new AbortController().signal,
+    );
+    await writerStarted;
+    try {
+      const refused = await index.query(
+        roots,
+        ["writerfirstterm"],
+        new AbortController().signal,
+      );
+      expect(refused).toMatchObject({
+        kind: "unavailable",
+        candidates: [],
+        reason: "memory index update is in progress; retry the query",
+      });
+      expect(readReaderPinState(databasePath, leasedGeneration).pinCount).toBe(
+        0,
+      );
+      expect(readReaderPinState(databasePath, otherGeneration).pinCount).toBe(
+        0,
+      );
+
+      releaseWriter();
+      await expect(writerRefresh).resolves.toMatchObject({ kind: "complete" });
+      expect(readGenerationIdForRoot(databasePath, globalRoot)).toBe(
+        leasedGeneration,
+      );
+      expect(readGenerationIdForRoot(databasePath, projectRoot)).toBe(
+        otherGeneration,
+      );
+
+      const expiryDatabase = new Database(databasePath);
+      try {
+        expiryDatabase
+          .prepare(
+            `UPDATE memory_index_generations
+                SET builder_owner = ?, builder_lease_expires_at_ms = 0
+              WHERE id = ?`,
+          )
+          .run("expired-cross-instance-writer", leasedGeneration);
+      } finally {
+        expiryDatabase.close();
+      }
+      const afterExpiry = await index.query(
+        roots,
+        ["writerfirstterm"],
+        new AbortController().signal,
+      );
+      expect(afterExpiry).toMatchObject({ kind: "complete" });
+      expect(afterExpiry.candidates).toHaveLength(2);
+    } finally {
+      releaseWriter();
+      await writerRefresh.catch(() => undefined);
+      writer.close();
+    }
+  });
+
+  it("discards helper output when an expired reader pin is reclaimed by an incremental writer", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-pin-loss-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    const memoryPath = join(memoryRoot, "query.md");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await writeMemory(memoryPath, "Pin loss", "pinlossterm alpha");
+    let now = 1_000;
+    const queryPool = new MemoryQueryProcessPool({ helperEntrypoint });
+    const runQuery = queryPool.query.bind(queryPool);
+    let markStarted!: () => void;
+    let releaseQuery!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseQuery = resolve;
+    });
+    vi.spyOn(queryPool, "query").mockImplementation(
+      async (request, signal) => {
+        markStarted();
+        await blocked;
+        return await runQuery(request, signal);
+      },
+    );
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      now: () => now,
+      queryPool,
+    });
+    const writer = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      now: () => now,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    const roots = [{ path: memoryRoot, role: "project" as const }];
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    const generationId = readCurrentGenerationId(databasePath);
+    const inFlight = index.query(
+      roots,
+      ["pinlossterm"],
+      new AbortController().signal,
+    );
+    await started;
+    try {
+      now = readReaderPinExpiry(databasePath, generationId);
+      await writeMemory(memoryPath, "Pin loss updated", "pinlossterm bravo");
+      writer.recordChange({
+        rootPath: memoryRoot,
+        relativePath: "query.md",
+        kind: "update",
+      });
+      await expect(
+        writer.refresh(roots, new AbortController().signal),
+      ).resolves.toMatchObject({ kind: "complete" });
+      expect(readCurrentGenerationId(databasePath)).toBe(generationId);
+      expect(readReaderPinState(databasePath, generationId).pinCount).toBe(0);
+      releaseQuery();
+      await expect(inFlight).resolves.toMatchObject({
+        kind: "query_resource_limited",
+        candidates: [],
+        reason: "memory query reader snapshot lease expired before completion",
+      });
+    } finally {
+      releaseQuery();
+      writer.close();
+    }
+  });
+
+  it("protects root cleanup with a live crash pin and reclaims it after expiry", async () => {
+    temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3b-pin-expiry-"));
+    const memoryRoot = join(temporaryRoot, "memory");
+    const stateRoot = join(temporaryRoot, "state");
+    const databasePath = join(stateRoot, "memory.sqlite");
+    await mkdir(memoryRoot, { recursive: true });
+    await mkdir(stateRoot, { recursive: true });
+    await writeMemory(
+      join(memoryRoot, "pinned.md"),
+      "Pinned root",
+      "pinnedrootterm",
+    );
+    let now = 1_000;
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      now: () => now,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    const roots = [{ path: memoryRoot, role: "project" as const }];
+    await index.refresh(roots, new AbortController().signal, {
+      explicit: true,
+    });
+    const generationId = readCurrentGenerationId(databasePath);
+    const crashedReader = new Database(databasePath);
+    try {
+      crashedReader
+        .prepare(
+          `INSERT INTO memory_index_reader_pins(
+             pin_id, generation_id, lease_expires_at_ms
+           ) VALUES (?, ?, ?)`,
+        )
+        .run(
+          "crashed-reader",
+          generationId,
+          now + MEMORY_INDEX_ROOT_IDLE_TTL_MS + 1,
+        );
+    } finally {
+      crashedReader.close();
+    }
+    index.close();
+    index = undefined;
+
+    now += MEMORY_INDEX_ROOT_IDLE_TTL_MS;
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      now: () => now,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    expect(index.cleanupUnusedRoots()).toBe(0);
+    index.close();
+    index = undefined;
+
+    const expiry = new Database(databasePath);
+    try {
+      expiry
+        .prepare(
+          "UPDATE memory_index_reader_pins SET lease_expires_at_ms = ? WHERE pin_id = ?",
+        )
+        .run(now - 1, "crashed-reader");
+    } finally {
+      expiry.close();
+    }
+    index = new PersistentMemoryIndex({
+      databasePath,
+      backgroundRefresh: false,
+      now: () => now,
+      queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+    });
+    expect(readReaderPinState(databasePath, generationId).pinCount).toBe(0);
+    expect(index.cleanupUnusedRoots()).toBe(1);
+  });
+
+  it("observes an external update through the debounced watcher and refreshes atomically", async () => {
     const fixture = await createFixture();
     const memoryPath = join(fixture.globalRoot, "watched.md");
     await writeMemory(memoryPath, "Watched", "watcher_alpha");
@@ -714,7 +1585,7 @@ describe("C3b persistent full-corpus index", () => {
     expect(audited.watcherHealth).toBe("healthy");
   });
 
-  it("applies rename and delete changes through an invisible incremental generation", async () => {
+  it("applies rename and delete changes through the incremental writer exclusion", async () => {
     const fixture = await createFixture();
     const oldPath = join(fixture.projectRoot, "old-name.md");
     const newPath = join(fixture.projectRoot, "new-name.md");
@@ -796,6 +1667,19 @@ describe("C3b persistent full-corpus index", () => {
       state: "refresh_pending",
       generationToken,
     });
+    const discoveryBeforeRestart = readGenerationDiscoveryState(
+      databasePath,
+      generationToken!,
+    );
+    expect(discoveryBeforeRestart.persistedCount).toBe(
+      discoveryBeforeRestart.rowCount,
+    );
+    expect(discoveryBeforeRestart.persistedCount).toBeGreaterThan(0);
+    index.recordChange({
+      rootPath: memoryRoot,
+      relativePath: "replayed-missing.md",
+      kind: "create",
+    });
     const invisiblePrefix = await index.query(
       roots,
       ["ordinaryterm"],
@@ -811,11 +1695,24 @@ describe("C3b persistent full-corpus index", () => {
       queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
     });
     let refresh = await index.refresh(roots, new AbortController().signal);
+    const discoveryAfterRestart = readGenerationDiscoveryState(
+      databasePath,
+      generationToken!,
+    );
+    expect(discoveryAfterRestart.persistedCount).toBe(
+      discoveryAfterRestart.rowCount,
+    );
     for (
       let slice = 0;
       slice < 4 && refresh.kind === "refresh_pending";
       slice += 1
     ) {
+      index.close();
+      index = new PersistentMemoryIndex({
+        databasePath,
+        backgroundRefresh: false,
+        queryPool: new MemoryQueryProcessPool({ helperEntrypoint }),
+      });
       refresh = await index.refresh(roots, new AbortController().signal);
     }
     expect(refresh.kind).toBe("complete");
@@ -828,7 +1725,10 @@ describe("C3b persistent full-corpus index", () => {
     expect(complete.candidates[0]?.canonicalPath).toBe(
       join(memoryRoot, "10000.md"),
     );
-  }, 30_000);
+    expect(readGenerationDiscoveryState(databasePath, generationToken!)).toEqual(
+      { persistedCount: 0, rowCount: 0 },
+    );
+  }, 120_000);
 });
 
 async function createFixture(): Promise<{
@@ -878,7 +1778,7 @@ function readCurrentGenerationProgress(databasePath: string): {
   const database = new Database(databasePath, {
     readonly: true,
     fileMustExist: true,
-  }, 120_000);
+  });
   try {
     return database
       .prepare(
@@ -896,6 +1796,185 @@ function readCurrentGenerationProgress(databasePath: string): {
       digest: string;
       discoveryOperations: number;
     };
+  } finally {
+    database.close();
+  }
+}
+
+function readCurrentGenerationId(databasePath: string): number {
+  const database = new Database(databasePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    return database
+      .prepare<[], { current_generation_id: number }>(
+        `SELECT current_generation_id
+           FROM memory_index_roots
+          WHERE current_generation_id IS NOT NULL
+          ORDER BY root_id
+          LIMIT 1`,
+      )
+      .get()!.current_generation_id;
+  } finally {
+    database.close();
+  }
+}
+
+function readGenerationIdForRoot(
+  databasePath: string,
+  canonicalRoot: string,
+): number {
+  const database = new Database(databasePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    return database
+      .prepare<[string], { current_generation_id: number }>(
+        `SELECT current_generation_id
+           FROM memory_index_roots
+          WHERE canonical_path = ? AND current_generation_id IS NOT NULL`,
+      )
+      .get(canonicalRoot)!.current_generation_id;
+  } finally {
+    database.close();
+  }
+}
+
+function readReaderPinState(
+  databasePath: string,
+  generationId: number,
+): { readonly generationPresent: boolean; readonly pinCount: number } {
+  const database = new Database(databasePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    const generationPresent =
+      database
+        .prepare<[number], { present: number }>(
+          "SELECT 1 AS present FROM memory_index_generations WHERE id = ?",
+        )
+        .get(generationId) !== undefined;
+    const pinCount = database
+      .prepare<[number], { count: number }>(
+        `SELECT COUNT(*) AS count FROM memory_index_reader_pins
+          WHERE generation_id = ?`,
+      )
+      .get(generationId)!.count;
+    return { generationPresent, pinCount };
+  } finally {
+    database.close();
+  }
+}
+
+function readReaderPinExpiry(
+  databasePath: string,
+  generationId: number,
+): number {
+  const database = new Database(databasePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    return database
+      .prepare<[number], { lease_expires_at_ms: number }>(
+        `SELECT lease_expires_at_ms FROM memory_index_reader_pins
+          WHERE generation_id = ?`,
+      )
+      .get(generationId)!.lease_expires_at_ms;
+  } finally {
+    database.close();
+  }
+}
+
+function readGenerationChangeState(
+  databasePath: string,
+  generationId: number,
+): { readonly changeCursor: number; readonly pendingChanges: number } {
+  const database = new Database(databasePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    return database
+      .prepare<[number], { changeCursor: number; pendingChanges: number }>(
+        `SELECT g.change_cursor AS changeCursor,
+                (
+                  SELECT COUNT(*) FROM memory_index_change_log c
+                   WHERE c.root_id = g.root_id
+                     AND c.sequence > g.change_cursor
+                ) AS pendingChanges
+           FROM memory_index_generations g
+          WHERE g.id = ?`,
+      )
+      .get(generationId)!;
+  } finally {
+    database.close();
+  }
+}
+
+function readDatabasePageCount(databasePath: string): number {
+  const database = new Database(databasePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    return Number(database.pragma("page_count", { simple: true }));
+  } finally {
+    database.close();
+  }
+}
+
+function readIndexedEntryCounts(
+  databasePath: string,
+  generationId: number,
+): { readonly entries: number; readonly ftsEntries: number } {
+  const database = new Database(databasePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    const entries = database
+      .prepare<[number], { count: number }>(
+        "SELECT COUNT(*) AS count FROM memory_index_entries WHERE generation_id = ?",
+      )
+      .get(generationId)!.count;
+    const ftsEntries = database
+      .prepare<[number], { count: number }>(
+        "SELECT COUNT(*) AS count FROM memory_fts WHERE generation_id = ?",
+      )
+      .get(generationId)!.count;
+    return { entries, ftsEntries };
+  } finally {
+    database.close();
+  }
+}
+
+function readGenerationDiscoveryState(
+  databasePath: string,
+  generationToken: string,
+): { readonly persistedCount: number; readonly rowCount: number } {
+  const database = new Database(databasePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    return database
+      .prepare<
+        [string],
+        { persistedCount: number; rowCount: number }
+      >(
+        `SELECT g.discovered_file_count AS persistedCount,
+                COUNT(d.relative_path) AS rowCount
+           FROM memory_index_generations g
+           LEFT JOIN memory_index_discovered_files d
+             ON d.generation_id = g.id AND d.root_id = g.root_id
+          WHERE g.generation_token = ?
+          GROUP BY g.id`,
+      )
+      .get(generationToken)!;
   } finally {
     database.close();
   }

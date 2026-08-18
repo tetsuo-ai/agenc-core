@@ -669,25 +669,13 @@ describe("real embedded Neovim lifecycle", () => {
 
   it("retains the live process when abnormal recovery cannot preserve every dirty buffer", async () => {
     const filePath = join(dir, "unpreservable-buffer.txt");
-    const agencHome = join(dir, "agenc-home");
-    const recoveryBlocker = join(dir, "not-a-swap-directory");
-    await Promise.all([
-      writeFile(filePath, "disk content\n", "utf8"),
-      writeFile(recoveryBlocker, "regular file", "utf8"),
-    ]);
+    await writeFile(filePath, "disk content\n", "utf8");
     let execLua: EmbeddedNeovimStartupContext["execLua"] | null = null;
-    const beforeOpenFile = async (
+    const beforeOpenFile = (
       context: EmbeddedNeovimStartupContext,
     ): Promise<EmbeddedNeovimStartupPreparation | void> => {
       execLua = context.execLua;
-      const prepared = await installPrivateNeovimRecovery(context);
-      if (!prepared) return;
-      return {
-        recovery: {
-          ...prepared.paths,
-          swapFiles: prepared.swapFiles,
-        },
-      };
+      return Promise.resolve();
     };
     const session = await startEmbeddedNeovim({
       executable: neovim.executable,
@@ -697,9 +685,8 @@ describe("real embedded Neovim lifecycle", () => {
       column: 0,
       cwd: dir,
       workspaceRoot: dir,
-      agencHome,
       beforeOpenFile,
-      cleanupTimeoutMs: 50,
+      cleanupTimeoutMs: 5_000,
       size: { rows: 4, columns: 32 },
       onSnapshot: () => {},
       onError: () => {},
@@ -714,19 +701,30 @@ describe("real embedded Neovim lifecycle", () => {
       if (!startupExecLua) {
         throw new Error("embedded Neovim execLua hook was not captured");
       }
-      // Remove the existing swap and point 'directory' at a regular file.
-      // Neovim then rejects :preserve with E313. This is a deterministic real
-      // transport failure, not a mock-only malformed response.
-      await startupExecLua(
+      // This lifecycle-level negative case intentionally has no private
+      // recovery hook. An empty 'directory' is Neovim's documented,
+      // platform-independent way to make the dirty buffer unpreservable.
+      const faultState = await startupExecLua(
         [
           "vim.bo.swapfile = false",
-          `vim.o.directory = ${JSON.stringify(`${recoveryBlocker}//`)}`,
-          "return true",
+          "vim.o.directory = ''",
+          "return {",
+          "  modified = vim.bo.modified,",
+          "  directory = vim.o.directory,",
+          "  swapfile = vim.bo.swapfile,",
+          "  swap = vim.fn.swapname(0),",
+          "}",
         ].join("\n"),
       );
+      expect(faultState).toEqual({
+        modified: true,
+        directory: "",
+        swapfile: false,
+        swap: "",
+      });
 
       await expect(session.cleanup({ preserveRecovery: true })).rejects.toThrow(
-        "Embedded Neovim remains live because exact recovery preservation was not confirmed",
+        /exact recovery preservation was not confirmed:[\s\S]*Vim\(preserve\):E313: Cannot preserve, there is no swap file/u,
       );
       expect(session.recoveryPreservationProven).toBe(false);
       expect(isProcessAlive(pid)).toBe(true);
@@ -1084,26 +1082,17 @@ describe("real embedded Neovim lifecycle", () => {
         (snapshot) => snapshot.cursor.row === 0 && snapshot.cursor.column === 0,
       );
       await session.input("v$");
-      const visual = await waitForSnapshot(snapshots, (snapshot) =>
-        snapshot.mode.startsWith("visual"),
+      // Neovim may publish mode_change before the grid_line redraw that
+      // carries the visual-selection highlight. Require one coherent frame.
+      const visual = await waitForSnapshot(
+        snapshots,
+        (snapshot) =>
+          snapshot.mode.startsWith("visual") &&
+          visibleSelectionCellCount(snapshot) > 0,
       );
-      const highlightsById = new Map(
-        visual.highlights.map((highlight) => [
-          highlight.id,
-          highlight.attributes,
-        ]),
-      );
-      const selectedCells =
-        visual.cells[0]?.filter((cell) => {
-          const attributes = highlightsById.get(cell.highlightId);
-          return (
-            attributes?.reverse === true ||
-            typeof attributes?.background === "number"
-          );
-        }) ?? [];
 
       expect(visual.lines[0]).toContain("alpha beta gamma");
-      expect(selectedCells.length).toBeGreaterThan(0);
+      expect(visibleSelectionCellCount(visual)).toBeGreaterThan(0);
     } finally {
       await session.quit(true);
       await session.cleanup();
@@ -1855,6 +1844,24 @@ function isProcessAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function visibleSelectionCellCount(snapshot: NeovimRenderSnapshot): number {
+  const highlightsById = new Map(
+    snapshot.highlights.map((highlight) => [
+      highlight.id,
+      highlight.attributes,
+    ]),
+  );
+  return (
+    snapshot.cells[0]?.filter((cell) => {
+      const attributes = highlightsById.get(cell.highlightId);
+      return (
+        attributes?.reverse === true ||
+        typeof attributes?.background === "number"
+      );
+    }).length ?? 0
+  );
 }
 
 async function waitUntilDead(pid: number): Promise<void> {

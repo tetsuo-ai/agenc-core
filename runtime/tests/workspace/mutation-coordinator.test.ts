@@ -9463,6 +9463,7 @@ describe("filesystem-tool editor coherence", () => {
     expect(afterReconciliation.decision).toBe("allow");
     if (afterReconciliation.decision === "allow") {
       restarted.cancelMutation(afterReconciliation.token);
+      await restarted.flushQuarantinePersistence();
     }
   });
 

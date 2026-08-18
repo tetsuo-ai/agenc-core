@@ -40,6 +40,7 @@ const MARKER_TIMEOUT_MS = 3_000;
 const MARKER_MAX_BYTES = 1_024;
 const HEARTBEAT_STARTUP_TIMEOUT_MS = 1_000;
 const HEARTBEAT_INTERVAL_TIMEOUT_MS = 500;
+const HEALTHY_HEARTBEAT_INTERVAL_TIMEOUT_MS = 2_000;
 const SIMULATED_FAILURE_EXIT_CODE = 65;
 const LARGE_STDIN_BYTES = 1_048_576;
 const STALE_EVIDENCE_NONCE = "0".repeat(PROCESS_EVIDENCE_NONCE_HEX_LENGTH);
@@ -530,7 +531,14 @@ describe("contained child-process harness", () => {
     const healthyPath = join(root, "healthy-heartbeat.json");
     const healthy = await harness.run(
       nodeInvocation(root, [CRASH_CHILD, "heartbeat-and-exit", healthyPath], {
-        heartbeat: heartbeatExpectation(healthyPath),
+        // This half proves observation and clean exit, not the silence bound.
+        // Hosted shard load can defer the child's nominal 150ms timer without
+        // indicating a stalled process. The stalled half below retains the
+        // tight interval that proves heartbeat failure detection.
+        heartbeat: {
+          ...heartbeatExpectation(healthyPath),
+          intervalTimeoutMs: HEALTHY_HEARTBEAT_INTERVAL_TIMEOUT_MS,
+        },
       }),
     );
     expect(healthy).toMatchObject({
@@ -548,6 +556,36 @@ describe("contained child-process harness", () => {
       }),
     );
     expect(stalled).toMatchObject({
+      stopReason: "heartbeat-timeout",
+      forced: true,
+      backstopExpired: false,
+      heartbeatCount: 1,
+    });
+  });
+
+  it("retries a heartbeat pathname replacement during a bounded read", async () => {
+    const { harness, root } = await createHarness();
+    const heartbeatPath = join(root, "replaced-heartbeat.json");
+    const displacedPath = join(root, "replaced-heartbeat-displaced.json");
+    const result = await withSecondDescriptorStatHook(
+      async () => {
+        const heartbeat = await readFile(heartbeatPath);
+        await rename(heartbeatPath, displacedPath);
+        await writeFile(heartbeatPath, heartbeat);
+      },
+      () =>
+        harness.run(
+          nodeInvocation(
+            root,
+            [CRASH_CHILD, "heartbeat-stall", heartbeatPath],
+            {
+              heartbeat: heartbeatExpectation(heartbeatPath),
+              timeoutMs: 2_000,
+            },
+          ),
+        ),
+    );
+    expect(result).toMatchObject({
       stopReason: "heartbeat-timeout",
       forced: true,
       backstopExpired: false,

@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 import { describe, expect, test } from "vitest";
@@ -345,5 +346,46 @@ describe("MCP stdio server transport", () => {
     await transport.close();
     expect(closeEvents).toEqual(["closed"]);
     lines.close();
+  });
+
+  test("notifies close when stdin ended before transport startup", async () => {
+    const input = new PassThrough({ autoDestroy: false });
+    input.resume();
+    input.end();
+    await once(input, "end");
+    expect(input.readableEnded).toBe(true);
+    expect(input.destroyed).toBe(false);
+
+    const closed = new Promise<void>((resolve) => {
+      const transport = new McpStdioServerTransport({
+        input,
+        output: new PassThrough(),
+        server: new McpServerFramework(),
+        onClose: resolve,
+      });
+      transport.start();
+    });
+
+    await expect(withTimeout(closed)).resolves.toBeUndefined();
+    input.destroy();
+  });
+
+  test("notifies close when stdin was destroyed before transport startup", async () => {
+    const input = new PassThrough({ autoDestroy: false });
+    input.destroy();
+    expect(input.readableEnded).toBe(false);
+    expect(input.destroyed).toBe(true);
+
+    const closed = new Promise<void>((resolve) => {
+      const transport = new McpStdioServerTransport({
+        input,
+        output: new PassThrough(),
+        server: new McpServerFramework(),
+        onClose: resolve,
+      });
+      transport.start();
+    });
+
+    await expect(withTimeout(closed)).resolves.toBeUndefined();
   });
 });

@@ -935,12 +935,16 @@ benchmark-harness fault contracts for process-tree containment, owned-root
 retention, exclusive artifact publication, minimal subprocess environments,
 bounded metadata commands, and provenance binding. macOS adds one Seatbelt test
 and one volume-sensitive pathname-identity test for an exact total of 82 tests,
-ten suites, and six files. Before its native allowlist, Windows requires the
+ten suites, and six files. Both native lanes also exercise CSV publication on
+the real filesystem and reject a foreign inheritable-read ACL before staging,
+bringing macOS to an exact 84 tests, eleven suites, and seven files. Before its
+native allowlist, Windows requires the
 exact one-file FND red-probe audit summary and
 runs three forced-containment tests in one file. Its named-pipe and
 atomic-publication/`.cmd` and bound-helper transport contracts bring the native
-total to 88 tests, fifteen suites, and nine files. Release builders deliberately retain their
-narrower 44-test shared set: the Windows release subset excludes the two
+total to 92 tests, eighteen suites, and eleven files. Release builders
+deliberately retain their narrower 44-test shared set: the Windows release
+subset excludes the two
 named-pipe-only PR tests and the benchmark fault contract, while retaining the
 two bound-helper transport tests, so it remains 49 tests, twelve suites, and
 seven files. Native result parsers require the exact

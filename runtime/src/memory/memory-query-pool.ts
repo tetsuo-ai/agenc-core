@@ -112,6 +112,18 @@ export class MemoryQueryProcessPool {
       }
       throw new Error(`${response.code}: ${response.message}`);
     }
+    if (
+      response.candidates.some(
+        (candidate) =>
+          candidate.rootId !== request.rootId ||
+          candidate.generationId !== request.generationId ||
+          candidate.rootRole !== request.rootRole,
+      )
+    ) {
+      throw new MemoryIndexQueryResourceLimitedError(
+        "memory query helper returned a candidate outside its bound generation",
+      );
+    }
     return response.candidates;
   }
 }

@@ -103,6 +103,10 @@ import {
   assertLocalPrivateDirectory,
   assertLocalPrivateFile,
 } from "../utils/sqlite-lock.js";
+import {
+  resolveTrustedWindowsSystemExecutable,
+  resolveTrustedWindowsSystemPaths,
+} from "../utils/windows-system-path.js";
 
 export const DEFAULT_RELEASE_REPO = OFFICIAL_RELEASE_REPOSITORY;
 export const MINIMUM_PRIVATE_NODE_UPDATE_VERSION =
@@ -113,7 +117,6 @@ const PRIVATE_NODE_IDENTITY_REL = "node_modules/.agenc-node/identity.json";
 const DEFAULT_UPDATE_FETCH_TIMEOUT_MS = 120_000;
 const DEFAULT_STAGED_PRIVATE_NODE_TIMEOUT_MS = 15_000;
 const STAGED_PRIVATE_NODE_MAX_OUTPUT_BYTES = 16 * 1024;
-const WINDOWS_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
 
 /**
  * Create an empty, private work directory without retaining a caller-supplied
@@ -1869,34 +1872,41 @@ export async function resolveTrustedSystemTar(
   if (platform !== "win32") {
     throw new Error(`trusted system tar is unsupported on ${platform}`);
   }
-  // GLOBALROOT enters the kernel's real SystemRoot namespace and cannot be
-  // redirected through caller-controlled SystemRoot/WINDIR values or drive
-  // mappings. Keep the namespace path through execution rather than resolving
-  // it back to a mutable DOS spelling.
-  const systemRoot = WINDOWS_SYSTEM_ROOT;
-  const system32 = win32.join(systemRoot, "System32");
-  const powershellRoot = win32.join(system32, "WindowsPowerShell", "v1.0");
-  const tarPath = win32.join(system32, "tar.exe");
-  const metadata = lstatSync(tarPath, { bigint: true });
-  if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    throw new Error("Windows system tar is not a regular file");
-  }
-  const powershell = win32.join(powershellRoot, "powershell.exe");
-  const powershellMetadata = lstatSync(powershell, { bigint: true });
-  if (!powershellMetadata.isFile() || powershellMetadata.isSymbolicLink()) {
-    throw new Error("trusted Windows PowerShell is unavailable");
-  }
+  // Derive CreateProcess-compatible DOS spellings from GLOBALROOT and prove
+  // each executable still aliases its namespace path immediately before use.
+  const windowsPaths = resolveTrustedWindowsSystemPaths();
+  const {
+    systemRoot,
+    system32,
+    powerShellRoot: powershellRoot,
+  } = windowsPaths;
+  const tarPath = resolveTrustedWindowsSystemExecutable(windowsPaths, [
+    "System32",
+    "tar.exe",
+  ]);
+  const powershell = resolveTrustedWindowsSystemExecutable(windowsPaths, [
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  ]);
   const toolEnv: NodeJS.ProcessEnv = {
     APPDATA: "",
     COMSPEC: win32.join(system32, "cmd.exe"),
     HOME: "",
+    HOMEDRIVE: "",
+    HOMEPATH: "",
     LOCALAPPDATA: "",
+    LOGONSERVER: "",
     PATH: `${system32};${powershellRoot}`,
     PATHEXT: ".COM;.EXE",
     PSModulePath: win32.join(powershellRoot, "Modules"),
+    SYSTEMDRIVE: "",
     SystemRoot: systemRoot,
     TEMP: win32.join(systemRoot, "Temp"),
     TMP: win32.join(systemRoot, "Temp"),
+    USERDOMAIN: "",
+    USERNAME: "",
     USERPROFILE: powershellRoot,
     WINDIR: systemRoot,
   };
@@ -1926,7 +1936,13 @@ export async function resolveTrustedSystemTar(
   if (signature.error !== undefined || signature.status !== 0) {
     throw new Error("Windows system tar failed Microsoft Authenticode validation");
   }
-  return { path: tarPath, env: toolEnv };
+  return {
+    path: resolveTrustedWindowsSystemExecutable(windowsPaths, [
+      "System32",
+      "tar.exe",
+    ]),
+    env: toolEnv,
+  };
 }
 
 export interface OfficialProvenanceProcessResult {
@@ -1980,18 +1996,35 @@ export function runBoundedProcess(
         rejectKill(new Error("bounded Windows process has no PID for tree termination"));
         return;
       }
-      const system32 = win32.join(WINDOWS_SYSTEM_ROOT, "System32");
+      const windowsPaths = resolveTrustedWindowsSystemPaths();
+      const { systemRoot, system32 } = windowsPaths;
+      const taskkill = resolveTrustedWindowsSystemExecutable(windowsPaths, [
+        "System32",
+        "taskkill.exe",
+      ]);
       const killer = spawn(
-        win32.join(system32, "taskkill.exe"),
+        taskkill,
         ["/PID", String(child.pid), "/T", "/F"],
         {
           cwd: system32,
           env: {
+            APPDATA: "",
             COMSPEC: win32.join(system32, "cmd.exe"),
+            HOMEDRIVE: "",
+            HOMEPATH: "",
+            LOCALAPPDATA: "",
+            LOGONSERVER: "",
             PATH: system32,
             PATHEXT: ".COM;.EXE",
-            SystemRoot: WINDOWS_SYSTEM_ROOT,
-            WINDIR: WINDOWS_SYSTEM_ROOT,
+            PSMODULEPATH: "",
+            SYSTEMDRIVE: "",
+            SystemRoot: systemRoot,
+            TEMP: system32,
+            TMP: system32,
+            USERDOMAIN: "",
+            USERNAME: "",
+            USERPROFILE: system32,
+            WINDIR: systemRoot,
           },
           stdio: "ignore",
           windowsHide: true,
@@ -2169,11 +2202,20 @@ function stagedPrivateNodeEnvironment(
     throw new Error("staged private Node identity probe received an unexpected library path");
   }
   if (options.artifact.platform === "win") {
-    const system32 = win32.join(WINDOWS_SYSTEM_ROOT, "System32");
+    const { systemRoot, system32 } = resolveTrustedWindowsSystemPaths();
+    environment.APPDATA = options.stagingDir;
     environment.COMSPEC = win32.join(system32, "cmd.exe");
+    environment.HOMEDRIVE = "";
+    environment.HOMEPATH = "";
+    environment.LOCALAPPDATA = options.stagingDir;
+    environment.LOGONSERVER = "";
     environment.PATHEXT = ".COM;.EXE";
-    environment.SystemRoot = WINDOWS_SYSTEM_ROOT;
-    environment.WINDIR = WINDOWS_SYSTEM_ROOT;
+    environment.PSMODULEPATH = "";
+    environment.SYSTEMDRIVE = "";
+    environment.SystemRoot = systemRoot;
+    environment.USERDOMAIN = "";
+    environment.USERNAME = "";
+    environment.WINDIR = systemRoot;
     environment.PATH = `${dirname(options.nodeBinPath)};${system32}`;
   }
   return environment;
@@ -2344,24 +2386,27 @@ function officialVerifierEnvironment(workDir: string): NodeJS.ProcessEnv {
   }
   const configDir = join(workDir, "config");
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  const windowsSystem32 = win32.join(WINDOWS_SYSTEM_ROOT, "System32");
-  const windowsPowerShell = win32.join(
-    windowsSystem32,
-    "WindowsPowerShell",
-    "v1.0",
-  );
-  const trustedPath = process.platform === "win32"
-    ? `${windowsSystem32};${windowsPowerShell}`
-    : "/usr/bin:/bin";
+  const windowsPaths = process.platform === "win32"
+    ? resolveTrustedWindowsSystemPaths()
+    : undefined;
+  const trustedPath = windowsPaths === undefined
+    ? "/usr/bin:/bin"
+    : `${windowsPaths.system32};${windowsPaths.powerShellRoot}`;
   return {
     ...env,
-    ...(process.platform === "win32" ? {
-      COMSPEC: win32.join(windowsSystem32, "cmd.exe"),
+    ...(windowsPaths === undefined ? {} : {
+      COMSPEC: win32.join(windowsPaths.system32, "cmd.exe"),
+      HOMEDRIVE: "",
+      HOMEPATH: "",
+      LOGONSERVER: "",
       PATHEXT: ".COM;.EXE",
-      PSModulePath: win32.join(windowsPowerShell, "Modules"),
-      SystemRoot: WINDOWS_SYSTEM_ROOT,
-      WINDIR: WINDOWS_SYSTEM_ROOT,
-    } : {}),
+      PSModulePath: win32.join(windowsPaths.powerShellRoot, "Modules"),
+      SYSTEMDRIVE: "",
+      SystemRoot: windowsPaths.systemRoot,
+      USERDOMAIN: "",
+      USERNAME: "",
+      WINDIR: windowsPaths.systemRoot,
+    }),
     PATH: trustedPath,
     HOME: workDir,
     USERPROFILE: workDir,

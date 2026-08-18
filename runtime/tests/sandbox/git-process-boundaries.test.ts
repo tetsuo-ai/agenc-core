@@ -164,6 +164,10 @@ describe.sequential("git process sandbox boundaries", () => {
       "protocol.ext.allow=never",
       "-c",
       "diff.external=",
+      "-c",
+      "gc.auto=0",
+      "-c",
+      "maintenance.auto=false",
     ];
     const addArgs: Record<string, unknown> = {
       name: slug,

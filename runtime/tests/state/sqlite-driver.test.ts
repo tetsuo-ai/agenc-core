@@ -10,7 +10,6 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateSchemaMismatchError } from "./errors.js";
-import { compactionTransactionMigration } from "./migrations/024_compaction_transaction.js";
 import {
   applyMigrations,
   openStateDatabases,
@@ -202,7 +201,7 @@ describe("openStateDatabases", () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
           .get()?.version,
-      ).toBe(compactionTransactionMigration.version);
+      ).toBe(STATE_DB_MIGRATIONS.at(-1)?.version);
     } finally {
       driver.close();
     }

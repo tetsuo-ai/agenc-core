@@ -75,6 +75,141 @@ const MANIFEST_PATH = resolve(
 const DEFAULT_RUNTIME_FETCH_TIMEOUT_MS = 120_000;
 const DEFAULT_RUNTIME_EXTRACTION_TIMEOUT_MS = 120_000;
 const WINDOWS_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
+const WINDOWS_INVALID_FILE_ID = 0xffff_ffff_ffff_ffffn;
+const WINDOWS_RESERVED_DEVICE_BASENAME =
+  /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu;
+const WINDOWS_EXECUTABLE_FILESYSTEM = {
+  lstat: (path) => lstatSync(path, { bigint: true }),
+  open: (path) => openSync(
+    path,
+    fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+  ),
+  fstat: (descriptor) => fstatSync(descriptor, { bigint: true }),
+  close: closeSync,
+};
+
+function trustedWindowsSystemPaths(canonicalize = realpathSync.native) {
+  const systemRoot = canonicalize(WINDOWS_SYSTEM_ROOT);
+  if (!/^[a-z]:\\/iu.test(systemRoot) || win32.normalize(systemRoot) !== systemRoot) {
+    throw new Error(
+      "agenc: trusted Windows SystemRoot did not resolve to a canonical local DOS path",
+    );
+  }
+  const system32 = win32.join(systemRoot, "System32");
+  const powershellRoot = win32.join(system32, "WindowsPowerShell", "v1.0");
+  return {
+    systemRoot,
+    system32,
+    powershellRoot,
+    namespaceSystemRoot: WINDOWS_SYSTEM_ROOT,
+  };
+}
+
+function trustedWindowsSystemExecutable(
+  paths,
+  relativeSegments,
+  filesystem = WINDOWS_EXECUTABLE_FILESYSTEM,
+) {
+  if (
+    relativeSegments.length === 0 ||
+    relativeSegments.some((segment) => !isSafeWindowsExecutableSegment(segment))
+  ) {
+    throw new TypeError("trusted Windows executable segments are invalid");
+  }
+  const executable = win32.join(paths.systemRoot, ...relativeSegments);
+  const namespaceExecutable = win32.join(
+    paths.namespaceSystemRoot,
+    ...relativeSegments,
+  );
+  verifyWindowsExecutableAliases(namespaceExecutable, executable, filesystem);
+  return executable;
+}
+
+function isSafeWindowsExecutableSegment(segment) {
+  return segment.length > 0 && segment !== "." && segment !== ".." &&
+    win32.basename(segment) === segment &&
+    !/[\u0000-\u001f<>:"/\\|?*]/u.test(segment) && !/[ .]$/u.test(segment) &&
+    !WINDOWS_RESERVED_DEVICE_BASENAME.test(segment);
+}
+
+function verifyWindowsExecutableAliases(namespaceExecutable, executable, filesystem) {
+  let namespaceDescriptor;
+  let candidateDescriptor;
+  let operationError;
+  try {
+    const namespaceBefore = filesystem.lstat(namespaceExecutable);
+    const candidateBefore = filesystem.lstat(executable);
+    assertRegularWindowsExecutable(namespaceBefore, "GLOBALROOT path");
+    assertRegularWindowsExecutable(candidateBefore, "DOS path");
+    namespaceDescriptor = filesystem.open(namespaceExecutable);
+    candidateDescriptor = filesystem.open(executable);
+    const namespaceOpened = filesystem.fstat(namespaceDescriptor);
+    const candidateOpened = filesystem.fstat(candidateDescriptor);
+    const namespaceAfter = filesystem.lstat(namespaceExecutable);
+    const candidateAfter = filesystem.lstat(executable);
+    assertRegularWindowsExecutable(namespaceOpened, "GLOBALROOT descriptor");
+    assertRegularWindowsExecutable(candidateOpened, "DOS descriptor");
+    assertRegularWindowsExecutable(namespaceAfter, "GLOBALROOT path");
+    assertRegularWindowsExecutable(candidateAfter, "DOS path");
+    for (const identity of [
+      namespaceBefore,
+      candidateBefore,
+      namespaceOpened,
+      candidateOpened,
+      namespaceAfter,
+      candidateAfter,
+    ]) {
+      if (
+        identity.dev <= 0n || identity.ino <= 0n ||
+        identity.dev === WINDOWS_INVALID_FILE_ID || identity.ino === WINDOWS_INVALID_FILE_ID
+      ) {
+        throw new Error("trusted Windows system executable identity is unavailable");
+      }
+    }
+    if (
+      !sameWindowsExecutableIdentity(namespaceBefore, namespaceOpened) ||
+      !sameWindowsExecutableIdentity(namespaceOpened, namespaceAfter) ||
+      !sameWindowsExecutableIdentity(candidateBefore, candidateOpened) ||
+      !sameWindowsExecutableIdentity(candidateOpened, candidateAfter) ||
+      !sameWindowsExecutableIdentity(namespaceOpened, candidateOpened)
+    ) {
+      throw new Error("trusted Windows system executable identity mismatch");
+    }
+  } catch (error) {
+    operationError = error;
+  }
+  const closeErrors = [];
+  for (const descriptor of [candidateDescriptor, namespaceDescriptor]) {
+    if (descriptor === undefined) continue;
+    try { filesystem.close(descriptor); } catch (error) { closeErrors.push(error); }
+  }
+  if (operationError !== undefined) {
+    if (closeErrors.length > 0) {
+      throw new AggregateError(
+        [operationError, ...closeErrors],
+        "trusted Windows executable validation and cleanup both failed",
+      );
+    }
+    throw operationError;
+  }
+  if (closeErrors.length === 1) throw closeErrors[0];
+  if (closeErrors.length > 1) {
+    throw new AggregateError(
+      closeErrors,
+      "trusted Windows executable descriptor cleanup failed",
+    );
+  }
+}
+
+function assertRegularWindowsExecutable(identity, spelling) {
+  if (!identity.isFile() || identity.isSymbolicLink()) {
+    throw new Error(`trusted Windows ${spelling} executable is not a regular non-link file`);
+  }
+}
+
+function sameWindowsExecutableIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
 
 export function resolveAgenCHome(env = process.env, userHome = homedir()) {
   const configured = env.AGENC_HOME;
@@ -1106,31 +1241,39 @@ export function resolveTrustedSystemTar(platform = process.platform) {
     throw new Error(`agenc: trusted operating-system tar is unsupported on ${platform}`);
   }
 
-  // GLOBALROOT reaches the kernel's real SystemRoot namespace and cannot be
-  // redirected with caller-controlled SystemRoot/WINDIR values or drive maps.
-  const system32 = win32.join(WINDOWS_SYSTEM_ROOT, "System32");
-  const powershellRoot = win32.join(system32, "WindowsPowerShell", "v1.0");
-  const tarPath = win32.join(system32, "tar.exe");
-  const powershell = win32.join(powershellRoot, "powershell.exe");
-  for (const [path, label] of [[tarPath, "tar"], [powershell, "PowerShell"]]) {
-    const metadata = lstatSync(path, { bigint: true });
-    if (!metadata.isFile() || metadata.isSymbolicLink()) {
-      throw new Error(`agenc: trusted Windows ${label} is unavailable`);
-    }
-  }
+  // Derive CreateProcess-compatible DOS spellings from GLOBALROOT and prove
+  // each executable still aliases its namespace path immediately before use.
+  const windowsPaths = trustedWindowsSystemPaths();
+  const { systemRoot, system32, powershellRoot } = windowsPaths;
+  const tarPath = trustedWindowsSystemExecutable(windowsPaths, [
+    "System32",
+    "tar.exe",
+  ]);
+  const powershell = trustedWindowsSystemExecutable(windowsPaths, [
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  ]);
   const env = {
     APPDATA: "",
     COMSPEC: win32.join(system32, "cmd.exe"),
     HOME: "",
+    HOMEDRIVE: "",
+    HOMEPATH: "",
     LOCALAPPDATA: "",
+    LOGONSERVER: "",
     PATH: `${system32};${powershellRoot}`,
     PATHEXT: ".COM;.EXE",
     PSModulePath: win32.join(powershellRoot, "Modules"),
-    SystemRoot: WINDOWS_SYSTEM_ROOT,
-    TEMP: win32.join(WINDOWS_SYSTEM_ROOT, "Temp"),
-    TMP: win32.join(WINDOWS_SYSTEM_ROOT, "Temp"),
+    SYSTEMDRIVE: "",
+    SystemRoot: systemRoot,
+    TEMP: win32.join(systemRoot, "Temp"),
+    TMP: win32.join(systemRoot, "Temp"),
+    USERDOMAIN: "",
+    USERNAME: "",
     USERPROFILE: powershellRoot,
-    WINDIR: WINDOWS_SYSTEM_ROOT,
+    WINDIR: systemRoot,
   };
   const signature = spawnSync(
     powershell,
@@ -1159,7 +1302,10 @@ export function resolveTrustedSystemTar(platform = process.platform) {
   if (signature.error !== undefined || signature.status !== 0) {
     throw new Error("agenc: Windows operating-system tar failed Authenticode validation");
   }
-  return { path: tarPath, env };
+  return {
+    path: trustedWindowsSystemExecutable(windowsPaths, ["System32", "tar.exe"]),
+    env,
+  };
 }
 
 function extractTarGz(archive, destDir) {

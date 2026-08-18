@@ -23,6 +23,8 @@ import { csvJobSchedulerMigration } from "./021_csv_job_scheduler.js";
 import { workflowHandoffArtifactsMigration } from "./022_workflow_handoff_artifacts.js";
 import { setBasedCancellationIndexesMigration } from "./023_set_based_cancellation_indexes.js";
 import { compactionTransactionMigration } from "./024_compaction_transaction.js";
+import { csvOutputWriterIdentityMigration } from "./025_csv_output_writer_identity.js";
+import { csvOutputOrphanAccountingMigration } from "./026_csv_output_orphan_accounting.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -53,6 +55,8 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   workflowHandoffArtifactsMigration,
   setBasedCancellationIndexesMigration,
   compactionTransactionMigration,
+  csvOutputWriterIdentityMigration,
+  csvOutputOrphanAccountingMigration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [

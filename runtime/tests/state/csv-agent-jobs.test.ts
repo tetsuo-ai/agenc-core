@@ -3,14 +3,17 @@ import {
   link,
   lstat,
   readFile,
+  readdir,
   rename,
+  rm,
   unlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Event } from "../session/event-log.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import {
@@ -24,9 +27,21 @@ import {
   type CsvProcessIdentityProbe,
 } from "./csv-agent-jobs.js";
 import {
+  __setCsvOutputAfterExactUnlinkCaptureForTesting,
+  __setCsvOutputAfterRecoveryReadChunkForTesting,
+  __setCsvOutputAfterTargetCaptureForTesting,
+  __setCsvOutputAfterTargetAnchorEstablishedForTesting,
+  __setCsvOutputAfterTargetPublicationLinkForTesting,
+  __setCsvOutputAfterTargetRestoreLinkForTesting,
+  __setCsvOutputAfterWriterAnchorsReleasedForTesting,
+  __setCsvOutputBeforePublicationForTesting,
+  __setCsvOutputMissingBirthGenerationForTesting,
   createCsvOutputRootCapability,
   recoverCsvOutputIntents,
+  writeCsvOutput,
+  type CsvOutputIntentStore,
 } from "../agents/jobs/csv-output.js";
+import { csvOutputWriterAnchorPaths } from "../agents/jobs/csv-output-writer-anchor.js";
 import {
   canonicalizeCsvResult,
   compileCsvOutputSchema,
@@ -34,6 +49,8 @@ import {
 } from "../agents/jobs/csv-schema.js";
 import {
   CSV_MAX_DURABLE_BYTES,
+  CSV_MAX_OUTPUT_STAGING_BYTES_GLOBAL,
+  CSV_MAX_OUTPUT_STAGING_FILES_GLOBAL,
   CSV_MAX_RESULT_BLOB_BYTES_GLOBAL,
   CSV_MAX_STAGING_ROWS_GLOBAL,
 } from "../contracts/csv-job-contract.js";
@@ -278,6 +295,15 @@ function seedExpiredStagedImport(
 }
 
 beforeEach(() => {
+  __setCsvOutputAfterExactUnlinkCaptureForTesting(undefined);
+  __setCsvOutputAfterRecoveryReadChunkForTesting(undefined);
+  __setCsvOutputAfterTargetCaptureForTesting(undefined);
+  __setCsvOutputAfterTargetAnchorEstablishedForTesting(undefined);
+  __setCsvOutputAfterTargetPublicationLinkForTesting(undefined);
+  __setCsvOutputAfterTargetRestoreLinkForTesting(undefined);
+  __setCsvOutputAfterWriterAnchorsReleasedForTesting(undefined);
+  __setCsvOutputBeforePublicationForTesting(undefined);
+  __setCsvOutputMissingBirthGenerationForTesting(false);
   home = mkdtempSync(join(tmpdir(), "agenc-csv-jobs-home-"));
   cwd = mkdtempSync(join(tmpdir(), "agenc-csv-jobs-cwd-"));
   mkdirSync(join(cwd, ".git"));
@@ -288,6 +314,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setCsvOutputAfterExactUnlinkCaptureForTesting(undefined);
+  __setCsvOutputAfterRecoveryReadChunkForTesting(undefined);
+  __setCsvOutputAfterTargetCaptureForTesting(undefined);
+  __setCsvOutputAfterTargetAnchorEstablishedForTesting(undefined);
+  __setCsvOutputAfterTargetPublicationLinkForTesting(undefined);
+  __setCsvOutputAfterTargetRestoreLinkForTesting(undefined);
+  __setCsvOutputAfterWriterAnchorsReleasedForTesting(undefined);
+  __setCsvOutputBeforePublicationForTesting(undefined);
+  __setCsvOutputMissingBirthGenerationForTesting(false);
   driver.close();
   if (originalAgencHome) process.env.AGENC_HOME = originalAgencHome;
   else delete process.env.AGENC_HOME;
@@ -704,6 +739,672 @@ describe("CsvAgentJobsRepository", () => {
     ).toBe("cancelled");
   });
 
+  it("blocks retirement until an active output intent releases quota", async () => {
+    repo.createJob(
+      {
+        id: "output-retirement-fence",
+        name: "output-retirement-fence",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("output-retirement-item", 0, {})],
+    );
+    repo.markItemCancelled(
+      "output-retirement-fence",
+      "output-retirement-item",
+      "test retirement",
+    );
+    repo.refreshJobOutcome("output-retirement-fence");
+    const temporary = join(cwd, ".retirement-fence.agenc-csv.tmp");
+    await writeFile(temporary, "partial", { mode: 0o600 });
+    const stats = await lstat(temporary, { bigint: true });
+    const intentId = repo.beginCsvOutputIntent({
+      jobId: "output-retirement-fence",
+      rootPath: cwd,
+      targetPath: join(cwd, "retirement-fence.csv"),
+      temporaryPath: temporary,
+      temporaryDev: stats.dev.toString(),
+      temporaryIno: stats.ino.toString(),
+      temporaryBirthtimeNs: stats.birthtimeNs.toString(),
+      reservedBytes: 64,
+    });
+
+    expect(() => repo.retireJob("output-retirement-fence")).toThrow(
+      /not safely retireable/u,
+    );
+    expect(() =>
+      driver
+        .prepareState(
+          `UPDATE csv_output_intents SET writer_anchor_state = 'pending'
+           WHERE intent_id = ?`,
+        )
+        .run(intentId),
+    ).toThrow(/invalid CSV output writer anchor phase transition/u);
+    expect(() =>
+      driver
+        .prepareState("DELETE FROM csv_agent_jobs WHERE id = ?")
+        .run("output-retirement-fence"),
+    ).toThrow(/output intent/u);
+    repo.abandonCsvOutputIntent(intentId, true);
+    expect(
+      await recoverCsvOutputIntents(createCsvOutputRootCapability(cwd), repo),
+    ).toEqual({ recovered: 1, deferred: 0 });
+    repo.retireJob("output-retirement-fence");
+    repo.deleteJob("output-retirement-fence");
+    expect(repo.getJob("output-retirement-fence")).toBeNull();
+  });
+
+  it("transfers one bounded terminal output record into a tombstone before GC", async () => {
+    repo.createJob(
+      {
+        id: "terminal-output-evidence",
+        name: "terminal-output-evidence",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("terminal-output-item", 0, { value: "one" })],
+    );
+    repo.markItemCancelled(
+      "terminal-output-evidence",
+      "terminal-output-item",
+      "terminal evidence test",
+    );
+    repo.refreshJobOutcome("terminal-output-evidence");
+    const intentId = repo.reserveCsvOutputIntent({
+      jobId: "terminal-output-evidence",
+      rootPath: cwd,
+      targetPath: join(cwd, "terminal-output-evidence.csv"),
+      temporaryPath: join(cwd, ".terminal-output-evidence.agenc-csv.tmp"),
+      reservedBytes: 64,
+    });
+    expect(() =>
+      repo.reserveCsvOutputIntent({
+        jobId: "terminal-output-evidence",
+        rootPath: cwd,
+        targetPath: join(cwd, "concurrent.csv"),
+        temporaryPath: join(cwd, ".concurrent.agenc-csv.tmp"),
+        reservedBytes: 64,
+      }),
+    ).toThrow(/cannot create CSV output intent/u);
+    repo.abandonCsvOutputIntent(intentId, true);
+    expect(
+      await recoverCsvOutputIntents(createCsvOutputRootCapability(cwd), repo),
+    ).toEqual({ recovered: 1, deferred: 0 });
+    expect(
+      driver
+        .prepareState(
+          `SELECT terminal_kind, quota_released FROM csv_output_intents
+           WHERE intent_id = ?`,
+        )
+        .get(intentId),
+    ).toEqual({
+      terminal_kind: "orphaned_unverifiable_writer_identity",
+      quota_released: 1,
+    });
+
+    repo.retireJob("terminal-output-evidence");
+    expect(() =>
+      driver
+        .prepareState("DELETE FROM csv_agent_jobs WHERE id = ?")
+        .run("terminal-output-evidence"),
+    ).toThrow(/retained output intent evidence/u);
+    expect(() =>
+      repo.reserveCsvOutputIntent({
+        jobId: "terminal-output-evidence",
+        rootPath: cwd,
+        targetPath: join(cwd, "second.csv"),
+        temporaryPath: join(cwd, ".second.agenc-csv.tmp"),
+        reservedBytes: 64,
+      }),
+    ).toThrow(/cannot create CSV output intent/u);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_output_intents
+           WHERE job_id = 'terminal-output-evidence'`,
+        )
+        .get()?.count,
+    ).toBe(1);
+
+    repo.deleteJob("terminal-output-evidence");
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_output_intents
+           WHERE job_id = 'terminal-output-evidence'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_agent_jobs
+           WHERE id = 'terminal-output-evidence'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    const tombstone = driver
+      .prepareState<
+        [],
+        {
+          readonly job_id: string;
+          readonly final_status: string;
+          readonly final_counters_json: string;
+          readonly input_digest: string | null;
+          readonly output_digest: string | null;
+          readonly output_schema_digest: string | null;
+          readonly result_set_digest: string | null;
+          readonly evidence_references_json: string;
+          readonly payload_bytes: number;
+        }
+      >(
+        `SELECT job_id, final_status, final_counters_json, input_digest,
+                output_digest, output_schema_digest, result_set_digest,
+                evidence_references_json, payload_bytes
+         FROM csv_job_tombstones
+         WHERE job_id = 'terminal-output-evidence'`,
+      )
+      .get()!;
+    const references = JSON.parse(tombstone.evidence_references_json) as {
+      readonly terminalOutput: {
+        readonly contractVersion: number;
+        readonly intentId: string;
+        readonly temporaryPath: string;
+        readonly terminalKind: string;
+        readonly diagnostic: string;
+      };
+    };
+    expect(references.terminalOutput).toMatchObject({
+      contractVersion: 1,
+      intentId,
+      temporaryPath: join(cwd, ".terminal-output-evidence.agenc-csv.tmp"),
+      terminalKind: "orphaned_unverifiable_writer_identity",
+    });
+    expect(references.terminalOutput.diagnostic.length).toBeGreaterThan(0);
+    expect(tombstone.payload_bytes).toBe(
+      Buffer.byteLength(
+        JSON.stringify({
+          jobId: tombstone.job_id,
+          status: tombstone.final_status,
+          counters: tombstone.final_counters_json,
+          inputDigest: tombstone.input_digest,
+          outputDigest: tombstone.output_digest,
+          outputSchemaDigest: tombstone.output_schema_digest,
+          resultSetDigest: tombstone.result_set_digest,
+          evidenceReferences: tombstone.evidence_references_json,
+        }),
+        "utf8",
+      ),
+    );
+    expect(
+      driver
+        .prepareState<
+          [],
+          { readonly tombstone_bytes: number; readonly tombstones: number }
+        >(
+          `SELECT tombstone_bytes, tombstones FROM csv_storage_quota
+           WHERE singleton = 1`,
+        )
+        .get(),
+    ).toEqual({
+      tombstone_bytes: tombstone.payload_bytes,
+      tombstones: 1,
+    });
+
+    driver.close();
+    driver = openStateDatabases({ cwd });
+    repo = new CsvAgentJobsRepository(driver);
+    expect(
+      driver
+        .prepareState<[], { readonly evidence_references_json: string }>(
+          `SELECT evidence_references_json FROM csv_job_tombstones
+           WHERE job_id = 'terminal-output-evidence'`,
+        )
+        .get()?.evidence_references_json,
+    ).toBe(tombstone.evidence_references_json);
+  });
+
+  it("collector transfers terminal output evidence instead of pinning a durable job", async () => {
+    repo.createJob(
+      {
+        id: "terminal-output-collector",
+        name: "terminal-output-collector",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("terminal-collector-item", 0, { value: "one" })],
+    );
+    repo.markItemCancelled(
+      "terminal-output-collector",
+      "terminal-collector-item",
+      "terminal collector test",
+    );
+    repo.refreshJobOutcome("terminal-output-collector");
+    const intentId = repo.reserveCsvOutputIntent({
+      jobId: "terminal-output-collector",
+      rootPath: cwd,
+      targetPath: join(cwd, "terminal-output-collector.csv"),
+      temporaryPath: join(cwd, ".terminal-output-collector.agenc-csv.tmp"),
+      reservedBytes: 64,
+    });
+    repo.abandonCsvOutputIntent(intentId, true);
+    await expect(
+      recoverCsvOutputIntents(createCsvOutputRootCapability(cwd), repo),
+    ).resolves.toEqual({ recovered: 1, deferred: 0 });
+
+    expect(repo.collectRetainedTerminalJobs(Number.MAX_SAFE_INTEGER)).toBe(1);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_agent_jobs
+           WHERE id = 'terminal-output-collector'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_output_intents
+           WHERE intent_id = ?`,
+        )
+        .get(intentId)?.count,
+    ).toBe(0);
+    const references = JSON.parse(
+      driver
+        .prepareState<[], { readonly evidence_references_json: string }>(
+          `SELECT evidence_references_json FROM csv_job_tombstones
+           WHERE job_id = 'terminal-output-collector'`,
+        )
+        .get()!.evidence_references_json,
+    ) as {
+      readonly terminalOutput: {
+        readonly intentId: string;
+        readonly terminalKind: string;
+      };
+    };
+    expect(references.terminalOutput).toMatchObject({
+      intentId,
+      terminalKind: "orphaned_unverifiable_writer_identity",
+    });
+  });
+
+  it("fails a zero-work parent and keeps retained orphan bytes bounded through GC", async () => {
+    repo.createJob(
+      {
+        id: "terminal-output-parent",
+        name: "terminal-output-parent",
+        instruction: "x",
+        autoExport: true,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "terminal-output-parent.csv",
+      },
+      [item("terminal-parent-item", 0, { value: "one" })],
+    );
+    repo.markJobRunning("terminal-output-parent");
+    repo.markItemRunning("terminal-output-parent", "terminal-parent-item");
+    repo.markItemCompleted("terminal-output-parent", "terminal-parent-item", {
+      value: "done",
+    });
+    expect(repo.getJob("terminal-output-parent")).toMatchObject({
+      status: "running",
+      pendingItems: 0,
+      runningItems: 0,
+    });
+    const intentId = repo.reserveCsvOutputIntent({
+      jobId: "terminal-output-parent",
+      rootPath: cwd,
+      targetPath: join(cwd, "terminal-output-parent.csv"),
+      temporaryPath: join(cwd, ".terminal-output-parent.agenc-csv.tmp"),
+      reservedBytes: CSV_MAX_OUTPUT_STAGING_BYTES_GLOBAL,
+    });
+    repo.abandonCsvOutputIntent(intentId, true);
+
+    await expect(
+      recoverCsvOutputIntents(createCsvOutputRootCapability(cwd), repo),
+    ).resolves.toEqual({ recovered: 1, deferred: 0 });
+    expect(repo.getJob("terminal-output-parent")).toMatchObject({
+      status: "failed",
+      completedAt: expect.any(Number),
+      lastError: expect.stringContaining("anchor proof is unavailable"),
+    });
+    expect(
+      driver
+        .prepareState(
+          `SELECT output_staging_files, output_staging_bytes,
+                  output_orphan_files, output_orphan_bytes
+           FROM csv_storage_quota WHERE singleton = 1`,
+        )
+        .get(),
+    ).toEqual({
+      output_staging_files: 0,
+      output_staging_bytes: 0,
+      output_orphan_files: 1,
+      output_orphan_bytes: CSV_MAX_OUTPUT_STAGING_BYTES_GLOBAL,
+    });
+
+    expect(repo.collectRetainedTerminalJobs(Number.MAX_SAFE_INTEGER)).toBe(1);
+    expect(repo.getJob("terminal-output-parent")).toBeNull();
+    expect(
+      driver
+        .prepareState(
+          `SELECT state, reserved_bytes FROM csv_output_orphans
+           WHERE intent_id = ?`,
+        )
+        .get(intentId),
+    ).toEqual({
+      state: "retained",
+      reserved_bytes: CSV_MAX_OUTPUT_STAGING_BYTES_GLOBAL,
+    });
+
+    repo.createJob(
+      {
+        id: "orphan-cap-fence",
+        name: "orphan-cap-fence",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [],
+    );
+    expect(() =>
+      repo.reserveCsvOutputIntent({
+        jobId: "orphan-cap-fence",
+        rootPath: cwd,
+        targetPath: join(cwd, "orphan-cap-fence.csv"),
+        temporaryPath: join(cwd, ".orphan-cap-fence.agenc-csv.tmp"),
+        reservedBytes: 1,
+      }),
+    ).toThrow(/output staging byte quota is full/u);
+  });
+
+  it("transfers bounded duplicate terminal rows inherited from a pre-v25 database", async () => {
+    repo.createJob(
+      {
+        id: "legacy-duplicate-terminal",
+        name: "legacy-duplicate-terminal",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("legacy-duplicate-item", 0, { value: "one" })],
+    );
+    repo.markItemCancelled(
+      "legacy-duplicate-terminal",
+      "legacy-duplicate-item",
+      "legacy duplicate terminal test",
+    );
+    repo.refreshJobOutcome("legacy-duplicate-terminal");
+    const firstIntent = repo.reserveCsvOutputIntent({
+      jobId: "legacy-duplicate-terminal",
+      rootPath: cwd,
+      targetPath: join(cwd, "legacy-first.csv"),
+      temporaryPath: join(cwd, ".legacy-first.agenc-csv.tmp"),
+      reservedBytes: 64,
+    });
+    repo.abandonCsvOutputIntent(firstIntent, true);
+    await expect(
+      recoverCsvOutputIntents(createCsvOutputRootCapability(cwd), repo),
+    ).resolves.toEqual({ recovered: 1, deferred: 0 });
+    driver
+      .prepareState("DROP TRIGGER csv_output_intents_single_job_guard")
+      .run();
+    driver
+      .prepareState(
+        `INSERT INTO csv_output_intents (
+           intent_id, job_id, root_path, target_path, temporary_path,
+           reserved_bytes, state, owner_generation, owner_pid, last_error,
+           quota_released, terminal_kind, created_at, updated_at
+         ) VALUES (
+           'legacy-second-intent', 'legacy-duplicate-terminal', ?, ?, ?, 0,
+           'abandoned', 'legacy-second-owner', 42, 'legacy second evidence',
+           1, 'orphaned_target_replacement_conflict', 2, 2
+         )`,
+      )
+      .run(
+        cwd,
+        join(cwd, "legacy-second.csv"),
+        join(cwd, ".legacy-second.agenc-csv.tmp"),
+      );
+
+    repo.retireJob("legacy-duplicate-terminal");
+    repo.deleteJob("legacy-duplicate-terminal");
+    const references = JSON.parse(
+      driver
+        .prepareState<[], { readonly evidence_references_json: string }>(
+          `SELECT evidence_references_json FROM csv_job_tombstones
+           WHERE job_id = 'legacy-duplicate-terminal'`,
+        )
+        .get()!.evidence_references_json,
+    ) as {
+      readonly terminalOutputs: ReadonlyArray<{ readonly intentId: string }>;
+    };
+    expect(
+      references.terminalOutputs.map((entry) => entry.intentId).sort(),
+    ).toEqual([firstIntent, "legacy-second-intent"].sort());
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_output_intents
+           WHERE job_id = 'legacy-duplicate-terminal'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+  });
+
+  it("restart skips an active-output GC fence and transfers a later terminal row", async () => {
+    const createCancelledJob = (jobId: string): void => {
+      repo.createJob(
+        {
+          id: jobId,
+          name: jobId,
+          instruction: "x",
+          autoExport: false,
+          inputHeaders: ["value"],
+          inputCsvPath: "/in",
+          outputCsvPath: "",
+        },
+        [item(`${jobId}-item`, 0, { value: jobId })],
+      );
+      repo.markItemCancelled(jobId, `${jobId}-item`, "restart GC test");
+      repo.refreshJobOutcome(jobId);
+    };
+    createCancelledJob("blocked-oldest-gc");
+    createCancelledJob("blocked-finish-gc");
+    createCancelledJob("later-terminal-gc");
+    const blockedIntent = repo.reserveCsvOutputIntent({
+      jobId: "blocked-oldest-gc",
+      rootPath: cwd,
+      targetPath: join(cwd, "blocked-oldest-gc.csv"),
+      temporaryPath: join(cwd, ".blocked-oldest-gc.agenc-csv.tmp"),
+      reservedBytes: 64,
+    });
+    const finishTemporary = join(cwd, ".blocked-finish-gc.agenc-csv.tmp");
+    await writeFile(finishTemporary, "partial", { mode: 0o600 });
+    const finishStats = await lstat(finishTemporary, { bigint: true });
+    const finishIntent = repo.beginCsvOutputIntent({
+      jobId: "blocked-finish-gc",
+      rootPath: cwd,
+      targetPath: join(cwd, "blocked-finish-gc.csv"),
+      temporaryPath: finishTemporary,
+      temporaryDev: finishStats.dev.toString(),
+      temporaryIno: finishStats.ino.toString(),
+      temporaryBirthtimeNs: finishStats.birthtimeNs.toString(),
+      reservedBytes: 64,
+    });
+    const terminalIntent = repo.reserveCsvOutputIntent({
+      jobId: "later-terminal-gc",
+      rootPath: cwd,
+      targetPath: join(cwd, "later-terminal-gc.csv"),
+      temporaryPath: join(cwd, ".later-terminal-gc.agenc-csv.tmp"),
+      reservedBytes: 64,
+    });
+    repo.abandonCsvOutputIntent(terminalIntent, true);
+    await expect(
+      recoverCsvOutputIntents(createCsvOutputRootCapability(cwd), repo),
+    ).resolves.toEqual({ recovered: 1, deferred: 0 });
+    repo.abandonCsvOutputIntent(blockedIntent, true);
+    repo.abandonCsvOutputIntent(finishIntent, true);
+    driver
+      .prepareState(
+        `UPDATE csv_agent_jobs SET retired_at = ?, updated_at = ?
+         WHERE id IN (
+           'blocked-oldest-gc', 'blocked-finish-gc', 'later-terminal-gc'
+         )`,
+      )
+      .run(1, 1);
+
+    const insertInterruptedTombstone = (
+      jobId: string,
+      createdAt: number,
+    ): number => {
+      const counters = "{}";
+      const evidenceReferences = JSON.stringify({
+        historyCount: 0,
+        historyDigest: "0".repeat(64),
+      });
+      const payloadBytes = Buffer.byteLength(
+        JSON.stringify({
+          jobId,
+          status: "cancelled",
+          counters,
+          inputDigest: null,
+          outputDigest: null,
+          outputSchemaDigest: null,
+          resultSetDigest: null,
+          evidenceReferences,
+        }),
+        "utf8",
+      );
+      driver
+        .prepareState(
+          `INSERT INTO csv_job_tombstones (
+             job_id, final_status, final_counters_json, input_digest,
+             output_digest, output_schema_digest, result_set_digest,
+             evidence_references_json, payload_bytes, created_at
+           ) VALUES (?, 'cancelled', ?, NULL, NULL, NULL, NULL, ?, ?, ?)`,
+        )
+        .run(jobId, counters, evidenceReferences, payloadBytes, createdAt);
+      driver
+        .prepareState(
+          `INSERT INTO csv_job_gc_intents (
+             job_id, cursor_row_index, state, created_at, updated_at
+           ) VALUES (?, -1, 'tombstoned', ?, ?)`,
+        )
+        .run(jobId, createdAt, createdAt);
+      return payloadBytes;
+    };
+    const tombstoneBytes =
+      insertInterruptedTombstone("blocked-oldest-gc", 1) +
+      insertInterruptedTombstone("blocked-finish-gc", 2) +
+      insertInterruptedTombstone("later-terminal-gc", 3);
+    driver
+      .prepareState(
+        `UPDATE csv_storage_quota SET tombstones = tombstones + 3,
+           tombstone_bytes = tombstone_bytes + ? WHERE singleton = 1`,
+      )
+      .run(tombstoneBytes);
+
+    driver.close();
+    driver = openStateDatabases({ cwd });
+    repo = new CsvAgentJobsRepository(driver);
+
+    expect(
+      driver
+        .prepareState<[string], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_agent_jobs WHERE id = ?`,
+        )
+        .get("blocked-oldest-gc")?.count,
+    ).toBe(1);
+    expect(
+      driver
+        .prepareState<[string], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_output_intents
+           WHERE intent_id = ?`,
+        )
+      .get(blockedIntent)?.count,
+    ).toBe(1);
+    expect(
+      driver
+        .prepareState<[string], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_output_intents
+           WHERE intent_id = ?`,
+        )
+        .get(finishIntent)?.count,
+    ).toBe(1);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_agent_jobs
+           WHERE id = 'later-terminal-gc'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      driver
+        .prepareState<[string], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_output_intents
+           WHERE intent_id = ?`,
+        )
+        .get(terminalIntent)?.count,
+    ).toBe(0);
+    const references = JSON.parse(
+      driver
+        .prepareState<[], { readonly evidence_references_json: string }>(
+          `SELECT evidence_references_json FROM csv_job_tombstones
+           WHERE job_id = 'later-terminal-gc'`,
+        )
+        .get()!.evidence_references_json,
+    ) as { readonly terminalOutput: { readonly intentId: string } };
+    expect(references.terminalOutput.intentId).toBe(terminalIntent);
+
+    await expect(
+      recoverCsvOutputIntents(createCsvOutputRootCapability(cwd), repo),
+    ).resolves.toEqual({ recovered: 2, deferred: 0 });
+    for (const [jobId, intentId] of [
+      ["blocked-oldest-gc", blockedIntent],
+      ["blocked-finish-gc", finishIntent],
+    ] as const) {
+      expect(
+        driver
+          .prepareState<[string], { readonly count: number }>(
+            `SELECT COUNT(*) AS count FROM csv_agent_jobs WHERE id = ?`,
+          )
+          .get(jobId)?.count,
+      ).toBe(0);
+      expect(
+        driver
+          .prepareState<[string], { readonly count: number }>(
+            `SELECT COUNT(*) AS count FROM csv_output_intents
+             WHERE intent_id = ?`,
+          )
+          .get(intentId)?.count,
+      ).toBe(0);
+    }
+    const blockedReferences = JSON.parse(
+      driver
+        .prepareState<[], { readonly evidence_references_json: string }>(
+          `SELECT evidence_references_json FROM csv_job_tombstones
+           WHERE job_id = 'blocked-oldest-gc'`,
+        )
+        .get()!.evidence_references_json,
+    ) as { readonly terminalOutput: { readonly intentId: string } };
+    expect(blockedReferences.terminalOutput.intentId).toBe(blockedIntent);
+  });
+
   it("listJobs filters by status and orders by updated_at DESC", async () => {
     repo.createJob(
       {
@@ -882,6 +1583,7 @@ describe("CsvAgentJobsRepository", () => {
       temporaryPath: abandonedTemporary,
       temporaryDev: abandonedStats.dev.toString(),
       temporaryIno: abandonedStats.ino.toString(),
+      temporaryBirthtimeNs: abandonedStats.birthtimeNs.toString(),
       reservedBytes: 128,
     });
     repo.abandonCsvOutputIntent(abandonedIntent, true);
@@ -909,6 +1611,7 @@ describe("CsvAgentJobsRepository", () => {
       temporaryPath: publishedTemporary,
       temporaryDev: publishedStats.dev.toString(),
       temporaryIno: publishedStats.ino.toString(),
+      temporaryBirthtimeNs: publishedStats.birthtimeNs.toString(),
       reservedBytes: 128,
     });
     repo.markCsvOutputIntentFlushed(publishedIntent);
@@ -933,7 +1636,920 @@ describe("CsvAgentJobsRepository", () => {
     ).toBe(0);
   });
 
-  it("retains an output intent instead of unlinking a replaced temporary", async () => {
+  it("releases a page claim when cancellation arrives immediately after claim", async () => {
+    repo.createJob(
+      {
+        id: "post-claim-abort",
+        name: "post-claim-abort",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("post-claim-abort-item", 0, { value: "one" })],
+    );
+    const temporary = join(cwd, ".post-claim-abort.agenc-csv.tmp");
+    await writeFile(temporary, "partial", { mode: 0o600 });
+    const stats = await lstat(temporary, { bigint: true });
+    const intentId = repo.beginCsvOutputIntent({
+      jobId: "post-claim-abort",
+      rootPath: cwd,
+      targetPath: join(cwd, "post-claim-abort.csv"),
+      temporaryPath: temporary,
+      temporaryDev: stats.dev.toString(),
+      temporaryIno: stats.ino.toString(),
+      temporaryBirthtimeNs: stats.birthtimeNs.toString(),
+      reservedBytes: 64,
+    });
+    repo.abandonCsvOutputIntent(intentId, true);
+    const controller = new AbortController();
+    const reason = new Error("abort after repository claim");
+    const originalClaim = repo.claimCsvOutputRecoveryIntents.bind(repo);
+    vi.spyOn(repo, "claimCsvOutputRecoveryIntents").mockImplementationOnce(
+      async (input) => {
+        const page = await originalClaim(input);
+        controller.abort(reason);
+        return page;
+      },
+    );
+
+    await expect(
+      recoverCsvOutputIntents(createCsvOutputRootCapability(cwd), repo, {
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason);
+    expect(
+      driver
+        .prepareState(
+          `SELECT state, quota_released FROM csv_output_intents
+           WHERE intent_id = ?`,
+        )
+        .get(intentId),
+    ).toEqual({ state: "abandoned", quota_released: 0 });
+
+    expect(
+      await recoverCsvOutputIntents(createCsvOutputRootCapability(cwd), repo),
+    ).toEqual({ recovered: 1, deferred: 0 });
+    expect(
+      driver
+        .prepareState(
+          "SELECT 1 AS present FROM csv_output_intents WHERE intent_id = ?",
+        )
+        .get(intentId),
+    ).toBeUndefined();
+  });
+
+  it("releases the current and unprocessed claims when hashing is cancelled", async () => {
+    const capability = createCsvOutputRootCapability(cwd);
+    for (const suffix of ["first", "second"]) {
+      const jobId = `hash-abort-${suffix}`;
+      repo.createJob(
+        {
+          id: jobId,
+          name: jobId,
+          instruction: "x",
+          autoExport: false,
+          inputHeaders: ["value"],
+          inputCsvPath: "/in",
+          outputCsvPath: "",
+        },
+        [item(`${jobId}-item`, 0, { value: suffix })],
+      );
+      const temporary = join(cwd, `.${jobId}.agenc-csv.tmp`);
+      const target = join(cwd, `${jobId}.csv`);
+      await writeFile(temporary, `${suffix}\n`, { mode: 0o600 });
+      const stats = await lstat(temporary, { bigint: true });
+      const intentId = repo.beginCsvOutputIntent({
+        jobId,
+        rootPath: cwd,
+        targetPath: target,
+        temporaryPath: temporary,
+        temporaryDev: stats.dev.toString(),
+        temporaryIno: stats.ino.toString(),
+        temporaryBirthtimeNs: stats.birthtimeNs.toString(),
+        reservedBytes: 64,
+      });
+      repo.markCsvOutputIntentFlushed(intentId);
+      await link(temporary, target);
+      repo.markCsvOutputIntentPublished(intentId);
+      repo.abandonCsvOutputIntent(intentId, true);
+    }
+    const controller = new AbortController();
+    const reason = new Error("abort recovered artifact hash");
+    __setCsvOutputAfterRecoveryReadChunkForTesting(() => {
+      __setCsvOutputAfterRecoveryReadChunkForTesting(undefined);
+      controller.abort(reason);
+    });
+
+    await expect(
+      recoverCsvOutputIntents(capability, repo, { signal: controller.signal }),
+    ).rejects.toBe(reason);
+    expect(
+      driver
+        .prepareState<[], { readonly state: string }>(
+          `SELECT state FROM csv_output_intents
+           WHERE job_id LIKE 'hash-abort-%' ORDER BY job_id`,
+        )
+        .all(),
+    ).toEqual([{ state: "abandoned" }, { state: "abandoned" }]);
+
+    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
+      recovered: 2,
+      deferred: 0,
+    });
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          "SELECT COUNT(*) AS count FROM csv_output_intents WHERE job_id LIKE 'hash-abort-%'",
+        )
+        .get()?.count,
+    ).toBe(0);
+  });
+
+  it("recovers a create-new output interrupted after cleanup capture", async () => {
+    repo.createJob(
+      {
+        id: "output-capture-crash",
+        name: "output-capture-crash",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("output-capture-item", 0, { value: "one" })],
+    );
+    const capability = createCsvOutputRootCapability(cwd);
+    const target = join(cwd, "captured-create-new.csv");
+    const interrupted = new Error("crash after cleanup capture");
+    __setCsvOutputAfterExactUnlinkCaptureForTesting(() => {
+      __setCsvOutputAfterExactUnlinkCaptureForTesting(undefined);
+      throw interrupted;
+    });
+
+    await expect(
+      writeCsvOutput({
+        capability,
+        jobId: "output-capture-crash",
+        requestedPath: target,
+        mode: "create_new",
+        headers: ["value"],
+        rows: [["one"]],
+        intentStore: repo,
+      }),
+    ).rejects.toBe(interrupted);
+    expect(await readFile(target, "utf8")).toBe("value\none\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(4n);
+    expect(
+      (await readdir(cwd)).filter((name) => name.endsWith(".capture")),
+    ).toHaveLength(1);
+
+    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
+      recovered: 1,
+      deferred: 0,
+    });
+    expect(await readFile(target, "utf8")).toBe("value\none\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(1n);
+    expect(
+      (await readdir(cwd)).filter((name) => name.endsWith(".capture")),
+    ).toEqual([]);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          "SELECT COUNT(*) AS count FROM csv_output_intents",
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      driver
+        .prepareState<
+          [],
+          {
+            readonly output_staging_files: number;
+            readonly output_staging_bytes: number;
+          }
+        >(
+          `SELECT output_staging_files, output_staging_bytes
+           FROM csv_storage_quota WHERE singleton = 1`,
+        )
+        .get(),
+    ).toEqual({ output_staging_files: 0, output_staging_bytes: 0 });
+  });
+
+  it("rolls back an interrupted replace after the original target capture", async () => {
+    repo.createJob(
+      {
+        id: "replace-target-capture-crash",
+        name: "replace-target-capture-crash",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("replace-target-capture-item", 0, { value: "one" })],
+    );
+    const capability = createCsvOutputRootCapability(cwd);
+    const target = join(cwd, "replace-target-capture.csv");
+    await writeFile(target, "prior\n", { mode: 0o600 });
+    const interrupted = new Error("crash after target capture");
+    __setCsvOutputAfterTargetCaptureForTesting(() => {
+      __setCsvOutputAfterTargetCaptureForTesting(undefined);
+      throw interrupted;
+    });
+
+    await expect(
+      writeCsvOutput({
+        capability,
+        jobId: "replace-target-capture-crash",
+        requestedPath: target,
+        headers: ["value"],
+        rows: [["owned"]],
+        intentStore: repo,
+      }),
+    ).rejects.toBe(interrupted);
+    await expect(readFile(target)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      (await readdir(cwd)).filter((name) => name.endsWith(".capture")),
+    ).toHaveLength(1);
+
+    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
+      recovered: 1,
+      deferred: 0,
+    });
+    await expect(readFile(target, "utf8")).resolves.toBe("prior\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(1n);
+    expect(
+      (await readdir(cwd)).filter((name) => name.endsWith(".capture")),
+    ).toEqual([]);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_output_intents
+           WHERE job_id = 'replace-target-capture-crash'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+  });
+
+  it("finishes an interrupted replace after the no-clobber writer link", async () => {
+    repo.createJob(
+      {
+        id: "replace-target-link-crash",
+        name: "replace-target-link-crash",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("replace-target-link-item", 0, { value: "one" })],
+    );
+    const capability = createCsvOutputRootCapability(cwd);
+    const target = join(cwd, "replace-target-link.csv");
+    await writeFile(target, "prior\n", { mode: 0o600 });
+    const interrupted = new Error("crash after target publication link");
+    __setCsvOutputAfterTargetPublicationLinkForTesting(() => {
+      __setCsvOutputAfterTargetPublicationLinkForTesting(undefined);
+      throw interrupted;
+    });
+
+    await expect(
+      writeCsvOutput({
+        capability,
+        jobId: "replace-target-link-crash",
+        requestedPath: target,
+        headers: ["value"],
+        rows: [["owned"]],
+        intentStore: repo,
+      }),
+    ).rejects.toBe(interrupted);
+    await expect(readFile(target, "utf8")).resolves.toBe("value\nowned\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(4n);
+
+    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
+      recovered: 1,
+      deferred: 0,
+    });
+    await expect(readFile(target, "utf8")).resolves.toBe("value\nowned\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(1n);
+    expect(
+      (await readdir(cwd)).filter((name) => name.endsWith(".capture")),
+    ).toEqual([]);
+    expect(repo.getJob("replace-target-link-crash")?.outputDigest).toBe(
+      createHash("sha256").update("value\nowned\n").digest("hex"),
+    );
+  });
+
+  it("retains a concurrent target and the pinned original on replace CAS loss", async () => {
+    repo.createJob(
+      {
+        id: "replace-target-cas-loss",
+        name: "replace-target-cas-loss",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("replace-target-cas-item", 0, { value: "one" })],
+    );
+    const capability = createCsvOutputRootCapability(cwd);
+    const target = join(cwd, "replace-target-cas-loss.csv");
+    await writeFile(target, "prior\n", { mode: 0o600 });
+    __setCsvOutputBeforePublicationForTesting(async (_temporary, path) => {
+      __setCsvOutputBeforePublicationForTesting(undefined);
+      await unlink(path);
+      await writeFile(path, "concurrent replacement\n", { mode: 0o600 });
+    });
+
+    await expect(
+      writeCsvOutput({
+        capability,
+        jobId: "replace-target-cas-loss",
+        requestedPath: target,
+        headers: ["value"],
+        rows: [["owned"]],
+        intentStore: repo,
+      }),
+    ).rejects.toThrow(/target identity changed at publication/u);
+    await expect(readFile(target, "utf8")).resolves.toBe(
+      "concurrent replacement\n",
+    );
+    const capture = (await readdir(cwd)).find((name) =>
+      name.endsWith(".capture"),
+    );
+    expect(capture).toBeDefined();
+    await expect(
+      readFile(join(cwd, capture!, "target-anchor"), "utf8"),
+    ).resolves.toBe("prior\n");
+
+    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
+      recovered: 1,
+      deferred: 0,
+    });
+    expect(
+      driver
+        .prepareState(
+          `SELECT terminal_kind, quota_released FROM csv_output_intents
+           WHERE job_id = 'replace-target-cas-loss'`,
+        )
+        .get(),
+    ).toEqual({
+      terminal_kind: "orphaned_target_replacement_conflict",
+      quota_released: 1,
+    });
+    await expect(readFile(target, "utf8")).resolves.toBe(
+      "concurrent replacement\n",
+    );
+    await expect(
+      readFile(join(cwd, capture!, "target-anchor"), "utf8"),
+    ).resolves.toBe("prior\n");
+  });
+
+  it("rejects same-size target mutation even when mtime is restored", async () => {
+    repo.createJob(
+      {
+        id: "replace-target-digest-race",
+        name: "replace-target-digest-race",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("replace-target-digest-item", 0, { value: "one" })],
+    );
+    const capability = createCsvOutputRootCapability(cwd);
+    const target = join(cwd, "replace-target-digest-race.csv");
+    await writeFile(target, "AAAA\n", { mode: 0o600 });
+    const baseline = await lstat(target, { bigint: true });
+    __setCsvOutputBeforePublicationForTesting(async (_temporary, path) => {
+      __setCsvOutputBeforePublicationForTesting(undefined);
+      await writeFile(path, "BBBB\n", { mode: 0o600 });
+      await utimes(
+        path,
+        Number(baseline.atimeNs) / 1e9,
+        Number(baseline.mtimeNs) / 1e9,
+      );
+    });
+
+    await expect(
+      writeCsvOutput({
+        capability,
+        jobId: "replace-target-digest-race",
+        requestedPath: target,
+        headers: ["value"],
+        rows: [["owned"]],
+        intentStore: repo,
+      }),
+    ).rejects.toThrow(/target identity changed at publication/u);
+    await expect(readFile(target, "utf8")).resolves.toBe("BBBB\n");
+  });
+
+  it("resumes rollback after crashing between target restore link and capture unlink", async () => {
+    repo.createJob(
+      {
+        id: "replace-target-restore-crash",
+        name: "replace-target-restore-crash",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("replace-target-restore-item", 0, { value: "one" })],
+    );
+    const capability = createCsvOutputRootCapability(cwd);
+    const target = join(cwd, "replace-target-restore-crash.csv");
+    await writeFile(target, "prior\n", { mode: 0o600 });
+    const captureCrash = new Error("crash with original target captured");
+    __setCsvOutputAfterTargetCaptureForTesting(() => {
+      __setCsvOutputAfterTargetCaptureForTesting(undefined);
+      throw captureCrash;
+    });
+    await expect(
+      writeCsvOutput({
+        capability,
+        jobId: "replace-target-restore-crash",
+        requestedPath: target,
+        headers: ["value"],
+        rows: [["owned"]],
+        intentStore: repo,
+      }),
+    ).rejects.toBe(captureCrash);
+
+    const restoreCrash = new Error("crash after target restore link");
+    __setCsvOutputAfterTargetRestoreLinkForTesting(() => {
+      __setCsvOutputAfterTargetRestoreLinkForTesting(undefined);
+      throw restoreCrash;
+    });
+    await expect(recoverCsvOutputIntents(capability, repo)).resolves.toEqual({
+      recovered: 0,
+      deferred: 1,
+    });
+    await expect(readFile(target, "utf8")).resolves.toBe("prior\n");
+    const capture = (await readdir(cwd)).find((name) =>
+      name.endsWith(".capture"),
+    );
+    expect(capture).toBeDefined();
+    expect(
+      (await lstat(join(cwd, capture!, "target-candidate"), { bigint: true }))
+        .nlink,
+    ).toBe(3n);
+
+    await expect(recoverCsvOutputIntents(capability, repo)).resolves.toEqual({
+      recovered: 1,
+      deferred: 0,
+    });
+    await expect(readFile(target, "utf8")).resolves.toBe("prior\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(1n);
+    expect(
+      (await readdir(cwd)).filter((name) => name.endsWith(".capture")),
+    ).toEqual([]);
+  });
+
+  it("resumes rollback after crashing at the durable target-release phase", async () => {
+    repo.createJob(
+      {
+        id: "replace-target-release-phase-crash",
+        name: "replace-target-release-phase-crash",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("replace-target-release-phase-item", 0, { value: "one" })],
+    );
+    const capability = createCsvOutputRootCapability(cwd);
+    const target = join(cwd, "replace-target-release-phase-crash.csv");
+    await writeFile(target, "prior\n", { mode: 0o600 });
+    const captureCrash = new Error("crash with original target captured");
+    __setCsvOutputAfterTargetCaptureForTesting(() => {
+      __setCsvOutputAfterTargetCaptureForTesting(undefined);
+      throw captureCrash;
+    });
+    await expect(
+      writeCsvOutput({
+        capability,
+        jobId: "replace-target-release-phase-crash",
+        requestedPath: target,
+        headers: ["value"],
+        rows: [["owned"]],
+        intentStore: repo,
+      }),
+    ).rejects.toBe(captureCrash);
+
+    const releasePhaseCrash = new Error("crash after target release phase");
+    const markTargetReleasing =
+      repo.markCsvOutputIntentRecoveryTargetReleasing.bind(repo);
+    vi.spyOn(
+      repo,
+      "markCsvOutputIntentRecoveryTargetReleasing",
+    ).mockImplementationOnce((input) => {
+      markTargetReleasing(input);
+      throw releasePhaseCrash;
+    });
+    await expect(recoverCsvOutputIntents(capability, repo)).resolves.toEqual({
+      recovered: 0,
+      deferred: 1,
+    });
+    expect(
+      driver
+        .prepareState(
+          `SELECT state, target_anchor_state FROM csv_output_intents
+           WHERE job_id = 'replace-target-release-phase-crash'`,
+        )
+        .get(),
+    ).toEqual({ state: "abandoned", target_anchor_state: "releasing" });
+    await expect(readFile(target, "utf8")).resolves.toBe("prior\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(2n);
+
+    await expect(recoverCsvOutputIntents(capability, repo)).resolves.toEqual({
+      recovered: 1,
+      deferred: 0,
+    });
+    await expect(readFile(target, "utf8")).resolves.toBe("prior\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(1n);
+    expect(
+      (await readdir(cwd)).filter((name) => name.endsWith(".capture")),
+    ).toEqual([]);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          `SELECT COUNT(*) AS count FROM csv_output_intents
+           WHERE job_id = 'replace-target-release-phase-crash'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+  });
+
+  it("terminalizes an existing-target proof interrupted before DB readiness", async () => {
+    repo.createJob(
+      {
+        id: "replace-target-pending-crash",
+        name: "replace-target-pending-crash",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("replace-target-pending-item", 0, { value: "one" })],
+    );
+    const capability = createCsvOutputRootCapability(cwd);
+    const target = join(cwd, "replace-target-pending-crash.csv");
+    await writeFile(target, "prior\n", { mode: 0o600 });
+    const interrupted = new Error("crash before target proof DB readiness");
+    __setCsvOutputAfterTargetAnchorEstablishedForTesting(() => {
+      __setCsvOutputAfterTargetAnchorEstablishedForTesting(undefined);
+      throw interrupted;
+    });
+    await expect(
+      writeCsvOutput({
+        capability,
+        jobId: "replace-target-pending-crash",
+        requestedPath: target,
+        headers: ["value"],
+        rows: [["owned"]],
+        intentStore: repo,
+      }),
+    ).rejects.toBe(interrupted);
+
+    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
+      recovered: 1,
+      deferred: 0,
+    });
+    expect(
+      driver
+        .prepareState(
+          `SELECT target_anchor_state, target_original_sha256,
+                  terminal_kind, quota_released
+           FROM csv_output_intents
+           WHERE job_id = 'replace-target-pending-crash'`,
+        )
+        .get(),
+    ).toEqual({
+      target_anchor_state: "pending",
+      target_original_sha256: null,
+      terminal_kind: "orphaned_target_replacement_conflict",
+      quota_released: 1,
+    });
+    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
+      recovered: 0,
+      deferred: 0,
+    });
+  });
+
+  it("recovers after captured cleanup removed its link but not its directory", async () => {
+    repo.createJob(
+      {
+        id: "output-empty-capture-crash",
+        name: "output-empty-capture-crash",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("output-empty-capture-item", 0, { value: "one" })],
+    );
+    const capability = createCsvOutputRootCapability(cwd);
+    const target = join(cwd, "empty-captured-create-new.csv");
+    const interrupted = new Error("crash after captured link removal");
+    __setCsvOutputAfterExactUnlinkCaptureForTesting(async (candidatePath) => {
+      __setCsvOutputAfterExactUnlinkCaptureForTesting(undefined);
+      await unlink(candidatePath);
+      throw interrupted;
+    });
+
+    await expect(
+      writeCsvOutput({
+        capability,
+        jobId: "output-empty-capture-crash",
+        requestedPath: target,
+        mode: "create_new",
+        headers: ["value"],
+        rows: [["one"]],
+        intentStore: repo,
+      }),
+    ).rejects.toBe(interrupted);
+    expect(await readFile(target, "utf8")).toBe("value\none\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(3n);
+    const captureDirectories = (await readdir(cwd)).filter((name) =>
+      name.endsWith(".capture"),
+    );
+    expect(captureDirectories).toHaveLength(1);
+    expect((await readdir(join(cwd, captureDirectories[0]!))).sort()).toEqual([
+      "anchor",
+      "authority",
+    ]);
+
+    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
+      recovered: 1,
+      deferred: 0,
+    });
+    expect(await readFile(target, "utf8")).toBe("value\none\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(1n);
+    expect(
+      (await readdir(cwd)).filter((name) => name.endsWith(".capture")),
+    ).toEqual([]);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          "SELECT COUNT(*) AS count FROM csv_output_intents",
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      driver
+        .prepareState<
+          [],
+          {
+            readonly output_staging_files: number;
+            readonly output_staging_bytes: number;
+          }
+        >(
+          `SELECT output_staging_files, output_staging_bytes
+           FROM csv_storage_quota WHERE singleton = 1`,
+        )
+        .get(),
+    ).toEqual({ output_staging_files: 0, output_staging_bytes: 0 });
+  });
+
+  it("terminalizes once after interruption removed the final writer anchor", async () => {
+    repo.createJob(
+      {
+        id: "output-anchor-release-crash",
+        name: "output-anchor-release-crash",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("output-anchor-release-item", 0, { value: "one" })],
+    );
+    const capability = createCsvOutputRootCapability(cwd);
+    const target = join(cwd, "released-anchor-create-new.csv");
+    const interrupted = new Error("crash after final anchor removal");
+    __setCsvOutputAfterWriterAnchorsReleasedForTesting(() => {
+      __setCsvOutputAfterWriterAnchorsReleasedForTesting(undefined);
+      throw interrupted;
+    });
+
+    await expect(
+      writeCsvOutput({
+        capability,
+        jobId: "output-anchor-release-crash",
+        requestedPath: target,
+        mode: "create_new",
+        headers: ["value"],
+        rows: [["one"]],
+        intentStore: repo,
+      }),
+    ).rejects.toBe(interrupted);
+    expect(await readFile(target, "utf8")).toBe("value\none\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(1n);
+    expect(
+      (await readdir(cwd)).filter((name) => name.endsWith(".capture")),
+    ).toEqual([]);
+    expect(
+      driver
+        .prepareState<
+          [],
+          { readonly state: string; readonly writer_anchor_state: string }
+        >(
+          `SELECT state, writer_anchor_state FROM csv_output_intents
+           WHERE job_id = 'output-anchor-release-crash'`,
+        )
+        .get(),
+    ).toEqual({ state: "abandoned", writer_anchor_state: "releasing" });
+
+    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
+      recovered: 1,
+      deferred: 0,
+    });
+    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
+      recovered: 0,
+      deferred: 0,
+    });
+    expect(
+      driver
+        .prepareState<
+          [],
+          { readonly terminal_kind: string; readonly quota_released: number }
+        >(
+          `SELECT terminal_kind, quota_released FROM csv_output_intents
+           WHERE job_id = 'output-anchor-release-crash'`,
+        )
+        .get(),
+    ).toEqual({
+      terminal_kind: "orphaned_unverifiable_writer_identity",
+      quota_released: 1,
+    });
+    expect(
+      driver
+        .prepareState<
+          [],
+          {
+            readonly output_staging_files: number;
+            readonly output_staging_bytes: number;
+          }
+        >(
+          `SELECT output_staging_files, output_staging_bytes
+           FROM csv_storage_quota WHERE singleton = 1`,
+        )
+        .get(),
+    ).toEqual({ output_staging_files: 0, output_staging_bytes: 0 });
+  });
+
+  it("persists and publishes an anchored writer with no birth time", async () => {
+    repo.createJob(
+      {
+        id: "output-no-birthtime",
+        name: "output-no-birthtime",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("output-no-birthtime-item", 0, { value: "one" })],
+    );
+    const target = join(cwd, "no-birthtime.csv");
+    __setCsvOutputMissingBirthGenerationForTesting(true);
+
+    await expect(
+      writeCsvOutput({
+        capability: createCsvOutputRootCapability(cwd),
+        jobId: "output-no-birthtime",
+        requestedPath: target,
+        mode: "create_new",
+        headers: ["value"],
+        rows: [["one"]],
+        intentStore: repo,
+      }),
+    ).resolves.toMatchObject({ path: target });
+    expect(await readFile(target, "utf8")).toBe("value\none\n");
+    expect((await lstat(target, { bigint: true })).nlink).toBe(1n);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          "SELECT COUNT(*) AS count FROM csv_output_intents",
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      driver
+        .prepareState<
+          [],
+          {
+            readonly output_staging_files: number;
+            readonly output_staging_bytes: number;
+          }
+        >(
+          `SELECT output_staging_files, output_staging_bytes
+           FROM csv_storage_quota WHERE singleton = 1`,
+        )
+        .get(),
+    ).toEqual({ output_staging_files: 0, output_staging_bytes: 0 });
+  });
+
+  it("reserves quota before creating a durable output temporary", async () => {
+    repo.createJob(
+      {
+        id: "output-reservation-quota",
+        name: "output-reservation-quota",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("output-reservation-item", 0, { value: "one" })],
+    );
+    driver
+      .prepareState(
+        `UPDATE csv_storage_quota SET output_staging_files = ?
+         WHERE singleton = 1`,
+      )
+      .run(CSV_MAX_OUTPUT_STAGING_FILES_GLOBAL);
+
+    await expect(
+      writeCsvOutput({
+        capability: createCsvOutputRootCapability(cwd),
+        jobId: "output-reservation-quota",
+        requestedPath: join(cwd, "quota-rejected.csv"),
+        mode: "create_new",
+        headers: ["value"],
+        rows: [["one"]],
+        intentStore: repo,
+      }),
+    ).rejects.toThrow(/output staging file quota is full/u);
+    expect(
+      (await readdir(cwd)).filter(
+        (name) => name.endsWith(".agenc-csv.tmp") || name.endsWith(".capture"),
+      ),
+    ).toEqual([]);
+    expect(
+      driver
+        .prepareState<[], { readonly count: number }>(
+          "SELECT COUNT(*) AS count FROM csv_output_intents",
+        )
+        .get()?.count,
+    ).toBe(0);
+  });
+
+  it("terminalizes a crash after reservation without deleting its temporary", async () => {
+    repo.createJob(
+      {
+        id: "output-pre-identity-crash",
+        name: "output-pre-identity-crash",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("output-pre-identity-item", 0, { value: "one" })],
+    );
+    const temporary = join(cwd, ".pre-identity-crash.agenc-csv.tmp");
+    const intentId = repo.reserveCsvOutputIntent({
+      jobId: "output-pre-identity-crash",
+      rootPath: cwd,
+      targetPath: join(cwd, "pre-identity-crash.csv"),
+      temporaryPath: temporary,
+      reservedBytes: 64,
+    });
+    await writeFile(temporary, "partial", { mode: 0o600 });
+    repo.abandonCsvOutputIntent(intentId, true);
+
+    expect(
+      await recoverCsvOutputIntents(createCsvOutputRootCapability(cwd), repo),
+    ).toEqual({ recovered: 1, deferred: 0 });
+    expect(await readFile(temporary, "utf8")).toBe("partial");
+    expect(
+      driver
+        .prepareState(
+          `SELECT temporary_dev, temporary_ino, temporary_birthtime_ns,
+                  writer_anchor_state, terminal_kind, quota_released
+           FROM csv_output_intents WHERE intent_id = ?`,
+        )
+        .get(intentId),
+    ).toEqual({
+      temporary_dev: null,
+      temporary_ino: null,
+      temporary_birthtime_ns: null,
+      writer_anchor_state: "pending",
+      terminal_kind: "orphaned_unverifiable_writer_identity",
+      quota_released: 1,
+    });
+  });
+
+  it("retains an output intent after exact temporary inode ABA", async () => {
     repo.createJob(
       {
         id: "output-recovery-race",
@@ -946,6 +2562,12 @@ describe("CsvAgentJobsRepository", () => {
       },
       [item("output-race-item", 0, { value: "one" })],
     );
+    repo.markItemCancelled(
+      "output-recovery-race",
+      "output-race-item",
+      "orphan reconciliation test",
+    );
+    repo.refreshJobOutcome("output-recovery-race");
     const capability = createCsvOutputRootCapability(cwd);
     const temporary = join(cwd, ".output-race.changed.agenc-csv.tmp");
     const target = join(cwd, "changed.csv");
@@ -958,24 +2580,100 @@ describe("CsvAgentJobsRepository", () => {
       temporaryPath: temporary,
       temporaryDev: recorded.dev.toString(),
       temporaryIno: recorded.ino.toString(),
+      temporaryBirthtimeNs: recorded.birthtimeNs.toString(),
       reservedBytes: 64,
     });
     repo.abandonCsvOutputIntent(intentId, true);
     await unlink(temporary);
     await writeFile(temporary, "unrelated", { mode: 0o600 });
+    const replacement = await lstat(temporary, { bigint: true });
+    // The private anchors keep the original inode allocated, so even an
+    // allocator (or timestamp source) with coarse reuse cannot reproduce
+    // dev+ino while the writer remains pinned.
+    expect([replacement.dev, replacement.ino]).not.toEqual([
+      recorded.dev,
+      recorded.ino,
+    ]);
 
-    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
-      recovered: 0,
-      deferred: 1,
+    const recoveryWithoutOrphanReconciliation = new Proxy(repo, {
+      get(target, property) {
+        if (
+          property === "listCsvOutputOrphanReservations" ||
+          property === "releaseCsvOutputOrphanReservation"
+        ) {
+          return undefined;
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as CsvOutputIntentStore;
+    expect(
+      await recoverCsvOutputIntents(
+        capability,
+        recoveryWithoutOrphanReconciliation,
+      ),
+    ).toEqual({
+      recovered: 1,
+      deferred: 0,
     });
     expect(await readFile(temporary, "utf8")).toBe("unrelated");
+    expect((await lstat(temporary, { bigint: true })).nlink).toBe(1n);
+    expect(
+      (await readdir(cwd)).filter((name) => name.endsWith(".capture")),
+    ).toEqual([]);
     expect(
       driver
-        .prepareState<[], { readonly count: number }>(
-          "SELECT COUNT(*) AS count FROM csv_output_intents",
+        .prepareState<
+          [string],
+          { readonly terminal_kind: string; readonly quota_released: number }
+        >(
+          `SELECT terminal_kind, quota_released FROM csv_output_intents
+           WHERE intent_id = ?`,
         )
-        .get()?.count,
-    ).toBe(1);
+        .get(intentId),
+    ).toEqual({
+      terminal_kind: "orphaned_unverifiable_writer_identity",
+      quota_released: 1,
+    });
+    expect(
+      driver
+        .prepareState(
+          `SELECT state, cleanup_eligible FROM csv_output_orphans
+           WHERE intent_id = ?`,
+        )
+        .get(intentId),
+    ).toEqual({ state: "retained", cleanup_eligible: 1 });
+
+    expect(repo.collectRetainedTerminalJobs(Number.MAX_SAFE_INTEGER)).toBe(1);
+    expect(repo.getJob("output-recovery-race")).toBeNull();
+    expect(
+      driver
+        .prepareState(
+          `SELECT state FROM csv_output_orphans WHERE intent_id = ?`,
+        )
+        .get(intentId),
+    ).toEqual({ state: "retained" });
+
+    await expect(recoverCsvOutputIntents(capability, repo)).resolves.toEqual({
+      recovered: 0,
+      deferred: 0,
+    });
+    await expect(readFile(temporary, "utf8")).resolves.toBe("unrelated");
+    expect(
+      driver
+        .prepareState(
+          `SELECT state FROM csv_output_orphans WHERE intent_id = ?`,
+        )
+        .get(intentId),
+    ).toBeUndefined();
+    expect(
+      driver
+        .prepareState(
+          `SELECT output_orphan_files, output_orphan_bytes
+           FROM csv_storage_quota WHERE singleton = 1`,
+        )
+        .get(),
+    ).toEqual({ output_orphan_files: 0, output_orphan_bytes: 0 });
   });
 
   it("retains recovery evidence when a published target inode changes", async () => {
@@ -1004,6 +2702,7 @@ describe("CsvAgentJobsRepository", () => {
       temporaryPath: temporary,
       temporaryDev: recorded.dev.toString(),
       temporaryIno: recorded.ino.toString(),
+      temporaryBirthtimeNs: recorded.birthtimeNs.toString(),
       reservedBytes: 64,
     });
     repo.markCsvOutputIntentFlushed(intentId);
@@ -1054,6 +2753,7 @@ describe("CsvAgentJobsRepository", () => {
       temporaryPath: temporary,
       temporaryDev: recorded.dev.toString(),
       temporaryIno: recorded.ino.toString(),
+      temporaryBirthtimeNs: recorded.birthtimeNs.toString(),
       reservedBytes: 64,
     });
     repo.markCsvOutputIntentFlushed(intentId);
@@ -1064,19 +2764,26 @@ describe("CsvAgentJobsRepository", () => {
     await writeFile(target, "unrelated\n", { mode: 0o600 });
 
     expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
-      recovered: 0,
-      deferred: 1,
+      recovered: 1,
+      deferred: 0,
     });
-    expect(await readFile(temporary, "utf8")).toBe("owned\n");
+    await expect(readFile(temporary)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(target, "utf8")).toBe("unrelated\n");
     expect(repo.getJob("output-linked-race")?.outputDigest).toBeUndefined();
     expect(
       driver
-        .prepareState<[], { readonly count: number }>(
-          "SELECT COUNT(*) AS count FROM csv_output_intents",
+        .prepareState<
+          [string],
+          { readonly terminal_kind: string; readonly quota_released: number }
+        >(
+          `SELECT terminal_kind, quota_released FROM csv_output_intents
+           WHERE intent_id = ?`,
         )
-        .get()?.count,
-    ).toBe(1);
+        .get(intentId),
+    ).toEqual({
+      terminal_kind: "orphaned_unverifiable_writer_identity",
+      quota_released: 1,
+    });
   });
 
   it("holds ambiguous outcomes for evidence-backed review and abandons terminally", async () => {
@@ -2197,7 +3904,160 @@ describe("CsvAgentJobsRepository", () => {
     ).toBe(0);
   });
 
-  it("reclaims a crashed output intent and its quota without /proc metadata", async () => {
+  it("terminalizes legacy output identity once while retaining orphan evidence", async () => {
+    repo.createJob(
+      {
+        id: "legacy-output-identity",
+        name: "legacy-output-identity",
+        instruction: "x",
+        autoExport: false,
+        inputHeaders: ["value"],
+        inputCsvPath: "/in",
+        outputCsvPath: "",
+      },
+      [item("legacy-output-item", 0, { value: "one" })],
+    );
+    const temporary = join(cwd, ".legacy-output.agenc-csv.tmp");
+    const target = join(cwd, "legacy-output.csv");
+    await writeFile(temporary, "legacy", { mode: 0o600 });
+    const stats = await lstat(temporary, { bigint: true });
+    const intentId = repo.beginCsvOutputIntent({
+      jobId: "legacy-output-identity",
+      rootPath: cwd,
+      targetPath: target,
+      temporaryPath: temporary,
+      temporaryDev: stats.dev.toString(),
+      temporaryIno: stats.ino.toString(),
+      temporaryBirthtimeNs: stats.birthtimeNs.toString(),
+      reservedBytes: 64,
+    });
+    repo.abandonCsvOutputIntent(intentId, true);
+    const anchors = csvOutputWriterAnchorPaths(temporary, intentId, {
+      dev: stats.dev,
+      ino: stats.ino,
+      birthtimeNs: stats.birthtimeNs,
+    });
+    await rm(anchors.directoryPath, { recursive: true });
+    driver
+      .prepareState(
+        `UPDATE csv_output_intents SET temporary_birthtime_ns = NULL
+         WHERE intent_id = ?`,
+      )
+      .run(intentId);
+    const capability = createCsvOutputRootCapability(cwd);
+
+    expect(await recoverCsvOutputIntents(capability, repo)).toEqual({
+      recovered: 1,
+      deferred: 0,
+    });
+    expect(await readFile(temporary, "utf8")).toBe("legacy");
+    const evidence = driver
+      .prepareState<
+        [string],
+        {
+          readonly temporary_path: string;
+          readonly temporary_dev: string;
+          readonly temporary_ino: string;
+          readonly temporary_birthtime_ns: string | null;
+          readonly terminal_kind: string;
+          readonly quota_released: number;
+          readonly last_error: string;
+        }
+      >(
+        `SELECT temporary_path, temporary_dev, temporary_ino,
+                temporary_birthtime_ns, terminal_kind, quota_released,
+                last_error
+         FROM csv_output_intents WHERE intent_id = ?`,
+      )
+      .get(intentId);
+    expect(evidence).toEqual({
+      temporary_path: temporary,
+      temporary_dev: stats.dev.toString(),
+      temporary_ino: stats.ino.toString(),
+      temporary_birthtime_ns: null,
+      terminal_kind: "orphaned_unverifiable_writer_identity",
+      quota_released: 1,
+      last_error:
+        "CSV output durable writer anchor proof is unavailable for a legacy identity; filesystem paths retained",
+    });
+    expect(() =>
+      driver
+        .prepareState(
+          `UPDATE csv_output_intents SET terminal_kind = 'invalid'
+           WHERE intent_id = ?`,
+        )
+        .run(intentId),
+    ).toThrow(
+      /invalid CSV output terminal quota state|CHECK constraint failed/u,
+    );
+    expect(() =>
+      driver
+        .prepareState(
+          `UPDATE csv_output_intents SET quota_released = 2
+           WHERE intent_id = ?`,
+        )
+        .run(intentId),
+    ).toThrow(
+      /invalid CSV output terminal quota state|CHECK constraint failed/u,
+    );
+    expect(() =>
+      driver
+        .prepareState(
+          `UPDATE csv_output_intents SET terminal_kind = NULL
+           WHERE intent_id = ?`,
+        )
+        .run(intentId),
+    ).toThrow(/invalid CSV output terminal quota state/u);
+    expect(() =>
+      driver
+        .prepareState(
+          `UPDATE csv_output_intents SET quota_released = 0
+           WHERE intent_id = ?`,
+        )
+        .run(intentId),
+    ).toThrow(
+      /invalid CSV output terminal quota state|CHECK constraint failed/u,
+    );
+    repo.abandonCsvOutputIntent(intentId, false);
+    expect(
+      driver
+        .prepareState<
+          [],
+          {
+            readonly output_staging_files: number;
+            readonly output_staging_bytes: number;
+          }
+        >(
+          `SELECT output_staging_files, output_staging_bytes
+           FROM csv_storage_quota WHERE singleton = 1`,
+        )
+        .get(),
+    ).toEqual({ output_staging_files: 0, output_staging_bytes: 0 });
+
+    const restarted = new CsvAgentJobsRepository(driver, {
+      processIdentityProbe: deadOwnerProbe(77),
+    });
+    expect(await recoverCsvOutputIntents(capability, restarted)).toEqual({
+      recovered: 0,
+      deferred: 0,
+    });
+    expect(
+      driver
+        .prepareState(
+          `SELECT terminal_kind, quota_released, last_error
+           FROM csv_output_intents WHERE intent_id = ?`,
+        )
+        .get(intentId),
+    ).toEqual({
+      terminal_kind: "orphaned_unverifiable_writer_identity",
+      quota_released: 1,
+      last_error:
+        "CSV output durable writer anchor proof is unavailable for a legacy identity; filesystem paths retained",
+    });
+    expect(await readFile(temporary, "utf8")).toBe("legacy");
+  });
+
+  it("terminalizes a pre-anchor output intent without mutating its file", async () => {
     repo.createJob(
       {
         id: "portable-output-recovery",
@@ -2218,16 +4078,24 @@ describe("CsvAgentJobsRepository", () => {
       .prepareState(
         `INSERT INTO csv_output_intents (
            intent_id, job_id, root_path, target_path, temporary_path,
-           temporary_dev, temporary_ino, reserved_bytes, state,
+           temporary_dev, temporary_ino, temporary_birthtime_ns,
+           reserved_bytes, state,
            recovery_prior_state, owner_generation, owner_pid,
            owner_boot_id, owner_process_start, created_at, updated_at
          ) VALUES (
-           'portable-output-intent', 'portable-output-recovery', ?, ?, ?, ?, ?,
+           'portable-output-intent', 'portable-output-recovery', ?, ?, ?, ?, ?, ?,
            64, 'abandoned', NULL, 'portable-output-generation', 4242,
            NULL, NULL, 1, 1
          )`,
       )
-      .run(cwd, target, temporary, stats.dev.toString(), stats.ino.toString());
+      .run(
+        cwd,
+        target,
+        temporary,
+        stats.dev.toString(),
+        stats.ino.toString(),
+        stats.birthtimeNs.toString(),
+      );
     driver
       .prepareState(
         `UPDATE csv_storage_quota SET output_staging_files = 1,
@@ -2244,7 +4112,19 @@ describe("CsvAgentJobsRepository", () => {
         recovered,
       ),
     ).toEqual({ recovered: 1, deferred: 0 });
-    await expect(readFile(temporary)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(temporary, "utf8")).resolves.toBe("partial");
+    expect(
+      driver
+        .prepareState(
+          `SELECT terminal_kind, quota_released, writer_anchor_state
+           FROM csv_output_intents WHERE intent_id = 'portable-output-intent'`,
+        )
+        .get(),
+    ).toEqual({
+      terminal_kind: "orphaned_unverifiable_writer_identity",
+      quota_released: 1,
+      writer_anchor_state: "legacy",
+    });
     expect(
       driver
         .prepareState<
@@ -2275,13 +4155,18 @@ describe("CsvAgentJobsRepository", () => {
       [item("bounded-output-item", 0, { value: "one" })],
     );
     const candidateCount = CSV_RECOVERY_CANDIDATE_PAGE_SIZE + 5;
+    // Model duplicate pre-v25 rows while retaining the new-write policy.
+    driver
+      .prepareState("DROP TRIGGER csv_output_intents_single_job_guard")
+      .run();
     const insertIntent = driver.prepareState(
       `INSERT INTO csv_output_intents (
          intent_id, job_id, root_path, target_path, temporary_path,
-         temporary_dev, temporary_ino, reserved_bytes, state,
+         temporary_dev, temporary_ino, temporary_birthtime_ns,
+         reserved_bytes, state,
          recovery_prior_state, owner_generation, owner_pid,
          owner_boot_id, owner_process_start, created_at, updated_at
-       ) VALUES (?, 'bounded-output-job', ?, ?, ?, '1', '1', 1, 'writing',
+       ) VALUES (?, 'bounded-output-job', ?, ?, ?, '1', '1', NULL, 1, 'writing',
          NULL, ?, 4242, NULL, 'old-start', 1, 1)`,
     );
     for (let index = 0; index < candidateCount; index += 1) {
@@ -2340,13 +4225,18 @@ describe("CsvAgentJobsRepository", () => {
       [item("paged-output-item", 0, { value: "one" })],
     );
     const candidateCount = CSV_RECOVERY_CANDIDATE_PAGE_SIZE + 5;
+    // Model duplicate pre-v25 rows while retaining the new-write policy.
+    driver
+      .prepareState("DROP TRIGGER csv_output_intents_single_job_guard")
+      .run();
     const insertIntent = driver.prepareState(
       `INSERT INTO csv_output_intents (
          intent_id, job_id, root_path, target_path, temporary_path,
-         temporary_dev, temporary_ino, reserved_bytes, state,
+         temporary_dev, temporary_ino, temporary_birthtime_ns,
+         reserved_bytes, state,
          recovery_prior_state, owner_generation, owner_pid,
          owner_boot_id, owner_process_start, created_at, updated_at
-       ) VALUES (?, 'paged-output-job', ?, ?, ?, ?, ?, 1, 'abandoned',
+       ) VALUES (?, 'paged-output-job', ?, ?, ?, ?, ?, ?, 1, 'abandoned',
          NULL, ?, 4242, NULL, NULL, 1, 1)`,
     );
     for (let index = 0; index < candidateCount; index += 1) {
@@ -2361,6 +4251,7 @@ describe("CsvAgentJobsRepository", () => {
         temporaryPath,
         stats.dev.toString(),
         stats.ino.toString(),
+        stats.birthtimeNs.toString(),
         `paged-output-generation-${suffix}`,
       );
     }
@@ -2380,11 +4271,11 @@ describe("CsvAgentJobsRepository", () => {
     );
     expect(
       driver
-        .prepareState<[], { readonly last_error: string | null }>(
-          "SELECT DISTINCT last_error FROM csv_output_intents WHERE intent_id LIKE 'paged-output-%'",
+        .prepareState<[], { readonly terminal_kind: string | null }>(
+          "SELECT DISTINCT terminal_kind FROM csv_output_intents WHERE intent_id LIKE 'paged-output-%'",
         )
         .all(),
-    ).toEqual([]);
+    ).toEqual([{ terminal_kind: "orphaned_unverifiable_writer_identity" }]);
     expect(recoveryResult).toEqual({ recovered: candidateCount, deferred: 0 });
     expect(
       driver
@@ -2392,7 +4283,7 @@ describe("CsvAgentJobsRepository", () => {
           "SELECT COUNT(*) AS count FROM csv_output_intents WHERE intent_id LIKE 'paged-output-%'",
         )
         .get()?.count,
-    ).toBe(0);
+    ).toBe(candidateCount);
     expect(
       driver
         .prepareState<

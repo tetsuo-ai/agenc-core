@@ -129,6 +129,8 @@ test("required gate inventory is complete, ordered, and bounded", () => {
     "runtime/native/agenc-process-job-broker.cs",
     "runtime/scripts/run-fnd-red-probes.mjs",
     "runtime/src/utils/supervisedProcess.ts",
+    "runtime/src/utils/windows-system-path.js",
+    "runtime/src/utils/windows-system-path.ts",
     "runtime/tests/fnd/red-probes/manifest.json",
     "runtime/tests/helpers/red-probe-bootstrap.mjs",
     "runtime/tests/helpers/red-probe-markdown-loader.mjs",

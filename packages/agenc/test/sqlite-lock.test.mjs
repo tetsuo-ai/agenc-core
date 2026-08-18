@@ -309,38 +309,110 @@ try {
   assert.doesNotMatch(result.stderr, /TimeoutOverflowWarning/);
 });
 
-test("Windows ACL validation resolves PowerShell through the true OS namespace", async () => {
+test("Windows ACL validation uses bounded .NET-only PowerShell transport", async () => {
   const original = readFileSync(new URL(LOCK_MODULE_URL), "utf8");
-  const exposed = original.replace(
-    "function trustedWindowsPowerShellPath() {",
-    "export function trustedWindowsPowerShellPath() {",
-  ).replace(
-    "function windowsPowerShellEnvironment(paths) {",
-    "export function windowsPowerShellEnvironment(paths) {",
-  ).replace(
+  const pathHelperExposed = original.replace(
+    "function trustedWindowsPowerShellPath(\n",
+    "export function trustedWindowsPowerShellPath(\n",
+  );
+  assert.notEqual(
+    pathHelperExposed,
+    original,
+    "trusted Windows PowerShell path test seam did not apply",
+  );
+  const environmentHelperExposed = pathHelperExposed.replace(
+    "function windowsPowerShellEnvironment(paths, trustedPaths = trustedWindowsPowerShellPath()) {",
+    "export function windowsPowerShellEnvironment(paths, trustedPaths = trustedWindowsPowerShellPath()) {",
+  );
+  assert.notEqual(
+    environmentHelperExposed,
+    pathHelperExposed,
+    "Windows PowerShell environment test seam did not apply",
+  );
+  const scriptExposed = environmentHelperExposed.replace(
+    "const WINDOWS_SECURITY_SCRIPT = String.raw`",
+    "export const WINDOWS_SECURITY_SCRIPT = String.raw`",
+  );
+  assert.notEqual(
+    scriptExposed,
+    environmentHelperExposed,
+    "Windows PowerShell script test seam did not apply",
+  );
+  const exposed = scriptExposed.replace(
     "function identityFromStats(stats, path) {",
     "export function identityFromStats(stats, path) {",
   );
-  assert.notEqual(exposed, original, "Windows helper test seam did not apply");
+  assert.notEqual(
+    exposed,
+    scriptExposed,
+    "SQLite identity helper test seam did not apply",
+  );
   assert.doesNotMatch(original, /process\.env|env\.(?:SystemRoot|WINDIR)/);
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(exposed).toString("base64")}`;
   const {
+    WINDOWS_SECURITY_SCRIPT,
     identityFromStats,
     trustedWindowsPowerShellPath,
     windowsPowerShellEnvironment,
   } =
     await import(moduleUrl);
-  assert.deepEqual(trustedWindowsPowerShellPath(), {
-    systemRoot: String.raw`\\?\GLOBALROOT\SystemRoot`,
-    workingDirectory: String.raw`\\?\GLOBALROOT\SystemRoot\System32`,
-    executable: String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`,
+  const canonicalized = [];
+  const identity = {
+    dev: 17n,
+    ino: 29n,
+    isFile: () => true,
+    isSymbolicLink: () => false,
+  };
+  const opened = [];
+  const closed = [];
+  const filesystem = {
+    lstat: () => identity,
+    open: (path) => {
+      opened.push(path);
+      return path.startsWith("C:") ? 12 : 11;
+    },
+    fstat: () => identity,
+    close: (descriptor) => closed.push(descriptor),
+  };
+  const trustedPaths = trustedWindowsPowerShellPath(
+    (path) => {
+      canonicalized.push(path);
+      return String.raw`C:\Windows`;
+    },
+    filesystem,
+  );
+  assert.deepEqual(canonicalized, [String.raw`\\?\GLOBALROOT\SystemRoot`]);
+  assert.deepEqual(trustedPaths, {
+    systemRoot: String.raw`C:\Windows`,
+    workingDirectory: String.raw`C:\Windows\System32`,
+    executable: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
   });
+  assert.deepEqual(opened, [
+    String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`,
+    String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+  ]);
+  assert.deepEqual(closed, [12, 11]);
+  const mismatchedIdentity = { ...identity, ino: 31n };
+  const mismatchFilesystem = {
+    ...filesystem,
+    lstat: (path) => path.startsWith("C:") ? mismatchedIdentity : identity,
+    fstat: (descriptor) => descriptor === 12 ? mismatchedIdentity : identity,
+    close: () => {},
+  };
+  assert.throws(
+    () => trustedWindowsPowerShellPath(
+      () => String.raw`C:\Windows`,
+      mismatchFilesystem,
+    ),
+    /identity mismatch/u,
+  );
+  const lockPath = String.raw`C:\Users\AgenC\雪-💾 lock.sqlite`;
   const environment = windowsPowerShellEnvironment([{
-    path: String.raw`C:\Users\AgenC\lock.sqlite`,
+    path: lockPath,
     role: "file",
-  }]);
+  }], trustedPaths);
   assert.deepEqual(Object.keys(environment).sort(), [
-    "AGENC_LOCK_PATHS_JSON",
+    "AGENC_LOCK_PATHS",
     "APPDATA",
     "COMSPEC",
     "HOMEDRIVE",
@@ -359,19 +431,111 @@ test("Windows ACL validation resolves PowerShell through the true OS namespace",
     "USERPROFILE",
     "WINDIR",
   ]);
-  assert.equal(environment.SYSTEMROOT, String.raw`\\?\GLOBALROOT\SystemRoot`);
+  assert.equal(environment.SYSTEMROOT, String.raw`C:\Windows`);
   assert.equal(environment.WINDIR, environment.SYSTEMROOT);
-  assert.equal(environment.PATH, String.raw`\\?\GLOBALROOT\SystemRoot\System32`);
+  assert.equal(environment.PATH, String.raw`C:\Windows\System32`);
   assert.equal(environment.TEMP, environment.PATH);
   assert.equal(environment.USERPROFILE, environment.PATH);
+  const [transportRecord] = environment.AGENC_LOCK_PATHS.split("\n");
+  const separator = transportRecord.indexOf(":");
+  assert.ok(separator > 0);
+  const encodedPath = transportRecord.slice(separator + 1);
+  assert.equal(Buffer.from(encodedPath, "base64").toString("base64"), encodedPath);
+  assert.deepEqual({
+    role: transportRecord.slice(0, separator),
+    path: Buffer.from(encodedPath, "base64").toString("utf16le"),
+  }, { role: "file", path: lockPath });
+  const arbitraryCodeUnitsPath = `C:\\code-units-${String.fromCharCode(
+    0xd800,
+    0x61,
+    0xdc00,
+  )}`;
+  const arbitraryTransport = windowsPowerShellEnvironment([{
+    path: arbitraryCodeUnitsPath,
+    role: "file",
+  }], trustedPaths).AGENC_LOCK_PATHS;
+  const arbitrarySeparator = arbitraryTransport.indexOf(":");
   assert.equal(
-    environment.AGENC_LOCK_PATHS_JSON,
-    '[{"path":"C:\\\\Users\\\\AgenC\\\\lock.sqlite","role":"file"}]',
+    Buffer.from(
+      arbitraryTransport.slice(arbitrarySeparator + 1),
+      "base64",
+    ).toString("utf16le"),
+    arbitraryCodeUnitsPath,
   );
+  assert.equal("AGENC_LOCK_PATHS_JSON" in environment, false);
+  assert.throws(
+    () => windowsPowerShellEnvironment(
+      Array.from({ length: 129 }, () => ({ path: lockPath, role: "file" })),
+      trustedPaths,
+    ),
+    /invalid entry count/u,
+  );
+  assert.throws(
+    () => windowsPowerShellEnvironment([{
+      path: `C:\\${"x".repeat(7_000)}`,
+      role: "file",
+    }], trustedPaths),
+    /transport exceeds its limit/u,
+  );
+  assert.match(WINDOWS_SECURITY_SCRIPT, /\$transport\.Length -gt 16384/u);
+  assert.match(WINDOWS_SECURITY_SCRIPT, /\$entries\.Count -gt 128/u);
+  assert.match(
+    WINDOWS_SECURITY_SCRIPT,
+    /\$entries = \[string\[\]\]\$transport\.Split\(\[char\]10\)/u,
+  );
+  assert.match(
+    WINDOWS_SECURITY_SCRIPT,
+    /\[System\.Convert\]::FromBase64String\(\$encodedPath\)/u,
+  );
+  assert.match(
+    WINDOWS_SECURITY_SCRIPT,
+    /\[System\.Convert\]::ToBase64String\(\$pathBytes\)/u,
+  );
+  assert.match(
+    WINDOWS_SECURITY_SCRIPT,
+    /\$pathCharacters = \[char\[\]\]::new/u,
+  );
+  assert.match(
+    WINDOWS_SECURITY_SCRIPT,
+    /\$requested = \[string\]::new\(\$pathCharacters\)/u,
+  );
+  assert.match(
+    WINDOWS_SECURITY_SCRIPT,
+    /\[System\.IO\.File\]::GetAttributes\(\$full\)/u,
+  );
+  assert.match(
+    WINDOWS_SECURITY_SCRIPT,
+    /\[System\.IO\.Directory\]::GetAccessControl\(\$full, \$aclSections\)/u,
+  );
+  assert.match(
+    WINDOWS_SECURITY_SCRIPT,
+    /\[System\.IO\.File\]::GetAccessControl\(\$full, \$aclSections\)/u,
+  );
+  assert.match(
+    WINDOWS_SECURITY_SCRIPT,
+    /\$bytes = \$acl\.GetSecurityDescriptorBinaryForm\(\)/u,
+  );
+  assert.doesNotMatch(
+    WINDOWS_SECURITY_SCRIPT,
+    /\.GetSecurityDescriptorBinaryForm\([^)]*,\s*0\)/u,
+  );
+  assert.doesNotMatch(
+    WINDOWS_SECURITY_SCRIPT,
+    /\b(?:ConvertFrom-Json|ForEach-Object|Get-Item|Get-Acl|Set-Acl|Import-Module)\b/u,
+  );
+  assert.doesNotMatch(WINDOWS_SECURITY_SCRIPT, /System\.Text\.Encoding/u);
   assert.match(original, /\$drive\.DriveFormat -ne 'NTFS'/);
   assert.doesNotMatch(original, /'ReFS'/);
-  assert.match(original, /\$leafMutationMask = \[int64\]852310/);
-  assert.match(original, /\$ancestorMutationMask = \[int64\]852306/);
+  assert.match(original, /\$leafMutationMask = \[int64\]1343029590/);
+  assert.match(original, /\$ancestorMutationMask = \[int64\]1343029586/);
+  assert.match(
+    original,
+    /\$rights = \(\[int64\]\$rule\.FileSystemRights\) -band \[int64\]4294967295/,
+  );
+  assert.match(
+    original,
+    /\$trusted -notcontains \$sid -and \(\(\$rights -band \$mutationMask\) -ne 0\)/,
+  );
   assert.match(
     original,
     /S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464/,
@@ -388,6 +552,96 @@ test("Windows ACL validation resolves PowerShell through the true OS namespace",
     );
   }
   assert.equal(identityFromStats({ dev: 2n, ino: 3n }, "valid.sqlite"), "2:3");
+});
+
+test("Windows ACL mutation masks cover generic and inherit-only rights", () => {
+  const original = readFileSync(new URL(LOCK_MODULE_URL), "utf8");
+  assert.match(
+    original,
+    /\$childInheritance = \[System\.Security\.AccessControl\.InheritanceFlags\]::ObjectInherit -bor \[System\.Security\.AccessControl\.InheritanceFlags\]::ContainerInherit/,
+  );
+  assert.match(
+    original,
+    /\$reachesNewChild = \(\$rule\.InheritanceFlags -band \$childInheritance\) -ne 0/,
+  );
+  assert.match(
+    original,
+    /if \(\$role -ne 'leafDirectory' -or -not \$reachesNewChild\) \{\s+continue\s+\}/,
+  );
+  const leafMask = BigInt(
+    original.match(/\$leafMutationMask = \[int64\](\d+)/)?.[1] ?? "0",
+  );
+  const ancestorMask = BigInt(
+    original.match(/\$ancestorMutationMask = \[int64\](\d+)/)?.[1] ?? "0",
+  );
+  const genericRead = 0x8000_0000n;
+  const genericWrite = 0x4000_0000n;
+  const genericAll = 0x1000_0000n;
+  const writeData = 0x0000_0002n;
+  const appendData = 0x0000_0004n;
+  const addSubdirectory = appendData;
+  const low32 = (rights) => BigInt.asUintN(32, BigInt(rights));
+  const reachesRole = ({ role, inheritOnly, objectInherit, containerInherit }) =>
+    !inheritOnly || (
+      role === "leafDirectory" && (objectInherit || containerInherit)
+    );
+  const rejects = ({ role, rights, ...inheritance }) => {
+    if (!reachesRole({ role, ...inheritance })) return false;
+    const mask = role === "ancestorDirectory" ? ancestorMask : leafMask;
+    return (low32(rights) & mask) !== 0n;
+  };
+  const active = { inheritOnly: false, objectInherit: false, containerInherit: false };
+
+  assert.equal(leafMask, 0x500d_0156n);
+  assert.equal(ancestorMask, 0x500d_0152n);
+  assert.equal(low32(BigInt.asIntN(32, genericRead | genericWrite)), 0xc000_0000n);
+  assert.equal(rejects({ role: "file", rights: genericWrite, ...active }), true);
+  assert.equal(rejects({ role: "file", rights: genericAll, ...active }), true);
+  assert.equal(rejects({ role: "file", rights: genericRead, ...active }), false);
+  assert.equal(rejects({
+    role: "file",
+    rights: BigInt.asIntN(32, genericRead | genericWrite),
+    ...active,
+  }), true);
+  assert.equal(rejects({ role: "leafDirectory", rights: writeData, ...active }), true);
+  assert.equal(rejects({ role: "ancestorDirectory", rights: genericWrite, ...active }), true);
+  assert.equal(rejects({ role: "ancestorDirectory", rights: genericAll, ...active }), true);
+  assert.equal(rejects({ role: "ancestorDirectory", rights: addSubdirectory, ...active }), false);
+  assert.equal(rejects({
+    role: "leafDirectory",
+    rights: genericWrite,
+    inheritOnly: true,
+    objectInherit: true,
+    containerInherit: false,
+  }), true);
+  assert.equal(rejects({
+    role: "leafDirectory",
+    rights: genericAll,
+    inheritOnly: true,
+    objectInherit: false,
+    containerInherit: true,
+  }), true);
+  assert.equal(rejects({
+    role: "leafDirectory",
+    rights: appendData,
+    inheritOnly: true,
+    objectInherit: false,
+    containerInherit: false,
+  }), false);
+  assert.equal(rejects({
+    role: "ancestorDirectory",
+    rights: genericWrite,
+    inheritOnly: true,
+    objectInherit: true,
+    containerInherit: true,
+  }), false);
+  assert.equal(rejects({
+    role: "file",
+    rights: genericAll,
+    inheritOnly: true,
+    objectInherit: true,
+    containerInherit: true,
+  }), false);
 });
 
 test("Darwin ACL listing parser accepts deny/read ACEs and rejects mutation or ambiguity", async () => {

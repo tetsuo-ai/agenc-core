@@ -1528,7 +1528,11 @@ describe("FND red-probe supervisor", () => {
       name: "output overflow",
       source: probeSource({
         imports: ['import { writeSync } from "node:fs";'],
-        beforeAssertion: ["writeSync(1, Buffer.alloc(32_768, 120));"],
+        beforeAssertion: [
+          "const overflowChunk = Buffer.alloc(256, 120);",
+          "let overflowBytes = 0;",
+          "while (overflowBytes < 32_768) overflowBytes += writeSync(1, overflowChunk);",
+        ],
       }),
       error: "exceeded the child-output limit",
     },

@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { basename, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -44,8 +45,15 @@ import {
   buildMemoryFtsMatch,
   computeMemoryHeaderFingerprint,
   fuseMemoryRanks,
+  memoryIndexRootId,
+  stableMemoryId,
   type MemoryRankCandidate,
 } from "../../src/memory/full-corpus-contract.js";
+import {
+  decodeMemoryQueryResponseFrame,
+  encodeMemoryQueryFrame,
+  MEMORY_QUERY_HELPER_PROTOCOL_VERSION,
+} from "../../src/memory/full-corpus-protocol.js";
 
 describe("C3b full-corpus memory contract", () => {
   it("freezes every resource, tokenizer, BM25, and RRF constant", () => {
@@ -203,6 +211,52 @@ describe("C3b full-corpus memory contract", () => {
       rootRole: "project",
     });
   });
+
+  it("requires exact persisted header identity in helper candidates", () => {
+    const rootPath = resolve("memory-wire-root");
+    const canonicalPath = join(rootPath, "wire.md").normalize("NFC");
+    const ranked = {
+      ...candidate("wire", canonicalPath, "global"),
+      memoryId: stableMemoryId(canonicalPath),
+      fingerprint: "0".repeat(64),
+      rootId: memoryIndexRootId(rootPath.normalize("NFC")),
+      bm25Score: -1,
+    };
+    const response = {
+      protocolVersion: MEMORY_QUERY_HELPER_PROTOCOL_VERSION,
+      kind: "ok",
+      candidates: [ranked],
+    };
+    expect(
+      decodeMemoryQueryResponseFrame(encodeMemoryQueryFrame(response)),
+    ).toMatchObject(response);
+    for (const headerSnapshot of [
+      { ...ranked.headerSnapshot, fileDev: "-0" },
+      { ...ranked.headerSnapshot, relativePath: "../wire.md" },
+    ]) {
+      expect(() =>
+        decodeMemoryQueryResponseFrame(
+          encodeMemoryQueryFrame({
+            ...response,
+            candidates: [{ ...ranked, headerSnapshot }],
+          }),
+        ),
+      ).toThrow("malformed candidate");
+    }
+  });
+
+  it("rejects helper error codes outside the protocol union", () => {
+    expect(() =>
+      decodeMemoryQueryResponseFrame(
+        encodeMemoryQueryFrame({
+          protocolVersion: MEMORY_QUERY_HELPER_PROTOCOL_VERSION,
+          kind: "error",
+          code: "future_unreviewed_failure",
+          message: "not part of protocol v2",
+        }),
+      ),
+    ).toThrow("malformed");
+  });
 });
 
 function candidate(
@@ -212,6 +266,7 @@ function candidate(
 ): MemoryRankCandidate {
   return {
     memoryId,
+    generationId: 1,
     canonicalPath,
     title: memoryId,
     description: "",
@@ -221,5 +276,19 @@ function candidate(
     fingerprint: memoryId.padEnd(64, "0"),
     rootId: `${rootRole}-root`,
     rootRole,
+    headerSnapshot: {
+      relativePath: basename(canonicalPath),
+      fileDev: "1",
+      fileIno: "1",
+      fileMode: "33188",
+      fileMtimeNs: "1000000",
+      fileCtimeNs: "1000000",
+      rootDev: "1",
+      rootIno: "2",
+      rootMode: "16877",
+      rootSize: "4096",
+      rootMtimeNs: "1000000",
+      rootCtimeNs: "1000000",
+    },
   };
 }

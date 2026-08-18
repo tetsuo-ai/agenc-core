@@ -15,6 +15,20 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
+const {
+  resolveTrustedWindowsSystemExecutableMock,
+  resolveTrustedWindowsSystemPathsMock,
+} = vi.hoisted(() => ({
+  resolveTrustedWindowsSystemExecutableMock: vi.fn(),
+  resolveTrustedWindowsSystemPathsMock: vi.fn(),
+}));
+
+vi.mock("../../src/utils/windows-system-path.js", () => ({
+  resolveTrustedWindowsSystemExecutable:
+    resolveTrustedWindowsSystemExecutableMock,
+  resolveTrustedWindowsSystemPaths: resolveTrustedWindowsSystemPathsMock,
+}));
+
 import {
   isProcessTreeAlive,
   runSupervisedProcess,
@@ -229,38 +243,70 @@ function waitForChildClose(
 
 async function withFakeWindowsTaskkill(
   exitCode: number,
-  run: (logPath: string) => Promise<void>,
+  run: (logPath: string, poisonedLogPath: string) => Promise<void>,
 ): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "agenc-taskkill-test-"));
-  const system32 = join(dir, "System32");
+  const trustedRoot = join(dir, "trusted-windows");
+  const system32 = join(trustedRoot, "System32");
   const taskkill = join(system32, "taskkill.exe");
   const logPath = join(dir, "taskkill.log");
-  mkdirSync(system32);
+  const poisonedRoot = join(dir, "poisoned-windows");
+  const poisonedSystem32 = join(poisonedRoot, "System32");
+  const poisonedTaskkill = join(poisonedSystem32, "taskkill.exe");
+  const poisonedLogPath = join(dir, "poisoned-taskkill.log");
+  mkdirSync(system32, { recursive: true });
+  mkdirSync(poisonedSystem32, { recursive: true });
   writeFileSync(
     taskkill,
-    `#!/bin/sh\nsleep 0.05\nprintf '%s ' "$@" >> "$AGENC_TASKKILL_TEST_LOG"\nprintf '\\n' >> "$AGENC_TASKKILL_TEST_LOG"\nexit ${exitCode}\n`,
+    `#!/bin/sh\n` +
+      `if [ "$PWD" != ${JSON.stringify(system32)} ] || ` +
+      `[ "$SystemRoot" != ${JSON.stringify(trustedRoot)} ] || ` +
+      `[ "$WINDIR" != ${JSON.stringify(trustedRoot)} ] || ` +
+      `[ "$PATH" != ${JSON.stringify(system32)} ]; then exit 88; fi\n` +
+      `printf '%s ' "$@" >> ${JSON.stringify(logPath)}\n` +
+      `printf '\\n' >> ${JSON.stringify(logPath)}\n` +
+      `exit ${exitCode}\n`,
+  );
+  writeFileSync(
+    poisonedTaskkill,
+    `#!/bin/sh\nprintf 'poisoned\\n' >> ${JSON.stringify(poisonedLogPath)}\nexit 0\n`,
   );
   chmodSync(taskkill, 0o700);
+  chmodSync(poisonedTaskkill, 0o700);
   const platformDescriptor = Object.getOwnPropertyDescriptor(
     process,
     "platform",
   )!;
   const previousSystemRoot = process.env.SystemRoot;
-  const previousLog = process.env.AGENC_TASKKILL_TEST_LOG;
+  const trustedPaths = {
+    systemRoot: trustedRoot,
+    system32,
+    powerShellRoot: join(system32, "WindowsPowerShell", "v1.0"),
+    namespaceSystemRoot: String.raw`\\?\GLOBALROOT\SystemRoot`,
+  };
+  resolveTrustedWindowsSystemPathsMock.mockReset();
+  resolveTrustedWindowsSystemPathsMock.mockReturnValue(trustedPaths);
+  resolveTrustedWindowsSystemExecutableMock.mockReset();
+  resolveTrustedWindowsSystemExecutableMock.mockImplementation(
+    (paths, segments) => {
+      expect(paths).toBe(trustedPaths);
+      expect(segments).toEqual(["System32", "taskkill.exe"]);
+      return taskkill;
+    },
+  );
   Object.defineProperty(process, "platform", {
     ...platformDescriptor,
     value: "win32",
   });
-  process.env.SystemRoot = dir;
-  process.env.AGENC_TASKKILL_TEST_LOG = logPath;
+  process.env.SystemRoot = poisonedRoot;
   try {
-    await run(logPath);
+    await run(logPath, poisonedLogPath);
   } finally {
     Object.defineProperty(process, "platform", platformDescriptor);
     if (previousSystemRoot === undefined) delete process.env.SystemRoot;
     else process.env.SystemRoot = previousSystemRoot;
-    if (previousLog === undefined) delete process.env.AGENC_TASKKILL_TEST_LOG;
-    else process.env.AGENC_TASKKILL_TEST_LOG = previousLog;
+    resolveTrustedWindowsSystemPathsMock.mockReset();
+    resolveTrustedWindowsSystemExecutableMock.mockReset();
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -1405,6 +1451,33 @@ describe("process-tree root safety", () => {
     expect(supervisionSource).toContain("spawn(broker, [],");
     expect(supervisionSource).not.toContain("Add-Type -TypeDefinition");
     expect(supervisionSource).not.toContain("WINDOWS_JOB_BROKER_SCRIPT");
+    const compilerDiscovery = supervisionSource.slice(
+      supervisionSource.indexOf(
+        "function trustedWindowsCSharpCompilerCandidates()",
+      ),
+      supervisionSource.indexOf("function isRegularNonSymlinkFile"),
+    );
+    expect(compilerDiscovery).toContain(
+      "resolveTrustedWindowsSystemExecutable",
+    );
+    expect(compilerDiscovery).toContain('"Microsoft.NET", "Framework64"');
+    expect(compilerDiscovery).toContain('"Microsoft.NET", "Framework"');
+    expect(compilerDiscovery).not.toContain("ProgramFiles");
+    expect(compilerDiscovery).not.toContain("process.env");
+    const taskkillDiscovery = supervisionSource.slice(
+      supervisionSource.indexOf("function trustedWindowsTaskkill()"),
+      supervisionSource.indexOf(
+        "function safeKill",
+        supervisionSource.indexOf("function trustedWindowsTaskkill()"),
+      ),
+    );
+    expect(taskkillDiscovery).toContain(
+      "resolveTrustedWindowsSystemExecutable",
+    );
+    expect(taskkillDiscovery).toMatch(
+      /\[\s*"System32",\s*"taskkill\.exe",?\s*\]/u,
+    );
+    expect(taskkillDiscovery).not.toContain("process.env");
     expect(packageManifest.agencExecutableFiles).toContain(
       "dist/agenc-process-job-broker.exe",
     );
@@ -1479,8 +1552,8 @@ describe("terminateProcessTreeAndWait on Windows", () => {
     kill: () => true,
   };
 
-  it("awaits taskkill /T even when the process leader already exited", async () => {
-    await withFakeWindowsTaskkill(0, async (logPath) => {
+  it("awaits only identity-proved taskkill /T when the process leader exited", async () => {
+    await withFakeWindowsTaskkill(0, async (logPath, poisonedLogPath) => {
       await terminateProcessTreeAndWait(exitedLeader, {
         terminateGraceMs: 500,
         killGraceMs: 500,
@@ -1488,6 +1561,51 @@ describe("terminateProcessTreeAndWait on Windows", () => {
       });
 
       expect(readFileSync(logPath, "utf8").trim()).toBe("/PID 4242 /T");
+      expect(existsSync(poisonedLogPath)).toBe(false);
+      expect(resolveTrustedWindowsSystemPathsMock).toHaveBeenCalledOnce();
+      expect(resolveTrustedWindowsSystemExecutableMock).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("uses the identity-proved taskkill for best-effort signals", async () => {
+    await withFakeWindowsTaskkill(0, async (logPath, poisonedLogPath) => {
+      const directKill = vi.fn(() => true);
+      signalProcessTree(
+        {
+          pid: 4_242,
+          kill: directKill,
+        },
+        "SIGKILL",
+      );
+
+      const deadline = Date.now() + 1_000;
+      while (!existsSync(logPath) && Date.now() < deadline) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      expect(readFileSync(logPath, "utf8").trim()).toBe("/PID 4242 /T /F");
+      expect(existsSync(poisonedLogPath)).toBe(false);
+      expect(directKill).not.toHaveBeenCalled();
+    });
+  });
+
+  it("fails closed instead of launching an env-selected taskkill", async () => {
+    await withFakeWindowsTaskkill(0, async (logPath, poisonedLogPath) => {
+      resolveTrustedWindowsSystemExecutableMock.mockImplementationOnce(() => {
+        throw new Error("trusted Windows system executable identity mismatch");
+      });
+
+      await expect(
+        terminateProcessTreeAndWait(exitedLeader, {
+          terminateGraceMs: 100,
+          killGraceMs: 100,
+          label: "Windows identity failure",
+        }),
+      ).rejects.toThrow(
+        "Windows identity failure tree cleanup cannot be verified: " +
+          "taskkill.exe is unavailable (pid 4242)",
+      );
+      expect(existsSync(logPath)).toBe(false);
+      expect(existsSync(poisonedLogPath)).toBe(false);
     });
   });
 

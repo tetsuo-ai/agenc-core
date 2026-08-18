@@ -1,3 +1,4 @@
+import type { BigIntStats } from "node:fs";
 import {
   link,
   mkdtemp,
@@ -33,6 +34,11 @@ type FileHandleRead = (
   position: number,
 ) => Promise<{ bytesRead: number; buffer: Uint8Array }>;
 
+type FileHandleBigIntStat = (
+  this: unknown,
+  options: { bigint: true },
+) => Promise<BigIntStats>;
+
 afterEach(async () => {
   await Promise.all(
     [...roots].map(async (root) => {
@@ -51,19 +57,23 @@ async function createRoot(): Promise<string> {
 async function expectIoError(
   action: () => Promise<unknown>,
   code: BoundedFileIoError["code"],
+  message?: string,
 ): Promise<void> {
   try {
     await action();
   } catch (error) {
     expect(error).toBeInstanceOf(BoundedFileIoError);
     expect(error).toMatchObject({ code });
+    if (message !== undefined) {
+      expect(error).toHaveProperty("message", message);
+    }
     return;
   }
   throw new Error(`expected BoundedFileIoError ${code}`);
 }
 
 async function withFirstDescriptorReadHook<T>(
-  hook: () => Promise<void>,
+  hook: (handle: { stat: FileHandleBigIntStat }) => Promise<void>,
   action: () => Promise<T>,
 ): Promise<T> {
   const root = await createRoot();
@@ -92,7 +102,7 @@ async function withFirstDescriptorReadHook<T>(
     );
     if (!hooked) {
       hooked = true;
-      await hook();
+      await hook(this as { stat: FileHandleBigIntStat });
     }
     return result;
   };
@@ -204,6 +214,41 @@ describe("bounded descriptor file I/O", () => {
               label: "replaced fixture",
             }),
           "changed",
+        ),
+    );
+  });
+
+  it("classifies an unlinked opened inode as a pathname change", async () => {
+    const root = await createRoot();
+    const path = join(root, "overwritten.bin");
+    await writeFile(path, Buffer.from("original"));
+
+    await withFirstDescriptorReadHook(
+      async (handle) => {
+        const originalStat = handle.stat;
+        Object.defineProperty(handle, "stat", {
+          configurable: true,
+          value: async (options: { bigint: true }) => {
+            const result = await originalStat.call(handle, options);
+            Object.defineProperty(result, "nlink", {
+              configurable: true,
+              enumerable: true,
+              value: 0n,
+              writable: true,
+            });
+            return result;
+          },
+        });
+      },
+      () =>
+        expectIoError(
+          () =>
+            readBoundedRegularFile(path, {
+              byteLimit: TEST_FILE_LIMIT,
+              label: "overwritten fixture",
+            }),
+          "changed",
+          "overwritten fixture was unlinked while it was inspected",
         ),
     );
   });

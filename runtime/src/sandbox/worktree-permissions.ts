@@ -89,7 +89,11 @@ function isBareGitCommonDirectory(root: string): boolean {
   }
 }
 
-/** Disable repository-controlled hooks/fsmonitor for metadata-privileged Git. */
+/**
+ * Disable repository-controlled helpers and optional background maintenance.
+ * A controlled Git transaction must not outlive its supervised command by
+ * detaching automatic maintenance after an otherwise successful commit.
+ */
 export function hardenGitWorktreeMutationArgs(
   args: readonly string[],
 ): string[] {
@@ -105,6 +109,10 @@ export function hardenGitWorktreeMutationArgs(
     "protocol.ext.allow=never",
     "-c",
     "diff.external=",
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "maintenance.auto=false",
     ...args,
   ];
 }

@@ -544,6 +544,11 @@ function fixedGitArguments(controlRoot: string): readonly string[] {
     "commit.gpgSign=false",
     "-c",
     "protocol.allow=never",
+    // Keep each hermetic transaction inside the supervisor's process lifetime.
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "maintenance.auto=false",
   ]);
 }
 

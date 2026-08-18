@@ -1,5 +1,13 @@
 import { chmodSync, renameSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -43,6 +51,61 @@ afterEach(async () => {
 });
 
 describe("bounded repository Git supervision", () => {
+  it.skipIf(process.platform === "win32")(
+    "disables optional maintenance for every bounded Git transaction",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-git-maintenance-test-"));
+      temporaryRoots.add(root);
+      const executableDirectory = join(root, "bin");
+      const repositoryRoot = join(root, "repository");
+      const controlRoot = join(root, "control");
+      const invocationPath = join(root, "invocation.json");
+      await Promise.all([
+        mkdir(executableDirectory),
+        mkdir(repositoryRoot),
+        mkdir(controlRoot),
+      ]);
+      const executablePath = join(executableDirectory, "git");
+      const shim =
+        `#!${process.execPath}\n` +
+        `require("node:fs").writeFileSync(${JSON.stringify(invocationPath)}, ` +
+        "JSON.stringify(process.argv.slice(2)));\n";
+      await writeFile(
+        executablePath,
+        shim,
+        "utf8",
+      );
+      await chmod(executablePath, 0o755);
+
+      const originalPath = process.env.PATH;
+      let git: BoundedRepositoryGit;
+      try {
+        process.env.PATH = executableDirectory;
+        git = new BoundedRepositoryGit({
+          allocationRoot: root,
+          repositoryRoot,
+          controlRoot,
+          maxOutputBytes: 4_096,
+          maxWallMs: GIT_DISCOVERY_WALL_MS,
+        });
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+
+      await git.initialize();
+      const args = JSON.parse(
+        await readFile(invocationPath, "utf8"),
+      ) as string[];
+      const legacyGc = args.indexOf("gc.auto=0");
+      expect(args[legacyGc - 1]).toBe("-c");
+      expect(legacyGc).toBeLessThan(args.indexOf("init"));
+      const maintenance = args.indexOf("maintenance.auto=false");
+      expect(args[maintenance - 1]).toBe("-c");
+      expect(maintenance).toBeLessThan(args.indexOf("init"));
+    },
+  );
+
   it("normalizes safe PATHEXT values and rejects path traversal", () => {
     expect(validateGitPathExtensions(".EXE;.com;.EXE")).toEqual([
       ".exe",

@@ -68,9 +68,15 @@ import {
   type CanonicalCsvResult,
   type ValidatedCsvResult,
 } from "../agents/jobs/csv-schema.js";
+import {
+  csvOutputWriterAnchorPaths,
+  establishCsvOutputWriterAnchorsSync,
+  type CsvOutputWriterIdentity,
+} from "../agents/jobs/csv-output-writer-anchor.js";
 import type {
   CsvOutputArtifact,
   CsvOutputMode,
+  CsvOutputOrphanReservation,
   CsvOutputRecoveryIntent,
 } from "../agents/jobs/csv-output.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
@@ -1593,6 +1599,8 @@ interface CsvStorageQuotaRow {
   readonly tombstone_bytes: number;
   readonly output_staging_files: number;
   readonly output_staging_bytes: number;
+  readonly output_orphan_files: number;
+  readonly output_orphan_bytes: number;
 }
 
 interface StagedImportRecoveryRow {
@@ -1619,8 +1627,18 @@ interface CsvOutputIntentRecoveryRow {
   readonly intent_id: string;
   readonly target_path: string;
   readonly temporary_path: string;
-  readonly temporary_dev: string;
-  readonly temporary_ino: string;
+  readonly temporary_dev: string | null;
+  readonly temporary_ino: string | null;
+  readonly temporary_birthtime_ns: string | null;
+  readonly writer_anchor_state: "legacy" | "pending" | "ready" | "releasing";
+  readonly target_anchor_state:
+    "legacy" | "absent" | "pending" | "ready" | "replacing" | "releasing";
+  readonly target_original_dev: string | null;
+  readonly target_original_ino: string | null;
+  readonly target_original_size: string | null;
+  readonly target_original_mtime_ns: string | null;
+  readonly target_original_ctime_ns: string | null;
+  readonly target_original_sha256: string | null;
   readonly state:
     "writing" | "flushed" | "published" | "abandoned" | "recovering";
   readonly recovery_prior_state:
@@ -1631,6 +1649,148 @@ interface CsvOutputIntentRecoveryRow {
   readonly owner_process_start: string | null;
   readonly created_at: number;
   readonly recovery_rank: number;
+}
+
+type CsvOutputTerminalKind =
+  | "orphaned_unverifiable_writer_identity"
+  | "orphaned_target_replacement_conflict";
+
+interface CsvTerminalOutputIntentRow {
+  readonly intent_id: string;
+  readonly root_path: string;
+  readonly target_path: string;
+  readonly temporary_path: string;
+  readonly temporary_dev: string | null;
+  readonly temporary_ino: string | null;
+  readonly temporary_birthtime_ns: string | null;
+  readonly reserved_bytes: number;
+  readonly state: string;
+  readonly recovery_prior_state: string | null;
+  readonly writer_anchor_state: string;
+  readonly target_anchor_state: string;
+  readonly target_original_dev: string | null;
+  readonly target_original_ino: string | null;
+  readonly target_original_size: string | null;
+  readonly target_original_mtime_ns: string | null;
+  readonly target_original_ctime_ns: string | null;
+  readonly target_original_sha256: string | null;
+  readonly terminal_kind: CsvOutputTerminalKind;
+  readonly last_error: string | null;
+  readonly created_at: number;
+  readonly updated_at: number;
+  readonly orphan_state: "retained" | "released";
+  readonly orphan_cleanup_eligible: number;
+}
+
+interface CsvOutputOrphanSourceRow {
+  readonly intent_id: string;
+  readonly job_id: string;
+  readonly root_path: string;
+  readonly target_path: string;
+  readonly temporary_path: string;
+  readonly temporary_dev: string | null;
+  readonly temporary_ino: string | null;
+  readonly temporary_birthtime_ns: string | null;
+  readonly writer_anchor_state: string;
+  readonly target_anchor_state: string;
+  readonly target_original_dev: string | null;
+  readonly target_original_ino: string | null;
+  readonly target_original_size: string | null;
+  readonly target_original_mtime_ns: string | null;
+  readonly target_original_ctime_ns: string | null;
+  readonly target_original_sha256: string | null;
+  readonly reserved_bytes: number;
+  readonly terminal_kind: CsvOutputTerminalKind | null;
+  readonly last_error: string | null;
+  readonly created_at: number;
+  readonly updated_at: number;
+}
+
+interface CsvOutputOrphanReservationRow {
+  readonly intent_id: string;
+}
+
+interface CsvJobTombstoneRow {
+  readonly job_id: string;
+  readonly final_status: string;
+  readonly final_counters_json: string;
+  readonly input_digest: string | null;
+  readonly output_digest: string | null;
+  readonly output_schema_digest: string | null;
+  readonly result_set_digest: string | null;
+  readonly evidence_references_json: string;
+  readonly payload_bytes: number;
+}
+
+interface CsvJobTombstonePayload {
+  readonly jobId: string;
+  readonly status: string;
+  readonly counters: string;
+  readonly inputDigest: string | null;
+  readonly outputDigest: string | null;
+  readonly outputSchemaDigest: string | null;
+  readonly resultSetDigest: string | null;
+  readonly evidenceReferences: string;
+}
+
+interface CsvTerminalOutputEvidence {
+  readonly contractVersion: 1;
+  readonly intentId: string;
+  readonly rootPath: string;
+  readonly targetPath: string;
+  readonly temporaryPath: string;
+  readonly writerIdentity: {
+    readonly dev: string | null;
+    readonly ino: string | null;
+    readonly birthtimeNs: string | null;
+  };
+  readonly reservedBytes: number;
+  readonly state: string;
+  readonly recoveryPriorState: string | null;
+  readonly writerAnchorState: string;
+  readonly targetAnchorState: string;
+  readonly targetOriginalIdentity: {
+    readonly dev: string | null;
+    readonly ino: string | null;
+    readonly size: string | null;
+    readonly mtimeNs: string | null;
+    readonly ctimeNs: string | null;
+    readonly sha256: string | null;
+  };
+  readonly terminalKind: CsvOutputTerminalKind;
+  readonly diagnostic: string | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly orphanReservation: {
+    readonly id: string;
+    readonly state: "retained" | "released";
+    readonly cleanupEligible: boolean;
+  };
+}
+
+function canonicalCsvOutputWriterIdentity(input: {
+  readonly temporaryDev: string;
+  readonly temporaryIno: string;
+  readonly temporaryBirthtimeNs: string;
+}): CsvOutputWriterIdentity {
+  try {
+    const dev = BigInt(input.temporaryDev);
+    const ino = BigInt(input.temporaryIno);
+    const birthtimeNs = BigInt(input.temporaryBirthtimeNs);
+    if (
+      dev < 0n ||
+      ino <= 0n ||
+      birthtimeNs < 0n ||
+      dev.toString() !== input.temporaryDev ||
+      ino.toString() !== input.temporaryIno ||
+      birthtimeNs.toString() !== input.temporaryBirthtimeNs
+    ) {
+      throw new Error("non-canonical writer identity");
+    }
+    return { dev, ino, birthtimeNs };
+  } catch {
+    throw new Error("invalid CSV output temporary writer identity");
+  }
 }
 
 export class CsvStorageQuotaError extends Error {
@@ -1674,6 +1834,11 @@ const CSV_PROCESS_START_QUERY_MAX_BUFFER_BYTES = 64 * 1_024;
 export const CSV_RECOVERY_MAX_PROCESS_PROBES_PER_PASS = 8;
 export const CSV_RECOVERY_PROCESS_PROBE_BUDGET_MS = 2_500;
 export const CSV_RECOVERY_CANDIDATE_PAGE_SIZE = 16;
+const CSV_OUTPUT_ORPHAN_RECONCILIATION_PAGE_SIZE = 100;
+const CSV_TERMINAL_OUTPUT_EVIDENCE_MAX_BYTES = 1_048_576;
+const CSV_TERMINAL_OUTPUT_EVIDENCE_SET_MAX_BYTES = Math.floor(
+  CSV_MAX_JOB_TOMBSTONE_BYTES / 4,
+);
 const MACOS_PROCESS_QUERY_EXECUTABLE = "/bin/ps";
 const WINDOWS_PROCESS_QUERY_EXECUTABLE = "powershell.exe";
 const MACOS_PROCESS_START_PREFIX = "darwin-lstart-seconds:";
@@ -2026,6 +2191,56 @@ function assertQuota(
   if (current + requested > limit) {
     throw new CsvStorageQuotaError(label, limit);
   }
+}
+
+function csvJobTombstonePayloadBytes(payload: CsvJobTombstonePayload): number {
+  return Buffer.byteLength(JSON.stringify(payload), "utf8");
+}
+
+function terminalOutputEvidence(
+  row: CsvTerminalOutputIntentRow,
+): CsvTerminalOutputEvidence {
+  const evidence: CsvTerminalOutputEvidence = {
+    contractVersion: 1,
+    intentId: row.intent_id,
+    rootPath: row.root_path,
+    targetPath: row.target_path,
+    temporaryPath: row.temporary_path,
+    writerIdentity: {
+      dev: row.temporary_dev,
+      ino: row.temporary_ino,
+      birthtimeNs: row.temporary_birthtime_ns,
+    },
+    reservedBytes: row.reserved_bytes,
+    state: row.state,
+    recoveryPriorState: row.recovery_prior_state,
+    writerAnchorState: row.writer_anchor_state,
+    targetAnchorState: row.target_anchor_state,
+    targetOriginalIdentity: {
+      dev: row.target_original_dev,
+      ino: row.target_original_ino,
+      size: row.target_original_size,
+      mtimeNs: row.target_original_mtime_ns,
+      ctimeNs: row.target_original_ctime_ns,
+      sha256: row.target_original_sha256,
+    },
+    terminalKind: row.terminal_kind,
+    diagnostic: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    orphanReservation: {
+      id: row.intent_id,
+      state: row.orphan_state,
+      cleanupEligible: row.orphan_cleanup_eligible === 1,
+    },
+  };
+  if (
+    Buffer.byteLength(JSON.stringify(evidence), "utf8") >
+    CSV_TERMINAL_OUTPUT_EVIDENCE_MAX_BYTES
+  ) {
+    throw new Error("CSV terminal output evidence exceeds its bounded record");
+  }
+  return evidence;
 }
 
 export class CsvAgentJobsRepository {
@@ -3474,6 +3689,11 @@ export class CsvAgentJobsRepository {
              SELECT 1 FROM csv_agent_job_items AS item
              WHERE item.job_id = csv_agent_jobs.id
                AND item.review_status = 'pending'
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM csv_output_intents AS output_intent
+             WHERE output_intent.job_id = csv_agent_jobs.id
+               AND output_intent.quota_released = 0
            )`,
       )
       .run(now, now, jobId);
@@ -3502,6 +3722,11 @@ export class CsvAgentJobsRepository {
                AND (item.review_status = 'pending'
                  OR item.status IN ('running', 'unknown_outcome'))
            )
+           AND NOT EXISTS (
+             SELECT 1 FROM csv_output_intents AS output_intent
+             WHERE output_intent.job_id = csv_agent_jobs.id
+               AND output_intent.quota_released = 0
+           )
          ORDER BY completed_at ASC, id ASC LIMIT ?`,
       )
       .all(cutoff, CSV_JOB_GC_PAGE_ITEMS);
@@ -3525,6 +3750,11 @@ export class CsvAgentJobsRepository {
     if (job.status === "finished_with_unknown_outcomes") {
       throw new Error(
         "CSV jobs with abandoned unknown outcomes cannot be deleted",
+      );
+    }
+    if (this.hasActiveOutputIntent(jobId)) {
+      throw new Error(
+        `CSV job ${jobId} has an active output intent and cannot be deleted`,
       );
     }
     const resultSet = createHash("sha256");
@@ -3577,13 +3807,32 @@ export class CsvAgentJobsRepository {
       unknownOutcomeItems: job.unknown_outcome_items,
       resultBytes: job.result_bytes,
     });
-    const evidenceReferences = JSON.stringify({
-      historyCount: evidenceCount,
-      historyDigest: evidence.digest("hex"),
-    });
+    const historyDigest = evidence.digest("hex");
     const resultSetDigest = resultSet.digest("hex");
-    const payloadBytes = Buffer.byteLength(
-      JSON.stringify({
+    this.driver.transactionImmediate(() => {
+      const existing = this.driver
+        .prepareState<[string], { readonly job_id: string }>(
+          `SELECT job_id FROM csv_job_tombstones WHERE job_id = ?`,
+        )
+        .get(jobId);
+      if (existing !== undefined) return;
+      if (this.hasActiveOutputIntent(jobId)) {
+        throw new Error(
+          `CSV job ${jobId} has an active output intent and cannot be deleted`,
+        );
+      }
+      this.ensureTerminalOutputOrphanReservations(jobId);
+      const terminal = this.getTerminalOutputEvidence(jobId);
+      const evidenceReferences = JSON.stringify({
+        historyCount: evidenceCount,
+        historyDigest,
+        ...(terminal.length === 0
+          ? {}
+          : terminal.length === 1
+            ? { terminalOutput: terminal[0] }
+            : { terminalOutputs: terminal }),
+      });
+      const payloadBytes = csvJobTombstonePayloadBytes({
         jobId,
         status: job.status,
         counters,
@@ -3592,16 +3841,7 @@ export class CsvAgentJobsRepository {
         outputSchemaDigest: job.output_schema_digest,
         resultSetDigest,
         evidenceReferences,
-      }),
-      "utf8",
-    );
-    this.driver.transactionImmediate(() => {
-      const existing = this.driver
-        .prepareState<[string], { readonly job_id: string }>(
-          `SELECT job_id FROM csv_job_tombstones WHERE job_id = ?`,
-        )
-        .get(jobId);
-      if (existing !== undefined) return;
+      });
       const quota = this.getQuota();
       assertQuota(quota.tombstones, 1, CSV_MAX_JOB_TOMBSTONES, "job tombstone");
       assertQuota(
@@ -3644,13 +3884,310 @@ export class CsvAgentJobsRepository {
            WHERE singleton = 1`,
         )
         .run(payloadBytes, nowSeconds());
+      if (terminal.length > 0) {
+        const removed = this.driver
+          .prepareState(
+            `DELETE FROM csv_output_intents
+             WHERE job_id = ? AND terminal_kind IS NOT NULL
+               AND quota_released = 1`,
+          )
+          .run(jobId);
+        if (removed.changes !== terminal.length) {
+          throw new Error(
+            `CSV terminal output evidence changed for job ${jobId}`,
+          );
+        }
+        this.deleteReleasedOutputOrphanEvidence(jobId);
+      }
     });
+  }
+
+  private insertOutputOrphanReservation(input: {
+    readonly row: CsvOutputOrphanSourceRow;
+    readonly terminalKind: CsvOutputTerminalKind;
+    readonly diagnostic: string;
+    readonly cleanupEligible: boolean;
+    readonly now: number;
+  }): boolean {
+    const row = input.row;
+    return (
+      this.driver
+        .prepareState(
+          `INSERT OR IGNORE INTO csv_output_orphans (
+             intent_id, job_id, root_path, target_path, temporary_path,
+             temporary_dev, temporary_ino, temporary_birthtime_ns,
+             writer_anchor_state, target_anchor_state,
+             target_original_dev, target_original_ino, target_original_size,
+             target_original_mtime_ns, target_original_ctime_ns,
+             target_original_sha256, reserved_bytes, terminal_kind, diagnostic,
+             cleanup_eligible, state, released_at, created_at, updated_at
+           ) VALUES (
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+             'retained', NULL, ?, ?
+           )`,
+        )
+        .run(
+          row.intent_id,
+          row.job_id,
+          row.root_path,
+          row.target_path,
+          row.temporary_path,
+          row.temporary_dev,
+          row.temporary_ino,
+          row.temporary_birthtime_ns,
+          row.writer_anchor_state,
+          row.target_anchor_state,
+          row.target_original_dev,
+          row.target_original_ino,
+          row.target_original_size,
+          row.target_original_mtime_ns,
+          row.target_original_ctime_ns,
+          row.target_original_sha256,
+          row.reserved_bytes,
+          input.terminalKind,
+          input.diagnostic,
+          input.cleanupEligible ? 1 : 0,
+          row.created_at,
+          input.now,
+        ).changes === 1
+    );
+  }
+
+  /** Promote terminal rows produced by an older binary before transferring GC. */
+  private ensureTerminalOutputOrphanReservations(jobId: string): void {
+    const missing = this.driver
+      .prepareState<[string], CsvOutputOrphanSourceRow>(
+        `SELECT intent.intent_id, intent.job_id, intent.root_path,
+                intent.target_path, intent.temporary_path,
+                intent.temporary_dev, intent.temporary_ino,
+                intent.temporary_birthtime_ns, intent.writer_anchor_state,
+                intent.target_anchor_state, intent.target_original_dev,
+                intent.target_original_ino, intent.target_original_size,
+                intent.target_original_mtime_ns,
+                intent.target_original_ctime_ns,
+                intent.target_original_sha256, intent.reserved_bytes,
+                intent.terminal_kind, intent.last_error,
+                intent.created_at, intent.updated_at
+         FROM csv_output_intents AS intent
+         WHERE intent.job_id = ? AND intent.terminal_kind IS NOT NULL
+           AND intent.quota_released = 1
+           AND NOT EXISTS (
+             SELECT 1 FROM csv_output_orphans AS orphan
+             WHERE orphan.intent_id = intent.intent_id
+           )
+         ORDER BY intent.created_at ASC, intent.intent_id ASC`,
+      )
+      .all(jobId);
+    let files = 0;
+    let bytes = 0;
+    for (const row of missing) {
+      if (row.terminal_kind === null) continue;
+      if (
+        this.insertOutputOrphanReservation({
+          row,
+          terminalKind: row.terminal_kind,
+          diagnostic: row.last_error ?? "legacy terminal CSV output evidence",
+          cleanupEligible: false,
+          now: row.updated_at,
+        })
+      ) {
+        files += 1;
+        bytes += row.reserved_bytes;
+      }
+    }
+    if (files === 0) return;
+    const quota = this.getQuota();
+    assertQuota(
+      quota.output_staging_files + quota.output_orphan_files,
+      files,
+      CSV_MAX_OUTPUT_STAGING_FILES_GLOBAL,
+      "output staging and orphan file",
+    );
+    assertQuota(
+      quota.output_staging_bytes + quota.output_orphan_bytes,
+      bytes,
+      CSV_MAX_OUTPUT_STAGING_BYTES_GLOBAL,
+      "output staging and orphan byte",
+    );
+    this.driver
+      .prepareState(
+        `UPDATE csv_storage_quota SET
+           output_orphan_files = output_orphan_files + ?,
+           output_orphan_bytes = output_orphan_bytes + ?, updated_at = ?
+         WHERE singleton = 1`,
+      )
+      .run(files, bytes, nowSeconds());
+  }
+
+  private deleteReleasedOutputOrphanEvidence(jobId: string): void {
+    this.driver
+      .prepareState(
+        `DELETE FROM csv_output_orphans
+         WHERE job_id = ? AND state = 'released'`,
+      )
+      .run(jobId);
+  }
+
+  private getTerminalOutputEvidence(
+    jobId: string,
+  ): ReadonlyArray<CsvTerminalOutputEvidence> {
+    const rows = this.driver
+      .prepareState<[string], CsvTerminalOutputIntentRow>(
+        `SELECT intent.intent_id, intent.root_path, intent.target_path,
+                intent.temporary_path, intent.temporary_dev,
+                intent.temporary_ino, intent.temporary_birthtime_ns,
+                intent.reserved_bytes, intent.state,
+                intent.recovery_prior_state, intent.writer_anchor_state,
+                intent.target_anchor_state, intent.target_original_dev,
+                intent.target_original_ino, intent.target_original_size,
+                intent.target_original_mtime_ns,
+                intent.target_original_ctime_ns,
+                intent.target_original_sha256, intent.terminal_kind,
+                intent.last_error, intent.created_at, intent.updated_at,
+                orphan.state AS orphan_state,
+                orphan.cleanup_eligible AS orphan_cleanup_eligible
+         FROM csv_output_intents AS intent
+         JOIN csv_output_orphans AS orphan
+           ON orphan.intent_id = intent.intent_id
+         WHERE intent.job_id = ? AND intent.terminal_kind IS NOT NULL
+           AND intent.quota_released = 1
+         ORDER BY intent.created_at ASC, intent.intent_id ASC`,
+      )
+      .iterate(jobId);
+    const evidence: CsvTerminalOutputEvidence[] = [];
+    let encodedBytes = 2;
+    for (const row of rows) {
+      if (evidence.length >= CSV_MAX_OUTPUT_STAGING_FILES_GLOBAL) {
+        throw new Error(
+          `CSV job ${jobId} exceeds bounded terminal output evidence records`,
+        );
+      }
+      const record = terminalOutputEvidence(row);
+      encodedBytes +=
+        Buffer.byteLength(JSON.stringify(record), "utf8") +
+        (evidence.length === 0 ? 0 : 1);
+      if (encodedBytes > CSV_TERMINAL_OUTPUT_EVIDENCE_SET_MAX_BYTES) {
+        throw new Error(
+          `CSV job ${jobId} terminal output evidence exceeds tombstone quota`,
+        );
+      }
+      evidence.push(record);
+    }
+    return evidence;
+  }
+
+  /**
+   * Older binaries could leave a terminal intent beside an already-created
+   * tombstone. Transfer it and its byte accounting in the same transaction
+   * before any parent row can be garbage-collected.
+   */
+  private transferTerminalOutputEvidenceToTombstone(jobId: string): void {
+    this.ensureTerminalOutputOrphanReservations(jobId);
+    const terminal = this.getTerminalOutputEvidence(jobId);
+    if (terminal.length === 0) return;
+    const tombstone = this.driver
+      .prepareState<[string], CsvJobTombstoneRow>(
+        `SELECT job_id, final_status, final_counters_json, input_digest,
+                output_digest, output_schema_digest, result_set_digest,
+                evidence_references_json, payload_bytes
+         FROM csv_job_tombstones WHERE job_id = ?`,
+      )
+      .get(jobId);
+    if (tombstone === undefined) {
+      throw new Error(`CSV job ${jobId} lost its tombstone evidence fence`);
+    }
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(tombstone.evidence_references_json);
+    } catch {
+      throw new Error(`CSV job ${jobId} has invalid tombstone evidence`);
+    }
+    if (
+      decoded === null ||
+      typeof decoded !== "object" ||
+      Array.isArray(decoded)
+    ) {
+      throw new Error(`CSV job ${jobId} has invalid tombstone evidence`);
+    }
+    if (
+      Object.hasOwn(decoded, "terminalOutput") ||
+      Object.hasOwn(decoded, "terminalOutputs")
+    ) {
+      throw new Error(
+        `CSV job ${jobId} has conflicting terminal output evidence`,
+      );
+    }
+    const evidenceReferences = JSON.stringify({
+      ...(decoded as Readonly<Record<string, unknown>>),
+      ...(terminal.length === 1
+        ? { terminalOutput: terminal[0] }
+        : { terminalOutputs: terminal }),
+    });
+    const payloadBytes = csvJobTombstonePayloadBytes({
+      jobId: tombstone.job_id,
+      status: tombstone.final_status,
+      counters: tombstone.final_counters_json,
+      inputDigest: tombstone.input_digest,
+      outputDigest: tombstone.output_digest,
+      outputSchemaDigest: tombstone.output_schema_digest,
+      resultSetDigest: tombstone.result_set_digest,
+      evidenceReferences,
+    });
+    const quotaDelta = payloadBytes - tombstone.payload_bytes;
+    if (quotaDelta > 0) {
+      assertQuota(
+        this.getQuota().tombstone_bytes,
+        quotaDelta,
+        CSV_MAX_JOB_TOMBSTONE_BYTES,
+        "job tombstone byte",
+      );
+    }
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_job_tombstones SET evidence_references_json = ?,
+           payload_bytes = ?
+         WHERE job_id = ? AND evidence_references_json = ?
+           AND payload_bytes = ?`,
+      )
+      .run(
+        evidenceReferences,
+        payloadBytes,
+        jobId,
+        tombstone.evidence_references_json,
+        tombstone.payload_bytes,
+      );
+    if (updated.changes !== 1) {
+      throw new Error(`CSV job ${jobId} tombstone evidence changed`);
+    }
+    this.driver
+      .prepareState(
+        `UPDATE csv_storage_quota SET
+           tombstone_bytes = tombstone_bytes + ?, updated_at = ?
+         WHERE singleton = 1`,
+      )
+      .run(quotaDelta, nowSeconds());
+    const removed = this.driver
+      .prepareState(
+        `DELETE FROM csv_output_intents
+         WHERE job_id = ? AND terminal_kind IS NOT NULL
+           AND quota_released = 1`,
+      )
+      .run(jobId);
+    if (removed.changes !== terminal.length) {
+      throw new Error(`CSV terminal output evidence changed for job ${jobId}`);
+    }
+    this.deleteReleasedOutputOrphanEvidence(jobId);
   }
 
   private continueJobGarbageCollection(jobId: string): void {
     const deadline = Date.now() + CSV_MAX_JOB_GC_MS_PER_SLICE;
     while (Date.now() <= deadline) {
       const finished = this.driver.transactionImmediate(() => {
+        // This also protects tombstones created by an older binary before the
+        // active-output retirement fence existed. Leave the GC intent durable
+        // until output recovery releases its quota.
+        if (this.hasActiveOutputIntent(jobId)) return true;
+        this.transferTerminalOutputEvidenceToTombstone(jobId);
         const batch = this.driver
           .prepareState<
             [string, number],
@@ -3734,13 +4271,29 @@ export class CsvAgentJobsRepository {
   private resumeInterruptedJobGarbageCollection(): void {
     const pending = this.driver
       .prepareState<[], { readonly job_id: string }>(
-        `SELECT job_id FROM csv_job_gc_intents
+        `SELECT gc.job_id FROM csv_job_gc_intents AS gc
+         WHERE NOT EXISTS (
+           SELECT 1 FROM csv_output_intents AS output_intent
+           WHERE output_intent.job_id = gc.job_id
+             AND output_intent.quota_released = 0
+         )
          ORDER BY created_at ASC, job_id ASC LIMIT 1`,
       )
       .get();
     if (pending !== undefined) {
       this.continueJobGarbageCollection(pending.job_id);
     }
+  }
+
+  private hasActiveOutputIntent(jobId: string): boolean {
+    return (
+      this.driver
+        .prepareState<[string], { readonly present: number }>(
+          `SELECT 1 AS present FROM csv_output_intents
+           WHERE job_id = ? AND quota_released = 0 LIMIT 1`,
+        )
+        .get(jobId) !== undefined
+    );
   }
 
   markJobRunning(jobId: string, effectiveMaxConcurrency?: number): void {
@@ -3841,7 +4394,28 @@ export class CsvAgentJobsRepository {
     readonly temporaryPath: string;
     readonly temporaryDev: string;
     readonly temporaryIno: string;
+    readonly temporaryBirthtimeNs: string;
     readonly reservedBytes: number;
+    readonly targetOriginalPresent?: boolean;
+  }): string {
+    const intentId = this.reserveCsvOutputIntent(input);
+    try {
+      this.attachCsvOutputIntentWriter(intentId, input);
+      this.markCsvOutputIntentAnchorsReady(intentId);
+      return intentId;
+    } catch (error) {
+      this.abandonCsvOutputIntent(intentId, true);
+      throw error;
+    }
+  }
+
+  reserveCsvOutputIntent(input: {
+    readonly jobId: string;
+    readonly rootPath: string;
+    readonly targetPath: string;
+    readonly temporaryPath: string;
+    readonly reservedBytes: number;
+    readonly targetOriginalPresent?: boolean;
   }): string {
     const intentId = randomUUID();
     const ownerGeneration = randomUUID();
@@ -3849,13 +4423,13 @@ export class CsvAgentJobsRepository {
     this.driver.transactionImmediate(() => {
       const quota = this.getQuota();
       assertQuota(
-        quota.output_staging_files,
+        quota.output_staging_files + quota.output_orphan_files,
         1,
         CSV_MAX_OUTPUT_STAGING_FILES_GLOBAL,
         "output staging file",
       );
       assertQuota(
-        quota.output_staging_bytes,
+        quota.output_staging_bytes + quota.output_orphan_bytes,
         input.reservedBytes,
         CSV_MAX_OUTPUT_STAGING_BYTES_GLOBAL,
         "output staging byte",
@@ -3864,13 +4438,18 @@ export class CsvAgentJobsRepository {
         .prepareState(
           `INSERT INTO csv_output_intents (
              intent_id, job_id, root_path, target_path, temporary_path, temporary_dev,
-             temporary_ino, reserved_bytes, state, owner_generation,
+             temporary_ino, temporary_birthtime_ns, writer_anchor_state,
+             target_anchor_state,
+             reserved_bytes, state, owner_generation,
              owner_pid, owner_boot_id, owner_process_start, created_at, updated_at
            )
-           SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'writing', ?, ?, ?, ?, ?, ?
+           SELECT ?, ?, ?, ?, ?, NULL, NULL, NULL, 'pending', ?, ?, 'writing', ?, ?, ?, ?, ?, ?
            WHERE EXISTS (
              SELECT 1 FROM csv_agent_jobs WHERE id = ?
                AND import_state = 'visible' AND retired_at IS NULL
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM csv_output_intents WHERE job_id = ?
            )`,
         )
         .run(
@@ -3879,8 +4458,7 @@ export class CsvAgentJobsRepository {
           input.rootPath,
           input.targetPath,
           input.temporaryPath,
-          input.temporaryDev,
-          input.temporaryIno,
+          input.targetOriginalPresent === true ? "pending" : "absent",
           input.reservedBytes,
           ownerGeneration,
           this.ownerIdentity.pid,
@@ -3888,6 +4466,7 @@ export class CsvAgentJobsRepository {
           this.ownerIdentity.processStart ?? null,
           now,
           now,
+          input.jobId,
           input.jobId,
         );
       if (inserted.changes !== 1) {
@@ -3908,11 +4487,170 @@ export class CsvAgentJobsRepository {
     return intentId;
   }
 
+  attachCsvOutputIntentWriter(
+    intentId: string,
+    input: {
+      readonly temporaryDev: string;
+      readonly temporaryIno: string;
+      readonly temporaryBirthtimeNs: string;
+    },
+  ): void {
+    const writerIdentity = canonicalCsvOutputWriterIdentity(input);
+    const intent = this.driver
+      .prepareState<
+        [string],
+        {
+          readonly temporary_path: string;
+          readonly owner_generation: string;
+        }
+      >(
+        `SELECT temporary_path, owner_generation FROM csv_output_intents
+         WHERE intent_id = ? AND state = 'writing'
+           AND writer_anchor_state = 'pending'
+           AND temporary_dev IS NULL AND temporary_ino IS NULL
+           AND temporary_birthtime_ns IS NULL
+           AND terminal_kind IS NULL AND quota_released = 0`,
+      )
+      .get(intentId);
+    if (intent === undefined) {
+      throw new Error(`CSV output intent ${intentId} cannot attach its writer`);
+    }
+    const identified = this.driver
+      .prepareState(
+        `UPDATE csv_output_intents SET temporary_dev = ?, temporary_ino = ?,
+           temporary_birthtime_ns = ?, updated_at = ?
+         WHERE intent_id = ? AND owner_generation = ? AND state = 'writing'
+           AND writer_anchor_state = 'pending'
+           AND temporary_dev IS NULL AND temporary_ino IS NULL
+           AND temporary_birthtime_ns IS NULL
+           AND terminal_kind IS NULL AND quota_released = 0`,
+      )
+      .run(
+        input.temporaryDev,
+        input.temporaryIno,
+        input.temporaryBirthtimeNs,
+        nowSeconds(),
+        intentId,
+        intent.owner_generation,
+      );
+    if (identified.changes !== 1) {
+      throw new Error(`CSV output intent ${intentId} lost its identity fence`);
+    }
+    establishCsvOutputWriterAnchorsSync(
+      csvOutputWriterAnchorPaths(
+        intent.temporary_path,
+        intentId,
+        writerIdentity,
+      ),
+      intent.temporary_path,
+      writerIdentity,
+    );
+  }
+
+  markCsvOutputIntentAnchorsReady(
+    intentId: string,
+    targetOriginal?: {
+      readonly dev: string;
+      readonly ino: string;
+      readonly size: string;
+      readonly mtimeNs: string;
+      readonly ctimeNs: string;
+      readonly sha256: string;
+    },
+  ): void {
+    if (targetOriginal !== undefined) {
+      assertSha256(targetOriginal.sha256, "CSV output original target digest");
+      for (const [label, value, allowZero] of [
+        ["device", targetOriginal.dev, true],
+        ["inode", targetOriginal.ino, false],
+        ["size", targetOriginal.size, true],
+        ["mtime", targetOriginal.mtimeNs, true],
+        ["ctime", targetOriginal.ctimeNs, true],
+      ] as const) {
+        const parsed = BigInt(value);
+        if (
+          parsed.toString() !== value ||
+          (allowZero ? parsed < 0n : parsed <= 0n)
+        ) {
+          throw new Error(`invalid CSV output target ${label}`);
+        }
+      }
+    }
+    const targetState = targetOriginal === undefined ? "absent" : "pending";
+    const anchored = this.driver
+      .prepareState(
+        `UPDATE csv_output_intents SET writer_anchor_state = 'ready',
+           target_anchor_state = CASE
+             WHEN target_anchor_state = 'pending' THEN 'ready'
+             ELSE target_anchor_state
+           END,
+           target_original_dev = ?, target_original_ino = ?,
+           target_original_size = ?, target_original_mtime_ns = ?,
+           target_original_ctime_ns = ?, target_original_sha256 = ?,
+           updated_at = ?
+         WHERE intent_id = ?
+           AND state = 'writing' AND writer_anchor_state = 'pending'
+           AND target_anchor_state = ?
+           AND terminal_kind IS NULL AND quota_released = 0`,
+      )
+      .run(
+        targetOriginal?.dev ?? null,
+        targetOriginal?.ino ?? null,
+        targetOriginal?.size ?? null,
+        targetOriginal?.mtimeNs ?? null,
+        targetOriginal?.ctimeNs ?? null,
+        targetOriginal?.sha256 ?? null,
+        nowSeconds(),
+        intentId,
+        targetState,
+      );
+    if (anchored.changes !== 1) {
+      throw new Error(`CSV output intent ${intentId} lost its anchor fence`);
+    }
+  }
+
+  markCsvOutputIntentReplacing(intentId: string): void {
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_output_intents SET target_anchor_state = 'replacing',
+           updated_at = ?
+         WHERE intent_id = ? AND state = 'flushed'
+           AND writer_anchor_state = 'ready'
+           AND target_anchor_state = 'ready'
+           AND terminal_kind IS NULL AND quota_released = 0`,
+      )
+      .run(nowSeconds(), intentId);
+    if (updated.changes !== 1) {
+      throw new Error(
+        `CSV output intent ${intentId} cannot replace its target`,
+      );
+    }
+  }
+
+  markCsvOutputIntentTargetReleasing(intentId: string): void {
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_output_intents SET target_anchor_state = 'releasing',
+           updated_at = ?
+         WHERE intent_id = ? AND state = 'published'
+           AND target_anchor_state = 'replacing'
+           AND terminal_kind IS NULL AND quota_released = 0`,
+      )
+      .run(nowSeconds(), intentId);
+    if (updated.changes !== 1) {
+      throw new Error(
+        `CSV output intent ${intentId} cannot release its target anchor`,
+      );
+    }
+  }
+
   markCsvOutputIntentFlushed(intentId: string): void {
     const updated = this.driver
       .prepareState(
         `UPDATE csv_output_intents SET state = 'flushed', updated_at = ?
-         WHERE intent_id = ? AND state = 'writing'`,
+         WHERE intent_id = ? AND state = 'writing'
+           AND writer_anchor_state = 'ready'
+           AND target_anchor_state IN ('absent', 'ready')`,
       )
       .run(nowSeconds(), intentId);
     if (updated.changes !== 1) {
@@ -3920,11 +4658,71 @@ export class CsvAgentJobsRepository {
     }
   }
 
+  markCsvOutputIntentAnchorReleasing(intentId: string): void {
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_output_intents SET writer_anchor_state = 'releasing',
+           updated_at = ?
+         WHERE intent_id = ? AND writer_anchor_state = 'ready'
+           AND state IN ('writing', 'flushed', 'published')`,
+      )
+      .run(nowSeconds(), intentId);
+    if (updated.changes !== 1) {
+      throw new Error(
+        `CSV output intent ${intentId} cannot release its anchor`,
+      );
+    }
+  }
+
+  markCsvOutputIntentRecoveryAnchorReleasing(input: {
+    readonly intentId: string;
+    readonly ownerGeneration: string;
+  }): void {
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_output_intents SET writer_anchor_state = 'releasing',
+           updated_at = ?
+         WHERE intent_id = ? AND owner_generation = ?
+           AND state = 'recovering'
+           AND writer_anchor_state IN ('pending', 'ready', 'releasing')
+           AND terminal_kind IS NULL AND quota_released = 0`,
+      )
+      .run(nowSeconds(), input.intentId, input.ownerGeneration);
+    if (updated.changes !== 1) {
+      throw new Error(
+        `CSV output recovery intent ${input.intentId} cannot release its anchor`,
+      );
+    }
+  }
+
+  markCsvOutputIntentRecoveryTargetReleasing(input: {
+    readonly intentId: string;
+    readonly ownerGeneration: string;
+  }): void {
+    const updated = this.driver
+      .prepareState(
+        `UPDATE csv_output_intents SET target_anchor_state = 'releasing',
+           updated_at = ?
+         WHERE intent_id = ? AND owner_generation = ?
+           AND state = 'recovering'
+           AND target_anchor_state IN ('pending', 'ready', 'replacing', 'releasing')
+           AND terminal_kind IS NULL AND quota_released = 0`,
+      )
+      .run(nowSeconds(), input.intentId, input.ownerGeneration);
+    if (updated.changes !== 1) {
+      throw new Error(
+        `CSV output recovery intent ${input.intentId} cannot release its target anchor`,
+      );
+    }
+  }
+
   markCsvOutputIntentPublished(intentId: string): void {
     const updated = this.driver
       .prepareState(
         `UPDATE csv_output_intents SET state = 'published', updated_at = ?
-         WHERE intent_id = ? AND state = 'flushed'`,
+         WHERE intent_id = ? AND state = 'flushed'
+           AND writer_anchor_state = 'ready'
+           AND target_anchor_state IN ('absent', 'replacing')`,
       )
       .run(nowSeconds(), intentId);
     if (updated.changes !== 1) {
@@ -3963,7 +4761,9 @@ export class CsvAgentJobsRepository {
           }
         >(
           `SELECT job_id, target_path, reserved_bytes FROM csv_output_intents
-           WHERE intent_id = ? AND state IN ('flushed', 'published')`,
+           WHERE intent_id = ? AND state IN ('flushed', 'published')
+             AND writer_anchor_state = 'releasing'
+             AND target_anchor_state IN ('legacy', 'absent', 'releasing')`,
         )
         .get(intentId);
       if (intent === undefined || intent.target_path !== artifact.path) {
@@ -4007,11 +4807,22 @@ export class CsvAgentJobsRepository {
     const now = nowSeconds();
     this.driver.transactionImmediate(() => {
       const intent = this.driver
-        .prepareState<[string], { readonly reserved_bytes: number }>(
-          `SELECT reserved_bytes FROM csv_output_intents WHERE intent_id = ?`,
+        .prepareState<
+          [string],
+          {
+            readonly reserved_bytes: number;
+            readonly terminal_kind: string | null;
+            readonly quota_released: number;
+          }
+        >(
+          `SELECT reserved_bytes, terminal_kind, quota_released
+           FROM csv_output_intents WHERE intent_id = ?`,
         )
         .get(intentId);
       if (intent === undefined) return;
+      // A terminal row is retained evidence, not an active staging lease.
+      // Never delete it or release its already-released quota a second time.
+      if (intent.terminal_kind !== null || intent.quota_released !== 0) return;
       if (retainForRecovery) {
         this.driver
           .prepareState(
@@ -4058,12 +4869,18 @@ export class CsvAgentJobsRepository {
         CsvOutputIntentRecoveryRow
       >(
         `SELECT intent_id, target_path, temporary_path, temporary_dev,
-                temporary_ino, state, recovery_prior_state,
+                temporary_ino, temporary_birthtime_ns, writer_anchor_state,
+                target_anchor_state, target_original_dev, target_original_ino,
+                target_original_size, target_original_mtime_ns,
+                target_original_ctime_ns, target_original_sha256,
+                state, recovery_prior_state,
                 owner_generation, owner_pid,
                 owner_boot_id, owner_process_start, created_at,
                 CASE WHEN last_error IS NULL THEN 0 ELSE 1 END AS recovery_rank
          FROM csv_output_intents
          WHERE root_path = ?
+           AND terminal_kind IS NULL
+           AND quota_released = 0
            AND state IN ('writing', 'flushed', 'published', 'abandoned', 'recovering')
            AND (
              ? IS NULL OR
@@ -4088,86 +4905,113 @@ export class CsvAgentJobsRepository {
     const probeBudget = createRecoveryProbeBudget();
     const claimed: CsvOutputRecoveryIntent[] = [];
     let consumedPage = true;
-    for (const candidate of candidates) {
-      if (claimed.length >= input.limit) {
-        consumedPage = false;
-        break;
-      }
-      if (LIVE_CSV_OUTPUT_GENERATIONS.has(candidate.owner_generation)) {
+    try {
+      for (const candidate of candidates) {
+        if (claimed.length >= input.limit) {
+          consumedPage = false;
+          break;
+        }
+        if (LIVE_CSV_OUTPUT_GENERATIONS.has(candidate.owner_generation)) {
+          this.outputRecoveryCursors.set(input.rootPath, {
+            recoveryRank: candidate.recovery_rank,
+            createdAt: candidate.created_at,
+            intentId: candidate.intent_id,
+          });
+          continue;
+        }
+        if (
+          candidate.state !== "abandoned" &&
+          !reserveRecoveryProcessProbe(probeBudget)
+        ) {
+          consumedPage = false;
+          break;
+        }
+        const ownerProof =
+          candidate.state === "abandoned"
+            ? ({ kind: "proven_dead" } as const)
+            : await this.recordedOwnerDeathProof(
+                {
+                  pid: candidate.owner_pid,
+                  bootId: candidate.owner_boot_id,
+                  processStart: candidate.owner_process_start,
+                },
+                input.signal,
+              );
+        input.signal?.throwIfAborted();
         this.outputRecoveryCursors.set(input.rootPath, {
           recoveryRank: candidate.recovery_rank,
           createdAt: candidate.created_at,
           intentId: candidate.intent_id,
         });
-        continue;
-      }
-      if (
-        candidate.state !== "abandoned" &&
-        !reserveRecoveryProcessProbe(probeBudget)
-      ) {
-        consumedPage = false;
-        break;
-      }
-      const ownerProof =
-        candidate.state === "abandoned"
-          ? ({ kind: "proven_dead" } as const)
-          : await this.recordedOwnerDeathProof(
-              {
-                pid: candidate.owner_pid,
-                bootId: candidate.owner_boot_id,
-                processStart: candidate.owner_process_start,
-              },
-              input.signal,
-            );
-      input.signal?.throwIfAborted();
-      this.outputRecoveryCursors.set(input.rootPath, {
-        recoveryRank: candidate.recovery_rank,
-        createdAt: candidate.created_at,
-        intentId: candidate.intent_id,
-      });
-      if (ownerProof.kind === "deferred") {
-        this.recordOutputRecoveryDeferral(candidate, ownerProof.code);
-        continue;
-      }
-      const ownerGeneration = randomUUID();
-      const now = nowSeconds();
-      const changes = this.driver.transactionImmediate(
-        () =>
-          this.driver
-            .prepareState(
-              `UPDATE csv_output_intents SET state = 'recovering',
+        if (ownerProof.kind === "deferred") {
+          this.recordOutputRecoveryDeferral(candidate, ownerProof.code);
+          continue;
+        }
+        const ownerGeneration = randomUUID();
+        const now = nowSeconds();
+        const changes = this.driver.transactionImmediate(
+          () =>
+            this.driver
+              .prepareState(
+                `UPDATE csv_output_intents SET state = 'recovering',
                recovery_prior_state = COALESCE(
                  recovery_prior_state,
                  CASE WHEN state = 'recovering' THEN 'abandoned' ELSE state END
                ),
                owner_generation = ?, owner_pid = ?, owner_boot_id = ?,
                owner_process_start = ?, last_error = NULL, updated_at = ?
-             WHERE intent_id = ? AND owner_generation = ? AND state = ?`,
-            )
-            .run(
-              ownerGeneration,
-              this.ownerIdentity.pid,
-              this.ownerIdentity.bootId ?? null,
-              this.ownerIdentity.processStart ?? null,
-              now,
-              candidate.intent_id,
-              candidate.owner_generation,
-              candidate.state,
-            ).changes,
-      );
-      if (changes !== 1) continue;
-      LIVE_CSV_OUTPUT_GENERATIONS.add(ownerGeneration);
-      claimed.push({
-        intentId: candidate.intent_id,
-        ownerGeneration,
-        priorState:
-          candidate.recovery_prior_state ??
-          (candidate.state === "recovering" ? "abandoned" : candidate.state),
-        targetPath: candidate.target_path,
-        temporaryPath: candidate.temporary_path,
-        temporaryDev: candidate.temporary_dev,
-        temporaryIno: candidate.temporary_ino,
-      });
+             WHERE intent_id = ? AND owner_generation = ? AND state = ?
+               AND terminal_kind IS NULL AND quota_released = 0`,
+              )
+              .run(
+                ownerGeneration,
+                this.ownerIdentity.pid,
+                this.ownerIdentity.bootId ?? null,
+                this.ownerIdentity.processStart ?? null,
+                now,
+                candidate.intent_id,
+                candidate.owner_generation,
+                candidate.state,
+              ).changes,
+        );
+        if (changes !== 1) continue;
+        LIVE_CSV_OUTPUT_GENERATIONS.add(ownerGeneration);
+        claimed.push({
+          intentId: candidate.intent_id,
+          ownerGeneration,
+          priorState:
+            candidate.recovery_prior_state ??
+            (candidate.state === "recovering" ? "abandoned" : candidate.state),
+          targetPath: candidate.target_path,
+          temporaryPath: candidate.temporary_path,
+          temporaryDev: candidate.temporary_dev,
+          temporaryIno: candidate.temporary_ino,
+          temporaryBirthtimeNs: candidate.temporary_birthtime_ns,
+          writerAnchorState: candidate.writer_anchor_state,
+          targetAnchorState: candidate.target_anchor_state,
+          targetOriginalDev: candidate.target_original_dev,
+          targetOriginalIno: candidate.target_original_ino,
+          targetOriginalSize: candidate.target_original_size,
+          targetOriginalMtimeNs: candidate.target_original_mtime_ns,
+          targetOriginalCtimeNs: candidate.target_original_ctime_ns,
+          targetOriginalSha256: candidate.target_original_sha256,
+        });
+      }
+    } catch (error) {
+      if (input.signal?.aborted !== true) throw error;
+      for (const intent of claimed) {
+        try {
+          this.deferCsvOutputIntentRecovery({
+            intentId: intent.intentId,
+            ownerGeneration: intent.ownerGeneration,
+            reason: "CSV output recovery aborted while claiming a page",
+          });
+        } catch {
+          // The original abort remains authoritative; a claim whose fence no
+          // longer matches was already completed or independently released.
+        }
+      }
+      throw input.signal.reason ?? error;
     }
     if (consumedPage && candidates.length < CSV_RECOVERY_CANDIDATE_PAGE_SIZE) {
       this.outputRecoveryCursors.delete(input.rootPath);
@@ -4195,6 +5039,7 @@ export class CsvAgentJobsRepository {
       }
     }
     const now = nowSeconds();
+    let recoveredJobId: string | undefined;
     this.driver.transactionImmediate(() => {
       const intent = this.driver
         .prepareState<
@@ -4208,7 +5053,8 @@ export class CsvAgentJobsRepository {
           `SELECT job_id, target_path, reserved_bytes
            FROM csv_output_intents
            WHERE intent_id = ? AND owner_generation = ?
-             AND state = 'recovering'`,
+             AND state = 'recovering' AND terminal_kind IS NULL
+             AND quota_released = 0`,
         )
         .get(input.intentId, input.ownerGeneration);
       if (
@@ -4243,7 +5089,8 @@ export class CsvAgentJobsRepository {
       const removed = this.driver
         .prepareState(
           `DELETE FROM csv_output_intents
-           WHERE intent_id = ? AND owner_generation = ? AND state = 'recovering'`,
+           WHERE intent_id = ? AND owner_generation = ? AND state = 'recovering'
+             AND terminal_kind IS NULL AND quota_released = 0`,
         )
         .run(input.intentId, input.ownerGeneration);
       if (removed.changes !== 1) {
@@ -4259,8 +5106,12 @@ export class CsvAgentJobsRepository {
            WHERE singleton = 1`,
         )
         .run(intent.reserved_bytes, now);
+      recoveredJobId = intent.job_id;
     });
     LIVE_CSV_OUTPUT_GENERATIONS.delete(input.ownerGeneration);
+    if (recoveredJobId !== undefined) {
+      this.resumeTombstonedJobGarbageCollection(recoveredJobId);
+    }
   }
 
   deferCsvOutputIntentRecovery(input: {
@@ -4278,7 +5129,8 @@ export class CsvAgentJobsRepository {
       .prepareState(
         `UPDATE csv_output_intents SET state = 'abandoned', last_error = ?,
            updated_at = ?
-         WHERE intent_id = ? AND owner_generation = ? AND state = 'recovering'`,
+         WHERE intent_id = ? AND owner_generation = ? AND state = 'recovering'
+           AND terminal_kind IS NULL AND quota_released = 0`,
       )
       .run(input.reason, nowSeconds(), input.intentId, input.ownerGeneration);
     if (updated.changes !== 1) {
@@ -4287,6 +5139,209 @@ export class CsvAgentJobsRepository {
       );
     }
     LIVE_CSV_OUTPUT_GENERATIONS.delete(input.ownerGeneration);
+  }
+
+  retireCsvOutputIntentRecovery(input: {
+    readonly intentId: string;
+    readonly ownerGeneration: string;
+    readonly reason: string;
+    readonly writerArtifactDisposition?: "verified_absent";
+    readonly terminalKind?:
+      | "orphaned_unverifiable_writer_identity"
+      | "orphaned_target_replacement_conflict";
+  }): void {
+    if (
+      input.reason.length === 0 ||
+      Buffer.byteLength(input.reason, "utf8") > 1_024
+    ) {
+      throw new Error("invalid CSV output terminal diagnostic");
+    }
+    const now = nowSeconds();
+    let terminalJobId: string | undefined;
+    this.driver.transactionImmediate(() => {
+      const intent = this.driver
+        .prepareState<
+          [string, string],
+          CsvOutputOrphanSourceRow & { readonly quota_released: number }
+        >(
+          `SELECT intent_id, job_id, root_path, target_path, temporary_path,
+                  temporary_dev, temporary_ino, temporary_birthtime_ns,
+                  writer_anchor_state, target_anchor_state,
+                  target_original_dev, target_original_ino,
+                  target_original_size, target_original_mtime_ns,
+                  target_original_ctime_ns, target_original_sha256,
+                  reserved_bytes, terminal_kind, last_error,
+                  created_at, updated_at, quota_released
+           FROM csv_output_intents
+           WHERE intent_id = ? AND owner_generation = ?
+             AND state = 'recovering' AND terminal_kind IS NULL`,
+        )
+        .get(input.intentId, input.ownerGeneration);
+      if (intent === undefined || intent.quota_released !== 0) {
+        throw new Error(
+          `CSV output recovery fence changed for ${input.intentId}`,
+        );
+      }
+      const terminalKind =
+        input.terminalKind ?? "orphaned_unverifiable_writer_identity";
+      if (
+        !this.insertOutputOrphanReservation({
+          row: intent,
+          terminalKind,
+          diagnostic: input.reason,
+          cleanupEligible:
+            input.writerArtifactDisposition === "verified_absent",
+          now,
+        })
+      ) {
+        throw new Error(
+          `CSV output orphan reservation already exists for ${input.intentId}`,
+        );
+      }
+      const retired = this.driver
+        .prepareState(
+          `UPDATE csv_output_intents SET state = 'abandoned',
+             terminal_kind = ?,
+             quota_released = 1, last_error = ?, updated_at = ?
+           WHERE intent_id = ? AND owner_generation = ?
+             AND state = 'recovering' AND terminal_kind IS NULL
+             AND quota_released = 0`,
+        )
+        .run(
+          terminalKind,
+          input.reason,
+          now,
+          input.intentId,
+          input.ownerGeneration,
+        );
+      if (retired.changes !== 1) {
+        throw new Error(
+          `CSV output recovery fence changed for ${input.intentId}`,
+        );
+      }
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+             output_staging_files = output_staging_files - 1,
+             output_staging_bytes = output_staging_bytes - ?,
+             output_orphan_files = output_orphan_files + 1,
+             output_orphan_bytes = output_orphan_bytes + ?, updated_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(intent.reserved_bytes, intent.reserved_bytes, now);
+      this.driver
+        .prepareState(
+          `UPDATE csv_agent_jobs
+           SET status = 'failed', completed_at = ?, updated_at = ?,
+               last_error = ?
+           WHERE id = ? AND import_state = 'visible' AND retired_at IS NULL
+             AND status IN ('pending', 'running')
+             AND pending_items = 0 AND running_items = 0
+             AND unknown_outcome_items = 0 AND review_pending_items = 0`,
+        )
+        .run(now, now, input.reason, intent.job_id);
+      terminalJobId = intent.job_id;
+    });
+    LIVE_CSV_OUTPUT_GENERATIONS.delete(input.ownerGeneration);
+    if (terminalJobId !== undefined) {
+      this.resumeTombstonedJobGarbageCollection(terminalJobId);
+    }
+  }
+
+  listCsvOutputOrphanReservations(input: {
+    readonly rootPath: string;
+    readonly limit: number;
+  }): ReadonlyArray<CsvOutputOrphanReservation> {
+    if (
+      !Number.isSafeInteger(input.limit) ||
+      input.limit <= 0 ||
+      input.limit > CSV_OUTPUT_ORPHAN_RECONCILIATION_PAGE_SIZE
+    ) {
+      throw new Error("CSV output orphan limit is outside its bounded page");
+    }
+    return this.driver
+      .prepareState<
+        [string, number],
+        CsvOutputOrphanReservationRow
+      >(
+        `SELECT intent_id
+         FROM csv_output_orphans
+         WHERE root_path = ? AND state = 'retained' AND cleanup_eligible = 1
+         ORDER BY intent_id ASC LIMIT ?`,
+      )
+      .all(input.rootPath, input.limit)
+      .map((row) => ({
+        intentId: row.intent_id,
+      }));
+  }
+
+  releaseCsvOutputOrphanReservation(input: {
+    readonly intentId: string;
+    readonly rootPath: string;
+  }): void {
+    this.driver.transactionImmediate(() => {
+      const orphan = this.driver
+        .prepareState<
+          [string, string],
+          {
+            readonly job_id: string;
+            readonly reserved_bytes: number;
+            readonly state: string;
+          }
+        >(
+          `SELECT job_id, reserved_bytes, state FROM csv_output_orphans
+           WHERE intent_id = ? AND root_path = ? AND cleanup_eligible = 1`,
+        )
+        .get(input.intentId, input.rootPath);
+      if (orphan === undefined || orphan.state === "released") return;
+      const now = nowSeconds();
+      const released = this.driver
+        .prepareState(
+          `UPDATE csv_output_orphans SET state = 'released',
+             released_at = ?, updated_at = ?
+           WHERE intent_id = ? AND root_path = ? AND state = 'retained'
+             AND cleanup_eligible = 1`,
+        )
+        .run(now, now, input.intentId, input.rootPath);
+      if (released.changes !== 1) return;
+      this.driver
+        .prepareState(
+          `UPDATE csv_storage_quota SET
+             output_orphan_files = output_orphan_files - 1,
+             output_orphan_bytes = output_orphan_bytes - ?, updated_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(orphan.reserved_bytes, now);
+      this.driver
+        .prepareState(
+          `DELETE FROM csv_output_orphans
+           WHERE intent_id = ? AND state = 'released'
+             AND NOT EXISTS (
+               SELECT 1 FROM csv_output_intents
+               WHERE intent_id = csv_output_orphans.intent_id
+             )
+             AND EXISTS (
+               SELECT 1 FROM csv_job_tombstones
+               WHERE job_id = csv_output_orphans.job_id
+             )`,
+        )
+        .run(input.intentId);
+    });
+  }
+
+  private resumeTombstonedJobGarbageCollection(jobId: string): void {
+    const pending = this.driver
+      .prepareState<[string], { readonly present: number }>(
+        `SELECT 1 AS present FROM csv_job_gc_intents WHERE job_id = ?`,
+      )
+      .get(jobId);
+    if (pending === undefined) return;
+    try {
+      this.continueJobGarbageCollection(jobId);
+    } catch {
+      // The GC intent and orphan charge remain durable. Terminal recovery has
+      // already committed and must not be misreported as a retryable claim.
+    }
   }
 
   private outputIntentGeneration(intentId: string): string | undefined {

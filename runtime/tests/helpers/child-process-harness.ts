@@ -11,6 +11,7 @@ import {
   waitForProcessTreeExit,
   type SupervisedProcessResult,
 } from "../../src/utils/supervisedProcess.js";
+import { BoundedFileIoError } from "./bounded-file-io.js";
 import {
   snapshotBoundedJsonObject,
   snapshotChildInvocation,
@@ -25,6 +26,7 @@ import {
   type SnapshottedMarkerExpectation,
 } from "./process-harness-contract.js";
 import {
+  type BoundedFileSnapshot,
   pinProcessWorkspace,
   type PinnedProcessWorkspace,
   type ValidatedProcessLocation,
@@ -722,12 +724,33 @@ class OwnedChildImplementation implements OwnedChild {
     const started = performance.now();
     let lastChange = started;
     let lastSequence: number | undefined;
+    const heartbeatExpired = (now: number): boolean =>
+      (lastSequence === undefined &&
+        now - started >= heartbeat.startupTimeoutMs) ||
+      (lastSequence !== undefined &&
+        now - lastChange >= heartbeat.intervalTimeoutMs);
     for (;;) {
       if (this.#closed) return;
-      const snapshot = await this.#workspace.readBoundedFileIfPresent(
-        heartbeat.absolutePath,
-        heartbeat.maxBytes,
-      );
+      let snapshot: BoundedFileSnapshot | null;
+      try {
+        snapshot = await this.#workspace.readBoundedFileIfPresent(
+          heartbeat.absolutePath,
+          heartbeat.maxBytes,
+        );
+      } catch (error) {
+        if (
+          !(error instanceof BoundedFileIoError) ||
+          error.code !== "changed"
+        ) {
+          throw error;
+        }
+        if (heartbeatExpired(performance.now())) {
+          await this.#requestStop("heartbeat-timeout");
+          return;
+        }
+        await delay(HEARTBEAT_POLL_INTERVAL_MS);
+        continue;
+      }
       await this.#hooks.afterHeartbeatRead?.();
       if (this.#closed) return;
       const now = performance.now();
@@ -749,12 +772,7 @@ class OwnedChildImplementation implements OwnedChild {
           this.#heartbeatCount = sequence;
         }
       }
-      if (
-        (lastSequence === undefined &&
-          now - started >= heartbeat.startupTimeoutMs) ||
-        (lastSequence !== undefined &&
-          now - lastChange >= heartbeat.intervalTimeoutMs)
-      ) {
+      if (heartbeatExpired(now)) {
         await this.#requestStop("heartbeat-timeout");
         return;
       }
