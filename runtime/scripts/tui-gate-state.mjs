@@ -27,6 +27,8 @@ const DAEMON_FORCE_KILL_GRACE_MS = 2_000;
 const DAEMON_POLL_MS = 100;
 const MAX_DAEMON_OUTPUT_BYTES = 64 * 1024;
 const SHORT_ROOT_PREFIX = "agt-";
+const WINDOWS_ROOT_REMOVE_MAX_RETRIES = 10;
+const WINDOWS_ROOT_REMOVE_RETRY_DELAY_MS = 50;
 const PROJECT_FIXTURE_FILES = Object.freeze({
   "README.md": "# AgenC TUI gate fixture\n",
   "package.json": '{"private":true}\n',
@@ -94,6 +96,17 @@ const ACTIVE_STATES_BY_HOME = new Map();
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export function tuiGateRootRemoveOptions(platform = process.platform) {
+  if (platform !== "win32") return { recursive: true };
+  // ConPTY/process exit can precede release of the final directory handle.
+  // Bound fs.rm's native EBUSY retry path without weakening absence proof.
+  return {
+    recursive: true,
+    maxRetries: WINDOWS_ROOT_REMOVE_MAX_RETRIES,
+    retryDelay: WINDOWS_ROOT_REMOVE_RETRY_DELAY_MS,
+  };
 }
 
 function systemEnvironment(baseEnv) {
@@ -788,7 +801,7 @@ async function performTeardown(state) {
   }
 
   await assertOwnedState(state);
-  await rm(state.root, { recursive: true });
+  await rm(state.root, tuiGateRootRemoveOptions());
   if (await pathExists(state.root)) {
     throw new Error(`private TUI gate root survived cleanup: ${state.root}`);
   }

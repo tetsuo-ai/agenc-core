@@ -2,6 +2,10 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
+import {
+  INITIAL_STATE,
+  parseMultipleKeypresses,
+} from "../../../src/tui/ink/parse-keypress.js";
 import { runEmbeddedNeovimCommand } from "../../../scripts/check-tui-e2e/helpers/workbench-buffer-neovim.mjs";
 
 // NOTE: This is a STATIC contract check that the PTY gate scripts exist and
@@ -12,14 +16,16 @@ import { runEmbeddedNeovimCommand } from "../../../scripts/check-tui-e2e/helpers
 // Neovim lane covers four lower-level real-process lifecycle tests; the full
 // PTY scenario remains local, so do not treat this file as e2e coverage.
 describe("embedded Neovim BUFFER PTY gate files", () => {
-  it("enters command mode only after committed provider-state acknowledgements", async () => {
+  it("enters command mode with an unambiguous Escape before provider-state acknowledgements", async () => {
     const events: string[] = [];
+    const sentInputs: string[] = [];
     const session = {
       cols: 80,
       rows: 24,
       raw: "target.txt [embedded Neovim NVIM v0.11.4, normal, ready]",
       send(input: string) {
         events.push(`send:${JSON.stringify(input)}`);
+        sentInputs.push(input);
         if (input === ":") {
           this.raw =
             "target.txt [embedded Neovim NVIM v0.11.4, normal, ready] CMDLINE_NORMAL";
@@ -43,17 +49,31 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
 
     expect(events).toEqual([
       "idle:200",
-      'send:"\\u001b"',
+      'send:"\\u001b[27u"',
       'send:":"',
       'send:"\\u001b[200~write\\u001b[201~"',
       'send:"\\r"',
       "idle:500",
       "idle:200",
-      'send:"\\u001b"',
+      'send:"\\u001b[27u"',
       'send:":"',
       'send:"\\u001b[200~q!\\u001b[201~"',
       'send:"\\r"',
       "idle:500",
+    ]);
+    const [parsedCommandModeInputs] = parseMultipleKeypresses(
+      INITIAL_STATE,
+      sentInputs.slice(0, 2).join(""),
+    );
+    expect(
+      parsedCommandModeInputs.map((input) =>
+        input.kind === "key"
+          ? { kind: input.kind, name: input.name, sequence: input.sequence }
+          : { kind: input.kind },
+      ),
+    ).toEqual([
+      { kind: "key", name: "escape", sequence: "\x1b[27u" },
+      { kind: "key", name: "", sequence: ":" },
     ]);
   });
 

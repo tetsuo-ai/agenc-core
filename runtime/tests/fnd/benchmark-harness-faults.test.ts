@@ -68,6 +68,9 @@ const RUNTIME_ROOT = join(import.meta.dirname, "../..");
 const RUNNER_PATH = join(RUNTIME_ROOT, "benchmarks/fnd/run-baselines.mjs");
 const CASE_WORKER_PATH = join(RUNTIME_ROOT, "benchmarks/fnd/case-worker.mjs");
 const NPM_CLI_BOUNDARY_PROBE_TIMEOUT_MS = 15_000;
+// The Windows-native lane runs this fixture alongside process and ACL probes;
+// keep setup bounded while allowing for hosted process-startup contention.
+const FIXTURE_GIT_TIMEOUT_MS = process.platform === "win32" ? 15_000 : 5_000;
 const MODULE_TRACKER_PATH = join(
   RUNTIME_ROOT,
   "benchmarks/fnd/module-closure.mjs",
@@ -1383,6 +1386,13 @@ describe("FND benchmark harness fault contracts", () => {
   });
 
   test("detects source and harness mutation across a capture", () => {
+    expect(fixtureGitArguments(["status"])).toEqual([
+      "-c",
+      "gc.auto=0",
+      "-c",
+      "maintenance.auto=false",
+      "status",
+    ]);
     const fixture = createProvenanceFixture();
     try {
       const options = provenanceOptions(fixture.repositoryRoot);
@@ -1856,21 +1866,31 @@ function processIsAlive(pid: number): boolean {
 }
 
 function runGit(repositoryRoot: string, args: readonly string[]): void {
-  execFileSync("git", args, {
+  execFileSync("git", fixtureGitArguments(args), {
     cwd: repositoryRoot,
     maxBuffer: 65_536,
     stdio: "ignore",
-    timeout: 5_000,
+    timeout: FIXTURE_GIT_TIMEOUT_MS,
     windowsHide: true,
   });
 }
 
 function readGitText(repositoryRoot: string, args: readonly string[]): string {
-  return execFileSync("git", args, {
+  return execFileSync("git", fixtureGitArguments(args), {
     cwd: repositoryRoot,
     encoding: "utf8",
     maxBuffer: 65_536,
-    timeout: 5_000,
+    timeout: FIXTURE_GIT_TIMEOUT_MS,
     windowsHide: true,
   }).trim();
+}
+
+function fixtureGitArguments(args: readonly string[]): string[] {
+  return [
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "maintenance.auto=false",
+    ...args,
+  ];
 }

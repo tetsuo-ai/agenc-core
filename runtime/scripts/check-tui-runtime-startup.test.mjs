@@ -28,6 +28,7 @@ import {
   teardownTuiGateState,
   TUI_GATE_TRUST_TIMESTAMP,
   tuiGateEnvironment,
+  tuiGateRootRemoveOptions,
   writeTuiGateDefaultConfig,
   writeTuiGateTrust,
 } from "./tui-gate-state.mjs";
@@ -339,6 +340,32 @@ test("private gate teardown removes only an owned root and proves it absent", as
   } finally {
     rmSync(state.root, { recursive: true, force: true });
   }
+});
+
+test("private gate root removal bounds Windows handle retries only", () => {
+  assert.deepEqual(tuiGateRootRemoveOptions("win32"), {
+    recursive: true,
+    maxRetries: 10,
+    retryDelay: 50,
+  });
+  assert.deepEqual(tuiGateRootRemoveOptions("linux"), { recursive: true });
+  assert.deepEqual(tuiGateRootRemoveOptions("darwin"), { recursive: true });
+
+  const source = readFileSync(
+    new URL("./tui-gate-state.mjs", import.meta.url),
+    "utf8",
+  );
+  const teardownStart = source.indexOf("async function performTeardown(state)");
+  const teardownEnd = source.indexOf(
+    "async function settlePendingDaemonStarts(state)",
+    teardownStart,
+  );
+  assert.ok(teardownStart >= 0);
+  assert.ok(teardownEnd > teardownStart);
+  assert.match(
+    source.slice(teardownStart, teardownEnd),
+    /await rm\(state\.root, tuiGateRootRemoveOptions\(\)\);/u,
+  );
 });
 
 test("private gate project fixtures are deterministic and can expose real diffs", async () => {

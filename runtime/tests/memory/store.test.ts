@@ -106,7 +106,7 @@ describe("MemoryStore", () => {
     expect(store.recordStage1OutputUsage(["thread-1", "missing"])).toBe(1);
     expect(store.listStage1OutputsForGlobal(5)).toHaveLength(1);
     expect(store.getPhase2InputSelection(5, 36_500)).toHaveLength(1);
-    expect(store.pruneStage1OutputsForRetention(0, 10)).toBeGreaterThanOrEqual(0);
+    expect(store.pruneStage1OutputsForRetention(1, 10)).toBe(0);
     driver
       .prepareState("DELETE FROM memory_jobs WHERE kind = 'memory_consolidate_global'")
       .run();

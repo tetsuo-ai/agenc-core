@@ -7,6 +7,7 @@ import { renderPtyRows } from "../harness.mjs";
 
 const execFileAsync = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const CSI_U_ESCAPE = "\x1b[27u";
 
 export async function anchorWorkbenchProjectRoot(cwd) {
   // Project trust resolves the nearest ancestor marker. Pin each generated
@@ -101,7 +102,13 @@ export async function runEmbeddedNeovimCommand(
     );
   }
   await session.waitForIdle({ idleWindow: 200, timeout: 5_000 });
-  session.send("\x1b");
+  // A lone ESC is intentionally buffered by the TUI parser so a following
+  // byte can complete an Alt/meta sequence. A parent-side delay cannot prove
+  // that a render-stalled child flushed that byte first: ESC and ':' can be
+  // read together, dropping the Escape normalization that transient native
+  // modes require. CSI-u encodes Escape as one complete key, so it remains
+  // distinct from the colon even when both writes reach the same stdin read.
+  session.send(CSI_U_ESCAPE);
   await sleep(80);
   session.send(":");
   // Neovim's provider footer remains in CMDLINE_NORMAL for the lifetime of
