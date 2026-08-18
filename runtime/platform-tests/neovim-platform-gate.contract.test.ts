@@ -149,6 +149,11 @@ describe("hosted Neovim platform gate contract", () => {
     expect(source).toContain(
       "platform-tests/neovim-process-tree.real.test.ts",
     );
+    expect(source).toContain("numTotalTests: 65");
+    expect(source).toContain("numPassedTests: 65");
+    expect(source).toContain(
+      "Neovim provider/observed-descendant platform lane passed 65 tests in 3 files with zero skipped",
+    );
     expect(source).toContain(
       "scripts/check-tui-e2e/runner.mjs --platform",
     );

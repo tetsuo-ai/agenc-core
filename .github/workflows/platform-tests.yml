@@ -1009,8 +1009,8 @@ jobs:
             "tests/tui/workbench/buffer-neovim-provider.contract.test.ts",
           ];
           const exactCounts = {
-            numTotalTests: 63,
-            numPassedTests: 63,
+            numTotalTests: 65,
+            numPassedTests: 65,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
             numFailedTests: 0,
@@ -1038,7 +1038,7 @@ jobs:
             );
           }
           console.log(
-            "Neovim provider/observed-descendant platform lane passed 63 tests in 3 files with zero skipped",
+            "Neovim provider/observed-descendant platform lane passed 65 tests in 3 files with zero skipped",
           );
           NODE
 
