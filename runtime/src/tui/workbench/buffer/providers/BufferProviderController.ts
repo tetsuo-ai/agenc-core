@@ -43,6 +43,7 @@ import type {
   BufferProviderSaveAllResult,
   BufferProviderShutdownOptions,
   BufferProviderSnapshot,
+  BufferStaleAuthorityEditorAction,
   BufferWorkspaceBufferCapture,
   BufferWorkspaceWriteAuthorityHandler,
 } from "./types.js";
@@ -684,6 +685,14 @@ export class BufferProviderController {
       this.#provider?.resolveRecovery?.(action) ??
       Promise.resolve({ ok: false, reason: "No BUFFER recovery is pending." })
     );
+  }
+
+  async performStaleAuthorityEditorAction(
+    action: BufferStaleAuthorityEditorAction,
+  ): Promise<boolean> {
+    const provider = this.#provider;
+    if (!provider?.performStaleAuthorityEditorAction) return false;
+    return provider.performStaleAuthorityEditorAction(action);
   }
 
   subscribeIntegrationIntents(

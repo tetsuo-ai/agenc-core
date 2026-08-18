@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -42,6 +49,32 @@ function request(id: string, method: string, params: JsonObject): JsonObject {
 }
 
 describe("daemon editor coherence protocol", () => {
+  it("advertises recovered topology resolution only to protocol 1.1 clients", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+    });
+    for (const [version, expected] of [
+      ["1.0.0", false],
+      ["1.1.0", true],
+    ] as const) {
+      const initialized = await dispatcher.createConnection().dispatch(
+        request(`initialize-${version}`, "initialize", {
+          protocol: { version },
+        }),
+      );
+      expect(
+        (
+          (initialized.result as JsonObject).capabilities as Record<
+            string,
+            Record<string, boolean>
+          >
+        )[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]?.[
+          "workspace.editor.topology.recovered.resolve"
+        ],
+      ).toBe(expected);
+    }
+  });
+
   it("does not acknowledge a dirty sync whose quarantine cannot be persisted", async () => {
     const workspaceRoot = await tempDirectory("agenc-editor-rpc-workspace-");
     const agencHome = await tempDirectory("agenc-editor-rpc-home-");
@@ -96,6 +129,304 @@ describe("daemon editor coherence protocol", () => {
     });
   });
 
+  it("refreshes stale disk evidence without asking a new Editor to prove orphaned bytes", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-editor-refresh-workspace-",
+    );
+    const agencHome = await tempDirectory("agenc-editor-refresh-home-");
+    process.env.AGENC_HOME = agencHome;
+    const path = join(workspaceRoot, "refresh.ts");
+    const initialDiskContent = "initial disk revision\n";
+    const refreshedDiskContent = "refreshed disk revision\n";
+    const orphanedContent = "orphaned Editor revision\n";
+    await writeFile(path, initialDiskContent, "utf8");
+
+    const firstDispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+    });
+    const firstConnection = firstDispatcher.createConnection();
+    await firstConnection.dispatch(
+      request("initialize-first", "initialize", {
+        protocol: { version: "1.1.0" },
+      }),
+    );
+    const firstAcquired = await firstConnection.dispatch(
+      request("acquire-first", "workspace.editor.acquire", {
+        workspaceRoot,
+        editorInstanceId: "editor-before-refresh",
+      }),
+    );
+    const firstLease = firstAcquired.result as {
+      readonly leaseToken: string;
+      readonly epoch: number;
+    };
+    await expect(
+      firstConnection.dispatch(
+        request("sync-first", "workspace.editor.sync", {
+          workspaceRoot,
+          editorInstanceId: "editor-before-refresh",
+          leaseToken: firstLease.leaseToken,
+          epoch: firstLease.epoch,
+          sequence: 0,
+          buffers: [
+            {
+              path,
+              bufferHandle: 1,
+              changedtick: 9,
+              contentSha256: sha256(orphanedContent),
+              contentBytes: Buffer.byteLength(orphanedContent),
+              dirty: true,
+              content: orphanedContent,
+            },
+          ],
+        }),
+      ),
+    ).resolves.toMatchObject({ result: { accepted: true } });
+    await workspaceMutationCoordinators
+      .getOrCreate(workspaceRoot)
+      .flushQuarantinePersistence();
+    await firstConnection.close();
+    workspaceMutationCoordinators.clearForTests();
+
+    const restartedDispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+    });
+    const connection = restartedDispatcher.createConnection();
+    await connection.dispatch(
+      request("initialize-restarted", "initialize", {
+        protocol: { version: "1.1.0" },
+      }),
+    );
+    const acquired = await connection.dispatch(
+      request("acquire-restarted", "workspace.editor.acquire", {
+        workspaceRoot,
+        editorInstanceId: "editor-reviewing-refresh",
+      }),
+    );
+    const lease = acquired.result as {
+      readonly leaseToken: string;
+      readonly epoch: number;
+    };
+    expect(acquired).toMatchObject({
+      result: {
+        sequence: -1,
+        staleAuthority: [
+          {
+            path,
+            editorContentSha256: sha256(orphanedContent),
+            diskContentSha256: sha256(initialDiskContent),
+          },
+        ],
+      },
+    });
+
+    await writeFile(path, refreshedDiskContent, "utf8");
+    const leaseParams = {
+      workspaceRoot,
+      editorInstanceId: "editor-reviewing-refresh",
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    };
+    await expect(
+      connection.dispatch(
+        request(
+          "refresh",
+          "workspace.editor.staleAuthority.refresh",
+          leaseParams,
+        ),
+      ),
+    ).resolves.toMatchObject({
+      result: {
+        refreshed: true,
+        staleAuthority: [
+          {
+            path,
+            editorContentSha256: sha256(orphanedContent),
+            editorInstanceId: "editor-before-refresh",
+            diskState: "content",
+            diskContentSha256: sha256(refreshedDiskContent),
+            diskContentBytes: Buffer.byteLength(refreshedDiskContent),
+          },
+        ],
+      },
+    });
+    await expect(
+      connection.dispatch(
+        request(
+          "refresh-cannot-resolve",
+          "workspace.editor.staleAuthority.refresh",
+          {
+            ...leaseParams,
+            abandonStaleAuthority: [],
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: expect.stringContaining("abandonStaleAuthority"),
+      },
+    });
+
+    const coordinator =
+      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    expect(coordinator.authorityForPath(path)).toBe("stale_dirty");
+    expect(coordinator.stalePaths()).toEqual([path]);
+
+    await expect(
+      connection.dispatch(
+        request("ordinary-sync", "workspace.editor.sync", {
+          ...leaseParams,
+          sequence: 0,
+          buffers: [
+            {
+              path,
+              bufferHandle: 2,
+              changedtick: 1,
+              contentSha256: sha256(refreshedDiskContent),
+              contentBytes: Buffer.byteLength(refreshedDiskContent),
+              dirty: false,
+            },
+          ],
+        }),
+      ),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: expect.stringContaining("belongs to a different editor"),
+      },
+    });
+    await expect(
+      connection.dispatch(
+        request(
+          "heartbeat-after-refresh",
+          "workspace.editor.heartbeat",
+          leaseParams,
+        ),
+      ),
+    ).resolves.toMatchObject({
+      result: {
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+        sequence: -1,
+      },
+    });
+    expect(coordinator.authorityForPath(path)).toBe("stale_dirty");
+  });
+
+  it("retries a pending audit projection on same-daemon acquire exactly once", async () => {
+    const workspaceRoot = await tempDirectory("agenc-editor-audit-workspace-");
+    const agencHome = await tempDirectory("agenc-editor-audit-home-");
+    process.env.AGENC_HOME = agencHome;
+    const path = join(workspaceRoot, "pending-audit.ts");
+    const before = "orphaned editor state\n";
+    const after = "reviewed disk state\n";
+    await writeFile(path, after, "utf8");
+    const auditEntry = {
+      version: 1,
+      entryId: sha256("same-daemon-pending-audit"),
+      timestamp: "2026-08-17T18:00:00.000Z",
+      workspaceRoot,
+      path,
+      source: "editor",
+      status: "discarded",
+      beforeSha256: sha256(before),
+      afterSha256: sha256(after),
+    };
+    const stateDirectory = join(
+      agencHome,
+      "workspace-mutations",
+      sha256(workspaceRoot).slice(0, 32),
+    );
+    const quarantinePath = join(stateDirectory, "quarantine-v1.json");
+    const ledgerPath = join(stateDirectory, "ledger-v1.jsonl");
+    await mkdir(stateDirectory, { recursive: true });
+    await writeFile(
+      quarantinePath,
+      `${JSON.stringify({
+        version: 2,
+        workspaceRoot,
+        entries: [],
+        proposalCommitments: [],
+        proposalReceipts: [],
+        mutationIntents: [],
+        topologyIntents: [],
+        changeSequence: 0,
+        changes: [],
+        auditOutbox: [auditEntry],
+      })}\n`,
+      "utf8",
+    );
+    await mkdir(ledgerPath);
+
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+    });
+    const connection = dispatcher.createConnection();
+    await connection.dispatch(
+      request("initialize", "initialize", {
+        protocol: { version: "1.0.0" },
+      }),
+    );
+    const acquireParams = {
+      workspaceRoot,
+      editorInstanceId: "editor-same-daemon-audit-retry",
+    };
+
+    await expect(
+      connection.dispatch(
+        request(
+          "acquire-failed-audit",
+          "workspace.editor.acquire",
+          acquireParams,
+        ),
+      ),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: expect.stringContaining(
+          "pending workspace audit could not be completed",
+        ),
+      },
+    });
+
+    await rm(ledgerPath, { recursive: true });
+    await expect(
+      connection.dispatch(
+        request(
+          "acquire-retry-audit",
+          "workspace.editor.acquire",
+          acquireParams,
+        ),
+      ),
+    ).resolves.toMatchObject({
+      result: {
+        editorInstanceId: acquireParams.editorInstanceId,
+        sequence: -1,
+      },
+    });
+    await expect(
+      connection.dispatch(
+        request(
+          "acquire-again-audit",
+          "workspace.editor.acquire",
+          acquireParams,
+        ),
+      ),
+    ).resolves.toMatchObject({ result: { sequence: -1 } });
+
+    const ledgerEntries = (await readFile(ledgerPath, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line) as unknown);
+    expect(ledgerEntries).toEqual([auditEntry]);
+    const cleanedQuarantine = JSON.parse(
+      await readFile(quarantinePath, "utf8"),
+    ) as { readonly version?: number; readonly auditOutbox?: unknown };
+    expect(cleanedQuarantine).toMatchObject({ version: 1 });
+    expect(cleanedQuarantine.auditOutbox).toBeUndefined();
+  });
+
   it("acquires, syncs, inspects, applies, and discards in-memory proposals", async () => {
     const workspaceRoot = await tempDirectory("agenc-editor-rpc-workspace-");
     const agencHome = await tempDirectory("agenc-editor-rpc-home-");
@@ -108,7 +439,7 @@ describe("daemon editor coherence protocol", () => {
     const connection = dispatcher.createConnection();
     const initialized = await connection.dispatch(
       request("initialize", "initialize", {
-        protocol: { version: "1.0.0" },
+        protocol: { version: "1.1.0" },
       }),
     );
     expect(
@@ -121,6 +452,7 @@ describe("daemon editor coherence protocol", () => {
     ).toMatchObject({
       "workspace.editor.acquire": true,
       "workspace.editor.sync": true,
+      "workspace.editor.staleAuthority.refresh": true,
       "workspace.editor.heartbeat": true,
       "workspace.editor.release": true,
       "workspace.editor.topology.reserve": true,

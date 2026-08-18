@@ -226,6 +226,35 @@ describe("descriptor-bound file reads", () => {
     }
   });
 
+  test("reads a text window while preserving the bounded binary sample", async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-bound-read-window-"));
+    const target = join(root, "target.txt");
+    const content = Array.from(
+      { length: 2_000 },
+      (_, index) => `line-${index + 1}`,
+    ).join("\n");
+    await writeFile(target, content, "utf8");
+    const capability = await bindWorkspaceFileReadCapability(target);
+
+    try {
+      const result = await capability.readTextWindow(2, 2, 4_096);
+
+      expect(result.content).toBe("line-2\nline-3");
+      expect(result.binarySample).toEqual(
+        Buffer.from(content, "utf8").subarray(0, 8_192),
+      );
+      expect(result.stats.size).toBe(Buffer.byteLength(content, "utf8"));
+      expect(result).toMatchObject({
+        startLine: 2,
+        endLine: 3,
+        numLines: 2,
+        isPartial: true,
+      });
+    } finally {
+      await capability.dispose();
+    }
+  });
+
   test.runIf(process.platform === "linux")(
     "keeps NFC and NFD siblings distinct on a normalization-sensitive Darwin mount",
     async () => {
@@ -249,8 +278,7 @@ describe("descriptor-bound file reads", () => {
         | Awaited<ReturnType<typeof bindWorkspaceDirectoryReadCapability>>
         | undefined;
       let fileCapability:
-        | Awaited<ReturnType<typeof bindWorkspaceFileReadCapability>>
-        | undefined;
+        Awaited<ReturnType<typeof bindWorkspaceFileReadCapability>> | undefined;
       Object.defineProperty(process, "platform", {
         ...platformDescriptor,
         value: "darwin",
@@ -296,9 +324,7 @@ describe("descriptor-bound file reads", () => {
         throw new Error("process.platform is not configurable for this test");
       }
       let guard:
-        | Awaited<
-            ReturnType<typeof captureWorkspaceFilePathTransactionGuard>
-          >
+        | Awaited<ReturnType<typeof captureWorkspaceFilePathTransactionGuard>>
         | undefined;
       Object.defineProperty(process, "platform", {
         ...platformDescriptor,

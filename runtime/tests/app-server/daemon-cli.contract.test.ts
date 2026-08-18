@@ -2058,8 +2058,8 @@ backend = "local"
         id: "missing-cookie-init",
         method: "initialize",
         params: {
-          protocolVersion: "1.0.0",
-          protocol: { version: "1.0.0" },
+          protocolVersion: "1.1.0",
+          protocol: { version: "1.1.0" },
           clientName: "agenc-portal",
           capabilities: { "portal.dashboard.read": true },
         },
@@ -2083,8 +2083,8 @@ backend = "local"
         id: "initialize",
         method: "initialize",
         params: {
-          protocolVersion: "1.0.0",
-          protocol: { version: "1.0.0" },
+          protocolVersion: "1.1.0",
+          protocol: { version: "1.1.0" },
           clientName: "agenc-portal",
           authCookie,
           capabilities: { "portal.dashboard.read": true },
@@ -2095,8 +2095,8 @@ backend = "local"
       id: "initialize",
       result: {
         type: "initialized",
-        protocolVersion: "1.0.0",
-        protocol: { version: "1.0.0" },
+        protocolVersion: "1.1.0",
+        protocol: { version: "1.1.0" },
       },
     });
 

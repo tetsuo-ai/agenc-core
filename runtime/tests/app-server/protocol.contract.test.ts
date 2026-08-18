@@ -112,6 +112,7 @@ const expectedNotifications = [
 const expectedInternalMethods = [
   "workspace.editor.acquire",
   "workspace.editor.sync",
+  "workspace.editor.staleAuthority.refresh",
   "workspace.editor.heartbeat",
   "workspace.editor.release",
   "workspace.editor.topology.reserve",

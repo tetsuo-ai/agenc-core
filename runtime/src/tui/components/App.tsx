@@ -48,8 +48,12 @@ import type {
 import type {
   WorkspaceEditorProposalResult,
   WorkspaceEditorProposalStatusResult,
+  WorkspaceEditorStaleAuthorityEntry,
 } from "../../app-server/protocol/index.js";
-import type { BufferCodePredictionUi } from "../workbench/surfaces/BufferSurface.js";
+import type {
+  BufferCodePredictionUi,
+  BufferStaleAuthorityRecoveryUi,
+} from "../workbench/surfaces/BufferSurface.js";
 import { installPrivateNeovimRecovery } from "../workbench/buffer/neovim/NeovimRecovery.js";
 import {
   applyWorkbenchCommand,
@@ -74,9 +78,11 @@ import {
 } from "../workbench/uiStatePersistence.js";
 import {
   bufferSnapshotRequiresWorkspaceEditorAuthority,
+  abandonWorkspaceEditorStaleAuthority,
   createOrderedWorkspaceEditorTeardown,
   isValidAcceptedEditorProposalResolution,
   isValidRejectedEditorProposalResolution,
+  refreshWorkspaceEditorStaleAuthority,
   resolveWorkspaceEditorRecoveredTopologyMutation,
   settleWorkspaceEditorTeardown,
   WorkspaceEditorLeaseSynchronizer,
@@ -3135,10 +3141,66 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       },
     };
   }, [addNotification, bufferWorkspaceRoot, workspaceEditorAuthority]);
+  const editorStaleAuthorityRecovery = useMemo<
+    BufferStaleAuthorityRecoveryUi | undefined
+  >(() => {
+    const entries: readonly WorkspaceEditorStaleAuthorityEntry[] | undefined =
+      workspaceEditorAuthority.status === "blocked"
+        ? workspaceEditorAuthority.staleAuthority
+        : undefined;
+    if (entries === undefined || entries.length === 0) return undefined;
+    return {
+      entries,
+      onRefresh: async (): Promise<void> => {
+        try {
+          await refreshWorkspaceEditorStaleAuthority(bufferWorkspaceRoot);
+        } catch (cause) {
+          const error =
+            cause instanceof Error ? cause : new Error(String(cause));
+          addNotification({
+            key: "workspace-editor-stale-authority-refresh-failed",
+            text: `Could not refresh disk evidence for the orphaned Editor revision: ${error.message}`,
+            color: "error",
+            priority: "high",
+          });
+          throw error;
+        }
+      },
+      onUseDisk: async (
+        reviewedEntries: readonly WorkspaceEditorStaleAuthorityEntry[],
+      ): Promise<void> => {
+        try {
+          await abandonWorkspaceEditorStaleAuthority(
+            bufferWorkspaceRoot,
+            reviewedEntries,
+          );
+          addNotification({
+            key: `workspace-editor-stale-authority-abandoned:${reviewedEntries
+              .map((entry) => entry.editorContentSha256)
+              .join(":")}`,
+            text: `${reviewedEntries.length} orphaned Editor revision${reviewedEntries.length === 1 ? "" : "s"} abandoned after exact disk-state confirmation. Editor authority was resynchronized.`,
+            color: "warning",
+            priority: "high",
+          });
+        } catch (cause) {
+          const error =
+            cause instanceof Error ? cause : new Error(String(cause));
+          addNotification({
+            key: "workspace-editor-stale-authority-abandon-failed",
+            text: `Could not use disk for the orphaned Editor revision: ${error.message}`,
+            color: "error",
+            priority: "high",
+          });
+          throw error;
+        }
+      },
+    };
+  }, [addNotification, bufferWorkspaceRoot, workspaceEditorAuthority]);
   const workspaceEditorAuthoritySupported =
     workbenchEnabled &&
     props.session.acquireWorkspaceEditor !== undefined &&
     props.session.syncWorkspaceEditor !== undefined &&
+    props.session.refreshWorkspaceEditorStaleAuthority !== undefined &&
     props.session.heartbeatWorkspaceEditor !== undefined &&
     props.session.releaseWorkspaceEditor !== undefined &&
     props.session.reserveWorkspaceEditorTopology !== undefined &&
@@ -3216,6 +3278,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     }
     const acquireWorkspaceEditor = props.session.acquireWorkspaceEditor;
     const syncWorkspaceEditor = props.session.syncWorkspaceEditor;
+    const refreshWorkspaceEditorStaleAuthority =
+      props.session.refreshWorkspaceEditorStaleAuthority;
     const heartbeatWorkspaceEditor = props.session.heartbeatWorkspaceEditor;
     const releaseWorkspaceEditor = props.session.releaseWorkspaceEditor;
     const reserveWorkspaceEditorTopology =
@@ -3243,6 +3307,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       client: {
         acquireWorkspaceEditor: (params) => acquireWorkspaceEditor(params),
         syncWorkspaceEditor: (params) => syncWorkspaceEditor(params),
+        refreshWorkspaceEditorStaleAuthority: (params) =>
+          refreshWorkspaceEditorStaleAuthority(params),
         heartbeatWorkspaceEditor: (params) => heartbeatWorkspaceEditor(params),
         releaseWorkspaceEditor: (params) => releaseWorkspaceEditor(params),
         reserveWorkspaceEditorTopology: (params) =>
@@ -3295,6 +3361,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           : {}),
       },
       onWorkspaceChange: async (change) => {
+        // Target-scoped topology invalidations are reconciled under the
+        // synchronizer's provider lock before this callback is acknowledged.
+        if (change.kind === "topology") return;
         if (change.status === "proposed") {
           const reference = workspaceMutationProposalFromChange(change);
           if (reference === null) {
@@ -4503,7 +4572,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         // plugins) reporting "Unknown command" on submit.
         logForDebugging(
           `dynamic TUI command load failed; palette degraded to built-ins: ${
-            error instanceof Error ? (error.stack ?? error.message) : String(error)
+            error instanceof Error
+              ? (error.stack ?? error.message)
+              : String(error)
           }`,
           { level: "warn" },
         );
@@ -7003,6 +7074,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           codePrediction={codePrediction}
           editorMutationBlockedReason={workspaceEditorBlockers.editor}
           editorTopologyRecovery={editorTopologyRecovery}
+          editorStaleAuthorityRecovery={editorStaleAuthorityRecovery}
         />
       ) : (
         <FullscreenLayout

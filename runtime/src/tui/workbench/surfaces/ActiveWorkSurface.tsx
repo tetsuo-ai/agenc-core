@@ -13,6 +13,7 @@ import { AgentSurface } from "./AgentSurface.js";
 import {
   BufferSurface,
   type BufferCodePredictionUi,
+  type BufferStaleAuthorityRecoveryUi,
   type BufferTopologyRecoveryUi,
 } from "./BufferSurface.js";
 import { DiffSurface } from "./DiffSurface.js";
@@ -33,6 +34,7 @@ export type WorkbenchSurfaceRenderProps = {
   readonly codePrediction?: BufferCodePredictionUi;
   readonly editorMutationBlockedReason?: string | null;
   readonly editorTopologyRecovery?: BufferTopologyRecoveryUi;
+  readonly editorStaleAuthorityRecovery?: BufferStaleAuthorityRecoveryUi;
 };
 
 export type WorkbenchSurfaceDescriptor = {
@@ -88,6 +90,7 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
       codePrediction,
       editorMutationBlockedReason,
       editorTopologyRecovery,
+      editorStaleAuthorityRecovery,
     }) => (
       <BufferSurface
         focused={focused}
@@ -95,6 +98,7 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
         codePrediction={codePrediction}
         mutationBlockedReason={editorMutationBlockedReason}
         topologyRecovery={editorTopologyRecovery}
+        staleAuthorityRecovery={editorStaleAuthorityRecovery}
       />
     ),
   },
@@ -163,6 +167,7 @@ export function ActiveWorkSurface({
   codePrediction,
   editorMutationBlockedReason,
   editorTopologyRecovery,
+  editorStaleAuthorityRecovery,
 }: {
   readonly focused: boolean;
   readonly transcript: React.ReactNode;
@@ -173,6 +178,7 @@ export function ActiveWorkSurface({
   readonly codePrediction?: BufferCodePredictionUi;
   readonly editorMutationBlockedReason?: string | null;
   readonly editorTopologyRecovery?: BufferTopologyRecoveryUi;
+  readonly editorStaleAuthorityRecovery?: BufferStaleAuthorityRecoveryUi;
 }): React.ReactElement {
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
@@ -234,6 +240,7 @@ export function ActiveWorkSurface({
               codePrediction,
               editorMutationBlockedReason,
               editorTopologyRecovery,
+              editorStaleAuthorityRecovery,
             })}
           </WorkbenchTranscriptLayoutProvider>
         ) : (
@@ -247,6 +254,7 @@ export function ActiveWorkSurface({
             codePrediction,
             editorMutationBlockedReason,
             editorTopologyRecovery,
+            editorStaleAuthorityRecovery,
           })
         )}
       </Box>

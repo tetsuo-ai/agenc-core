@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import type { AgenCBackgroundAgentRunner } from "./background-agent-runner.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
-import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
+import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
+  JSON_RPC_VERSION,
+  type JsonObject,
+} from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 
 function request(
@@ -78,7 +82,10 @@ async function createHarness(
       params: { protocol: { version: "1.0.0" } },
     }),
   ).resolves.toMatchObject({
-    result: { type: "initialized", protocolVersion: "1.0.0" },
+    result: {
+      type: "initialized",
+      protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+    },
   });
   if (options.skipCreate !== true) {
     await expect(

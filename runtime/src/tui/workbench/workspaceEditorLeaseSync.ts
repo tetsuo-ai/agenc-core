@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import type {
   WorkspaceEditorAcquireParams,
@@ -23,6 +23,9 @@ import type {
   WorkspaceEditorRecoveredTopologyResolveResult,
   WorkspaceEditorReleaseParams,
   WorkspaceEditorReleaseResult,
+  WorkspaceEditorStaleAuthorityEntry,
+  WorkspaceEditorStaleAuthorityRefreshParams,
+  WorkspaceEditorStaleAuthorityRefreshResult,
   WorkspaceEditorSyncParams,
   WorkspaceEditorSyncResult,
   WorkspaceEditorTopologyCompleteParams,
@@ -36,11 +39,13 @@ import type {
 import type {
   BufferProviderSnapshot,
   BufferEditorProposalResolution,
+  BufferProviderPathMutationResult,
   BufferWorkspaceBufferCapture,
   BufferWorkspaceWriteAuthorityHandler,
   BufferWorkspaceWriteDecision,
   BufferWorkspaceWriteRequest,
 } from "./buffer/providers/types.js";
+import { BufferWorkspaceCaptureUnstableError } from "./buffer/providers/types.js";
 
 const DEFAULT_SYNC_DEBOUNCE_MS = 80;
 const DEFAULT_HEARTBEAT_MS = 3_000;
@@ -95,6 +100,9 @@ export type WorkspaceEditorLeaseClient = {
   syncWorkspaceEditor(
     params: WorkspaceEditorSyncParams,
   ): Promise<WorkspaceEditorSyncResult>;
+  refreshWorkspaceEditorStaleAuthority(
+    params: WorkspaceEditorStaleAuthorityRefreshParams,
+  ): Promise<WorkspaceEditorStaleAuthorityRefreshResult>;
   heartbeatWorkspaceEditor(
     params: WorkspaceEditorHeartbeatParams,
   ): Promise<WorkspaceEditorLeaseResult>;
@@ -137,6 +145,11 @@ export type WorkspaceEditorBufferSource = {
   subscribe(listener: () => void): () => void;
   getSnapshot(): BufferProviderSnapshot;
   captureWorkspaceBuffers(): Promise<readonly BufferWorkspaceBufferCapture[]>;
+  beginProjectPathMutation?(): boolean;
+  endProjectPathMutation?(): void;
+  synchronizePathDelete?(
+    path: string,
+  ): Promise<BufferProviderPathMutationResult>;
   setWorkspaceWriteAuthorityHandler?(
     handler: BufferWorkspaceWriteAuthorityHandler | null,
   ): void;
@@ -166,6 +179,7 @@ export type WorkspaceEditorAuthorityState =
       readonly status: "blocked";
       readonly reason: string;
       readonly recoveredTopologyMutations?: readonly WorkspaceEditorRecoveredTopologyMutation[];
+      readonly staleAuthority?: readonly WorkspaceEditorStaleAuthorityEntry[];
     };
 
 export function bufferSnapshotRequiresWorkspaceEditorAuthority(
@@ -212,6 +226,31 @@ export async function resolveWorkspaceEditorRecoveredTopologyMutation(
     throw new Error("The authoritative Editor recovery session is not active.");
   }
   await synchronizer.resolveRecoveredTopologyMutation(tokenId);
+}
+
+export async function abandonWorkspaceEditorStaleAuthority(
+  workspaceRoot: string,
+  entries: readonly WorkspaceEditorStaleAuthorityEntry[],
+): Promise<void> {
+  const synchronizer = topologySynchronizers.get(
+    workspaceTopologyKey(workspaceRoot),
+  );
+  if (synchronizer === undefined) {
+    throw new Error("The authoritative Editor recovery session is not active.");
+  }
+  await synchronizer.abandonStaleAuthority(entries);
+}
+
+export async function refreshWorkspaceEditorStaleAuthority(
+  workspaceRoot: string,
+): Promise<void> {
+  const synchronizer = topologySynchronizers.get(
+    workspaceTopologyKey(workspaceRoot),
+  );
+  if (synchronizer === undefined) {
+    throw new Error("The authoritative Editor recovery session is not active.");
+  }
+  await synchronizer.refreshStaleAuthority();
 }
 
 type PendingWorkspaceProposalAcceptance = {
@@ -289,6 +328,7 @@ export class WorkspaceEditorLeaseSynchronizer {
   #recoveredTopologyMutations: readonly WorkspaceEditorRecoveredTopologyMutation[] =
     [];
   #recoveredTopologyResolvePromise: Promise<void> | null = null;
+  #staleAuthority: readonly WorkspaceEditorStaleAuthorityEntry[] = [];
   #pendingProposalAcceptance: PendingWorkspaceProposalAcceptance | null = null;
   #pendingProposalRejection: PendingWorkspaceProposalRejection | null = null;
   #stopPreparationPromise: Promise<void> | null = null;
@@ -453,48 +493,121 @@ export class WorkspaceEditorLeaseSynchronizer {
     }
     const resolveRecovered =
       this.#client.resolveRecoveredWorkspaceEditorTopology;
-    const lease = this.#lease;
-    if (resolveRecovered === undefined || lease === null) {
+    if (resolveRecovered === undefined || this.#lease === null) {
       throw new Error(
         "The connected daemon cannot reconcile the recovered Editor project-path fence. Restart the daemon with this AgenC version.",
       );
     }
     const operation = (async () => {
+      if (this.#heartbeatPromise !== null) {
+        await this.#heartbeatPromise;
+      }
+      const lease = this.#lease;
+      if (lease === null) {
+        throw new Error(
+          "The authoritative Editor lease was lost before recovered mutation reconciliation could start.",
+        );
+      }
       this.#publishRecoveredTopologyBlock(
         "Reconciling the interrupted Editor path operation as an audited unknown outcome…",
       );
-      const result = await resolveRecovered({
-        workspaceRoot: this.#workspaceRoot,
-        editorInstanceId: this.#editorInstanceId,
-        leaseToken: lease.leaseToken,
-        epoch: lease.epoch,
-        tokenId,
-      });
+      const beginProviderMutation = this.#buffers.beginProjectPathMutation;
+      const endProviderMutation = this.#buffers.endProjectPathMutation;
       if (
-        result.resolved !== true ||
-        result.tokenId !== tokenId ||
-        result.status !== "unknown_outcome"
+        beginProviderMutation === undefined ||
+        endProviderMutation === undefined ||
+        !beginProviderMutation.call(this.#buffers)
       ) {
         throw new Error(
-          "The daemon returned a malformed recovered project-path reconciliation.",
+          "The active Editor provider cannot freeze project paths for recovered mutation reconciliation.",
         );
       }
-      this.#recoveredTopologyMutations =
-        this.#recoveredTopologyMutations.filter(
-          (mutation) => mutation.tokenId !== tokenId,
+      try {
+        await this.#unloadRecoveredTopologyCleanTargets(recovered);
+        const otherRecoveredTargets = this.#recoveredTopologyMutations
+          .filter((mutation) => mutation.tokenId !== tokenId)
+          .flatMap((mutation) => mutation.targets);
+        const captures = (await this.#buffers.captureWorkspaceBuffers()).filter(
+          (capture) =>
+            !otherRecoveredTargets.some((target) =>
+              recoveredTopologyTargetContainsPath(target, capture.path),
+            ),
         );
-      const stillBlocked = await this.#discoverRecoveredTopologyMutations();
-      if (stillBlocked) return;
-      this.#lastObservedManifest = null;
-      this.#lastSyncedManifest = null;
-      this.#initialSynchronizationComplete = false;
-      this.#publishAuthority({ status: "securing" });
-      await this.#synchronize(true);
+        const prepared = captures.map(workspaceBufferSync);
+        const sequence = this.#sequence + 1;
+        const result = await resolveRecovered({
+          workspaceRoot: this.#workspaceRoot,
+          editorInstanceId: this.#editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+          tokenId,
+          sequence,
+          buffers: prepared,
+        });
+        if (
+          result.resolved !== true ||
+          result.tokenId !== tokenId ||
+          result.status !== "unknown_outcome" ||
+          result.sync.accepted !== true ||
+          result.sync.sequence !== sequence
+        ) {
+          throw new Error(
+            "The daemon returned a malformed recovered project-path reconciliation.",
+          );
+        }
+        this.#sequence = result.sync.sequence;
+        this.#lastSyncedManifest =
+          synchronizedBufferManifestSignature(prepared);
+        this.#lease = {
+          ...lease,
+          sequence: result.sync.sequence,
+          expiresAt: result.sync.expiresAt,
+        };
+        this.#recoveredTopologyMutations =
+          this.#recoveredTopologyMutations.filter(
+            (mutation) => mutation.tokenId !== tokenId,
+          );
+        const stillBlocked = await this.#discoverRecoveredTopologyMutations();
+        if (stillBlocked) return;
+        this.#lastObservedManifest = null;
+        this.#initialSynchronizationComplete = false;
+        this.#publishAuthority({ status: "securing" });
+        await this.#synchronize(true);
+      } finally {
+        endProviderMutation.call(this.#buffers);
+      }
     })();
     this.#recoveredTopologyResolvePromise = operation;
     try {
       await operation;
     } catch (cause) {
+      try {
+        const stillBlocked = await this.#discoverRecoveredTopologyMutations();
+        const tokenStillDurable = this.#recoveredTopologyMutations.some(
+          (mutation) => mutation.tokenId === tokenId,
+        );
+        if (!tokenStillDurable) {
+          // The daemon may have durably installed the combined manifest/token
+          // terminal and then lost the reply (or failed only while draining
+          // its append-once audit outbox). Re-listing is the idempotent receipt.
+          const acquired = await this.#client.acquireWorkspaceEditor({
+            workspaceRoot: this.#workspaceRoot,
+            editorInstanceId: this.#editorInstanceId,
+          });
+          this.#acceptAcquiredLease(acquired);
+          if (!stillBlocked) {
+            this.#lastObservedManifest = null;
+            this.#lastSyncedManifest = null;
+            this.#initialSynchronizationComplete = false;
+            this.#publishAuthority({ status: "securing" });
+            await this.#synchronize(true);
+          }
+          return;
+        }
+      } catch {
+        // Preserve the original reconciliation failure when its durable state
+        // cannot be queried safely.
+      }
       this.#publishRecoveredTopologyBlock(errorMessage(cause));
       this.#report(cause);
       throw cause;
@@ -502,6 +615,233 @@ export class WorkspaceEditorLeaseSynchronizer {
       if (this.#recoveredTopologyResolvePromise === operation) {
         this.#recoveredTopologyResolvePromise = null;
       }
+    }
+  }
+
+  async #unloadRecoveredTopologyCleanTargets(
+    mutation: WorkspaceEditorRecoveredTopologyMutation,
+  ): Promise<void> {
+    const unloadCleanPath = this.#buffers.synchronizePathDelete;
+    if (unloadCleanPath === undefined) {
+      throw new Error(
+        "The active Editor provider cannot safely close clean buffers for recovered mutation reconciliation.",
+      );
+    }
+    for (;;) {
+      const snapshot = this.#buffers.getSnapshot();
+      const candidate = snapshot.buffers.find((buffer) => {
+        if (
+          !buffer.loaded ||
+          buffer.bufferType !== "" ||
+          buffer.absolutePath === null ||
+          buffer.changedtick === null ||
+          buffer.modified
+        ) {
+          return false;
+        }
+        return mutation.targets.some((target) =>
+          recoveredTopologyTargetContainsPath(target, buffer.absolutePath!),
+        );
+      });
+      if (candidate === undefined) return;
+      const path = candidate.absolutePath!;
+      const unloaded = await unloadCleanPath.call(this.#buffers, path);
+      if (!unloaded.ok) {
+        const racedDirty = this.#buffers
+          .getSnapshot()
+          .buffers.some(
+            (buffer) =>
+              buffer.loaded &&
+              buffer.modified &&
+              buffer.absolutePath !== null &&
+              workspaceTopologyKey(buffer.absolutePath) ===
+                workspaceTopologyKey(path),
+          );
+        if (racedDirty) {
+          // A buffer that raced dirty remains Editor authority and is carried
+          // in the final exact manifest; recovery must never unload it.
+          continue;
+        }
+        throw new Error(
+          `Editor could not safely close recovered clean path ${path}: ${unloaded.reason}`,
+        );
+      }
+      const stillLoadedClean = this.#buffers
+        .getSnapshot()
+        .buffers.some(
+          (buffer) =>
+            buffer.loaded &&
+            !buffer.modified &&
+            buffer.absolutePath !== null &&
+            workspaceTopologyKey(buffer.absolutePath) ===
+              workspaceTopologyKey(path),
+        );
+      if (stillLoadedClean) {
+        throw new Error(
+          `The Editor still reports clean path ${path} after its safe unload completed.`,
+        );
+      }
+    }
+  }
+
+  async abandonStaleAuthority(
+    entries: readonly WorkspaceEditorStaleAuthorityEntry[],
+  ): Promise<void> {
+    if (this.#stopRequested || this.#stopped) {
+      throw new Error("Editor workspace synchronization is stopping.");
+    }
+    if (entries.length === 0) {
+      throw new Error("No stale Editor revisions were selected for recovery.");
+    }
+    if (
+      this.#recoveredTopologyMutations.length > 0 ||
+      this.#recoveredTopologyResolvePromise !== null ||
+      this.#topologyOperationStarting ||
+      this.#topologyOperation !== null ||
+      this.#workspaceWriteAuthorizationPromise !== null ||
+      this.#proposalOperationActive
+    ) {
+      throw new Error(
+        "Another authoritative Editor operation must finish before stale revisions can be abandoned.",
+      );
+    }
+    if (this.#syncTimer !== null) {
+      clearTimeout(this.#syncTimer);
+      this.#syncTimer = null;
+    }
+    if (this.#retryTimer !== null) {
+      clearTimeout(this.#retryTimer);
+      this.#retryTimer = null;
+    }
+    if (this.#heartbeatPromise !== null) await this.#heartbeatPromise;
+    if (this.#syncPromise !== null) await this.#syncPromise;
+    this.#publishAuthority({
+      status: "blocked",
+      reason:
+        "Confirming the reviewed disk state and abandoning the selected orphaned Editor revisions…",
+      staleAuthority: entries,
+    });
+    await this.#synchronize(true, entries);
+    const remainingPaths = new Set(
+      this.#staleAuthority.map((entry) => entry.path),
+    );
+    if (entries.some((entry) => remainingPaths.has(entry.path))) {
+      throw new Error(
+        "The selected orphaned Editor revisions are still protected. Review the current recovery evidence before trying again.",
+      );
+    }
+  }
+
+  async refreshStaleAuthority(): Promise<void> {
+    if (this.#stopRequested || this.#stopped) {
+      throw new Error("Editor workspace synchronization is stopping.");
+    }
+    if (this.#staleAuthority.length === 0) return;
+    if (
+      this.#recoveredTopologyMutations.length > 0 ||
+      this.#recoveredTopologyResolvePromise !== null ||
+      this.#topologyOperationStarting ||
+      this.#topologyOperation !== null ||
+      this.#workspaceWriteAuthorizationPromise !== null ||
+      this.#proposalOperationActive
+    ) {
+      throw new Error(
+        "Another authoritative Editor operation must finish before stale disk evidence can be refreshed.",
+      );
+    }
+    if (this.#syncTimer !== null) {
+      clearTimeout(this.#syncTimer);
+      this.#syncTimer = null;
+    }
+    if (this.#retryTimer !== null) {
+      clearTimeout(this.#retryTimer);
+      this.#retryTimer = null;
+    }
+    if (this.#heartbeatPromise !== null) await this.#heartbeatPromise;
+    if (this.#syncPromise !== null) await this.#syncPromise;
+    const operation = this.#performStaleAuthorityRefresh();
+    this.#syncPromise = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.#syncPromise === operation) this.#syncPromise = null;
+      if (this.#syncQueued && !this.#stopped && !this.#stopRequested) {
+        this.#syncQueued = false;
+        this.#scheduleSync(0);
+      }
+    }
+  }
+
+  async #performStaleAuthorityRefresh(): Promise<void> {
+    this.#publishAuthority({
+      status: "blocked",
+      reason:
+        "Refreshing the current disk evidence for orphaned Editor revisions…",
+      staleAuthority: this.#staleAuthority,
+    });
+    let lease = this.#lease;
+    try {
+      if (lease === null) {
+        const acquired = await this.#client.acquireWorkspaceEditor({
+          workspaceRoot: this.#workspaceRoot,
+          editorInstanceId: this.#editorInstanceId,
+        });
+        this.#acceptAcquiredLease(acquired);
+        lease = this.#lease;
+      }
+      if (lease === null) {
+        throw new Error("The authoritative Editor lease is unavailable.");
+      }
+      const result = await this.#client.refreshWorkspaceEditorStaleAuthority({
+        workspaceRoot: this.#workspaceRoot,
+        editorInstanceId: this.#editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      });
+      if (
+        result.refreshed !== true ||
+        !isValidStaleAuthorityList(result.staleAuthority)
+      ) {
+        throw new Error(
+          "The daemon returned malformed stale Editor recovery evidence.",
+        );
+      }
+      if (
+        this.#lease?.leaseToken !== lease.leaseToken ||
+        this.#lease.epoch !== lease.epoch
+      ) {
+        throw new Error(
+          "The authoritative Editor lease changed while disk evidence was refreshed.",
+        );
+      }
+      this.#staleAuthority = result.staleAuthority;
+      this.#lastErrorMessage = null;
+      if (this.#staleAuthority.length > 0) {
+        this.#initialSynchronizationComplete = false;
+        this.#publishAuthority({
+          status: "blocked",
+          reason: staleAuthorityBlockReason(this.#staleAuthority),
+          staleAuthority: this.#staleAuthority,
+        });
+        return;
+      }
+      this.#initialSynchronizationComplete = false;
+      this.#lastObservedManifest = null;
+      this.#lastSyncedManifest = null;
+      this.#publishAuthority({ status: "syncing" });
+      this.#syncQueued = true;
+    } catch (cause) {
+      if (this.#lease?.leaseToken === lease?.leaseToken) {
+        this.#lease = null;
+      }
+      this.#initialSynchronizationComplete = false;
+      this.#publishAuthority({
+        status: "blocked",
+        reason: errorMessage(cause),
+        staleAuthority: this.#staleAuthority,
+      });
+      this.#report(cause);
+      throw cause;
     }
   }
 
@@ -779,6 +1119,9 @@ export class WorkspaceEditorLeaseSynchronizer {
       );
     }
     const operation = (async () => {
+      if (this.#heartbeatPromise !== null) {
+        await this.#heartbeatPromise;
+      }
       const lease = this.#lease;
       if (lease === null) {
         throw new Error(
@@ -1118,7 +1461,10 @@ export class WorkspaceEditorLeaseSynchronizer {
     }
   }
 
-  async #synchronize(force = false): Promise<void> {
+  async #synchronize(
+    force = false,
+    abandonStaleAuthority?: readonly WorkspaceEditorStaleAuthorityEntry[],
+  ): Promise<void> {
     if ((this.#stopped || this.#stopRequested) && !force) return;
     if (this.#hasPendingProposalAcknowledgement() && !force) return;
     if (this.#workspaceWriteAuthorizationPromise !== null && !force) {
@@ -1141,7 +1487,7 @@ export class WorkspaceEditorLeaseSynchronizer {
       await this.#syncPromise;
       return;
     }
-    const operation = this.#performSync(force);
+    const operation = this.#performSync(force, abandonStaleAuthority);
     this.#syncPromise = operation;
     try {
       await operation;
@@ -1154,7 +1500,10 @@ export class WorkspaceEditorLeaseSynchronizer {
     }
   }
 
-  async #performSync(force: boolean): Promise<void> {
+  async #performSync(
+    force: boolean,
+    abandonStaleAuthority?: readonly WorkspaceEditorStaleAuthorityEntry[],
+  ): Promise<void> {
     try {
       if (this.#lease === null) {
         this.#publishAuthority({ status: "securing" });
@@ -1184,10 +1533,24 @@ export class WorkspaceEditorLeaseSynchronizer {
       );
       const manifest = synchronizedBufferManifestSignature(prepared);
       if (!force && manifest === this.#lastSyncedManifest) {
-        this.#initialSynchronizationComplete = true;
-        this.#publishAuthority({ status: "ready" });
+        if (this.#staleAuthority.length > 0) {
+          this.#initialSynchronizationComplete = false;
+          this.#publishAuthority({
+            status: "blocked",
+            reason: staleAuthorityBlockReason(this.#staleAuthority),
+            staleAuthority: this.#staleAuthority,
+          });
+        } else {
+          this.#initialSynchronizationComplete = true;
+          this.#publishAuthority({ status: "ready" });
+        }
         return;
       }
+      const effectiveAbandonStaleAuthority =
+        reconcileStaleAuthorityConfirmation(
+          abandonStaleAuthority,
+          this.#staleAuthority,
+        );
       const sequence = this.#sequence + 1;
       const result = await this.#client.syncWorkspaceEditor({
         workspaceRoot: this.#workspaceRoot,
@@ -1196,10 +1559,17 @@ export class WorkspaceEditorLeaseSynchronizer {
         epoch: lease.epoch,
         sequence,
         buffers: prepared,
+        ...(effectiveAbandonStaleAuthority !== undefined
+          ? { abandonStaleAuthority: effectiveAbandonStaleAuthority }
+          : {}),
       });
+      const returnedStaleAuthority =
+        result.staleAuthority ?? this.#staleAuthority;
       if (
+        result.accepted !== true ||
         !Number.isSafeInteger(result.sequence) ||
-        result.sequence !== sequence
+        result.sequence !== sequence ||
+        !isValidStaleAuthorityList(returnedStaleAuthority)
       ) {
         throw new Error(
           `The daemon returned malformed editor sync sequence ${String(result.sequence)}; expected ${sequence}.`,
@@ -1207,14 +1577,24 @@ export class WorkspaceEditorLeaseSynchronizer {
       }
       this.#sequence = result.sequence;
       this.#lastSyncedManifest = manifest;
+      this.#staleAuthority = returnedStaleAuthority;
       this.#lease = {
         ...lease,
         sequence: result.sequence,
         expiresAt: result.expiresAt,
       };
       this.#pollWorkspaceChangesInBackground();
-      this.#initialSynchronizationComplete = true;
       this.#lastErrorMessage = null;
+      if (this.#staleAuthority.length > 0) {
+        this.#initialSynchronizationComplete = false;
+        this.#publishAuthority({
+          status: "blocked",
+          reason: staleAuthorityBlockReason(this.#staleAuthority),
+          staleAuthority: this.#staleAuthority,
+        });
+        return;
+      }
+      this.#initialSynchronizationComplete = true;
       const currentManifest = workspaceBufferManifestSignature(
         this.#buffers.getSnapshot(),
       );
@@ -1226,12 +1606,40 @@ export class WorkspaceEditorLeaseSynchronizer {
         this.#observe();
       }
     } catch (cause) {
+      if (cause instanceof BufferWorkspaceCaptureUnstableError) {
+        // Ordinary insert-mode input can advance changedtick faster than the
+        // multi-RPC background snapshot can settle. Keep the existing lease
+        // and its daemon-side fence: native writes still pass through the
+        // synchronous BufWritePre authority gate, while another background
+        // capture can retry without turning normal keystrokes into read-only
+        // input. A pre-existing stale-authority quarantine remains hard.
+        if (this.#staleAuthority.length > 0) {
+          this.#initialSynchronizationComplete = false;
+          this.#publishAuthority({
+            status: "blocked",
+            reason: staleAuthorityBlockReason(this.#staleAuthority),
+            staleAuthority: this.#staleAuthority,
+          });
+        } else {
+          // Acquisition already established the daemon-side workspace fence,
+          // and Neovim's native write gate stays installed while capture
+          // retries. Keep provider input live even when the first snapshot is
+          // unstable so no part of a command or insert is silently discarded.
+          this.#publishAuthority({ status: "syncing" });
+        }
+        this.#scheduleRetry();
+        if (force) throw cause;
+        return;
+      }
       this.#report(cause);
       this.#lease = null;
       this.#initialSynchronizationComplete = false;
       this.#publishAuthority({
         status: "blocked",
         reason: errorMessage(cause),
+        ...(this.#staleAuthority.length > 0
+          ? { staleAuthority: this.#staleAuthority }
+          : {}),
       });
       this.#scheduleRetry();
       // Background synchronization remains retryable and reports through the
@@ -1244,6 +1652,14 @@ export class WorkspaceEditorLeaseSynchronizer {
 
   #acceptAcquiredLease(lease: WorkspaceEditorLeaseResult): void {
     assertValidLeaseSequence(lease.sequence);
+    if (
+      lease.staleAuthority !== undefined &&
+      !isValidStaleAuthorityList(lease.staleAuthority)
+    ) {
+      throw new Error(
+        "The daemon returned malformed stale Editor recovery evidence.",
+      );
+    }
     const sameLease =
       this.#knownLeaseIdentity?.epoch === lease.epoch &&
       this.#knownLeaseIdentity.leaseToken === lease.leaseToken;
@@ -1262,6 +1678,9 @@ export class WorkspaceEditorLeaseSynchronizer {
       epoch: lease.epoch,
       leaseToken: lease.leaseToken,
     };
+    if (lease.staleAuthority !== undefined) {
+      this.#staleAuthority = lease.staleAuthority;
+    }
     this.#lease = lease;
   }
 
@@ -1287,13 +1706,18 @@ export class WorkspaceEditorLeaseSynchronizer {
         mutation.tokenId.length === 0 ||
         tokenIds.has(mutation.tokenId) ||
         typeof mutation.workspaceRoot !== "string" ||
-        mutation.workspaceRoot.length === 0 ||
+        workspaceTopologyKey(mutation.workspaceRoot) !==
+          workspaceTopologyKey(this.#workspaceRoot) ||
         !Array.isArray(mutation.targets) ||
         mutation.targets.length === 0 ||
         mutation.targets.some(
           (target) =>
             typeof target?.path !== "string" ||
             target.path.length === 0 ||
+            !recoveredTopologyTargetWithinWorkspace(
+              this.#workspaceRoot,
+              target.path,
+            ) ||
             (target.includeDescendants !== undefined &&
               typeof target.includeDescendants !== "boolean"),
         ) ||
@@ -1332,6 +1756,8 @@ export class WorkspaceEditorLeaseSynchronizer {
       this.#proposalOperationActive ||
       this.#syncPromise !== null ||
       this.#workspaceWriteAuthorizationPromise !== null ||
+      this.#topologyFinalizePromise !== null ||
+      this.#recoveredTopologyResolvePromise !== null ||
       this.#heartbeatPromise !== null
     ) {
       return;
@@ -1364,6 +1790,9 @@ export class WorkspaceEditorLeaseSynchronizer {
         this.#publishAuthority({
           status: "blocked",
           reason: errorMessage(cause),
+          ...(this.#staleAuthority.length > 0
+            ? { staleAuthority: this.#staleAuthority }
+            : {}),
         });
         this.#report(cause);
         this.#scheduleRetry();
@@ -1404,6 +1833,7 @@ export class WorkspaceEditorLeaseSynchronizer {
       });
       this.#lastSyncedManifest = null;
       this.#knownLeaseIdentity = null;
+      this.#staleAuthority = [];
       this.#initialSynchronizationComplete = false;
       this.#lastErrorMessage = null;
     } catch (cause) {
@@ -1505,7 +1935,9 @@ export class WorkspaceEditorLeaseSynchronizer {
           this.#authorityState.reason === state.reason &&
           recoveredTopologySignature(
             this.#authorityState.recoveredTopologyMutations,
-          ) === recoveredTopologySignature(state.recoveredTopologyMutations)))
+          ) === recoveredTopologySignature(state.recoveredTopologyMutations) &&
+          staleAuthoritySignature(this.#authorityState.staleAuthority) ===
+            staleAuthoritySignature(state.staleAuthority)))
     ) {
       return;
     }
@@ -1541,12 +1973,91 @@ export class WorkspaceEditorLeaseSynchronizer {
       this.#workspaceChangeCallbackProposalId =
         change.status === "proposed" ? (change.proposalId ?? null) : null;
       try {
+        if (change.kind === "topology") {
+          await this.#reconcileTopologyInvalidation(change);
+        }
         await this.#onWorkspaceChange?.(change);
       } finally {
         this.#workspaceChangeCallbackProposalId = null;
       }
     }
     this.#changeSequence = result.sequence;
+  }
+
+  async #reconcileTopologyInvalidation(
+    change: WorkspaceEditorChangeResult,
+  ): Promise<void> {
+    if (
+      change.kind !== "topology" ||
+      typeof change.topologyTokenId !== "string" ||
+      typeof change.includeDescendants !== "boolean" ||
+      (change.status !== "applied" && change.status !== "unknown_outcome") ||
+      !recoveredTopologyTargetWithinWorkspace(this.#workspaceRoot, change.path)
+    ) {
+      throw new Error(
+        "The daemon returned a malformed project-path invalidation.",
+      );
+    }
+    const beginProviderMutation = this.#buffers.beginProjectPathMutation;
+    const endProviderMutation = this.#buffers.endProjectPathMutation;
+    if (
+      beginProviderMutation === undefined ||
+      endProviderMutation === undefined ||
+      !beginProviderMutation.call(this.#buffers)
+    ) {
+      throw new Error(
+        "The active Editor provider cannot freeze project paths while applying a durable path invalidation.",
+      );
+    }
+    try {
+      const target: WorkspaceEditorTopologyTarget = {
+        path: change.path,
+        includeDescendants: change.includeDescendants,
+      };
+      const dirty = this.#buffers
+        .getSnapshot()
+        .buffers.find(
+          (buffer) =>
+            buffer.loaded &&
+            buffer.modified &&
+            buffer.bufferType === "" &&
+            buffer.absolutePath !== null &&
+            recoveredTopologyTargetContainsPath(target, buffer.absolutePath),
+        );
+      if (dirty !== undefined) {
+        throw new Error(
+          `Editor buffer ${dirty.absolutePath} has unsaved changes under a completed project-path operation. Save or discard it before acknowledging the disk invalidation.`,
+        );
+      }
+      await this.#unloadRecoveredTopologyCleanTargets({
+        tokenId: change.topologyTokenId,
+        workspaceRoot: this.#workspaceRoot,
+        targets: [target],
+        source: change.source,
+        createdAt: 0,
+      });
+      const racedDirty = this.#buffers
+        .getSnapshot()
+        .buffers.find(
+          (buffer) =>
+            buffer.loaded &&
+            buffer.modified &&
+            buffer.bufferType === "" &&
+            buffer.absolutePath !== null &&
+            recoveredTopologyTargetContainsPath(target, buffer.absolutePath),
+        );
+      if (racedDirty !== undefined) {
+        throw new Error(
+          `Editor buffer ${racedDirty.absolutePath} became dirty while applying a completed project-path operation. Save or discard it before acknowledging the disk invalidation.`,
+        );
+      }
+      this.#lastObservedManifest = null;
+      this.#lastSyncedManifest = null;
+      this.#initialSynchronizationComplete = false;
+      await this.#synchronize(true);
+    } finally {
+      endProviderMutation.call(this.#buffers);
+    }
   }
 
   #pollWorkspaceChangesInBackground(): void {
@@ -1888,6 +2399,40 @@ function workspaceTopologyKey(workspaceRoot: string): string {
   return resolve(workspaceRoot).normalize("NFC");
 }
 
+function isSameOrDescendantPath(parent: string, candidate: string): boolean {
+  const bounded = relative(parent, candidate);
+  return (
+    bounded === "" ||
+    (bounded !== ".." &&
+      !bounded.startsWith(`..${sep}`) &&
+      !isAbsolute(bounded))
+  );
+}
+
+function recoveredTopologyTargetWithinWorkspace(
+  workspaceRoot: string,
+  targetPath: string,
+): boolean {
+  if (!isAbsolute(targetPath)) return false;
+  return isSameOrDescendantPath(
+    workspaceTopologyKey(workspaceRoot),
+    workspaceTopologyKey(targetPath),
+  );
+}
+
+function recoveredTopologyTargetContainsPath(
+  target: WorkspaceEditorTopologyTarget,
+  path: string,
+): boolean {
+  const targetPath = workspaceTopologyKey(target.path);
+  const candidatePath = workspaceTopologyKey(path);
+  return (
+    targetPath === candidatePath ||
+    (target.includeDescendants === true &&
+      isSameOrDescendantPath(targetPath, candidatePath))
+  );
+}
+
 function recoveredTopologySignature(
   mutations: readonly WorkspaceEditorRecoveredTopologyMutation[] | undefined,
 ): string {
@@ -1902,6 +2447,117 @@ function recoveredTopologySignature(
         target.includeDescendants === true,
       ]),
     ]),
+  );
+}
+
+function isValidStaleAuthorityList(
+  value: unknown,
+): value is readonly WorkspaceEditorStaleAuthorityEntry[] {
+  if (!Array.isArray(value) || value.length > 512) return false;
+  const paths = new Set<string>();
+  for (const entry of value) {
+    if (
+      typeof entry !== "object" ||
+      entry === null ||
+      typeof entry.path !== "string" ||
+      entry.path.length === 0 ||
+      paths.has(entry.path) ||
+      typeof entry.editorContentSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(entry.editorContentSha256) ||
+      !Number.isSafeInteger(entry.editorContentBytes) ||
+      entry.editorContentBytes < 0 ||
+      !Number.isSafeInteger(entry.changedtick) ||
+      entry.changedtick < 0 ||
+      typeof entry.editorInstanceId !== "string" ||
+      entry.editorInstanceId.length === 0 ||
+      !Number.isSafeInteger(entry.epoch) ||
+      entry.epoch < 1 ||
+      (entry.editorState !== "dirty" && entry.editorState !== "clean") ||
+      (entry.diskState !== "content" &&
+        entry.diskState !== "missing" &&
+        entry.diskState !== "unavailable")
+    ) {
+      return false;
+    }
+    if (entry.diskState === "content") {
+      if (
+        typeof entry.diskContentSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(entry.diskContentSha256) ||
+        !Number.isSafeInteger(entry.diskContentBytes) ||
+        (entry.diskContentBytes as number) < 0
+      ) {
+        return false;
+      }
+    } else if (
+      entry.diskContentSha256 !== undefined ||
+      entry.diskContentBytes !== undefined
+    ) {
+      return false;
+    }
+    paths.add(entry.path);
+  }
+  return true;
+}
+
+function staleAuthoritySignature(
+  entries: readonly WorkspaceEditorStaleAuthorityEntry[] | undefined,
+): string {
+  return JSON.stringify(
+    (entries ?? []).map((entry) => [
+      entry.path,
+      entry.editorContentSha256,
+      entry.editorContentBytes,
+      entry.changedtick,
+      entry.editorInstanceId,
+      entry.epoch,
+      entry.editorState,
+      entry.diskState,
+      entry.diskContentSha256 ?? null,
+      entry.diskContentBytes ?? null,
+    ]),
+  );
+}
+
+function staleAuthorityEntriesEqual(
+  left: WorkspaceEditorStaleAuthorityEntry,
+  right: WorkspaceEditorStaleAuthorityEntry,
+): boolean {
+  return staleAuthoritySignature([left]) === staleAuthoritySignature([right]);
+}
+
+function reconcileStaleAuthorityConfirmation(
+  requested: readonly WorkspaceEditorStaleAuthorityEntry[] | undefined,
+  current: readonly WorkspaceEditorStaleAuthorityEntry[],
+): readonly WorkspaceEditorStaleAuthorityEntry[] | undefined {
+  if (requested === undefined) return undefined;
+  if (!isValidStaleAuthorityList(requested) || requested.length === 0) {
+    throw new Error("The stale Editor recovery confirmation is malformed.");
+  }
+  const currentByPath = new Map(current.map((entry) => [entry.path, entry]));
+  const matching = requested.filter((entry) => {
+    const latest = currentByPath.get(entry.path);
+    return latest !== undefined && staleAuthorityEntriesEqual(entry, latest);
+  });
+  if (matching.length === requested.length) return requested;
+  if (requested.every((entry) => !currentByPath.has(entry.path))) {
+    // The previous exact sync may have committed before its response was lost.
+    // Reacquire is authoritative; continue with an ordinary sync instead of
+    // turning an already-completed explicit choice into a permanent error.
+    return undefined;
+  }
+  throw new Error(
+    "The stale Editor or disk recovery evidence changed. Review it again before choosing Use Disk.",
+  );
+}
+
+function staleAuthorityBlockReason(
+  entries: readonly WorkspaceEditorStaleAuthorityEntry[],
+): string {
+  const count = entries.length;
+  return (
+    `${count} orphaned Editor revision${count === 1 ? "" : "s"} ` +
+    `${count === 1 ? "still owns" : "still own"} workspace authority. ` +
+    "Recover a matching Neovim swap if offered, or explicitly choose Use Disk after reviewing the affected paths."
   );
 }
 

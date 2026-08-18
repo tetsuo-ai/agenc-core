@@ -2415,6 +2415,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         dirtyPaths: [path],
         stalePaths: [],
       })),
+      refreshWorkspaceEditorStaleAuthority: vi.fn(async () => ({
+        refreshed: true as const,
+        staleAuthority: [],
+      })),
       heartbeatWorkspaceEditor: vi.fn(async (params) => ({
         ...lease,
         editorInstanceId: params.editorInstanceId,
@@ -2712,6 +2716,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           stalePaths: [],
         };
       }),
+      refreshWorkspaceEditorStaleAuthority: vi.fn(async () => ({
+        refreshed: true as const,
+        staleAuthority: [],
+      })),
       heartbeatWorkspaceEditor: vi.fn(async (params) => ({
         ...lease,
         editorInstanceId: params.editorInstanceId,

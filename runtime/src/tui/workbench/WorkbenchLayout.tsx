@@ -22,6 +22,7 @@ import { ProjectExplorer } from "./project-tree/ProjectExplorer.js";
 import { ActiveWorkSurface } from "./surfaces/ActiveWorkSurface.js";
 import type {
   BufferCodePredictionUi,
+  BufferStaleAuthorityRecoveryUi,
   BufferTopologyRecoveryUi,
 } from "./surfaces/BufferSurface.js";
 import { WorkbenchComposerFocusProvider } from "./composerFocusContext.js";
@@ -75,6 +76,7 @@ type Props = {
   readonly codePrediction?: BufferCodePredictionUi;
   readonly editorMutationBlockedReason?: string | null;
   readonly editorTopologyRecovery?: BufferTopologyRecoveryUi;
+  readonly editorStaleAuthorityRecovery?: BufferStaleAuthorityRecoveryUi;
 };
 
 export function WorkbenchLayout({
@@ -94,6 +96,7 @@ export function WorkbenchLayout({
   codePrediction,
   editorMutationBlockedReason = null,
   editorTopologyRecovery,
+  editorStaleAuthorityRecovery,
 }: Props): React.ReactElement {
   const { columns, rows } = useTerminalSize();
   const workbench = useWorkbenchState();
@@ -290,6 +293,7 @@ export function WorkbenchLayout({
               codePrediction={codePrediction}
               editorMutationBlockedReason={editorMutationBlockedReason}
               editorTopologyRecovery={editorTopologyRecovery}
+              editorStaleAuthorityRecovery={editorStaleAuthorityRecovery}
             />
           </ContentWidthProvider>
           {showRail ? (

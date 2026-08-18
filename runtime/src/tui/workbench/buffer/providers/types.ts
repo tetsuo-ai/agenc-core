@@ -121,6 +121,17 @@ export type BufferProviderCleanupOptions = {
 export type BufferRecoveryAction =
   "recover" | "compare" | "save-copy" | "discard";
 
+/**
+ * The only buffer mutations exposed by the hard stale-authority inspector.
+ * Native providers implement these as host-directed operations rather than
+ * replaying user input through their command surface.
+ */
+export type BufferStaleAuthorityEditorAction = {
+  readonly type: "reload" | "unload";
+  /** Exact reviewed quarantine path this action is allowed to affect. */
+  readonly path: string;
+};
+
 export type BufferRecoveryResult =
   | { readonly ok: true; readonly copyPath?: string }
   | { readonly ok: false; readonly reason: string };
@@ -278,6 +289,18 @@ export type BufferWorkspaceBufferCapture = {
 };
 
 /**
+ * The provider observed a valid workspace manifest, but it changed while the
+ * corresponding buffer contents were being copied. Nothing is unsafe or
+ * malformed; the caller must keep mutations fenced and retry the capture.
+ */
+export class BufferWorkspaceCaptureUnstableError extends Error {
+  constructor() {
+    super("Neovim buffers changed during workspace synchronization; retry.");
+    this.name = "BufferWorkspaceCaptureUnstableError";
+  }
+}
+
+/**
  * Exact in-memory workspace state captured synchronously by Neovim before a
  * native write. The target is repeated explicitly so a malformed or stale
  * manifest can never authorize a different buffer's `:write`.
@@ -380,6 +403,9 @@ export interface BufferEditorProvider {
   ): void;
   reloadCleanPath?(path: string): Promise<BufferExternalChangeResolution>;
   resolveRecovery?(action: BufferRecoveryAction): Promise<BufferRecoveryResult>;
+  performStaleAuthorityEditorAction?(
+    action: BufferStaleAuthorityEditorAction,
+  ): Promise<boolean>;
   subscribeIntegrationIntents?(
     listener: BufferIntegrationIntentListener,
   ): () => void;

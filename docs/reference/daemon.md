@@ -109,9 +109,18 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 ## Protocol
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.0.0`**
+- Protocol version constant: **`1.1.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
-- Clients send `initialize` with the protocol version; mismatch → error.
+- Clients send `initialize` with the protocol version. Negotiation compares the
+  numeric major and minor versions: the server accepts the same major when the
+  client minor is less than or equal to the server minor; the patch component
+  does not affect compatibility. Malformed versions, different majors, and a
+  client minor newer than the server are rejected with
+  `PROTOCOL_VERSION_UNSUPPORTED`.
+- Consequently, a 1.1 daemon accepts a 1.0 client, while a current 1.1 TUI is
+  rejected by a still-running 1.0 daemon before it can send the newer Editor
+  recovery fields. Update if necessary, then run `agenc daemon restart` so the
+  daemon uses the installed protocol version.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 

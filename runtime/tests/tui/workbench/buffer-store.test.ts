@@ -1119,6 +1119,10 @@ describe("WorkbenchBufferStore", () => {
       ["wqall!", { type: "saveQuit", force: true, all: true }],
       ["xa!", { type: "saveQuit", force: true, all: true }],
       ["xall!", { type: "saveQuit", force: true, all: true }],
+      ["e!", { type: "reload", force: true }],
+      ["edit!", { type: "reload", force: true }],
+      ["bd!", { type: "closeBuffer", discard: true }],
+      ["bdelete!", { type: "closeBuffer", discard: true }],
     ] as const) {
       sendCommand(raw);
       expect(commands.pop()).toEqual(expected);

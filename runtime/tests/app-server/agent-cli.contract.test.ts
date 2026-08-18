@@ -1110,7 +1110,7 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.0.0",
+              protocolVersion: "1.1.0",
               capabilities: {},
             },
           });
@@ -1182,7 +1182,7 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.0.0",
+              protocolVersion: "1.1.0",
               capabilities: {},
             },
           });
@@ -1255,7 +1255,7 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.0.0",
+              protocolVersion: "1.1.0",
               capabilities: {},
             },
           });
@@ -1316,7 +1316,7 @@ autostart = false
           id: message.id,
           result: {
             type: "initialized",
-            protocolVersion: "1.0.0",
+            protocolVersion: "1.1.0",
             capabilities: {},
           },
         });
@@ -1394,7 +1394,7 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.0.0",
+              protocolVersion: "1.1.0",
               capabilities: {},
             },
           });
@@ -1485,7 +1485,7 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.0.0",
+              protocolVersion: "1.1.0",
               capabilities: {},
             },
           })}\n`,
@@ -1527,7 +1527,7 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.0.0",
+              protocolVersion: "1.1.0",
               capabilities: {},
             },
           });
@@ -1570,7 +1570,7 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.0.0",
+              protocolVersion: "1.1.0",
               capabilities: {},
             },
           });
@@ -1633,7 +1633,7 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.0.0",
+              protocolVersion: "1.1.0",
               capabilities: {},
             },
           });
@@ -1688,7 +1688,7 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.0.0",
+              protocolVersion: "1.1.0",
               capabilities: {},
             },
           });
@@ -1749,7 +1749,7 @@ autostart = false
               id: message.id,
               result: {
                 type: "initialized",
-                protocolVersion: "1.0.0",
+                protocolVersion: "1.1.0",
                 capabilities: {},
               },
             });
@@ -1817,7 +1817,7 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.0.0",
+              protocolVersion: "1.1.0",
               capabilities: {},
             },
           });
@@ -1876,7 +1876,7 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.0.0",
+              protocolVersion: "1.1.0",
               capabilities: {},
             },
           });
@@ -1934,7 +1934,7 @@ autostart = false
               id: message.id,
               result: {
                 type: "initialized",
-                protocolVersion: "1.0.0",
+                protocolVersion: "1.1.0",
                 capabilities: {},
               },
             });

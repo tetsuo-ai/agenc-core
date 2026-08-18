@@ -8,6 +8,11 @@ import {
   type KeybindingContextName,
 } from "../../../src/tui/keybindings/types.js";
 import { descriptorForSurface } from "../../../src/tui/workbench/surfaces/ActiveWorkSurface.js";
+import { bufferKeybindingContext } from "../../../src/tui/workbench/buffer/keybindingContext.js";
+import {
+  INLINE_BUFFER_CAPABILITIES,
+  NEOVIM_BUFFER_CAPABILITIES,
+} from "../../../src/tui/workbench/buffer/providers/types.js";
 
 const WORKBENCH_CONTEXTS = [
   "WorkspaceTabs",
@@ -97,6 +102,47 @@ const WORKBENCH_ACTIONS = [
 ] as const satisfies readonly KeybindingAction[];
 
 describe("workbench keybinding contract", () => {
+  it("uses host navigation only until a provider owns the first file", () => {
+    expect(
+      bufferKeybindingContext({
+        filePath: null,
+        providerStatus: "idle",
+        provider: {
+          kind: "inline",
+          label: "unopened BUFFER placeholder",
+          fallbackReason: null,
+          capabilities: INLINE_BUFFER_CAPABILITIES,
+        },
+      }),
+    ).toBe("BufferHost");
+
+    expect(
+      bufferKeybindingContext({
+        filePath: "src/app.ts",
+        providerStatus: "ready",
+        provider: {
+          kind: "inline",
+          label: "basic inline BUFFER fallback",
+          fallbackReason: null,
+          capabilities: INLINE_BUFFER_CAPABILITIES,
+        },
+      }),
+    ).toBe("Buffer");
+
+    expect(
+      bufferKeybindingContext({
+        filePath: "src/app.ts",
+        providerStatus: "ready",
+        provider: {
+          kind: "neovim",
+          label: "embedded Neovim",
+          fallbackReason: null,
+          capabilities: NEOVIM_BUFFER_CAPABILITIES,
+        },
+      }),
+    ).toBe("BufferHost");
+  });
+
   it("registers every workbench context and action with the global keybinding schema", () => {
     for (const context of WORKBENCH_CONTEXTS) {
       expect(KEYBINDING_CONTEXT_NAMES).toContain(context);

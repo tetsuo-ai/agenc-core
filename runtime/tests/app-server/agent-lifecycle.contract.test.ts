@@ -12,9 +12,7 @@ import {
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
-import {
-  listUnresolvedUnknownOutcomeEffects,
-} from "../state/unknown-outcome-gate.js";
+import { listUnresolvedUnknownOutcomeEffects } from "../state/unknown-outcome-gate.js";
 import { recordInFlightToolCallUnknownOutcome } from "../state/tool-output-rotation.js";
 import {
   AgenCDaemonAgentLifecycleError,
@@ -23,6 +21,7 @@ import {
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   JSON_RPC_VERSION,
 } from "./protocol/index.js";
@@ -3420,15 +3419,11 @@ describe("AgenC background agent lifecycle", () => {
         ],
         remaining: 2,
       });
-      expect(
-        effects.getEffect("run_v1", "run_v1:step"),
-      ).toMatchObject({
+      expect(effects.getEffect("run_v1", "run_v1:step")).toMatchObject({
         effectFormatVersion: 1,
         reviewStatus: "pending",
       });
-      expect(
-        effects.getEffect("run_v2", "run_v2:step"),
-      ).toMatchObject({
+      expect(effects.getEffect("run_v2", "run_v2:step")).toMatchObject({
         effectFormatVersion: 2,
         reviewStatus: "pending",
       });
@@ -3456,9 +3451,9 @@ describe("AgenC background agent lifecycle", () => {
         resolved: [],
         remaining: 2,
       });
-      expect(
-        effects.getEffect("run_v2", "run_v2:step"),
-      ).toMatchObject({ reviewStatus: "pending" });
+      expect(effects.getEffect("run_v2", "run_v2:step")).toMatchObject({
+        reviewStatus: "pending",
+      });
     } finally {
       driver?.close();
       restoreEnv();
@@ -3586,7 +3581,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "future-protocol",
         method: "initialize",
         params: {
-          protocol: { version: "1.1.0" },
+          protocol: { version: "1.2.0" },
           clientName: "contract-test",
         },
       }),
@@ -3598,8 +3593,8 @@ describe("AgenC background agent lifecycle", () => {
         message: "Unsupported protocol version",
         data: {
           code: "PROTOCOL_VERSION_UNSUPPORTED",
-          clientVersion: "1.1.0",
-          serverVersion: "1.0.0",
+          clientVersion: "1.2.0",
+          serverVersion: "1.1.0",
         },
       },
     });
@@ -3661,15 +3656,16 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocolVersion: "1.0.0",
-        protocol: { version: "1.0.0" },
+        protocolVersion: "1.1.0",
+        protocol: { version: "1.1.0" },
         capabilities: {},
       },
     });
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.1.0");
     expect(connection.initializeState).toMatchObject({
-      protocol: { version: "1.0.0" },
+      protocol: { version: "1.1.0" },
       clientProtocol: { version: "1.0.0" },
-      serverProtocol: { version: "1.0.0" },
+      serverProtocol: { version: "1.1.0" },
       clientCapabilities: { experimentalApi: true },
     });
     expect(
@@ -4173,7 +4169,7 @@ describe("AgenC background agent lifecycle", () => {
       id: "initialize",
       result: {
         type: "initialized",
-        protocolVersion: "1.0.0",
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
       },
     });
     expect(connection.initializeState?.clientCapabilities).toEqual(

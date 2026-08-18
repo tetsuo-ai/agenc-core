@@ -2779,6 +2779,7 @@ type DeferredWorkspaceEditorSessionSurface = Pick<
   AgenCTuiBridgeSession,
   | "acquireWorkspaceEditor"
   | "syncWorkspaceEditor"
+  | "refreshWorkspaceEditorStaleAuthority"
   | "heartbeatWorkspaceEditor"
   | "releaseWorkspaceEditor"
   | "reserveWorkspaceEditorTopology"
@@ -3508,6 +3509,11 @@ async function createDeferredDaemonPromptTuiSession(params: {
     syncWorkspaceEditor: async (editorParams) =>
       (await ensureWorkspaceEditorControlClient()).request(
         "workspace.editor.sync",
+        editorParams,
+      ),
+    refreshWorkspaceEditorStaleAuthority: async (editorParams) =>
+      (await ensureWorkspaceEditorControlClient()).request(
+        "workspace.editor.staleAuthority.refresh",
         editorParams,
       ),
     heartbeatWorkspaceEditor: async (editorParams) =>

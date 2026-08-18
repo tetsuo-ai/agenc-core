@@ -278,6 +278,12 @@ function createClient(): AgenCDaemonTuiClient & {
           stalePaths: [],
         } as never;
       }
+      if (method === "workspace.editor.staleAuthority.refresh") {
+        return {
+          refreshed: true,
+          staleAuthority: [],
+        } as never;
+      }
       if (method === "workspace.editor.release") {
         return {
           released: true,
@@ -1311,6 +1317,12 @@ describe("AgenC TUI daemon session adapter", () => {
       stalePaths: [],
     });
     await expect(
+      session.refreshWorkspaceEditorStaleAuthority?.(lease),
+    ).resolves.toEqual({
+      refreshed: true,
+      staleAuthority: [],
+    });
+    await expect(
       session.heartbeatWorkspaceEditor?.(lease),
     ).resolves.toMatchObject({
       ...lease,
@@ -1504,6 +1516,10 @@ describe("AgenC TUI daemon session adapter", () => {
             },
           ],
         },
+      },
+      {
+        method: "workspace.editor.staleAuthority.refresh",
+        params: lease,
       },
       {
         method: "workspace.editor.heartbeat",

@@ -484,6 +484,10 @@ describe("real embedded Neovim lifecycle", () => {
           stalePaths: [],
         };
       },
+      refreshWorkspaceEditorStaleAuthority: async () => ({
+        refreshed: true as const,
+        staleAuthority: [],
+      }),
       heartbeatWorkspaceEditor: async () => lease(),
       releaseWorkspaceEditor: async () => ({
         released: true as const,

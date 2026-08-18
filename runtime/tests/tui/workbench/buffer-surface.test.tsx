@@ -7,6 +7,7 @@ import React from "react";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { WorkspaceEditorStaleAuthorityEntry } from "../../../src/app-server/protocol/index.js";
 import {
   registerPendingLSPDiagnostic,
   resetAllLSPDiagnosticState,
@@ -422,13 +423,23 @@ describe("BufferSurface", () => {
       { type: "saveQuit", force: false, all: false },
       { store, dispatch, hasInFlightAgent: false },
     );
+    executeBufferVimCommand(
+      { type: "reload", force: true },
+      { store, dispatch, hasInFlightAgent: false },
+    );
+    executeBufferVimCommand(
+      { type: "closeBuffer", discard: true },
+      { store, dispatch, hasInFlightAgent: false },
+    );
     await flush();
 
     expect(store.save).toHaveBeenCalledWith({
       hasInFlightAgent: true,
       force: true,
     });
-    expect(store.close).not.toHaveBeenCalled();
+    expect(store.revert).toHaveBeenCalledTimes(1);
+    expect(store.close).toHaveBeenCalledWith({ discard: true });
+    expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch).toHaveBeenCalledWith({ type: "closeSurface" });
 
     const blockedStore = createActionStore({
@@ -516,7 +527,6 @@ describe("BufferSurface", () => {
       stdin: stdin as any as NodeJS.ReadStream,
       stdout: stdout as any as NodeJS.WriteStream,
     });
-
     try {
       root.render(
         <AppStateProvider
@@ -553,7 +563,6 @@ describe("BufferSurface", () => {
       stdin: stdin as any as NodeJS.ReadStream,
       stdout: stdout as any as NodeJS.WriteStream,
     });
-
     try {
       await runWithCwdOverride(dir, async () => {
         root.render(
@@ -2169,6 +2178,693 @@ describe("BufferSurface", () => {
       ).toBe(true);
       expect(provider.handleInput).not.toHaveBeenCalled();
     } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("focuses the explorer with Alt+H before the first Editor provider opens", async () => {
+    const changes: ReturnType<typeof getDefaultAppState>[] = [];
+    const controller = getWorkbenchBufferProviderController();
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as any as NodeJS.ReadStream,
+      stdout: stdout as any as NodeJS.WriteStream,
+    });
+
+    try {
+      expect(controller.getSnapshot()).toMatchObject({
+        filePath: null,
+        providerStatus: "idle",
+      });
+
+      await runWithCwdOverride(dir, async () => {
+        root.render(
+          <AppStateProvider
+            initialState={{
+              ...getDefaultAppState(),
+              workbench: {
+                ...getDefaultAppState().workbench,
+                activeSurfaceMode: "buffer",
+                activeFilePath: null,
+                focusedPane: "surface",
+              },
+            }}
+            onChangeAppState={({ newState }) => {
+              changes.push(newState);
+            }}
+          >
+            <KeybindingSetup>
+              <WorkbenchLayout
+                transcript={<Text>transcript</Text>}
+                composer={<Text>composer</Text>}
+              />
+            </KeybindingSetup>
+          </AppStateProvider>,
+        );
+        await sleep();
+      });
+
+      stdin.write("\x1bh");
+      await sleep();
+
+      expect(
+        changes.some((state) => state.workbench.focusedPane === "explorer"),
+      ).toBe(true);
+      expect(controller.getSnapshot()).toMatchObject({
+        filePath: null,
+        providerStatus: "idle",
+      });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("requires a second confirmation before abandoning stale Editor authority", async () => {
+    const entry: WorkspaceEditorStaleAuthorityEntry = {
+      path: "/workspace/file.ts",
+      editorContentSha256: "a".repeat(64),
+      editorContentBytes: 23,
+      changedtick: 9,
+      editorInstanceId: "orphaned-editor",
+      epoch: 4,
+      editorState: "dirty",
+      diskState: "content",
+      diskContentSha256: "b".repeat(64),
+      diskContentBytes: 19,
+    };
+    const laterEntry: WorkspaceEditorStaleAuthorityEntry = {
+      ...entry,
+      path: "/workspace/later.ts",
+      editorContentSha256: "c".repeat(64),
+      diskContentSha256: "d".repeat(64),
+    };
+    const onRefresh = vi.fn(async () => {});
+    const onUseDisk = vi.fn(async () => {});
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as any as NodeJS.ReadStream,
+      stdout: stdout as any as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "buffer",
+              activeFilePath: null,
+              focusedPane: "surface",
+            },
+          }}
+        >
+          <KeybindingSetup>
+            <BufferSurface
+              focused={true}
+              mutationBlockedReason="Editor safety is paused."
+              staleAuthorityRecovery={{
+                entries: [entry, laterEntry],
+                onRefresh,
+                onUseDisk,
+              }}
+            />
+          </KeybindingSetup>
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      const instance = instances.get(
+        stdout as any as NodeJS.WriteStream,
+      ) as any;
+      if (!instance?.rootNode) throw new Error("Ink instance not found");
+      expect(nodeText(instance.rootNode)).toContain(
+        "Orphaned Editor revisions need a decision",
+      );
+      expect(nodeText(instance.rootNode)).toContain("/workspace/file.ts");
+      expect(nodeText(instance.rootNode)).not.toContain("/workspace/later.ts");
+      expect(nodeText(instance.rootNode)).toContain(
+        "1 more affected path remains for a later review",
+      );
+      expect(nodeText(instance.rootNode)).toContain(
+        "Editor 23 B (dirty), disk 19 B",
+      );
+
+      stdin.write("d");
+      await sleep();
+      expect(onUseDisk).not.toHaveBeenCalled();
+      expect(nodeText(instance.rootNode)).toContain(
+        "Press D again to permanently abandon orphaned edits and use disk",
+      );
+
+      stdin.write("d");
+      await sleep();
+      expect(onUseDisk).toHaveBeenCalledTimes(1);
+      expect(onUseDisk).toHaveBeenCalledWith([entry]);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("disables stale-authority abandonment when disk evidence is unavailable", async () => {
+    const entry: WorkspaceEditorStaleAuthorityEntry = {
+      path: "/workspace/unreadable.ts",
+      editorContentSha256: "c".repeat(64),
+      editorContentBytes: 31,
+      changedtick: 12,
+      editorInstanceId: "orphaned-editor",
+      epoch: 4,
+      editorState: "dirty",
+      diskState: "unavailable",
+    };
+    const onRefresh = vi.fn(async () => {});
+    const onUseDisk = vi.fn(async () => {});
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as any as NodeJS.ReadStream,
+      stdout: stdout as any as NodeJS.WriteStream,
+    });
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "buffer",
+              activeFilePath: null,
+              focusedPane: "surface",
+            },
+          }}
+        >
+          <KeybindingSetup>
+            <BufferSurface
+              focused={true}
+              mutationBlockedReason="Editor safety is paused."
+              staleAuthorityRecovery={{
+                entries: [entry],
+                onRefresh,
+                onUseDisk,
+              }}
+            />
+          </KeybindingSetup>
+        </AppStateProvider>,
+      );
+      await sleep();
+
+      expect(output()).toContain("/workspace/unreadable.ts");
+      expect(output()).toContain("RRefreshDiskState");
+      expect(output()).toContain(
+        "Atleastonediskpathisunreadable,notaregularfile,ortoolarge",
+      );
+
+      stdin.write("d");
+      await sleep();
+      stdin.write("d");
+      await sleep();
+
+      expect(onUseDisk).not.toHaveBeenCalled();
+      expect(output()).not.toContain("DConfirmUseDisk");
+
+      stdin.write("r");
+      await sleep();
+      expect(onRefresh).toHaveBeenCalledTimes(1);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("binds Use Disk arming to exact evidence before passive effects run", async () => {
+    const originalEntry: WorkspaceEditorStaleAuthorityEntry = {
+      path: "/workspace/review.ts",
+      editorContentSha256: "e".repeat(64),
+      editorContentBytes: 41,
+      changedtick: 15,
+      editorInstanceId: "orphaned-editor-a",
+      epoch: 4,
+      editorState: "dirty",
+      diskState: "content",
+      diskContentSha256: "f".repeat(64),
+      diskContentBytes: 37,
+    };
+    const onRefresh = vi.fn(async () => {});
+    const onUseDisk = vi.fn(async () => {});
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as any as NodeJS.ReadStream,
+      stdout: stdout as any as NodeJS.WriteStream,
+    });
+    const renderEvidence = (
+      entry: WorkspaceEditorStaleAuthorityEntry,
+    ): void => {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "buffer",
+              activeFilePath: null,
+              focusedPane: "surface",
+            },
+          }}
+        >
+          <KeybindingSetup>
+            <BufferSurface
+              focused={true}
+              mutationBlockedReason="Editor safety is paused."
+              staleAuthorityRecovery={{
+                entries: [entry],
+                onRefresh,
+                onUseDisk,
+              }}
+            />
+          </KeybindingSetup>
+        </AppStateProvider>,
+      );
+    };
+
+    try {
+      renderEvidence(originalEntry);
+      await sleep();
+      stdin.write("d");
+      await sleep();
+      expect(onUseDisk).not.toHaveBeenCalled();
+
+      const cleanEntry: WorkspaceEditorStaleAuthorityEntry = {
+        ...originalEntry,
+        editorState: "clean",
+      };
+      renderEvidence(cleanEntry);
+      // Input can arrive after the new layout capture commits but before
+      // passive effects. The old arm must not authorize the new evidence.
+      stdin.write("d");
+      await sleep();
+      expect(onUseDisk).not.toHaveBeenCalled();
+      stdin.write("d");
+      await sleep();
+      expect(onUseDisk).toHaveBeenLastCalledWith([cleanEntry]);
+
+      const replacementIdentity: WorkspaceEditorStaleAuthorityEntry = {
+        ...cleanEntry,
+        editorInstanceId: "orphaned-editor-b",
+        epoch: 5,
+      };
+      renderEvidence(replacementIdentity);
+      stdin.write("d");
+      await sleep();
+      expect(onUseDisk).toHaveBeenCalledTimes(1);
+      stdin.write("d");
+      await sleep();
+      expect(onUseDisk).toHaveBeenCalledTimes(2);
+      expect(onUseDisk).toHaveBeenLastCalledWith([replacementIdentity]);
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("keeps native Recovery Editor input restricted to path-bound reload and unload", async () => {
+    const targetPath = join(dir, "target.ts");
+    await writeFile(targetPath, "const value = 1;\n", "utf8");
+    const identity = {
+      kind: "neovim" as const,
+      label: "embedded Neovim test",
+      fallbackReason: null,
+      capabilities: NEOVIM_BUFFER_CAPABILITIES,
+    };
+    const provider = {
+      identity,
+      subscribe: vi.fn(() => () => {}),
+      getSnapshot: vi.fn(() => ({
+        ...emptyProviderSnapshot(identity),
+        status: "ready" as const,
+        providerStatus: "ready" as const,
+        filePath: "target.ts",
+        absolutePath: targetPath,
+        terminal: {
+          ...createNeovimRenderSnapshot(4, 24),
+          lines: ["recovery buffer", "", "", ""],
+          mode: "normal" as const,
+          commandLine: null,
+          cursor: { grid: 1, row: 0, column: 0 },
+        },
+        vimMode: "NORMAL" as const,
+        position: { line: 1, column: 0, offset: 0 },
+        buffers: [
+          {
+            handle: 1,
+            changedtick: 7,
+            endOfLine: true,
+            name: targetPath,
+            filePath: "target.ts",
+            absolutePath: targetPath,
+            listed: true,
+            loaded: true,
+            modified: true,
+            current: true,
+            bufferType: "",
+            modifiable: true,
+            readOnly: false,
+            saveable: true,
+          },
+          {
+            handle: 2,
+            changedtick: 1,
+            endOfLine: true,
+            name: join(dir, "other.ts"),
+            filePath: "other.ts",
+            absolutePath: join(dir, "other.ts"),
+            listed: true,
+            loaded: true,
+            modified: false,
+            current: false,
+            bufferType: "",
+            modifiable: true,
+            readOnly: false,
+            saveable: true,
+          },
+        ],
+        activeBufferHandle: 1,
+      })),
+      getVisibleLines: vi.fn(() => []),
+      open: vi.fn(async () => {}),
+      save: vi.fn(async () => true),
+      selectBuffer: vi.fn(async () => true),
+      revert: vi.fn(async () => {}),
+      performStaleAuthorityEditorAction: vi.fn(async () => true),
+      close: vi.fn(async () => true),
+      openExternalEditor: vi.fn(async () => false),
+      undo: vi.fn(() => false),
+      redo: vi.fn(() => false),
+      move: vi.fn(() => false),
+      requestHover: vi.fn(async () => null),
+      goToDefinition: vi.fn(async () => false),
+      handleInput: vi.fn(() => true),
+      click: vi.fn(() => true),
+      resize: vi.fn(),
+      focus: vi.fn(),
+      cleanup: vi.fn(async () => {}),
+    };
+    getWorkbenchBufferProviderController().setSelectionFactoryForTesting(
+      async () => ({
+        kind: "neovim",
+        provider,
+        discovery: {
+          usable: true,
+          executable: "nvim",
+          version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
+          args: ["--embed", "--clean"],
+          useUserInit: false,
+        },
+      }),
+    );
+    const entry: WorkspaceEditorStaleAuthorityEntry = {
+      path: targetPath,
+      editorContentSha256: "1".repeat(64),
+      editorContentBytes: 17,
+      changedtick: 7,
+      editorInstanceId: "orphaned-loaded-editor",
+      epoch: 3,
+      editorState: "clean",
+      diskState: "content",
+      diskContentSha256: "2".repeat(64),
+      diskContentBytes: 17,
+    };
+    const onRefresh = vi.fn(async () => {});
+    const onUseDisk = vi.fn(async () => {});
+    const { stdin, stdout, output } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as any as NodeJS.ReadStream,
+      stdout: stdout as any as NodeJS.WriteStream,
+    });
+
+    try {
+      await runWithCwdOverride(dir, async () => {
+        root.render(
+          <AppStateProvider
+            initialState={{
+              ...getDefaultAppState(),
+              workbench: {
+                ...getDefaultAppState().workbench,
+                activeSurfaceMode: "buffer",
+                activeFilePath: "target.ts",
+                activeFileLine: 1,
+                focusedPane: "surface",
+              },
+            }}
+          >
+            <KeybindingSetup>
+              <BufferSurface
+                focused={true}
+                mutationBlockedReason="Editor safety is paused."
+                staleAuthorityRecovery={{
+                  entries: [entry],
+                  onRefresh,
+                  onUseDisk,
+                }}
+              />
+            </KeybindingSetup>
+          </AppStateProvider>,
+        );
+        await sleep();
+      });
+
+      const instance = instances.get(
+        stdout as any as NodeJS.WriteStream,
+      ) as any;
+      if (!instance?.rootNode) throw new Error("Ink instance not found");
+      expect(nodeText(instance.rootNode)).toContain("E Open Recovery Editor");
+
+      const sendNativeCommand = async (command: string): Promise<void> => {
+        stdin.write(":");
+        await sleep();
+        stdin.write(command);
+        await sleep();
+        stdin.write("\r");
+        await sleep();
+      };
+      provider.handleInput.mockClear();
+      stdin.write("e");
+      await sleep();
+      expect(nodeText(instance.rootNode)).toContain("RECOVERY EDITOR");
+      expect(output()).toContain("recoverybuffer");
+      expect(provider.handleInput).not.toHaveBeenCalled();
+      expect(onUseDisk).not.toHaveBeenCalled();
+
+      stdin.write("i");
+      await sleep();
+      stdin.write(
+        "\x1b[200~:lua vim.fn.writefile({'paste'}, '/tmp/bypass')\x1b[201~",
+      );
+      await sleep();
+      await sendNativeCommand("!touch /tmp/agenc-recovery-bypass");
+      await sendNativeCommand("terminal");
+      await sendNativeCommand("lua vim.fn.writefile({'x'}, '/tmp/bypass')");
+      expect(provider.handleInput).not.toHaveBeenCalled();
+      expect(provider.performStaleAuthorityEditorAction).not.toHaveBeenCalled();
+      expect(nodeText(instance.rootNode)).toContain(
+        "Restricted Recovery Editor allows only :edit! and :bd!.",
+      );
+
+      const otherTab = findClickableBoxes(instance.rootNode).find(
+        (box) => nodeText(box) === "other.ts",
+      );
+      const contentBox = findClickableBoxes(instance.rootNode).find(
+        (box) => nodeText(box) === "",
+      );
+      if (!otherTab?._eventHandlers?.onClick || !contentBox?._eventHandlers?.onClick) {
+        throw new Error(
+          `Expected native Recovery Editor tab and content click handlers: ${JSON.stringify(
+            findClickableBoxes(instance.rootNode).map((box) => nodeText(box)),
+          )}`,
+        );
+      }
+      otherTab._eventHandlers.onClick({
+        stopImmediatePropagation: vi.fn(),
+      });
+      contentBox._eventHandlers.onClick({
+        stopImmediatePropagation: vi.fn(),
+        localRow: 1,
+        localCol: 1,
+      });
+      await sleep();
+      expect(provider.selectBuffer).not.toHaveBeenCalled();
+      expect(provider.click).not.toHaveBeenCalled();
+
+      await sendNativeCommand("edit!");
+      expect(provider.performStaleAuthorityEditorAction).toHaveBeenCalledWith({
+        type: "reload",
+        path: targetPath,
+      });
+      expect(provider.handleInput).not.toHaveBeenCalled();
+
+      await sendNativeCommand("bd!");
+      expect(provider.performStaleAuthorityEditorAction).toHaveBeenLastCalledWith(
+        { type: "unload", path: targetPath },
+      );
+      expect(nodeText(instance.rootNode)).toContain(
+        "Orphaned Editor revisions need a decision",
+      );
+
+      stdin.write("e");
+      await sleep();
+      stdin.write("\x07");
+      await sleep();
+      expect(nodeText(instance.rootNode)).toContain(
+        "Orphaned Editor revisions need a decision",
+      );
+      expect(nodeText(instance.rootNode)).toContain("E Open Recovery Editor");
+      expect(provider.handleInput).not.toHaveBeenCalled();
+      expect(onUseDisk).not.toHaveBeenCalled();
+      expect(onRefresh).not.toHaveBeenCalled();
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("lets inline Recovery Editor force-reload or unload while keeping writes blocked", async () => {
+    const targetPath = join(dir, "inline-recovery.ts");
+    const originalDisk = "const value = 1;\n";
+    const replacementDisk = "const value = 2;\n";
+    await writeFile(targetPath, originalDisk, "utf8");
+    const entry: WorkspaceEditorStaleAuthorityEntry = {
+      path: targetPath,
+      editorContentSha256: "3".repeat(64),
+      editorContentBytes: Buffer.byteLength(originalDisk),
+      changedtick: 8,
+      editorInstanceId: "orphaned-inline-editor",
+      epoch: 4,
+      editorState: "dirty",
+      diskState: "content",
+      diskContentSha256: "4".repeat(64),
+      diskContentBytes: Buffer.byteLength(originalDisk),
+    };
+    const onRefresh = vi.fn(async () => {});
+    const onUseDisk = vi.fn(async () => {});
+    const controller = getWorkbenchBufferProviderController();
+    const recoveryAction = vi.spyOn(
+      controller,
+      "performStaleAuthorityEditorAction",
+    );
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as any as NodeJS.ReadStream,
+      stdout: stdout as any as NodeJS.WriteStream,
+    });
+    const sendCommand = async (command: string): Promise<void> => {
+      stdin.write(":");
+      await sleep();
+      stdin.write(command);
+      await sleep();
+      stdin.write("\r");
+      await sleep();
+    };
+
+    try {
+      await runWithCwdOverride(dir, async () => {
+        root.render(
+          <AppStateProvider
+            initialState={{
+              ...getDefaultAppState(),
+              workbench: {
+                ...getDefaultAppState().workbench,
+                activeSurfaceMode: "buffer",
+                activeFilePath: "inline-recovery.ts",
+                activeFileLine: 1,
+                focusedPane: "surface",
+              },
+            }}
+          >
+            <KeybindingSetup>
+              <BufferSurface
+                focused={true}
+                mutationBlockedReason="Editor safety is paused."
+                staleAuthorityRecovery={{
+                  entries: [entry],
+                  onRefresh,
+                  onUseDisk,
+                }}
+              />
+            </KeybindingSetup>
+          </AppStateProvider>,
+        );
+        await sleep();
+      });
+
+      const store = getWorkbenchBufferStore();
+      expect(store.getText()).toBe(originalDisk);
+      stdin.write("e");
+      await sleep();
+
+      stdin.write("i");
+      await sleep();
+      stdin.write("draft ");
+      await sleep();
+      stdin.write("\x1b");
+      await sleep();
+      expect(store.getSnapshot().dirty).toBe(true);
+
+      await sendCommand("w!");
+      expect(await readFile(targetPath, "utf8")).toBe(originalDisk);
+      expect(store.getSnapshot().dirty).toBe(true);
+
+      await writeFile(targetPath, replacementDisk, "utf8");
+      await sendCommand("e!");
+      expect(recoveryAction).toHaveBeenCalledWith({
+        type: "reload",
+        path: targetPath,
+      });
+      expect(store.getText()).toBe(replacementDisk);
+      expect(store.getSnapshot().dirty).toBe(false);
+
+      stdin.write("i");
+      await sleep();
+      stdin.write("discarded ");
+      await sleep();
+      stdin.write("\x1b");
+      await sleep();
+      expect(store.getSnapshot().dirty).toBe(true);
+
+      await sendCommand("bd!");
+      expect(recoveryAction).toHaveBeenLastCalledWith({
+        type: "unload",
+        path: targetPath,
+      });
+      expect(controller.getSnapshot()).toMatchObject({
+        status: "idle",
+        filePath: null,
+        dirty: false,
+      });
+      const instance = instances.get(
+        stdout as any as NodeJS.WriteStream,
+      ) as any;
+      if (!instance?.rootNode) throw new Error("Ink instance not found");
+      expect(nodeText(instance.rootNode)).toContain(
+        "Orphaned Editor revisions need a decision",
+      );
+      expect(await readFile(targetPath, "utf8")).toBe(replacementDisk);
+      expect(onUseDisk).not.toHaveBeenCalled();
+      expect(onRefresh).not.toHaveBeenCalled();
+    } finally {
+      recoveryAction.mockRestore();
       root.unmount();
       stdin.end();
       stdout.end();

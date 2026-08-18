@@ -71,6 +71,8 @@ import type {
   WorkspaceEditorRecoveredTopologyListResult,
   WorkspaceEditorRecoveredTopologyResolveParams,
   WorkspaceEditorRecoveredTopologyResolveResult,
+  WorkspaceEditorStaleAuthorityRefreshParams,
+  WorkspaceEditorStaleAuthorityRefreshResult,
   WorkspaceEditorSyncParams,
   WorkspaceEditorSyncResult,
   WorkspaceEditorTopologyCompleteParams,
@@ -232,6 +234,9 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   syncWorkspaceEditor?(
     params: WorkspaceEditorSyncParams,
   ): Promise<WorkspaceEditorSyncResult>;
+  refreshWorkspaceEditorStaleAuthority?(
+    params: WorkspaceEditorStaleAuthorityRefreshParams,
+  ): Promise<WorkspaceEditorStaleAuthorityRefreshResult>;
   heartbeatWorkspaceEditor?(
     params: WorkspaceEditorHeartbeatParams,
   ): Promise<WorkspaceEditorLeaseResult>;
@@ -484,6 +489,10 @@ interface AgenCDaemonEditorCoherenceClient {
     method: "workspace.editor.sync",
     params: WorkspaceEditorSyncParams,
   ): Promise<WorkspaceEditorSyncResult>;
+  request(
+    method: "workspace.editor.staleAuthority.refresh",
+    params: WorkspaceEditorStaleAuthorityRefreshParams,
+  ): Promise<WorkspaceEditorStaleAuthorityRefreshResult>;
   request(
     method: "workspace.editor.heartbeat",
     params: WorkspaceEditorHeartbeatParams,
@@ -1215,6 +1224,11 @@ export function createDaemonTuiSession<
       editorCoherenceClient.request("workspace.editor.acquire", params),
     syncWorkspaceEditor: async (params) =>
       editorCoherenceClient.request("workspace.editor.sync", params),
+    refreshWorkspaceEditorStaleAuthority: async (params) =>
+      editorCoherenceClient.request(
+        "workspace.editor.staleAuthority.refresh",
+        params,
+      ),
     heartbeatWorkspaceEditor: async (params) =>
       editorCoherenceClient.request("workspace.editor.heartbeat", params),
     releaseWorkspaceEditor: async (params) =>

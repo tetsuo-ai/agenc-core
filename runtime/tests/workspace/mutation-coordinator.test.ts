@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import {
+  appendFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -10,7 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -51,6 +53,52 @@ function workspaceMutationStatePath(
     .digest("hex")
     .slice(0, 32);
   return join(agencHome, "workspace-mutations", key, fileName);
+}
+
+function relativePathOfLength(length: number, label: string): string {
+  const components: string[] = [];
+  let remaining = length;
+  let index = 0;
+  while (remaining > 120) {
+    const componentLength = Math.min(120, remaining - 2);
+    const prefix = index === 0 ? label : `segment-${index}`;
+    components.push(prefix.padEnd(componentLength, "x"));
+    remaining -= componentLength + 1;
+    index += 1;
+  }
+  const finalPrefix = index === 0 ? label : `tail-${index}`;
+  components.push(finalPrefix.slice(0, remaining).padEnd(remaining, "y"));
+  const relativePath = components.join(sep);
+  expect(relativePath.length).toBe(length);
+  return relativePath;
+}
+
+interface PersistedWorkspaceLedgerEntry {
+  readonly version: number;
+  readonly entryId: string;
+  readonly timestamp: string;
+  readonly workspaceRoot: string;
+  readonly path: string;
+  readonly source: string;
+  readonly status: string;
+  readonly beforeSha256: string;
+  readonly afterSha256?: string;
+  readonly proposalId?: string;
+}
+
+async function readWorkspaceMutationLedger(
+  workspaceRoot: string,
+  agencHome: string,
+): Promise<readonly PersistedWorkspaceLedgerEntry[]> {
+  const serialized = await readFile(
+    workspaceMutationStatePath(workspaceRoot, agencHome, "ledger-v1.jsonl"),
+    "utf8",
+  );
+  return serialized
+    .trimEnd()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as PersistedWorkspaceLedgerEntry);
 }
 
 afterEach(async () => {
@@ -263,16 +311,16 @@ describe("WorkspaceMutationCoordinator", () => {
     expect(
       secondRegistry.getOrCreate(workspaceRoot).hasProtectedEditorPaths(),
     ).toBe(true);
-    expect(secondRegistry.hasProtectedEditorAuthority(workspaceRoot)).toBe(true);
+    expect(secondRegistry.hasProtectedEditorAuthority(workspaceRoot)).toBe(
+      true,
+    );
   });
 
-  // Regression: a TUI that died without releasing its lease left its quarantine
-  // entries on disk, all of them `disk_authoritative`. From the next daemon
-  // start on, every tool in that workspace was refused with "Tool
-  // 'exec_command' is blocked while this workspace has protected Editor
-  // authority", with no editor running and nothing at risk — a
-  // `disk_authoritative` entry says the file on disk is the truth.
-  it("does not treat leftover disk-authoritative entries as protection", async () => {
+  // A persisted entry that was last known clean is not equivalent to a live
+  // disk-authoritative buffer: disk may have changed while the daemon was
+  // stopped. Keep every workspace-wide write fence closed until exact recovery
+  // evidence is reviewed.
+  it("protects persisted last-known-clean entries until exact recovery", async () => {
     const parent = await tempDirectory("agenc-coherence-stale-disk-");
     const agencHome = await tempDirectory("agenc-coherence-stale-disk-home-");
     const workspaceRoot = join(parent, "workspace");
@@ -311,14 +359,26 @@ describe("WorkspaceMutationCoordinator", () => {
     );
 
     const registry = new WorkspaceMutationCoordinatorRegistry({ agencHome });
-    expect(
-      registry.getOrCreate(workspaceRoot).hasProtectedEditorPaths(),
-    ).toBe(false);
-    expect(registry.hasProtectedEditorAuthority(workspaceRoot)).toBe(false);
-    // The tool barrier is the thing the user actually hits.
+    const restarted = registry.getOrCreate(workspaceRoot);
+    expect(restarted.hasProtectedEditorPaths()).toBe(true);
+    expect(restarted.staleAuthority()).toEqual([
+      expect.objectContaining({
+        path: `${workspaceRoot}/HARDWARE.md`,
+        editorState: "clean",
+        diskState: "missing",
+      }),
+    ]);
+    expect(registry.hasProtectedEditorAuthority(workspaceRoot)).toBe(true);
     expect(() =>
       registry.beginToolOperation(workspaceRoot, "exec_command"),
-    ).not.toThrow();
+    ).toThrow(/protected Editor authority/u);
+    expect(() =>
+      registry.acquireEditor(workspaceRoot, {
+        workspaceRoot,
+        editorInstanceId: "shell-requiring-unprotected-clean-workspace",
+        requireUnprotectedWorkspace: true,
+      }),
+    ).toThrow(/protected Editor authority/u);
   });
 
   // The other half: unsaved editor content still blocks, because a tool writing
@@ -431,7 +491,9 @@ describe("WorkspaceMutationCoordinator", () => {
         value: "darwin",
       });
       try {
-        const registry = new WorkspaceMutationCoordinatorRegistry({ agencHome });
+        const registry = new WorkspaceMutationCoordinatorRegistry({
+          agencHome,
+        });
         expect(
           registry.getOrCreate(nfcWorkspaceRoot).hasProtectedEditorPaths(),
         ).toBe(false);
@@ -967,6 +1029,1277 @@ describe("WorkspaceMutationCoordinator", () => {
       changedtick: 17,
     });
   });
+
+  it("durably audits exact stale-authority and automatic proposal abandonment once", async () => {
+    const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
+    const agencHome = await tempDirectory("agenc-coherence-home-");
+    const path = join(workspaceRoot, "abandon-stale-dirty.ts");
+    const diskContent = "reviewed disk state\n";
+    const editorContent = "orphaned unsaved state\n";
+    const proposalContent = "proposed replacement state\n";
+    await writeFile(path, diskContent, "utf8");
+
+    const first = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const firstLease = first.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-before-abandonment",
+    });
+    first.sync({
+      workspaceRoot,
+      editorInstanceId: firstLease.editorInstanceId,
+      leaseToken: firstLease.leaseToken,
+      epoch: firstLease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 3,
+          changedtick: 17,
+          contentSha256: sha256(editorContent),
+          contentBytes: Buffer.byteLength(editorContent),
+          dirty: true,
+          content: editorContent,
+        },
+      ],
+    });
+    const admission = await first.prepareMutation({
+      path,
+      source: "file_edit",
+      beforeText: editorContent,
+      afterText: proposalContent,
+    });
+    if (admission.decision !== "proposal") {
+      throw new Error("expected an Editor proposal");
+    }
+    await first.flushQuarantinePersistence();
+
+    const restarted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = restarted.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-reviewing-stale-authority",
+    });
+    expect(lease.staleAuthority).toEqual([
+      {
+        path,
+        editorContentSha256: sha256(editorContent),
+        editorContentBytes: Buffer.byteLength(editorContent),
+        changedtick: 17,
+        editorInstanceId: firstLease.editorInstanceId,
+        epoch: firstLease.epoch,
+        editorState: "dirty",
+        diskState: "content",
+        diskContentSha256: sha256(diskContent),
+        diskContentBytes: Buffer.byteLength(diskContent),
+      },
+    ]);
+
+    const synchronized = await restarted.syncAbandoningStaleAuthority({
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+      sequence: 0,
+      buffers: [],
+      abandonStaleAuthority: lease.staleAuthority,
+    });
+
+    expect(synchronized).toMatchObject({
+      accepted: true,
+      dirtyPaths: [],
+      stalePaths: [],
+      staleAuthority: [],
+    });
+    expect(restarted.authorityForPath(path)).toBe("disk_authoritative");
+    const delivered = restarted.listChanges({
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    });
+    expect(delivered.changes).toContainEqual(
+      expect.objectContaining({
+        path,
+        source: "editor",
+        status: "discarded",
+        beforeSha256: sha256(editorContent),
+        afterSha256: sha256(diskContent),
+      }),
+    );
+    expect(delivered.changes).toContainEqual(
+      expect.objectContaining({
+        path,
+        source: "file_edit",
+        status: "discarded",
+        beforeSha256: sha256(editorContent),
+        afterSha256: sha256(proposalContent),
+        proposalId: admission.proposal.proposalId,
+      }),
+    );
+
+    const ledgerBeforeAcknowledgement = await readWorkspaceMutationLedger(
+      workspaceRoot,
+      agencHome,
+    );
+    const staleAuthorityTerminals = ledgerBeforeAcknowledgement.filter(
+      (entry) =>
+        entry.path === path &&
+        entry.source === "editor" &&
+        entry.status === "discarded" &&
+        entry.proposalId === undefined,
+    );
+    expect(staleAuthorityTerminals).toEqual([
+      expect.objectContaining({
+        version: 1,
+        workspaceRoot,
+        beforeSha256: sha256(editorContent),
+        afterSha256: sha256(diskContent),
+      }),
+    ]);
+    const proposalTerminals = ledgerBeforeAcknowledgement.filter(
+      (entry) =>
+        entry.proposalId === admission.proposal.proposalId &&
+        entry.status === "discarded",
+    );
+    expect(proposalTerminals).toEqual([
+      expect.objectContaining({
+        version: 1,
+        workspaceRoot,
+        path,
+        source: "file_edit",
+        beforeSha256: sha256(editorContent),
+        afterSha256: sha256(proposalContent),
+      }),
+    ]);
+
+    restarted.listChanges({
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+      afterSequence: delivered.sequence,
+    });
+    await restarted.flushQuarantinePersistence();
+    expect(await readWorkspaceMutationLedger(workspaceRoot, agencHome)).toEqual(
+      ledgerBeforeAcknowledgement,
+    );
+
+    const persisted = JSON.parse(
+      await readFile(
+        workspaceMutationStatePath(
+          workspaceRoot,
+          agencHome,
+          "quarantine-v1.json",
+        ),
+        "utf8",
+      ),
+    ) as { entries?: unknown[] };
+    expect(persisted.entries).toEqual([]);
+
+    const rehydratedRegistry = new WorkspaceMutationCoordinatorRegistry({
+      agencHome,
+    });
+    const rehydrated = rehydratedRegistry.getOrCreate(workspaceRoot);
+    expect(rehydrated.stalePaths()).toEqual([]);
+    expect(rehydrated.authorityForPath(path)).toBe("disk_authoritative");
+    expect(rehydrated.hasProtectedEditorPaths()).toBe(false);
+    const operation = rehydratedRegistry.beginToolOperation(
+      workspaceRoot,
+      "exec_command",
+    );
+    rehydratedRegistry.endToolOperation(operation);
+    expect(await readWorkspaceMutationLedger(workspaceRoot, agencHome)).toEqual(
+      ledgerBeforeAcknowledgement,
+    );
+  });
+
+  it("retries a failed stale-authority audit in the same coordinator exactly once", async () => {
+    const workspaceRoot = await tempDirectory("agenc-audit-retry-workspace-");
+    const agencHome = await tempDirectory("agenc-audit-retry-home-");
+    const path = join(workspaceRoot, "same-daemon-retry.ts");
+    const diskContent = "reviewed disk state\n";
+    const editorContent = "orphaned editor state\n";
+    await writeFile(path, diskContent, "utf8");
+
+    const first = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const firstLease = first.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-before-audit-retry",
+    });
+    first.sync({
+      workspaceRoot,
+      editorInstanceId: firstLease.editorInstanceId,
+      leaseToken: firstLease.leaseToken,
+      epoch: firstLease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 7,
+          changedtick: 3,
+          contentSha256: sha256(editorContent),
+          contentBytes: Buffer.byteLength(editorContent),
+          dirty: true,
+          content: editorContent,
+        },
+      ],
+    });
+    await first.flushQuarantinePersistence();
+
+    const coordinator = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = coordinator.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-retrying-audit",
+    });
+    const ledgerPath = workspaceMutationStatePath(
+      workspaceRoot,
+      agencHome,
+      "ledger-v1.jsonl",
+    );
+    await mkdir(ledgerPath);
+
+    await expect(
+      coordinator.syncAbandoningStaleAuthority({
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+        sequence: 0,
+        buffers: [],
+        abandonStaleAuthority: lease.staleAuthority,
+      }),
+    ).rejects.toMatchObject({ code: "MUTATION_AUDIT_FAILED" });
+    expect(coordinator.authorityForPath(path)).toBe("disk_authoritative");
+
+    const pendingQuarantine = JSON.parse(
+      await readFile(
+        workspaceMutationStatePath(
+          workspaceRoot,
+          agencHome,
+          "quarantine-v1.json",
+        ),
+        "utf8",
+      ),
+    ) as { readonly version?: number; readonly auditOutbox?: unknown[] };
+    expect(pendingQuarantine).toMatchObject({
+      version: 2,
+      auditOutbox: [expect.objectContaining({ path, status: "discarded" })],
+    });
+
+    await rm(ledgerPath, { recursive: true });
+    await coordinator.flushPendingAuditOutbox();
+    await coordinator.flushPendingAuditOutbox();
+
+    expect(await readWorkspaceMutationLedger(workspaceRoot, agencHome)).toEqual(
+      [
+        expect.objectContaining({
+          path,
+          source: "editor",
+          status: "discarded",
+          beforeSha256: sha256(editorContent),
+          afterSha256: sha256(diskContent),
+        }),
+      ],
+    );
+    const cleanedQuarantine = JSON.parse(
+      await readFile(
+        workspaceMutationStatePath(
+          workspaceRoot,
+          agencHome,
+          "quarantine-v1.json",
+        ),
+        "utf8",
+      ),
+    ) as { readonly version?: number; readonly auditOutbox?: unknown };
+    expect(cleanedQuarantine).toMatchObject({ version: 1 });
+    expect(cleanedQuarantine.auditOutbox).toBeUndefined();
+  });
+
+  it("drains a v2 audit outbox once and keeps the cleaned legacy v1 quarantine readable", async () => {
+    const workspaceRoot = await tempDirectory("agenc-audit-outbox-workspace-");
+    const agencHome = await tempDirectory("agenc-audit-outbox-home-");
+    const path = join(workspaceRoot, "outbox-recovery.ts");
+    const before = "orphaned editor identity\n";
+    const after = "reviewed disk identity\n";
+    await writeFile(path, after, "utf8");
+
+    const auditEntry: PersistedWorkspaceLedgerEntry = {
+      version: 1,
+      entryId: sha256("pending-audit-outbox-fixture"),
+      timestamp: "2026-08-17T12:00:00.000Z",
+      workspaceRoot,
+      path,
+      source: "editor",
+      status: "discarded",
+      beforeSha256: sha256(before),
+      afterSha256: sha256(after),
+    };
+    const quarantinePath = workspaceMutationStatePath(
+      workspaceRoot,
+      agencHome,
+      "quarantine-v1.json",
+    );
+    await mkdir(dirname(quarantinePath), { recursive: true });
+    await writeFile(
+      quarantinePath,
+      `${JSON.stringify({
+        version: 2,
+        workspaceRoot,
+        entries: [],
+        proposalCommitments: [],
+        proposalReceipts: [],
+        mutationIntents: [],
+        topologyIntents: [],
+        changeSequence: 0,
+        changes: [],
+        auditOutbox: [auditEntry],
+      })}\n`,
+      "utf8",
+    );
+
+    const firstRestart = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const firstLease = firstRestart.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-draining-audit-outbox",
+    });
+    // This resolver is serialized behind constructor recovery, giving the
+    // durable outbox drain and its cleanup checkpoint a public completion
+    // boundary without relying on timers or private test seams.
+    await expect(
+      firstRestart.discardProposalForEditor({
+        workspaceRoot,
+        editorInstanceId: firstLease.editorInstanceId,
+        leaseToken: firstLease.leaseToken,
+        epoch: firstLease.epoch,
+        proposalId: "missing-after-audit-drain",
+      }),
+    ).rejects.toThrow(/proposal not found/u);
+    await firstRestart.flushQuarantinePersistence();
+
+    expect(await readWorkspaceMutationLedger(workspaceRoot, agencHome)).toEqual(
+      [auditEntry],
+    );
+    const cleanedQuarantine = JSON.parse(
+      await readFile(quarantinePath, "utf8"),
+    ) as { readonly version?: number; readonly auditOutbox?: unknown };
+    expect(cleanedQuarantine).toMatchObject({ version: 1 });
+    expect(cleanedQuarantine.auditOutbox).toBeUndefined();
+
+    const secondRestart = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    expect(secondRestart.authorityForPath(path)).toBe("disk_authoritative");
+    expect(secondRestart.hasProtectedEditorPaths()).toBe(false);
+    expect(await readWorkspaceMutationLedger(workspaceRoot, agencHome)).toEqual(
+      [auditEntry],
+    );
+  });
+
+  it("fences a contradictory proposal receipt and terminal audit outbox during hydration", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-audit-outbox-conflict-workspace-",
+    );
+    const agencHome = await tempDirectory("agenc-audit-outbox-conflict-home-");
+    const path = join(workspaceRoot, "contradictory-terminal.ts");
+    const proposalId = "proposal-with-contradictory-terminal";
+    const base = "proposal base\n";
+    const candidate = "applied proposal candidate\n";
+    await writeFile(path, base, "utf8");
+
+    const quarantinePath = workspaceMutationStatePath(
+      workspaceRoot,
+      agencHome,
+      "quarantine-v1.json",
+    );
+    await mkdir(dirname(quarantinePath), { recursive: true });
+    await writeFile(
+      quarantinePath,
+      `${JSON.stringify({
+        version: 2,
+        workspaceRoot,
+        entries: [
+          {
+            path,
+            contentSha256: sha256(candidate),
+            contentBytes: Buffer.byteLength(candidate),
+            changedtick: 2,
+            epoch: 1,
+            editorInstanceId: "editor-before-terminal-corruption",
+            authority: "editor_dirty",
+          },
+        ],
+        proposalCommitments: [],
+        proposalReceipts: [
+          {
+            proposalId,
+            action: "applied",
+            path,
+            changedtick: 2,
+            contentSha256: sha256(candidate),
+          },
+        ],
+        mutationIntents: [],
+        topologyIntents: [],
+        changeSequence: 0,
+        changes: [],
+        auditOutbox: [
+          {
+            version: 1,
+            entryId: sha256("contradictory-proposal-terminal"),
+            timestamp: "2026-08-17T12:00:00.000Z",
+            workspaceRoot,
+            path,
+            source: "file_edit",
+            status: "discarded",
+            beforeSha256: sha256(base),
+            afterSha256: sha256(candidate),
+            proposalId,
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+
+    let appendOnceCalls = 0;
+    const coordinator = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+      appendLedgerOnce: async () => {
+        appendOnceCalls += 1;
+      },
+    });
+
+    expect(coordinator.authorityForPath(path)).toBe("stale_dirty");
+    expect(() => coordinator.authoritativeRead(path)).toThrow(
+      /may contain unsaved changes/u,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(appendOnceCalls).toBe(0);
+    await expect(
+      stat(
+        workspaceMutationStatePath(workspaceRoot, agencHome, "ledger-v1.jsonl"),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "classifies a persisted stale path replaced by a FIFO without blocking",
+    async () => {
+      const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
+      const agencHome = await tempDirectory("agenc-coherence-home-");
+      const path = join(workspaceRoot, "stale-path-fifo.ts");
+      const diskContent = "disk before fifo replacement\n";
+      const editorContent = "orphaned unsaved state\n";
+      await writeFile(path, diskContent, "utf8");
+
+      const first = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const firstLease = first.acquire({
+        workspaceRoot,
+        editorInstanceId: "editor-before-fifo-replacement",
+      });
+      first.sync({
+        workspaceRoot,
+        editorInstanceId: firstLease.editorInstanceId,
+        leaseToken: firstLease.leaseToken,
+        epoch: firstLease.epoch,
+        sequence: 0,
+        buffers: [
+          {
+            path,
+            bufferHandle: 13,
+            changedtick: 29,
+            contentSha256: sha256(editorContent),
+            contentBytes: Buffer.byteLength(editorContent),
+            dirty: true,
+            content: editorContent,
+          },
+        ],
+      });
+      await first.flushQuarantinePersistence();
+
+      await rm(path);
+      const mkfifo = spawnSync("mkfifo", [path], { encoding: "utf8" });
+      expect(mkfifo.error).toBeUndefined();
+      expect(mkfifo.status, mkfifo.stderr).toBe(0);
+
+      // If the descriptor loses O_NONBLOCK, the delayed writer releases both
+      // synchronous probes so this regression fails on elapsed time instead
+      // of hanging the entire test process indefinitely.
+      const delayedWriter = spawn(
+        process.execPath,
+        [
+          "-e",
+          [
+            'const fs = require("node:fs");',
+            "setTimeout(() => {",
+            "  for (let index = 0; index < 2; index += 1) {",
+            "    const descriptor = fs.openSync(process.argv[1], fs.constants.O_WRONLY);",
+            "    fs.closeSync(descriptor);",
+            "  }",
+            "}, 1250);",
+          ].join("\n"),
+          path,
+        ],
+        { stdio: "ignore" },
+      );
+      const writerExited = new Promise<void>((resolve) => {
+        delayedWriter.once("exit", () => resolve());
+        delayedWriter.once("error", () => resolve());
+      });
+      try {
+        const startedAt = performance.now();
+        const restarted = new WorkspaceMutationCoordinator({
+          workspaceRoot,
+          agencHome,
+        });
+        const lease = restarted.acquire({
+          workspaceRoot,
+          editorInstanceId: "editor-reviewing-fifo-replacement",
+        });
+        const staleAuthority = restarted.staleAuthority();
+        const elapsedMs = performance.now() - startedAt;
+
+        expect(elapsedMs).toBeLessThan(750);
+        expect(lease.staleAuthority).toEqual([
+          expect.objectContaining({
+            path,
+            editorContentSha256: sha256(editorContent),
+            editorState: "dirty",
+            diskState: "unavailable",
+          }),
+        ]);
+        expect(staleAuthority).toEqual(lease.staleAuthority);
+      } finally {
+        if (
+          delayedWriter.exitCode === null &&
+          delayedWriter.signalCode === null
+        ) {
+          delayedWriter.kill("SIGKILL");
+        }
+        await writerExited;
+      }
+    },
+  );
+
+  it("atomically rejects stale-authority abandonment when disk changes after review", async () => {
+    const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
+    const agencHome = await tempDirectory("agenc-coherence-home-");
+    const path = join(workspaceRoot, "changed-after-review.ts");
+    const reviewedDiskContent = "disk state at review\n";
+    const changedDiskContent = "disk state changed after review\n";
+    const editorContent = "orphaned unsaved state\n";
+    await writeFile(path, reviewedDiskContent, "utf8");
+
+    const first = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const firstLease = first.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-before-disk-race",
+    });
+    first.sync({
+      workspaceRoot,
+      editorInstanceId: firstLease.editorInstanceId,
+      leaseToken: firstLease.leaseToken,
+      epoch: firstLease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 7,
+          changedtick: 23,
+          contentSha256: sha256(editorContent),
+          contentBytes: Buffer.byteLength(editorContent),
+          dirty: true,
+          content: editorContent,
+        },
+      ],
+    });
+    await first.flushQuarantinePersistence();
+
+    const restarted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = restarted.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-reviewing-before-disk-race",
+    });
+    const reviewedEvidence = lease.staleAuthority;
+    expect(reviewedEvidence).toMatchObject([
+      {
+        path,
+        editorContentSha256: sha256(editorContent),
+        diskState: "content",
+        diskContentSha256: sha256(reviewedDiskContent),
+      },
+    ]);
+    await writeFile(path, changedDiskContent, "utf8");
+
+    await expect(
+      restarted.syncAbandoningStaleAuthority({
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+        sequence: 0,
+        buffers: [],
+        abandonStaleAuthority: reviewedEvidence,
+      }),
+    ).rejects.toThrow(
+      /stale Editor or disk authority changed before confirmation/u,
+    );
+
+    expect(restarted.authorityForPath(path)).toBe("stale_dirty");
+    expect(restarted.stalePaths()).toEqual([path]);
+    expect(
+      restarted.listChanges({
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      }).changes,
+    ).not.toContainEqual(
+      expect.objectContaining({ path, status: "discarded" }),
+    );
+    expect(
+      restarted.acquire({
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+      }),
+    ).toMatchObject({
+      sequence: -1,
+      staleAuthority: [
+        {
+          path,
+          editorContentSha256: sha256(editorContent),
+          editorState: "dirty",
+          diskState: "content",
+          diskContentSha256: sha256(changedDiskContent),
+        },
+      ],
+    });
+
+    const rehydrated = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    expect(rehydrated.authorityForPath(path)).toBe("stale_dirty");
+    expect(rehydrated.hasProtectedEditorPaths()).toBe(true);
+  });
+
+  it("refreshes stale disk evidence without reconciling the new Editor buffer", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-coherence-refresh-workspace-",
+    );
+    const agencHome = await tempDirectory("agenc-coherence-refresh-home-");
+    const path = join(workspaceRoot, "refresh.ts");
+    const initialDiskContent = "disk state at acquisition\n";
+    const refreshedDiskContent = "disk state at refresh\n";
+    const editorContent = "orphaned unsaved state\n";
+    await writeFile(path, initialDiskContent, "utf8");
+
+    const first = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const firstLease = first.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-before-refresh",
+    });
+    first.sync({
+      workspaceRoot,
+      editorInstanceId: firstLease.editorInstanceId,
+      leaseToken: firstLease.leaseToken,
+      epoch: firstLease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 7,
+          changedtick: 23,
+          contentSha256: sha256(editorContent),
+          contentBytes: Buffer.byteLength(editorContent),
+          dirty: true,
+          content: editorContent,
+        },
+      ],
+    });
+    await first.flushQuarantinePersistence();
+
+    const restarted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = restarted.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-reviewing-refresh",
+    });
+    expect(lease.staleAuthority).toMatchObject([
+      {
+        path,
+        editorContentSha256: sha256(editorContent),
+        diskContentSha256: sha256(initialDiskContent),
+      },
+    ]);
+
+    await writeFile(path, refreshedDiskContent, "utf8");
+    const refreshed = restarted.refreshStaleAuthority({
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    });
+
+    expect(refreshed).toEqual({
+      refreshed: true,
+      staleAuthority: [
+        {
+          path,
+          editorContentSha256: sha256(editorContent),
+          editorContentBytes: Buffer.byteLength(editorContent),
+          changedtick: 23,
+          editorInstanceId: firstLease.editorInstanceId,
+          epoch: firstLease.epoch,
+          editorState: "dirty",
+          diskState: "content",
+          diskContentSha256: sha256(refreshedDiskContent),
+          diskContentBytes: Buffer.byteLength(refreshedDiskContent),
+        },
+      ],
+    });
+    expect(restarted.authorityForPath(path)).toBe("stale_dirty");
+    expect(restarted.stalePaths()).toEqual([path]);
+    expect(
+      restarted.heartbeat({
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      }),
+    ).toMatchObject({
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+      sequence: -1,
+    });
+
+    expect(() =>
+      restarted.sync({
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+        sequence: 0,
+        buffers: [
+          {
+            path,
+            bufferHandle: 8,
+            changedtick: 1,
+            contentSha256: sha256(refreshedDiskContent),
+            contentBytes: Buffer.byteLength(refreshedDiskContent),
+            dirty: false,
+          },
+        ],
+      }),
+    ).toThrow(/belongs to a different editor instance/u);
+    expect(restarted.authorityForPath(path)).toBe("stale_dirty");
+  });
+
+  it("keeps stale authority and proposals intact when abandonment persistence fails", async () => {
+    const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
+    const agencHome = await tempDirectory("agenc-coherence-home-");
+    const path = join(workspaceRoot, "abandonment-persistence-failure.ts");
+    const diskContent = "disk state\n";
+    const editorContent = "orphaned unsaved state\n";
+    const candidate = "reviewed proposal\n";
+    await writeFile(path, diskContent, "utf8");
+
+    const first = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const firstLease = first.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-before-persistence-failure",
+    });
+    first.sync({
+      workspaceRoot,
+      editorInstanceId: firstLease.editorInstanceId,
+      leaseToken: firstLease.leaseToken,
+      epoch: firstLease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 31,
+          changedtick: 9,
+          contentSha256: sha256(editorContent),
+          contentBytes: Buffer.byteLength(editorContent),
+          dirty: true,
+          content: editorContent,
+        },
+      ],
+    });
+    const admission = await first.prepareMutation({
+      path,
+      source: "file_edit",
+      beforeText: editorContent,
+      afterText: candidate,
+    });
+    if (admission.decision !== "proposal") {
+      throw new Error("expected an editor proposal");
+    }
+    await first.flushQuarantinePersistence();
+
+    const restarted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = restarted.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-abandonment-persistence-failure",
+    });
+    expect(lease.staleAuthority).toHaveLength(1);
+
+    const quarantineDirectory = dirname(
+      workspaceMutationStatePath(
+        workspaceRoot,
+        agencHome,
+        "quarantine-v1.json",
+      ),
+    );
+    const preservedQuarantineDirectory = join(
+      agencHome,
+      "preserved-abandonment-persistence-state",
+    );
+    await rename(quarantineDirectory, preservedQuarantineDirectory);
+    await writeFile(quarantineDirectory, "persistence blocked", "utf8");
+    try {
+      await expect(
+        restarted.syncAbandoningStaleAuthority({
+          workspaceRoot,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+          sequence: 0,
+          buffers: [],
+          abandonStaleAuthority: lease.staleAuthority,
+        }),
+      ).rejects.toBeDefined();
+    } finally {
+      await rm(quarantineDirectory, { force: true });
+      await rename(preservedQuarantineDirectory, quarantineDirectory);
+    }
+
+    expect(restarted.authorityForPath(path)).toBe("stale_dirty");
+    expect(restarted.stalePaths()).toEqual([path]);
+    expect(
+      restarted.acquire({
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+      }),
+    ).toMatchObject({ sequence: -1 });
+    const inMemoryProposalChanges = restarted
+      .listChanges({
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      })
+      .changes.filter(
+        (change) => change.proposalId === admission.proposal.proposalId,
+      );
+    expect(inMemoryProposalChanges.map((change) => change.status)).toEqual([
+      "proposed",
+    ]);
+
+    const rehydrated = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const rehydratedLease = rehydrated.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-after-persistence-failure",
+    });
+    expect(rehydratedLease).toMatchObject({
+      sequence: -1,
+      staleAuthority: [expect.objectContaining({ path })],
+    });
+    expect(rehydrated.authorityForPath(path)).toBe("stale_dirty");
+    expect(rehydrated.stalePaths()).toEqual([path]);
+    await expect(
+      rehydrated.proposalStatus({
+        workspaceRoot,
+        editorInstanceId: rehydratedLease.editorInstanceId,
+        leaseToken: rehydratedLease.leaseToken,
+        epoch: rehydratedLease.epoch,
+        proposalId: admission.proposal.proposalId,
+      }),
+    ).resolves.toMatchObject({
+      status: "committed",
+      proposalId: admission.proposal.proposalId,
+      path,
+    });
+    expect(
+      rehydrated
+        .listChanges({
+          workspaceRoot,
+          editorInstanceId: rehydratedLease.editorInstanceId,
+          leaseToken: rehydratedLease.leaseToken,
+          epoch: rehydratedLease.epoch,
+        })
+        .changes.filter(
+          (change) => change.proposalId === admission.proposal.proposalId,
+        )
+        .map((change) => change.status),
+    ).toEqual(["proposed"]);
+  });
+
+  it("keeps live dirty authority and proposals intact when abandon-dirty release persistence fails", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-release-abandon-workspace-",
+    );
+    const agencHome = await tempDirectory("agenc-release-abandon-home-");
+    const path = join(workspaceRoot, "release-abandon-failure.ts");
+    const diskContent = "disk state\n";
+    const editorContent = "live unsaved Editor state\n";
+    const proposalContent = "reviewed proposal state\n";
+    await writeFile(path, diskContent, "utf8");
+
+    const coordinator = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = coordinator.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-release-abandon-failure",
+    });
+    coordinator.sync({
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 37,
+          changedtick: 11,
+          contentSha256: sha256(editorContent),
+          contentBytes: Buffer.byteLength(editorContent),
+          dirty: true,
+          content: editorContent,
+        },
+      ],
+    });
+    const admission = await coordinator.prepareMutation({
+      path,
+      source: "file_edit",
+      beforeText: editorContent,
+      afterText: proposalContent,
+    });
+    if (admission.decision !== "proposal") {
+      throw new Error("expected an Editor proposal");
+    }
+    await coordinator.flushQuarantinePersistence();
+
+    const quarantineDirectory = dirname(
+      workspaceMutationStatePath(
+        workspaceRoot,
+        agencHome,
+        "quarantine-v1.json",
+      ),
+    );
+    const preservedQuarantineDirectory = join(
+      agencHome,
+      "preserved-release-abandon-state",
+    );
+    await rename(quarantineDirectory, preservedQuarantineDirectory);
+    await writeFile(quarantineDirectory, "persistence blocked", "utf8");
+    try {
+      await expect(
+        coordinator.release({
+          workspaceRoot,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+          abandonDirty: true,
+        }),
+      ).rejects.toBeDefined();
+    } finally {
+      await rm(quarantineDirectory, { force: true });
+      await rename(preservedQuarantineDirectory, quarantineDirectory);
+    }
+
+    expect(coordinator.authorityForPath(path)).toBe("editor_dirty");
+    expect(coordinator.authoritativeRead(path)).toMatchObject({
+      authority: "editor_dirty",
+      path,
+      content: editorContent,
+      changedtick: 11,
+    });
+    expect(
+      coordinator
+        .listChanges({
+          workspaceRoot,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+        })
+        .changes.filter(
+          (change) => change.proposalId === admission.proposal.proposalId,
+        )
+        .map((change) => change.status),
+    ).toEqual(["proposed"]);
+
+    const restarted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const restartedLease = restarted.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-after-release-abandon-failure",
+    });
+    expect(restartedLease.staleAuthority).toEqual([
+      expect.objectContaining({
+        path,
+        editorContentSha256: sha256(editorContent),
+      }),
+    ]);
+    await expect(
+      restarted.proposalStatus({
+        workspaceRoot,
+        editorInstanceId: restartedLease.editorInstanceId,
+        leaseToken: restartedLease.leaseToken,
+        epoch: restartedLease.epoch,
+        proposalId: admission.proposal.proposalId,
+      }),
+    ).resolves.toMatchObject({
+      status: "committed",
+      proposalId: admission.proposal.proposalId,
+      path,
+    });
+  });
+
+  it.each([
+    { action: "apply" as const, terminalStatus: "applied" as const },
+    { action: "discard" as const, terminalStatus: "discarded" as const },
+  ])(
+    "waits for an in-flight proposal $action durability seam before abandoning stale authority",
+    async ({ action, terminalStatus }) => {
+      const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
+      const agencHome = await tempDirectory("agenc-coherence-home-");
+      const path = join(workspaceRoot, `abandonment-${action}-race.ts`);
+      const base = "dirty proposal base\n";
+      const candidate = "reviewed proposal candidate\n";
+      await writeFile(path, base, "utf8");
+      let releaseTerminalAppend!: () => void;
+      let reportTerminalAppendStarted!: () => void;
+      const terminalAppendStarted = new Promise<void>((resolve) => {
+        reportTerminalAppendStarted = resolve;
+      });
+      const terminalAppendGate = new Promise<void>((resolve) => {
+        releaseTerminalAppend = resolve;
+      });
+      const coordinator = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+        appendLedgerOnce: async (entries) => {
+          if (
+            entries.some(
+              (entry) =>
+                entry.status === terminalStatus &&
+                entry.proposalId !== undefined,
+            )
+          ) {
+            reportTerminalAppendStarted();
+            await terminalAppendGate;
+          }
+        },
+      });
+      const firstLease = coordinator.acquire({
+        workspaceRoot,
+        editorInstanceId: `editor-before-${action}-race`,
+      });
+      coordinator.sync({
+        workspaceRoot,
+        editorInstanceId: firstLease.editorInstanceId,
+        leaseToken: firstLease.leaseToken,
+        epoch: firstLease.epoch,
+        sequence: 0,
+        buffers: [
+          {
+            path,
+            bufferHandle: 41,
+            changedtick: 1,
+            contentSha256: sha256(base),
+            contentBytes: Buffer.byteLength(base),
+            dirty: true,
+            content: base,
+          },
+        ],
+      });
+      const admission = await coordinator.prepareMutation({
+        path,
+        source: "file_edit",
+        beforeText: base,
+        afterText: candidate,
+      });
+      if (admission.decision !== "proposal") {
+        throw new Error("expected an editor proposal");
+      }
+      await coordinator.release({
+        workspaceRoot,
+        editorInstanceId: firstLease.editorInstanceId,
+        leaseToken: firstLease.leaseToken,
+        epoch: firstLease.epoch,
+      });
+      const lease = coordinator.acquire({
+        workspaceRoot,
+        editorInstanceId: `editor-during-${action}-race`,
+      });
+      expect(lease.staleAuthority).toHaveLength(1);
+
+      const resolution =
+        action === "apply"
+          ? coordinator.applyProposal({
+              workspaceRoot,
+              editorInstanceId: lease.editorInstanceId,
+              leaseToken: lease.leaseToken,
+              epoch: lease.epoch,
+              proposalId: admission.proposal.proposalId,
+              changedtick: 2,
+              contentSha256: sha256(candidate),
+              content: candidate,
+            })
+          : coordinator.discardProposalForEditor({
+              workspaceRoot,
+              editorInstanceId: lease.editorInstanceId,
+              leaseToken: lease.leaseToken,
+              epoch: lease.epoch,
+              proposalId: admission.proposal.proposalId,
+            });
+      await terminalAppendStarted;
+
+      let abandonmentSettled = false;
+      const abandonment = coordinator
+        .syncAbandoningStaleAuthority({
+          workspaceRoot,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+          sequence: 0,
+          buffers: [],
+          abandonStaleAuthority: lease.staleAuthority,
+        })
+        .then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        )
+        .finally(() => {
+          abandonmentSettled = true;
+        });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(abandonmentSettled).toBe(false);
+
+      releaseTerminalAppend();
+      await expect(resolution).resolves.toMatchObject(
+        action === "apply" ? { applied: true } : { discarded: true },
+      );
+      const abandonmentOutcome = await abandonment;
+      if (action === "apply") {
+        expect(abandonmentOutcome).toMatchObject({ status: "rejected" });
+        if (abandonmentOutcome.status === "rejected") {
+          expect(abandonmentOutcome.reason).toBeInstanceOf(
+            WorkspaceMutationCoordinatorError,
+          );
+          expect(String(abandonmentOutcome.reason)).toMatch(
+            /stale Editor authority changed before confirmation/u,
+          );
+        }
+        expect(coordinator.authorityForPath(path)).toBe("editor_dirty");
+      } else {
+        expect(abandonmentOutcome).toMatchObject({
+          status: "fulfilled",
+          value: {
+            accepted: true,
+            sequence: 0,
+            stalePaths: [],
+          },
+        });
+        expect(coordinator.authorityForPath(path)).toBe("disk_authoritative");
+      }
+
+      const proposalStatuses = coordinator
+        .listChanges({
+          workspaceRoot,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+        })
+        .changes.filter(
+          (change) => change.proposalId === admission.proposal.proposalId,
+        )
+        .map((change) => change.status);
+      expect(proposalStatuses).toEqual([terminalStatus]);
+      expect(proposalStatuses).not.toContain(
+        terminalStatus === "applied" ? "discarded" : "applied",
+      );
+
+      const rehydrated = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const rehydratedLease = rehydrated.acquire({
+        workspaceRoot,
+        editorInstanceId: `editor-after-${action}-race`,
+      });
+      await expect(
+        rehydrated.proposalStatus({
+          workspaceRoot,
+          editorInstanceId: rehydratedLease.editorInstanceId,
+          leaseToken: rehydratedLease.leaseToken,
+          epoch: rehydratedLease.epoch,
+          proposalId: admission.proposal.proposalId,
+        }),
+      ).resolves.toMatchObject({
+        status: terminalStatus,
+        proposalId: admission.proposal.proposalId,
+        path,
+      });
+      const rehydratedProposalStatuses = rehydrated
+        .listChanges({
+          workspaceRoot,
+          editorInstanceId: rehydratedLease.editorInstanceId,
+          leaseToken: rehydratedLease.leaseToken,
+          epoch: rehydratedLease.epoch,
+        })
+        .changes.filter(
+          (change) => change.proposalId === admission.proposal.proposalId,
+        )
+        .map((change) => change.status);
+      expect(rehydratedProposalStatuses).toEqual([terminalStatus]);
+    },
+  );
 
   it("lets a restarted TUI adopt only the exact quarantined dirty revision under its new instance", async () => {
     const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
@@ -1579,9 +2912,8 @@ describe("WorkspaceMutationCoordinator", () => {
       const dirtyPath = join(workspaceRoot, "dirty.ts");
       const dirtyContent = "authoritative editor bytes\n";
       await writeFile(dirtyPath, "stale disk bytes\n", "utf8");
-      const coordinator = workspaceMutationCoordinators.getOrCreate(
-        workspaceRoot,
-      );
+      const coordinator =
+        workspaceMutationCoordinators.getOrCreate(workspaceRoot);
       const lease = coordinator.acquire({
         workspaceRoot,
         editorInstanceId: "captured-root-editor",
@@ -1678,6 +3010,136 @@ describe("WorkspaceMutationCoordinator", () => {
       code: "STALE_EDITOR_BUFFER",
     });
   });
+
+  it.each(["changed", "deleted"] as const)(
+    "reviews and durably resolves a last-known-clean path %s during downtime",
+    async (diskOutcome) => {
+      const workspaceRoot = await tempDirectory(
+        "agenc-coherence-clean-drift-workspace-",
+      );
+      const agencHome = await tempDirectory(
+        "agenc-coherence-clean-drift-home-",
+      );
+      const path = join(workspaceRoot, `clean-${diskOutcome}.ts`);
+      const editorContent = "export const beforeDowntime = true;\n";
+      const changedDiskContent = "export const changedDuringDowntime = true;\n";
+      await writeFile(path, editorContent, "utf8");
+
+      const first = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const firstLease = first.acquire({
+        workspaceRoot,
+        editorInstanceId: `editor-before-clean-${diskOutcome}`,
+      });
+      first.sync({
+        workspaceRoot,
+        editorInstanceId: firstLease.editorInstanceId,
+        leaseToken: firstLease.leaseToken,
+        epoch: firstLease.epoch,
+        sequence: 0,
+        buffers: [
+          {
+            path,
+            bufferHandle: 4,
+            changedtick: 2,
+            contentSha256: sha256(editorContent),
+            contentBytes: Buffer.byteLength(editorContent),
+            dirty: false,
+          },
+        ],
+      });
+      await first.flushQuarantinePersistence();
+
+      if (diskOutcome === "changed") {
+        await writeFile(path, changedDiskContent, "utf8");
+      } else {
+        await rm(path);
+      }
+
+      const restarted = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const lease = restarted.acquire({
+        workspaceRoot,
+        editorInstanceId: `editor-reviewing-clean-${diskOutcome}`,
+      });
+      const expectedDiskEvidence =
+        diskOutcome === "changed"
+          ? {
+              diskState: "content" as const,
+              diskContentSha256: sha256(changedDiskContent),
+              diskContentBytes: Buffer.byteLength(changedDiskContent),
+            }
+          : { diskState: "missing" as const };
+      expect(lease.staleAuthority).toEqual([
+        {
+          path,
+          editorContentSha256: sha256(editorContent),
+          editorContentBytes: Buffer.byteLength(editorContent),
+          changedtick: 2,
+          editorInstanceId: firstLease.editorInstanceId,
+          epoch: firstLease.epoch,
+          editorState: "clean",
+          ...expectedDiskEvidence,
+        },
+      ]);
+
+      const reviewedEvidence = lease.staleAuthority;
+      if (reviewedEvidence === undefined) {
+        throw new Error("expected stale clean-buffer authority evidence");
+      }
+      const resolution = restarted.syncAbandoningStaleAuthority({
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+        sequence: 0,
+        buffers:
+          diskOutcome === "changed"
+            ? [
+                {
+                  path,
+                  bufferHandle: 5,
+                  changedtick: 3,
+                  contentSha256: sha256(changedDiskContent),
+                  contentBytes: Buffer.byteLength(changedDiskContent),
+                  dirty: false,
+                },
+              ]
+            : [],
+        abandonStaleAuthority: reviewedEvidence,
+      });
+
+      await expect(resolution).resolves.toMatchObject({
+        accepted: true,
+        dirtyPaths: [],
+        stalePaths: [],
+        staleAuthority: [],
+      });
+      expect(restarted.authorityForPath(path)).toBe("disk_authoritative");
+      expect(restarted.stalePaths()).toEqual([]);
+
+      await restarted.release({
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      });
+      await restarted.flushQuarantinePersistence();
+      expect(restarted.hasProtectedEditorPaths()).toBe(false);
+
+      const rehydrated = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      expect(rehydrated.stalePaths()).toEqual([]);
+      expect(rehydrated.authorityForPath(path)).toBe("disk_authoritative");
+      expect(rehydrated.hasProtectedEditorPaths()).toBe(false);
+    },
+  );
 
   it("fails closed when durable quarantine contains an unsafe entry", async () => {
     const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
@@ -2045,8 +3507,8 @@ describe("WorkspaceMutationCoordinator", () => {
     const coordinator = new WorkspaceMutationCoordinator({
       workspaceRoot,
       agencHome,
-      appendLedger: async (entry) => {
-        if (entry.status !== "applied") return;
+      appendLedgerOnce: async (entries) => {
+        if (!entries.some((entry) => entry.status === "applied")) return;
         reportAppliedStarted();
         await appliedGate;
       },
@@ -2235,6 +3697,945 @@ describe("WorkspaceMutationCoordinator", () => {
     expect(quarantine).not.toContain(candidate);
     expect(quarantine).toContain(sha256(candidate));
     expect(quarantine).toContain(admission.proposal.proposalId);
+  });
+
+  it.each([
+    { action: "apply" as const, terminalStatus: "applied" as const },
+    { action: "discard" as const, terminalStatus: "discarded" as const },
+  ])(
+    "rehydrates exactly one $terminalStatus proposal outcome after a crash at the audit projection seam",
+    async ({ action, terminalStatus }) => {
+      const workspaceRoot = await tempDirectory(
+        `agenc-proposal-${action}-outbox-workspace-`,
+      );
+      const agencHome = await tempDirectory(
+        `agenc-proposal-${action}-outbox-home-`,
+      );
+      const path = join(workspaceRoot, `${action}-projection-crash.ts`);
+      const base = "dirty proposal base\n";
+      const candidate = "reviewed proposal replacement\n";
+      await writeFile(path, base, "utf8");
+
+      const first = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+        appendLedgerOnce: async () => {
+          throw new Error("injected terminal projection crash seam");
+        },
+      });
+      const firstLease = first.acquire({
+        workspaceRoot,
+        editorInstanceId: `editor-before-${action}-projection-crash`,
+      });
+      const firstLeaseInput = {
+        workspaceRoot,
+        editorInstanceId: firstLease.editorInstanceId,
+        leaseToken: firstLease.leaseToken,
+        epoch: firstLease.epoch,
+      };
+      first.sync({
+        ...firstLeaseInput,
+        sequence: 0,
+        buffers: [
+          {
+            path,
+            bufferHandle: 61,
+            changedtick: 4,
+            contentSha256: sha256(base),
+            dirty: true,
+            content: base,
+          },
+        ],
+      });
+      const admission = await first.prepareMutation({
+        path,
+        source: "file_edit",
+        beforeText: base,
+        afterText: candidate,
+      });
+      if (admission.decision !== "proposal") {
+        throw new Error("expected an editor proposal");
+      }
+
+      const resolution =
+        action === "apply"
+          ? first.applyProposal({
+              ...firstLeaseInput,
+              proposalId: admission.proposal.proposalId,
+              changedtick: 5,
+              contentSha256: sha256(candidate),
+              content: candidate,
+            })
+          : first.discardProposalForEditor({
+              ...firstLeaseInput,
+              proposalId: admission.proposal.proposalId,
+            });
+      await expect(resolution).rejects.toMatchObject({
+        code: "MUTATION_AUDIT_FAILED",
+      });
+
+      const pending = JSON.parse(
+        await readFile(
+          workspaceMutationStatePath(
+            workspaceRoot,
+            agencHome,
+            "quarantine-v1.json",
+          ),
+          "utf8",
+        ),
+      ) as {
+        readonly version?: number;
+        readonly proposalCommitments?: unknown[];
+        readonly proposalReceipts?: readonly Record<string, unknown>[];
+        readonly auditOutbox?: readonly PersistedWorkspaceLedgerEntry[];
+      };
+      expect(pending).toMatchObject({
+        version: 2,
+        proposalCommitments: [],
+        proposalReceipts: [
+          expect.objectContaining({
+            proposalId: admission.proposal.proposalId,
+            action: terminalStatus,
+          }),
+        ],
+        auditOutbox: [
+          expect.objectContaining({
+            proposalId: admission.proposal.proposalId,
+            status: terminalStatus,
+          }),
+        ],
+      });
+
+      // Simulate process loss after the terminal snapshot but before its
+      // append-only projection. A new coordinator must drain that outbox.
+      const restarted = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      await restarted.flushPendingAuditOutbox();
+      const restartedLease = restarted.acquire({
+        workspaceRoot,
+        editorInstanceId: `editor-after-${action}-projection-crash`,
+      });
+      const restartedLeaseInput = {
+        workspaceRoot,
+        editorInstanceId: restartedLease.editorInstanceId,
+        leaseToken: restartedLease.leaseToken,
+        epoch: restartedLease.epoch,
+      };
+      await expect(
+        restarted.proposalStatus({
+          ...restartedLeaseInput,
+          proposalId: admission.proposal.proposalId,
+        }),
+      ).resolves.toMatchObject({
+        status: terminalStatus,
+        proposalId: admission.proposal.proposalId,
+      });
+      expect(restartedLease.staleAuthority).toHaveLength(1);
+
+      await expect(
+        restarted.syncAbandoningStaleAuthority({
+          ...restartedLeaseInput,
+          sequence: 0,
+          buffers: [],
+          abandonStaleAuthority: restartedLease.staleAuthority,
+        }),
+      ).resolves.toMatchObject({ accepted: true, stalePaths: [] });
+
+      const terminalEntries = (
+        await readWorkspaceMutationLedger(workspaceRoot, agencHome)
+      ).filter(
+        (entry) =>
+          entry.proposalId === admission.proposal.proposalId &&
+          (entry.status === "applied" || entry.status === "discarded"),
+      );
+      expect(terminalEntries).toEqual([
+        expect.objectContaining({
+          entryId: sha256(
+            JSON.stringify([
+              "workspace-proposal-terminal-v1",
+              workspaceRoot,
+              admission.proposal.proposalId,
+            ]),
+          ),
+          status: terminalStatus,
+        }),
+      ]);
+    },
+  );
+
+  it.each([
+    { action: "apply" as const, terminalStatus: "applied" as const },
+    { action: "discard" as const, terminalStatus: "discarded" as const },
+  ])(
+    "keeps the old proposal live and durable when $action terminal persistence fails",
+    async ({ action, terminalStatus }) => {
+      const workspaceRoot = await tempDirectory(
+        `agenc-proposal-${action}-persistence-workspace-`,
+      );
+      const agencHome = await tempDirectory(
+        `agenc-proposal-${action}-persistence-home-`,
+      );
+      const path = join(workspaceRoot, `${action}-persistence.ts`);
+      const base = "dirty base before failed persistence\n";
+      const candidate = "reviewed replacement after retry\n";
+      await writeFile(path, base, "utf8");
+
+      const first = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const firstLease = first.acquire({
+        workspaceRoot,
+        editorInstanceId: `editor-before-${action}-persistence-failure`,
+      });
+      const firstLeaseInput = {
+        workspaceRoot,
+        editorInstanceId: firstLease.editorInstanceId,
+        leaseToken: firstLease.leaseToken,
+        epoch: firstLease.epoch,
+      };
+      first.sync({
+        ...firstLeaseInput,
+        sequence: 0,
+        buffers: [
+          {
+            path,
+            bufferHandle: 66,
+            changedtick: 8,
+            contentSha256: sha256(base),
+            dirty: true,
+            content: base,
+          },
+        ],
+      });
+      const admission = await first.prepareMutation({
+        path,
+        source: "file_write",
+        beforeText: base,
+        afterText: candidate,
+      });
+      if (admission.decision !== "proposal") {
+        throw new Error("expected an editor proposal");
+      }
+      await first.flushQuarantinePersistence();
+
+      const quarantinePath = workspaceMutationStatePath(
+        workspaceRoot,
+        agencHome,
+        "quarantine-v1.json",
+      );
+      const quarantineBackupPath = `${quarantinePath}.retryable`;
+      await rename(quarantinePath, quarantineBackupPath);
+      await mkdir(quarantinePath);
+      const resolution =
+        action === "apply"
+          ? first.applyProposal({
+              ...firstLeaseInput,
+              proposalId: admission.proposal.proposalId,
+              changedtick: 9,
+              contentSha256: sha256(candidate),
+              content: candidate,
+            })
+          : first.discardProposalForEditor({
+              ...firstLeaseInput,
+              proposalId: admission.proposal.proposalId,
+            });
+      await expect(resolution).rejects.toMatchObject({
+        code: "MUTATION_AUDIT_FAILED",
+      });
+      expect(first.getProposal(admission.proposal.proposalId)).not.toBeNull();
+
+      await rm(quarantinePath, { recursive: true });
+      await rename(quarantineBackupPath, quarantinePath);
+      const restarted = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const restartedLease = restarted.acquire({
+        workspaceRoot,
+        editorInstanceId: `editor-after-${action}-persistence-failure`,
+      });
+      const restartedLeaseInput = {
+        workspaceRoot,
+        editorInstanceId: restartedLease.editorInstanceId,
+        leaseToken: restartedLease.leaseToken,
+        epoch: restartedLease.epoch,
+      };
+      await expect(
+        restarted.proposalStatus({
+          ...restartedLeaseInput,
+          proposalId: admission.proposal.proposalId,
+        }),
+      ).resolves.toMatchObject({
+        status: "committed",
+        proposalId: admission.proposal.proposalId,
+      });
+
+      const retry =
+        action === "apply"
+          ? restarted.applyProposal({
+              ...restartedLeaseInput,
+              proposalId: admission.proposal.proposalId,
+              changedtick: 9,
+              contentSha256: sha256(candidate),
+              content: candidate,
+            })
+          : restarted.discardProposalForEditor({
+              ...restartedLeaseInput,
+              proposalId: admission.proposal.proposalId,
+            });
+      await expect(retry).resolves.toMatchObject({
+        proposalId: admission.proposal.proposalId,
+      });
+      expect(
+        (await readWorkspaceMutationLedger(workspaceRoot, agencHome)).filter(
+          (entry) =>
+            entry.proposalId === admission.proposal.proposalId &&
+            (entry.status === "applied" || entry.status === "discarded"),
+        ),
+      ).toEqual([expect.objectContaining({ status: terminalStatus })]);
+    },
+  );
+
+  it("keeps a proposal retryable until every admitted mutation token is cancelled", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-proposal-token-gate-workspace-",
+    );
+    const agencHome = await tempDirectory("agenc-proposal-token-gate-home-");
+    const proposalPath = join(workspaceRoot, "proposal.ts");
+    const diskPath = join(workspaceRoot, "admitted-disk-write.ts");
+    const base = "dirty proposal base\n";
+    const candidate = "reviewed proposal replacement\n";
+    const diskBefore = "disk before\n";
+    const diskAfter = "disk after\n";
+    await writeFile(proposalPath, base, "utf8");
+    await writeFile(diskPath, diskBefore, "utf8");
+
+    const coordinator = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = coordinator.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-proposal-token-gate",
+    });
+    const leaseInput = {
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    };
+    coordinator.sync({
+      ...leaseInput,
+      sequence: 0,
+      buffers: [
+        {
+          path: proposalPath,
+          bufferHandle: 67,
+          changedtick: 3,
+          contentSha256: sha256(base),
+          dirty: true,
+          content: base,
+        },
+      ],
+    });
+    const proposalAdmission = await coordinator.prepareMutation({
+      path: proposalPath,
+      source: "file_edit",
+      beforeText: base,
+      afterText: candidate,
+    });
+    if (proposalAdmission.decision !== "proposal") {
+      throw new Error("expected an editor proposal");
+    }
+    const diskAdmission = await coordinator.prepareMutation({
+      path: diskPath,
+      source: "file_write",
+      beforeText: diskBefore,
+      afterText: diskAfter,
+    });
+    if (diskAdmission.decision !== "allow") {
+      throw new Error("expected an admitted disk mutation");
+    }
+    const applyInput = {
+      ...leaseInput,
+      proposalId: proposalAdmission.proposal.proposalId,
+      changedtick: 4,
+      contentSha256: sha256(candidate),
+      content: candidate,
+    };
+
+    await expect(coordinator.applyProposal(applyInput)).rejects.toMatchObject({
+      code: "EDITOR_LEASE_MISMATCH",
+    });
+    await expect(
+      coordinator.proposalStatus({
+        ...leaseInput,
+        proposalId: proposalAdmission.proposal.proposalId,
+      }),
+    ).resolves.toMatchObject({ status: "reviewable" });
+
+    coordinator.cancelMutation(diskAdmission.token);
+    await expect(coordinator.applyProposal(applyInput)).resolves.toMatchObject({
+      applied: true,
+      proposalId: proposalAdmission.proposal.proposalId,
+    });
+  });
+
+  it.each(["apply", "discard"] as const)(
+    "rejects topology reservation behind an in-flight checkpoint while proposal $action remains pending",
+    async (action) => {
+      const workspaceRoot = await tempDirectory(
+        `agenc-proposal-${action}-topology-race-workspace-`,
+      );
+      const agencHome = await tempDirectory(
+        `agenc-proposal-${action}-topology-race-home-`,
+      );
+      const proposalPath = join(workspaceRoot, "proposal.ts");
+      const topologyPath = join(workspaceRoot, "topology-target.ts");
+      const base = "dirty proposal base\n";
+      const candidate = "reviewed proposal replacement\n";
+      const diskBefore = "disk before reservation\n";
+      const diskAfter = "disk after reservation\n";
+      await writeFile(proposalPath, base, "utf8");
+      await writeFile(topologyPath, diskBefore, "utf8");
+
+      let gateNextQuarantineWrite = false;
+      let releaseQuarantineWrite!: () => void;
+      let reportQuarantineWriteStarted!: () => void;
+      const quarantineWriteStarted = new Promise<void>((resolve) => {
+        reportQuarantineWriteStarted = resolve;
+      });
+      const quarantineWriteGate = new Promise<void>((resolve) => {
+        releaseQuarantineWrite = resolve;
+      });
+      const coordinator = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+        beforePersistQuarantine: async () => {
+          if (!gateNextQuarantineWrite) return;
+          gateNextQuarantineWrite = false;
+          reportQuarantineWriteStarted();
+          await quarantineWriteGate;
+        },
+      });
+      const lease = coordinator.acquire({
+        workspaceRoot,
+        editorInstanceId: `editor-${action}-topology-race`,
+      });
+      const leaseInput = {
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      };
+      coordinator.sync({
+        ...leaseInput,
+        sequence: 0,
+        buffers: [
+          {
+            path: proposalPath,
+            bufferHandle: 68,
+            changedtick: 3,
+            contentSha256: sha256(base),
+            dirty: true,
+            content: base,
+          },
+        ],
+      });
+      const proposalAdmission = await coordinator.prepareMutation({
+        path: proposalPath,
+        source: "file_edit",
+        beforeText: base,
+        afterText: candidate,
+      });
+      if (proposalAdmission.decision !== "proposal") {
+        throw new Error("expected an editor proposal");
+      }
+      const diskAdmission = await coordinator.prepareMutation({
+        path: topologyPath,
+        source: "file_write",
+        beforeText: diskBefore,
+        afterText: diskAfter,
+      });
+      if (diskAdmission.decision !== "allow") {
+        throw new Error("expected an admitted disk mutation");
+      }
+
+      gateNextQuarantineWrite = true;
+      coordinator.cancelMutation(diskAdmission.token);
+      await quarantineWriteStarted;
+      const reservation = coordinator.reserveTopologyMutation([
+        { path: topologyPath },
+      ]);
+      const resolution =
+        action === "apply"
+          ? coordinator.applyProposal({
+              ...leaseInput,
+              proposalId: proposalAdmission.proposal.proposalId,
+              changedtick: 4,
+              contentSha256: sha256(candidate),
+              content: candidate,
+            })
+          : coordinator.discardProposalForEditor({
+              ...leaseInput,
+              proposalId: proposalAdmission.proposal.proposalId,
+            });
+      let resolutionSettled = false;
+      void resolution.then(
+        () => {
+          resolutionSettled = true;
+        },
+        () => {
+          resolutionSettled = true;
+        },
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(resolutionSettled).toBe(false);
+
+      releaseQuarantineWrite();
+      await expect(reservation).rejects.toMatchObject({
+        code: "EDITOR_LEASE_MISMATCH",
+      });
+      await expect(resolution).resolves.toMatchObject({
+        proposalId: proposalAdmission.proposal.proposalId,
+      });
+      const topologyToken = await coordinator.reserveTopologyMutation([
+        { path: topologyPath },
+      ]);
+      await coordinator.releaseTopologyMutation(topologyToken);
+    },
+  );
+
+  it("rejects Use Disk before persistence when a legacy ledger already records the proposal as applied", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-proposal-legacy-terminal-workspace-",
+    );
+    const agencHome = await tempDirectory(
+      "agenc-proposal-legacy-terminal-home-",
+    );
+    const path = join(workspaceRoot, "legacy-terminal.ts");
+    const base = "dirty proposal base\n";
+    const candidate = "historically applied replacement\n";
+    await writeFile(path, base, "utf8");
+
+    const first = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const firstLease = first.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-before-legacy-terminal",
+    });
+    first.sync({
+      workspaceRoot,
+      editorInstanceId: firstLease.editorInstanceId,
+      leaseToken: firstLease.leaseToken,
+      epoch: firstLease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 71,
+          changedtick: 6,
+          contentSha256: sha256(base),
+          dirty: true,
+          content: base,
+        },
+      ],
+    });
+    const admission = await first.prepareMutation({
+      path,
+      source: "file_edit",
+      beforeText: base,
+      afterText: candidate,
+    });
+    if (admission.decision !== "proposal") {
+      throw new Error("expected an editor proposal");
+    }
+    await first.flushQuarantinePersistence();
+
+    await appendFile(
+      workspaceMutationStatePath(workspaceRoot, agencHome, "ledger-v1.jsonl"),
+      `${JSON.stringify({
+        version: 1,
+        entryId: sha256("legacy-random-proposal-terminal-id"),
+        timestamp: "2026-08-17T12:00:00.000Z",
+        workspaceRoot,
+        path,
+        source: "file_edit",
+        status: "applied",
+        beforeSha256: sha256(base),
+        afterSha256: sha256(candidate),
+        proposalId: admission.proposal.proposalId,
+      })}\n`,
+      "utf8",
+    );
+
+    const restarted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = restarted.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-after-legacy-terminal",
+    });
+    const leaseInput = {
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    };
+    await expect(
+      restarted.syncAbandoningStaleAuthority({
+        ...leaseInput,
+        sequence: 0,
+        buffers: [],
+        abandonStaleAuthority: lease.staleAuthority,
+      }),
+    ).rejects.toMatchObject({ code: "MUTATION_AUDIT_FAILED" });
+    await expect(
+      restarted.proposalStatus({
+        ...leaseInput,
+        proposalId: admission.proposal.proposalId,
+      }),
+    ).resolves.toMatchObject({
+      status: "committed",
+      proposalId: admission.proposal.proposalId,
+    });
+
+    const persisted = JSON.parse(
+      await readFile(
+        workspaceMutationStatePath(
+          workspaceRoot,
+          agencHome,
+          "quarantine-v1.json",
+        ),
+        "utf8",
+      ),
+    ) as {
+      readonly proposalCommitments?: readonly Record<string, unknown>[];
+      readonly proposalReceipts?: unknown[];
+      readonly auditOutbox?: unknown[];
+    };
+    expect(persisted.proposalCommitments).toEqual([
+      expect.objectContaining({ proposalId: admission.proposal.proposalId }),
+    ]);
+    expect(persisted.proposalReceipts).toEqual([]);
+    expect(persisted.auditOutbox).toBeUndefined();
+    expect(
+      (await readWorkspaceMutationLedger(workspaceRoot, agencHome)).filter(
+        (entry) =>
+          entry.proposalId === admission.proposal.proposalId &&
+          (entry.status === "applied" || entry.status === "discarded"),
+      ),
+    ).toEqual([expect.objectContaining({ status: "applied" })]);
+  });
+
+  it("recognizes a legacy proposal terminal recorded with equivalent root and path spellings", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-proposal-legacy-path-workspace-",
+    );
+    const agencHome = await tempDirectory("agenc-proposal-legacy-path-home-");
+    const fileName = "legacy-equivalent.ts";
+    const path = join(workspaceRoot, fileName);
+    const base = "dirty proposal base\n";
+    const candidate = "historically applied replacement\n";
+    await writeFile(path, base, "utf8");
+
+    const first = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const firstLease = first.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-before-legacy-path-terminal",
+    });
+    first.sync({
+      workspaceRoot,
+      editorInstanceId: firstLease.editorInstanceId,
+      leaseToken: firstLease.leaseToken,
+      epoch: firstLease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 72,
+          changedtick: 6,
+          contentSha256: sha256(base),
+          dirty: true,
+          content: base,
+        },
+      ],
+    });
+    const admission = await first.prepareMutation({
+      path,
+      source: "file_edit",
+      beforeText: base,
+      afterText: candidate,
+    });
+    if (admission.decision !== "proposal") {
+      throw new Error("expected an editor proposal");
+    }
+    await first.flushQuarantinePersistence();
+
+    const legacyEntryId = sha256("legacy-equivalent-proposal-terminal-id");
+    await appendFile(
+      workspaceMutationStatePath(workspaceRoot, agencHome, "ledger-v1.jsonl"),
+      `${JSON.stringify({
+        version: 1,
+        entryId: legacyEntryId,
+        timestamp: "2026-08-17T12:00:00.000Z",
+        workspaceRoot: `${workspaceRoot}${sep}.`,
+        path: `${workspaceRoot}${sep}.${sep}${fileName}`,
+        source: "file_edit",
+        status: "applied",
+        beforeSha256: sha256(base),
+        afterSha256: sha256(candidate),
+        proposalId: admission.proposal.proposalId,
+      })}\n`,
+      "utf8",
+    );
+
+    const restarted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = restarted.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-after-legacy-path-terminal",
+    });
+    const leaseInput = {
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    };
+    expect(
+      restarted.sync({
+        ...leaseInput,
+        sequence: 0,
+        buffers: [
+          {
+            path,
+            bufferHandle: 73,
+            changedtick: 2,
+            contentSha256: sha256(candidate),
+            dirty: true,
+            content: candidate,
+          },
+        ],
+      }),
+    ).toMatchObject({ accepted: true, dirtyPaths: [path] });
+
+    await expect(
+      restarted.applyProposal({
+        ...leaseInput,
+        proposalId: admission.proposal.proposalId,
+        changedtick: 2,
+        contentSha256: sha256(candidate),
+        content: candidate,
+      }),
+    ).resolves.toMatchObject({
+      applied: true,
+      proposalId: admission.proposal.proposalId,
+    });
+    expect(
+      (await readWorkspaceMutationLedger(workspaceRoot, agencHome)).filter(
+        (entry) =>
+          entry.proposalId === admission.proposal.proposalId &&
+          (entry.status === "applied" || entry.status === "discarded"),
+      ),
+    ).toEqual([
+      expect.objectContaining({ entryId: legacyEntryId, status: "applied" }),
+    ]);
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "keeps historical audit validation independent of changed descendant symlinks",
+    async () => {
+      const workspaceRoot = await tempDirectory(
+        "agenc-proposal-legacy-symlink-workspace-",
+      );
+      const agencHome = await tempDirectory(
+        "agenc-proposal-legacy-symlink-home-",
+      );
+      const externalDirectory = await tempDirectory(
+        "agenc-proposal-legacy-symlink-external-",
+      );
+      const originalDirectory = join(workspaceRoot, "original-audit-target");
+      const linkPath = join(workspaceRoot, "historical-link");
+      const path = join(workspaceRoot, "proposal-after-symlink-change.ts");
+      const base = "dirty proposal base\n";
+      const candidate = "proposal independent of old symlink\n";
+      await mkdir(originalDirectory);
+      await symlink(originalDirectory, linkPath, "dir");
+      await writeFile(path, base, "utf8");
+
+      const coordinator = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const lease = coordinator.acquire({
+        workspaceRoot,
+        editorInstanceId: "editor-after-historical-symlink-change",
+      });
+      const leaseInput = {
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      };
+      coordinator.sync({
+        ...leaseInput,
+        sequence: 0,
+        buffers: [
+          {
+            path,
+            bufferHandle: 75,
+            changedtick: 3,
+            contentSha256: sha256(base),
+            dirty: true,
+            content: base,
+          },
+        ],
+      });
+      const admission = await coordinator.prepareMutation({
+        path,
+        source: "file_edit",
+        beforeText: base,
+        afterText: candidate,
+      });
+      if (admission.decision !== "proposal") {
+        throw new Error("expected an editor proposal");
+      }
+
+      await appendFile(
+        workspaceMutationStatePath(workspaceRoot, agencHome, "ledger-v1.jsonl"),
+        `${JSON.stringify({
+          version: 1,
+          entryId: sha256("historical-descendant-symlink-audit"),
+          timestamp: "2026-08-17T12:00:00.000Z",
+          workspaceRoot,
+          path: join(linkPath, "historical.ts"),
+          source: "editor",
+          status: "discarded",
+          beforeSha256: sha256("historical editor state"),
+        })}\n`,
+        "utf8",
+      );
+      await rm(linkPath, { force: true });
+      await symlink(externalDirectory, linkPath, "dir");
+
+      await expect(
+        coordinator.discardProposalForEditor({
+          ...leaseInput,
+          proposalId: admission.proposal.proposalId,
+        }),
+      ).resolves.toMatchObject({
+        discarded: true,
+        proposalId: admission.proposal.proposalId,
+      });
+    },
+  );
+
+  it("rejects a legacy audit path that escapes its canonical workspace", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-proposal-legacy-escape-workspace-",
+    );
+    const agencHome = await tempDirectory("agenc-proposal-legacy-escape-home-");
+    const path = join(workspaceRoot, "legacy-escape.ts");
+    const base = "dirty proposal base\n";
+    const candidate = "candidate blocked by invalid legacy audit\n";
+    await writeFile(path, base, "utf8");
+
+    const coordinator = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = coordinator.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-with-legacy-escape",
+    });
+    const leaseInput = {
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    };
+    coordinator.sync({
+      ...leaseInput,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 74,
+          changedtick: 3,
+          contentSha256: sha256(base),
+          dirty: true,
+          content: base,
+        },
+      ],
+    });
+    const admission = await coordinator.prepareMutation({
+      path,
+      source: "file_edit",
+      beforeText: base,
+      afterText: candidate,
+    });
+    if (admission.decision !== "proposal") {
+      throw new Error("expected an editor proposal");
+    }
+
+    await appendFile(
+      workspaceMutationStatePath(workspaceRoot, agencHome, "ledger-v1.jsonl"),
+      `${JSON.stringify({
+        version: 1,
+        entryId: sha256("legacy-escaping-audit-entry"),
+        timestamp: "2026-08-17T12:00:00.000Z",
+        workspaceRoot: `${workspaceRoot}${sep}.`,
+        path: `${workspaceRoot}${sep}..${sep}outside.ts`,
+        source: "editor",
+        status: "discarded",
+        beforeSha256: sha256("escaped editor state"),
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(
+      coordinator.discardProposalForEditor({
+        ...leaseInput,
+        proposalId: admission.proposal.proposalId,
+      }),
+    ).rejects.toMatchObject({ code: "MUTATION_AUDIT_FAILED" });
+    await expect(
+      coordinator.proposalStatus({
+        ...leaseInput,
+        proposalId: admission.proposal.proposalId,
+      }),
+    ).resolves.toMatchObject({ status: "reviewable" });
+
+    const persisted = JSON.parse(
+      await readFile(
+        workspaceMutationStatePath(
+          workspaceRoot,
+          agencHome,
+          "quarantine-v1.json",
+        ),
+        "utf8",
+      ),
+    ) as {
+      readonly proposalCommitments?: readonly Record<string, unknown>[];
+      readonly proposalReceipts?: unknown[];
+      readonly auditOutbox?: unknown[];
+    };
+    expect(persisted.proposalCommitments).toEqual([
+      expect.objectContaining({ proposalId: admission.proposal.proposalId }),
+    ]);
+    expect(persisted.proposalReceipts).toEqual([]);
+    expect(persisted.auditOutbox).toBeUndefined();
   });
 
   it("reconciles exact accepted proposal bytes under a fresh Editor process tick", async () => {
@@ -2533,9 +4934,15 @@ describe("WorkspaceMutationCoordinator", () => {
     const coordinator = new WorkspaceMutationCoordinator({
       workspaceRoot,
       agencHome,
-      appendLedger: async (entry) => {
-        if (entry.status !== "applied" || entry.proposalId === undefined)
+      appendLedgerOnce: async (entries) => {
+        if (
+          !entries.some(
+            (entry) =>
+              entry.status === "applied" && entry.proposalId !== undefined,
+          )
+        ) {
           return;
+        }
         appliedAttempts += 1;
         if (appliedAttempts === 1) throw new Error("injected ledger failure");
         if (appliedAttempts === 2) {
@@ -2636,7 +5043,14 @@ describe("WorkspaceMutationCoordinator", () => {
               await secondProposalGate;
             }
           }
-          if (entry.status === "applied" || entry.status === "discarded") {
+        },
+        appendLedgerOnce: async (entries) => {
+          if (
+            entries.some(
+              (entry) =>
+                entry.status === "applied" || entry.status === "discarded",
+            )
+          ) {
             resolutionAppendStarted = true;
           }
         },
@@ -2834,6 +5248,1263 @@ describe("WorkspaceMutationCoordinator", () => {
     expect(proposedAppends).toBe(1);
   });
 
+  it("rejects proposal admission when neither terminal audit outcome fits the durable outbox", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-proposal-terminal-capacity-workspace-",
+    );
+    const agencHome = await tempDirectory(
+      "agenc-proposal-terminal-capacity-home-",
+    );
+    const path = join(workspaceRoot, "terminal-capacity.ts");
+    const base = "dirty base at terminal capacity\n";
+    const candidate = "candidate that must remain uncommitted\n";
+    await writeFile(path, base, "utf8");
+
+    // The persisted maximum is MAX_SYNCED_BUFFERS + MAX_PENDING_PROPOSALS.
+    // Keep projection unavailable so constructor recovery cannot drain the
+    // exact-boundary fixture before proposal admission runs.
+    const auditOutbox = Array.from({ length: 512 + 32 }, (_, index) => ({
+      version: 1,
+      entryId: sha256(`terminal-capacity-audit-${index}`),
+      timestamp: "2026-08-17T12:00:00.000Z",
+      workspaceRoot,
+      path,
+      source: "editor",
+      status: "discarded",
+      beforeSha256: sha256(`discarded-editor-state-${index}`),
+    }));
+    const quarantinePath = workspaceMutationStatePath(
+      workspaceRoot,
+      agencHome,
+      "quarantine-v1.json",
+    );
+    await mkdir(dirname(quarantinePath), { recursive: true });
+    await writeFile(
+      quarantinePath,
+      `${JSON.stringify({
+        version: 2,
+        workspaceRoot,
+        entries: [],
+        proposalCommitments: [],
+        proposalReceipts: [],
+        mutationIntents: [],
+        topologyIntents: [],
+        changeSequence: 0,
+        changes: [],
+        auditOutbox,
+      })}\n`,
+      "utf8",
+    );
+
+    let proposedAppends = 0;
+    const coordinator = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+      appendLedger: async (entry) => {
+        if (entry.status === "proposed") proposedAppends += 1;
+      },
+      appendLedgerOnce: async () => {
+        throw new Error("audit projection remains unavailable");
+      },
+    });
+    const lease = coordinator.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-at-terminal-capacity",
+    });
+    const leaseInput = {
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    };
+    coordinator.sync({
+      ...leaseInput,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 113,
+          changedtick: 1,
+          contentSha256: sha256(base),
+          dirty: true,
+          content: base,
+        },
+      ],
+    });
+
+    await expect(
+      coordinator.prepareMutation({
+        path,
+        source: "file_edit",
+        beforeText: base,
+        afterText: candidate,
+      }),
+    ).rejects.toMatchObject({ code: "MUTATION_AUDIT_FAILED" });
+    expect(proposedAppends).toBe(0);
+    expect(
+      coordinator
+        .listChanges(leaseInput)
+        .changes.filter((change) => change.status === "proposed"),
+    ).toEqual([]);
+
+    const persisted = JSON.parse(await readFile(quarantinePath, "utf8")) as {
+      readonly proposalCommitments?: unknown[];
+      readonly proposalReceipts?: unknown[];
+      readonly auditOutbox?: unknown[];
+    };
+    expect(persisted.proposalCommitments).toEqual([]);
+    expect(persisted.proposalReceipts).toEqual([]);
+    expect(persisted.auditOutbox).toHaveLength(512 + 32);
+  });
+
+  it("rejects a 512-buffer sync that would retain an omitted dirty quarantine entry", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-sync-shape-cap-workspace-",
+    );
+    const agencHome = await tempDirectory("agenc-sync-shape-cap-home-");
+    const omittedPath = join(workspaceRoot, "omitted-dirty.ts");
+    const omittedContent = "unsaved authority\n";
+    const coordinator = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = coordinator.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-sync-shape-cap",
+    });
+    const leaseInput = {
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    };
+    coordinator.sync({
+      ...leaseInput,
+      sequence: 0,
+      buffers: [
+        {
+          path: omittedPath,
+          bufferHandle: 1,
+          changedtick: 1,
+          contentSha256: sha256(omittedContent),
+          dirty: true,
+          content: omittedContent,
+        },
+      ],
+    });
+    const replacement = Array.from({ length: 512 }, (_, index) => {
+      const content = `replacement dirty ${index}\n`;
+      return {
+        path: join(workspaceRoot, `replacement-${index}.ts`),
+        bufferHandle: index + 2,
+        changedtick: 1,
+        contentSha256: sha256(content),
+        dirty: true as const,
+        content,
+      };
+    });
+
+    expect(() =>
+      coordinator.sync({
+        ...leaseInput,
+        sequence: 1,
+        buffers: replacement,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_EDITOR_SYNC" }));
+    await coordinator.flushQuarantinePersistence();
+
+    const restarted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    expect(restarted.stalePaths()).toContain(omittedPath);
+  });
+
+  it("rejects a full replacement manifest that would make a surviving proposal apply persist 513 buffers", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-proposal-shape-cap-workspace-",
+    );
+    const agencHome = await tempDirectory("agenc-proposal-shape-cap-home-");
+    const proposalPath = join(workspaceRoot, "omitted-proposal.ts");
+    const base = "clean proposal base\n";
+    const candidate = "reviewed proposal candidate\n";
+    await writeFile(proposalPath, base, "utf8");
+    const coordinator = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const lease = coordinator.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-proposal-shape-cap",
+    });
+    const leaseInput = {
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    };
+    coordinator.sync({
+      ...leaseInput,
+      sequence: 0,
+      buffers: [
+        {
+          path: proposalPath,
+          bufferHandle: 1,
+          changedtick: 1,
+          contentSha256: sha256(base),
+          contentBytes: Buffer.byteLength(base, "utf8"),
+          dirty: false,
+        },
+      ],
+    });
+    const admission = await coordinator.prepareMutation({
+      path: proposalPath,
+      source: "file_edit",
+      beforeText: base,
+      afterText: candidate,
+    });
+    if (admission.decision !== "proposal") {
+      throw new Error("expected a clean loaded-buffer proposal");
+    }
+    const replacement = Array.from({ length: 512 }, (_, index) => {
+      const content = `replacement dirty ${index}\n`;
+      return {
+        path: join(workspaceRoot, `replacement-${index}.ts`),
+        bufferHandle: index + 2,
+        changedtick: 1,
+        contentSha256: sha256(content),
+        dirty: true as const,
+        content,
+      };
+    });
+
+    expect(() =>
+      coordinator.sync({
+        ...leaseInput,
+        sequence: 1,
+        buffers: replacement,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_EDITOR_SYNC" }));
+    await coordinator.flushQuarantinePersistence();
+
+    const restarted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const restartedLease = restarted.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-proposal-shape-cap-restart",
+    });
+    await expect(
+      restarted.proposalStatus({
+        workspaceRoot,
+        editorInstanceId: restartedLease.editorInstanceId,
+        leaseToken: restartedLease.leaseToken,
+        epoch: restartedLease.epoch,
+        proposalId: admission.proposal.proposalId,
+      }),
+    ).resolves.toMatchObject({
+      status: "committed",
+      proposalId: admission.proposal.proposalId,
+    });
+  });
+
+  it("keeps an irreducible legacy terminal overflow blocked but explicitly abandonable", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-legacy-shape-overflow-workspace-",
+    );
+    const agencHome = await tempDirectory("agenc-legacy-shape-overflow-home-");
+    const proposalPath = join(workspaceRoot, "legacy-proposal.ts");
+    const base = "legacy proposal base\n";
+    await writeFile(proposalPath, base, "utf8");
+    const first = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const firstLease = first.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-before-legacy-overflow",
+    });
+    first.sync({
+      workspaceRoot,
+      editorInstanceId: firstLease.editorInstanceId,
+      leaseToken: firstLease.leaseToken,
+      epoch: firstLease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path: proposalPath,
+          bufferHandle: 1,
+          changedtick: 1,
+          contentSha256: sha256(base),
+          contentBytes: Buffer.byteLength(base, "utf8"),
+          dirty: false,
+        },
+      ],
+    });
+    const admission = await first.prepareMutation({
+      path: proposalPath,
+      source: "file_edit",
+      beforeText: base,
+      afterText: "legacy reviewed candidate\n",
+    });
+    if (admission.decision !== "proposal") {
+      throw new Error("expected a durable proposal commitment");
+    }
+    await first.flushQuarantinePersistence();
+    const quarantinePath = workspaceMutationStatePath(
+      workspaceRoot,
+      agencHome,
+      "quarantine-v1.json",
+    );
+    const legacySnapshot = JSON.parse(
+      await readFile(quarantinePath, "utf8"),
+    ) as {
+      entries: Record<string, unknown>[];
+    } & Record<string, unknown>;
+    const template = legacySnapshot.entries[0];
+    if (template === undefined) throw new Error("expected persisted authority");
+    legacySnapshot.entries = Array.from({ length: 512 }, (_, index) => ({
+      ...template,
+      path: join(workspaceRoot, `legacy-buffer-${index}.ts`),
+    }));
+    const serializedLegacySnapshot = `${JSON.stringify(legacySnapshot)}\n`;
+    expect(Buffer.byteLength(serializedLegacySnapshot, "utf8")).toBeLessThan(
+      524_288,
+    );
+    await writeFile(quarantinePath, serializedLegacySnapshot, "utf8");
+
+    const blocked = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    expect(() => blocked.authoritativeRead(proposalPath)).toThrow(
+      /may contain unsaved changes/u,
+    );
+    const recoveryLease = blocked.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-abandoning-legacy-overflow",
+    });
+    expect(() =>
+      blocked.sync({
+        workspaceRoot,
+        editorInstanceId: recoveryLease.editorInstanceId,
+        leaseToken: recoveryLease.leaseToken,
+        epoch: recoveryLease.epoch,
+        sequence: 0,
+        buffers: [],
+      }),
+    ).toThrow(/explicitly abandon dirty quarantine/u);
+    await expect(
+      blocked.release({
+        workspaceRoot,
+        editorInstanceId: recoveryLease.editorInstanceId,
+        leaseToken: recoveryLease.leaseToken,
+        epoch: recoveryLease.epoch,
+        abandonDirty: true,
+      }),
+    ).resolves.toEqual({ released: true, stalePaths: [] });
+
+    const recovered = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    expect(recovered.authoritativeRead(proposalPath)).toBeNull();
+  });
+
+  it.runIf(process.platform === "linux")(
+    "rejects an admission that would strand an existing proposal terminal at the quarantine byte boundary",
+    async () => {
+      const workspaceRoot = await mkdtemp("/tmp/agenc-capmulti-root-");
+      const agencHome = await mkdtemp("/tmp/agenc-capmulti-home-");
+      temporaryPaths.push(workspaceRoot, agencHome);
+      const firstPath = join(
+        workspaceRoot,
+        relativePathOfLength(3_400, "proposal-a"),
+      );
+      const secondPath = join(
+        workspaceRoot,
+        relativePathOfLength(12, "proposal-b"),
+      );
+      const firstBase = "proposal A dirty base\n";
+      const secondBase = "proposal B dirty base\n";
+      const otherBuffers = Array.from({ length: 510 }, (_, index) => {
+        const content = `other dirty base ${index}\n`;
+        return {
+          path: join(
+            workspaceRoot,
+            relativePathOfLength(748, `other-${index}`),
+          ),
+          bufferHandle: index + 3,
+          changedtick: 1,
+          contentSha256: sha256(content),
+          dirty: true as const,
+          content,
+        };
+      });
+      let proposedAppends = 0;
+      const coordinator = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+        appendLedger: async (entry) => {
+          if (entry.status === "proposed") proposedAppends += 1;
+        },
+      });
+      const lease = coordinator.acquire({
+        workspaceRoot,
+        editorInstanceId: "editor-cap-boundary",
+      });
+      const leaseInput = {
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      };
+      coordinator.sync({
+        ...leaseInput,
+        sequence: 0,
+        buffers: [
+          {
+            path: firstPath,
+            bufferHandle: 1,
+            changedtick: 1,
+            contentSha256: sha256(firstBase),
+            dirty: true,
+            content: firstBase,
+          },
+          {
+            path: secondPath,
+            bufferHandle: 2,
+            changedtick: 1,
+            contentSha256: sha256(secondBase),
+            dirty: true,
+            content: secondBase,
+          },
+          ...otherBuffers,
+        ],
+      });
+
+      const firstAdmission = await coordinator.prepareMutation({
+        path: firstPath,
+        source: "file_edit",
+        beforeText: firstBase,
+        afterText: "proposal A candidate\n",
+      });
+      if (firstAdmission.decision !== "proposal") {
+        throw new Error("expected proposal A to fit before proposal B");
+      }
+      await expect(
+        coordinator.prepareMutation({
+          path: secondPath,
+          source: "file_edit",
+          beforeText: secondBase,
+          afterText: "proposal B candidate\n",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_EDITOR_SYNC" });
+
+      expect(proposedAppends).toBe(1);
+      expect(
+        coordinator
+          .listChanges(leaseInput)
+          .changes.filter((change) => change.status === "proposed"),
+      ).toEqual([
+        expect.objectContaining({
+          proposalId: firstAdmission.proposal.proposalId,
+          path: firstPath,
+        }),
+      ]);
+      await expect(
+        coordinator.discardProposalForEditor({
+          ...leaseInput,
+          proposalId: firstAdmission.proposal.proposalId,
+        }),
+      ).resolves.toMatchObject({
+        discarded: true,
+        proposalId: firstAdmission.proposal.proposalId,
+      });
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "reserves cumulative terminal growth across three near-capacity proposals",
+    async () => {
+      const workspaceRoot = await mkdtemp("/tmp/agenc-capmulti-root-");
+      const agencHome = await mkdtemp("/tmp/agenc-capmulti-home-");
+      temporaryPaths.push(workspaceRoot, agencHome);
+      const proposalSpecs = [
+        { label: "a", length: 3_400 },
+        { label: "b", length: 3_200 },
+        { label: "c", length: 3_000 },
+      ] as const;
+      const paths = proposalSpecs.map((spec) =>
+        join(
+          workspaceRoot,
+          relativePathOfLength(spec.length, `proposal-${spec.label}`),
+        ),
+      );
+      const bases = proposalSpecs.map(
+        (spec) => `proposal ${spec.label} dirty base\n`,
+      );
+      const candidates = proposalSpecs.map(
+        (spec) => `proposal ${spec.label} reviewed candidate\n`,
+      );
+      const fillers = Array.from({ length: 509 }, (_, index) => {
+        const content = `filler ${index}\n`;
+        return {
+          path: join(
+            workspaceRoot,
+            relativePathOfLength(590, `filler-${index}`),
+          ),
+          bufferHandle: index + 4,
+          changedtick: 1,
+          contentSha256: sha256(content),
+          dirty: true as const,
+          content,
+        };
+      });
+      const buffers = [
+        ...paths.map((path, index) => ({
+          path,
+          bufferHandle: index + 1,
+          changedtick: 1,
+          contentSha256: sha256(bases[index]!),
+          dirty: true as const,
+          content: bases[index]!,
+        })),
+        ...fillers,
+      ];
+      const seed = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const seedLease = seed.acquire({
+        workspaceRoot,
+        editorInstanceId: "editor-cap-boundary-seed",
+      });
+      seed.sync({
+        workspaceRoot,
+        editorInstanceId: seedLease.editorInstanceId,
+        leaseToken: seedLease.leaseToken,
+        epoch: seedLease.epoch,
+        sequence: 0,
+        buffers,
+      });
+      await seed.flushQuarantinePersistence();
+      const quarantinePath = workspaceMutationStatePath(
+        workspaceRoot,
+        agencHome,
+        "quarantine-v1.json",
+      );
+      const saturatedSnapshot = JSON.parse(
+        await readFile(quarantinePath, "utf8"),
+      ) as Record<string, unknown>;
+      saturatedSnapshot.proposalReceipts = Array.from(
+        { length: 510 },
+        (_, index) => ({
+          proposalId: `legacy-receipt-${index}`,
+          action: "discarded",
+          path: join(workspaceRoot, "receipt.ts"),
+        }),
+      );
+      const serializedSaturatedSnapshot = `${JSON.stringify(saturatedSnapshot)}\n`;
+      expect(
+        Buffer.byteLength(serializedSaturatedSnapshot, "utf8"),
+      ).toBeLessThan(524_288);
+      await writeFile(quarantinePath, serializedSaturatedSnapshot, "utf8");
+
+      const coordinator = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const lease = coordinator.acquire({
+        workspaceRoot,
+        editorInstanceId: "editor-cap-boundary",
+      });
+      const leaseInput = {
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      };
+      coordinator.sync({
+        ...leaseInput,
+        sequence: 0,
+        buffers,
+      });
+      const first = await coordinator.prepareMutation({
+        path: paths[0]!,
+        source: "file_edit",
+        beforeText: bases[0]!,
+        afterText: candidates[0]!,
+      });
+      const second = await coordinator.prepareMutation({
+        path: paths[1]!,
+        source: "file_edit",
+        beforeText: bases[1]!,
+        afterText: candidates[1]!,
+      });
+      if (first.decision !== "proposal" || second.decision !== "proposal") {
+        throw new Error("expected the first two proposals to fit");
+      }
+      // A projection that resolves every other proposal before checking the
+      // target incorrectly sees their removed commitments as free space and
+      // admits C. The monotone envelope must retain that cumulative growth.
+      await expect(
+        coordinator.prepareMutation({
+          path: paths[2]!,
+          source: "file_edit",
+          beforeText: bases[2]!,
+          afterText: candidates[2]!,
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_EDITOR_SYNC" });
+
+      await expect(
+        coordinator.applyProposal({
+          ...leaseInput,
+          proposalId: first.proposal.proposalId,
+          changedtick: 2,
+          contentSha256: sha256(candidates[0]!),
+          content: candidates[0]!,
+        }),
+      ).resolves.toMatchObject({
+        applied: true,
+        proposalId: first.proposal.proposalId,
+      });
+      const restarted = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const restartedLease = restarted.acquire({
+        workspaceRoot,
+        editorInstanceId: "editor-cap-boundary-restart",
+      });
+      await expect(
+        restarted.discardProposalForEditor({
+          workspaceRoot,
+          editorInstanceId: restartedLease.editorInstanceId,
+          leaseToken: restartedLease.leaseToken,
+          epoch: restartedLease.epoch,
+          proposalId: second.proposal.proposalId,
+        }),
+      ).resolves.toMatchObject({
+        discarded: true,
+        proposalId: second.proposal.proposalId,
+      });
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "rejects Editor sync growth that would strand an existing proposal terminal",
+    async () => {
+      const workspaceRoot = await mkdtemp("/tmp/agenc-capmulti-root-");
+      const agencHome = await mkdtemp("/tmp/agenc-capmulti-home-");
+      temporaryPaths.push(workspaceRoot, agencHome);
+      const proposalPath = join(
+        workspaceRoot,
+        relativePathOfLength(3_400, "proposal-a"),
+      );
+      const shortCleanPath = join(
+        workspaceRoot,
+        relativePathOfLength(12, "short-clean"),
+      );
+      const grownCleanPath = join(
+        workspaceRoot,
+        relativePathOfLength(600, "grown-clean"),
+      );
+      const proposalBase = "proposal A dirty base\n";
+      const cleanBase = "clean disk revision\n";
+      const otherBuffers = Array.from({ length: 510 }, (_, index) => {
+        const content = `other dirty base ${index}\n`;
+        if (index === 0) {
+          return {
+            path: join(
+              workspaceRoot,
+              relativePathOfLength(748, `other-${index}`),
+            ),
+            bufferHandle: index + 3,
+            changedtick: 1,
+            contentSha256: sha256(content),
+            contentBytes: Buffer.byteLength(content, "utf8"),
+            dirty: false as const,
+          };
+        }
+        return {
+          path: join(
+            workspaceRoot,
+            relativePathOfLength(748, `other-${index}`),
+          ),
+          bufferHandle: index + 3,
+          changedtick: 1,
+          contentSha256: sha256(content),
+          dirty: true as const,
+          content,
+        };
+      });
+      const coordinator = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const lease = coordinator.acquire({
+        workspaceRoot,
+        editorInstanceId: "editor-cap-boundary",
+      });
+      const leaseInput = {
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      };
+      const proposalBuffer = {
+        path: proposalPath,
+        bufferHandle: 1,
+        changedtick: 1,
+        contentSha256: sha256(proposalBase),
+        dirty: true as const,
+        content: proposalBase,
+      };
+      coordinator.sync({
+        ...leaseInput,
+        sequence: 0,
+        buffers: [
+          proposalBuffer,
+          {
+            path: shortCleanPath,
+            bufferHandle: 2,
+            changedtick: 1,
+            contentSha256: sha256(cleanBase),
+            contentBytes: Buffer.byteLength(cleanBase, "utf8"),
+            dirty: false,
+          },
+          ...otherBuffers,
+        ],
+      });
+
+      const admission = await coordinator.prepareMutation({
+        path: proposalPath,
+        source: "file_edit",
+        beforeText: proposalBase,
+        afterText: "proposal A candidate\n",
+      });
+      if (admission.decision !== "proposal") {
+        throw new Error("expected proposal A to fit before Editor sync growth");
+      }
+
+      await expect(
+        coordinator.prepareMutation({
+          path: proposalPath,
+          source: "file_edit",
+          beforeText: "stale planner input\n",
+          afterText: "blocked replacement\n",
+        }),
+      ).resolves.toMatchObject({
+        decision: "blocked",
+        code: "STALE_EDITOR_BUFFER",
+      });
+      await expect(
+        coordinator.reserveEditorTopologyMutation({
+          ...leaseInput,
+          targets: [
+            {
+              path: otherBuffers[0]!.path,
+              allowOwnedClean: true,
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: "EDITOR_LEASE_MISMATCH" });
+      await expect(
+        coordinator.prepareMutation({
+          path: join(
+            workspaceRoot,
+            relativePathOfLength(120, "pending-disk-effect"),
+          ),
+          source: "file_write",
+          beforeText: "",
+          afterText: "disk replacement\n",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_EDITOR_SYNC" });
+
+      expect(() =>
+        coordinator.sync({
+          ...leaseInput,
+          sequence: 1,
+          buffers: [
+            proposalBuffer,
+            {
+              path: grownCleanPath,
+              bufferHandle: 2,
+              changedtick: 2,
+              contentSha256: sha256(cleanBase),
+              contentBytes: Buffer.byteLength(cleanBase, "utf8"),
+              dirty: false,
+            },
+            ...otherBuffers,
+          ],
+        }),
+      ).toThrowError(expect.objectContaining({ code: "INVALID_EDITOR_SYNC" }));
+      await coordinator.flushQuarantinePersistence();
+      const restarted = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const restartedLease = restarted.acquire({
+        workspaceRoot,
+        editorInstanceId: "editor-after-capacity-restart",
+      });
+      const restartedLeaseInput = {
+        workspaceRoot,
+        editorInstanceId: restartedLease.editorInstanceId,
+        leaseToken: restartedLease.leaseToken,
+        epoch: restartedLease.epoch,
+      };
+      await expect(
+        restarted.proposalStatus({
+          ...restartedLeaseInput,
+          proposalId: admission.proposal.proposalId,
+        }),
+      ).resolves.toMatchObject({
+        status: "committed",
+        proposalId: admission.proposal.proposalId,
+      });
+      await expect(
+        restarted.discardProposalForEditor({
+          ...restartedLeaseInput,
+          proposalId: admission.proposal.proposalId,
+        }),
+      ).resolves.toMatchObject({
+        discarded: true,
+        proposalId: admission.proposal.proposalId,
+      });
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "falls back to a scoped topology invalidation when exact contention cannot fit quarantine",
+    async () => {
+      const workspaceRoot = await mkdtemp("/tmp/agenc-capmulti-root-");
+      const agencHome = await mkdtemp("/tmp/agenc-capmulti-home-");
+      temporaryPaths.push(workspaceRoot, agencHome);
+      const shortCleanPath = join(
+        workspaceRoot,
+        relativePathOfLength(12, "short-clean"),
+      );
+      const topologyRoot = join(workspaceRoot, "newdir");
+      const contendedPath = join(
+        topologyRoot,
+        relativePathOfLength(300 - "newdir/".length, "contended"),
+      );
+      expect(contendedPath.slice(workspaceRoot.length + 1).length).toBe(300);
+      const cleanContent = "clean disk revision\n";
+      const dirtyBuffers = Array.from({ length: 511 }, (_, index) => {
+        const content = `topology dirty base ${index}\n`;
+        return {
+          path: join(
+            workspaceRoot,
+            relativePathOfLength(784, `dirty-${index}`),
+          ),
+          bufferHandle: index + 2,
+          changedtick: 1,
+          contentSha256: sha256(content),
+          dirty: true as const,
+          content,
+        };
+      });
+      const coordinator = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      const lease = coordinator.acquire({
+        workspaceRoot,
+        editorInstanceId: "editor-cap-boundary",
+      });
+      const leaseInput = {
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      };
+      coordinator.sync({
+        ...leaseInput,
+        sequence: 0,
+        buffers: [
+          {
+            path: shortCleanPath,
+            bufferHandle: 1,
+            changedtick: 1,
+            contentSha256: sha256(cleanContent),
+            contentBytes: Buffer.byteLength(cleanContent, "utf8"),
+            dirty: false,
+          },
+          ...dirtyBuffers,
+        ],
+      });
+      const token = await coordinator.reserveTopologyMutation([
+        { path: topologyRoot, includeDescendants: true },
+      ]);
+      await coordinator.flushQuarantinePersistence();
+
+      expect(() =>
+        coordinator.sync({
+          ...leaseInput,
+          sequence: 1,
+          buffers: [
+            {
+              path: contendedPath,
+              bufferHandle: 1,
+              changedtick: 2,
+              contentSha256: sha256(cleanContent),
+              contentBytes: Buffer.byteLength(cleanContent, "utf8"),
+              dirty: false,
+            },
+            ...dirtyBuffers,
+          ],
+        }),
+      ).toThrowError(
+        expect.objectContaining({ code: "EDITOR_LEASE_MISMATCH" }),
+      );
+      await expect(
+        coordinator.flushQuarantinePersistence(),
+      ).resolves.toBeUndefined();
+      const quarantinePath = workspaceMutationStatePath(
+        workspaceRoot,
+        agencHome,
+        "quarantine-v1.json",
+      );
+      const boundedQuarantine = JSON.parse(
+        await readFile(quarantinePath, "utf8"),
+      ) as {
+        readonly topologyIntents?: readonly {
+          readonly tokenId?: string;
+          readonly source?: string;
+          readonly targets?: readonly unknown[];
+          readonly contentions?: readonly unknown[];
+        }[];
+      };
+      expect(boundedQuarantine.topologyIntents?.[0]?.contentions).toEqual([]);
+      const persistedIntent = boundedQuarantine.topologyIntents?.[0];
+      if (persistedIntent === undefined) {
+        throw new Error("expected a durable topology intent");
+      }
+      const legacySnapshot = {
+        ...boundedQuarantine,
+        topologyIntents: [
+          {
+            ...persistedIntent,
+            contentions: [
+              { path: contendedPath, beforeSha256: sha256(cleanContent) },
+            ],
+          },
+        ],
+      };
+      const serializedLegacySnapshot = `${JSON.stringify(legacySnapshot)}\n`;
+      expect(
+        Buffer.byteLength(serializedLegacySnapshot, "utf8"),
+      ).toBeLessThanOrEqual(524_288);
+      await writeFile(quarantinePath, serializedLegacySnapshot, "utf8");
+      const migrated = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+      });
+      await migrated.flushQuarantinePersistence();
+      const repaired = JSON.parse(await readFile(quarantinePath, "utf8")) as {
+        readonly topologyIntents?: readonly {
+          readonly contentions?: readonly unknown[];
+        }[];
+      };
+      expect(repaired.topologyIntents?.[0]?.contentions).toEqual([]);
+      await expect(
+        coordinator.completeTopologyMutation(token, "applied"),
+      ).resolves.toBeUndefined();
+      expect(coordinator.listChanges(leaseInput).changes).toContainEqual(
+        expect.objectContaining({
+          kind: "topology",
+          topologyTokenId: token.tokenId,
+          path: topologyRoot,
+          includeDescendants: true,
+          status: "applied",
+        }),
+      );
+    },
+  );
+
+  it("widens duplicate topology targets before removing descendant scopes", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-topology-target-normalization-workspace-",
+    );
+    const agencHome = await tempDirectory(
+      "agenc-topology-target-normalization-home-",
+    );
+    const directory = join(workspaceRoot, "tree");
+    const child = join(directory, "child");
+    const coordinator = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+
+    for (const duplicateOrder of [
+      [
+        { path: directory, includeDescendants: false },
+        { path: directory, includeDescendants: true },
+      ],
+      [
+        { path: directory, includeDescendants: true },
+        { path: directory, includeDescendants: false },
+      ],
+    ]) {
+      const token = await coordinator.reserveTopologyMutation([
+        ...duplicateOrder,
+        { path: child, includeDescendants: true },
+      ]);
+      expect(token.targets).toEqual([
+        { path: directory, includeDescendants: true },
+      ]);
+      await coordinator.releaseTopologyMutation(token);
+    }
+  });
+
+  it("drains one proposal terminal audit before resolving an unrelated proposal", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-proposal-shared-audit-fence-workspace-",
+    );
+    const agencHome = await tempDirectory(
+      "agenc-proposal-shared-audit-fence-home-",
+    );
+    const firstPath = join(workspaceRoot, "first-reviewable.ts");
+    const secondPath = join(workspaceRoot, "second-terminal.ts");
+    const firstBase = "first dirty base\n";
+    const secondBase = "second dirty base\n";
+    await writeFile(firstPath, firstBase, "utf8");
+    await writeFile(secondPath, secondBase, "utf8");
+
+    let projectionAvailable = false;
+    const projectedProposalIds: string[] = [];
+    const coordinator = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+      appendLedgerOnce: async (entries) => {
+        if (!projectionAvailable) {
+          throw new Error("audit projection is offline");
+        }
+        for (const entry of entries) {
+          if (entry.proposalId !== undefined) {
+            projectedProposalIds.push(entry.proposalId);
+          }
+        }
+      },
+    });
+    const lease = coordinator.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-with-shared-audit-fence",
+    });
+    const leaseInput = {
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    };
+    coordinator.sync({
+      ...leaseInput,
+      sequence: 0,
+      buffers: [
+        {
+          path: firstPath,
+          bufferHandle: 114,
+          changedtick: 1,
+          contentSha256: sha256(firstBase),
+          dirty: true,
+          content: firstBase,
+        },
+        {
+          path: secondPath,
+          bufferHandle: 115,
+          changedtick: 1,
+          contentSha256: sha256(secondBase),
+          dirty: true,
+          content: secondBase,
+        },
+      ],
+    });
+    const firstAdmission = await coordinator.prepareMutation({
+      path: firstPath,
+      source: "file_edit",
+      beforeText: firstBase,
+      afterText: "first proposal candidate\n",
+    });
+    const secondAdmission = await coordinator.prepareMutation({
+      path: secondPath,
+      source: "file_edit",
+      beforeText: secondBase,
+      afterText: "second proposal candidate\n",
+    });
+    if (
+      firstAdmission.decision !== "proposal" ||
+      secondAdmission.decision !== "proposal"
+    ) {
+      throw new Error("expected two editor proposals");
+    }
+
+    await expect(
+      coordinator.discardProposalForEditor({
+        ...leaseInput,
+        proposalId: secondAdmission.proposal.proposalId,
+      }),
+    ).rejects.toMatchObject({ code: "MUTATION_AUDIT_FAILED" });
+    await expect(
+      coordinator.proposalStatus({
+        ...leaseInput,
+        proposalId: secondAdmission.proposal.proposalId,
+      }),
+    ).resolves.toMatchObject({ status: "discarded" });
+
+    await expect(
+      coordinator.discardProposalForEditor({
+        ...leaseInput,
+        proposalId: firstAdmission.proposal.proposalId,
+      }),
+    ).rejects.toMatchObject({ code: "MUTATION_AUDIT_FAILED" });
+    await expect(
+      coordinator.proposalStatus({
+        ...leaseInput,
+        proposalId: firstAdmission.proposal.proposalId,
+      }),
+    ).resolves.toMatchObject({ status: "reviewable" });
+
+    const fenced = JSON.parse(
+      await readFile(
+        workspaceMutationStatePath(
+          workspaceRoot,
+          agencHome,
+          "quarantine-v1.json",
+        ),
+        "utf8",
+      ),
+    ) as {
+      readonly proposalCommitments?: readonly {
+        readonly proposalId?: string;
+      }[];
+      readonly proposalReceipts?: readonly { readonly proposalId?: string }[];
+      readonly auditOutbox?: readonly { readonly proposalId?: string }[];
+    };
+    expect(fenced.proposalCommitments).toEqual([
+      expect.objectContaining({
+        proposalId: firstAdmission.proposal.proposalId,
+      }),
+    ]);
+    expect(fenced.proposalReceipts).toEqual([
+      expect.objectContaining({
+        proposalId: secondAdmission.proposal.proposalId,
+      }),
+    ]);
+    expect(fenced.auditOutbox).toEqual([
+      expect.objectContaining({
+        proposalId: secondAdmission.proposal.proposalId,
+      }),
+    ]);
+
+    projectionAvailable = true;
+    await expect(
+      coordinator.discardProposalForEditor({
+        ...leaseInput,
+        proposalId: firstAdmission.proposal.proposalId,
+      }),
+    ).resolves.toMatchObject({
+      discarded: true,
+      proposalId: firstAdmission.proposal.proposalId,
+    });
+    expect(projectedProposalIds).toEqual([
+      secondAdmission.proposal.proposalId,
+      firstAdmission.proposal.proposalId,
+    ]);
+  });
+
+  it.each(["ordinary", "editor"] as const)(
+    "fences %s topology reservation behind a pending proposal terminal audit",
+    async (reservationKind) => {
+      const workspaceRoot = await tempDirectory(
+        `agenc-topology-audit-fence-${reservationKind}-workspace-`,
+      );
+      const agencHome = await tempDirectory(
+        `agenc-topology-audit-fence-${reservationKind}-home-`,
+      );
+      const proposalPath = join(workspaceRoot, "proposal.ts");
+      const topologyPath = join(workspaceRoot, "topology-target.ts");
+      const base = "dirty proposal base\n";
+      await writeFile(proposalPath, base, "utf8");
+      await writeFile(topologyPath, "topology disk state\n", "utf8");
+
+      let projectionAvailable = false;
+      const coordinator = new WorkspaceMutationCoordinator({
+        workspaceRoot,
+        agencHome,
+        appendLedgerOnce: async () => {
+          if (!projectionAvailable) {
+            throw new Error("audit projection is offline");
+          }
+        },
+      });
+      const lease = coordinator.acquire({
+        workspaceRoot,
+        editorInstanceId: `editor-topology-audit-${reservationKind}`,
+      });
+      const leaseInput = {
+        workspaceRoot,
+        editorInstanceId: lease.editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+      };
+      coordinator.sync({
+        ...leaseInput,
+        sequence: 0,
+        buffers: [
+          {
+            path: proposalPath,
+            bufferHandle: 116,
+            changedtick: 1,
+            contentSha256: sha256(base),
+            dirty: true,
+            content: base,
+          },
+        ],
+      });
+      const admission = await coordinator.prepareMutation({
+        path: proposalPath,
+        source: "file_edit",
+        beforeText: base,
+        afterText: "proposal candidate\n",
+      });
+      if (admission.decision !== "proposal") {
+        throw new Error("expected an editor proposal");
+      }
+      await expect(
+        coordinator.discardProposalForEditor({
+          ...leaseInput,
+          proposalId: admission.proposal.proposalId,
+        }),
+      ).rejects.toMatchObject({ code: "MUTATION_AUDIT_FAILED" });
+
+      const reserve = () =>
+        reservationKind === "ordinary"
+          ? coordinator.reserveTopologyMutation([{ path: topologyPath }])
+          : coordinator.reserveEditorTopologyMutation({
+              ...leaseInput,
+              targets: [{ path: topologyPath }],
+              source: "editor",
+            });
+      await expect(reserve()).rejects.toMatchObject({
+        code: "MUTATION_AUDIT_FAILED",
+      });
+
+      projectionAvailable = true;
+      const token = await reserve();
+      await coordinator.releaseTopologyMutation(token);
+      await expect(
+        coordinator.proposalStatus({
+          ...leaseInput,
+          proposalId: admission.proposal.proposalId,
+        }),
+      ).resolves.toMatchObject({ status: "discarded" });
+    },
+  );
+
   it("keeps every admitted unresolved proposal discoverable and discardable after restart", async () => {
     const workspaceRoot = await tempDirectory(
       "agenc-proposal-discovery-capacity-",
@@ -2979,8 +6650,13 @@ describe("WorkspaceMutationCoordinator", () => {
     const coordinator = new WorkspaceMutationCoordinator({
       workspaceRoot,
       agencHome,
-      appendLedger: async (entry) => {
-        if (entry.status === "applied" && entry.proposalId !== undefined) {
+      appendLedgerOnce: async (entries) => {
+        if (
+          entries.some(
+            (entry) =>
+              entry.status === "applied" && entry.proposalId !== undefined,
+          )
+        ) {
           reportAppliedAppend();
           await appliedAppendGate;
         }
@@ -3074,8 +6750,13 @@ describe("WorkspaceMutationCoordinator", () => {
     const coordinator = new WorkspaceMutationCoordinator({
       workspaceRoot,
       agencHome,
-      appendLedger: async (entry) => {
-        if (entry.status === "applied" && entry.proposalId !== undefined) {
+      appendLedgerOnce: async (entries) => {
+        if (
+          entries.some(
+            (entry) =>
+              entry.status === "applied" && entry.proposalId !== undefined,
+          )
+        ) {
           reportAppliedAppend();
           await appliedAppendGate;
         }
@@ -3811,7 +7492,7 @@ describe("filesystem-tool editor coherence", () => {
     expect(result.isError).toBe(true);
     expect(result.content).toContain("changed files on disk");
     expect(result.content).toContain(
-      "2 workspace audit outcome(s) are unknown",
+      "3 workspace audit outcome(s) are unknown",
     );
     expect(await readFile(firstPath, "utf8")).toBe(firstAfter);
     expect(await readFile(secondPath, "utf8")).toBe(secondAfter);
@@ -3851,7 +7532,7 @@ describe("filesystem-tool editor coherence", () => {
           },
         ],
       }),
-    ).not.toThrow();
+    ).toThrow(/path operation is committing/u);
   });
 
   it("returns honest Write and NotebookEdit errors when bytes changed but auditing failed", async () => {
@@ -4395,6 +8076,27 @@ describe("filesystem-tool editor coherence", () => {
     expect(
       await readFile(join(destination, "nested", "clean.ts"), "utf8"),
     ).toBe(diskContent);
+    const delivered = coordinator.listChanges({
+      workspaceRoot,
+      editorInstanceId: "editor-a",
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    });
+    expect(delivered.changes).toContainEqual(
+      expect.objectContaining({
+        kind: "topology",
+        status: "applied",
+      }),
+    );
+    expect(
+      coordinator.listChanges({
+        workspaceRoot,
+        editorInstanceId: "editor-a",
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+        afterSequence: delivered.sequence,
+      }).changes,
+    ).toEqual([]);
     const unloadedDelete = await deleteTool.execute({
       path: destination,
       recursive: true,
@@ -5004,12 +8706,52 @@ describe("filesystem-tool editor coherence", () => {
         buffers: [],
         status: "unknown_outcome",
       }),
+    ).rejects.toThrow(/does not belong/u);
+    await expect(
+      restarted.resolveRecoveredEditorTopologyMutation({
+        workspaceRoot,
+        editorInstanceId: restartedLease.editorInstanceId,
+        leaseToken: restartedLease.leaseToken,
+        epoch: restartedLease.epoch,
+        tokenId: token.tokenId,
+        sequence: 0,
+        buffers: [],
+      }),
     ).resolves.toMatchObject({
-      completed: true,
+      resolved: true,
       tokenId: token.tokenId,
       status: "unknown_outcome",
       sync: { accepted: true, sequence: 0 },
     });
+    const delivered = restarted.listChanges({
+      workspaceRoot,
+      editorInstanceId: restartedLease.editorInstanceId,
+      leaseToken: restartedLease.leaseToken,
+      epoch: restartedLease.epoch,
+    });
+    expect(delivered.changes).toContainEqual(
+      expect.objectContaining({
+        kind: "topology",
+        topologyTokenId: token.tokenId,
+        path: directory,
+        includeDescendants: true,
+        status: "unknown_outcome",
+      }),
+    );
+    await expect(
+      restarted.reserveTopologyMutation([
+        { path: directory, includeDescendants: true },
+      ]),
+    ).rejects.toMatchObject({ code: "EDITOR_LEASE_MISMATCH" });
+    expect(
+      restarted.listChanges({
+        workspaceRoot,
+        editorInstanceId: restartedLease.editorInstanceId,
+        leaseToken: restartedLease.leaseToken,
+        epoch: restartedLease.epoch,
+        afterSequence: delivered.sequence,
+      }).changes,
+    ).toEqual([]);
     await expect(
       restarted.reserveTopologyMutation([
         { path: directory, includeDescendants: true },
@@ -5106,6 +8848,8 @@ describe("filesystem-tool editor coherence", () => {
       restarted.resolveRecoveredEditorTopologyMutation({
         ...leaseInput,
         tokenId: "not-the-durable-token",
+        sequence: 0,
+        buffers: [],
       }),
     ).rejects.toThrow(/not a durable orphan/u);
 
@@ -5113,11 +8857,14 @@ describe("filesystem-tool editor coherence", () => {
       restarted.resolveRecoveredEditorTopologyMutation({
         ...leaseInput,
         tokenId: token.tokenId,
+        sequence: 0,
+        buffers: [],
       }),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       resolved: true,
       tokenId: token.tokenId,
       status: "unknown_outcome",
+      sync: { accepted: true, sequence: 0 },
     });
     expect(restarted.listRecoveredEditorTopologyMutations(leaseInput)).toEqual(
       [],
@@ -5666,7 +9413,7 @@ describe("filesystem-tool editor coherence", () => {
       restarted.reserveTopologyMutation([
         { path: directory, includeDescendants: true },
       ]),
-    ).rejects.toThrow(/overlapping workspace path operation/u);
+    ).rejects.toThrow(/recovered path fences/u);
     expect(
       restarted.listChanges({
         workspaceRoot,
@@ -5682,14 +9429,13 @@ describe("filesystem-tool editor coherence", () => {
     );
 
     await restarted.completeTopologyMutation(reservation, "unknown_outcome");
-    expect(
-      restarted.listChanges({
-        workspaceRoot,
-        editorInstanceId: restartedLease.editorInstanceId,
-        leaseToken: restartedLease.leaseToken,
-        epoch: restartedLease.epoch,
-      }).changes,
-    ).toContainEqual(
+    const delivered = restarted.listChanges({
+      workspaceRoot,
+      editorInstanceId: restartedLease.editorInstanceId,
+      leaseToken: restartedLease.leaseToken,
+      epoch: restartedLease.epoch,
+    });
+    expect(delivered.changes).toContainEqual(
       expect.objectContaining({
         path,
         source: "rewind",
@@ -5698,6 +9444,15 @@ describe("filesystem-tool editor coherence", () => {
         afterSha256: sha256(after),
       }),
     );
+    expect(
+      restarted.listChanges({
+        workspaceRoot,
+        editorInstanceId: restartedLease.editorInstanceId,
+        leaseToken: restartedLease.leaseToken,
+        epoch: restartedLease.epoch,
+        afterSequence: delivered.sequence,
+      }).changes,
+    ).toEqual([]);
     await restarted.flushQuarantinePersistence();
     const afterReconciliation = await restarted.prepareMutation({
       path,
@@ -5767,7 +9522,7 @@ describe("filesystem-tool editor coherence", () => {
     });
   });
 
-  it("keeps a topology fence and its durable intent when reload delivery is full", async () => {
+  it("uses a scoped topology invalidation when exact reload delivery is full", async () => {
     const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
     const agencHome = await tempDirectory("agenc-coherence-home-");
     const coordinator = new WorkspaceMutationCoordinator({
@@ -5834,7 +9589,7 @@ describe("filesystem-tool editor coherence", () => {
     );
     await coordinator.flushQuarantinePersistence();
     expect(() => syncPath(secondPath, secondContent)).toThrow(
-      /pending workspace change queue/u,
+      /path operation is committing/u,
     );
     await coordinator.flushQuarantinePersistence();
     const quarantine = JSON.parse(
@@ -5855,13 +9610,33 @@ describe("filesystem-tool editor coherence", () => {
       quarantine.topologyIntents?.[0]?.contentions?.map(
         (contention) => contention.path,
       ),
-    ).toEqual([firstPath, secondPath]);
+    ).toEqual([]);
     await expect(
       coordinator.completeTopologyMutation(reservation, "applied"),
-    ).rejects.toThrow(/pending workspace change queue/u);
-    expect(() => syncPath(firstPath, firstContent)).toThrow(
-      /path operation is committing/u,
+    ).resolves.toBeUndefined();
+    const delivered = coordinator.listChanges({
+      workspaceRoot,
+      editorInstanceId: "full-delivery-editor",
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+    });
+    expect(delivered.changes).toContainEqual(
+      expect.objectContaining({
+        kind: "topology",
+        topologyTokenId: reservation.tokenId,
+        path: directory,
+        includeDescendants: true,
+        status: "applied",
+      }),
     );
+    await expect(
+      coordinator.prepareMutation({
+        path: firstPath,
+        source: "file_write",
+        beforeText: firstContent,
+        afterText: "stale provider write\n",
+      }),
+    ).rejects.toThrow(/acknowledges the completed workspace path operation/u);
   });
 
   it("declares every editor-coherence RPC as an internal capability", () => {

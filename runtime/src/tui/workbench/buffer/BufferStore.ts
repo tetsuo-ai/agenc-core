@@ -108,7 +108,9 @@ type Listener = () => void;
 export type BufferVimCommand =
   | { readonly type: "save"; readonly force: boolean }
   | { readonly type: "quit"; readonly discard: boolean; readonly all: boolean }
-  | { readonly type: "saveQuit"; readonly force: boolean; readonly all: boolean };
+  | { readonly type: "saveQuit"; readonly force: boolean; readonly all: boolean }
+  | { readonly type: "reload"; readonly force: true }
+  | { readonly type: "closeBuffer"; readonly discard: true };
 
 type BufferVimCommandHandler = (command: BufferVimCommand) => void;
 export type WorkbenchBufferStoreOptions = {
@@ -1070,6 +1072,12 @@ function parseVimCommand(rawCommand: string): BufferVimCommand | null {
     case "xa!":
     case "xall!":
       return { type: "saveQuit", force: true, all: true };
+    case "e!":
+    case "edit!":
+      return { type: "reload", force: true };
+    case "bd!":
+    case "bdelete!":
+      return { type: "closeBuffer", discard: true };
     default:
       return null;
   }

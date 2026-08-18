@@ -8,7 +8,10 @@ import React, {
 } from "react";
 import { basename, relative } from "node:path";
 
-import type { WorkspaceEditorRecoveredTopologyMutation } from "../../../app-server/protocol/index.js";
+import type {
+  WorkspaceEditorRecoveredTopologyMutation,
+  WorkspaceEditorStaleAuthorityEntry,
+} from "../../../app-server/protocol/index.js";
 import { peekLSPDiagnosticsForFile } from "../../../services/lsp/LSPDiagnosticRegistry.js";
 import { peekAmbientRuntimeSession } from "../../../session/current-session.js";
 import type { DiagnosticEntry } from "../../../services/lsp/types.js";
@@ -34,6 +37,7 @@ import { highlightBufferVisibleLines } from "../buffer/highlight.js";
 import { getWorkbenchBufferProviderController } from "../buffer/providers/BufferProviderController.js";
 import { BufferLine, NeovimGridView } from "../buffer/render.js";
 import { useBufferStore } from "../buffer/useBufferStore.js";
+import { bufferKeybindingContext } from "../buffer/keybindingContext.js";
 import { bufferIntegrationIntentCommand } from "../commands.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
@@ -50,6 +54,7 @@ import type {
 
 const EMPTY_HIGHLIGHTS: ReadonlyMap<number, string> = new Map();
 const INITIAL_CONTENT_SIZE = { rows: 1, columns: 1 } as const;
+const STALE_AUTHORITY_REVIEW_BATCH_SIZE = 1;
 
 export type BufferCodePredictionUi = {
   readonly enabled: boolean;
@@ -68,18 +73,28 @@ export type BufferTopologyRecoveryUi = {
   readonly onResolveUnknown: () => Promise<void>;
 };
 
+export type BufferStaleAuthorityRecoveryUi = {
+  readonly entries: readonly WorkspaceEditorStaleAuthorityEntry[];
+  readonly onRefresh: () => Promise<void>;
+  readonly onUseDisk: (
+    entries: readonly WorkspaceEditorStaleAuthorityEntry[],
+  ) => Promise<void>;
+};
+
 export function BufferSurface({
   focused,
   onEditorInteraction,
   codePrediction,
   mutationBlockedReason = null,
   topologyRecovery,
+  staleAuthorityRecovery,
 }: {
   readonly focused: boolean;
   readonly onEditorInteraction?: (intent: BufferIntegrationIntent) => void;
   readonly codePrediction?: BufferCodePredictionUi;
   readonly mutationBlockedReason?: string | null;
   readonly topologyRecovery?: BufferTopologyRecoveryUi;
+  readonly staleAuthorityRecovery?: BufferStaleAuthorityRecoveryUi;
 }): React.ReactElement {
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
@@ -114,6 +129,18 @@ export function BufferSurface({
   const [topologyRecoveryArmed, setTopologyRecoveryArmed] = useState(false);
   const [topologyRecoveryWorking, setTopologyRecoveryWorking] = useState(false);
   const topologyRecoveryArmedRef = useRef(false);
+  const [staleAuthorityArmedSignature, setStaleAuthorityArmedSignature] =
+    useState<string | null>(null);
+  const [staleAuthorityWorking, setStaleAuthorityWorking] = useState(false);
+  const [staleAuthorityEditorVisible, setStaleAuthorityEditorVisible] =
+    useState(false);
+  const [staleAuthorityEditorWorking, setStaleAuthorityEditorWorking] =
+    useState(false);
+  const [staleAuthorityNativeCommandLine, setStaleAuthorityNativeCommandLine] =
+    useState<string | null>(null);
+  const [staleAuthorityNativeCommandError, setStaleAuthorityNativeCommandError] =
+    useState<string | null>(null);
+  const staleAuthorityArmedSignatureRef = useRef<string | null>(null);
   const [predictionFeedbackRevision, setPredictionFeedbackRevision] =
     useState(0);
   const predictionGenerationRef = useRef(0);
@@ -178,6 +205,12 @@ export function BufferSurface({
   const recoveryPending =
     snapshot.recovery?.status === "pending" ||
     snapshot.recovery?.status === "working";
+  const nativeStaleAuthorityEditorVisible =
+    staleAuthorityEditorVisible &&
+    snapshot.provider.capabilities.terminalUi;
+  const inlineStaleAuthorityEditorVisible =
+    staleAuthorityEditorVisible &&
+    !snapshot.provider.capabilities.terminalUi;
   const attemptHostOpen = useCallback(
     (request: NonNullable<typeof pendingHostOpen.current>): void => {
       if (request.inFlight) return;
@@ -204,6 +237,35 @@ export function BufferSurface({
     setTopologyRecoveryArmed(false);
     setTopologyRecoveryWorking(false);
   }, [topologyRecovery?.mutation.tokenId]);
+  const staleAuthorityRecoverySignature = useMemo(
+    () =>
+      JSON.stringify(
+        staleAuthorityRecovery?.entries.map((entry) => [
+          entry.path,
+          entry.editorContentSha256,
+          entry.editorContentBytes,
+          entry.changedtick,
+          entry.editorInstanceId,
+          entry.epoch,
+          entry.editorState,
+          entry.diskState,
+          entry.diskContentSha256 ?? null,
+          entry.diskContentBytes ?? null,
+        ]) ?? [],
+      ),
+    [staleAuthorityRecovery?.entries],
+  );
+  const staleAuthorityArmed =
+    staleAuthorityArmedSignature === staleAuthorityRecoverySignature;
+  useLayoutEffect(() => {
+    staleAuthorityArmedSignatureRef.current = null;
+    setStaleAuthorityArmedSignature(null);
+    setStaleAuthorityWorking(false);
+    setStaleAuthorityEditorVisible(false);
+    setStaleAuthorityEditorWorking(false);
+    setStaleAuthorityNativeCommandLine(null);
+    setStaleAuthorityNativeCommandError(null);
+  }, [staleAuthorityRecoverySignature]);
   const resolveRecovery = useCallback(
     (action: "recover" | "compare" | "save-copy" | "discard"): void => {
       if (snapshot.recovery?.status !== "pending") return;
@@ -239,6 +301,88 @@ export function BufferSurface({
         setTopologyRecoveryWorking(false);
       });
   }, [topologyRecovery, topologyRecoveryWorking]);
+  const useDiskForStaleAuthority = useCallback((): void => {
+    if (
+      staleAuthorityRecovery === undefined ||
+      staleAuthorityWorking ||
+      staleAuthorityRecovery.entries
+        .slice(0, STALE_AUTHORITY_REVIEW_BATCH_SIZE)
+        .some((entry) => entry.diskState === "unavailable")
+    ) {
+      return;
+    }
+    if (
+      staleAuthorityArmedSignatureRef.current !==
+      staleAuthorityRecoverySignature
+    ) {
+      staleAuthorityArmedSignatureRef.current =
+        staleAuthorityRecoverySignature;
+      setStaleAuthorityArmedSignature(staleAuthorityRecoverySignature);
+      return;
+    }
+    staleAuthorityArmedSignatureRef.current = null;
+    setStaleAuthorityArmedSignature(null);
+    setStaleAuthorityWorking(true);
+    void staleAuthorityRecovery
+      .onUseDisk(
+        staleAuthorityRecovery.entries.slice(
+          0,
+          STALE_AUTHORITY_REVIEW_BATCH_SIZE,
+        ),
+      )
+      .catch(logError)
+      .finally(() => {
+        setStaleAuthorityWorking(false);
+      });
+  }, [
+    staleAuthorityRecovery,
+    staleAuthorityRecoverySignature,
+    staleAuthorityWorking,
+  ]);
+  const refreshStaleAuthority = useCallback((): void => {
+    if (staleAuthorityRecovery === undefined || staleAuthorityWorking) return;
+    setStaleAuthorityWorking(true);
+    void staleAuthorityRecovery
+      .onRefresh()
+      .catch(logError)
+      .finally(() => {
+        setStaleAuthorityWorking(false);
+      });
+  }, [staleAuthorityRecovery, staleAuthorityWorking]);
+  const performStaleAuthorityEditorAction = useCallback(
+    (action: "reload" | "unload"): void => {
+      const reviewedEntry = staleAuthorityRecovery?.entries[0];
+      if (reviewedEntry === undefined || staleAuthorityEditorWorking) {
+        return;
+      }
+      setStaleAuthorityEditorWorking(true);
+      setStaleAuthorityNativeCommandLine(null);
+      setStaleAuthorityNativeCommandError(null);
+      void store
+        .performStaleAuthorityEditorAction({
+          type: action,
+          path: reviewedEntry.path,
+        })
+        .then((completed) => {
+          if (!completed) {
+            setStaleAuthorityNativeCommandError(
+              `Recovery ${action} was not completed; review the Editor error and retry.`,
+            );
+            return;
+          }
+          if (action === "unload") setStaleAuthorityEditorVisible(false);
+        })
+        .catch((error: unknown) => {
+          logError(error);
+          setStaleAuthorityNativeCommandError(
+            `Recovery ${action} failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        })
+        .finally(() => {
+          setStaleAuthorityEditorWorking(false);
+        });
+    }, [staleAuthorityEditorWorking, staleAuthorityRecovery, store],
+  );
 
   useEffect(() => {
     if (!activePath) return;
@@ -517,9 +661,7 @@ export function BufferSurface({
     workbench.activeWorkspaceView,
   ]);
 
-  const keybindingContext = snapshot.provider.capabilities.terminalUi
-    ? "BufferHost"
-    : "Buffer";
+  const keybindingContext = bufferKeybindingContext(snapshot);
   useRegisterKeybindingContext(keybindingContext, focused);
   const hasInFlightAgent = Boolean(inFlightAgent);
   const keyHandlers = useMemo(
@@ -548,14 +690,36 @@ export function BufferSurface({
 
   const executeVimCommand = useCallback(
     (command: BufferVimCommand): void => {
-      if (mutationBlockedReason !== null && command.type !== "quit") return;
+      const deliberateRecoveryDiskAction =
+        staleAuthorityEditorVisible &&
+        (command.type === "reload" || command.type === "closeBuffer");
+      if (
+        mutationBlockedReason !== null &&
+        command.type !== "quit" &&
+        !deliberateRecoveryDiskAction
+      ) {
+        return;
+      }
+      if (deliberateRecoveryDiskAction) {
+        performStaleAuthorityEditorAction(
+          command.type === "reload" ? "reload" : "unload",
+        );
+        return;
+      }
       executeBufferVimCommand(command, {
         store,
         dispatch,
         hasInFlightAgent,
       });
     },
-    [dispatch, hasInFlightAgent, mutationBlockedReason, store],
+    [
+      dispatch,
+      hasInFlightAgent,
+      mutationBlockedReason,
+      performStaleAuthorityEditorAction,
+      staleAuthorityEditorVisible,
+      store,
+    ],
   );
 
   useInputCapture(
@@ -587,9 +751,95 @@ export function BufferSurface({
             copyCrashDetails();
             return true;
           }
+          // The crash card owns input while visible. Do not let an
+          // unrecognized key trigger a lower-priority recovery action that is
+          // currently hidden behind it.
+          return true;
         }
         if (topologyRecovery !== undefined) {
           if (input.toLowerCase() === "u") resolveTopologyRecovery();
+          return true;
+        }
+        if (staleAuthorityRecovery !== undefined) {
+          if (staleAuthorityEditorVisible) {
+            if (key.ctrl && input.toLowerCase() === "g") {
+              setStaleAuthorityEditorVisible(false);
+              setStaleAuthorityNativeCommandLine(null);
+              setStaleAuthorityNativeCommandError(null);
+              return true;
+            }
+            if (nativeStaleAuthorityEditorVisible) {
+              if (staleAuthorityEditorWorking) return true;
+              if (event.keypress.isPasted) {
+                setStaleAuthorityNativeCommandError(
+                  "Paste is disabled in the restricted Recovery Editor.",
+                );
+                return true;
+              }
+              if (staleAuthorityNativeCommandLine === null) {
+                if (
+                  input === ":" &&
+                  !key.ctrl &&
+                  !key.meta &&
+                  !key.super
+                ) {
+                  setStaleAuthorityNativeCommandLine("");
+                  setStaleAuthorityNativeCommandError(null);
+                }
+                return true;
+              }
+              if (key.escape || (key.ctrl && input.toLowerCase() === "c")) {
+                setStaleAuthorityNativeCommandLine(null);
+                setStaleAuthorityNativeCommandError(null);
+                return true;
+              }
+              if (key.return) {
+                const action = staleAuthorityEditorActionFromCommand(
+                  staleAuthorityNativeCommandLine,
+                );
+                setStaleAuthorityNativeCommandLine(null);
+                if (action === null) {
+                  setStaleAuthorityNativeCommandError(
+                    "Restricted Recovery Editor allows only :edit! and :bd!.",
+                  );
+                  return true;
+                }
+                performStaleAuthorityEditorAction(action);
+                return true;
+              }
+              if (key.backspace || key.delete) {
+                setStaleAuthorityNativeCommandLine((command) =>
+                  command === null
+                    ? null
+                    : removeLastRecoveryCommandChar(command),
+                );
+                return true;
+              }
+              if (key.ctrl || key.meta || key.super) return true;
+              if (/^[\x20-\x7e]+$/u.test(input)) {
+                setStaleAuthorityNativeCommandLine((command) =>
+                  command === null
+                    ? null
+                    : `${command}${input}`.slice(0, 64),
+                );
+              }
+              return true;
+            }
+            return store.handleInput(
+              input,
+              key,
+              inputContentSize.current,
+              executeVimCommand,
+              event.keypress.isPasted,
+            );
+          }
+          if (input.toLowerCase() === "d") useDiskForStaleAuthority();
+          if (input.toLowerCase() === "r") refreshStaleAuthority();
+          if (input.toLowerCase() === "e") {
+            setStaleAuthorityEditorVisible(true);
+            setStaleAuthorityNativeCommandLine(null);
+            setStaleAuthorityNativeCommandError(null);
+          }
           return true;
         }
         if (mutationBlockedReason !== null) return true;
@@ -625,13 +875,21 @@ export function BufferSurface({
         executeVimCommand,
         hasInFlightAgent,
         mutationBlockedReason,
+        nativeStaleAuthorityEditorVisible,
+        performStaleAuthorityEditorAction,
         recoveryPending,
+        refreshStaleAuthority,
         resolveRecovery,
         resolveTopologyRecovery,
         restartAfterCrash,
         snapshot.provider.capabilities.terminalUi,
+        staleAuthorityEditorVisible,
+        staleAuthorityEditorWorking,
+        staleAuthorityNativeCommandLine,
         store,
+        staleAuthorityRecovery,
         topologyRecovery,
+        useDiskForStaleAuthority,
       ],
     ),
     { context: keybindingContext, isActive: focused },
@@ -640,7 +898,8 @@ export function BufferSurface({
   if (
     !activePath &&
     snapshot.status === "idle" &&
-    topologyRecovery === undefined
+    topologyRecovery === undefined &&
+    staleAuthorityRecovery === undefined
   ) {
     return <EmptySurface title="BUFFER" message="No file selected" />;
   }
@@ -722,7 +981,11 @@ export function BufferSurface({
               onClick={(event) => {
                 event.stopImmediatePropagation();
                 dispatch({ type: "focus", pane: "surface" });
-                if (mutationBlockedReason !== null) return;
+                if (
+                  mutationBlockedReason !== null &&
+                  !inlineStaleAuthorityEditorVisible
+                )
+                  return;
                 void store.selectBuffer(buffer.handle).catch(logError);
               }}
             >
@@ -751,7 +1014,12 @@ export function BufferSurface({
         onClick={(event) => {
           event.stopImmediatePropagation();
           dispatch({ type: "focus", pane: "surface" });
-          if (recoveryPending || crashed || mutationBlockedReason !== null)
+          if (
+            recoveryPending ||
+            crashed ||
+            (mutationBlockedReason !== null &&
+              !inlineStaleAuthorityEditorVisible)
+          )
             return;
           store.click(event.localRow, event.localCol);
         }}
@@ -782,15 +1050,34 @@ export function BufferSurface({
             working={topologyRecoveryWorking}
             onResolve={resolveTopologyRecovery}
           />
+        ) : staleAuthorityRecovery && !staleAuthorityEditorVisible ? (
+          <StaleAuthorityRecoveryCard
+            entries={staleAuthorityRecovery.entries}
+            armed={staleAuthorityArmed}
+            working={staleAuthorityWorking}
+            onRefresh={refreshStaleAuthority}
+            onOpenEditor={() => setStaleAuthorityEditorVisible(true)}
+            onUseDisk={useDiskForStaleAuthority}
+          />
         ) : snapshot.status === "loading" ? (
           <Text dimColor>Loading...</Text>
         ) : null}
-        {!recoveryPending && !crashed && !topologyRecovery && terminal ? (
+        {!recoveryPending &&
+        !crashed &&
+        !topologyRecovery &&
+        (!staleAuthorityRecovery || staleAuthorityEditorVisible) &&
+        terminal ? (
           <NeovimGridView
             terminal={terminal}
-            focused={focused && mutationBlockedReason === null}
+            focused={
+              focused &&
+              mutationBlockedReason === null
+            }
           />
-        ) : !recoveryPending && !crashed && !topologyRecovery ? (
+        ) : !recoveryPending &&
+          !crashed &&
+          !topologyRecovery &&
+          (!staleAuthorityRecovery || staleAuthorityEditorVisible) ? (
           visibleLines.map((line) => (
             <BufferLine
               key={line.number}
@@ -817,17 +1104,36 @@ export function BufferSurface({
                   : topologyRecoveryArmed
                     ? "Press U again to mark outcome unknown and resynchronize"
                     : "U review and resolve interrupted path operation"
-                : mutationBlockedReason !== null
-                  ? "EDITOR READ-ONLY  alt+h explorer  shift+tab composer  alt+q hide"
-                  : terminal
-                    ? `${terminal.mode.toUpperCase()}  ctrl+s save  ctrl+r redo${workbench.rail !== null ? "  alt+l AI" : ""}  alt+r rail  shift+tab composer  alt+z ${workbench.surfaceMaximized ? "restore" : "maximize"}  alt+h explorer  alt+e external`
-                    : snapshot.vimCommandLine !== null
-                      ? `:${snapshot.vimCommandLine}`
-                      : snapshot.vimMode === "VISUAL"
-                        ? "VISUAL  h/j/k/l move  y yank  d delete  c change  p paste  esc normal"
-                        : snapshot.vimMode === "NORMAL"
-                          ? "BASIC FALLBACK  v visual  y/p register  : command  i/a/o insert  ctrl+r rail  esc composer"
-                          : "INSERT  esc normal"}
+                : staleAuthorityRecovery
+                  ? staleAuthorityEditorVisible
+                    ? nativeStaleAuthorityEditorVisible &&
+                      staleAuthorityNativeCommandLine !== null
+                      ? `RECOVERY COMMAND :${staleAuthorityNativeCommandLine}`
+                      : staleAuthorityEditorWorking
+                        ? "RECOVERY EDITOR — APPLYING RESTRICTED ACTION…"
+                        : staleAuthorityNativeCommandError !== null
+                          ? staleAuthorityNativeCommandError
+                          : "RESTRICTED RECOVERY EDITOR  :edit! reload  :bd! unload reviewed path  ctrl+g review"
+                    : staleAuthorityWorking
+                      ? "CONFIRMING DISK STATE AND RESYNCHRONIZING…"
+                      : staleAuthorityRecovery.entries
+                            .slice(0, STALE_AUTHORITY_REVIEW_BATCH_SIZE)
+                            .some((entry) => entry.diskState === "unavailable")
+                        ? "DISK STATE UNAVAILABLE — restore/remove the path, then R refresh"
+                        : staleAuthorityArmed
+                          ? "Press D again to permanently abandon orphaned edits and use disk"
+                          : "D review and use exact disk state"
+                  : mutationBlockedReason !== null
+                    ? "EDITOR READ-ONLY  alt+h explorer  shift+tab composer  alt+q hide"
+                    : terminal
+                      ? `${terminal.mode.toUpperCase()}  ctrl+s save  ctrl+r redo${workbench.rail !== null ? "  alt+l AI" : ""}  alt+r rail  shift+tab composer  alt+z ${workbench.surfaceMaximized ? "restore" : "maximize"}  alt+h explorer  alt+e external`
+                      : snapshot.vimCommandLine !== null
+                        ? `:${snapshot.vimCommandLine}`
+                        : snapshot.vimMode === "VISUAL"
+                          ? "VISUAL  h/j/k/l move  y yank  d delete  c change  p paste  esc normal"
+                          : snapshot.vimMode === "NORMAL"
+                            ? "BASIC FALLBACK  v visual  y/p register  : command  i/a/o insert  ctrl+r rail  esc composer"
+                            : "INSERT  esc normal"}
         </Text>
       </Box>
     </Box>
@@ -837,6 +1143,25 @@ export function BufferSurface({
 export function isCodePredictionInsertMode(mode: string): boolean {
   const normalized = mode.trim().toLowerCase();
   return normalized === "i" || normalized.startsWith("insert");
+}
+
+export function staleAuthorityEditorActionFromCommand(
+  rawCommand: string,
+): "reload" | "unload" | null {
+  switch (rawCommand.trim().toLowerCase()) {
+    case "e!":
+    case "edit!":
+      return "reload";
+    case "bd!":
+    case "bdelete!":
+      return "unload";
+    default:
+      return null;
+  }
+}
+
+function removeLastRecoveryCommandChar(value: string): string {
+  return Array.from(value).slice(0, -1).join("");
 }
 
 export function bufferTabLabels(
@@ -949,6 +1274,100 @@ function NeovimCrashCard({
         <Box borderStyle="single" paddingX={1} onClick={onCopy}>
           <Text>C Copy details</Text>
         </Box>
+      </Box>
+    </Box>
+  );
+}
+
+function StaleAuthorityRecoveryCard({
+  entries,
+  armed,
+  working,
+  onRefresh,
+  onOpenEditor,
+  onUseDisk,
+}: {
+  readonly entries: readonly WorkspaceEditorStaleAuthorityEntry[];
+  readonly armed: boolean;
+  readonly working: boolean;
+  readonly onRefresh: () => void;
+  readonly onOpenEditor: () => void;
+  readonly onUseDisk: () => void;
+}): React.ReactElement {
+  const visibleEntries = entries.slice(0, STALE_AUTHORITY_REVIEW_BATCH_SIZE);
+  const diskUnavailable = visibleEntries.some(
+    (entry) => entry.diskState === "unavailable",
+  );
+  return (
+    <Box flexDirection="column" paddingX={1} paddingY={1}>
+      <Text color="warning" bold>
+        Orphaned Editor revisions need a decision
+      </Text>
+      {visibleEntries.map((entry) => (
+        <Text key={entry.path} dimColor wrap="truncate-middle">
+          {entry.path} — Editor {entry.editorContentBytes} B (
+          {entry.editorState === "dirty" ? "dirty" : "last known clean"}), disk{" "}
+          {entry.diskState === "content"
+            ? `${entry.diskContentBytes} B`
+            : entry.diskState}
+        </Text>
+      ))}
+      {entries.length > visibleEntries.length ? (
+        <Text dimColor>
+          {entries.length - visibleEntries.length} more affected path
+          {entries.length - visibleEntries.length === 1
+            ? " remains"
+            : "s remain"}{" "}
+          for a later review
+        </Text>
+      ) : null}
+      {working ? (
+        <Text>Verifying the exact disk fingerprints and resynchronizing…</Text>
+      ) : diskUnavailable ? (
+        <Text color="error" wrap="wrap">
+          At least one disk path is unreadable, not a regular file, or too
+          large. Restore it to a readable file or remove it before choosing
+          disk, then refresh the evidence.
+        </Text>
+      ) : armed ? (
+        <Text color="error" wrap="wrap">
+          Press D again to permanently abandon the orphaned revision shown
+          above. AgenC will proceed only if its disk fingerprint still matches
+          this review.
+        </Text>
+      ) : (
+        <Text dimColor wrap="wrap">
+          AgenC retained fingerprints, not the previous source text. Recover a
+          Neovim swap if one is offered. Use Disk deliberately discards the
+          orphaned revision and any proposals based on it. Open Recovery Editor
+          to run :edit! or :bd! when the path is still loaded.
+        </Text>
+      )}
+      <Box
+        borderStyle="single"
+        paddingX={1}
+        marginTop={1}
+        onClick={onOpenEditor}
+      >
+        <Text>E Open Recovery Editor</Text>
+      </Box>
+      <Box
+        borderStyle="single"
+        paddingX={1}
+        marginTop={1}
+        onClick={working ? undefined : diskUnavailable ? onRefresh : onUseDisk}
+      >
+        <Text color={armed ? "error" : undefined}>
+          {working
+            ? diskUnavailable
+              ? "Refreshing…"
+              : "Confirming…"
+            : diskUnavailable
+              ? "R Refresh Disk State"
+              : armed
+                ? "D Confirm Use Disk"
+                : "D Use Disk"}
+        </Text>
       </Box>
     </Box>
   );
@@ -1122,6 +1541,8 @@ type BufferSurfaceStore = Pick<
   ReturnType<typeof getWorkbenchBufferProviderController>,
   | "save"
   | "revert"
+  | "performStaleAuthorityEditorAction"
+  | "close"
   | "openExternalEditor"
   | "undo"
   | "redo"
@@ -1247,10 +1668,11 @@ export function executeBufferVimCommand(
     store,
     dispatch,
     hasInFlightAgent,
+    onBufferClosed,
   }: Pick<
     BufferSurfaceActionOptions,
     "store" | "dispatch" | "hasInFlightAgent"
-  >,
+  > & { readonly onBufferClosed?: () => void },
 ): void {
   switch (command.type) {
     case "save":
@@ -1269,6 +1691,17 @@ export function executeBufferVimCommand(
         });
         if (saved) dispatch({ type: "closeSurface" });
       })().catch(logError);
+      break;
+    case "reload":
+      void store.revert().catch(logError);
+      break;
+    case "closeBuffer":
+      void store
+        .close({ discard: command.discard })
+        .then((closed) => {
+          if (closed) onBufferClosed?.();
+        })
+        .catch(logError);
       break;
   }
 }

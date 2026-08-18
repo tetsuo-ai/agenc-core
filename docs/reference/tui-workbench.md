@@ -106,7 +106,7 @@ cannot replace or submit Agent-tab context.
 | `Ctrl+S`               | Save the active buffer with AgenC's disk/agent conflict checks                        |
 | `Ctrl+R`               | Redo the last Neovim change natively                                                  |
 | `Alt+R`                | Move the current file to the review rail and return to chat                           |
-| `Alt+H`                | Focus the project explorer                                                            |
+| `Alt+H`                | Focus the project explorer, including from a fresh **No file selected** Editor        |
 | `Alt+L`                | Focus the open Editor AI/proposal panel; pass through to Neovim when no panel is open |
 | `Alt+E`                | Open the configured external editor, only when every Neovim buffer is confirmed clean |
 
@@ -151,6 +151,23 @@ preflights the complete buffer set before it writes. The same gate covers
 blocked during a proposal-only Editor turn, asynchronous proposal staging, and
 shadow review; AgenC focuses the proposal panel so the user can accept or
 reject it before retrying the transition.
+
+After a crash leaves orphaned dirty authority—or a last-known-clean Editor path
+changes during downtime—BUFFER shows a recovery card instead of leaving the
+workspace silently blocked. It reviews one path at a time. Prefer a matching
+Neovim swap when available; press `E` to open the loaded Recovery Editor. Its
+hard-quarantine command surface is host-owned: only exact `:edit!`/`:bd!`
+(`:bdelete!`) recovery actions are accepted, and native Neovim input, mappings,
+paste, mouse input, and tab selection are not forwarded. Press `Ctrl+G` to
+return. This narrow recovery restriction does not sandbox ordinary embedded
+Neovim or user configuration outside quarantine. Otherwise **Use Disk**
+requires two
+`D` presses (or clicks), warns that the reviewed revision and proposals will be
+discarded, and succeeds only if the daemon revalidates its exact disk
+fingerprint (hash and byte count). Changed or unavailable disk state keeps the
+recovery card and workspace protection in place. After restoring or removing
+an unavailable path, press `R` to re-read only the card's disk evidence; this
+does not synchronize the loaded buffer or resolve its quarantine.
 
 Providers are `auto`, `neovim`, `inline`, and `external`. Configure them from
 `/config`, `[buffer]` in `config.toml`, or temporary `AGENC_BUFFER_*`

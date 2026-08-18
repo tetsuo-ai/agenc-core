@@ -49,11 +49,9 @@ export default async function (session) {
   );
   let openedReadmeFromExplorer = false;
   if (/No file selected/u.test(frameText(session))) {
-    // A fresh workspace has no active buffer. Focus the shared explorer,
-    // select README.md (the second fixture file), and open it in Editor.
-    session.send("\x18");
-    await sleep(80);
-    session.send("h");
+    // A fresh workspace has no active buffer. Exercise the documented Alt+H
+    // chord, select README.md (the second fixture file), and open it in Editor.
+    session.send("\x1bh");
     await sleep(100);
     session.send("\x1b[B");
     session.send("\r");

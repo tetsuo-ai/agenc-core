@@ -13,6 +13,7 @@ import {
   TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
 } from "./daemon-dispatcher.js";
 import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
   JSON_RPC_VERSION,
   type AgenCDaemonRequest,
   type JsonObject,
@@ -100,8 +101,8 @@ describe("AgenC in-process app-server transport", () => {
     await expect(transport.initialize()).resolves.toMatchObject({
       result: {
         type: "initialized",
-        protocolVersion: "1.0.0",
-        protocol: { version: "1.0.0" },
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       },
     });
     expect(transport.initialized).toBe(true);
@@ -283,7 +284,7 @@ describe("AgenC in-process app-server transport", () => {
       id: 1,
       method: "initialize",
       params: {
-        protocolVersion: "1.0.0",
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
         clientName: "sdk-shape-test",
       },
     } satisfies AgenCDaemonRequest;
@@ -293,7 +294,7 @@ describe("AgenC in-process app-server transport", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocol: { version: "1.0.0" },
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       },
     });
     await transport.close();
@@ -322,8 +323,8 @@ describe("AgenC in-process app-server transport", () => {
       }),
     ).resolves.toMatchObject({
       type: "initialized",
-      protocolVersion: "1.0.0",
-      protocol: { version: "1.0.0" },
+      protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+      protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
     });
     await transport.close();
   });

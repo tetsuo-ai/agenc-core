@@ -538,6 +538,59 @@ describe("embedded Neovim lifecycle", () => {
     await session.cleanup();
   });
 
+  it("uses exact path-bound noautocmd RPCs for stale-authority recovery", async () => {
+    const child = fakeChild({
+      exitCode: 0,
+      pid: syntheticNeovimPid(793),
+    });
+    const rpc = {
+      request: vi.fn(async () => true),
+      close: vi.fn(),
+    };
+    const session = new EmbeddedNeovimSession(
+      { child, pid: syntheticNeovimPid(793), kill: vi.fn() } as any,
+      rpc as any,
+      { resize: vi.fn(), dispose: vi.fn() } as any,
+      5,
+      25,
+    );
+    const reviewedPath = "/workspace/reviewed.ts";
+
+    await expect(
+      session.reloadBufferForStaleAuthority(7, reviewedPath),
+    ).resolves.toBe(true);
+    await expect(
+      session.unloadBufferForStaleAuthority(7, reviewedPath),
+    ).resolves.toBe(true);
+
+    expect(rpc.request).toHaveBeenNthCalledWith(
+      1,
+      "nvim_exec_lua",
+      [
+        expect.stringMatching(
+          /actual_path ~= expected_path[\s\S]*silent keepalt noautocmd edit!/u,
+        ),
+        [7, reviewedPath],
+      ],
+      { timeoutMs: 25, signal: expect.any(AbortSignal) },
+    );
+    expect(rpc.request).toHaveBeenNthCalledWith(
+      2,
+      "nvim_exec_lua",
+      [
+        expect.stringMatching(
+          /actual_path ~= expected_path[\s\S]*silent noautocmd bdelete!/u,
+        ),
+        [7, reviewedPath],
+      ],
+      { timeoutMs: 25, signal: expect.any(AbortSignal) },
+    );
+    expect(rpc.request).toHaveBeenCalledTimes(2);
+    await expect(
+      session.reloadBufferForStaleAuthority(7, ""),
+    ).rejects.toThrow("requires a named file buffer");
+  });
+
   it("reloads a clean loaded path through a guarded Neovim buffer call", async () => {
     const child = fakeChild({
       exitCode: 0,

@@ -141,6 +141,7 @@ import {
   type WorkspaceEditorReleaseParams,
   type WorkspaceEditorRecoveredTopologyListParams,
   type WorkspaceEditorRecoveredTopologyResolveParams,
+  type WorkspaceEditorStaleAuthorityEntry,
   type WorkspaceEditorSyncParams,
   type WorkspaceEditorTopologyCompleteParams,
   type WorkspaceEditorTopologyFinalizeParams,
@@ -326,6 +327,7 @@ function buildServerCapabilities(
     "auth.logout": inputs.authHandlers !== undefined,
     "workspace.editor.acquire": true,
     "workspace.editor.sync": true,
+    "workspace.editor.staleAuthority.refresh": true,
     "workspace.editor.heartbeat": true,
     "workspace.editor.release": true,
     "workspace.editor.topology.reserve": true,
@@ -1000,6 +1002,16 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await syncWorkspaceEditor(validateWorkspaceEditorSyncParams(params)),
+        );
+      case "workspace.editor.staleAuthority.refresh":
+        return internalSuccessResponse(
+          id,
+          await refreshWorkspaceEditorStaleAuthority(
+            validateWorkspaceEditorHeartbeatParams(
+              params,
+              "workspace.editor.staleAuthority.refresh",
+            ),
+          ),
         );
       case "workspace.editor.heartbeat":
         return internalSuccessResponse(
@@ -1958,6 +1970,17 @@ function negotiateInitializeProtocol(
   ) {
     return { supported: false, clientVersion };
   }
+  const clientProtocol = parseProtocolVersion(clientVersion)!;
+  const negotiatedCapabilities =
+    clientProtocol.minor < 1
+      ? ({
+          ...serverCapabilities,
+          [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: {
+            ...serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY],
+            "workspace.editor.topology.recovered.resolve": false,
+          },
+        } satisfies AgenCDaemonServerCapabilities)
+      : serverCapabilities;
   return {
     supported: true,
     state: {
@@ -1965,7 +1988,7 @@ function negotiateInitializeProtocol(
       clientProtocol: { version: clientVersion },
       serverProtocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientCapabilities: cloneJsonObject(params.capabilities),
-      serverCapabilities,
+      serverCapabilities: negotiatedCapabilities,
     },
   };
 }
@@ -2606,7 +2629,11 @@ function validateSessionResolveToolCallParams(
   ].some((field) => Object.prototype.hasOwnProperty.call(validated, field));
   if (!hasEvidenceFields) {
     if (validated.toolCallId !== undefined) {
-      validateRequiredString(validated, "session.resolveToolCall", "toolCallId");
+      validateRequiredString(
+        validated,
+        "session.resolveToolCall",
+        "toolCallId",
+      );
     }
     if (validated.reviewer !== undefined) {
       validateRequiredString(validated, "session.resolveToolCall", "reviewer");
@@ -2729,11 +2756,7 @@ function validateSessionRollbackCompactionParams(
 ): SessionRollbackCompactionParams {
   const validated = validateObjectShape(params, {
     methodName: "session.rollbackCompaction",
-    stringFields: [
-      "sessionId",
-      "attemptId",
-      "reviewedBranchTargetSessionId",
-    ],
+    stringFields: ["sessionId", "attemptId", "reviewedBranchTargetSessionId"],
   });
   validateRequiredString(validated, "session.rollbackCompaction", "sessionId");
   validateRequiredString(validated, "session.rollbackCompaction", "attemptId");
@@ -3487,7 +3510,7 @@ function validateWorkspaceEditorSyncParams(
     methodName: "workspace.editor.sync",
     stringFields: ["workspaceRoot", "editorInstanceId", "leaseToken"],
     numberFields: ["epoch", "sequence"],
-    valueFields: ["buffers"],
+    valueFields: ["buffers", "abandonStaleAuthority"],
   });
   for (const field of [
     "workspaceRoot",
@@ -3514,7 +3537,112 @@ function validateWorkspaceEditorSyncParams(
   const buffers = validated.buffers.map((value, index) =>
     validateWorkspaceEditorBuffer(value, index),
   );
-  return { ...validated, buffers } as unknown as WorkspaceEditorSyncParams;
+  const abandonStaleAuthority =
+    validated.abandonStaleAuthority === undefined
+      ? undefined
+      : validateWorkspaceEditorStaleAuthorityEntries(
+          validated.abandonStaleAuthority,
+        );
+  return {
+    ...validated,
+    buffers,
+    ...(abandonStaleAuthority !== undefined ? { abandonStaleAuthority } : {}),
+  } as unknown as WorkspaceEditorSyncParams;
+}
+
+function validateWorkspaceEditorStaleAuthorityEntries(
+  value: unknown,
+): readonly WorkspaceEditorStaleAuthorityEntry[] {
+  const field = "workspace.editor.sync param 'abandonStaleAuthority'";
+  if (!Array.isArray(value) || value.length === 0 || value.length > 512) {
+    throw invalidParams(`${field} must contain between 1 and 512 entries`);
+  }
+  return value.map((candidate, index) => {
+    const methodName = `workspace.editor.sync.abandonStaleAuthority[${index}]`;
+    if (!isPlainJsonObject(candidate)) {
+      throw invalidParams(`${methodName} must be an object`);
+    }
+    const validated = validateObjectShape(candidate, {
+      methodName,
+      stringFields: [
+        "path",
+        "editorContentSha256",
+        "editorInstanceId",
+        "editorState",
+        "diskState",
+        "diskContentSha256",
+      ],
+      numberFields: [
+        "editorContentBytes",
+        "changedtick",
+        "epoch",
+        "diskContentBytes",
+      ],
+    });
+    for (const required of [
+      "path",
+      "editorContentSha256",
+      "editorInstanceId",
+      "editorState",
+      "diskState",
+    ] as const) {
+      validateRequiredString(validated, methodName, required);
+    }
+    if (!/^[a-f0-9]{64}$/u.test(validated.editorContentSha256 as string)) {
+      throw invalidParams(
+        `${methodName} param 'editorContentSha256' must be a SHA-256 digest`,
+      );
+    }
+    if (
+      validated.editorState !== "dirty" &&
+      validated.editorState !== "clean"
+    ) {
+      throw invalidParams(
+        `${methodName} param 'editorState' must be dirty or clean`,
+      );
+    }
+    for (const numberField of [
+      "editorContentBytes",
+      "changedtick",
+      "epoch",
+    ] as const) {
+      if (
+        !Number.isSafeInteger(validated[numberField]) ||
+        (validated[numberField] as number) < (numberField === "epoch" ? 1 : 0)
+      ) {
+        throw invalidParams(
+          `${methodName} param '${numberField}' must be a ${numberField === "epoch" ? "positive" : "non-negative"} safe integer`,
+        );
+      }
+    }
+    if (validated.diskState === "content") {
+      if (
+        typeof validated.diskContentSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(validated.diskContentSha256) ||
+        !Number.isSafeInteger(validated.diskContentBytes) ||
+        (validated.diskContentBytes as number) < 0
+      ) {
+        throw invalidParams(
+          `${methodName} content disk state requires a SHA-256 digest and non-negative byte length`,
+        );
+      }
+    } else if (
+      validated.diskState !== "missing" &&
+      validated.diskState !== "unavailable"
+    ) {
+      throw invalidParams(
+        `${methodName} param 'diskState' must be content, missing, or unavailable`,
+      );
+    } else if (
+      validated.diskContentSha256 !== undefined ||
+      validated.diskContentBytes !== undefined
+    ) {
+      throw invalidParams(
+        `${methodName} non-content disk state must not include disk content evidence`,
+      );
+    }
+    return validated as WorkspaceEditorStaleAuthorityEntry;
+  });
 }
 
 function validateWorkspaceEditorBuffer(
@@ -3558,6 +3686,7 @@ function validateWorkspaceEditorBuffer(
 function validateWorkspaceEditorHeartbeatParams(
   params: JsonObject,
   methodName:
+    | "workspace.editor.staleAuthority.refresh"
     | "workspace.editor.heartbeat"
     | "workspace.editor.release"
     | "workspace.editor.proposal.get"
@@ -3666,7 +3795,9 @@ function validateWorkspaceEditorTopologyTarget(
 function validateWorkspaceEditorTopologyFinalizeParams(
   params: JsonObject,
   methodName:
-    "workspace.editor.topology.complete" | "workspace.editor.topology.release",
+    | "workspace.editor.topology.complete"
+    | "workspace.editor.topology.release"
+    | "workspace.editor.topology.recovered.resolve",
   extraStringFields: readonly string[] = [],
 ): WorkspaceEditorTopologyFinalizeParams {
   const validated = validateWorkspaceEditorHeartbeatParams(
@@ -3720,12 +3851,10 @@ function validateWorkspaceEditorTopologyCompleteParams(
 function validateWorkspaceEditorRecoveredTopologyResolveParams(
   params: JsonObject,
 ): WorkspaceEditorRecoveredTopologyResolveParams {
-  const methodName = "workspace.editor.topology.recovered.resolve";
-  const validated = validateWorkspaceEditorHeartbeatParams(params, methodName, [
-    "tokenId",
-  ]);
-  validateRequiredString(validated, methodName, "tokenId");
-  return validated as WorkspaceEditorRecoveredTopologyResolveParams;
+  return validateWorkspaceEditorTopologyFinalizeParams(
+    params,
+    "workspace.editor.topology.recovered.resolve",
+  );
 }
 
 function validateWorkspaceEditorReleaseParams(
@@ -4053,7 +4182,7 @@ function validateWorkspaceEditorPredictionFeedbackParams(
 async function acquireWorkspaceEditor(params: WorkspaceEditorAcquireParams) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
+    const lease = workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
       ...(params.takeover !== undefined ? { takeover: params.takeover } : {}),
@@ -4063,6 +4192,14 @@ async function acquireWorkspaceEditor(params: WorkspaceEditorAcquireParams) {
           }
         : {}),
     });
+    // A stale-authority transaction commits its replacement quarantine before
+    // projecting terminal audit entries. If that append failed, acquiring the
+    // same in-process coordinator is the client's retry boundary: do not
+    // acknowledge the lease until the append-once outbox is durably drained.
+    await workspaceMutationCoordinators
+      .getOrCreate(workspaceRoot)
+      .flushPendingAuditOutbox();
+    return lease;
   } catch (error) {
     throw invalidParams(error instanceof Error ? error.message : String(error));
   }
@@ -4073,14 +4210,21 @@ async function syncWorkspaceEditor(params: WorkspaceEditorSyncParams) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
     coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
-    const result = coordinator.sync({
+    const input = {
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
       leaseToken: params.leaseToken,
       epoch: params.epoch,
       sequence: params.sequence,
       buffers: params.buffers,
-    });
+      ...(params.abandonStaleAuthority !== undefined
+        ? { abandonStaleAuthority: params.abandonStaleAuthority }
+        : {}),
+    };
+    if (params.abandonStaleAuthority !== undefined) {
+      return await coordinator.syncAbandoningStaleAuthority(input);
+    }
+    const result = coordinator.sync(input);
     await coordinator.flushQuarantinePersistence();
     return result;
   } catch (error) {
@@ -4088,6 +4232,24 @@ async function syncWorkspaceEditor(params: WorkspaceEditorSyncParams) {
     // contention. Do not let the client retry after the fence disappears
     // until that record is safely on disk.
     await coordinator?.flushQuarantinePersistence().catch(() => {});
+    throw invalidParams(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function refreshWorkspaceEditorStaleAuthority(
+  params: WorkspaceEditorHeartbeatParams,
+) {
+  try {
+    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
+    return workspaceMutationCoordinators
+      .getOrCreate(workspaceRoot)
+      .refreshStaleAuthority({
+        workspaceRoot,
+        editorInstanceId: params.editorInstanceId,
+        leaseToken: params.leaseToken,
+        epoch: params.epoch,
+      });
+  } catch (error) {
     throw invalidParams(error instanceof Error ? error.message : String(error));
   }
 }
@@ -4232,6 +4394,8 @@ async function resolveRecoveredWorkspaceEditorTopology(
       leaseToken: params.leaseToken,
       epoch: params.epoch,
       tokenId: params.tokenId,
+      sequence: params.sequence,
+      buffers: params.buffers,
     });
   } catch (error) {
     await coordinator?.flushQuarantinePersistence().catch(() => {});

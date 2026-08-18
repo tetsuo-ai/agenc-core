@@ -13,6 +13,7 @@ import type {
   BufferProviderResize,
   BufferProviderSaveOptions,
   BufferProviderSnapshot,
+  BufferStaleAuthorityEditorAction,
 } from "../types.js";
 import { INLINE_BUFFER_CAPABILITIES, withProviderSnapshot } from "../types.js";
 
@@ -58,6 +59,21 @@ export class InlineBufferProvider implements BufferEditorProvider {
 
   async revert(): Promise<void> {
     await this.#store.revert();
+  }
+
+  async performStaleAuthorityEditorAction(
+    action: BufferStaleAuthorityEditorAction,
+  ): Promise<boolean> {
+    const before = this.#store.getSnapshot();
+    if (before.absolutePath === null || before.absolutePath !== action.path) {
+      return false;
+    }
+    if (action.type === "reload") {
+      await this.#store.revert();
+      const after = this.#store.getSnapshot();
+      return after.absolutePath === action.path && after.status === "ready";
+    }
+    return this.#store.close({ discard: true });
   }
 
   async prepareDiscardAll(): Promise<string | null> {

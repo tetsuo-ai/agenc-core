@@ -67,12 +67,14 @@ import type {
   BufferProviderSaveAllResult,
   BufferProviderShutdownOptions,
   BufferProviderSnapshot,
+  BufferStaleAuthorityEditorAction,
   BufferWorkspaceBufferCapture,
   BufferWorkspaceWriteAuthorityHandler,
   BufferWorkspaceWriteDecision,
   BufferWorkspaceWriteRequest,
 } from "../types.js";
 import {
+  BufferWorkspaceCaptureUnstableError,
   emptyProviderSnapshot,
   NEOVIM_BUFFER_CAPABILITIES,
   positionFromNeovimCursor,
@@ -465,9 +467,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       }));
     }
 
-    throw new Error(
-      "Neovim buffers changed during workspace synchronization; retry.",
-    );
+    throw new BufferWorkspaceCaptureUnstableError();
   }
 
   setWorkspaceWriteAuthorityHandler(
@@ -1980,6 +1980,81 @@ export class NeovimBufferProvider implements BufferEditorProvider {
     if (!this.#ownsOperation(ownership)) return;
     await this.#refreshFileSnapshot(this.#captureFileOwnership());
     this.#setSnapshot("ready", null);
+  }
+
+  async performStaleAuthorityEditorAction(
+    action: BufferStaleAuthorityEditorAction,
+  ): Promise<boolean> {
+    if (this.#projectPathMutationLocked) {
+      this.#setSnapshot(
+        "conflict",
+        "Wait for the current project rename or delete before recovering this buffer.",
+      );
+      return false;
+    }
+    const session = this.#session;
+    if (!session) return false;
+    const ownership = this.#captureOperationOwnership(session);
+    try {
+      await this.#refreshWorkspace(ownership);
+      if (!this.#ownsOperation(ownership)) return false;
+      const target = this.#buffers.find(
+        (buffer) =>
+          buffer.loaded &&
+          buffer.bufferType === "" &&
+          buffer.name.length > 0 &&
+          buffer.absolutePath !== null &&
+          sameNeovimFilePath(buffer.absolutePath, action.path),
+      );
+      if (!target) {
+        this.#setSnapshot(
+          "error",
+          `The reviewed stale-authority path is not loaded in Neovim: ${action.path}`,
+        );
+        return false;
+      }
+      const recoverySession = session as EmbeddedNeovimSession & {
+        reloadBufferForStaleAuthority?: EmbeddedNeovimSession["reloadBufferForStaleAuthority"];
+        unloadBufferForStaleAuthority?: EmbeddedNeovimSession["unloadBufferForStaleAuthority"];
+      };
+      const completed =
+        action.type === "reload"
+          ? await recoverySession.reloadBufferForStaleAuthority?.(
+              target.handle,
+              target.name,
+            )
+          : await recoverySession.unloadBufferForStaleAuthority?.(
+              target.handle,
+              target.name,
+            );
+      if (completed !== true) {
+        throw new Error(
+          "The active Neovim session does not support restricted stale-authority recovery.",
+        );
+      }
+      if (!this.#ownsOperation(ownership)) return false;
+      if (target.absolutePath !== null) {
+        this.#fileSnapshots.delete(
+          neovimFileSnapshotKey(target.absolutePath),
+        );
+      }
+      await this.#refreshWorkspace(ownership);
+      if (!this.#ownsOperation(ownership)) return false;
+      if (action.type === "reload") {
+        await this.#refreshFileSnapshot(this.#captureFileOwnership());
+        if (!this.#ownsOperation(ownership)) return false;
+      }
+      this.#setSnapshot("ready", null);
+      return true;
+    } catch (error) {
+      if (this.#ownsOperation(ownership)) {
+        this.#setSnapshot(
+          "error",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      return false;
+    }
   }
 
   async close(options: BufferProviderCloseOptions = {}): Promise<boolean> {

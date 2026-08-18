@@ -1712,7 +1712,10 @@ try {
           code: "INVALID_COMMAND",
         });
       }
-      const sampleBuffer = Buffer.alloc(Math.min(8192, opened.stats.size));
+      const sampleBytes = Number(
+        opened.stats.size < 8192n ? opened.stats.size : 8192n,
+      );
+      const sampleBuffer = Buffer.alloc(sampleBytes);
       const sampleRead =
         sampleBuffer.length === 0
           ? { bytesRead: 0 }
@@ -3480,7 +3483,9 @@ export async function bindWorkspaceDirectoryMutation(input: {
   readonly targetPath: string;
 }): Promise<WorkspaceBoundDirectoryMutation> {
   const targetPath = resolveFilesystemPathIdentity(input.targetPath);
-  if (dirname(targetPath) !== resolveFilesystemPathIdentity(input.parent.path)) {
+  if (
+    dirname(targetPath) !== resolveFilesystemPathIdentity(input.parent.path)
+  ) {
     throw new WorkspaceFileMutationPathBindingUnavailableError(targetPath);
   }
   const pathIdentity: WorkspacePathIdentity = {

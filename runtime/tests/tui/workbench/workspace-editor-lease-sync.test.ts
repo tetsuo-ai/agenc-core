@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
@@ -9,6 +11,7 @@ import type {
   WorkspaceEditorProposalParams,
   WorkspaceEditorRecoveredTopologyMutation,
   WorkspaceEditorRecoveredTopologyResolveParams,
+  WorkspaceEditorStaleAuthorityEntry,
   WorkspaceEditorSyncParams,
   WorkspaceEditorTopologyCompleteParams,
   WorkspaceEditorTopologyFinalizeParams,
@@ -24,6 +27,7 @@ import {
   type WorkspaceEditorLeaseClient,
 } from "../../../src/tui/workbench/workspaceEditorLeaseSync.js";
 import {
+  BufferWorkspaceCaptureUnstableError,
   emptyProviderSnapshot,
   NEOVIM_BUFFER_CAPABILITIES,
   type BufferProviderSnapshot,
@@ -32,6 +36,7 @@ import {
   type BufferWorkspaceWriteDecision,
 } from "../../../src/tui/workbench/buffer/providers/types.js";
 import { TuiTeardownBarrier } from "../../../src/tui/teardownBarrier.js";
+import { WorkspaceMutationCoordinator } from "../../../src/workspace/mutation-coordinator.js";
 
 const WORKSPACE = "/workspace";
 const EDITOR_ID = "tui-editor-test";
@@ -61,6 +66,7 @@ describe("workspace editor lease synchronization", () => {
           .filter((buffer) => buffer.dirty)
           .map((buffer) => buffer.path),
         stalePaths: [],
+        staleAuthority: [],
       };
     });
     const authority = vi.fn();
@@ -117,6 +123,284 @@ describe("workspace editor lease synchronization", () => {
 
     expect(authority).toHaveBeenLastCalledWith({ status: "ready" });
     expect(client.syncWorkspaceEditor).toHaveBeenCalledTimes(syncCount);
+    await synchronizer.stop();
+  });
+
+  test("keeps typing live and the daemon lease fenced across transient capture instability", async () => {
+    vi.useFakeTimers();
+    const source = new FakeBufferSource();
+    const client = new FakeLeaseClient();
+    const authority = vi.fn();
+    const onError = vi.fn();
+    const synchronizer = new WorkspaceEditorLeaseSynchronizer({
+      workspaceRoot: WORKSPACE,
+      editorInstanceId: EDITOR_ID,
+      client,
+      buffers: source,
+      onAuthorityChange: authority,
+      onError,
+      syncDebounceMs: 0,
+      retryMs: 20,
+      heartbeatMs: 100,
+    });
+
+    synchronizer.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(authority).toHaveBeenLastCalledWith({ status: "ready" });
+
+    vi.spyOn(source, "captureWorkspaceBuffers").mockRejectedValueOnce(
+      new BufferWorkspaceCaptureUnstableError(),
+    );
+    source.update({
+      changedtick: 2,
+      content: "const value = 'still typing';\n",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(authority).toHaveBeenLastCalledWith({ status: "syncing" });
+    expect(client.acquireWorkspaceEditor).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(40);
+    expect(client.acquireWorkspaceEditor).toHaveBeenCalledTimes(1);
+    expect(client.syncs.at(-1)).toMatchObject({
+      sequence: 1,
+      buffers: [
+        expect.objectContaining({
+          changedtick: 2,
+          content: "const value = 'still typing';\n",
+        }),
+      ],
+    });
+    expect(authority).toHaveBeenLastCalledWith({ status: "ready" });
+
+    await synchronizer.stop();
+  });
+
+  test("keeps initial input live after acquisition while the first capture retries", async () => {
+    vi.useFakeTimers();
+    const source = new FakeBufferSource();
+    vi.spyOn(source, "captureWorkspaceBuffers").mockRejectedValueOnce(
+      new BufferWorkspaceCaptureUnstableError(),
+    );
+    const client = new FakeLeaseClient();
+    const authority = vi.fn();
+    const onError = vi.fn();
+    const synchronizer = new WorkspaceEditorLeaseSynchronizer({
+      workspaceRoot: WORKSPACE,
+      editorInstanceId: EDITOR_ID,
+      client,
+      buffers: source,
+      onAuthorityChange: authority,
+      onError,
+      syncDebounceMs: 0,
+      retryMs: 20,
+      heartbeatMs: 100,
+    });
+
+    synchronizer.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(authority).toHaveBeenLastCalledWith({ status: "syncing" });
+    expect(client.acquireWorkspaceEditor).toHaveBeenCalledTimes(1);
+    expect(client.syncWorkspaceEditor).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+
+    const writeDecision = await source.requestWorkspaceWrite();
+    expect(writeDecision).toEqual({ allowed: true });
+    expect(client.acquireWorkspaceEditor).toHaveBeenCalledTimes(1);
+    expect(client.syncs).toEqual([
+      expect.objectContaining({
+        leaseToken: "lease-1",
+        epoch: 1,
+        buffers: [
+          expect.objectContaining({
+            changedtick: 1,
+            content: "const value = 1;\n",
+          }),
+        ],
+      }),
+    ]);
+
+    await synchronizer.stop();
+  });
+
+  test("keeps stale evidence blocked until the exact disk confirmation is acknowledged", async () => {
+    vi.useFakeTimers();
+    const diskContent = "const value = 1;\n";
+    const staleAuthority: WorkspaceEditorStaleAuthorityEntry = {
+      path: "/workspace/file.ts",
+      editorContentSha256: sha256("const orphaned = true;\n"),
+      editorContentBytes: Buffer.byteLength("const orphaned = true;\n"),
+      changedtick: 9,
+      editorInstanceId: "orphaned-editor",
+      epoch: 1,
+      editorState: "dirty",
+      diskState: "content",
+      diskContentSha256: sha256(diskContent),
+      diskContentBytes: Buffer.byteLength(diskContent),
+    };
+    const source = new FakeBufferSource();
+    source.loadClean(diskContent, 2);
+    const client = new FakeLeaseClient();
+    client.acquireWorkspaceEditor.mockResolvedValue({
+      ...client.lease,
+      staleAuthority: [staleAuthority],
+    });
+    client.refreshWorkspaceEditorStaleAuthority.mockResolvedValue({
+      refreshed: true,
+      staleAuthority: [staleAuthority],
+    });
+    let staleAuthorityOutstanding = true;
+    client.syncWorkspaceEditor.mockImplementation(async (params) => {
+      client.syncs.push(params);
+      client.leaseSequence = params.sequence;
+      if (params.abandonStaleAuthority !== undefined) {
+        staleAuthorityOutstanding = false;
+      }
+      return {
+        accepted: true,
+        sequence: params.sequence,
+        expiresAt: 10_000,
+        dirtyPaths: [],
+        stalePaths: staleAuthorityOutstanding ? [staleAuthority.path] : [],
+        staleAuthority: staleAuthorityOutstanding ? [staleAuthority] : [],
+      };
+    });
+    const authority = vi.fn();
+    const synchronizer = new WorkspaceEditorLeaseSynchronizer({
+      workspaceRoot: WORKSPACE,
+      editorInstanceId: EDITOR_ID,
+      client,
+      buffers: source,
+      onAuthorityChange: authority,
+      syncDebounceMs: 0,
+      heartbeatMs: 100,
+    });
+
+    synchronizer.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(authority).toHaveBeenLastCalledWith({
+      status: "blocked",
+      reason: expect.stringContaining(
+        "1 orphaned Editor revision still owns workspace authority",
+      ),
+      staleAuthority: [staleAuthority],
+    });
+    expect(client.syncs[0]).not.toHaveProperty("abandonStaleAuthority");
+
+    const syncCountBeforeRefresh = client.syncs.length;
+    await synchronizer.refreshStaleAuthority();
+
+    expect(client.refreshWorkspaceEditorStaleAuthority).toHaveBeenCalledWith({
+      workspaceRoot: WORKSPACE,
+      editorInstanceId: EDITOR_ID,
+      leaseToken: "lease-1",
+      epoch: 1,
+    });
+    expect(client.syncs).toHaveLength(syncCountBeforeRefresh);
+    expect(authority).toHaveBeenLastCalledWith({
+      status: "blocked",
+      reason: expect.stringContaining(
+        "1 orphaned Editor revision still owns workspace authority",
+      ),
+      staleAuthority: [staleAuthority],
+    });
+
+    await synchronizer.abandonStaleAuthority([staleAuthority]);
+
+    expect(client.syncs.at(-1)?.abandonStaleAuthority).toEqual([
+      staleAuthority,
+    ]);
+    expect(client.syncs.at(-1)?.buffers).toEqual([
+      expect.objectContaining({
+        path: staleAuthority.path,
+        changedtick: 2,
+        dirty: false,
+        contentSha256: staleAuthority.diskContentSha256,
+        contentBytes: staleAuthority.diskContentBytes,
+      }),
+    ]);
+    expect(client.syncs.at(-1)?.buffers[0]).not.toHaveProperty("content");
+    expect(authority).toHaveBeenLastCalledWith({ status: "ready" });
+    await synchronizer.stop();
+  });
+
+  test("refreshes through the read-only RPC after rejected reconciliation clears the local lease", async () => {
+    vi.useFakeTimers();
+    const diskContent = "const value = 1;\n";
+    const refreshedDiskContent = "const value = 2;\n";
+    const staleAuthority: WorkspaceEditorStaleAuthorityEntry = {
+      path: "/workspace/file.ts",
+      editorContentSha256: sha256("const orphaned = true;\n"),
+      editorContentBytes: Buffer.byteLength("const orphaned = true;\n"),
+      changedtick: 9,
+      editorInstanceId: "orphaned-editor",
+      epoch: 1,
+      editorState: "dirty",
+      diskState: "content",
+      diskContentSha256: sha256(diskContent),
+      diskContentBytes: Buffer.byteLength(diskContent),
+    };
+    const refreshedAuthority: WorkspaceEditorStaleAuthorityEntry = {
+      ...staleAuthority,
+      diskContentSha256: sha256(refreshedDiskContent),
+      diskContentBytes: Buffer.byteLength(refreshedDiskContent),
+    };
+    const source = new FakeBufferSource();
+    source.loadClean(diskContent, 2);
+    const client = new FakeLeaseClient();
+    client.acquireWorkspaceEditor.mockResolvedValue({
+      ...client.lease,
+      staleAuthority: [staleAuthority],
+    });
+    client.syncWorkspaceEditor.mockRejectedValueOnce(
+      new Error(
+        "Cannot reconcile quarantined editor buffer: it belongs to a different editor instance.",
+      ),
+    );
+    client.refreshWorkspaceEditorStaleAuthority.mockResolvedValue({
+      refreshed: true,
+      staleAuthority: [refreshedAuthority],
+    });
+    const authority = vi.fn();
+    const synchronizer = new WorkspaceEditorLeaseSynchronizer({
+      workspaceRoot: WORKSPACE,
+      editorInstanceId: EDITOR_ID,
+      client,
+      buffers: source,
+      onAuthorityChange: authority,
+      syncDebounceMs: 0,
+      retryMs: 1_500,
+      heartbeatMs: 100,
+    });
+
+    synchronizer.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.syncWorkspaceEditor).toHaveBeenCalledTimes(1);
+    expect(authority).toHaveBeenLastCalledWith({
+      status: "blocked",
+      reason: expect.stringContaining("different editor instance"),
+      staleAuthority: [staleAuthority],
+    });
+
+    await synchronizer.refreshStaleAuthority();
+
+    expect(client.acquireWorkspaceEditor).toHaveBeenCalledTimes(2);
+    expect(client.syncWorkspaceEditor).toHaveBeenCalledTimes(1);
+    expect(client.refreshWorkspaceEditorStaleAuthority).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(authority).toHaveBeenLastCalledWith({
+      status: "blocked",
+      reason: expect.stringContaining(
+        "1 orphaned Editor revision still owns workspace authority",
+      ),
+      staleAuthority: [refreshedAuthority],
+    });
+
     await synchronizer.stop();
   });
 
@@ -1983,6 +2267,288 @@ describe("workspace editor lease synchronization", () => {
     expect(authority).toHaveBeenLastCalledWith({ status: "ready" });
     await synchronizer.stop();
   });
+
+  test.each([
+    { dirty: false, expectedBuffers: 0, expectedUnloads: 1 },
+    { dirty: true, expectedBuffers: 1, expectedUnloads: 0 },
+  ])(
+    "closes matching clean buffers and preserves matching dirty buffers during recovered topology resolution ($dirty)",
+    async ({ dirty, expectedBuffers, expectedUnloads }) => {
+      vi.useFakeTimers();
+      const source = new FakeBufferSource();
+      if (!dirty) source.loadClean("const value = 1;\n", 1);
+      source.allowCleanUnload();
+      const client = new FakeLeaseClient();
+      client.recoveredTopologies = [
+        {
+          tokenId: "recovered-topology-buffer-policy",
+          workspaceRoot: WORKSPACE,
+          targets: [{ path: "/workspace/file.ts" }],
+          source: "editor",
+          createdAt: 123,
+        },
+      ];
+      const synchronizer = new WorkspaceEditorLeaseSynchronizer({
+        workspaceRoot: WORKSPACE,
+        editorInstanceId: EDITOR_ID,
+        client,
+        buffers: source,
+        syncDebounceMs: 0,
+        heartbeatMs: 100,
+      });
+
+      synchronizer.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await synchronizer.resolveRecoveredTopologyMutation(
+        "recovered-topology-buffer-policy",
+      );
+
+      expect(source.cleanUnloadPaths).toHaveLength(expectedUnloads);
+      expect(
+        client.resolveRecoveredWorkspaceEditorTopology.mock.calls[0]?.[0]
+          .buffers,
+      ).toHaveLength(expectedBuffers);
+      if (dirty) {
+        expect(
+          client.resolveRecoveredWorkspaceEditorTopology.mock.calls[0]?.[0]
+            .buffers,
+        ).toContainEqual(
+          expect.objectContaining({ path: "/workspace/file.ts", dirty: true }),
+        );
+      }
+      await synchronizer.stop();
+    },
+  );
+
+  test("keeps recovered topology blocked when the provider cannot close a matching clean buffer", async () => {
+    vi.useFakeTimers();
+    const source = new FakeBufferSource();
+    source.loadClean("const value = 1;\n", 1);
+    const unload = source.synchronizePathDelete.bind(source);
+    Object.defineProperty(source, "synchronizePathDelete", {
+      configurable: true,
+      value: undefined,
+    });
+    const client = new FakeLeaseClient();
+    client.recoveredTopologies = [
+      {
+        tokenId: "recovered-topology-missing-cleanup",
+        workspaceRoot: WORKSPACE,
+        targets: [{ path: "/workspace/file.ts" }],
+        source: "editor",
+        createdAt: 123,
+      },
+    ];
+    const synchronizer = new WorkspaceEditorLeaseSynchronizer({
+      workspaceRoot: WORKSPACE,
+      editorInstanceId: EDITOR_ID,
+      client,
+      buffers: source,
+      syncDebounceMs: 0,
+      heartbeatMs: 100,
+    });
+
+    synchronizer.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(
+      synchronizer.resolveRecoveredTopologyMutation(
+        "recovered-topology-missing-cleanup",
+      ),
+    ).rejects.toThrow(/cannot safely close clean buffers/u);
+    expect(
+      client.resolveRecoveredWorkspaceEditorTopology,
+    ).not.toHaveBeenCalled();
+
+    Object.defineProperty(source, "synchronizePathDelete", {
+      configurable: true,
+      value: unload,
+    });
+    source.allowCleanUnload();
+    await synchronizer.resolveRecoveredTopologyMutation(
+      "recovered-topology-missing-cleanup",
+    );
+    await synchronizer.stop();
+  });
+
+  test("does not acknowledge a topology invalidation when a clean buffer races dirty during unload", async () => {
+    vi.useFakeTimers();
+    const source = new FakeBufferSource();
+    source.loadClean("const value = 1;\n", 1);
+    source.allowCleanUnload();
+    source.raceNextCleanUnloadDirty();
+    const client = new FakeLeaseClient();
+    const topologyChange: WorkspaceEditorChangeResult = {
+      kind: "topology",
+      topologyTokenId: "completed-topology-1",
+      path: "/workspace/file.ts",
+      includeDescendants: false,
+      sequence: 1,
+      timestamp: "2026-08-17T00:00:00.000Z",
+      workspaceRoot: WORKSPACE,
+      source: "editor",
+      status: "applied",
+    };
+    client.changes = [topologyChange];
+    client.listWorkspaceEditorChanges.mockImplementation(async (params) => ({
+      sequence: 1,
+      changes: params.afterSequence === 1 ? [] : [topologyChange],
+    }));
+    const onError = vi.fn();
+    const synchronizer = new WorkspaceEditorLeaseSynchronizer({
+      workspaceRoot: WORKSPACE,
+      editorInstanceId: EDITOR_ID,
+      client,
+      buffers: source,
+      onError,
+      syncDebounceMs: 0,
+      heartbeatMs: 100,
+    });
+
+    synchronizer.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => {
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringMatching(/became dirty/u),
+        }),
+      );
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(
+      client.listWorkspaceEditorChanges.mock.calls.at(-1)?.[0].afterSequence,
+    ).toBe(0);
+
+    client.changes = [];
+    client.listWorkspaceEditorChanges.mockImplementation(async () => ({
+      sequence: 1,
+      changes: [],
+    }));
+    await vi.advanceTimersByTimeAsync(100);
+    await synchronizer.stop();
+  });
+
+  test("reacquires the authoritative sequence after one of two recovered topology commits loses its response", async () => {
+    const workspaceRoot = await mkdtemp(
+      "/tmp/agenc-topology-lost-response-workspace-",
+    );
+    const agencHome = await mkdtemp("/tmp/agenc-topology-lost-response-home-");
+    const firstDirectory = join(workspaceRoot, "renamed-a");
+    const secondDirectory = join(workspaceRoot, "renamed-b");
+    await mkdir(firstDirectory);
+    await mkdir(secondDirectory);
+    const first = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    const firstToken = await first.reserveTopologyMutation(
+      [{ path: firstDirectory, includeDescendants: true }],
+      "editor",
+    );
+    const secondToken = await first.reserveTopologyMutation(
+      [{ path: secondDirectory, includeDescendants: true }],
+      "editor",
+    );
+    await first.flushQuarantinePersistence();
+    const restarted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    let acquireCount = 0;
+    let loseResolveResponse = true;
+    const resolveSequences: number[] = [];
+    const syncSequences: number[] = [];
+    const client: WorkspaceEditorLeaseClient = {
+      acquireWorkspaceEditor: async (params) => {
+        acquireCount += 1;
+        return restarted.acquire(params);
+      },
+      syncWorkspaceEditor: async (params) => {
+        syncSequences.push(params.sequence);
+        return restarted.sync(params);
+      },
+      refreshWorkspaceEditorStaleAuthority: async (params) =>
+        restarted.refreshStaleAuthority(params),
+      heartbeatWorkspaceEditor: async (params) => restarted.heartbeat(params),
+      releaseWorkspaceEditor: async (params) => restarted.release(params),
+      listRecoveredWorkspaceEditorTopologies: async (params) => ({
+        mutations: restarted.listRecoveredEditorTopologyMutations(params),
+      }),
+      resolveRecoveredWorkspaceEditorTopology: async (params) => {
+        resolveSequences.push(params.sequence);
+        const result =
+          await restarted.resolveRecoveredEditorTopologyMutation(params);
+        if (loseResolveResponse) {
+          loseResolveResponse = false;
+          throw new Error("simulated lost recovered-topology response");
+        }
+        return result;
+      },
+    };
+    const source: WorkspaceEditorBufferSource = {
+      subscribe: () => () => {},
+      getSnapshot: () => ({
+        ...emptyProviderSnapshot({
+          kind: "neovim",
+          label: "embedded Neovim",
+          fallbackReason: null,
+          capabilities: NEOVIM_BUFFER_CAPABILITIES,
+        }),
+        providerStatus: "ready",
+        workspaceAuthorityRequired: true,
+      }),
+      captureWorkspaceBuffers: async () => [],
+      beginProjectPathMutation: () => true,
+      endProjectPathMutation: () => {},
+      synchronizePathDelete: async (path) => ({
+        ok: false as const,
+        path,
+        reason: "path is not loaded",
+      }),
+    };
+    const authority = vi.fn();
+    const synchronizer = new WorkspaceEditorLeaseSynchronizer({
+      workspaceRoot,
+      editorInstanceId: EDITOR_ID,
+      client,
+      buffers: source,
+      onAuthorityChange: authority,
+      syncDebounceMs: 0,
+      heartbeatMs: 10_000,
+    });
+
+    try {
+      synchronizer.start();
+      await vi.waitFor(() => {
+        expect(authority).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            status: "blocked",
+            recoveredTopologyMutations: [
+              expect.objectContaining({ tokenId: firstToken.tokenId }),
+              expect.objectContaining({ tokenId: secondToken.tokenId }),
+            ],
+          }),
+        );
+      });
+
+      await expect(
+        synchronizer.resolveRecoveredTopologyMutation(firstToken.tokenId),
+      ).resolves.toBeUndefined();
+      expect(acquireCount).toBeGreaterThanOrEqual(2);
+      expect(syncSequences).toEqual([]);
+      await expect(
+        synchronizer.resolveRecoveredTopologyMutation(secondToken.tokenId),
+      ).resolves.toBeUndefined();
+      expect(resolveSequences).toEqual([0, 1]);
+      expect(syncSequences).toContain(2);
+      await vi.waitFor(() => {
+        expect(authority).toHaveBeenLastCalledWith({ status: "ready" });
+      });
+      await synchronizer.stop();
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
 });
 
 class FakeBufferSource implements WorkspaceEditorBufferSource {
@@ -1995,6 +2561,12 @@ class FakeBufferSource implements WorkspaceEditorBufferSource {
   #workspaceWriteAuthorityHandler: BufferWorkspaceWriteAuthorityHandler | null =
     null;
   #column = 1;
+  #dirty = true;
+  #loaded = true;
+  #allowCleanUnload = false;
+  #raceNextUnloadDirty = false;
+  #projectPathMutationLocked = false;
+  readonly cleanUnloadPaths: string[] = [];
 
   subscribe(listener: () => void): () => void {
     this.#listeners.add(listener);
@@ -2013,47 +2585,110 @@ class FakeBufferSource implements WorkspaceEditorBufferSource {
       providerStatus: this.#status,
       workspaceAuthorityRequired: this.#workspaceAuthorityRequired,
       position: { line: 1, column: this.#column },
-      buffers: [
-        {
-          handle: 1,
-          changedtick: this.#changedtick,
-          endOfLine: this.#endOfLine,
-          name: "/workspace/file.ts",
-          filePath: "file.ts",
-          absolutePath: "/workspace/file.ts",
-          listed: true,
-          loaded: true,
-          modified: true,
-          current: true,
-          bufferType: "",
-          modifiable: true,
-          readOnly: false,
-          saveable: true,
-        },
-      ],
-      activeBufferHandle: 1,
-      dirtyBufferCount: 1,
-      dirty: true,
+      buffers: this.#loaded
+        ? [
+            {
+              handle: 1,
+              changedtick: this.#changedtick,
+              endOfLine: this.#endOfLine,
+              name: "/workspace/file.ts",
+              filePath: "file.ts",
+              absolutePath: "/workspace/file.ts",
+              listed: true,
+              loaded: true,
+              modified: this.#dirty,
+              current: true,
+              bufferType: "",
+              modifiable: true,
+              readOnly: false,
+              saveable: true,
+            },
+          ]
+        : [],
+      activeBufferHandle: this.#loaded ? 1 : null,
+      dirtyBufferCount: this.#loaded && this.#dirty ? 1 : 0,
+      dirty: this.#loaded && this.#dirty,
     };
   }
 
   captureWorkspaceBuffers(): Promise<readonly BufferWorkspaceBufferCapture[]> {
-    return Promise.resolve([
-      {
-        path: "/workspace/file.ts",
-        bufferHandle: 1,
-        changedtick: this.#changedtick,
-        endOfLine: this.#endOfLine,
-        dirty: true,
-        content: this.#content,
-      },
-    ]);
+    return Promise.resolve(
+      this.#loaded
+        ? [
+            {
+              path: "/workspace/file.ts",
+              bufferHandle: 1,
+              changedtick: this.#changedtick,
+              endOfLine: this.#endOfLine,
+              dirty: this.#dirty,
+              content: this.#content,
+            },
+          ]
+        : [],
+    );
   }
 
   setWorkspaceWriteAuthorityHandler(
     handler: BufferWorkspaceWriteAuthorityHandler | null,
   ): void {
     this.#workspaceWriteAuthorityHandler = handler;
+  }
+
+  beginProjectPathMutation(): boolean {
+    if (this.#projectPathMutationLocked) return false;
+    this.#projectPathMutationLocked = true;
+    return true;
+  }
+
+  endProjectPathMutation(): void {
+    this.#projectPathMutationLocked = false;
+  }
+
+  reloadCleanPath(path: string) {
+    if (path !== "/workspace/file.ts") {
+      return Promise.resolve({
+        ok: false as const,
+        path,
+        reason: "path is not loaded",
+      });
+    }
+    if (this.#dirty) {
+      return Promise.resolve({
+        ok: false as const,
+        path,
+        reason: "path is dirty",
+        dirty: true as const,
+      });
+    }
+    return Promise.resolve({ ok: true as const, path, reloaded: true });
+  }
+
+  synchronizePathDelete(path: string) {
+    if (this.#raceNextUnloadDirty) {
+      this.#raceNextUnloadDirty = false;
+      this.#dirty = true;
+      return Promise.resolve({
+        ok: false as const,
+        reason: `path raced dirty: ${path}`,
+      });
+    }
+    if (
+      this.#allowCleanUnload &&
+      this.#loaded &&
+      !this.#dirty &&
+      path === "/workspace/file.ts"
+    ) {
+      this.#loaded = false;
+      this.cleanUnloadPaths.push(path);
+      return Promise.resolve({
+        ok: true as const,
+        affectedBufferHandles: [1],
+      });
+    }
+    return Promise.resolve({
+      ok: false as const,
+      reason: `cannot unload ${path}`,
+    });
   }
 
   requestWorkspaceWrite(): Promise<BufferWorkspaceWriteDecision> {
@@ -2100,12 +2735,30 @@ class FakeBufferSource implements WorkspaceEditorBufferSource {
     this.#changedtick = next.changedtick ?? this.#changedtick;
     this.#content = next.content ?? this.#content;
     this.#endOfLine = next.endOfLine ?? this.#endOfLine;
+    this.#dirty = true;
     this.emit();
+  }
+
+  loadClean(content: string, changedtick: number): void {
+    this.#loaded = true;
+    this.#content = content;
+    this.#changedtick = changedtick;
+    this.#dirty = false;
+    this.emit();
+  }
+
+  allowCleanUnload(): void {
+    this.#allowCleanUnload = true;
+  }
+
+  raceNextCleanUnloadDirty(): void {
+    this.#raceNextUnloadDirty = true;
   }
 
   apply(content: string): number {
     this.#changedtick += 1;
     this.#content = content;
+    this.#dirty = true;
     this.emit();
     return this.#changedtick;
   }
@@ -2165,9 +2818,14 @@ class FakeLeaseClient implements WorkspaceEditorLeaseClient {
           .filter((buffer) => buffer.dirty)
           .map((buffer) => buffer.path),
         stalePaths: [],
+        staleAuthority: [],
       };
     },
   );
+  readonly refreshWorkspaceEditorStaleAuthority = vi.fn(async () => ({
+    refreshed: true as const,
+    staleAuthority: [],
+  }));
   readonly heartbeatWorkspaceEditor = vi.fn(async () => this.lease);
   readonly releaseWorkspaceEditor = vi.fn(async () => ({
     released: true as const,
@@ -2194,6 +2852,7 @@ class FakeLeaseClient implements WorkspaceEditorLeaseClient {
             .filter((buffer) => buffer.dirty)
             .map((buffer) => buffer.path),
           stalePaths: [],
+          staleAuthority: [],
         },
       };
     },
@@ -2212,6 +2871,7 @@ class FakeLeaseClient implements WorkspaceEditorLeaseClient {
             .filter((buffer) => buffer.dirty)
             .map((buffer) => buffer.path),
           stalePaths: [],
+          staleAuthority: [],
         },
       };
     },
@@ -2225,10 +2885,21 @@ class FakeLeaseClient implements WorkspaceEditorLeaseClient {
       this.recoveredTopologies = this.recoveredTopologies.filter(
         (mutation) => mutation.tokenId !== params.tokenId,
       );
+      this.leaseSequence = params.sequence;
       return {
         resolved: true as const,
         tokenId: params.tokenId,
         status: "unknown_outcome" as const,
+        sync: {
+          accepted: true as const,
+          sequence: params.sequence,
+          expiresAt: 10_000,
+          dirtyPaths: params.buffers
+            .filter((buffer) => buffer.dirty)
+            .map((buffer) => buffer.path),
+          stalePaths: [],
+          staleAuthority: [],
+        },
       };
     },
   );

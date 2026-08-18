@@ -21,7 +21,7 @@ import type {
 } from "./csv-jobs.js";
 
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.0.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.1.0" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | JsonObject;

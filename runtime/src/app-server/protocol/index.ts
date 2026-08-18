@@ -12,7 +12,12 @@
  */
 
 export const JSON_RPC_VERSION = "2.0" as const;
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.0.0" as const;
+// 1.1 adds exact stale-Editor authority review/abandonment fields and its
+// read-only disk-evidence refresh request. A newer TUI must not negotiate with
+// a 1.0 daemon that would reject those requests after initialization; the
+// existing minor-version negotiation then produces the normal actionable
+// daemon-restart error instead.
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.1.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -97,6 +102,7 @@ export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
 export const AGENC_DAEMON_INTERNAL_METHODS = [
   "workspace.editor.acquire",
   "workspace.editor.sync",
+  "workspace.editor.staleAuthority.refresh",
   "workspace.editor.heartbeat",
   "workspace.editor.release",
   "workspace.editor.topology.reserve",
@@ -614,6 +620,14 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     result: "object",
     description:
       "TUI-internal request to synchronize revisioned clean and dirty editor-buffer authority.",
+  },
+  "workspace.editor.staleAuthority.refresh": {
+    method: "workspace.editor.staleAuthority.refresh",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal read-only request to refresh exact disk evidence for quarantined Editor authority.",
   },
   "workspace.editor.heartbeat": {
     method: "workspace.editor.heartbeat",
@@ -1176,14 +1190,10 @@ export interface RunStartParams extends JsonObject {
 }
 
 export type CsvJobReviewDisposition =
-  | "confirmed_committed"
-  | "confirmed_no_effect"
-  | "remains_unknown";
+  "confirmed_committed" | "confirmed_no_effect" | "remains_unknown";
 
 export type CsvJobReviewDomainAction =
-  | "mark_completed"
-  | "retry_new_attempt"
-  | "abandon_item";
+  "mark_completed" | "retry_new_attempt" | "abandon_item";
 
 export type CsvJobReviewStatus = "pending" | "resolved" | "abandoned";
 
@@ -1274,17 +1284,14 @@ export interface SessionResolveToolCallEvidenceParams extends JsonObject {
   readonly sessionId: string;
   readonly toolCallId: string;
   readonly disposition:
-    | "confirmed_committed"
-    | "confirmed_no_effect"
-    | "remains_unknown";
+    "confirmed_committed" | "confirmed_no_effect" | "remains_unknown";
   readonly evidenceRef: string;
   readonly evidenceSha256: string;
   readonly reviewer?: string;
 }
 
 export type SessionResolveToolCallParams =
-  | SessionResolveToolCallLegacyParams
-  | SessionResolveToolCallEvidenceParams;
+  SessionResolveToolCallLegacyParams | SessionResolveToolCallEvidenceParams;
 
 export interface SessionSnapshotParams extends JsonObject {
   readonly sessionId: string;
@@ -1368,6 +1375,25 @@ export interface WorkspaceEditorBufferSync extends JsonObject {
   readonly content?: string;
 }
 
+/**
+ * Content-free evidence for an Editor revision that survived its owning
+ * process. It may be dirty or last-known-clean; the disk fingerprint binds an
+ * explicit "use disk" choice to the exact filesystem state the user reviewed.
+ * Source text is never exposed or persisted through this record.
+ */
+export interface WorkspaceEditorStaleAuthorityEntry extends JsonObject {
+  readonly path: string;
+  readonly editorContentSha256: string;
+  readonly editorContentBytes: number;
+  readonly changedtick: number;
+  readonly editorInstanceId: string;
+  readonly epoch: number;
+  readonly editorState: "dirty" | "clean";
+  readonly diskState: "content" | "missing" | "unavailable";
+  readonly diskContentSha256?: string;
+  readonly diskContentBytes?: number;
+}
+
 export interface WorkspaceEditorSyncParams extends JsonObject {
   readonly workspaceRoot: string;
   readonly editorInstanceId: string;
@@ -1375,6 +1401,11 @@ export interface WorkspaceEditorSyncParams extends JsonObject {
   readonly epoch: number;
   readonly sequence: number;
   readonly buffers: readonly WorkspaceEditorBufferSync[];
+  /**
+   * Exact evidence echoed only after an explicit user confirmation to abandon
+   * orphaned Editor revisions and keep the reviewed disk state instead.
+   */
+  readonly abandonStaleAuthority?: readonly WorkspaceEditorStaleAuthorityEntry[];
 }
 
 export interface WorkspaceEditorHeartbeatParams extends JsonObject {
@@ -1383,6 +1414,8 @@ export interface WorkspaceEditorHeartbeatParams extends JsonObject {
   readonly leaseToken: string;
   readonly epoch: number;
 }
+
+export interface WorkspaceEditorStaleAuthorityRefreshParams extends WorkspaceEditorHeartbeatParams {}
 
 export interface WorkspaceEditorTopologyTarget extends JsonObject {
   readonly path: string;
@@ -1406,9 +1439,7 @@ export interface WorkspaceEditorTopologyCompleteParams extends WorkspaceEditorTo
 
 export interface WorkspaceEditorRecoveredTopologyListParams extends WorkspaceEditorHeartbeatParams {}
 
-export interface WorkspaceEditorRecoveredTopologyResolveParams extends WorkspaceEditorHeartbeatParams {
-  readonly tokenId: string;
-}
+export interface WorkspaceEditorRecoveredTopologyResolveParams extends WorkspaceEditorTopologyFinalizeParams {}
 
 export interface WorkspaceEditorReleaseParams extends WorkspaceEditorHeartbeatParams {
   readonly abandonDirty?: boolean;
@@ -2059,14 +2090,8 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"run.evidence", RunEvidenceParams>
   | AgenCDaemonRequestWithParams<"run.cancel", RunCancelParams>
   | AgenCDaemonRequestWithParams<"run.start", RunStartParams>
-  | AgenCDaemonRequestWithParams<
-      "csvJob.review.list",
-      CsvJobReviewListParams
-    >
-  | AgenCDaemonRequestWithParams<
-      "csvJob.review.show",
-      CsvJobReviewShowParams
-    >
+  | AgenCDaemonRequestWithParams<"csvJob.review.list", CsvJobReviewListParams>
+  | AgenCDaemonRequestWithParams<"csvJob.review.show", CsvJobReviewShowParams>
   | AgenCDaemonRequestWithParams<
       "csvJob.review.resolve",
       CsvJobReviewResolveParams
@@ -2253,9 +2278,7 @@ export interface CsvJobReviewDetail extends JsonObject {
     | "unknown_outcome";
   readonly attemptCount: number;
   readonly resultAvailability:
-    | "not_produced"
-    | "available"
-    | "unavailable_after_review";
+    "not_produced" | "available" | "unavailable_after_review";
   readonly resultSizeBytes: number;
   readonly resultDigest?: string;
   readonly reviewStatus: CsvJobReviewStatus;
@@ -2835,6 +2858,8 @@ export interface WorkspaceEditorLeaseResult extends JsonObject {
   readonly epoch: number;
   readonly sequence: number;
   readonly expiresAt: number;
+  /** Present on acquire so a reconnecting Editor can offer recovery. */
+  readonly staleAuthority?: readonly WorkspaceEditorStaleAuthorityEntry[];
 }
 
 export interface WorkspaceEditorSyncResult extends JsonObject {
@@ -2843,6 +2868,12 @@ export interface WorkspaceEditorSyncResult extends JsonObject {
   readonly expiresAt: number;
   readonly dirtyPaths: readonly string[];
   readonly stalePaths: readonly string[];
+  readonly staleAuthority?: readonly WorkspaceEditorStaleAuthorityEntry[];
+}
+
+export interface WorkspaceEditorStaleAuthorityRefreshResult extends JsonObject {
+  readonly refreshed: true;
+  readonly staleAuthority: readonly WorkspaceEditorStaleAuthorityEntry[];
 }
 
 export interface WorkspaceEditorReleaseResult extends JsonObject {
@@ -2884,6 +2915,7 @@ export interface WorkspaceEditorRecoveredTopologyResolveResult extends JsonObjec
   readonly resolved: true;
   readonly tokenId: string;
   readonly status: "unknown_outcome";
+  readonly sync: WorkspaceEditorSyncResult;
 }
 
 export interface WorkspaceEditorProposalResult extends JsonObject {
@@ -2952,11 +2984,14 @@ export interface WorkspaceEditorChangeResult extends JsonObject {
   readonly workspaceRoot: string;
   readonly path: string;
   readonly source: string;
+  readonly kind?: "path" | "topology";
   readonly status:
     "applied" | "proposed" | "blocked" | "discarded" | "unknown_outcome";
-  readonly beforeSha256: string;
+  readonly beforeSha256?: string;
   readonly afterSha256?: string;
   readonly proposalId?: string;
+  readonly topologyTokenId?: string;
+  readonly includeDescendants?: boolean;
 }
 
 export interface WorkspaceEditorChangesListResult extends JsonObject {
@@ -3351,6 +3386,7 @@ export interface AgenCDaemonResultByMethod {
 export interface AgenCDaemonInternalResultByMethod {
   readonly "workspace.editor.acquire": WorkspaceEditorLeaseResult;
   readonly "workspace.editor.sync": WorkspaceEditorSyncResult;
+  readonly "workspace.editor.staleAuthority.refresh": WorkspaceEditorStaleAuthorityRefreshResult;
   readonly "workspace.editor.heartbeat": WorkspaceEditorLeaseResult;
   readonly "workspace.editor.release": WorkspaceEditorReleaseResult;
   readonly "workspace.editor.topology.reserve": WorkspaceEditorTopologyReserveResult;

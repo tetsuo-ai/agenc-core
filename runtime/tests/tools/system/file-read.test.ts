@@ -145,6 +145,33 @@ describe("FileRead tool", () => {
     expect(tool.name).toBe(FILE_READ_TOOL_NAME);
   });
 
+  test("reads a bounded text window through protected Editor authority", async () => {
+    const workspace = join(root, "workspace");
+    const file = join(workspace, "window.txt");
+    await mkdir(workspace);
+    await writeFile(file, "alpha\nbeta\ngamma\ndelta\n", "utf8");
+    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
+      workspaceRoot: workspace,
+      editorInstanceId: "file-read-window-editor",
+    });
+    const tool = createFileReadTool({ allowedPaths: [workspace] });
+
+    const result = await tool.execute({
+      file_path: file,
+      offset: 2,
+      limit: 2,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe("2→beta\n3→gamma");
+    expect(result.metadata).toMatchObject({
+      startLine: 2,
+      endLine: 3,
+      numLines: 2,
+      isPartial: true,
+    });
+  });
+
   test("never reads outside text bytes after a final ancestor exchange", async () => {
     const workspace = join(root, "workspace");
     const displaced = join(root, "workspace-displaced");

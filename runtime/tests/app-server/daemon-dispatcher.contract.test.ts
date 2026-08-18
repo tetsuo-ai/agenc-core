@@ -8,6 +8,7 @@ import {
   TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
 } from "./daemon-dispatcher.js";
 import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
   JSON_RPC_VERSION,
@@ -39,11 +40,7 @@ function sequence(values: readonly string[]): () => string {
   };
 }
 
-function request(
-  id: string,
-  method: string,
-  params?: JsonObject,
-): JsonObject {
+function request(id: string, method: string, params?: JsonObject): JsonObject {
   return {
     jsonrpc: JSON_RPC_VERSION,
     id,
@@ -60,7 +57,10 @@ async function initialize(connection: {
       request("init", "initialize", { protocol: { version: "1.0.0" } }),
     ),
   ).resolves.toMatchObject({
-    result: { type: "initialized", protocolVersion: "1.0.0" },
+    result: {
+      type: "initialized",
+      protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+    },
   });
 }
 
@@ -99,7 +99,9 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       agentId: "agent_ledger",
       cwd: await workspaces.create(),
     });
-    const clientMultiplexer = new AgenCDaemonClientMultiplexer({ sessionManager });
+    const clientMultiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager,
+    });
     const notifications: JsonObject[] = [];
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
@@ -157,7 +159,9 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       agentId: "agent_mobile_status",
       cwd: await workspaces.create(),
     });
-    const clientMultiplexer = new AgenCDaemonClientMultiplexer({ sessionManager });
+    const clientMultiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager,
+    });
     const notifications: JsonObject[] = [];
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
@@ -290,18 +294,20 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       resolveStarted = resolve;
     });
     const fuzzyFileSearch = {
-      search: vi.fn(async (_params: unknown, options?: { signal?: AbortSignal }) => {
-        resolveStarted();
-        await new Promise<void>((resolve, reject) => {
-          releaseSearch = resolve;
-          options?.signal?.addEventListener(
-            "abort",
-            () => reject(options.signal?.reason ?? new Error("cancelled")),
-            { once: true },
-          );
-        });
-        return { files: [] };
-      }),
+      search: vi.fn(
+        async (_params: unknown, options?: { signal?: AbortSignal }) => {
+          resolveStarted();
+          await new Promise<void>((resolve, reject) => {
+            releaseSearch = resolve;
+            options?.signal?.addEventListener(
+              "abort",
+              () => reject(options.signal?.reason ?? new Error("cancelled")),
+              { once: true },
+            );
+          });
+          return { files: [] };
+        },
+      ),
     };
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
@@ -470,8 +476,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     const connections = new Map<string, AgenCDaemonJsonRpcConnection>();
     const closedConnectionKeys: string[] = [];
     let destroyEvictedClientConnection:
-      | ((clientId: string) => void)
-      | undefined;
+      ((clientId: string) => void) | undefined;
 
     const multiplexer = new AgenCDaemonClientMultiplexer({
       sessionManager,
@@ -517,7 +522,9 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     // clientId is a distinct multiplexer client with its OWN send closure, so
     // their pending-backlog accounting is independent (the slow one stalls, the
     // healthy one drains).
-    const connection = dispatcher.createConnection({ sendNotification: () => {} });
+    const connection = dispatcher.createConnection({
+      sendNotification: () => {},
+    });
     connections.set("conn_1", connection);
     await sessionManager.createSession({
       agentId: "agent_1",
@@ -643,7 +650,10 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         }),
       ),
     ).resolves.toMatchObject({
-      result: { type: "initialized", protocolVersion: "1.0.0" },
+      result: {
+        type: "initialized",
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+      },
     });
 
     await expect(
@@ -712,9 +722,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     const cwd = await workspaces.create();
 
     await expect(
-      connection.dispatch(
-        request("create-default", "session.create", { cwd }),
-      ),
+      connection.dispatch(request("create-default", "session.create", { cwd })),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
       id: "create-default",
@@ -747,7 +755,9 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       clientMultiplexer,
       sessionManager: sessions,
     });
-    const connection = dispatcher.createConnection({ sendNotification: () => {} });
+    const connection = dispatcher.createConnection({
+      sendNotification: () => {},
+    });
     await initialize(connection);
     const cwd = await workspaces.create();
 
@@ -778,9 +788,9 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     ).resolves.toMatchObject({
       result: { attachmentId: "attachment_1", clientId: "client_1" },
     });
-    await expect(clientMultiplexer.attachedClientIds("session_1")).resolves.toEqual(
-      ["client_1"],
-    );
+    await expect(
+      clientMultiplexer.attachedClientIds("session_1"),
+    ).resolves.toEqual(["client_1"]);
 
     await expect(
       connection.dispatch(
@@ -799,9 +809,9 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         remainingAttachmentIds: [],
       },
     });
-    await expect(clientMultiplexer.attachedClientIds("session_1")).resolves.toEqual(
-      [],
-    );
+    await expect(
+      clientMultiplexer.attachedClientIds("session_1"),
+    ).resolves.toEqual([]);
 
     await connection.dispatch(
       request("attach-two", "session.attach", {
@@ -827,13 +837,15 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         reason: "done",
       },
     });
-    await expect(clientMultiplexer.attachedClientIds("session_1")).resolves.toEqual(
-      [],
-    );
+    await expect(
+      clientMultiplexer.attachedClientIds("session_1"),
+    ).resolves.toEqual([]);
     await expect(sessions.getSession("session_1")).resolves.not.toHaveProperty(
       "activeAttachmentIds",
     );
-    await expect(clientMultiplexer.removeClient("client_2")).resolves.toEqual([]);
+    await expect(clientMultiplexer.removeClient("client_2")).resolves.toEqual(
+      [],
+    );
     await expect(
       connection.dispatch(
         request("terminate-again", "session.terminate", {
@@ -970,10 +982,12 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         remainingAttachmentIds: ["attachment_2"],
       },
     });
-    await expect(clientMultiplexer.attachedClientIds("session_1")).resolves.toEqual(
-      ["client_2"],
+    await expect(
+      clientMultiplexer.attachedClientIds("session_1"),
+    ).resolves.toEqual(["client_2"]);
+    await expect(clientMultiplexer.removeClient("client_1")).resolves.toEqual(
+      [],
     );
-    await expect(clientMultiplexer.removeClient("client_1")).resolves.toEqual([]);
     await clientMultiplexer.broadcastSessionEvent("session_1", {
       type: "session.delta",
       sessionId: "session_1",
@@ -1225,7 +1239,9 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       clientMultiplexer,
       sessionManager: sessions,
     });
-    const connection = dispatcher.createConnection({ sendNotification: () => {} });
+    const connection = dispatcher.createConnection({
+      sendNotification: () => {},
+    });
     await initialize(connection);
 
     await connection.dispatch(
@@ -1261,9 +1277,9 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         remainingAttachmentIds: [],
       },
     });
-    await expect(clientMultiplexer.attachedClientIds("session_1")).resolves.toEqual(
-      ["client_1"],
-    );
+    await expect(
+      clientMultiplexer.attachedClientIds("session_1"),
+    ).resolves.toEqual(["client_1"]);
   });
 
   it("validates newly routed session lifecycle params", async () => {

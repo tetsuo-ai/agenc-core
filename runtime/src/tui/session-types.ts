@@ -48,6 +48,8 @@ import type {
   WorkspaceEditorRecoveredTopologyListResult,
   WorkspaceEditorRecoveredTopologyResolveParams,
   WorkspaceEditorRecoveredTopologyResolveResult,
+  WorkspaceEditorStaleAuthorityRefreshParams,
+  WorkspaceEditorStaleAuthorityRefreshResult,
   WorkspaceEditorSyncParams,
   WorkspaceEditorSyncResult,
   WorkspaceEditorTopologyCompleteParams,
@@ -243,6 +245,9 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   syncWorkspaceEditor?(
     params: WorkspaceEditorSyncParams,
   ): Promise<WorkspaceEditorSyncResult>;
+  refreshWorkspaceEditorStaleAuthority?(
+    params: WorkspaceEditorStaleAuthorityRefreshParams,
+  ): Promise<WorkspaceEditorStaleAuthorityRefreshResult>;
   heartbeatWorkspaceEditor?(
     params: WorkspaceEditorHeartbeatParams,
   ): Promise<WorkspaceEditorLeaseResult>;

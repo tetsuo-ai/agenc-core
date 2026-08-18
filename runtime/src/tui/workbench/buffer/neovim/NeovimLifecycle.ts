@@ -256,6 +256,45 @@ const DISCARD_ALL_BUFFERS = [
   "return true",
 ].join("\n");
 
+const RELOAD_BUFFER_FOR_STALE_AUTHORITY = [
+  "local buffer, expected_path = ...",
+  "if not vim.api.nvim_buf_is_valid(buffer) or not vim.api.nvim_buf_is_loaded(buffer) then",
+  "  error('stale-authority buffer is no longer loaded: ' .. tostring(buffer))",
+  "end",
+  "if vim.api.nvim_get_option_value('buftype', { buf = buffer }) ~= '' then",
+  "  error('stale-authority recovery requires a file buffer: ' .. tostring(buffer))",
+  "end",
+  "local actual_path = vim.api.nvim_buf_get_name(buffer)",
+  "if actual_path ~= expected_path then",
+  "  error('stale-authority buffer path changed before reload: ' .. actual_path)",
+  "end",
+  "local ok, failure = pcall(vim.api.nvim_buf_call, buffer, function()",
+  "  vim.cmd('silent keepalt noautocmd edit!')",
+  "end)",
+  "if not ok then error('stale-authority reload failed: ' .. tostring(failure)) end",
+  "return true",
+].join("\n");
+
+const UNLOAD_BUFFER_FOR_STALE_AUTHORITY = [
+  "local buffer, expected_path = ...",
+  "if not vim.api.nvim_buf_is_valid(buffer) or not vim.api.nvim_buf_is_loaded(buffer) then",
+  "  error('stale-authority buffer is no longer loaded: ' .. tostring(buffer))",
+  "end",
+  "if vim.api.nvim_get_option_value('buftype', { buf = buffer }) ~= '' then",
+  "  error('stale-authority recovery requires a file buffer: ' .. tostring(buffer))",
+  "end",
+  "local actual_path = vim.api.nvim_buf_get_name(buffer)",
+  "if actual_path ~= expected_path then",
+  "  error('stale-authority buffer path changed before unload: ' .. actual_path)",
+  "end",
+  "local ok, failure = pcall(vim.cmd, 'silent noautocmd bdelete! ' .. tostring(buffer))",
+  "if not ok then error('stale-authority unload failed: ' .. tostring(failure)) end",
+  "if vim.api.nvim_buf_is_valid(buffer) and vim.api.nvim_buf_is_loaded(buffer) then",
+  "  error('stale-authority buffer remained loaded: ' .. tostring(buffer))",
+  "end",
+  "return true",
+].join("\n");
+
 const REBASE_FILE_BUFFERS = [
   "local changes = ...",
   "local moving = {}",
@@ -796,6 +835,54 @@ export class EmbeddedNeovimSession {
         await this.#request(
           "nvim_set_current_buf",
           [normalizedHandle],
+          signal,
+          timeoutMs,
+        );
+      },
+    );
+    return true;
+  }
+
+  async reloadBufferForStaleAuthority(
+    handle: number,
+    expectedPath: string,
+  ): Promise<boolean> {
+    if (this.#closed) return false;
+    const normalizedHandle = normalizeBufferHandle(handle);
+    if (expectedPath.length === 0) {
+      throw new Error("Stale-authority recovery requires a named file buffer.");
+    }
+    await this.#runRpcOperation(
+      `Embedded Neovim buffer ${handle} stale-authority reload`,
+      true,
+      async (signal, timeoutMs) => {
+        await this.#request(
+          "nvim_exec_lua",
+          [RELOAD_BUFFER_FOR_STALE_AUTHORITY, [normalizedHandle, expectedPath]],
+          signal,
+          timeoutMs,
+        );
+      },
+    );
+    return true;
+  }
+
+  async unloadBufferForStaleAuthority(
+    handle: number,
+    expectedPath: string,
+  ): Promise<boolean> {
+    if (this.#closed) return false;
+    const normalizedHandle = normalizeBufferHandle(handle);
+    if (expectedPath.length === 0) {
+      throw new Error("Stale-authority recovery requires a named file buffer.");
+    }
+    await this.#runRpcOperation(
+      `Embedded Neovim buffer ${handle} stale-authority unload`,
+      true,
+      async (signal, timeoutMs) => {
+        await this.#request(
+          "nvim_exec_lua",
+          [UNLOAD_BUFFER_FOR_STALE_AUTHORITY, [normalizedHandle, expectedPath]],
           signal,
           timeoutMs,
         );

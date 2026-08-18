@@ -7,6 +7,7 @@ import { useShortcutDisplay } from "../keybindings/useShortcutDisplay.js";
 import { useAppState } from "../state/AppState.js";
 import { useWorkbenchState } from "./state.js";
 import { useBufferStore } from "./buffer/useBufferStore.js";
+import { bufferKeybindingContext } from "./buffer/keybindingContext.js";
 
 // Hints are `<label>: <segment>  <segment>  …` with double-space separators.
 // On narrow terminals whole trailing segments are dropped instead of
@@ -28,27 +29,26 @@ export function WorkbenchFooter(): React.ReactElement {
   const { columns } = useTerminalSize();
   const workbench = useWorkbenchState();
   const buffer = useBufferStore();
-  const bufferKeybindingContext = buffer.provider.capabilities.terminalUi
-    ? "BufferHost"
-    : "Buffer";
+  const activeBufferKeybindingContext = bufferKeybindingContext(buffer);
+  const usesHostKeybindings = activeBufferKeybindingContext === "BufferHost";
   const composerShortcut = useShortcutDisplay(
     "workbench:focusComposer",
-    bufferKeybindingContext,
+    activeBufferKeybindingContext,
     "shift+tab",
   );
   const panelShortcut = useShortcutDisplay(
     "workbench:focusRail",
-    bufferKeybindingContext,
-    buffer.provider.capabilities.terminalUi ? "alt+l" : "ctrl+x l",
+    activeBufferKeybindingContext,
+    usesHostKeybindings ? "alt+l" : "ctrl+x l",
   );
   const maximizeShortcut = useShortcutDisplay(
     "workbench:toggleSurfaceMaximized",
-    bufferKeybindingContext,
-    buffer.provider.capabilities.terminalUi ? "alt+z" : "ctrl+x z",
+    activeBufferKeybindingContext,
+    usesHostKeybindings ? "alt+z" : "ctrl+x z",
   );
   const saveShortcut = useShortcutDisplay(
     "buffer:save",
-    bufferKeybindingContext,
+    activeBufferKeybindingContext,
     "ctrl+s",
   );
   const configuredRedoShortcut = useShortcutDisplay(
@@ -56,13 +56,11 @@ export function WorkbenchFooter(): React.ReactElement {
     "Buffer",
     "ctrl+x y",
   );
-  const redoShortcut = buffer.provider.capabilities.terminalUi
-    ? "ctrl+r"
-    : configuredRedoShortcut;
+  const redoShortcut = usesHostKeybindings ? "ctrl+r" : configuredRedoShortcut;
   const closeShortcut = useShortcutDisplay(
     "buffer:close",
-    bufferKeybindingContext,
-    buffer.provider.capabilities.terminalUi ? "alt+q" : "ctrl+x q",
+    activeBufferKeybindingContext,
+    usesHostKeybindings ? "alt+q" : "ctrl+x q",
   );
   const modeShortcut = useShortcutDisplay(
     "chat:cycleMode",

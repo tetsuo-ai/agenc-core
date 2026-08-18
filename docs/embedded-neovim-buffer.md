@@ -32,6 +32,8 @@ The important operator model is:
 - `Alt+Z` maximizes or restores BUFFER. Maximize hides workbench side rails,
   composer, and footer without resizing against the global terminal geometry;
   the embedded grid follows the actual center-pane size.
+- `Alt+H` focuses the project explorer, including from a fresh Editor that
+  still shows **No file selected** and has not started a provider.
 - `Ctrl+R` remains Neovim's native redo. `Alt+R` moves the current file to the
   workbench review rail.
 - `Alt+L` focuses the Editor's open AI/proposal panel. Page Up, Page Down,
@@ -393,6 +395,30 @@ Coordinated file writes use a fail-closed admission protocol:
 - A dirty path whose editor lease expired, crashed, or stopped reporting is
   quarantined as stale and all reads/writes are blocked until the editor
   reconnects and proves its revision or the user deliberately resolves it.
+
+On reconnect, orphaned Editor authority replaces the Editor surface with a
+recovery card. This includes dirty revisions and last-known-clean buffers whose
+disk path changed while the daemon was stopped. Prefer **Recover** from a
+matching private Neovim swap when one is offered; durable quarantine retains
+revision fingerprints, not the previous source text. The card reviews one path
+at a time. Press `E` to enter the loaded Recovery Editor when you first need
+`:edit!` to reload it or `:bd!`/`:bdelete!` to unload a missing path. This is a
+host-owned hard-quarantine command surface: arbitrary native input, mappings,
+shell/Lua commands, paste, mouse input, and tab selection are not forwarded to
+Neovim. `Ctrl+G` returns to the review. Ordinary embedded Neovim and user
+configuration remain intentionally unsandboxed outside this recovery surface.
+
+If no usable revision remains, **Use Disk** is the explicit destructive
+choice: press `D` (or click) once to arm it and again to confirm. The daemon
+re-reads that disk path and requires its exact reviewed hash and byte count to
+still match. That final descriptor-bound read is the decision point; a later
+external write is treated as a new disk revision. A changed or unavailable
+path rejects the operation and keeps the card active; after restoring or
+removing an unavailable path, press `R` to re-read only its disk evidence; the
+refresh does not synchronize the loaded buffer or resolve its quarantine.
+Success permanently discards that orphaned revision and any pending proposals
+based on it. Remaining paths are reviewed separately, and Agent and shell
+operations resume only after protected Editor authority is resolved.
 
 Heartbeats renew the lease; editor close and TUI cleanup release it without
 silently abandoning dirty authority. The same coordinator covers direct file

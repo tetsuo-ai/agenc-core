@@ -30,6 +30,7 @@ import type {
   BufferWorkspaceWriteDecision,
   BufferWorkspaceWriteRequest,
 } from "../../../src/tui/workbench/buffer/providers/types.js";
+import { BufferWorkspaceCaptureUnstableError } from "../../../src/tui/workbench/buffer/providers/types.js";
 import {
   NeovimStartupCleanupError,
   type EmbeddedNeovimSession,
@@ -445,6 +446,27 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(harness.session.inspectBuffers).toHaveBeenCalledTimes(4);
 
     await controller.cleanup();
+  });
+
+  it("classifies continuously changing workspace captures as retryable instability", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider({
+      ...harness.options,
+      workspaceRoot: TEST_WORKSPACE_ROOT,
+    });
+    await provider.open({ filePath: "target.txt" });
+    harness.setBufferTextReader(async () => {
+      harness.mutateBuffer();
+      return "latest text\n";
+    });
+    harness.session.inspectBuffers.mockClear();
+
+    await expect(provider.captureWorkspaceBuffers()).rejects.toBeInstanceOf(
+      BufferWorkspaceCaptureUnstableError,
+    );
+    expect(harness.session.inspectBuffers).toHaveBeenCalledTimes(6);
+
+    await provider.cleanup();
   });
 
   it("authorizes only exact full-buffer workspace write destinations", async () => {
@@ -1103,6 +1125,59 @@ describe("embedded Neovim BUFFER provider", () => {
       filePath: "next.txt",
       dirty: false,
     });
+  });
+
+  it("binds restricted stale-authority actions to the reviewed loaded path", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider(harness.options);
+    const reviewedPath = workspacePath("target.txt");
+    const unrelatedPath = workspacePath("unrelated.txt");
+    await provider.open({ filePath: "target.txt" });
+    await provider.open({ filePath: "unrelated.txt" });
+    expect(provider.getSnapshot()).toMatchObject({
+      absolutePath: unrelatedPath,
+      activeBufferHandle: 2,
+    });
+
+    harness.session.input.mockClear();
+    await expect(
+      provider.performStaleAuthorityEditorAction({
+        type: "reload",
+        path: reviewedPath,
+      }),
+    ).resolves.toBe(true);
+    expect(harness.session.reloadBufferForStaleAuthority).toHaveBeenCalledWith(
+      1,
+      reviewedPath,
+    );
+    expect(provider.getSnapshot().absolutePath).toBe(unrelatedPath);
+    expect(harness.session.input).not.toHaveBeenCalled();
+
+    await expect(
+      provider.performStaleAuthorityEditorAction({
+        type: "unload",
+        path: reviewedPath,
+      }),
+    ).resolves.toBe(true);
+    expect(harness.session.unloadBufferForStaleAuthority).toHaveBeenCalledWith(
+      1,
+      reviewedPath,
+    );
+    expect(provider.getSnapshot().absolutePath).toBe(unrelatedPath);
+    expect(harness.session.input).not.toHaveBeenCalled();
+
+    await expect(
+      provider.performStaleAuthorityEditorAction({
+        type: "unload",
+        path: workspacePath("missing.txt"),
+      }),
+    ).resolves.toBe(false);
+    expect(harness.session.unloadBufferForStaleAuthority).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(provider.getSnapshot().error).toContain(
+      "reviewed stale-authority path is not loaded",
+    );
   });
 
   it.each(["changedtick", "new-dirty-buffer"] as const)(
@@ -2682,6 +2757,30 @@ function createHarness(
         if (deletions.some((deletion) => deletion.path === currentPath)) {
           currentPath = buffers.keys().next().value ?? "";
         }
+      },
+    ),
+    reloadBufferForStaleAuthority: vi.fn(
+      async (handle: number, expectedPath: string) => {
+        const target = buffers.get(expectedPath);
+        if (!target || target.handle !== handle) {
+          throw new Error(`cannot reload stale buffer ${handle}`);
+        }
+        target.dirty = false;
+        target.changedtick += 1;
+        return true;
+      },
+    ),
+    unloadBufferForStaleAuthority: vi.fn(
+      async (handle: number, expectedPath: string) => {
+        const target = buffers.get(expectedPath);
+        if (!target || target.handle !== handle) {
+          throw new Error(`cannot unload stale buffer ${handle}`);
+        }
+        buffers.delete(expectedPath);
+        if (currentPath === expectedPath) {
+          currentPath = buffers.keys().next().value ?? "";
+        }
+        return true;
       },
     ),
     saveAll: vi.fn(async (force: boolean) => {

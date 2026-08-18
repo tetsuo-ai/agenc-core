@@ -704,10 +704,10 @@ describe("workbench render contract", () => {
       .find((line) => line.includes("BUFFER:"));
     expect(hintLine).toBeDefined();
     expect(hintLine).toContain("ctrl+s save");
-    expect(hintLine).toContain("ctrl+x y redo");
+    expect(hintLine).toContain("ctrl+r redo");
     expect(hintLine).toContain("shift+tab composer");
-    expect(hintLine).toContain("ctrl+x z maximize");
-    expect(hintLine).toContain("ctrl+x q hide");
+    expect(hintLine).toContain("alt+z maximize");
+    expect(hintLine).toContain("alt+q hide");
     expect(hintLine).not.toContain("/ commands");
   });
 
