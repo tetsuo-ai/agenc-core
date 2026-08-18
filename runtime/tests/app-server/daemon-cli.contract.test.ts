@@ -2095,8 +2095,8 @@ backend = "local"
       id: "initialize",
       result: {
         type: "initialized",
-        protocolVersion: "1.1.0",
-        protocol: { version: "1.1.0" },
+        protocolVersion: "1.2.0",
+        protocol: { version: "1.2.0" },
       },
     });
 

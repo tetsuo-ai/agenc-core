@@ -131,8 +131,13 @@ function makeRunnerHarness(opts: {
     openThreadSpawnChildren: vi.fn(() => []),
     clearConversationHistory: vi.fn(async () => {}),
   };
+  const rolloutStore = {
+    rolloutPath: `/tmp/${conversationId}.jsonl`,
+    readAll: () => [],
+  };
   const bootstrap = vi.fn(async () => ({
     session,
+    rolloutStore,
     registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() },
     shutdown: vi.fn(async () => {}),
   })) as unknown as ReturnType<typeof vi.fn> & AgenCBootstrapFunction;
