@@ -22,15 +22,30 @@ export type AgencStopReason = "completed" | "errored" | "stopped";
 export interface AgencPromptEventIdentity {
   readonly eventId?: string;
   readonly sequence?: number;
+  readonly runId?: string;
+  readonly historyEpoch?: string;
+  readonly turnId?: string;
+  readonly clientMessageId?: string;
+  readonly messageId?: string;
 }
 
 /** One streamed event observed while a prompt turn runs. */
 export type AgencPromptEvent = AgencPromptEventIdentity &
-  (| {
+  (
+    | {
         readonly type: "text";
         readonly delta: string;
-        readonly messageId?: string;
         readonly streamId?: string;
+      }
+    | {
+        readonly type: "message_committed";
+        readonly text: string;
+      }
+    | {
+        /** Durable transcript replacement; consumers should fetch v2 anew. */
+        readonly type: "history_reset";
+        readonly reason:
+          "cleared" | "partial_compact" | "rewind" | "compaction_rollback";
       }
     | {
         readonly type: "tool_call";
@@ -144,13 +159,6 @@ export function messageChunkFromNotification(
   ) {
     return payload.delta;
   }
-  if (
-    transcriptEvent.type === "agent_message" &&
-    payload !== null &&
-    typeof payload.message === "string"
-  ) {
-    return `${payload.message}\n`;
-  }
   return null;
 }
 
@@ -166,17 +174,27 @@ export function terminalStatusFromNotification(
   if (message.method === "event.agent_status" && params !== null) {
     const runStatus =
       typeof params.runStatus === "string" ? params.runStatus : undefined;
-    const status = typeof params.status === "string" ? params.status : undefined;
+    const status =
+      typeof params.status === "string" ? params.status : undefined;
     const statusMessage =
       typeof params.message === "string" ? params.message : undefined;
     if (runStatus === "completed" || status === "idle") {
-      return { code: 0, ...(statusMessage !== undefined ? { message: statusMessage } : {}) };
+      return {
+        code: 0,
+        ...(statusMessage !== undefined ? { message: statusMessage } : {}),
+      };
     }
     if (runStatus === "stopped" || status === "stopped") {
-      return { code: 130, ...(statusMessage !== undefined ? { message: statusMessage } : {}) };
+      return {
+        code: 130,
+        ...(statusMessage !== undefined ? { message: statusMessage } : {}),
+      };
     }
     if (runStatus === "errored" || status === "error") {
-      return { code: 1, ...(statusMessage !== undefined ? { message: statusMessage } : {}) };
+      return {
+        code: 1,
+        ...(statusMessage !== undefined ? { message: statusMessage } : {}),
+      };
     }
   }
   const transcriptEvent = nestedTranscriptEvent(message);
@@ -189,14 +207,20 @@ export function terminalStatusFromNotification(
       payload !== null && typeof payload.lastAgentMessage === "string"
         ? payload.lastAgentMessage
         : undefined;
-    return { code: 0, ...(finalMessage !== undefined ? { message: finalMessage } : {}) };
+    return {
+      code: 0,
+      ...(finalMessage !== undefined ? { message: finalMessage } : {}),
+    };
   }
   if (transcriptEvent.type === "error") {
     const errorMessage =
       payload !== null && typeof payload.message === "string"
         ? payload.message
         : undefined;
-    return { code: 1, ...(errorMessage !== undefined ? { message: errorMessage } : {}) };
+    return {
+      code: 1,
+      ...(errorMessage !== undefined ? { message: errorMessage } : {}),
+    };
   }
   return null;
 }
@@ -229,7 +253,9 @@ export function promptEventFromNotification(
       return null;
     }
     const afterSequence = positiveOrZeroInteger(params.afterSequence);
-    const firstAvailableSequence = positiveInteger(params.firstAvailableSequence);
+    const firstAvailableSequence = positiveInteger(
+      params.firstAvailableSequence,
+    );
     return {
       type: "gap",
       kind: "event_gap",
@@ -253,16 +279,41 @@ export function promptEventFromNotification(
         type: "text",
         delta,
         ...identity,
-        ...(typeof chunkParams.messageId === "string"
-          ? { messageId: chunkParams.messageId }
-          : {}),
         ...(typeof chunkParams.streamId === "string"
           ? { streamId: chunkParams.streamId }
           : {}),
       };
     }
     if (method === "event.session_event" && params !== null) {
-      const nested = isJsonObject(params.event) ? params.event : params;
+      const nested = nestedTranscriptEvent(message) ?? params;
+      const payload = isJsonObject(nested.payload) ? nested.payload : null;
+      if (
+        nested.type === "agent_message" &&
+        payload !== null &&
+        typeof payload.message === "string"
+      ) {
+        return {
+          type: "message_committed",
+          text: payload.message,
+          ...identity,
+        };
+      }
+      if (nested.type === "history_cleared") {
+        return { type: "history_reset", reason: "cleared", ...identity };
+      }
+      if (
+        nested.type === "transcript_epoch" &&
+        payload !== null &&
+        (payload.reason === "partial_compact" ||
+          payload.reason === "rewind" ||
+          payload.reason === "compaction_rollback")
+      ) {
+        return {
+          type: "history_reset",
+          reason: payload.reason,
+          ...identity,
+        };
+      }
       return { type: "session_event", event: nested, ...identity };
     }
     return null;
@@ -349,7 +400,9 @@ export function promptEventFromNotification(
       ...(typeof params.runStatus === "string"
         ? { runStatus: params.runStatus }
         : {}),
-      ...(typeof params.message === "string" ? { message: params.message } : {}),
+      ...(typeof params.message === "string"
+        ? { message: params.message }
+        : {}),
     };
   }
 
@@ -366,10 +419,19 @@ function eventIdentityFromParams(
     Number.isSafeInteger(sequence) &&
     sequence > 0;
   return {
-    ...(typeof params.eventId === "string"
-      ? { eventId: params.eventId }
-      : {}),
+    ...(typeof params.eventId === "string" ? { eventId: params.eventId } : {}),
     ...(hasSequence ? { sequence } : {}),
+    ...(typeof params.runId === "string" ? { runId: params.runId } : {}),
+    ...(typeof params.historyEpoch === "string"
+      ? { historyEpoch: params.historyEpoch }
+      : {}),
+    ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
+    ...(typeof params.clientMessageId === "string"
+      ? { clientMessageId: params.clientMessageId }
+      : {}),
+    ...(typeof params.messageId === "string"
+      ? { messageId: params.messageId }
+      : {}),
   };
 }
 

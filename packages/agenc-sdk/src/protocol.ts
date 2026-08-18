@@ -21,7 +21,7 @@ import type {
 } from "./csv-jobs.js";
 
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.1.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.2.0" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | JsonObject;
@@ -61,6 +61,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "session.clear",
   "session.snapshot",
   "session.transcript",
+  "session.transcript.v2",
   "session.cancelTurn",
   "session.resolveToolCall",
   "session.mcp.addServer",
@@ -139,10 +140,7 @@ export interface RequestCancelParams extends JsonObject {
 }
 
 export type PermissionMode =
-  | "default"
-  | "plan"
-  | "acceptEdits"
-  | "bypassPermissions";
+  "default" | "plan" | "acceptEdits" | "bypassPermissions";
 
 export type MessageContentBlock =
   | (JsonObject & { readonly type: "text"; readonly text: string })
@@ -284,9 +282,14 @@ export interface SessionTranscriptParams extends JsonObject {
   readonly sessionId: string;
 }
 
+export interface SessionTranscriptV2Params extends JsonObject {
+  readonly sessionId: string;
+}
+
 export interface SessionCancelTurnParams extends JsonObject {
   readonly sessionId: string;
   readonly reason?: string;
+  readonly expectedTurnId?: string;
 }
 
 /** Protocol-1.0 request shape shipped with agenc-sdk 0.3.0. */
@@ -305,17 +308,14 @@ export interface SessionResolveToolCallEvidenceParams extends JsonObject {
   readonly sessionId: string;
   readonly toolCallId: string;
   readonly disposition:
-    | "confirmed_committed"
-    | "confirmed_no_effect"
-    | "remains_unknown";
+    "confirmed_committed" | "confirmed_no_effect" | "remains_unknown";
   readonly evidenceRef: string;
   readonly evidenceSha256: string;
   readonly reviewer?: string;
 }
 
 export type SessionResolveToolCallParams =
-  | SessionResolveToolCallLegacyParams
-  | SessionResolveToolCallEvidenceParams;
+  SessionResolveToolCallLegacyParams | SessionResolveToolCallEvidenceParams;
 
 export interface SessionMcpServerConfig extends JsonObject {
   readonly name: string;
@@ -336,6 +336,7 @@ export interface MessageSendParams extends JsonObject {
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly clientMessageId?: string;
+  readonly ifBusy?: "reject";
   readonly metadata?: JsonObject;
 }
 
@@ -450,16 +451,17 @@ interface CommandExecStartBase extends JsonObject {
   readonly size?: CommandExecTerminalSize | null;
 }
 
-export type CommandExecStartParams = CommandExecStartBase & (
-  | {
-      readonly permissionProfile: string;
-      readonly sandboxPolicy?: null;
-    }
-  | {
-      readonly sandboxPolicy: JsonObject;
-      readonly permissionProfile?: null;
-    }
-);
+export type CommandExecStartParams = CommandExecStartBase &
+  (
+    | {
+        readonly permissionProfile: string;
+        readonly sandboxPolicy?: null;
+      }
+    | {
+        readonly sandboxPolicy: JsonObject;
+        readonly permissionProfile?: null;
+      }
+  );
 
 export interface CommandExecWriteParams extends JsonObject {
   readonly processId: string;
@@ -513,6 +515,7 @@ export interface AgencParamsByMethod {
   readonly "session.clear": SessionClearParams;
   readonly "session.snapshot": SessionSnapshotParams;
   readonly "session.transcript": SessionTranscriptParams;
+  readonly "session.transcript.v2": SessionTranscriptV2Params;
   readonly "session.cancelTurn": SessionCancelTurnParams;
   readonly "session.resolveToolCall": SessionResolveToolCallParams;
   readonly "session.mcp.addServer": SessionMcpAddServerParams;
@@ -813,8 +816,7 @@ export interface RunTerminalPersistedOutput extends JsonObject {
 /** Compatibility alias for code that names the unavailable branch directly. */
 export type RunTerminalOutputUnavailable = RunTerminalOutputAvailability;
 export type RunTerminalOutput =
-  | RunTerminalPersistedOutput
-  | RunTerminalOutputAvailability;
+  RunTerminalPersistedOutput | RunTerminalOutputAvailability;
 
 export interface RunResultResult extends JsonObject {
   readonly runId: string;
@@ -912,8 +914,7 @@ export type RunReplayEvent = RunJournalEvent | RunAdmissionReplayEvent;
 export interface RunReplaySourceUnavailableGap extends JsonObject {
   readonly kind: "source_unavailable";
   readonly reason:
-    | "execution_admission_journal_not_present"
-    | "run_journal_not_present";
+    "execution_admission_journal_not_present" | "run_journal_not_present";
 }
 
 /** A cursor range was retired or could not be recovered contiguously. */
@@ -955,9 +956,7 @@ export interface RunAdmissionReplaySource extends JsonObject {
   readonly projectDir: string;
 }
 
-export type RunReplaySource =
-  | RunJournalReplaySource
-  | RunAdmissionReplaySource;
+export type RunReplaySource = RunJournalReplaySource | RunAdmissionReplaySource;
 
 export interface RunReplayPage extends JsonObject {
   readonly runId: string;
@@ -982,9 +981,7 @@ export interface RunAdmissionReplayResult extends RunReplayPage {
 }
 
 /** Discriminated by `source.kind`; M3 and M4 event contracts stay precise. */
-export type RunReplayResult =
-  | RunJournalReplayResult
-  | RunAdmissionReplayResult;
+export type RunReplayResult = RunJournalReplayResult | RunAdmissionReplayResult;
 
 export function isRunAdmissionReplayResult(
   result: RunReplayResult,
@@ -999,10 +996,7 @@ export function isRunJournalReplayResult(
 }
 
 export type RunEvidenceCompleteness =
-  | "complete"
-  | "partial"
-  | "admission_source_unavailable"
-  | "journal_gap";
+  "complete" | "partial" | "admission_source_unavailable" | "journal_gap";
 
 export interface RunEvidenceSource extends JsonObject {
   readonly kind: "canonical_run_journal" | "existing_m3_admission_state";
@@ -1113,10 +1107,38 @@ export interface SessionTranscriptResult extends JsonObject {
   readonly messages: readonly SessionTranscriptMessage[];
 }
 
+export interface SessionTranscriptV2Message extends JsonObject {
+  readonly messageId: string;
+  readonly commitEventId: string;
+  readonly role: "user" | "assistant";
+  readonly text: string;
+  readonly turnId?: string;
+  readonly clientMessageId?: string;
+  /** Zero only for migrated response_item rows that predate event sequencing. */
+  readonly committedSequence: number;
+}
+
+export interface SessionTranscriptV2ActiveTurn extends JsonObject {
+  readonly turnId: string;
+  readonly clientMessageId?: string;
+}
+
+export interface SessionTranscriptV2Result extends JsonObject {
+  readonly schemaVersion: 2;
+  readonly sessionId: string;
+  readonly runId: string;
+  readonly historyEpoch: string;
+  readonly asOfSequence: number;
+  readonly messages: readonly SessionTranscriptV2Message[];
+  readonly activeTurn?: SessionTranscriptV2ActiveTurn;
+}
+
 export interface SessionCancelTurnResult extends JsonObject {
   readonly sessionId: string;
   readonly cancelled: boolean;
   readonly reason?: string;
+  readonly activeTurnId?: string;
+  readonly stale?: boolean;
 }
 
 export interface SessionResolveToolCallResult extends JsonObject {
@@ -1140,6 +1162,16 @@ export interface SessionMcpAddServerResult extends JsonObject {
 export interface MessageSendResult extends JsonObject {
   readonly messageId: string;
   readonly acceptedAt: string;
+  readonly disposition?: "started" | "duplicate";
+  /** Present for duplicate submissions so callers never guess crash outcomes. */
+  readonly duplicateState?: "completed" | "incomplete";
+  readonly turnId?: string;
+  readonly terminal?: MessageSendTerminalResult;
+}
+
+export interface MessageSendTerminalResult extends JsonObject {
+  readonly code: 0 | 1 | 130;
+  readonly message?: string;
 }
 
 export interface MessageStreamResult extends MessageSendResult {
@@ -1290,6 +1322,7 @@ export interface AgencResultByMethod {
   readonly "session.clear": SessionClearResult;
   readonly "session.snapshot": SessionSnapshotResult;
   readonly "session.transcript": SessionTranscriptResult;
+  readonly "session.transcript.v2": SessionTranscriptV2Result;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.resolveToolCall": SessionResolveToolCallResult;
   readonly "session.mcp.addServer": SessionMcpAddServerResult;
@@ -1325,13 +1358,17 @@ export interface AgencEventBaseParams extends JsonObject {
   readonly sessionId: string;
   readonly eventId: string;
   readonly agentId?: string;
+  readonly runId?: string;
+  readonly historyEpoch?: string;
   readonly sequence?: number;
   readonly acceptedAt?: string;
+  readonly turnId?: string;
+  readonly clientMessageId?: string;
+  readonly messageId?: string;
   readonly metadata?: JsonObject;
 }
 
 export interface EventMessageChunkParams extends AgencEventBaseParams {
-  readonly messageId?: string;
   readonly streamId?: string;
   readonly delta: string;
 }
@@ -1409,12 +1446,7 @@ export interface AgencDaemonRequest<
 }
 
 export type AgencDaemonErrorCode =
-  | -32700
-  | -32600
-  | -32601
-  | -32602
-  | -32603
-  | -32000;
+  -32700 | -32600 | -32601 | -32602 | -32603 | -32000;
 
 export interface AgencDaemonErrorObject extends JsonObject {
   readonly code: AgencDaemonErrorCode;

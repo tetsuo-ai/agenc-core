@@ -64,19 +64,21 @@ interface FakeDaemon {
  * hosted on the real in-process transport, with an agent runtime whose turn
  * behavior is provided by `onStreamMessage`.
  */
-async function createFakeDaemon(options: {
-  readonly onStreamMessage?: (
-    daemon: FakeDaemon,
-    params: JsonObject,
-  ) => Promise<void> | void;
-  readonly onApproveTool?: (daemon: FakeDaemon, params: JsonObject) => void;
-  readonly onDenyTool?: (daemon: FakeDaemon, params: JsonObject) => void;
-  readonly onPermissionRequest?: (
-    request: AgencPermissionRequest,
-  ) =>
-    | { behavior: "allow"; scope?: "once" | "session" | "agent" }
-    | { behavior: "deny"; reason?: string };
-} = {}): Promise<FakeDaemon> {
+async function createFakeDaemon(
+  options: {
+    readonly onStreamMessage?: (
+      daemon: FakeDaemon,
+      params: JsonObject,
+    ) => Promise<void> | void;
+    readonly onApproveTool?: (daemon: FakeDaemon, params: JsonObject) => void;
+    readonly onDenyTool?: (daemon: FakeDaemon, params: JsonObject) => void;
+    readonly onPermissionRequest?: (
+      request: AgencPermissionRequest,
+    ) =>
+      | { behavior: "allow"; scope?: "once" | "session" | "agent" }
+      | { behavior: "deny"; reason?: string };
+  } = {},
+): Promise<FakeDaemon> {
   const sessionManager = new AgenCDaemonSessionManager({
     createSessionId: sequence(["session_1", "session_2"]),
     createAttachmentId: sequence(["attachment_1", "attachment_2"]),
@@ -141,7 +143,40 @@ async function createFakeDaemon(options: {
       }),
       streamAgentMessage: async (params: JsonObject) => {
         calls.streamed.push(params);
+        const sessionId = String(params.sessionId);
+        const messageId = String(params.messageId);
+        const turnId = `turn_${messageId}`;
+        await daemon.broadcast(sessionId, {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "event.session_event",
+          params: {
+            sessionId,
+            eventId: `evt_user_${messageId}`,
+            event: {
+              id: `evt_user_${messageId}`,
+              type: "user_message",
+              payload: { message: params.content, messageId },
+            },
+          },
+        });
+        await daemon.broadcast(sessionId, {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "event.agent_status",
+          params: {
+            sessionId,
+            eventId: `evt_started_${messageId}`,
+            status: "running",
+            runStatus: "running",
+            turnId,
+          },
+        });
         await options.onStreamMessage?.(daemon, params);
+        return {
+          disposition: "started" as const,
+          acceptedAt: String(params.acceptedAt),
+          turnId,
+          terminal: { code: 0 as const },
+        };
       },
       approveTool: async (params: JsonObject) => {
         calls.approved.push(params);
@@ -280,7 +315,7 @@ describe("agenc-sdk client over the in-process transport", () => {
     const initialized = await daemon.client.initialize();
     expect(initialized).toMatchObject({
       type: "initialized",
-      protocol: { version: "1.1.0" },
+      protocol: { version: "1.2.0" },
     });
 
     const session = await daemon.client.createSession({
@@ -304,8 +339,9 @@ describe("agenc-sdk client over the in-process transport", () => {
       sessionId: "session_1",
       content: "hi there",
     });
-    await expect(run.accepted).resolves.toEqual({
+    await expect(run.accepted).resolves.toMatchObject({
       messageId: expect.any(String),
+      clientMessageId: expect.any(String),
     });
 
     expect(

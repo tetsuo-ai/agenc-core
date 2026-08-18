@@ -948,7 +948,10 @@ describe("AgenC background agent lifecycle", () => {
         streamId: "stream-runtime-restored",
         acceptedAt: "2026-05-01T12:06:00.000Z",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({
+      disposition: "started",
+      acceptedAt: "2026-05-01T12:06:00.000Z",
+    });
     expect(submitted).toEqual([
       {
         agentId: "agent-runtime-restored",
@@ -3253,7 +3256,10 @@ describe("AgenC background agent lifecycle", () => {
         streamId: "stream_snapshot_error",
         acceptedAt: "2026-05-01T12:00:01.000Z",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({
+      disposition: "started",
+      acceptedAt: "2026-05-01T12:00:01.000Z",
+    });
 
     expect(submitted).toHaveLength(1);
     expect(errors.map((error) => (error as Error).message)).toEqual([
@@ -3581,7 +3587,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "future-protocol",
         method: "initialize",
         params: {
-          protocol: { version: "1.2.0" },
+          protocol: { version: "1.3.0" },
           clientName: "contract-test",
         },
       }),
@@ -3593,8 +3599,8 @@ describe("AgenC background agent lifecycle", () => {
         message: "Unsupported protocol version",
         data: {
           code: "PROTOCOL_VERSION_UNSUPPORTED",
-          clientVersion: "1.2.0",
-          serverVersion: "1.1.0",
+          clientVersion: "1.3.0",
+          serverVersion: "1.2.0",
         },
       },
     });
@@ -3656,16 +3662,16 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocolVersion: "1.1.0",
-        protocol: { version: "1.1.0" },
+        protocolVersion: "1.2.0",
+        protocol: { version: "1.2.0" },
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.1.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.2.0");
     expect(connection.initializeState).toMatchObject({
-      protocol: { version: "1.1.0" },
+      protocol: { version: "1.2.0" },
       clientProtocol: { version: "1.0.0" },
-      serverProtocol: { version: "1.1.0" },
+      serverProtocol: { version: "1.2.0" },
       clientCapabilities: { experimentalApi: true },
     });
     expect(
@@ -3674,6 +3680,7 @@ describe("AgenC background agent lifecycle", () => {
       ],
     ).toMatchObject({
       "agent.create": true,
+      "session.transcript.v2": false,
       "session.create": false,
       "daemon.reload": false,
       "auth.login": false,

@@ -12,12 +12,10 @@
  */
 
 export const JSON_RPC_VERSION = "2.0" as const;
-// 1.1 adds exact stale-Editor authority review/abandonment fields and its
-// read-only disk-evidence refresh request. A newer TUI must not negotiate with
-// a 1.0 daemon that would reject those requests after initialization; the
-// existing minor-version negotiation then produces the normal actionable
-// daemon-restart error instead.
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.1.0" as const;
+// 1.2 adds an identity-bearing transcript projection and turn-scoped
+// cancellation. Clients that depend on those race-free semantics must not
+// negotiate with an older daemon that cannot provide them.
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.2.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -68,6 +66,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.clear",
   "session.snapshot",
   "session.transcript",
+  "session.transcript.v2",
   "session.cancelTurn",
   "session.resolveToolCall",
   "session.mcp.addServer",
@@ -409,6 +408,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Read a daemon-owned session's conversation history (user/assistant messages) so a client joining an existing session (e.g. one started in another client) can render the prior transcript.",
+  },
+  "session.transcript.v2": {
+    method: "session.transcript.v2",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Read an identity-bearing, sequence-watermarked transcript projection suitable for atomic snapshot-plus-live reconciliation.",
   },
   "session.cancelTurn": {
     method: "session.cancelTurn",
@@ -1300,6 +1307,8 @@ export interface SessionSnapshotParams extends JsonObject {
 export interface SessionCancelTurnParams extends JsonObject {
   readonly sessionId: string;
   readonly reason?: string;
+  /** Cancel only when this exact turn is still active. */
+  readonly expectedTurnId?: string;
 }
 
 export interface SessionMcpServerConfig extends JsonObject {
@@ -1619,6 +1628,8 @@ export interface MessageSendParams extends JsonObject {
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly clientMessageId?: string;
+  /** Opt in to fail-fast admission instead of the legacy session queue. */
+  readonly ifBusy?: "reject";
   readonly metadata?: JsonObject;
 }
 
@@ -1840,13 +1851,17 @@ export interface AgenCEventBaseParams extends JsonObject {
   readonly sessionId: string;
   readonly eventId: string;
   readonly agentId?: string;
+  readonly runId?: string;
+  readonly historyEpoch?: string;
   readonly sequence?: number;
   readonly acceptedAt?: string;
+  readonly turnId?: string;
+  readonly clientMessageId?: string;
+  readonly messageId?: string;
   readonly metadata?: JsonObject;
 }
 
 export interface EventMessageChunkParams extends AgenCEventBaseParams {
-  readonly messageId?: string;
   readonly streamId?: string;
   readonly delta: string;
 }
@@ -2104,6 +2119,10 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams>
   | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
   | AgenCDaemonRequestWithParams<"session.transcript", SessionTranscriptParams>
+  | AgenCDaemonRequestWithParams<
+      "session.transcript.v2",
+      SessionTranscriptV2Params
+    >
   | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
   | AgenCDaemonRequestWithParams<
       "session.resolveToolCall",
@@ -2814,6 +2833,10 @@ export interface SessionTranscriptParams extends JsonObject {
   readonly sessionId: string;
 }
 
+export interface SessionTranscriptV2Params extends JsonObject {
+  readonly sessionId: string;
+}
+
 export interface SessionTranscriptMessage extends JsonObject {
   readonly role: string; // "user" | "assistant"
   readonly text: string;
@@ -2822,6 +2845,32 @@ export interface SessionTranscriptMessage extends JsonObject {
 export interface SessionTranscriptResult extends JsonObject {
   readonly sessionId: string;
   readonly messages: readonly SessionTranscriptMessage[];
+}
+
+export interface SessionTranscriptV2Message extends JsonObject {
+  readonly messageId: string;
+  readonly commitEventId: string;
+  readonly role: "user" | "assistant";
+  readonly text: string;
+  readonly turnId?: string;
+  readonly clientMessageId?: string;
+  /** Zero only for migrated response_item rows that predate event sequencing. */
+  readonly committedSequence: number;
+}
+
+export interface SessionTranscriptV2ActiveTurn extends JsonObject {
+  readonly turnId: string;
+  readonly clientMessageId?: string;
+}
+
+export interface SessionTranscriptV2Result extends JsonObject {
+  readonly schemaVersion: 2;
+  readonly sessionId: string;
+  readonly runId: string;
+  readonly historyEpoch: string;
+  readonly asOfSequence: number;
+  readonly messages: readonly SessionTranscriptV2Message[];
+  readonly activeTurn?: SessionTranscriptV2ActiveTurn;
 }
 
 export interface SessionCancelTurnResult extends JsonObject {
@@ -2833,6 +2882,8 @@ export interface SessionCancelTurnResult extends JsonObject {
    */
   readonly cancelled: boolean;
   readonly reason?: string;
+  readonly activeTurnId?: string;
+  readonly stale?: boolean;
 }
 
 export interface SessionMcpAddServerResult extends JsonObject {
@@ -3164,6 +3215,16 @@ export interface SessionApplyConfigResult extends JsonObject {
 export interface MessageSendResult extends JsonObject {
   readonly messageId: string;
   readonly acceptedAt: string;
+  readonly disposition?: "started" | "duplicate";
+  /** Present for duplicate submissions so callers never guess crash outcomes. */
+  readonly duplicateState?: "completed" | "incomplete";
+  readonly turnId?: string;
+  readonly terminal?: MessageSendTerminalResult;
+}
+
+export interface MessageSendTerminalResult extends JsonObject {
+  readonly code: 0 | 1 | 130;
+  readonly message?: string;
 }
 
 export interface MessageStreamResult extends MessageSendResult {
@@ -3354,6 +3415,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.clear": SessionClearResult;
   readonly "session.snapshot": SessionSnapshotResult;
   readonly "session.transcript": SessionTranscriptResult;
+  readonly "session.transcript.v2": SessionTranscriptV2Result;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.resolveToolCall": SessionResolveToolCallResult;
   readonly "session.mcp.addServer": SessionMcpAddServerResult;

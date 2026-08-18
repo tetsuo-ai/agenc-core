@@ -90,4 +90,57 @@ describe("agenc-sdk prompt event mapping", () => {
       firstAvailableSequence: 11,
     });
   });
+
+  it.each([
+    ["history_cleared", {}, "cleared"],
+    ["transcript_epoch", { reason: "rewind" }, "rewind"],
+  ] as const)(
+    "surfaces %s as an identity-bearing transcript reset",
+    (type, payload, reason) => {
+      expect(
+        promptEventFromNotification({
+          jsonrpc: "2.0",
+          method: "event.session_event",
+          params: {
+            sessionId: "session_1",
+            eventId: "epoch_event",
+            sequence: 44,
+            runId: "run_1",
+            historyEpoch: "history:run_1:epoch_event",
+            event: { id: "epoch_event", type, payload },
+          },
+        }),
+      ).toEqual({
+        type: "history_reset",
+        reason,
+        eventId: "epoch_event",
+        sequence: 44,
+        runId: "run_1",
+        historyEpoch: "history:run_1:epoch_event",
+      });
+    },
+  );
+
+  it("maps a legacy params.msg history reset envelope", () => {
+    expect(
+      promptEventFromNotification({
+        jsonrpc: "2.0",
+        method: "event.session_event",
+        params: {
+          sessionId: "session_1",
+          eventId: "legacy_epoch",
+          historyEpoch: "history:run_1:legacy_epoch",
+          msg: {
+            type: "transcript_epoch",
+            payload: { reason: "compaction_rollback" },
+          },
+        },
+      }),
+    ).toEqual({
+      type: "history_reset",
+      reason: "compaction_rollback",
+      eventId: "legacy_epoch",
+      historyEpoch: "history:run_1:legacy_epoch",
+    });
+  });
 });

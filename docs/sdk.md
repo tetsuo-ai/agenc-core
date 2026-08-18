@@ -12,14 +12,14 @@ npm run build --workspace=@tetsuo-ai/agenc-sdk   # plain tsc → dist/
 
 ## Two transports
 
-| | daemon transport | subprocess transport |
-|---|---|---|
-| entry                | `connect()` → `AgencClient`            | `promptViaSubprocess()`                                           |
+|                      | daemon transport                                    | subprocess transport                                              |
+| -------------------- | --------------------------------------------------- | ----------------------------------------------------------------- |
+| entry                | `connect()` → `AgencClient`                         | `promptViaSubprocess()`                                           |
 | wire                 | JSON-lines over a Unix socket or Windows named pipe | `agenc -p --output-format stream-json --input-format stream-json` |
-| sessions             | persistent, resumable, multi-turn      | one-shot per spawn                                                |
-| permission callbacks | yes (approve or deny live)             | no — CLI auto-denies (exit code 2 = tool-denied giveup)           |
-| background agents    | spawn / attach / stop / logs           | no                                                                |
-| daemon required      | attaches, or starts one via the CLI    | the CLI manages its own daemon                                    |
+| sessions             | persistent, resumable, multi-turn                   | one-shot per spawn                                                |
+| permission callbacks | yes (approve or deny live)                          | no — CLI auto-denies (exit code 2 = tool-denied giveup)           |
+| background agents    | spawn / attach / stop / logs                        | no                                                                |
+| daemon required      | attaches, or starts one via the CLI                 | the CLI manages its own daemon                                    |
 
 Both produce the same typed event iterable (`AgencPromptEvent`) and the same
 final `AgencPromptResult`, so downstream consumption code is shared.
@@ -48,10 +48,15 @@ const run = session.prompt("Summarize this repo's protocol layer.");
 
 for await (const event of run) {
   switch (event.type) {
-    case "text":               process.stdout.write(event.delta); break;
-    case "tool_call":          /* event.toolName, event.input */ break;
-    case "permission_request": /* also routed to onPermissionRequest */ break;
-    case "status":             /* event.runStatus */ break;
+    case "text":
+      process.stdout.write(event.delta);
+      break;
+    case "tool_call":
+      /* event.toolName, event.input */ break;
+    case "permission_request":
+      /* also routed to onPermissionRequest */ break;
+    case "status":
+      /* event.runStatus */ break;
   }
 }
 
@@ -65,7 +70,7 @@ await client.close();
 Key `AgencClient` methods:
 
 - `createSession(params?)` / `resumeSession(sessionId)` → `AgencSession`
-  (`prompt`, `transcript`, `snapshot`, `cancelTurn`, `terminate`)
+  (`prompt`, `transcript`, `transcriptV2`, `snapshot`, `cancelTurn`, `terminate`)
 - `spawnAgent(params)` → background agent (`agent.create`)
 - `attachAgent(agentId)` → `{ attach, session }` for a running agent
 - `listAgents()` / `stopAgent(id)` / `agentLogs(id)`
@@ -74,7 +79,7 @@ Key `AgencClient` methods:
   `{ runId, specDigest, baseCommit, baseDirty }`)
 - `runStatus(id)` / `runResult(id)` / `replayRun(params)` /
   `reattachRun(options)` / `runEvidence(params)` / `cancelRun(id, reason?)`
-- `request(method, params)` → raw typed JSON-RPC for any of the **51** daemon methods
+- `request(method, params)` → raw typed JSON-RPC for any of the **52** daemon methods
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 
 Permission requests with no registered handler are **denied** (never granted)
@@ -99,6 +104,23 @@ capability option must remain opt-in and bind delivery to a concrete handler.
 Usage/cost: after the turn ends the SDK fetches `session.snapshot` and puts
 `tokenUsage`/`cacheStats` on the result (`includeUsage: false` to skip).
 
+Prompt admission is reserved synchronously per session, before attach or send,
+so a second local `prompt()` throws `AgencPromptRunInProgressError`. Every SDK
+prompt supplies a stable `clientMessageId` (callers may provide one for retry)
+and opts into `ifBusy: "reject"` when requested. That strict option fails
+closed before send when protocol 1.2 is unavailable. Stream/status events are
+ignored until the matching durable `user_message` is observed and its turn is
+bound. Abort before dispatch sends nothing; later abort uses `expectedTurnId`
+on protocol 1.2. The SDK never falls back to session-wide prompt cancellation
+on an older daemon because it could hit a later turn.
+
+The SDK distinguishes `text` deltas from `message_committed`, reconciles the
+final result with committed text, and exposes `history_reset` for clear,
+compaction, rewind, and rollback. A duplicate without durable terminal proof
+fails with `AgencDuplicateSubmissionIncompleteError`. Initialization retries a
+1.0/1.1 daemon at its reported version and retains negotiated version and
+capability information for safe feature fallback.
+
 ### Handshake and autostart
 
 The daemon requires the first message on a socket to be `initialize` carrying
@@ -109,7 +131,8 @@ Windows.
 
 When the socket is not accepting connections and `autostart` is enabled
 (default), `connect()` runs `<agencCommand> daemon start` and polls the cookie
-+ socket until ready (45s budget, or `AGENC_DAEMON_READY_TIMEOUT_MS`).
+
+- socket until ready (45s budget, or `AGENC_DAEMON_READY_TIMEOUT_MS`).
 
 Deviation from the launcher: the runtime's internal autostart also handles
 build-skew respawn and orphan-daemon adoption. Those need runtime-internal
@@ -148,7 +171,9 @@ const run = promptViaSubprocess("explain the fee split", {
   agencCommand: "agenc", // or ["/abs/path/agenc"]
   model: "grok-4.5", // optional; also provider/profile/permissionMode
 });
-for await (const event of run) { /* same AgencPromptEvent union */ }
+for await (const event of run) {
+  /* same AgencPromptEvent union */
+}
 const result = await run.result(); // exitCode/finalMessage/usage from the CLI's result line
 ```
 
@@ -253,24 +278,24 @@ other runs. `run.evidence` declares
 that compatibility source, together with an explicit completeness value and
 content hashes.
 
-## Daemon method surface (51 methods)
+## Daemon method surface (52 methods)
 
 Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 (order pinned to the runtime registry):
 
-| Group | Methods |
-| --- | --- |
-| lifecycle | `initialize`, `request.cancel` |
-| agents | `agent.create`, `agent.list`, `agent.attach`, `agent.stop`, `agent.logs` |
-| runs | `run.start`, `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.cancel` |
-| CSV review | `csvJob.review.list`, `csvJob.review.show`, `csvJob.review.resolve` |
-| sessions | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.addServer` |
-| messaging | `message.send`, `message.stream` |
-| realtime | `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/stop`, `thread/realtime/listVoices` |
-| tools / permissions | `tool.approve`, `tool.deny`, `tool.cancel`, `elicitation.respond`, `permission.list` |
-| exec / fs | `fs.fuzzy_search`, `commandExec.start`, `commandExec.write`, `commandExec.resize`, `commandExec.terminate` |
-| health / daemon | `health.ping`, `health.ready`, `health.stats`, `daemon.reload` |
-| auth | `auth.login`, `auth.whoami`, `auth.logout` |
+| Group               | Methods                                                                                                                                                                                                                                                 |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| lifecycle           | `initialize`, `request.cancel`                                                                                                                                                                                                                          |
+| agents              | `agent.create`, `agent.list`, `agent.attach`, `agent.stop`, `agent.logs`                                                                                                                                                                                |
+| runs                | `run.start`, `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.cancel`                                                                                                                                                                     |
+| CSV review          | `csvJob.review.list`, `csvJob.review.show`, `csvJob.review.resolve`                                                                                                                                                                                     |
+| sessions            | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.transcript.v2`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.addServer` |
+| messaging           | `message.send`, `message.stream`                                                                                                                                                                                                                        |
+| realtime            | `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/stop`, `thread/realtime/listVoices`                                                                                                              |
+| tools / permissions | `tool.approve`, `tool.deny`, `tool.cancel`, `elicitation.respond`, `permission.list`                                                                                                                                                                    |
+| exec / fs           | `fs.fuzzy_search`, `commandExec.start`, `commandExec.write`, `commandExec.resize`, `commandExec.terminate`                                                                                                                                              |
+| health / daemon     | `health.ping`, `health.ready`, `health.stats`, `daemon.reload`                                                                                                                                                                                          |
+| auth                | `auth.login`, `auth.whoami`, `auth.logout`                                                                                                                                                                                                              |
 
 `fs.fuzzy_search` accepts an optional `limit` from 1 through 1,000 and an
 optional `refresh` flag that waits for a verified replacement index
@@ -300,13 +325,13 @@ capability map instead of treating registry membership as availability.
 
 Important raw protocol additions:
 
-| Shape | Contract |
-| --- | --- |
-| `EventUserInputRequestParams.clientAction` | Optional trusted JSON action generated by Core, never by generic `request_user_input` model arguments |
-| `RequestUserInputResponse.clientResult` | Typed client result returned through `elicitation.respond`; Ledger receipts are challenge- and field-bound |
-| `ToolApproveParams.allowAllToolsForSession` | Valid only with `scope: "session"`; promotes the daemon session to `bypassPermissions` transactionally |
-| `AuthWhoamiResult.subscriptionTier` | Tier from the latest verified remote `/v1/auth/me` snapshot; identity also carries compatibility `plan` data |
-| `AuthLoginResult` | App-server login result contains non-secret state/identity only; the backend bearer is never returned over daemon RPC |
+| Shape                                       | Contract                                                                                                              |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `EventUserInputRequestParams.clientAction`  | Optional trusted JSON action generated by Core, never by generic `request_user_input` model arguments                 |
+| `RequestUserInputResponse.clientResult`     | Typed client result returned through `elicitation.respond`; Ledger receipts are challenge- and field-bound            |
+| `ToolApproveParams.allowAllToolsForSession` | Valid only with `scope: "session"`; promotes the daemon session to `bypassPermissions` transactionally                |
+| `AuthWhoamiResult.subscriptionTier`         | Tier from the latest verified remote `/v1/auth/me` snapshot; identity also carries compatibility `plan` data          |
+| `AuthLoginResult`                           | App-server login result contains non-secret state/identity only; the backend bearer is never returned over daemon RPC |
 
 Plain `scope: "session"` without `allowAllToolsForSession: true` keeps the
 narrower equivalent-rule approval cache. Interactive approval/deny/elicitation

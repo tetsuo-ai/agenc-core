@@ -91,6 +91,67 @@ function daemonMethodCapabilities(
 }
 
 describe("AgenC daemon session lifecycle dispatcher", () => {
+  it("does not turn an aborted v1.2 identity-bearing send into session-wide cancellation", async () => {
+    let resolveSubmission!: (value: {
+      disposition: "started";
+      acceptedAt: string;
+      terminal: { code: 0 };
+    }) => void;
+    const streamAgentMessage = vi.fn(
+      () =>
+        new Promise<{
+          disposition: "started";
+          acceptedAt: string;
+          terminal: { code: 0 };
+        }>((resolve) => {
+          resolveSubmission = resolve;
+        }),
+    );
+    const cancelSessionTurn = vi.fn(async () => ({
+      sessionId: "session_external_turn",
+      cancelled: true,
+    }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: {
+        streamAgentMessage,
+        cancelSessionTurn,
+        getSessionTranscriptV2: vi.fn(),
+      } as never,
+    });
+    const connection = dispatcher.createConnection();
+    await connection.dispatch(
+      request("init-safe-send", "initialize", {
+        protocol: { version: "1.2.0" },
+      }),
+    );
+
+    const pendingSend = connection.dispatch(
+      request("send-second-client", "message.send", {
+        sessionId: "session_external_turn",
+        content: "must not cancel the external turn",
+        clientMessageId: "second-client-message",
+        ifBusy: "reject",
+      }),
+    );
+    await vi.waitFor(() => expect(streamAgentMessage).toHaveBeenCalledOnce());
+    await expect(
+      connection.dispatch(
+        request("cancel-second-send", "request.cancel", {
+          requestId: "send-second-client",
+        }),
+      ),
+    ).resolves.toMatchObject({ result: { cancelled: true } });
+    expect(cancelSessionTurn).not.toHaveBeenCalled();
+
+    resolveSubmission({
+      disposition: "started",
+      acceptedAt: "2026-08-17T00:00:00.000Z",
+      terminal: { code: 0 },
+    });
+    await expect(pendingSend).resolves.toHaveProperty("error");
+    expect(cancelSessionTurn).not.toHaveBeenCalled();
+  });
+
   it("registers an initialized Ledger-capable client before any session attach", async () => {
     const sessionManager = new AgenCDaemonSessionManager({
       createSessionId: () => "session_ledger",

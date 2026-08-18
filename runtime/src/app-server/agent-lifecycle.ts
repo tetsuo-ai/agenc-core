@@ -22,10 +22,13 @@ import {
   requireAbsoluteWorkspaceCwd,
   WorkspaceCwdError,
 } from "./workspace-cwd.js";
-import type {
-  AgenCBackgroundAgentSnapshot,
-  AgenCBackgroundAgentTerminalSnapshot,
-  AgenCBackgroundAgentRunner,
+import {
+  AgenCBackgroundAgentMessageError,
+  sessionTranscriptV2FromRollout,
+  type AgenCBackgroundAgentMessageResult,
+  type AgenCBackgroundAgentSnapshot,
+  type AgenCBackgroundAgentTerminalSnapshot,
+  type AgenCBackgroundAgentRunner,
 } from "./background-agent-runner.js";
 import type {
   AgentAttachParams,
@@ -64,6 +67,8 @@ import type {
   SessionSnapshotResult,
   SessionTranscriptParams,
   SessionTranscriptResult,
+  SessionTranscriptV2Params,
+  SessionTranscriptV2Result,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
   SessionRollbackCompactionParams,
@@ -142,7 +147,9 @@ export type AgenCDaemonAgentLifecycleErrorCode =
   | "INVALID_ARGUMENT"
   | "INVALID_CURSOR"
   | "RUN_NOT_FOUND"
-  | "RUN_CANCEL_UNAVAILABLE";
+  | "RUN_CANCEL_UNAVAILABLE"
+  | "TURN_IN_PROGRESS"
+  | "CLIENT_MESSAGE_ID_CONFLICT";
 
 export class AgenCDaemonAgentLifecycleError extends Error {
   readonly code: AgenCDaemonAgentLifecycleErrorCode;
@@ -1807,6 +1814,30 @@ export class AgenCDaemonAgentManager {
     if (this.#runner.interruptAgentTurn === undefined) {
       return { sessionId: params.sessionId, cancelled: false, reason };
     }
+    if (params.expectedTurnId !== undefined) {
+      if (this.#runner.interruptAgentTurnIfMatches === undefined) {
+        return {
+          sessionId: params.sessionId,
+          cancelled: false,
+          reason,
+          stale: true,
+        };
+      }
+      const result = await this.#runner.interruptAgentTurnIfMatches(
+        session.agentId,
+        reason,
+        params.expectedTurnId,
+      );
+      return {
+        sessionId: params.sessionId,
+        cancelled: result.cancelled,
+        reason,
+        ...(result.activeTurnId !== undefined
+          ? { activeTurnId: result.activeTurnId }
+          : {}),
+        ...(result.stale !== undefined ? { stale: result.stale } : {}),
+      };
+    }
     const cancelled = await this.#runner.interruptAgentTurn(
       session.agentId,
       reason,
@@ -2105,6 +2136,54 @@ export class AgenCDaemonAgentManager {
     }
   }
 
+  async getSessionTranscriptV2(
+    params: SessionTranscriptV2Params,
+  ): Promise<SessionTranscriptV2Result> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.transcript.v2 requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.getAgentSessionTranscriptV2 === undefined) {
+      const persisted = this.#readPersistedSessionTranscriptV2(
+        params.sessionId,
+      );
+      if (persisted !== undefined) return persisted;
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.transcript.v2 requires a background runner",
+      );
+    }
+    let agentId: string;
+    try {
+      agentId = await this.#resolveActiveAgentIdForSession(params.sessionId, {
+        allowSnapshot: true,
+      });
+    } catch (error) {
+      if (isNoLiveAgentError(error)) {
+        const persisted = this.#readPersistedSessionTranscriptV2(
+          params.sessionId,
+        );
+        if (persisted !== undefined) return persisted;
+      }
+      throw error;
+    }
+    try {
+      return await this.#runner.getAgentSessionTranscriptV2(agentId, {
+        sessionId: params.sessionId,
+      });
+    } catch (error) {
+      if (isNoLiveAgentRunnerError(error)) {
+        const persisted = this.#readPersistedSessionTranscriptV2(
+          params.sessionId,
+        );
+        if (persisted !== undefined) return persisted;
+      }
+      throw error;
+    }
+  }
+
   /**
    * Read the persisted conversation for a session straight from the thread
    * store (the same source `agenc agent logs <id>` prints via
@@ -2134,6 +2213,29 @@ export class AgenCDaemonAgentManager {
       thread.history?.items ?? [],
     );
     return { sessionId, messages };
+  }
+
+  #readPersistedSessionTranscriptV2(
+    sessionId: string,
+  ): SessionTranscriptV2Result | undefined {
+    const threadStore = this.#threadStore;
+    if (threadStore === undefined) return undefined;
+    let thread: StoredThread;
+    try {
+      thread = threadStore.readThread({
+        threadId: sessionId,
+        includeArchived: true,
+        includeHistory: true,
+      });
+    } catch (error) {
+      if (isThreadLogReadMiss(error)) return undefined;
+      throw error;
+    }
+    return sessionTranscriptV2FromRollout(
+      thread.history?.items ?? [],
+      sessionId,
+      thread.threadId,
+    );
   }
 
   async partialCompactFromMessage(
@@ -2188,7 +2290,9 @@ export class AgenCDaemonAgentManager {
       sessionId: params.sessionId,
       attemptId: params.attemptId,
       ...(params.reviewedBranchTargetSessionId !== undefined
-        ? { reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId }
+        ? {
+            reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId,
+          }
         : {}),
     });
   }
@@ -2476,10 +2580,11 @@ export class AgenCDaemonAgentManager {
     readonly messageId: string;
     readonly streamId: string;
     readonly acceptedAt: string;
+    readonly ifBusy?: "reject";
     readonly displayUserMessage?: string | null;
     readonly editorInteraction?: SessionEditorInteraction;
     readonly methodName?: "message.send" | "message.stream";
-  }): Promise<void> {
+  }): Promise<AgenCBackgroundAgentMessageResult> {
     const methodName = params.methodName ?? "message.stream";
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -2537,29 +2642,46 @@ export class AgenCDaemonAgentManager {
       );
     }
 
-    await this.#runner.submitAgentMessage(session.agentId, {
-      sessionId: params.sessionId,
-      content: params.content,
-      originalContent: params.content,
-      ...(params.displayUserMessage !== undefined
-        ? { displayUserMessage: params.displayUserMessage }
-        : {}),
-      ...(params.editorInteraction !== undefined
-        ? { editorInteraction: params.editorInteraction }
-        : {}),
-      messageId: params.messageId,
-      streamId: params.streamId,
-      acceptedAt: params.acceptedAt,
-    });
-    await this.#recordMessageExchangeSnapshot({
-      sessionId: params.sessionId,
-      agentId: session.agentId,
-      ...messageTarget.route,
-      content: params.content as JsonValue,
-      messageId: params.messageId,
-      streamId: params.streamId,
-      acceptedAt: params.acceptedAt,
-    });
+    let submission: AgenCBackgroundAgentMessageResult;
+    try {
+      submission = (await this.#runner.submitAgentMessage(session.agentId, {
+        sessionId: params.sessionId,
+        content: params.content,
+        originalContent: params.content,
+        ...(params.displayUserMessage !== undefined
+          ? { displayUserMessage: params.displayUserMessage }
+          : {}),
+        ...(params.editorInteraction !== undefined
+          ? { editorInteraction: params.editorInteraction }
+          : {}),
+        ...(params.ifBusy !== undefined ? { ifBusy: params.ifBusy } : {}),
+        messageId: params.messageId,
+        streamId: params.streamId,
+        acceptedAt: params.acceptedAt,
+      })) ?? {
+        // Compatibility for injected pre-1.2 runners whose submit method
+        // returned void. Production 1.2 runners return the richer result.
+        disposition: "started",
+        acceptedAt: params.acceptedAt,
+      };
+    } catch (error) {
+      if (error instanceof AgenCBackgroundAgentMessageError) {
+        throw new AgenCDaemonAgentLifecycleError(error.code, error.message);
+      }
+      throw error;
+    }
+    if (submission.disposition === "started") {
+      await this.#recordMessageExchangeSnapshot({
+        sessionId: params.sessionId,
+        agentId: session.agentId,
+        ...messageTarget.route,
+        content: params.content as JsonValue,
+        messageId: params.messageId,
+        streamId: params.streamId,
+        acceptedAt: params.acceptedAt,
+      });
+    }
+    return submission;
   }
 
   async #refreshAgentsFromRunner(state: AgentLifecycleState): Promise<void> {

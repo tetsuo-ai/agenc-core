@@ -7,6 +7,8 @@
  * response is returned.
  */
 
+import { createHash } from "node:crypto";
+
 import {
   bootstrapLocalRuntimeSession,
   type BootstrapLocalRuntimeSessionOptions,
@@ -56,6 +58,7 @@ import {
 } from "../tools/untrusted-tool-result-framing.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import { getPlan, getPlanFilePath } from "../utils/plans.js";
+import { stableStringify } from "../utils/stableStringify.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
 import type { AgentId } from "../types/ids.js";
 import {
@@ -95,6 +98,8 @@ import {
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
 import type { McpServerMutationResult, Session } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
+import type { RolloutItem } from "../session/rollout-item.js";
+import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type {
   SessionEditorInteraction,
@@ -124,6 +129,7 @@ import type {
   SessionRewindFilesToMessageResult,
   SessionSnapshotResult,
   SessionTranscriptResult,
+  SessionTranscriptV2Result,
   SessionHookConfigShape,
   SessionHookValidationIssueShape,
   SessionHookRunDiagnosticShape,
@@ -234,6 +240,12 @@ export interface AgenCBackgroundAgentCancellationPreparation {
   readonly heldUnknownHolds: number;
 }
 
+export interface AgenCBackgroundAgentTurnCancellationResult {
+  readonly cancelled: boolean;
+  readonly activeTurnId?: string;
+  readonly stale?: boolean;
+}
+
 export interface AgenCBackgroundAgentSessionEventBinding {
   readonly sessionId: string;
   readonly emit: (event: JsonObject) => void | Promise<void>;
@@ -248,6 +260,33 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly messageId: string;
   readonly streamId: string;
   readonly acceptedAt: string;
+  readonly ifBusy?: "reject";
+}
+
+export interface AgenCBackgroundAgentMessageResult {
+  readonly disposition: "started" | "duplicate";
+  readonly acceptedAt: string;
+  readonly duplicateState?: "completed" | "incomplete";
+  readonly turnId?: string;
+  readonly terminal?: AgenCBackgroundAgentMessageTerminal;
+}
+
+export interface AgenCBackgroundAgentMessageTerminal extends JsonObject {
+  readonly code: 0 | 1 | 130;
+  readonly message?: string;
+}
+
+export type AgenCBackgroundAgentMessageErrorCode =
+  "TURN_IN_PROGRESS" | "CLIENT_MESSAGE_ID_CONFLICT";
+
+export class AgenCBackgroundAgentMessageError extends Error {
+  readonly code: AgenCBackgroundAgentMessageErrorCode;
+
+  constructor(code: AgenCBackgroundAgentMessageErrorCode, message: string) {
+    super(message);
+    this.name = "AgenCBackgroundAgentMessageError";
+    this.code = code;
+  }
 }
 
 export interface AgenCBackgroundAgentClearSessionParams {
@@ -389,7 +428,7 @@ export interface AgenCBackgroundAgentRunner {
   submitAgentMessage?(
     agentId: string,
     params: AgenCBackgroundAgentMessageParams,
-  ): Promise<void>;
+  ): Promise<AgenCBackgroundAgentMessageResult>;
   /** Resolve the live route without exposing the primary provider to callers. */
   resolveCodePredictionSource?(
     agentId: string,
@@ -406,6 +445,10 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: { readonly sessionId: string },
   ): Promise<SessionTranscriptResult>;
+  getAgentSessionTranscriptV2?(
+    agentId: string,
+    params: { readonly sessionId: string },
+  ): Promise<SessionTranscriptV2Result>;
   resolveLiveEffectReview?(
     agentId: string,
     params: ResolveDurableEffectReviewOptions,
@@ -485,6 +528,11 @@ export interface AgenCBackgroundAgentRunner {
    * also stopped — see {@link AgentControl.interrupt}.
    */
   interruptAgentTurn?(agentId: string, reason: string): Promise<boolean>;
+  interruptAgentTurnIfMatches?(
+    agentId: string,
+    reason: string,
+    expectedTurnId: string,
+  ): Promise<AgenCBackgroundAgentTurnCancellationResult>;
   /**
    * Register a callback invoked once per agent immediately before the
    * runner removes that agent from its `#active` registry on terminal
@@ -562,6 +610,11 @@ interface ActiveBackgroundAgent {
   sessionBinding?: AgenCBackgroundAgentSessionEventBinding;
   bufferedEvents: BackgroundAgentDaemonEvent[];
   activeToolCallIds: Set<string>;
+  historyEpoch: string;
+  messageSubmission?: ActiveMessageSubmission;
+  messageSubmissionQueue: Promise<void>;
+  pendingMessageSubmissionCount: number;
+  readonly messageSubmissionsById: Map<string, ActiveMessageSubmission>;
   /**
    * Per-agent emission serialization chain. `#emitOrBufferEvent` awaits
    * an async-locked broadcast, so two fire-and-forget emits from a
@@ -572,6 +625,19 @@ interface ActiveBackgroundAgent {
    * Mirrors AgenCStdioTransport's #dispatchChain (transport/stdio.ts).
    */
   dispatchChain: Promise<void>;
+}
+
+interface ActiveMessageSubmission {
+  readonly clientMessageId: string;
+  readonly contentFingerprint: string;
+  readonly streamId: string;
+  readonly acceptedAt: string;
+  turnId?: string;
+  assistantMessageOrdinal: number;
+  activeAssistantMessageId?: string;
+  terminal?: AgenCBackgroundAgentMessageTerminal;
+  readonly promise: Promise<AgenCBackgroundAgentMessageResult>;
+  settled: boolean;
 }
 
 interface BackgroundAgentDaemonEvent {
@@ -586,6 +652,10 @@ interface BackgroundAgentDaemonEvent {
   readonly messageId?: string;
   readonly streamId?: string;
   readonly acceptedAt?: string;
+  readonly runId?: string;
+  readonly historyEpoch?: string;
+  readonly turnId?: string;
+  readonly clientMessageId?: string;
 }
 
 interface ActiveAgentBudget {
@@ -980,6 +1050,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         activeToolCallIds:
           this.#pendingActiveToolCallIds.get(managedThread.threadId) ??
           new Set(),
+        historyEpoch: historyEpochFromRollout(
+          bootstrap.rolloutStore.readAll(),
+          managedThread.threadId,
+        ),
+        messageSubmissionQueue: Promise.resolve(),
+        pendingMessageSubmissionCount: 0,
+        messageSubmissionsById: new Map(),
         dispatchChain: Promise.resolve(),
       };
       this.#installAgentBudget(active, {
@@ -1255,6 +1332,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ),
         activeToolCallIds:
           this.#pendingActiveToolCallIds.get(params.agentId) ?? new Set(),
+        historyEpoch: historyEpochFromRollout(
+          bootstrap.rolloutStore.readAll(),
+          params.agentId,
+        ),
+        messageSubmissionQueue: Promise.resolve(),
+        pendingMessageSubmissionCount: 0,
+        messageSubmissionsById: new Map(),
         dispatchChain: Promise.resolve(),
       };
       this.#installAgentBudget(active, {
@@ -1478,24 +1562,150 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async submitAgentMessage(
     agentId: string,
     params: AgenCBackgroundAgentMessageParams,
-  ): Promise<void> {
+  ): Promise<AgenCBackgroundAgentMessageResult> {
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
+    const contentFingerprint = messageContentFingerprint(
+      params.originalContent,
+    );
+    const duplicate = active.messageSubmissionsById.get(params.messageId);
+    if (duplicate !== undefined) {
+      if (duplicate.contentFingerprint !== contentFingerprint) {
+        throw clientMessageIdConflict(params.messageId);
+      }
+      return duplicate.promise.then((result) => ({
+        ...result,
+        disposition: "duplicate" as const,
+        duplicateState: "completed" as const,
+      }));
+    }
+
+    const persisted = findPersistedMessageSubmission(
+      active.bootstrap.rolloutStore.readAll(),
+      params.messageId,
+    );
+    if (persisted !== undefined) {
+      if (persisted.contentFingerprint !== contentFingerprint) {
+        throw clientMessageIdConflict(params.messageId);
+      }
+      return {
+        disposition: "duplicate",
+        duplicateState:
+          persisted.terminal === undefined ? "incomplete" : "completed",
+        acceptedAt: persisted.acceptedAt ?? params.acceptedAt,
+        ...(persisted.turnId !== undefined ? { turnId: persisted.turnId } : {}),
+        ...(persisted.terminal !== undefined
+          ? { terminal: persisted.terminal }
+          : {}),
+      };
+    }
+
+    const threadStatus = active.thread.status().status;
+    if (
+      params.ifBusy === "reject" &&
+      (active.pendingMessageSubmissionCount > 0 ||
+        hasRuntimeActiveTurn(active.bootstrap.session) ||
+        threadStatus === "running" ||
+        threadStatus === "pending_init")
+    ) {
+      throw new AgenCBackgroundAgentMessageError(
+        "TURN_IN_PROGRESS",
+        `session ${params.sessionId} already has an active or queued turn`,
+      );
+    }
+
+    let resolveSubmission!: (result: AgenCBackgroundAgentMessageResult) => void;
+    let rejectSubmission!: (error: unknown) => void;
+    const promise = new Promise<AgenCBackgroundAgentMessageResult>(
+      (resolve, reject) => {
+        resolveSubmission = resolve;
+        rejectSubmission = reject;
+      },
+    );
+    const submission: ActiveMessageSubmission = {
+      clientMessageId: params.messageId,
+      contentFingerprint,
+      streamId: params.streamId,
+      acceptedAt: params.acceptedAt,
+      assistantMessageOrdinal: 0,
+      promise,
+      settled: false,
+    };
+    active.messageSubmissionsById.set(params.messageId, submission);
+    active.pendingMessageSubmissionCount += 1;
+
+    const execute = active.messageSubmissionQueue.then(async () => {
+      if (!isRunnableActiveAgent(active)) {
+        throw new Error(`AgenC daemon agent not running: ${agentId}`);
+      }
+      active.messageSubmission = submission;
+      try {
+        return await this.#executeAgentMessageSubmission(
+          active,
+          agentId,
+          params,
+          submission,
+        );
+      } finally {
+        if (active.messageSubmission === submission) {
+          active.messageSubmission = undefined;
+        }
+      }
+    });
+    active.messageSubmissionQueue = execute.then(
+      () => {},
+      () => {},
+    );
+    void execute.then(resolveSubmission, rejectSubmission).finally(() => {
+      submission.settled = true;
+      active.pendingMessageSubmissionCount = Math.max(
+        0,
+        active.pendingMessageSubmissionCount - 1,
+      );
+      pruneMessageSubmissionCache(active.messageSubmissionsById);
+    });
+    return promise;
+  }
+
+  async #executeAgentMessageSubmission(
+    active: ActiveBackgroundAgent,
+    agentId: string,
+    params: AgenCBackgroundAgentMessageParams,
+    submission: ActiveMessageSubmission,
+  ): Promise<AgenCBackgroundAgentMessageResult> {
     const input = messageContentToAgentInput(params.content);
     active.lastActiveAt = this.#now();
-    if (params.displayUserMessage !== null) {
+    if (params.displayUserMessage === null) {
+      // Hidden editor/internal prompts still need an fsync-durable admission
+      // identity. This marker is intentionally not bridged as a transcript
+      // event, but lets restart retries prove same-content idempotency.
+      active.bootstrap.session.emit(
+        {
+          id: `message-submission:${params.messageId}`,
+          msg: {
+            type: "message_submission",
+            payload: {
+              contentFingerprint: submission.contentFingerprint,
+              messageId: params.messageId,
+              streamId: params.streamId,
+              acceptedAt: params.acceptedAt,
+            },
+          },
+        },
+        { durable: true },
+      );
+    } else {
       const displayText =
         params.displayUserMessage ?? messageContentDisplayText(params.content);
-      // The TUI must see the submitted prompt before assistant deltas;
-      // sendInput can synchronously stream and complete a whole turn.
       await this.#emitPersistedUserMessage(active, {
         id: params.messageId,
         type: "user_message",
         messageId: params.messageId,
         streamId: params.streamId,
         acceptedAt: params.acceptedAt,
+        clientMessageId: params.messageId,
         payload: {
           message: params.originalContent,
           displayText,
@@ -1506,29 +1716,30 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       });
     }
     if (typeof input === "string") {
-      if (params.editorInteraction === undefined) {
-        await active.control.sendInput(agentId, input);
-      } else {
-        await active.control.sendInput(agentId, input, {
-          editorInteraction: params.editorInteraction,
-        });
-      }
+      await active.control.sendInput(
+        agentId,
+        input,
+        ...(params.editorInteraction === undefined
+          ? []
+          : [{ editorInteraction: params.editorInteraction }]),
+      );
     } else {
-      if (params.editorInteraction === undefined) {
-        await submitStructuredAgentInput(
-          active,
-          input,
-          messageContentDisplayText(params.content),
-        );
-      } else {
-        await submitStructuredAgentInput(
-          active,
-          input,
-          messageContentDisplayText(params.content),
-          { editorInteraction: params.editorInteraction },
-        );
-      }
+      await submitStructuredAgentInput(
+        active,
+        input,
+        messageContentDisplayText(params.content),
+        ...(params.editorInteraction === undefined
+          ? []
+          : [{ editorInteraction: params.editorInteraction }]),
+      );
     }
+    await active.dispatchChain;
+    return {
+      disposition: "started",
+      acceptedAt: submission.acceptedAt,
+      ...(submission.turnId !== undefined ? { turnId: submission.turnId } : {}),
+      terminal: submission.terminal ?? { code: 0 },
+    };
   }
 
   resolveCodePredictionSource(agentId: string): CodePredictionSource {
@@ -1563,14 +1774,19 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     this.#assistantTextByAgent.delete(agentId);
     active.lastActiveAt = params.clearedAt;
     const clearedAtMs = Date.parse(params.clearedAt);
-    await this.#emitOrBufferEvent(active, {
-      id: `history-cleared-${params.sessionId}-${params.clearedAt}`,
-      type: "history_cleared",
-      acceptedAt: params.clearedAt,
-      payload: {
-        timestamp: Number.isFinite(clearedAtMs) ? clearedAtMs : Date.now(),
+    active.bootstrap.session.emit(
+      {
+        id: `history-cleared-${params.sessionId}-${params.clearedAt}`,
+        msg: {
+          type: "history_cleared",
+          payload: {
+            timestamp: Number.isFinite(clearedAtMs) ? clearedAtMs : Date.now(),
+          },
+        },
       },
-    });
+      { durable: true },
+    );
+    await active.dispatchChain;
   }
 
   async addMcpServer(
@@ -1741,6 +1957,27 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return { sessionId: params.sessionId, messages };
   }
 
+  async getAgentSessionTranscriptV2(
+    agentId: string,
+    params: { readonly sessionId: string },
+  ): Promise<SessionTranscriptV2Result> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    return sessionTranscriptV2FromRollout(
+      active.bootstrap.rolloutStore.readAll(),
+      params.sessionId,
+      active.thread.threadId,
+      active.messageSubmission?.turnId === undefined
+        ? undefined
+        : {
+            turnId: active.messageSubmission.turnId,
+            clientMessageId: active.messageSubmission.clientMessageId,
+          },
+    );
+  }
+
   async resolveLiveEffectReview(
     agentId: string,
     params: ResolveDurableEffectReviewOptions,
@@ -1850,6 +2087,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ...(params.signal !== undefined ? { signal: params.signal } : {}),
     });
     if (result.ok && result.event !== undefined) {
+      await this.#persistTranscriptEpoch(
+        active,
+        result.event as unknown as JsonObject,
+      );
       await this.#emitOrBufferEvent(active, result.event as never);
       return {
         sessionId: params.sessionId,
@@ -1880,10 +2121,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const result = await active.bootstrap.session.rollbackCompaction({
       attemptId: params.attemptId,
       ...(params.reviewedBranchTargetSessionId !== undefined
-        ? { reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId }
+        ? {
+            reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId,
+          }
         : {}),
     });
     if (result.ok && result.event !== undefined) {
+      await this.#persistTranscriptEpoch(
+        active,
+        result.event as unknown as JsonObject,
+      );
       await this.#emitOrBufferEvent(active, result.event as never);
     }
     return result.ok
@@ -1943,6 +2190,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       messageOrdinal: params.messageOrdinal,
     });
     if (result.ok && result.event !== undefined) {
+      await this.#persistTranscriptEpoch(
+        active,
+        result.event as unknown as JsonObject,
+      );
       await this.#emitOrBufferEvent(active, result.event as never);
       return {
         sessionId: params.sessionId,
@@ -1960,6 +2211,34 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ? "No replacement event was produced."
         : result.message,
     };
+  }
+
+  async #persistTranscriptEpoch(
+    active: ActiveBackgroundAgent,
+    replacementEvent: JsonObject,
+  ): Promise<void> {
+    const id =
+      typeof replacementEvent.id === "string"
+        ? replacementEvent.id
+        : `history-replaced-${active.thread.threadId}-${Date.now()}`;
+    const payload = isJsonObject(replacementEvent.payload)
+      ? replacementEvent.payload
+      : {};
+    const reason =
+      payload.reason === "rewind" ||
+      payload.reason === "compaction_rollback" ||
+      payload.reason === "partial_compact"
+        ? payload.reason
+        : "partial_compact";
+    active.bootstrap.session.emit(
+      {
+        eventId: `transcript-epoch:${id}`,
+        id: `transcript-epoch:${id}`,
+        msg: { type: "transcript_epoch", payload: { reason } },
+      },
+      { durable: true },
+    );
+    await active.dispatchChain;
   }
 
   async previewFileRewind(
@@ -2505,6 +2784,53 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return true;
   }
 
+  async interruptAgentTurnIfMatches(
+    agentId: string,
+    reason: string,
+    expectedTurnId: string,
+  ): Promise<AgenCBackgroundAgentTurnCancellationResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isInterruptibleActiveAgent(active)) {
+      return { cancelled: false };
+    }
+    const activeTurnId =
+      runtimeActiveTurnId(active.bootstrap.session) ??
+      active.messageSubmission?.turnId;
+    if (activeTurnId !== expectedTurnId) {
+      return {
+        cancelled: false,
+        ...(activeTurnId !== undefined ? { activeTurnId } : {}),
+        stale: true,
+      };
+    }
+    let cancelled = false;
+    try {
+      cancelled = await active.bootstrap.session.abortTurnIfActive(
+        expectedTurnId,
+        "interrupted",
+      );
+    } catch {
+      return { cancelled: false, activeTurnId: expectedTurnId };
+    }
+    if (!cancelled) {
+      const turnAfterAttempt = runtimeActiveTurnId(active.bootstrap.session);
+      return {
+        cancelled: false,
+        ...(turnAfterAttempt !== undefined
+          ? { activeTurnId: turnAfterAttempt }
+          : {}),
+        ...(turnAfterAttempt !== expectedTurnId ? { stale: true } : {}),
+      };
+    }
+    for (const [childThreadId] of active.control.openThreadSpawnChildren(
+      active.thread.threadId,
+    )) {
+      active.control.interrupt(childThreadId, reason);
+    }
+    active.lastActiveAt = this.#now();
+    return { cancelled: true, activeTurnId: expectedTurnId };
+  }
+
   async respondToElicitation(
     agentId: string,
     params: AgenCBackgroundAgentElicitationResponseParams,
@@ -2609,8 +2935,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (typeof eventLog?.subscribe !== "function") return () => {};
     active.canonicalEventBridgeInstalled = true;
     return eventLog.subscribe((event) => {
-      const daemonEvent = daemonEventFromUnboundSessionEvent(event);
-      if (daemonEvent === null) return;
+      const uncorrelated = daemonEventFromUnboundSessionEvent(event);
+      if (uncorrelated === null) return;
+      const daemonEvent = correlateDaemonEvent(active, uncorrelated);
       active.lastActiveAt = this.#now();
       this.#applyCanonicalEventBookkeeping(active, daemonEvent);
       void this.#emitOrBufferEvent(active, daemonEvent);
@@ -3614,11 +3941,604 @@ function hasRuntimeActiveTurn(
   );
 }
 
+function runtimeActiveTurnId(
+  session: LocalRuntimeBootstrap["session"],
+): string | undefined {
+  const activeTurn = (session as unknown as { activeTurn?: ActiveTurnPeek })
+    .activeTurn;
+  if (typeof activeTurn?.unsafePeek !== "function") return undefined;
+  const value = activeTurn.unsafePeek();
+  if (!isJsonObject(value) || typeof value.turnId !== "string") {
+    return undefined;
+  }
+  return value.turnId;
+}
+
 function isClearInFlight(active: ActiveBackgroundAgent): boolean {
   if (hasRuntimeActiveTurn(active.bootstrap.session)) return true;
   if (active.activeToolCallIds.size > 0) return true;
   const status = active.thread.status();
   return status.status === "running" || status.status === "pending_init";
+}
+
+function correlateDaemonEvent(
+  active: ActiveBackgroundAgent,
+  event: BackgroundAgentDaemonEvent,
+): BackgroundAgentDaemonEvent {
+  const runId = active.thread.threadId;
+  if (event.type === "history_cleared" || event.type === "transcript_epoch") {
+    active.historyEpoch = historyEpochForBoundary(
+      runId,
+      event.eventId ?? event.id,
+    );
+    return { ...event, runId, historyEpoch: active.historyEpoch };
+  }
+
+  const submission = active.messageSubmission;
+  const isSubmissionUserMarker =
+    submission !== undefined &&
+    event.type === "user_message" &&
+    (event.messageId === submission.clientMessageId ||
+      event.payload?.messageId === submission.clientMessageId);
+  if (
+    submission !== undefined &&
+    submission.turnId === undefined &&
+    event.type !== "turn_started" &&
+    !isSubmissionUserMarker
+  ) {
+    // The durable user marker is visible before the queued input owns a
+    // runtime turn. Do not stamp tail events from the preceding turn with the
+    // new submission's identity while waiting for its turn_started boundary.
+    return {
+      ...event,
+      runId,
+      historyEpoch: active.historyEpoch,
+      ...(typeof event.payload?.turnId === "string"
+        ? { turnId: event.payload.turnId }
+        : {}),
+    };
+  }
+  if (
+    submission !== undefined &&
+    event.type === "turn_started" &&
+    typeof event.payload?.turnId === "string"
+  ) {
+    submission.turnId = event.payload.turnId;
+  }
+
+  const turnId =
+    submission?.turnId ??
+    (typeof event.payload?.turnId === "string"
+      ? event.payload.turnId
+      : undefined);
+  let messageId = event.messageId;
+  if (
+    submission !== undefined &&
+    (event.type === "agent_message_delta" || event.type === "agent_message")
+  ) {
+    if (submission.activeAssistantMessageId === undefined) {
+      submission.activeAssistantMessageId = assistantMessageId(
+        turnId ?? submission.clientMessageId,
+        submission.assistantMessageOrdinal,
+      );
+    }
+    messageId = submission.activeAssistantMessageId;
+    if (event.type === "agent_message") {
+      submission.activeAssistantMessageId = undefined;
+      submission.assistantMessageOrdinal += 1;
+    }
+  } else if (
+    submission === undefined &&
+    event.type === "agent_message" &&
+    messageId === undefined
+  ) {
+    messageId = `assistant:${event.eventId ?? event.id}`;
+  }
+  if (submission !== undefined) {
+    const terminal = messageTerminalFromDaemonEvent(event, submission.turnId);
+    if (terminal !== undefined) submission.terminal = terminal;
+  }
+
+  return {
+    ...event,
+    runId,
+    historyEpoch: active.historyEpoch,
+    ...(turnId !== undefined ? { turnId } : {}),
+    ...(submission !== undefined
+      ? { clientMessageId: submission.clientMessageId }
+      : {}),
+    ...(messageId !== undefined ? { messageId } : {}),
+  };
+}
+
+function messageTerminalFromDaemonEvent(
+  event: BackgroundAgentDaemonEvent,
+  expectedTurnId: string | undefined,
+): AgenCBackgroundAgentMessageTerminal | undefined {
+  const eventTurnId =
+    event.turnId ??
+    (typeof event.payload?.turnId === "string"
+      ? event.payload.turnId
+      : undefined);
+  if (
+    expectedTurnId !== undefined &&
+    eventTurnId !== undefined &&
+    eventTurnId !== expectedTurnId
+  ) {
+    return undefined;
+  }
+  if (event.type === "turn_complete") {
+    return {
+      code: 0,
+      ...(typeof event.payload?.lastAgentMessage === "string"
+        ? { message: event.payload.lastAgentMessage }
+        : {}),
+    };
+  }
+  if (event.type === "turn_aborted") {
+    return {
+      code: 130,
+      ...(typeof event.payload?.reason === "string"
+        ? { message: event.payload.reason }
+        : {}),
+    };
+  }
+  if (event.type === "error") {
+    return {
+      code: 1,
+      ...(typeof event.payload?.message === "string"
+        ? { message: event.payload.message }
+        : {}),
+    };
+  }
+  return undefined;
+}
+
+function assistantMessageId(turnId: string, ordinal: number): string {
+  return `assistant:${turnId}:${ordinal}`;
+}
+
+function historyEpochForBoundary(runId: string, boundaryId: string): string {
+  return `history:${runId}:${boundaryId}`;
+}
+
+function historyEpochFromRollout(
+  items: readonly RolloutItem[],
+  runId: string,
+): string {
+  return historyEpochForBoundary(
+    runId,
+    latestTranscriptBoundary(items, runId)?.id ?? "initial",
+  );
+}
+
+interface TranscriptBoundary {
+  readonly index: number;
+  readonly id: string;
+  readonly kind: "cleared" | "replaced";
+  readonly sequence?: number;
+}
+
+function latestTranscriptBoundary(
+  items: readonly RolloutItem[],
+  runId: string,
+): TranscriptBoundary | undefined {
+  let latest: TranscriptBoundary | undefined;
+  for (const [index, item] of items.entries()) {
+    if (
+      item.type === "event_msg" &&
+      (item.payload.msg.type === "history_cleared" ||
+        item.payload.msg.type === "transcript_epoch")
+    ) {
+      latest = {
+        index,
+        id: canonicalEventId(item.payload),
+        kind:
+          item.payload.msg.type === "history_cleared" ? "cleared" : "replaced",
+        ...(positiveSequence(item.payload.seq) !== undefined
+          ? { sequence: positiveSequence(item.payload.seq) }
+          : {}),
+      };
+      continue;
+    }
+    if (
+      item.type === "compacted" &&
+      item.payload.replacementHistory !== undefined
+    ) {
+      latest = {
+        index,
+        id: `compacted:${index}:${hashStable(JSON.stringify(item.payload.replacementHistory))}`,
+        kind: "replaced",
+      };
+      continue;
+    }
+    if (item.type === "compaction_committed") {
+      latest = {
+        index,
+        id: `compaction:${item.payload.attempt_id}`,
+        kind: "replaced",
+      };
+      continue;
+    }
+    if (
+      item.type === "compaction_rollback_committed" &&
+      item.payload.target_session_id === runId
+    ) {
+      latest = {
+        index,
+        id: `compaction-rollback:${item.payload.attempt_id}`,
+        kind: "replaced",
+      };
+    }
+  }
+  return latest;
+}
+
+function messageContentFingerprint(content: unknown): string {
+  return createHash("sha256")
+    .update(stableStringify(content) ?? "undefined", "utf8")
+    .digest("hex");
+}
+
+interface PersistedMessageSubmission {
+  readonly contentFingerprint: string;
+  readonly acceptedAt?: string;
+  readonly turnId?: string;
+  readonly terminal?: AgenCBackgroundAgentMessageTerminal;
+}
+
+function findPersistedMessageSubmission(
+  items: readonly RolloutItem[],
+  clientMessageId: string,
+): PersistedMessageSubmission | undefined {
+  let match: PersistedMessageSubmission | undefined;
+  for (const item of items) {
+    if (item.type !== "event_msg") continue;
+    const event = item.payload;
+    if (
+      match === undefined &&
+      ((event.msg.type === "user_message" &&
+        event.msg.payload.messageId === clientMessageId) ||
+        (event.msg.type === "message_submission" &&
+          event.msg.payload.messageId === clientMessageId))
+    ) {
+      const contentFingerprint =
+        event.msg.type === "message_submission"
+          ? event.msg.payload.contentFingerprint
+          : messageContentFingerprint(event.msg.payload.message);
+      const acceptedAt = event.msg.payload.acceptedAt;
+      match = {
+        contentFingerprint,
+        ...(acceptedAt !== undefined ? { acceptedAt } : {}),
+      };
+      continue;
+    }
+    if (match === undefined) continue;
+    // A user_message starts the next admitted submission. Never let a
+    // crash-tail retry inherit that later submission's turn_started or
+    // terminal outcome.
+    if (
+      event.msg.type === "user_message" ||
+      event.msg.type === "message_submission"
+    ) {
+      return match;
+    }
+    if (event.msg.type === "turn_started" && match.turnId === undefined) {
+      match = { ...match, turnId: event.msg.payload.turnId };
+      continue;
+    }
+    if (match.turnId === undefined) continue;
+    const terminal = messageTerminalFromEvent(event.msg, match.turnId);
+    if (terminal !== undefined) {
+      return { ...match, terminal };
+    }
+  }
+  return match;
+}
+
+function messageTerminalFromEvent(
+  event: Event["msg"],
+  expectedTurnId: string | undefined,
+): AgenCBackgroundAgentMessageTerminal | undefined {
+  if (event.type === "turn_complete") {
+    if (
+      expectedTurnId !== undefined &&
+      event.payload.turnId !== expectedTurnId
+    ) {
+      return undefined;
+    }
+    return {
+      code: 0,
+      ...(event.payload.lastAgentMessage !== undefined
+        ? { message: event.payload.lastAgentMessage }
+        : {}),
+    };
+  }
+  if (event.type === "turn_aborted") {
+    if (
+      expectedTurnId !== undefined &&
+      event.payload.turnId !== undefined &&
+      event.payload.turnId !== expectedTurnId
+    ) {
+      return undefined;
+    }
+    return { code: 130, message: event.payload.reason };
+  }
+  if (event.type === "error") {
+    if (
+      expectedTurnId !== undefined &&
+      event.payload.turnId !== undefined &&
+      event.payload.turnId !== expectedTurnId
+    ) {
+      return undefined;
+    }
+    return { code: 1, message: event.payload.message };
+  }
+  return undefined;
+}
+
+function clientMessageIdConflict(
+  clientMessageId: string,
+): AgenCBackgroundAgentMessageError {
+  return new AgenCBackgroundAgentMessageError(
+    "CLIENT_MESSAGE_ID_CONFLICT",
+    `clientMessageId ${clientMessageId} was already used for different content`,
+  );
+}
+
+const MAX_MESSAGE_SUBMISSION_CACHE = 1_024;
+
+function pruneMessageSubmissionCache(
+  submissions: Map<string, ActiveMessageSubmission>,
+): void {
+  if (submissions.size <= MAX_MESSAGE_SUBMISSION_CACHE) return;
+  for (const [clientMessageId, submission] of submissions) {
+    if (!submission.settled) continue;
+    submissions.delete(clientMessageId);
+    if (submissions.size <= MAX_MESSAGE_SUBMISSION_CACHE) return;
+  }
+}
+
+function canonicalEventId(event: Event): string {
+  return (
+    event.eventId ??
+    (event.seq !== undefined
+      ? `legacy-event:${event.seq}:${event.id}`
+      : event.id)
+  );
+}
+
+interface MutableTranscriptV2Message extends JsonObject {
+  messageId: string;
+  commitEventId: string;
+  role: "user" | "assistant";
+  text: string;
+  turnId?: string;
+  clientMessageId?: string;
+  committedSequence: number;
+}
+
+export function sessionTranscriptV2FromRollout(
+  items: readonly RolloutItem[],
+  sessionId: string,
+  runId: string,
+  activeTurn?: { readonly turnId: string; readonly clientMessageId: string },
+): SessionTranscriptV2Result {
+  const boundary = latestTranscriptBoundary(items, runId);
+  const boundaryIndex = boundary?.index ?? -1;
+  const boundaryId = boundary?.id ?? "initial";
+  let asOfSequence = 0;
+  for (const item of items) {
+    if (item.type !== "event_msg") continue;
+    const event = item.payload;
+    if (
+      event.seq !== undefined &&
+      Number.isSafeInteger(event.seq) &&
+      event.seq > asOfSequence
+    ) {
+      asOfSequence = event.seq;
+    }
+  }
+
+  const messages: MutableTranscriptV2Message[] = [];
+  let currentTurnId: string | undefined;
+  let currentClientMessageId: string | undefined;
+  let pendingUserIndex: number | undefined;
+  let pendingClientMessageId: string | undefined;
+  const assistantOrdinals = new Map<string, number>();
+
+  if (boundary?.kind === "replaced") {
+    const replacement = reconstructFromRollout(
+      items.slice(0, boundary.index + 1),
+    ).history;
+    const replacementSequence =
+      boundary.sequence ?? maxEventSequence(items.slice(0, boundary.index + 1));
+    let ordinal = 0;
+    for (const item of replacement) {
+      if (item.role !== "user" && item.role !== "assistant") continue;
+      const text = responseItemDisplayText(item.content);
+      if (text.length === 0) continue;
+      const messageId = `replacement:${boundary.id}:${ordinal}`;
+      messages.push({
+        messageId,
+        commitEventId: messageId,
+        role: item.role,
+        text,
+        committedSequence: replacementSequence,
+      });
+      ordinal += 1;
+    }
+  }
+
+  const transcriptStartIndex = boundaryIndex + 1;
+  const firstCanonicalTranscriptIndex = items.findIndex(
+    (item, index) =>
+      index >= transcriptStartIndex &&
+      item.type === "event_msg" &&
+      (item.payload.msg.type === "user_message" ||
+        item.payload.msg.type === "message_submission" ||
+        item.payload.msg.type === "agent_message"),
+  );
+  const legacyEndIndex =
+    firstCanonicalTranscriptIndex < 0
+      ? items.length
+      : firstCanonicalTranscriptIndex;
+  let legacyOrdinal = 0;
+  for (let index = transcriptStartIndex; index < legacyEndIndex; index += 1) {
+    const item = items[index]!;
+    if (item.type !== "response_item") continue;
+    if (item.payload.role !== "user" && item.payload.role !== "assistant") {
+      continue;
+    }
+    const text = responseItemDisplayText(item.payload.content);
+    if (text.length === 0) continue;
+    const messageId = `legacy:${boundaryId}:${legacyOrdinal}`;
+    messages.push({
+      messageId,
+      commitEventId: messageId,
+      role: item.payload.role,
+      text,
+      committedSequence: 0,
+    });
+    legacyOrdinal += 1;
+  }
+
+  // Scan canonical turn context from the epoch boundary, not merely from the
+  // first visible transcript row. Hidden-user submissions deliberately have
+  // no user_message, so their preceding turn_started is the only durable
+  // source for the assistant message identity.
+  for (let index = transcriptStartIndex; index < items.length; index += 1) {
+    const item = items[index]!;
+    if (item.type !== "event_msg") continue;
+    const event = item.payload;
+    const sequence = positiveSequence(event.seq);
+    if (sequence === undefined) continue;
+    if (event.msg.type === "message_submission") {
+      pendingUserIndex = undefined;
+      pendingClientMessageId = event.msg.payload.messageId;
+      continue;
+    }
+    if (event.msg.type === "user_message") {
+      const text =
+        event.msg.payload.displayText ??
+        unknownMessageContentDisplayText(event.msg.payload.message);
+      if (text.length === 0) continue;
+      const commitEventId = canonicalEventId(event);
+      const clientMessageId = event.msg.payload.messageId;
+      messages.push({
+        messageId: clientMessageId ?? `message:${commitEventId}`,
+        commitEventId,
+        role: "user",
+        text,
+        ...(clientMessageId !== undefined ? { clientMessageId } : {}),
+        committedSequence: sequence,
+      });
+      pendingUserIndex = messages.length - 1;
+      pendingClientMessageId = clientMessageId;
+      continue;
+    }
+    if (event.msg.type === "turn_started") {
+      currentTurnId = event.msg.payload.turnId;
+      if (pendingUserIndex !== undefined) {
+        messages[pendingUserIndex]!.turnId = currentTurnId;
+        pendingUserIndex = undefined;
+      }
+      currentClientMessageId = pendingClientMessageId;
+      pendingClientMessageId = undefined;
+      continue;
+    }
+    if (event.msg.type === "agent_message") {
+      const commitEventId = canonicalEventId(event);
+      const correlationId = currentTurnId ?? commitEventId;
+      const ordinal = assistantOrdinals.get(correlationId) ?? 0;
+      assistantOrdinals.set(correlationId, ordinal + 1);
+      const text = event.msg.payload.message;
+      // Empty durable commits are not transcript rows, but they still occupy
+      // an ordinal because the live identity allocator observes them.
+      if (text.length === 0) continue;
+      messages.push({
+        messageId:
+          currentTurnId === undefined
+            ? `assistant:${commitEventId}`
+            : assistantMessageId(currentTurnId, ordinal),
+        commitEventId,
+        role: "assistant",
+        text,
+        ...(currentTurnId !== undefined ? { turnId: currentTurnId } : {}),
+        ...(currentClientMessageId !== undefined
+          ? { clientMessageId: currentClientMessageId }
+          : {}),
+        committedSequence: sequence,
+      });
+      continue;
+    }
+    if (
+      event.msg.type === "turn_complete" ||
+      event.msg.type === "turn_aborted" ||
+      event.msg.type === "error"
+    ) {
+      const terminalTurnId =
+        "turnId" in event.msg.payload &&
+        typeof event.msg.payload.turnId === "string"
+          ? event.msg.payload.turnId
+          : undefined;
+      if (
+        (currentTurnId === undefined && pendingUserIndex !== undefined) ||
+        (currentTurnId !== undefined &&
+          terminalTurnId !== undefined &&
+          terminalTurnId !== currentTurnId)
+      ) {
+        continue;
+      }
+      currentTurnId = undefined;
+      currentClientMessageId = undefined;
+    }
+  }
+
+  return {
+    schemaVersion: 2,
+    sessionId,
+    runId,
+    historyEpoch: historyEpochForBoundary(runId, boundaryId),
+    asOfSequence,
+    messages,
+    ...(activeTurn !== undefined ? { activeTurn } : {}),
+  };
+}
+
+function maxEventSequence(items: readonly RolloutItem[]): number {
+  let max = 0;
+  for (const item of items) {
+    if (item.type !== "event_msg") continue;
+    const sequence = positiveSequence(item.payload.seq);
+    if (sequence !== undefined) max = Math.max(max, sequence);
+  }
+  return max;
+}
+
+function responseItemDisplayText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) =>
+      isJsonObject(part) && typeof part.text === "string" ? part.text : "",
+    )
+    .join("");
+}
+
+function unknownMessageContentDisplayText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (!isJsonObject(part)) return "";
+      if (typeof part.text === "string") return part.text;
+      if (part.type === "image") return "[image]";
+      if (part.type === "document") return "[document]";
+      return "";
+    })
+    .filter((part) => part.length > 0)
+    .join("\n");
 }
 
 async function unavailableRealtimeTransport(): Promise<RealtimeTransportConnection> {
@@ -3900,15 +4820,29 @@ function eventBaseParams(
   readonly sessionId: string;
   readonly eventId: string;
   readonly agentId: string;
+  readonly runId?: string;
+  readonly historyEpoch?: string;
   readonly sequence?: number;
   readonly acceptedAt?: string;
+  readonly turnId?: string;
+  readonly clientMessageId?: string;
+  readonly messageId?: string;
 } {
   return {
     sessionId,
     eventId: event.eventId ?? event.id,
     agentId,
+    ...(event.runId !== undefined ? { runId: event.runId } : {}),
+    ...(event.historyEpoch !== undefined
+      ? { historyEpoch: event.historyEpoch }
+      : {}),
     ...(event.sequence !== undefined ? { sequence: event.sequence } : {}),
     ...(event.acceptedAt !== undefined ? { acceptedAt: event.acceptedAt } : {}),
+    ...(event.turnId !== undefined ? { turnId: event.turnId } : {}),
+    ...(event.clientMessageId !== undefined
+      ? { clientMessageId: event.clientMessageId }
+      : {}),
+    ...(event.messageId !== undefined ? { messageId: event.messageId } : {}),
   };
 }
 
@@ -4481,6 +5415,8 @@ const COLLAB_AGENT_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
  * impossible to reconcile with run.replay after reconnect.
  */
 const CANONICAL_CORE_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "history_cleared",
+  "transcript_epoch",
   "agent_message_delta",
   "tool_call_started",
   "tool_call_completed",
@@ -4626,6 +5562,9 @@ export function daemonEventFromUnboundSessionEvent(event: {
       ...(acceptedAt !== undefined ? { acceptedAt } : {}),
       payload: {
         message: payload.message,
+        ...(messageId !== undefined ? { messageId } : {}),
+        ...(streamId !== undefined ? { streamId } : {}),
+        ...(acceptedAt !== undefined ? { acceptedAt } : {}),
         ...(typeof payload.displayText === "string"
           ? { displayText: payload.displayText }
           : {}),

@@ -9,11 +9,11 @@ Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md). Embedding API:
 
 ## Process ownership
 
-| Piece | Package / path | Role |
-| --- | --- | --- |
-| Launcher | `packages/agenc` (`@tetsuo-ai/agenc`) | Installs `agenc`, ensures runtime tarball, optional daemon autostart, execs runtime |
-| Daemon | `runtime/src/app-server` | Owns sessions, agents, tools, permissions, health, recovery |
-| Runtime CLI | `runtime/bin/agenc` | Subcommands including `daemon start|stop|status|reload|restart` |
+| Piece       | Package / path                        | Role                                                                                |
+| ----------- | ------------------------------------- | ----------------------------------------------------------------------------------- |
+| Launcher    | `packages/agenc` (`@tetsuo-ai/agenc`) | Installs `agenc`, ensures runtime tarball, optional daemon autostart, execs runtime |
+| Daemon      | `runtime/src/app-server`              | Owns sessions, agents, tools, permissions, health, recovery                         |
+| Runtime CLI | `runtime/bin/agenc`                   | Subcommands including `daemon start                                                 | stop | status | reload | restart` |
 
 Autostart is **on by default**. Disable with:
 
@@ -24,9 +24,9 @@ AGENC_DAEMON_AUTOSTART=0
 Ready-wait timeout for clients that start the daemon
 (`AGENC_DAEMON_READY_TIMEOUT_MS`):
 
-| Client | Default |
-| --- | --- |
-| Published launcher (`packages/agenc`) | **2000** ms |
+| Client                                                         | Default      |
+| -------------------------------------------------------------- | ------------ |
+| Published launcher (`packages/agenc`)                          | **2000** ms  |
 | Runtime daemon autostart / `agenc daemon` / SDK socket connect | **45000** ms |
 
 ```bash
@@ -61,14 +61,14 @@ Packaging units under `packaging/` (systemd, launchd, Windows service) run
 
 ## Files under `AGENC_HOME` (default `~/.agenc`)
 
-| File | Mode / notes |
-| --- | --- |
-| `daemon.sock` | Unix domain socket path clients connect to; Windows uses a stable per-home named pipe instead |
-| `daemon.cookie` | Shared secret; cookie auth for local clients |
-| `daemon.pid` | Detached process id |
-| `daemon.log` | Size-capped log sink |
-| `daemon-snapshot.json` | Lifecycle / recovery snapshot |
-| runtime-info files | Version/path metadata for attach and doctor |
+| File                   | Mode / notes                                                                                  |
+| ---------------------- | --------------------------------------------------------------------------------------------- |
+| `daemon.sock`          | Unix domain socket path clients connect to; Windows uses a stable per-home named pipe instead |
+| `daemon.cookie`        | Shared secret; cookie auth for local clients                                                  |
+| `daemon.pid`           | Detached process id                                                                           |
+| `daemon.log`           | Size-capped log sink                                                                          |
+| `daemon-snapshot.json` | Lifecycle / recovery snapshot                                                                 |
+| runtime-info files     | Version/path metadata for attach and doctor                                                   |
 
 Override home:
 
@@ -86,16 +86,17 @@ export AGENC_HOME=/var/lib/agenc
   defaults to loopback **`ws://127.0.0.1:7766/`** (see
   `AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT`). Env knobs:
 
-  | Env | Role |
-  | --- | --- |
-  | `AGENC_DAEMON_WEBSOCKET_HOST` | Bind host (default loopback `127.0.0.1`) |
-  | `AGENC_DAEMON_WEBSOCKET_PORT` | Port (default **7766**) |
-  | `AGENC_DAEMON_WEBSOCKET_PATH` | Path (default `/`) |
+  | Env                                        | Role                                                                               |
+  | ------------------------------------------ | ---------------------------------------------------------------------------------- |
+  | `AGENC_DAEMON_WEBSOCKET_HOST`              | Bind host (default loopback `127.0.0.1`)                                           |
+  | `AGENC_DAEMON_WEBSOCKET_PORT`              | Port (default **7766**)                                                            |
+  | `AGENC_DAEMON_WEBSOCKET_PATH`              | Path (default `/`)                                                                 |
   | `AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK` | Set `1` to allow a non-loopback host; otherwise non-loopback binds are **refused** |
 
   Prefer the local socket/named pipe for TUI/CLI; WebSocket is what remote/phone
   and tunnel docs mean by `ws://127.0.0.1:7766`. Implementation:
   `runtime/src/app-server/daemon-cli.ts` + `transport/`.
+
 - Config block `[daemon]` defaults: `transport = "unix"`, `autostart = true`
   (`runtime/src/config/schema.ts`).
 
@@ -109,7 +110,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 ## Protocol
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.1.0`**
+- Protocol version constant: **`1.2.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
@@ -117,35 +118,65 @@ const client = await connect(); // socket + cookie under AGENC_HOME
   does not affect compatibility. Malformed versions, different majors, and a
   client minor newer than the server are rejected with
   `PROTOCOL_VERSION_UNSUPPORTED`.
-- Consequently, a 1.1 daemon accepts a 1.0 client, while a current 1.1 TUI is
-  rejected by a still-running 1.0 daemon before it can send the newer Editor
-  recovery fields. Update if necessary, then run `agenc daemon restart` so the
+- Consequently, a 1.2 daemon accepts 1.0 and 1.1 clients, while a client that
+  requires 1.2 is rejected by a still-running 1.0/1.1 daemon. The embedding
+  SDK retries initialization at the reported older server version and uses
+  advertised capabilities for additive fallbacks; Core/TUI callers may still
+  fail closed. Update if necessary, then run `agenc daemon restart` so the
   daemon uses the installed protocol version.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 
-| Method | Purpose |
-| --- | --- |
-| `initialize` | Handshake + capability advertisement |
-| `request.cancel` | Cancel an in-flight request |
-| `agent.create` / `agent.list` / `agent.attach` / `agent.stop` / `agent.logs` | Background agents |
-| `run.start` / `run.status` / `run.result` / `run.replay` / `run.evidence` / `run.cancel` | Start a verified-change run; inspect durable state, journal replay/evidence, terminal result, or tree cancellation |
-| `csvJob.review.list` / `csvJob.review.show` / `csvJob.review.resolve` | Inspect and settle durable CSV batch-review items |
-| `session.create` / `session.list` / `session.attach` / `session.detach` | Session lifecycle |
-| `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` | Session control |
-| `session.cancelTurn` | Abort current turn |
-| `session.resolveToolCall` | Resolve a tool call whose durable outcome requires review |
-| `session.mcp.addServer` | Attach MCP server to a session |
-| `message.send` / `message.stream` | Prompt turns |
-| `thread/realtime/*` | Realtime voice/thread methods |
-| `tool.approve` / `tool.deny` / `tool.cancel` | Permission settlement |
-| `elicitation.respond` | User-input / MCP elicitation reply |
-| `permission.list` | List pending / granted permissions |
-| `fs.fuzzy_search` | Workspace fuzzy file search |
-| `commandExec.start` / `write` / `resize` / `terminate` | Reserved PTY/command-exec protocol; direct starts currently fail closed |
-| `health.ping` / `health.ready` / `health.stats` | Liveness and stats |
-| `daemon.reload` | Reload configuration |
-| `auth.login` / `auth.whoami` / `auth.logout` | Auth backend |
+| Method                                                                                                      | Purpose                                                                                                            |
+| ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `initialize`                                                                                                | Handshake + capability advertisement                                                                               |
+| `request.cancel`                                                                                            | Cancel an in-flight request                                                                                        |
+| `agent.create` / `agent.list` / `agent.attach` / `agent.stop` / `agent.logs`                                | Background agents                                                                                                  |
+| `run.start` / `run.status` / `run.result` / `run.replay` / `run.evidence` / `run.cancel`                    | Start a verified-change run; inspect durable state, journal replay/evidence, terminal result, or tree cancellation |
+| `csvJob.review.list` / `csvJob.review.show` / `csvJob.review.resolve`                                       | Inspect and settle durable CSV batch-review items                                                                  |
+| `session.create` / `session.list` / `session.attach` / `session.detach`                                     | Session lifecycle                                                                                                  |
+| `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` / `session.transcript.v2` | Session control and identity-bearing history sync                                                                  |
+| `session.cancelTurn`                                                                                        | Abort the current turn, optionally only when `expectedTurnId` still matches                                        |
+| `session.resolveToolCall`                                                                                   | Resolve a tool call whose durable outcome requires review                                                          |
+| `session.mcp.addServer`                                                                                     | Attach MCP server to a session                                                                                     |
+| `message.send` / `message.stream`                                                                           | Prompt turns                                                                                                       |
+| `thread/realtime/*`                                                                                         | Realtime voice/thread methods                                                                                      |
+| `tool.approve` / `tool.deny` / `tool.cancel`                                                                | Permission settlement                                                                                              |
+| `elicitation.respond`                                                                                       | User-input / MCP elicitation reply                                                                                 |
+| `permission.list`                                                                                           | List pending / granted permissions                                                                                 |
+| `fs.fuzzy_search`                                                                                           | Workspace fuzzy file search                                                                                        |
+| `commandExec.start` / `write` / `resize` / `terminate`                                                      | Reserved PTY/command-exec protocol; direct starts currently fail closed                                            |
+| `health.ping` / `health.ready` / `health.stats`                                                             | Liveness and stats                                                                                                 |
+| `daemon.reload`                                                                                             | Reload configuration                                                                                               |
+| `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
+
+### Race-safe turns and transcript sync (protocol 1.2)
+
+`message.send` and `message.stream` accept a caller-stable
+`clientMessageId`. Reusing it with the same content is idempotent; reusing it
+with different content is rejected. A retry response reports
+`duplicateState: "completed" | "incomplete"` and never invents success for a
+crash tail without a durable terminal event. Callers that require strict
+single-turn admission pass `ifBusy: "reject"`. Without that flag, the legacy
+FIFO/co-driving behavior is unchanged for 1.0/1.1 clients.
+Hidden-user submissions persist a non-rendering `message_submission` marker
+with a SHA-256 content fingerprint, so their idempotency identity also survives
+a process crash without duplicating the hidden prompt in that marker.
+
+`session.transcript.v2` returns `schemaVersion: 2`, `runId`, `historyEpoch`,
+`asOfSequence`, and stable identity-bearing messages. Canonical messages carry
+`messageId`, `commitEventId`, `turnId`/`clientMessageId` when known, and
+`committedSequence`. Migrated `response_item` rows use
+`committedSequence: 0`; this explicitly means they predate the canonical event
+cursor. Compaction, rewind, rollback, and clear each advance `historyEpoch` and
+replace the active projection.
+
+Live notifications carry the same `eventId`, `sequence`, `runId`,
+`historyEpoch`, `turnId`, `clientMessageId`, and `messageId` correlation where
+available. `event.message_chunk` is an assistant delta only; a durable
+`agent_message` is a distinct committed message. Consumers buffer live events
+while loading the snapshot, discard only events at or before
+`asOfSequence` in the same epoch, and resync when the epoch changes.
 
 `session.resolveToolCall` accepts two strict protocol-1.0 request shapes. The
 earlier `{ sessionId, toolCallId?, reviewer? }` shape can settle only a legacy
@@ -271,10 +302,10 @@ Examples: `event.message_chunk`, `event.tool_request`,
 `initialize.capabilities` can opt an authenticated connection into delivery
 outside ordinary session attachment:
 
-| Capability | Behavior |
-| --- | --- |
+| Capability                     | Behavior                                                                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | `portal.mobile.status.push.v1` | Global `event.agent_status` observer feed, deduplicated by physical connection and replayed from bounded session status buffers |
-| `portal.ledger.solana.sign.v1` | Single-consumer `event.user_input_request.clientAction` delivery to the newest capable phone, with bounded live-session replay |
+| `portal.ledger.solana.sign.v1` | Single-consumer `event.user_input_request.clientAction` delivery to the newest capable phone, with bounded live-session replay  |
 
 Generic SDK clients advertise no such capabilities by default. Conversation
 messages and transcripts remain attachment-bound.
@@ -339,16 +370,16 @@ agenc budget status    # cumulative autonomy ledger (not daemon-internal only)
 
 ## Source map
 
-| Concern | Path |
-| --- | --- |
-| CLI | `runtime/src/app-server/daemon-cli.ts` |
-| JSON-RPC dispatch | `runtime/src/app-server/daemon-dispatcher.ts` |
-| Protocol constants | `runtime/src/app-server/protocol/index.ts` |
-| Session lifecycle | `runtime/src/app-server/session-lifecycle.ts` |
-| Agent lifecycle | `runtime/src/app-server/agent-lifecycle.ts` |
-| Background runs | `runtime/src/app-server/background-agent-runner.ts` |
-| Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts` |
-| Cookie auth | `runtime/src/app-server/transport/auth.ts` |
-| Health | `runtime/src/app-server/health.ts` |
-| Launcher autostart | `packages/agenc/src/launcher.mjs` |
-| SDK connect | `packages/agenc-sdk/src/socket.ts` |
+| Concern                           | Path                                                |
+| --------------------------------- | --------------------------------------------------- |
+| CLI                               | `runtime/src/app-server/daemon-cli.ts`              |
+| JSON-RPC dispatch                 | `runtime/src/app-server/daemon-dispatcher.ts`       |
+| Protocol constants                | `runtime/src/app-server/protocol/index.ts`          |
+| Session lifecycle                 | `runtime/src/app-server/session-lifecycle.ts`       |
+| Agent lifecycle                   | `runtime/src/app-server/agent-lifecycle.ts`         |
+| Background runs                   | `runtime/src/app-server/background-agent-runner.ts` |
+| Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
+| Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |
+| Health                            | `runtime/src/app-server/health.ts`                  |
+| Launcher autostart                | `packages/agenc/src/launcher.mjs`                   |
+| SDK connect                       | `packages/agenc-sdk/src/socket.ts`                  |

@@ -5,6 +5,7 @@ import { transformSync } from "esbuild";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  AgenCBackgroundAgentMessageError,
   AgenCDelegateBackgroundAgentRunner,
   daemonEventFromUnboundSessionEvent,
   notificationFromDaemonEvent,
@@ -103,6 +104,7 @@ function makeStubConversationThreadManager(opts: {
     readonly outputTokens: number;
     readonly totalTokens: number;
   };
+  readonly scopedTurnCancellation?: boolean;
 }) {
   let listeners: ((status: AgentStatus) => void)[] = [];
   let currentStatus: AgentStatus =
@@ -231,6 +233,15 @@ function makeTopLevelRunner(opts: {
     rolloutPath: `/tmp/${opts.conversationId}.jsonl`,
     readAll: () => [...rolloutItems],
   };
+  let activeTurnValue: { readonly turnId: string } | null = null;
+  const abortTurnIfActive = vi.fn(async (turnId: string) => {
+    if (activeTurnValue?.turnId !== turnId) return false;
+    activeTurnValue = null;
+    return true;
+  });
+  const activeTurn = {
+    unsafePeek: () => activeTurnValue,
+  };
   const session = {
     conversationId: opts.conversationId,
     permissionModeRegistry,
@@ -291,6 +302,9 @@ function makeTopLevelRunner(opts: {
     rolloutStore,
     services: { conversationThreadManager: stub },
   };
+  if (opts.scopedTurnCancellation === true) {
+    Object.assign(session, { abortTurnIfActive, activeTurn });
+  }
   const shutdown = vi.fn(async () => {
     await shutdownImpl();
     while (durableOperations.size > 0) {
@@ -352,6 +366,11 @@ function makeTopLevelRunner(opts: {
     permissionUpdates,
     permissionModeRegistry,
     rolloutItems,
+    abortTurnIfActive,
+    activeTurn,
+    setActiveTurn(turnId: string | null) {
+      activeTurnValue = turnId === null ? null : { turnId };
+    },
   };
 }
 
@@ -626,16 +645,26 @@ describe("AgenC delegate background-agent runner", () => {
     });
     emitted.length = 0;
 
-    await expect(runner.rollbackCompaction?.(started.agentId, {
-      sessionId: "session-rollback-replacement",
-      attemptId: "attempt-rollback",
-    })).resolves.toMatchObject({
+    await expect(
+      runner.rollbackCompaction?.(started.agentId, {
+        sessionId: "session-rollback-replacement",
+        attemptId: "attempt-rollback",
+      }),
+    ).resolves.toMatchObject({
       ok: true,
       eventAlreadyEmitted: true,
       event: replacementEvent,
     });
-    expect(emitted).toHaveLength(1);
+    expect(emitted).toHaveLength(2);
     expect(emitted[0]).toMatchObject({
+      params: {
+        event: {
+          type: "transcript_epoch",
+          payload: { reason: "compaction_rollback" },
+        },
+      },
+    });
+    expect(emitted[1]).toMatchObject({
       params: {
         event: {
           type: "history_replaced",
@@ -2091,6 +2120,630 @@ describe("AgenC delegate background-agent runner", () => {
     expect(emitted).toHaveLength(1);
   });
 
+  it("[managed-thread] correlates every live turn surface to one admitted message", async () => {
+    const { runner, control, session } = makeTopLevelRunner({
+      conversationId: "session-correlated-events",
+    });
+    const emitted: JsonObject[] = [];
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-correlated-events", {
+      sessionId: "session_1",
+      emit: (notification) => emitted.push(notification),
+    });
+    emitted.length = 0;
+    control.sendInput.mockImplementationOnce(async () => {
+      session.emit({
+        id: "stale-complete",
+        msg: {
+          type: "turn_complete",
+          payload: { turnId: "turn-before", lastAgentMessage: "older answer" },
+        },
+      });
+      session.emit({
+        id: "turn-correlated",
+        msg: {
+          type: "turn_started",
+          payload: { turnId: "turn-correlated" },
+        },
+      });
+      session.emit({
+        id: "delta-correlated",
+        msg: { type: "agent_message_delta", payload: { delta: "hello" } },
+      });
+      session.emit({
+        id: "permission-correlated",
+        msg: {
+          type: "request_permissions",
+          payload: {
+            callId: "permission-correlated",
+            toolName: "Read",
+            turnId: "turn-correlated",
+            permissions: ["read"],
+          },
+        },
+      });
+      session.emit({
+        id: "input-correlated",
+        msg: {
+          type: "request_user_input",
+          payload: {
+            callId: "input-correlated",
+            turnId: "turn-correlated",
+            questions: [],
+          },
+        },
+      });
+      session.emit({
+        id: "elicitation-correlated",
+        msg: {
+          type: "mcp_elicitation_request",
+          payload: {
+            serverName: "server",
+            requestId: "elicitation-correlated",
+            turnId: "turn-correlated",
+            request: {},
+          },
+        },
+      });
+      session.emit({
+        id: "empty-committed-correlated",
+        msg: {
+          type: "agent_message",
+          payload: { message: "" },
+        },
+      });
+      session.emit({
+        id: "committed-correlated",
+        msg: {
+          type: "agent_message",
+          payload: { message: "hello" },
+        },
+      });
+      session.emit({
+        id: "complete-correlated",
+        msg: {
+          type: "turn_complete",
+          payload: { turnId: "turn-correlated", lastAgentMessage: "hello" },
+        },
+      });
+    });
+
+    await runner.submitAgentMessage("session-correlated-events", {
+      sessionId: "session_1",
+      content: "correlate me",
+      originalContent: "correlate me",
+      messageId: "client-correlated",
+      streamId: "client-correlated",
+      acceptedAt: "2026-08-17T00:00:00.000Z",
+    });
+
+    expect(
+      emitted.find((notification) => {
+        const params = notification.params as JsonObject | undefined;
+        const event = params?.event as JsonObject | undefined;
+        return event?.type === "user_message";
+      })?.params,
+    ).toMatchObject({
+      clientMessageId: "client-correlated",
+      messageId: "client-correlated",
+      event: {
+        messageId: "client-correlated",
+        payload: { messageId: "client-correlated" },
+      },
+    });
+    expect(
+      (
+        emitted.find((notification) => {
+          const params = notification.params as JsonObject | undefined;
+          return params?.eventId === "stale-complete";
+        })?.params as JsonObject | undefined
+      )?.clientMessageId,
+    ).toBeUndefined();
+
+    const turnNotifications = emitted.filter((notification) => {
+      const params = notification.params as JsonObject | undefined;
+      return params?.turnId === "turn-correlated";
+    });
+    expect(turnNotifications).toHaveLength(8);
+    for (const notification of turnNotifications) {
+      expect(notification.params).toMatchObject({
+        runId: "session-correlated-events",
+        historyEpoch: "history:session-correlated-events:initial",
+        turnId: "turn-correlated",
+        clientMessageId: "client-correlated",
+      });
+    }
+    expect(
+      turnNotifications.find(
+        (notification) => notification.method === "event.message_chunk",
+      )?.params,
+    ).toMatchObject({ messageId: "assistant:turn-correlated:0" });
+    expect(
+      turnNotifications.find(
+        (notification) =>
+          notification.method === "event.session_event" &&
+          (
+            (notification.params as JsonObject | undefined)?.event as
+              JsonObject | undefined
+          )?.id === "committed-correlated",
+      )?.params,
+    ).toMatchObject({ messageId: "assistant:turn-correlated:1" });
+
+    await expect(
+      runner.getAgentSessionTranscriptV2("session-correlated-events", {
+        sessionId: "session_1",
+      }),
+    ).resolves.toMatchObject({
+      runId: "session-correlated-events",
+      historyEpoch: "history:session-correlated-events:initial",
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          messageId: "client-correlated",
+          clientMessageId: "client-correlated",
+          turnId: "turn-correlated",
+        }),
+        expect.objectContaining({
+          messageId: "assistant:turn-correlated:1",
+          clientMessageId: "client-correlated",
+          turnId: "turn-correlated",
+        }),
+      ]),
+    });
+  });
+
+  it("[managed-thread] gives an uncorrelated committed message the same live and snapshot id", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-background-commit-id",
+    });
+    const emitted: JsonObject[] = [];
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-background-commit-id", {
+      sessionId: "session_1",
+      emit: (notification) => emitted.push(notification),
+    });
+    emitted.length = 0;
+
+    session.emit({
+      id: "background-commit",
+      msg: {
+        type: "agent_message",
+        payload: { message: "background answer" },
+      },
+    });
+    await vi.waitFor(() => expect(emitted).toHaveLength(1));
+
+    const liveParams = emitted[0]?.params as JsonObject | undefined;
+    const liveMessageId = liveParams?.messageId;
+    const snapshot = await runner.getAgentSessionTranscriptV2(
+      "session-background-commit-id",
+      { sessionId: "session_1" },
+    );
+    const committed = snapshot.messages.find(
+      (message) => message.text === "background answer",
+    );
+    expect(liveMessageId).toBe(`assistant:${String(liveParams?.eventId)}`);
+    expect(committed?.messageId).toBe(liveMessageId);
+  });
+
+  it("[managed-thread] retains turn identity for a hidden-user assistant commit", async () => {
+    const { runner, control, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: "session-hidden-user-id",
+    });
+    const emitted: JsonObject[] = [];
+    await runner.startAgent({
+      objective: "passive",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-hidden-user-id", {
+      sessionId: "session_1",
+      emit: (notification) => emitted.push(notification),
+    });
+    emitted.length = 0;
+    control.sendInput.mockImplementationOnce(async () => {
+      session.emit({
+        id: "turn-hidden",
+        msg: {
+          type: "turn_started",
+          payload: { turnId: "turn-hidden" },
+        },
+      });
+      session.emit({
+        id: "assistant-hidden",
+        msg: {
+          type: "agent_message",
+          payload: { message: "hidden answer" },
+        },
+      });
+      session.emit({
+        id: "complete-hidden",
+        msg: {
+          type: "turn_complete",
+          payload: {
+            turnId: "turn-hidden",
+            lastAgentMessage: "hidden answer",
+          },
+        },
+      });
+    });
+
+    await runner.submitAgentMessage("session-hidden-user-id", {
+      sessionId: "session_1",
+      content: "internal prompt",
+      originalContent: "internal prompt",
+      displayUserMessage: null,
+      messageId: "client-hidden",
+      streamId: "client-hidden",
+      acceptedAt: "2026-08-18T00:00:00.000Z",
+    });
+
+    expect(
+      emitted.some((notification) => {
+        const params = notification.params as JsonObject | undefined;
+        const event = params?.event as JsonObject | undefined;
+        return event?.type === "user_message";
+      }),
+    ).toBe(false);
+    const liveCommit = emitted.find((notification) => {
+      const params = notification.params as JsonObject | undefined;
+      const event = params?.event as JsonObject | undefined;
+      return event?.id === "assistant-hidden";
+    });
+    expect(liveCommit?.params).toMatchObject({
+      turnId: "turn-hidden",
+      clientMessageId: "client-hidden",
+      messageId: "assistant:turn-hidden:0",
+    });
+
+    const snapshot = await runner.getAgentSessionTranscriptV2(
+      "session-hidden-user-id",
+      { sessionId: "session_1" },
+    );
+    expect(snapshot.messages).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        text: "hidden answer",
+        turnId: "turn-hidden",
+        clientMessageId: "client-hidden",
+        messageId: "assistant:turn-hidden:0",
+      }),
+    ]);
+    expect(snapshot.messages[0]?.messageId).toBe(
+      (liveCommit?.params as JsonObject | undefined)?.messageId,
+    );
+    expect(
+      rolloutItems.some((item) => {
+        const event = item as {
+          type?: unknown;
+          payload?: { msg?: { type?: unknown } };
+        };
+        return (
+          event.type === "event_msg" &&
+          event.payload?.msg?.type === "message_submission"
+        );
+      }),
+    ).toBe(true);
+  });
+
+  it("[managed-thread] keeps a hidden submission idempotent across a crash", async () => {
+    const rolloutItems: unknown[] = [];
+    const firstRuntime = makeTopLevelRunner({
+      conversationId: "session-hidden-crash-retry",
+      rolloutItems,
+    });
+    let releaseFirst!: () => void;
+    firstRuntime.control.sendInput.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        }),
+    );
+    await firstRuntime.runner.startAgent({
+      objective: "passive",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    const acceptedThenCrashed = firstRuntime.runner.submitAgentMessage(
+      "session-hidden-crash-retry",
+      {
+        sessionId: "session_1",
+        content: "internal crash prompt",
+        originalContent: "internal crash prompt",
+        displayUserMessage: null,
+        messageId: "client-hidden-crash",
+        streamId: "client-hidden-crash",
+        acceptedAt: "2026-08-18T00:00:00.000Z",
+      },
+    );
+    await vi.waitFor(() => {
+      expect(
+        rolloutItems.some((item) => {
+          const event = item as {
+            type?: unknown;
+            payload?: {
+              msg?: { type?: unknown; payload?: Record<string, unknown> };
+            };
+          };
+          return (
+            event.type === "event_msg" &&
+            event.payload?.msg?.type === "message_submission" &&
+            event.payload.msg.payload?.messageId === "client-hidden-crash"
+          );
+        }),
+      ).toBe(true);
+    });
+
+    const restarted = makeTopLevelRunner({
+      conversationId: "session-hidden-crash-retry",
+      rolloutItems,
+    });
+    await restarted.runner.startAgent({
+      objective: "passive",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await expect(
+      restarted.runner.submitAgentMessage("session-hidden-crash-retry", {
+        sessionId: "session_1",
+        content: "different internal prompt",
+        originalContent: "different internal prompt",
+        displayUserMessage: null,
+        messageId: "client-hidden-crash",
+        streamId: "client-hidden-crash",
+        acceptedAt: "2026-08-18T00:30:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "CLIENT_MESSAGE_ID_CONFLICT" });
+    await expect(
+      restarted.runner.submitAgentMessage("session-hidden-crash-retry", {
+        sessionId: "session_1",
+        content: "internal crash prompt",
+        originalContent: "internal crash prompt",
+        displayUserMessage: null,
+        messageId: "client-hidden-crash",
+        streamId: "client-hidden-crash",
+        acceptedAt: "2026-08-18T01:00:00.000Z",
+      }),
+    ).resolves.toMatchObject({
+      disposition: "duplicate",
+      duplicateState: "incomplete",
+      acceptedAt: "2026-08-18T00:00:00.000Z",
+    });
+    expect(restarted.control.sendInput).not.toHaveBeenCalled();
+    await expect(
+      restarted.runner.getAgentSessionTranscriptV2(
+        "session-hidden-crash-retry",
+        { sessionId: "session_1" },
+      ),
+    ).resolves.toMatchObject({ messages: [] });
+
+    releaseFirst();
+    await acceptedThenCrashed;
+  });
+
+  it("[managed-thread] joins a concurrent idempotent retry and rejects conflicting content", async () => {
+    const { runner, control } = makeTopLevelRunner({
+      conversationId: "session-idempotent-submit",
+    });
+    let releaseSend!: () => void;
+    control.sendInput.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseSend = resolve;
+        }),
+    );
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    const first = runner.submitAgentMessage("session-idempotent-submit", {
+      sessionId: "session_1",
+      content: "same prompt",
+      originalContent: "same prompt",
+      messageId: "client-message-1",
+      streamId: "client-message-1",
+      acceptedAt: "2026-08-17T00:00:00.000Z",
+    });
+    const retry = runner.submitAgentMessage("session-idempotent-submit", {
+      sessionId: "session_1",
+      content: "same prompt",
+      originalContent: "same prompt",
+      messageId: "client-message-1",
+      streamId: "client-message-1",
+      acceptedAt: "2026-08-17T00:00:01.000Z",
+    });
+    await expect(
+      runner.submitAgentMessage("session-idempotent-submit", {
+        sessionId: "session_1",
+        content: "different prompt",
+        originalContent: "different prompt",
+        messageId: "client-message-1",
+        streamId: "client-message-1",
+        acceptedAt: "2026-08-17T00:00:02.000Z",
+      }),
+    ).rejects.toMatchObject({
+      name: AgenCBackgroundAgentMessageError.name,
+      code: "CLIENT_MESSAGE_ID_CONFLICT",
+    });
+
+    await vi.waitFor(() => expect(control.sendInput).toHaveBeenCalledOnce());
+    releaseSend();
+    await expect(first).resolves.toMatchObject({
+      disposition: "started",
+      terminal: { code: 0 },
+    });
+    await expect(retry).resolves.toMatchObject({
+      disposition: "duplicate",
+      duplicateState: "completed",
+      terminal: { code: 0 },
+    });
+    expect(control.sendInput).toHaveBeenCalledOnce();
+  });
+
+  it("[managed-thread] rejects opt-in admission during the initial turn without changing legacy FIFO", async () => {
+    const { runner, control } = makeTopLevelRunner({
+      conversationId: "session-strict-busy",
+    });
+    await runner.startAgent({
+      objective: "initial turn is running",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-strict-busy", {
+        sessionId: "session_1",
+        content: "strict second turn",
+        originalContent: "strict second turn",
+        messageId: "strict-message",
+        streamId: "strict-message",
+        acceptedAt: "2026-08-17T00:00:00.000Z",
+        ifBusy: "reject",
+      }),
+    ).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
+
+    await expect(
+      runner.submitAgentMessage("session-strict-busy", {
+        sessionId: "session_1",
+        content: "legacy queued turn",
+        originalContent: "legacy queued turn",
+        messageId: "legacy-message",
+        streamId: "legacy-message",
+        acceptedAt: "2026-08-17T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalledWith(
+      "session-strict-busy",
+      "legacy queued turn",
+    );
+  });
+
+  it("[managed-thread] reports a persisted crash-tail retry as incomplete", async () => {
+    const { runner, control } = makeTopLevelRunner({
+      conversationId: "session-crash-tail",
+      rolloutItems: [
+        {
+          type: "event_msg",
+          payload: {
+            id: "persisted-user",
+            eventId: "persisted-user",
+            seq: 1,
+            msg: {
+              type: "user_message",
+              payload: {
+                message: "retry me",
+                messageId: "crashed-message",
+                acceptedAt: "2026-08-17T00:00:00.000Z",
+              },
+            },
+          },
+        },
+        {
+          type: "event_msg",
+          payload: {
+            id: "persisted-turn",
+            eventId: "persisted-turn",
+            seq: 2,
+            msg: {
+              type: "turn_started",
+              payload: { turnId: "crashed-turn" },
+            },
+          },
+        },
+      ],
+    });
+    await runner.startAgent({
+      objective: "restored",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-crash-tail", {
+        sessionId: "session_1",
+        content: "retry me",
+        originalContent: "retry me",
+        messageId: "crashed-message",
+        streamId: "crashed-message",
+        acceptedAt: "2026-08-17T01:00:00.000Z",
+      }),
+    ).resolves.toMatchObject({
+      disposition: "duplicate",
+      duplicateState: "incomplete",
+      turnId: "crashed-turn",
+    });
+    expect(control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] never attributes a later completed turn to a crashed submission", async () => {
+    const event = (id: string, seq: number, msg: Record<string, unknown>) => ({
+      type: "event_msg",
+      payload: { id, eventId: id, seq, msg },
+    });
+    const { runner, control } = makeTopLevelRunner({
+      conversationId: "session-crash-before-next-turn",
+      rolloutItems: [
+        event("user-a", 1, {
+          type: "user_message",
+          payload: {
+            message: "prompt A",
+            messageId: "message-A",
+            acceptedAt: "2026-08-17T00:00:00.000Z",
+          },
+        }),
+        event("user-b", 2, {
+          type: "user_message",
+          payload: {
+            message: "prompt B",
+            messageId: "message-B",
+            acceptedAt: "2026-08-17T00:01:00.000Z",
+          },
+        }),
+        event("turn-b", 3, {
+          type: "turn_started",
+          payload: { turnId: "turn-B" },
+        }),
+        event("complete-b", 4, {
+          type: "turn_complete",
+          payload: { turnId: "turn-B", lastAgentMessage: "answer B" },
+        }),
+      ],
+    });
+    await runner.startAgent({
+      objective: "restored",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-crash-before-next-turn", {
+        sessionId: "session_1",
+        content: "prompt A",
+        originalContent: "prompt A",
+        messageId: "message-A",
+        streamId: "message-A",
+        acceptedAt: "2026-08-17T01:00:00.000Z",
+      }),
+    ).resolves.toMatchObject({
+      disposition: "duplicate",
+      duplicateState: "incomplete",
+    });
+    expect(control.sendInput).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] persists daemon-visible user prompts without duplicate live rows", async () => {
     const { runner, control, session } = makeTopLevelRunner({
       conversationId: "session-user-durable",
@@ -2448,7 +3101,10 @@ describe("AgenC delegate background-agent runner", () => {
         streamId: "stream-after-cancel",
         acceptedAt: "2026-05-09T00:00:01.000Z",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({
+      disposition: "started",
+      terminal: { code: 0 },
+    });
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-cancelled-turn-status",
       "continue after cancel",
@@ -2663,6 +3319,39 @@ describe("AgenC delegate background-agent runner", () => {
       "child-agent",
       "user_cancel",
     );
+  });
+
+  it("[managed-thread] scoped cancellation cannot interrupt a replacement turn", async () => {
+    const { runner, stub, setActiveTurn, abortTurnIfActive, activeTurn } =
+      makeTopLevelRunner({
+        conversationId: "session-scoped-interrupt",
+        scopedTurnCancellation: true,
+      });
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    stub.thread.submit.mockClear();
+    setActiveTurn("turn-old");
+    abortTurnIfActive.mockImplementationOnce(async (turnId: string) => {
+      expect(turnId).toBe("turn-old");
+      // Simulate the exact TOCTOU boundary: the scoped session operation has
+      // removed the old turn, then a new turn starts while abort cleanup awaits.
+      setActiveTurn("turn-new");
+      return true;
+    });
+
+    await expect(
+      runner.interruptAgentTurnIfMatches(
+        "session-scoped-interrupt",
+        "cancel old only",
+        "turn-old",
+      ),
+    ).resolves.toEqual({ cancelled: true, activeTurnId: "turn-old" });
+    expect(abortTurnIfActive).toHaveBeenCalledWith("turn-old", "interrupted");
+    expect(activeTurn.unsafePeek()).toEqual({ turnId: "turn-new" });
+    expect(stub.thread.submit).not.toHaveBeenCalled();
   });
 
   it("[managed-thread] stopAgent uses bootstrap lifecycle shutdown", async () => {

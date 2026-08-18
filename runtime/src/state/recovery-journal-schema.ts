@@ -626,6 +626,10 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       rolloutPath: isString,
     },
   ),
+  history_cleared: objectShape({ timestamp: isNumber }),
+  transcript_epoch: objectShape({
+    reason: oneOf("partial_compact", "rewind", "compaction_rollback"),
+  }),
   turn_started: objectShape(
     { turnId: isString },
     {
@@ -668,6 +672,12 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       acceptedAt: isString,
     },
   ),
+  message_submission: objectShape({
+    contentFingerprint: isString,
+    messageId: isString,
+    streamId: isString,
+    acceptedAt: isString,
+  }),
   token_count: objectShape(
     {},
     {

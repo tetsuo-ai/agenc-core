@@ -46,6 +46,7 @@ import {
   type SessionCreateParams,
   type SessionSnapshotResult,
   type SessionTranscriptResult,
+  type SessionTranscriptV2Result,
 } from "./protocol.js";
 import {
   promptEventFromNotification,
@@ -106,6 +107,48 @@ export class AgencMalformedResponseError extends Error {
   }
 }
 
+export class AgencPromptRunInProgressError extends Error {
+  readonly sessionId: string;
+  readonly clientMessageId: string;
+
+  constructor(sessionId: string, clientMessageId: string) {
+    super(`A prompt run is already active for session ${sessionId}`);
+    this.name = "AgencPromptRunInProgressError";
+    this.sessionId = sessionId;
+    this.clientMessageId = clientMessageId;
+  }
+}
+
+export class AgencDuplicateSubmissionIncompleteError extends Error {
+  readonly sessionId: string;
+  readonly clientMessageId: string;
+
+  constructor(sessionId: string, clientMessageId: string) {
+    super(
+      `The prior submission ${clientMessageId} has no durable terminal outcome`,
+    );
+    this.name = "AgencDuplicateSubmissionIncompleteError";
+    this.sessionId = sessionId;
+    this.clientMessageId = clientMessageId;
+  }
+}
+
+export class AgencCapabilityUnavailableError extends Error {
+  readonly capability: string;
+  readonly negotiatedProtocolVersion?: string;
+
+  constructor(capability: string, negotiatedProtocolVersion?: string) {
+    super(
+      `${capability} is unavailable with negotiated daemon protocol ${negotiatedProtocolVersion ?? "unknown"}`,
+    );
+    this.name = "AgencCapabilityUnavailableError";
+    this.capability = capability;
+    if (negotiatedProtocolVersion !== undefined) {
+      this.negotiatedProtocolVersion = negotiatedProtocolVersion;
+    }
+  }
+}
+
 /** A durable replay cursor cannot be advanced without acknowledging a gap. */
 export class AgencRunReplayGapError extends Error {
   readonly runId: string;
@@ -150,7 +193,10 @@ export class AgencRunReplayProtocolError extends Error {
 
 /** Decision returned by a permission callback. */
 export type AgencPermissionDecision =
-  | { readonly behavior: "allow"; readonly scope?: "once" | "session" | "agent" }
+  | {
+      readonly behavior: "allow";
+      readonly scope?: "once" | "session" | "agent";
+    }
   | { readonly behavior: "deny"; readonly reason?: string };
 
 export type AgencPermissionRequest = Extract<
@@ -188,6 +234,10 @@ export interface AgencClientOptions {
 
 export interface AgencPromptOptions {
   readonly signal?: AbortSignal;
+  /** Stable caller identity used for idempotent retry and event correlation. */
+  readonly clientMessageId?: string;
+  /** Ask protocol-1.2+ daemons to reject cross-client overlap. */
+  readonly ifBusy?: "reject";
   /**
    * Fetch `session.snapshot` after the turn completes so the result carries
    * token usage and cost. Defaults to `true`; snapshot failures are ignored.
@@ -205,8 +255,7 @@ export interface AgencRunReplayCursor {
 }
 
 export type AgencRunReplayDuplicateReason =
-  | "same_identity"
-  | "at_or_before_cursor";
+  "same_identity" | "at_or_before_cursor";
 
 export interface AgencRunReplayDuplicate {
   readonly event: RunReplayEvent;
@@ -331,7 +380,11 @@ function createEventChannel(): EventChannel {
 export interface AgencPromptRun extends AsyncIterable<AgencPromptEvent> {
   readonly sessionId: string;
   /** Resolves once the daemon acknowledged `message.send`. */
-  readonly accepted: Promise<{ messageId: string }>;
+  readonly accepted: Promise<{
+    messageId: string;
+    clientMessageId: string;
+    turnId?: string;
+  }>;
   /** Final outcome; resolves even when the events are never iterated. */
   result(): Promise<AgencPromptResult>;
   /** Interrupt the active turn (`session.cancelTurn`). */
@@ -350,12 +403,21 @@ export class AgencSession {
   }
 
   /** Send one message and stream the turn's events. */
-  prompt(content: MessageContent, options: AgencPromptOptions = {}): AgencPromptRun {
+  prompt(
+    content: MessageContent,
+    options: AgencPromptOptions = {},
+  ): AgencPromptRun {
     return this.#client.runPrompt(this.sessionId, content, options);
   }
 
   transcript(): Promise<SessionTranscriptResult> {
     return this.#client.request("session.transcript", {
+      sessionId: this.sessionId,
+    });
+  }
+
+  transcriptV2(): Promise<SessionTranscriptV2Result> {
+    return this.#client.request("session.transcript.v2", {
       sessionId: this.sessionId,
     });
   }
@@ -366,10 +428,11 @@ export class AgencSession {
     });
   }
 
-  async cancelTurn(reason?: string): Promise<void> {
+  async cancelTurn(reason?: string, expectedTurnId?: string): Promise<void> {
     await this.#client.request("session.cancelTurn", {
       sessionId: this.sessionId,
       ...(reason !== undefined ? { reason } : {}),
+      ...(expectedTurnId !== undefined ? { expectedTurnId } : {}),
     });
   }
 
@@ -426,8 +489,7 @@ class ClientRunAttachment implements AgencRunAttachment {
   readonly #identityWindow: number;
   readonly #signal: AbortSignal | undefined;
   readonly #onDuplicate:
-    | ((duplicate: AgencRunReplayDuplicate) => void)
-    | undefined;
+    ((duplicate: AgencRunReplayDuplicate) => void) | undefined;
   readonly #seenBySequence = new Map<number, SeenReplayEvent>();
   readonly #seenByEventId = new Map<string, SeenReplayEvent>();
   readonly #seenOrder = new Set<SeenReplayEvent>();
@@ -694,13 +756,20 @@ export class AgencClient {
     Set<(message: JsonObject) => void>
   >();
   readonly #attachedSessionIds = new Set<string>();
+  readonly #activePromptRuns = new Map<
+    string,
+    { readonly clientMessageId: string; turnId?: string }
+  >();
+  #initializeResult: InitializeResult | undefined;
+  #negotiatedClientProtocolVersion: string | undefined;
   #initialized = false;
   #closed = false;
 
   constructor(options: AgencClientOptions) {
     this.#transport = options.transport;
     this.#createRequestId = options.createRequestId ?? numericIdFactory();
-    this.#clientId = options.clientId ?? `agenc-sdk-${process.pid}-${randomUUID()}`;
+    this.#clientId =
+      options.clientId ?? `agenc-sdk-${process.pid}-${randomUUID()}`;
     this.#clientName = options.clientName ?? "agenc-sdk";
     this.#onPermissionRequest = options.onPermissionRequest;
     this.#onElicitationRequest = options.onElicitationRequest;
@@ -712,6 +781,23 @@ export class AgencClient {
 
   get initialized(): boolean {
     return this.#initialized;
+  }
+
+  get negotiatedProtocolVersion(): string | undefined {
+    return this.#negotiatedClientProtocolVersion;
+  }
+
+  get serverProtocolVersion(): string | undefined {
+    return this.#initializeResult?.protocol.version;
+  }
+
+  get serverCapabilities(): InitializeResult["capabilities"] | undefined {
+    return this.#initializeResult?.capabilities;
+  }
+
+  #supportsMethod(method: AgencDaemonMethod): boolean {
+    const methods = this.#initializeResult?.capabilities["daemon.methods"];
+    return isJsonObject(methods) && methods[method] === true;
   }
 
   /**
@@ -773,14 +859,41 @@ export class AgencClient {
   }
 
   async initialize(params: InitializeParams = {}): Promise<InitializeResult> {
-    const result = await this.request("initialize", {
-      protocolVersion: AGENC_SDK_DAEMON_PROTOCOL_VERSION,
-      protocol: { version: AGENC_SDK_DAEMON_PROTOCOL_VERSION },
+    const explicitVersion =
+      params.protocol?.version !== undefined ||
+      params.protocolVersion !== undefined;
+    let requestedVersion =
+      params.protocol?.version ??
+      params.protocolVersion ??
+      AGENC_SDK_DAEMON_PROTOCOL_VERSION;
+    const request = {
       clientName: this.#clientName,
       capabilities: {},
       ...params,
-    });
+      protocolVersion: requestedVersion,
+      protocol: { version: requestedVersion },
+    } satisfies InitializeParams;
+    let result: InitializeResult;
+    try {
+      result = await this.request("initialize", request);
+    } catch (error) {
+      const fallbackVersion = explicitVersion
+        ? undefined
+        : compatibleServerVersionFromInitializeError(error);
+      if (fallbackVersion === undefined) throw error;
+      requestedVersion = fallbackVersion;
+      result = await this.request("initialize", {
+        ...request,
+        protocolVersion: fallbackVersion,
+        protocol: { version: fallbackVersion },
+      });
+    }
     this.#initialized = true;
+    this.#initializeResult = result;
+    this.#negotiatedClientProtocolVersion = effectiveNegotiatedVersion(
+      requestedVersion,
+      result.protocol.version,
+    );
     return result;
   }
 
@@ -963,6 +1076,23 @@ export class AgencClient {
     content: MessageContent,
     options: AgencPromptOptions = {},
   ): AgencPromptRun {
+    const clientMessageId = normalizeClientMessageId(options.clientMessageId);
+    const existingRun = this.#activePromptRuns.get(sessionId);
+    if (existingRun !== undefined) {
+      throw new AgencPromptRunInProgressError(
+        sessionId,
+        existingRun.clientMessageId,
+      );
+    }
+    const reservation: { readonly clientMessageId: string; turnId?: string } = {
+      clientMessageId,
+    };
+    this.#activePromptRuns.set(sessionId, reservation);
+    const releaseReservation = (): void => {
+      if (this.#activePromptRuns.get(sessionId) === reservation) {
+        this.#activePromptRuns.delete(sessionId);
+      }
+    };
     const channel = createEventChannel();
     const onPermissionRequest =
       options.onPermissionRequest ?? this.#onPermissionRequest;
@@ -971,16 +1101,66 @@ export class AgencClient {
     const deniedPermissionRequestIds = new Set<string>();
     const handledPermissionRequestIds = new Set<string>();
     let assistantOutput = "";
+    let lastCommittedMessage = "";
     let finishing = false;
+    let submissionDispatched = false;
+    let submissionObserved = false;
+    let cancelBeforeDispatchReason: string | undefined;
+    let deferredCancellationReason: string | undefined;
+    let cancellationPromise: Promise<void> | undefined;
+    let removeAbortListener = (): void => {};
+
+    const flushDeferredCancellation = (): Promise<void> => {
+      if (
+        cancellationPromise !== undefined ||
+        deferredCancellationReason === undefined ||
+        !submissionObserved ||
+        reservation.turnId === undefined
+      ) {
+        return cancellationPromise ?? Promise.resolve();
+      }
+      cancellationPromise = this.request("session.cancelTurn", {
+        sessionId,
+        reason: deferredCancellationReason,
+        ...(this.#supportsMethod("session.transcript.v2")
+          ? { expectedTurnId: reservation.turnId }
+          : {}),
+      }).then(() => {});
+      return cancellationPromise;
+    };
+
+    const requestScopedCancellation = (reason: string): Promise<void> => {
+      if (!submissionDispatched) {
+        cancelBeforeDispatchReason = reason;
+        return Promise.resolve();
+      }
+      if (!this.#supportsMethod("session.transcript.v2")) {
+        // A legacy session-wide cancel can race with the next turn after the
+        // observed turn completes. Never claim scoped cancellation when the
+        // daemon cannot atomically compare expectedTurnId.
+        return Promise.reject(
+          new AgencCapabilityUnavailableError(
+            "turn-scoped prompt cancellation",
+            this.#negotiatedClientProtocolVersion,
+          ),
+        );
+      }
+      deferredCancellationReason = reason;
+      return flushDeferredCancellation();
+    };
 
     const finish = async (status: { code: number; message?: string }) => {
       if (finishing) return;
       finishing = true;
       unsubscribe();
+      removeAbortListener();
+      releaseReservation();
       let usageFields: Pick<AgencPromptResult, "usage" | "cacheStats"> = {};
       if (options.includeUsage !== false) {
         try {
-          const snapshot = await this.request("session.snapshot", { sessionId });
+          const snapshot = await this.request("session.snapshot", {
+            sessionId,
+          });
           usageFields = {
             usage: snapshot.tokenUsage,
             cacheStats: snapshot.cacheStats,
@@ -992,7 +1172,8 @@ export class AgencClient {
       channel.end({
         stopReason: stopReasonFromExitCode(status.code),
         exitCode: status.code,
-        finalMessage: status.message ?? assistantOutput.trimEnd(),
+        finalMessage:
+          status.message ?? (lastCommittedMessage || assistantOutput.trimEnd()),
         deniedPermissionRequestIds: [...deniedPermissionRequestIds],
         ...usageFields,
       });
@@ -1068,11 +1249,60 @@ export class AgencClient {
     };
 
     const unsubscribe = this.onSessionNotification(sessionId, (message) => {
+      const observedClientMessageId =
+        userMessageClientMessageIdFromNotification(message);
+      if (!submissionObserved) {
+        if (observedClientMessageId !== clientMessageId) return;
+        submissionObserved = true;
+      } else if (
+        observedClientMessageId !== null &&
+        observedClientMessageId !== clientMessageId
+      ) {
+        return;
+      }
+
       const event = promptEventFromNotification(message);
+      if (
+        event?.clientMessageId !== undefined &&
+        event.clientMessageId !== clientMessageId
+      ) {
+        return;
+      }
+      const startedTurnId = turnStartedIdFromNotification(message);
+      if (startedTurnId !== null) {
+        if (
+          reservation.turnId !== undefined &&
+          reservation.turnId !== startedTurnId
+        ) {
+          return;
+        }
+        reservation.turnId = startedTurnId;
+        void flushDeferredCancellation().catch(() => {});
+      }
+      if (
+        reservation.turnId === undefined &&
+        observedClientMessageId === null
+      ) {
+        return;
+      }
+      const notificationTurnId =
+        event?.turnId ?? turnIdFromNotification(message);
+      if (
+        reservation.turnId !== undefined &&
+        notificationTurnId !== null &&
+        notificationTurnId !== undefined &&
+        notificationTurnId !== reservation.turnId
+      ) {
+        return;
+      }
       if (event !== null) {
         if (event.type === "text") assistantOutput += event.delta;
+        if (event.type === "message_committed") {
+          lastCommittedMessage = event.text;
+        }
         channel.push(event);
-        if (event.type === "permission_request") void respondToPermission(event);
+        if (event.type === "permission_request")
+          void respondToPermission(event);
         if (event.type === "elicitation_request") {
           void respondToElicitation(event);
         }
@@ -1084,39 +1314,104 @@ export class AgencClient {
     if (options.signal !== undefined) {
       const signal = options.signal;
       const onAbort = () => {
-        void this.request("session.cancelTurn", {
-          sessionId,
-          reason: String(signal.reason ?? "aborted"),
-        }).catch(() => {});
+        void requestScopedCancellation(
+          String(signal.reason ?? "aborted"),
+        ).catch(() => {});
       };
       if (signal.aborted) onAbort();
-      else signal.addEventListener("abort", onAbort, { once: true });
+      else {
+        signal.addEventListener("abort", onAbort, { once: true });
+        removeAbortListener = () =>
+          signal.removeEventListener("abort", onAbort);
+      }
     }
 
     const accepted = (async () => {
+      throwIfPromptCancelledBeforeDispatch(cancelBeforeDispatchReason);
+      if (
+        options.ifBusy !== undefined &&
+        !this.#supportsMethod("session.transcript.v2")
+      ) {
+        throw new AgencCapabilityUnavailableError(
+          'ifBusy: "reject" prompt admission',
+          this.#negotiatedClientProtocolVersion,
+        );
+      }
       await this.#attachSession(sessionId);
+      throwIfPromptCancelledBeforeDispatch(cancelBeforeDispatchReason);
+      submissionDispatched = true;
       const sendResult = await this.request("message.send", {
         sessionId,
         content,
-        ...(options.metadata !== undefined ? { metadata: options.metadata } : {}),
+        clientMessageId,
+        ...(options.ifBusy !== undefined ? { ifBusy: options.ifBusy } : {}),
+        ...(options.metadata !== undefined
+          ? { metadata: options.metadata }
+          : {}),
       });
-      return { messageId: sendResult.messageId };
+      if (sendResult.turnId !== undefined) {
+        reservation.turnId = sendResult.turnId;
+        void flushDeferredCancellation().catch(() => {});
+      }
+      if (sendResult.disposition === "duplicate" && !finishing) {
+        if (sendResult.duplicateState !== "completed") {
+          throw new AgencDuplicateSubmissionIncompleteError(
+            sessionId,
+            clientMessageId,
+          );
+        }
+        try {
+          const snapshot = await this.request("session.transcript.v2", {
+            sessionId,
+          });
+          const finalAssistant = [...snapshot.messages]
+            .reverse()
+            .find(
+              (entry) =>
+                entry.clientMessageId === clientMessageId &&
+                entry.role === "assistant",
+            );
+          if (finalAssistant !== undefined) {
+            lastCommittedMessage = finalAssistant.text;
+          }
+        } catch {
+          /* a legacy daemon cannot provide identity-bearing reconciliation */
+        }
+        void finish({
+          code: sendResult.terminal?.code ?? 0,
+          ...(sendResult.terminal?.message !== undefined
+            ? { message: sendResult.terminal.message }
+            : lastCommittedMessage.length > 0
+              ? { message: lastCommittedMessage }
+              : {}),
+        });
+      } else if (sendResult.terminal !== undefined && !finishing) {
+        // The RPC result is the authoritative terminal fallback when a live
+        // notification was lost or filtered during reconnect. Legacy daemons
+        // omit this field, so their behavior remains notification-driven.
+        void finish(sendResult.terminal);
+      }
+      return {
+        messageId: sendResult.messageId,
+        clientMessageId,
+        ...(sendResult.turnId !== undefined
+          ? { turnId: sendResult.turnId }
+          : {}),
+      };
     })();
     accepted.catch((error: unknown) => {
       unsubscribe();
+      removeAbortListener();
+      releaseReservation();
       channel.fail(error instanceof Error ? error : new Error(String(error)));
     });
 
-    const self = this;
     return {
       sessionId,
       accepted,
       result: () => channel.result,
       cancel: async (reason?: string) => {
-        await self.request("session.cancelTurn", {
-          sessionId,
-          ...(reason !== undefined ? { reason } : {}),
-        });
+        await requestScopedCancellation(reason ?? "cancelled");
       },
       [Symbol.asyncIterator]: () => channel.iterate(),
     };
@@ -1127,6 +1422,7 @@ export class AgencClient {
     this.#closed = true;
     this.#notificationListeners.clear();
     this.#sessionListeners.clear();
+    this.#activePromptRuns.clear();
     await this.#transport.close?.();
   }
 
@@ -1162,6 +1458,95 @@ function safeNotify(
   } catch {
     // Listener failures must not poison notification routing.
   }
+}
+
+function nestedSessionEventFromNotification(
+  message: JsonObject,
+): JsonObject | null {
+  const params = isJsonObject(message.params) ? message.params : message;
+  if (isJsonObject(params.event)) return params.event;
+  if (isJsonObject(params.msg)) return params.msg;
+  return null;
+}
+
+function userMessageClientMessageIdFromNotification(
+  message: JsonObject,
+): string | null {
+  const event = nestedSessionEventFromNotification(message);
+  if (event?.type !== "user_message" || !isJsonObject(event.payload)) {
+    return null;
+  }
+  if (typeof event.payload.messageId === "string") {
+    return event.payload.messageId;
+  }
+  return typeof event.messageId === "string" ? event.messageId : null;
+}
+
+function turnStartedIdFromNotification(message: JsonObject): string | null {
+  const params = isJsonObject(message.params) ? message.params : message;
+  if (
+    message.method === "event.agent_status" &&
+    typeof params.turnId === "string" &&
+    (params.status === "running" || params.runStatus === "running")
+  ) {
+    return params.turnId;
+  }
+  const event = nestedSessionEventFromNotification(message);
+  if (event?.type !== "turn_started" || !isJsonObject(event.payload)) {
+    return null;
+  }
+  return typeof event.payload.turnId === "string" ? event.payload.turnId : null;
+}
+
+function turnIdFromNotification(message: JsonObject): string | null {
+  const params = isJsonObject(message.params) ? message.params : message;
+  if (typeof params.turnId === "string") return params.turnId;
+  const event = nestedSessionEventFromNotification(message);
+  if (event === null) return null;
+  if (typeof event.turnId === "string") return event.turnId;
+  return isJsonObject(event.payload) && typeof event.payload.turnId === "string"
+    ? event.payload.turnId
+    : null;
+}
+
+function throwIfPromptCancelledBeforeDispatch(
+  reason: string | undefined,
+): void {
+  if (reason === undefined) return;
+  const error = new Error(`Prompt cancelled before dispatch: ${reason}`);
+  error.name = "AbortError";
+  throw error;
+}
+
+function effectiveNegotiatedVersion(
+  requestedVersion: string,
+  serverVersion: string,
+): string {
+  const requested = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(requestedVersion);
+  const server = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(serverVersion);
+  if (requested === null || server === null || requested[1] !== server[1]) {
+    return requestedVersion;
+  }
+  return Number.parseInt(requested[2]!, 10) <= Number.parseInt(server[2]!, 10)
+    ? requestedVersion
+    : serverVersion;
+}
+
+function compatibleServerVersionFromInitializeError(
+  error: unknown,
+): string | undefined {
+  if (!(error instanceof AgencRpcError) || !isJsonObject(error.data)) {
+    return undefined;
+  }
+  if (error.data.code !== "PROTOCOL_VERSION_UNSUPPORTED") return undefined;
+  const serverVersion = error.data.serverVersion;
+  if (typeof serverVersion !== "string") return undefined;
+  const match = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(serverVersion);
+  if (match === null) return undefined;
+  const major = Number.parseInt(match[1]!, 10);
+  const minor = Number.parseInt(match[2]!, 10);
+  if (major !== 1 || minor < 0 || minor >= 2) return undefined;
+  return serverVersion;
 }
 
 function parseResponse<Method extends AgencDaemonMethod>(
@@ -1200,8 +1585,11 @@ function parseResponse<Method extends AgencDaemonMethod>(
       response,
     );
   }
-  return (response as AgencDaemonResponse<Method> & { result: AgencResultByMethod[Method] })
-    .result;
+  return (
+    response as AgencDaemonResponse<Method> & {
+      result: AgencResultByMethod[Method];
+    }
+  ).result;
 }
 
 /** Absolute workspace path for daemon create RPCs (DAE-02 client boundary). */
@@ -1212,6 +1600,15 @@ function resolveClientCwd(cwd: string | undefined): string {
     return isAbsolute(trimmed) ? resolve(trimmed) : resolve(base, trimmed);
   }
   return resolve(base);
+}
+
+function normalizeClientMessageId(value: string | undefined): string {
+  if (value === undefined) return `message-${randomUUID()}`;
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    throw new TypeError("clientMessageId must be a non-empty string");
+  }
+  return normalized;
 }
 
 function normalizeReplayRunId(runId: string): string {
@@ -1233,12 +1630,10 @@ function normalizeReplayAfterSequence(afterSequence: number): number {
 
 function normalizeReplayLimit(limit: number | undefined): number {
   const normalized = limit ?? 100;
-  if (
-    !Number.isSafeInteger(normalized) ||
-    normalized < 1 ||
-    normalized > 200
-  ) {
-    throw new TypeError("AgenC run replay limit must be an integer from 1 to 200");
+  if (!Number.isSafeInteger(normalized) || normalized < 1 || normalized > 200) {
+    throw new TypeError(
+      "AgenC run replay limit must be an integer from 1 to 200",
+    );
   }
   return normalized;
 }
@@ -1408,7 +1803,9 @@ function validateReplaySource(
       source.canonical !== "rollout_jsonl" ||
       source.projection !== "thread_rollout_items"
     ) {
-      invalid("AgenC run replay returned malformed run-journal source metadata");
+      invalid(
+        "AgenC run replay returned malformed run-journal source metadata",
+      );
     }
   } else if (source.kind === "execution_admission_journal") {
     if (
@@ -1416,7 +1813,9 @@ function validateReplaySource(
       source.canonical !== undefined ||
       source.projection !== undefined
     ) {
-      invalid("AgenC run replay returned malformed admission-journal source metadata");
+      invalid(
+        "AgenC run replay returned malformed admission-journal source metadata",
+      );
     }
   } else {
     invalid("AgenC run replay returned an unknown source kind");
@@ -1436,7 +1835,9 @@ function validateReplaySource(
       (source.kind === "execution_admission_journal" &&
         response.gap?.reason !== "execution_admission_journal_not_present"))
   ) {
-    invalid("AgenC run replay source kind conflicts with its unavailable reason");
+    invalid(
+      "AgenC run replay source kind conflicts with its unavailable reason",
+    );
   }
 }
 
@@ -1591,8 +1992,7 @@ function replayIdentityHashBits(value: string): readonly number[] {
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
     first = Math.imul(first ^ code, 0x01000193) >>> 0;
-    second =
-      Math.imul(second ^ (code + index), 0x85ebca6b) + 0xc2b2ae35;
+    second = Math.imul(second ^ (code + index), 0x85ebca6b) + 0xc2b2ae35;
     second >>>= 0;
   }
   const bitCount = REPLAY_IDENTITY_FILTER_BYTES * 8;

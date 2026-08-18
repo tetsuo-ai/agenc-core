@@ -120,6 +120,7 @@ import {
   type SessionAttachParams,
   type SessionAttachResult,
   type SessionCancelTurnParams,
+  type SessionTranscriptV2Params,
   type SessionResolveToolCallEvidenceParams,
   type SessionResolveToolCallLegacyParams,
   type SessionResolveToolCallParams,
@@ -289,6 +290,7 @@ function buildServerCapabilities(
     "session.clear": hasMethod(agentManager, "clearSessionHistory"),
     "session.snapshot": hasMethod(agentManager, "snapshotSession"),
     "session.transcript": hasMethod(agentManager, "getSessionTranscript"),
+    "session.transcript.v2": hasMethod(agentManager, "getSessionTranscriptV2"),
     "session.cancelTurn": hasMethod(agentManager, "cancelSessionTurn"),
     "session.resolveToolCall": hasMethod(
       agentManager,
@@ -429,6 +431,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "clearSessionHistory"
     | "snapshotSession"
     | "getSessionTranscript"
+    | "getSessionTranscriptV2"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
     | "enableMcpServerOnSession"
@@ -519,6 +522,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "clearSessionHistory"
     | "snapshotSession"
     | "getSessionTranscript"
+    | "getSessionTranscriptV2"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
     | "enableMcpServerOnSession"
@@ -758,6 +762,15 @@ export class AgenCDaemonJsonRpcDispatcher {
         });
       }
 
+      if (
+        method === "session.transcript.v2" &&
+        connection.initializeState?.serverCapabilities[
+          AGENC_DAEMON_METHOD_CAPABILITIES_KEY
+        ][method] !== true
+      ) {
+        return methodNotImplementedResponse(id, method);
+      }
+
       if (method === "request.cancel") {
         return successResponse(
           id,
@@ -938,6 +951,13 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.getSessionTranscript(
             validateSessionTranscriptParams(params),
+          ),
+        );
+      case "session.transcript.v2":
+        return successResponse(
+          id,
+          await this.#agentManager.getSessionTranscriptV2(
+            validateSessionTranscriptV2Params(params),
           ),
         );
       case "session.cancelTurn":
@@ -1236,9 +1256,23 @@ export class AgenCDaemonJsonRpcDispatcher {
           ),
         );
       case "message.send":
-        return this.#sendMessage(id, params, signal);
+        return this.#sendMessage(
+          id,
+          params,
+          signal,
+          connection.initializeState?.serverCapabilities[
+            AGENC_DAEMON_METHOD_CAPABILITIES_KEY
+          ]["session.transcript.v2"] === true,
+        );
       case "message.stream":
-        return this.#streamMessage(id, params, signal);
+        return this.#streamMessage(
+          id,
+          params,
+          signal,
+          connection.initializeState?.serverCapabilities[
+            AGENC_DAEMON_METHOD_CAPABILITIES_KEY
+          ]["session.transcript.v2"] === true,
+        );
       case "thread/realtime/start":
         return successResponse(
           id,
@@ -1597,24 +1631,51 @@ export class AgenCDaemonJsonRpcDispatcher {
     id: RequestId,
     params: JsonObject,
     signal: AbortSignal,
+    identitySafeCancellation: boolean,
   ): Promise<AgenCDaemonResponse> {
     const sendParams = validateMessageSendParams(params);
     const messageId = sendParams.clientMessageId ?? this.#createMessageId();
     const acceptedAt = this.#now();
-    await this.#runMessageWithCancel(signal, sendParams.sessionId, () =>
-      this.#agentManager.streamAgentMessage({
-        sessionId: sendParams.sessionId,
-        content: sendParams.content,
-        ...displayUserMessageFromMetadata("message.send", sendParams.metadata),
-        messageId,
-        streamId: messageId,
-        acceptedAt,
-        methodName: "message.send",
-      }),
+    const submissionResult = await this.#runMessageWithCancel(
+      signal,
+      sendParams.sessionId,
+      !identitySafeCancellation || sendParams.clientMessageId === undefined,
+      () =>
+        this.#agentManager.streamAgentMessage({
+          sessionId: sendParams.sessionId,
+          content: sendParams.content,
+          ...displayUserMessageFromMetadata(
+            "message.send",
+            sendParams.metadata,
+          ),
+          messageId,
+          streamId: messageId,
+          acceptedAt,
+          methodName: "message.send",
+          ...(sendParams.ifBusy !== undefined
+            ? { ifBusy: sendParams.ifBusy }
+            : {}),
+        }),
     );
+    const submission = submissionResult ?? {
+      disposition: "started" as const,
+      acceptedAt,
+    };
     return successResponse(id, {
       messageId,
-      acceptedAt,
+      acceptedAt: submission.acceptedAt,
+      ...(identitySafeCancellation
+        ? { disposition: submission.disposition }
+        : {}),
+      ...(identitySafeCancellation && submission.duplicateState !== undefined
+        ? { duplicateState: submission.duplicateState }
+        : {}),
+      ...(identitySafeCancellation && submission.turnId !== undefined
+        ? { turnId: submission.turnId }
+        : {}),
+      ...(identitySafeCancellation && submission.terminal !== undefined
+        ? { terminal: submission.terminal }
+        : {}),
     });
   }
 
@@ -1622,28 +1683,52 @@ export class AgenCDaemonJsonRpcDispatcher {
     id: RequestId,
     params: JsonObject,
     signal: AbortSignal,
+    identitySafeCancellation: boolean,
   ): Promise<AgenCDaemonResponse> {
     const streamParams = validateMessageStreamParams(params);
     const messageId = streamParams.clientMessageId ?? this.#createMessageId();
     const streamId = streamParams.streamId ?? messageId;
     const acceptedAt = this.#now();
-    await this.#runMessageWithCancel(signal, streamParams.sessionId, () =>
-      this.#agentManager.streamAgentMessage({
-        sessionId: streamParams.sessionId,
-        content: streamParams.content,
-        ...displayUserMessageFromMetadata(
-          "message.stream",
-          streamParams.metadata,
-        ),
-        messageId,
-        streamId,
-        acceptedAt,
-      }),
+    const submissionResult = await this.#runMessageWithCancel(
+      signal,
+      streamParams.sessionId,
+      !identitySafeCancellation || streamParams.clientMessageId === undefined,
+      () =>
+        this.#agentManager.streamAgentMessage({
+          sessionId: streamParams.sessionId,
+          content: streamParams.content,
+          ...displayUserMessageFromMetadata(
+            "message.stream",
+            streamParams.metadata,
+          ),
+          messageId,
+          streamId,
+          acceptedAt,
+          ...(streamParams.ifBusy !== undefined
+            ? { ifBusy: streamParams.ifBusy }
+            : {}),
+        }),
     );
+    const submission = submissionResult ?? {
+      disposition: "started" as const,
+      acceptedAt,
+    };
     return successResponse(id, {
       messageId,
       streamId,
-      acceptedAt,
+      acceptedAt: submission.acceptedAt,
+      ...(identitySafeCancellation
+        ? { disposition: submission.disposition }
+        : {}),
+      ...(identitySafeCancellation && submission.duplicateState !== undefined
+        ? { duplicateState: submission.duplicateState }
+        : {}),
+      ...(identitySafeCancellation && submission.turnId !== undefined
+        ? { turnId: submission.turnId }
+        : {}),
+      ...(identitySafeCancellation && submission.terminal !== undefined
+        ? { terminal: submission.terminal }
+        : {}),
     });
   }
 
@@ -1651,12 +1736,19 @@ export class AgenCDaemonJsonRpcDispatcher {
    * Await a full-turn message RPC while honoring request.cancel (todo-107).
    * On abort, interrupt the session turn so tools/model work stop promptly.
    */
-  async #runMessageWithCancel(
+  async #runMessageWithCancel<T>(
     signal: AbortSignal,
     sessionId: string,
-    run: () => Promise<void>,
-  ): Promise<void> {
+    allowUnscopedCancel: boolean,
+    run: () => Promise<T>,
+  ): Promise<T> {
     const cancelTurn = async (): Promise<void> => {
+      // Protocol 1.2 identity-bearing submissions deliberately fail closed
+      // until their durable user_message + turnId are correlated. A
+      // connection abort must never turn into a session-wide cancellation of
+      // somebody else's active turn. The client issues expectedTurnId cancel
+      // separately once it owns that correlation.
+      if (!allowUnscopedCancel) return;
       // Mocks and partial managers may omit cancelSessionTurn — never throw
       // from the abort path (connection teardown aborts in-flight signals).
       const cancel = (
@@ -1684,14 +1776,15 @@ export class AgenCDaemonJsonRpcDispatcher {
     };
     signal.addEventListener("abort", onAbort, { once: true });
     try {
-      await run();
+      const result = await run();
+      if (signal.aborted) {
+        throw Object.assign(new Error("request cancelled"), {
+          name: "AbortError",
+        });
+      }
+      return result;
     } finally {
       signal.removeEventListener("abort", onAbort);
-    }
-    if (signal.aborted) {
-      throw Object.assign(new Error("request cancelled"), {
-        name: "AbortError",
-      });
     }
   }
 }
@@ -1971,14 +2064,18 @@ function negotiateInitializeProtocol(
     return { supported: false, clientVersion };
   }
   const clientProtocol = parseProtocolVersion(clientVersion)!;
+  const methodCapabilities = {
+    ...serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY],
+    ...(clientProtocol.minor < 1
+      ? { "workspace.editor.topology.recovered.resolve": false }
+      : {}),
+    ...(clientProtocol.minor < 2 ? { "session.transcript.v2": false } : {}),
+  };
   const negotiatedCapabilities =
-    clientProtocol.minor < 1
+    clientProtocol.minor < 2
       ? ({
           ...serverCapabilities,
-          [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: {
-            ...serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY],
-            "workspace.editor.topology.recovered.resolve": false,
-          },
+          [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: methodCapabilities,
         } satisfies AgenCDaemonServerCapabilities)
       : serverCapabilities;
   return {
@@ -2596,12 +2693,23 @@ function validateSessionTranscriptParams(
   return validated as SessionTranscriptParams;
 }
 
+function validateSessionTranscriptV2Params(
+  params: JsonObject,
+): SessionTranscriptV2Params {
+  const validated = validateObjectShape(params, {
+    methodName: "session.transcript.v2",
+    stringFields: ["sessionId"],
+  });
+  validateRequiredString(validated, "session.transcript.v2", "sessionId");
+  return validated as SessionTranscriptV2Params;
+}
+
 function validateSessionCancelTurnParams(
   params: JsonObject,
 ): SessionCancelTurnParams {
   const validated = validateObjectShape(params, {
     methodName: "session.cancelTurn",
-    stringFields: ["sessionId", "reason"],
+    stringFields: ["sessionId", "reason", "expectedTurnId"],
   });
   validateRequiredString(validated, "session.cancelTurn", "sessionId");
   return validated as SessionCancelTurnParams;
@@ -2927,19 +3035,22 @@ function validateSessionApplyConfigParams(
 function validateMessageSendParams(params: JsonObject): MessageSendParams {
   const validated = validateObjectShape(params, {
     methodName: "message.send",
-    stringFields: ["sessionId", "clientMessageId"],
+    stringFields: ["sessionId", "clientMessageId", "ifBusy"],
     objectFields: ["metadata"],
     valueFields: ["content"],
   });
   validateRequiredString(validated, "message.send", "sessionId");
   validateMessageContent("message.send", "content", validated.content);
+  if (validated.ifBusy !== undefined && validated.ifBusy !== "reject") {
+    throw invalidParams("message.send param 'ifBusy' must be 'reject'");
+  }
   return validated as MessageSendParams;
 }
 
 function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   const validated = validateObjectShape(params, {
     methodName: "message.stream",
-    stringFields: ["sessionId", "clientMessageId", "streamId"],
+    stringFields: ["sessionId", "clientMessageId", "streamId", "ifBusy"],
     objectFields: ["metadata"],
     valueFields: ["content"],
   });
@@ -2950,6 +3061,9 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
     throw invalidParams("message.stream requires sessionId");
   }
   validateMessageContent("message.stream", "content", validated.content);
+  if (validated.ifBusy !== undefined && validated.ifBusy !== "reject") {
+    throw invalidParams("message.stream param 'ifBusy' must be 'reject'");
+  }
   return validated as MessageStreamParams;
 }
 

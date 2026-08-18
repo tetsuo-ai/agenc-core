@@ -234,9 +234,7 @@ export interface TurnCheckpointV2Event extends TurnCheckpointBase {
   readonly toolResultIntegrityVersion: 1;
 }
 
-export type TurnCheckpointEvent =
-  | TurnCheckpointV1Event
-  | TurnCheckpointV2Event;
+export type TurnCheckpointEvent = TurnCheckpointV1Event | TurnCheckpointV2Event;
 
 /**
  * Serialized, JSON-safe projection of the resumable `TurnState` counters.
@@ -291,6 +289,17 @@ export interface UserMessageEvent {
   readonly messageId?: string;
   readonly streamId?: string;
   readonly acceptedAt?: string;
+}
+
+/**
+ * Durable idempotency identity for a daemon submission whose user content is
+ * intentionally hidden from transcript clients.
+ */
+export interface MessageSubmissionEvent {
+  readonly contentFingerprint: string;
+  readonly messageId: string;
+  readonly streamId: string;
+  readonly acceptedAt: string;
 }
 
 export interface TokenCountEvent {
@@ -930,6 +939,16 @@ export type EventMsg =
       readonly type: "session_configured";
       readonly payload: SessionConfiguredEvent;
     }
+  | {
+      readonly type: "history_cleared";
+      readonly payload: { readonly timestamp: number };
+    }
+  | {
+      readonly type: "transcript_epoch";
+      readonly payload: {
+        readonly reason: "partial_compact" | "rewind" | "compaction_rollback";
+      };
+    }
   | { readonly type: "turn_started"; readonly payload: TurnStartedEvent }
   | { readonly type: "turn_context"; readonly payload: TurnContextItem }
   | { readonly type: "agent_message"; readonly payload: AgentMessageEvent }
@@ -969,6 +988,10 @@ export type EventMsg =
       };
     }
   | { readonly type: "user_message"; readonly payload: UserMessageEvent }
+  | {
+      readonly type: "message_submission";
+      readonly payload: MessageSubmissionEvent;
+    }
   | { readonly type: "token_count"; readonly payload: TokenCountEvent }
   | {
       readonly type: "mcp_tool_call_begin";
@@ -1297,6 +1320,9 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
   new Set<string>([
     "session_meta",
     "session_configured",
+    "history_cleared",
+    "transcript_epoch",
+    "message_submission",
     "turn_started",
     "turn_context",
     "agent_message",
@@ -1384,6 +1410,9 @@ export function isKnownEventType(type: string): boolean {
  */
 const DURABLE_EVENT_TYPES = Object.freeze(
   new Set<string>([
+    "history_cleared",
+    "transcript_epoch",
+    "message_submission",
     "turn_complete",
     "turn_aborted",
     "error",

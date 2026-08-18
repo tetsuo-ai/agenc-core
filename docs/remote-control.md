@@ -10,14 +10,14 @@ Related: [gateway](gateway.md) · [onboarding](onboarding.md) ·
 
 ## The pieces
 
-| Piece | Role |
-|---|---|
-| **Daemon** | App-server (`agenc daemon start`, default `ws://127.0.0.1:7766`). Hosts coding agents. Local TUI and remote phones are both clients. |
-| **Connector** | `agenc remote on` (or `/remote on` in the TUI). Bridges the loopback daemon to a phone through the relay. Never holds the relay secret; asks the backend for short-lived signed *host tickets*. |
-| **Relay** | Cloudflare Worker + per-room Durable Object ([`tetsuo-ai/agenc-relay`](https://github.com/tetsuo-ai/agenc-relay)). Routes frames by ticket room; each pairing is an isolated room keyed by `pairingId`. |
-| **Backend** | [`tetsuo-ai/agenc-backend`](https://github.com/tetsuo-ai/agenc-backend) (`id.agenc.ag`). Mints every relay ticket (sole holder of `RELAY_TICKET_SECRET`) and runs device-pairing endpoints. |
-| **iOS app** | [`tetsuo-ai/agenc-ios`](https://github.com/tetsuo-ai/agenc-ios). Pairs with code/QR, then connects through the relay. |
-| **Android app** | [`tetsuo-ai/agenc-android`](https://github.com/tetsuo-ai/agenc-android). Remote session control, background completion delivery, and optional Ledger Flex approval over BLE. |
+| Piece           | Role                                                                                                                                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Daemon**      | App-server (`agenc daemon start`, default `ws://127.0.0.1:7766`). Hosts coding agents. Local TUI and remote phones are both clients.                                                                    |
+| **Connector**   | `agenc remote on` (or `/remote on` in the TUI). Bridges the loopback daemon to a phone through the relay. Never holds the relay secret; asks the backend for short-lived signed _host tickets_.         |
+| **Relay**       | Cloudflare Worker + per-room Durable Object ([`tetsuo-ai/agenc-relay`](https://github.com/tetsuo-ai/agenc-relay)). Routes frames by ticket room; each pairing is an isolated room keyed by `pairingId`. |
+| **Backend**     | [`tetsuo-ai/agenc-backend`](https://github.com/tetsuo-ai/agenc-backend) (`id.agenc.ag`). Mints every relay ticket (sole holder of `RELAY_TICKET_SECRET`) and runs device-pairing endpoints.             |
+| **iOS app**     | [`tetsuo-ai/agenc-ios`](https://github.com/tetsuo-ai/agenc-ios). Pairs with code/QR, then connects through the relay.                                                                                   |
+| **Android app** | [`tetsuo-ai/agenc-android`](https://github.com/tetsuo-ai/agenc-android). Remote session control, background completion delivery, and optional Ledger Flex approval over BLE.                            |
 
 ## Prerequisites
 
@@ -51,7 +51,7 @@ agenc remote off       # forget this machine's pairing locally
 
 ## Device pairing flow
 
-Production routing pairs by *device*, not by account room:
+Production routing pairs by _device_, not by account room:
 
 1. Sign in on the computer with `/login` or
    `AGENC_AUTH_BACKEND=remote agenc login`. Google OAuth, when configured, is
@@ -91,6 +91,7 @@ Production routing pairs by *device*, not by account room:
    `/v1/pair/start`; Android stores it for `/v1/auth/me`, ticket refresh, and
    later authenticated operations. Legacy app versions may still send their
    bearer to `/v1/pair/claim`; the additive response remains decodable by them.
+
 6. Both sides share one isolated relay room. The QR surface auto-closes when
    the phone connects.
 
@@ -124,11 +125,16 @@ never calls `process.exit` (that would kill the session).
   agent in the daemon; `message.send` (keyed on `sessionId`) drives it; events
   stream back. TUI and phone are both clients.
 - **Co-driving**: the daemon broadcasts session events to every attached
-  client; `message.send` has no per-client lock, so terminal and phone can
-  drive the same live session together.
+  client. Legacy 1.0/1.1 sends retain FIFO co-driving semantics. Protocol 1.2
+  clients that need strict admission send a stable `clientMessageId` with
+  `ifBusy: "reject"`; the daemon then rejects overlap instead of silently
+  queueing it.
 - **Working directory**: create accepts a `cwd` so a client can start a
   session in any project directory.
-- **History on join**: `session.transcript` returns conversation history.
+- **History on join**: `session.transcript` returns legacy conversation
+  history. Protocol 1.2 clients should use `session.transcript.v2`, buffer live
+  events during the read, and merge by `historyEpoch` + `asOfSequence` and
+  stable message/event IDs.
   When no live agent is attached, it falls back to the persisted thread store
   (read-only). A still-running terminal holds an exclusive rollout lock, so
   those `conv-` sessions stay read-only until the terminal exits.
@@ -138,10 +144,10 @@ never calls `process.exit` (that would kill the session).
 After the relay bridge authenticates `initialize`, a phone may advertise
 capabilities in addition to attaching to individual sessions:
 
-| Capability | Delivery semantics |
-| --- | --- |
+| Capability                     | Delivery semantics                                                                                                            |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | `portal.mobile.status.push.v1` | Observer fan-out for global `event.agent_status` frames, including completion while the phone is not attached to that session |
-| `portal.ledger.solana.sign.v1` | Single-consumer typed Ledger action routing to the newest capable phone |
+| `portal.ledger.solana.sign.v1` | Single-consumer typed Ledger action routing to the newest capable phone                                                       |
 
 The daemon registers capability clients during initialize, before any
 `session.attach`. Logical registrations on one physical socket share a delivery
@@ -234,11 +240,11 @@ flag keeps the older, narrower equivalent-rule cache semantics.
 Capabilities are opt-in and old clients continue to use attachment-bound
 events. Deploy Core before relying on Android background status or `@ledger`:
 
-| Combination | Result |
-| --- | --- |
-| New Core + old phone | Existing pairing/chat works; new capabilities are simply absent |
-| Old Core + new phone | Pairing/chat works, but no global status push, typed Ledger action, or all-tools session promotion |
-| New Core + new Android | Full background notification, identity, permission, and Ledger protocol |
+| Combination            | Result                                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------------------------- |
+| New Core + old phone   | Existing pairing/chat works; new capabilities are simply absent                                    |
+| Old Core + new phone   | Pairing/chat works, but no global status push, typed Ledger action, or all-tools session promotion |
+| New Core + new Android | Full background notification, identity, permission, and Ledger protocol                            |
 
 Provider credentials and model execution remain on the host machine. The phone does not
 receive `XAI_API_KEY` or another provider secret.

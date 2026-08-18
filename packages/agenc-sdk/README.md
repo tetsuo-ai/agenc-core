@@ -6,19 +6,27 @@ Node **>=26.5 <27** · ESM only · plain `tsc` build · no runtime dependencies.
 
 ## Surfaces
 
-| API | What it does |
-| --- | --- |
-| `connect()` | Attach to (or CLI-start) the local daemon over its Unix socket or Windows named pipe. Typed `createSession()` / `prompt()` event streams, permission + elicitation callbacks, background-agent spawn/attach/stop/logs. |
-| `promptViaSubprocess()` | Same event-iterable interface over `agenc -p --output-format stream-json` with no daemon socket access from your process. |
-| `client.runStatus` / `runResult` / `replayRun` / `runEvidence` / `cancelRun` | Read durable run/admission state, replay or hash canonical journal evidence, or cancel a run tree. |
-| `client.reattachRun({ runId, afterSequence })` | Catch up from a durable cursor, suppress and report duplicate delivery, stop on any explicit replay gap, and fetch the durable terminal result after reconnect. |
-| `client.request(method, params)` | Raw typed JSON-RPC for all **51** public daemon methods (mirrored in `./protocol`). |
+| API                                                                          | What it does                                                                                                                                                                                                           |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `connect()`                                                                  | Attach to (or CLI-start) the local daemon over its Unix socket or Windows named pipe. Typed `createSession()` / `prompt()` event streams, permission + elicitation callbacks, background-agent spawn/attach/stop/logs. |
+| `promptViaSubprocess()`                                                      | Same event-iterable interface over `agenc -p --output-format stream-json` with no daemon socket access from your process.                                                                                              |
+| `client.runStatus` / `runResult` / `replayRun` / `runEvidence` / `cancelRun` | Read durable run/admission state, replay or hash canonical journal evidence, or cancel a run tree.                                                                                                                     |
+| `client.reattachRun({ runId, afterSequence })`                               | Catch up from a durable cursor, suppress and report duplicate delivery, stop on any explicit replay gap, and fetch the durable terminal result after reconnect.                                                        |
+| `client.request(method, params)`                                             | Raw typed JSON-RPC for all **52** public daemon methods (mirrored in `./protocol`).                                                                                                                                    |
 
 The protocol mirror preserves trusted `event.user_input_request.clientAction`
 objects, typed `elicitation.respond.clientResult` receipts,
 `ToolApproveParams.allowAllToolsForSession`, and remote subscription-tier
 identity fields. `connect()` advertises no mobile capabilities by default: it
 does not opt a generic embedder into global status or Ledger signing delivery.
+
+Daemon prompts reserve one local run per session synchronously and use a
+stable `clientMessageId` for correlation/idempotent retry. Protocol 1.2 adds
+opt-in `ifBusy: "reject"`, turn-scoped cancellation, identity-bearing
+`transcriptV2()`, distinct delta/committed assistant events, and
+`history_reset`. The SDK capability-falls back when initialization discovers a
+1.0/1.1 daemon; legacy queue behavior remains unchanged. Strict admission and
+scoped prompt cancellation fail closed when those guarantees are unavailable.
 
 ```js
 import { connect, promptViaSubprocess } from "@tetsuo-ai/agenc-sdk";
