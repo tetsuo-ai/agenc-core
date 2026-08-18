@@ -131,8 +131,7 @@ Windows.
 
 When the socket is not accepting connections and `autostart` is enabled
 (default), `connect()` runs `<agencCommand> daemon start` and polls the cookie
-
-- socket until ready (45s budget, or `AGENC_DAEMON_READY_TIMEOUT_MS`).
+and socket until ready (45s budget, or `AGENC_DAEMON_READY_TIMEOUT_MS`).
 
 Deviation from the launcher: the runtime's internal autostart also handles
 build-skew respawn and orphan-daemon adoption. Those need runtime-internal

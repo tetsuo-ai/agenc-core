@@ -13,7 +13,7 @@ Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md). Embedding API:
 | ----------- | ------------------------------------- | ----------------------------------------------------------------------------------- |
 | Launcher    | `packages/agenc` (`@tetsuo-ai/agenc`) | Installs `agenc`, ensures runtime tarball, optional daemon autostart, execs runtime |
 | Daemon      | `runtime/src/app-server`              | Owns sessions, agents, tools, permissions, health, recovery                         |
-| Runtime CLI | `runtime/bin/agenc`                   | Subcommands including `daemon start                                                 | stop | status | reload | restart` |
+| Runtime CLI | `runtime/bin/agenc`                   | Daemon subcommands for start, stop, status, reload, and restart                     |
 
 Autostart is **on by default**. Disable with:
 
