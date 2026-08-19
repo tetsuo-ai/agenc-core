@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.16.1**; embedding SDK
+Version in tree: **runtime / launcher 0.17.0**; embedding SDK
 **0.3.0**. Default provider **grok**; fresh-config session and direct-provider
 default **grok-4.6**. Managed OpenRouter's paid default remains
 **`x-ai/grok-4.5`** (see [providers.md](reference/providers.md)).
@@ -93,7 +93,8 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
-| [releases/0.16.1.md](releases/0.16.1.md) | AgenC 0.16.1: grok-4.6 as the default model, a shipped zeroday-hunter plugin, git branch in the workspace panel, and dead-process state no longer blocking a workspace |
+| [releases/0.17.0.md](releases/0.17.0.md) | AgenC 0.17.0: restart-safe resumable sessions, race-safe protocol 1.2 client sync, Linux Landlock fallback, and reliable large tool-output handling |
+| [releases/0.16.1.md](releases/0.16.1.md) | AgenC 0.16.1: stock-macOS installer repair, live install progress, launcher portability, and reliable supervised-process teardown |
 | [releases/0.15.0.md](releases/0.15.0.md) | AgenC 0.15.0: daemon port ownership and reaping, working mode-switcher keys, readable failures |
 | [releases/0.14.2.md](releases/0.14.2.md) | AgenC 0.14.2: scoped stale workspace quarantine and authoritative shell effect outcomes |
 | [releases/0.14.1.md](releases/0.14.1.md) | AgenC 0.14.1: emergency patch unbricking 0.13 to 0.14 daemon upgrades and surfacing failed submits |
@@ -129,7 +130,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.16.1) |
+| [`../README.md`](../README.md) | Product README (0.17.0) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |

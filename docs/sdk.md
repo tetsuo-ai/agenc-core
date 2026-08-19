@@ -79,7 +79,7 @@ Key `AgencClient` methods:
   `{ runId, specDigest, baseCommit, baseDirty }`)
 - `runStatus(id)` / `runResult(id)` / `replayRun(params)` /
   `reattachRun(options)` / `runEvidence(params)` / `cancelRun(id, reason?)`
-- `request(method, params)` → raw typed JSON-RPC for any of the **52** daemon methods
+- `request(method, params)` → raw typed JSON-RPC for any of the **53** daemon methods
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 
 Permission requests with no registered handler are **denied** (never granted)
@@ -277,7 +277,7 @@ other runs. `run.evidence` declares
 that compatibility source, together with an explicit completeness value and
 content hashes.
 
-## Daemon method surface (52 methods)
+## Daemon method surface (53 methods)
 
 Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 (order pinned to the runtime registry):
@@ -293,7 +293,7 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 | realtime            | `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/stop`, `thread/realtime/listVoices`                                                                                                              |
 | tools / permissions | `tool.approve`, `tool.deny`, `tool.cancel`, `elicitation.respond`, `permission.list`                                                                                                                                                                    |
 | exec / fs           | `fs.fuzzy_search`, `commandExec.start`, `commandExec.write`, `commandExec.resize`, `commandExec.terminate`                                                                                                                                              |
-| health / daemon     | `health.ping`, `health.ready`, `health.stats`, `daemon.reload`                                                                                                                                                                                          |
+| health / daemon     | `health.ping`, `health.ready`, `health.stats`, `daemon.reload`, `daemon.shutdown`                                                                                                                                                                       |
 | auth                | `auth.login`, `auth.whoami`, `auth.logout`                                                                                                                                                                                                              |
 
 `fs.fuzzy_search` accepts an optional `limit` from 1 through 1,000 and an

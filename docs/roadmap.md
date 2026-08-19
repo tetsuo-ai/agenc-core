@@ -1,6 +1,6 @@
 # AgenC product roadmap
 
-**As of 2026-08-08.** Product line **0.16.1** (SDK package **0.3.0**). What is
+**As of 2026-08-19.** Product line **0.17.0** (SDK package **0.3.0**). What is
 shipped in-tree versus open backlog.
 
 This replaces the competitive parity plan. Superseded research and phase
@@ -13,7 +13,7 @@ shipped / open summary.
 
 ---
 
-## Shipped (in product as of 2026-08-08 / 0.16.1)
+## Shipped (in product as of 2026-08-19 / 0.17.0)
 
 ### Core coding agent
 
@@ -26,7 +26,7 @@ shipped / open summary.
   accessibility-ref actions, SSRF-proxy egress control (task 18)
 - Multi-agent v2: `spawn_agent`, `wait_agent`, `close_agent`, `assign_task`,
   `send_message`, `list_agents`
-- Background agents and durable run inspection over the 51-method daemon protocol
+- Background agents and durable run inspection over the 53-method daemon protocol
 - Embedding SDK `@tetsuo-ai/agenc-sdk` **0.3.0** (`connect`, `promptViaSubprocess`)
 - Legacy local agent-eval diagnostic + regression gate (`runtime/eval/tasks/`)
 - Versioned competitive/trust evaluation suite protocols (`runtime/eval/suites/`)
