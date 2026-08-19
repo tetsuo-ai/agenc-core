@@ -1019,11 +1019,11 @@ describe("reproducible install and release contract", () => {
             imageVersion: "20260818.207.1",
             visualStudioVersion: "18.9.12112.369",
             msvcToolsVersion: "14.51.36231",
-            msvcCompilerVersion: "19.51.36252",
+            msvcCompilerVersion: "19.51.36256",
             msvcCompilerSha256:
-              "c94cdac6a780142920110e5cb8b7339817029eead696e0e97700b45e03216a00",
+              "e6d57100c82ae0310c18b16abfe52bc0df8fbb272ca6c5fb287d485807cfce91",
             msvcLinkerSha256:
-              "f233b8e337cec96a69868a8cde676808bfa81152493968d0b27b7cd0daac15be",
+              "3ef8fcf80d409fab22ddd89ee19249f31a26ad9914d3e3e48573c30998fa24de",
             windowsSdkVersion: "10.0.26100.0",
           },
           {
