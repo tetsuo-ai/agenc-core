@@ -280,6 +280,7 @@ describe("reproducible install and release contract", () => {
       workflow.indexOf("\n  powershell:"),
     );
     expect(linuxKernelJob).toContain("runs-on: ubuntu-24.04");
+    expect(linuxKernelJob).toContain("Run the exact real-kernel sandbox lane");
     expect(linuxKernelJob).toContain(
       '["bubblewrapTestRuntime"]["ubuntu-24.04-x64"]',
     );
@@ -299,14 +300,18 @@ describe("reproducible install and release contract", () => {
     expect(linuxKernelJob).toContain("--require-zero-skips");
     expect(linuxKernelJob).toContain("--config vitest.kernel.config.ts");
     expect(linuxKernelJob).toContain(
+      "tests/sandbox/landlock-seccomp.kernel.test.ts",
+    );
+    expect(linuxKernelJob).toContain(
       "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
     );
-    expect(linuxKernelJob).toContain("numTotalTestSuites: 1");
-    expect(linuxKernelJob).toContain("numTotalTests: 2");
-    expect(linuxKernelJob).toContain("numPassedTests: 2");
+    expect(linuxKernelJob).toContain("numTotalTestSuites: 3");
+    expect(linuxKernelJob).toContain("numTotalTests: 9");
+    expect(linuxKernelJob).toContain("numPassedTests: 9");
     expect(linuxKernelJob).toContain(
-      'bwrap_help="$(bwrap --help)"',
+      "real-kernel sandbox lane passed 9 tests in 2 files with zero skipped",
     );
+    expect(linuxKernelJob).toContain('bwrap_help="$(bwrap --help)"');
     expect(linuxKernelJob).toContain("grep -Fq -- '--ro-bind-fd'");
     expect(linuxKernelJob).toContain("/proc/[0-9]*/exe");
     expect(linuxKernelJob).toContain("pgrep -x bwrap");
@@ -485,9 +490,7 @@ describe("reproducible install and release contract", () => {
     expect(windowsJob).toContain(
       "tests/app-server/windows-named-pipe.win32.test.ts",
     );
-    expect(windowsJob).toContain(
-      "tests/agents/jobs/csv-output.native.test.ts",
-    );
+    expect(windowsJob).toContain("tests/agents/jobs/csv-output.native.test.ts");
     expect(windowsJob).toContain(
       "tests/durability/atomic-artifact.win32.test.ts",
     );

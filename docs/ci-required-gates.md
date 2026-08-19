@@ -906,15 +906,21 @@ Linux local gate. Its `linux-kernel-sandbox` job installs the digest- and
 byte-pinned Ubuntu bubblewrap package from
 [`release-toolchain.json`](../release-toolchain.json), keeps Ubuntu's global
 AppArmor user-namespace restriction enabled, and loads the narrow profile
-rendered by AgenC for a root-owned generated wrapper. The two-test allowlist
-then exercises the production broker, manager, packaged launcher, bubblewrap,
-user/PID/mount/network namespaces, network seccomp, filesystem mounts, and
-descendant cleanup as an unprivileged process with no effective capabilities.
-Linux readiness requires bubblewrap's descriptor-based `--ro-bind-fd` mount;
-older builds fail closed with an upgrade diagnostic before namespace setup.
-The job proves host loopback reachability before the sandbox, requires the
-sandboxed socket syscall to fail with `EPERM`, and unloads the profile with
-process- and checkout-cleanliness postconditions.
+rendered by AgenC for a root-owned generated wrapper. Its exact nine-test,
+two-file allowlist includes seven tests that exercise the native
+Landlock launcher's valid nested seccomp program and the production fallback
+when network access is disabled; these cannot run beneath the ordinary local
+gate's ptrace observer because that observer deliberately rejects nested
+filter installation. The remaining two tests exercise the production broker,
+manager, packaged launcher, bubblewrap, user/PID/mount/network namespaces,
+network seccomp, filesystem mounts, and descendant cleanup as an unprivileged
+process with no effective capabilities. Every test asserts its required kernel
+capabilities instead of conditionally declining to run. Linux readiness
+requires bubblewrap's descriptor-based `--ro-bind-fd` mount; older builds fail
+closed with an upgrade diagnostic before namespace setup. The job proves host
+loopback reachability before the sandbox, requires the sandboxed socket syscall
+to fail with `EPERM`, and unloads the profile with process- and
+checkout-cleanliness postconditions.
 
 The `powershell` job installs the digest- and byte-pinned
 PowerShell runtime from [`release-toolchain.json`](../release-toolchain.json),

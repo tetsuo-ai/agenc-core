@@ -167,6 +167,91 @@ describe("daemon instance identity", () => {
   );
 
   it.skipIf(process.platform !== "linux")(
+    "ignores a missing agenc path without the foreground daemon tail",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-nondaemon-argv-"));
+      const missingEntrypoint = join(root, "missing", "bin", "agenc");
+      const child = spawn(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1_000)", missingEntrypoint, "status"],
+        { stdio: "ignore" },
+      );
+      const readProcessCwdPath = vi.fn(async () => process.cwd());
+
+      try {
+        await once(child, "spawn");
+        await expect(
+          findLinuxAgenCDaemonProcesses(
+            {
+              entrypointPath: join(process.cwd(), "bin", "agenc"),
+              pid: process.pid,
+              platform: "linux",
+              isPidRunning: (pid) =>
+                pid === child.pid && child.exitCode === null,
+            },
+            join(root, "daemon-home"),
+            "any-install",
+            { readProcessCwdPath },
+          ),
+        ).resolves.toEqual([]);
+        expect(readProcessCwdPath).not.toHaveBeenCalled();
+      } finally {
+        const exited = once(child, "exit");
+        child.kill("SIGKILL");
+        await exited.catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "fails closed for a missing agenc path with the foreground daemon tail",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-daemon-argv-"));
+      const missingEntrypoint = join(root, "missing", "bin", "agenc");
+      const child = spawn(
+        process.execPath,
+        [
+          "-e",
+          "setInterval(() => {}, 1_000)",
+          missingEntrypoint,
+          "daemon",
+          "start",
+          "--foreground",
+        ],
+        { stdio: "ignore" },
+      );
+      const readProcessCwdPath = vi.fn(async () => process.cwd());
+
+      try {
+        await once(child, "spawn");
+        await expect(
+          findLinuxAgenCDaemonProcesses(
+            {
+              entrypointPath: join(process.cwd(), "bin", "agenc"),
+              pid: process.pid,
+              platform: "linux",
+              isPidRunning: (pid) =>
+                pid === child.pid && child.exitCode === null,
+            },
+            join(root, "daemon-home"),
+            "any-install",
+            { readProcessCwdPath },
+          ),
+        ).rejects.toBeInstanceOf(AgenCDaemonProcessScanIncompleteError);
+        expect(readProcessCwdPath).toHaveBeenCalledExactlyOnceWith(
+          `/proc/${child.pid}`,
+        );
+      } finally {
+        const exited = once(child, "exit");
+        child.kill("SIGKILL");
+        await exited.catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
     "matches a relative daemon entrypoint and fails closed when its cwd proof fails",
     async () => {
       const root = await mkdtemp(join(tmpdir(), "agenc-candidate-cwd-"));

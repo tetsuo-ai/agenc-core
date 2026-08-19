@@ -29,7 +29,6 @@ import {
 import {
   daemonInstanceIdentityFromRuntimeInfo,
   readDaemonRuntimeInfo,
-  readDistVersion,
   resolveAgenCDaemonRuntimeInfoPath,
   writeDaemonRuntimeInfo,
 } from "./daemon-runtime-info.js";
@@ -39,10 +38,17 @@ import {
   type AgenCDaemonProcessIdentity,
 } from "./daemon-instance-identity.js";
 
+const TEST_CURRENT_RUNTIME_BUILD = {
+  runtimeVersion: "0.17.0-test",
+  commit: "test-current-commit",
+  buildTime: "2026-08-19T00:00:00.000Z",
+} as const;
+
 function createHost(agencHome: string): AgenCDaemonCliHost & {
   readonly runningPids: Set<number>;
   readonly spawnedPids: number[];
   platform: NodeJS.Platform;
+  readCurrentRuntimeBuild(): typeof TEST_CURRENT_RUNTIME_BUILD;
   readProcessIdentity(pid: number): string | null;
   requestDaemonInstanceIdentity(): AgenCDaemonInstanceIdentity;
   requestDaemonShutdown(expected: AgenCDaemonInstanceIdentity): void;
@@ -56,11 +62,7 @@ function createHost(agencHome: string): AgenCDaemonCliHost & {
   let nextInstance = 0;
   const runningPids = new Set<number>();
   const spawnedPids: number[] = [];
-  const build = readDistVersion(process.cwd()) ?? {
-    runtimeVersion: "development",
-    commit: "unknown",
-    buildTime: "unknown",
-  };
+  const build = TEST_CURRENT_RUNTIME_BUILD;
   const runtimeInfoPath = resolveAgenCDaemonRuntimeInfoPath(agencHome);
   const host = {
     env: { AGENC_HOME: agencHome },
@@ -69,6 +71,7 @@ function createHost(agencHome: string): AgenCDaemonCliHost & {
     execPath: "/usr/bin/node",
     pid: 5100,
     platform: process.platform,
+    readCurrentRuntimeBuild: () => TEST_CURRENT_RUNTIME_BUILD,
     runningPids,
     spawnedPids,
     spawnDetachedDaemon: () => {
@@ -583,14 +586,13 @@ port = 0
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
-    const currentBuild = readDistVersion(process.cwd());
-    expect(currentBuild).not.toBeNull();
+    const currentBuild = TEST_CURRENT_RUNTIME_BUILD;
     const pid = 5309;
     host.runningPids.add(pid);
     await writeAgenCDaemonPid(pidPath, pid);
     host.recordDaemon(pid, {
-      ...currentBuild!,
-      commit: `${currentBuild!.commit}-different`,
+      ...currentBuild,
+      commit: `${currentBuild.commit}-different`,
     });
 
     try {
@@ -667,8 +669,7 @@ port = 0
     const host = createHost(agencHome);
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     const runtimeInfoPath = resolveAgenCDaemonRuntimeInfoPath(agencHome);
-    const currentBuild = readDistVersion(process.cwd());
-    expect(currentBuild).not.toBeNull();
+    const currentBuild = TEST_CURRENT_RUNTIME_BUILD;
     const pid = 5307;
     let processStart = `test-process:${pid}:old`;
     host.runningPids.add(pid);
@@ -711,7 +712,7 @@ port = 0
                 // does, then commit the new sidecar generation.
                 await writeAgenCDaemonPid(pidPath, pid);
                 replacementIdentity = host.recordDaemon(pid, {
-                  ...currentBuild!,
+                  ...currentBuild,
                   instanceId: "replacement-after-metadata-lock",
                   processStart,
                 });

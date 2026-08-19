@@ -1,6 +1,6 @@
-import { createAgenCVitestConfig } from './vitest.config.ts';
+import { createAgenCVitestConfig } from "./vitest.config.ts";
 
-// Exact real-kernel bubblewrap allowlist for the disposable hosted Linux lane.
-// The test fails closed unless the runner can create real user, PID, mount,
-// and network namespaces.
-export default createAgenCVitestConfig('kernel');
+// Exact real-kernel sandbox allowlist for the disposable hosted Linux lane.
+// Tests fail closed unless the runner exposes their required Landlock,
+// seccomp, user/PID/mount/network namespace, and AppArmor capabilities.
+export default createAgenCVitestConfig("kernel");

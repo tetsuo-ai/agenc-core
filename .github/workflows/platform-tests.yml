@@ -245,7 +245,7 @@ jobs:
           test "$(node --version)" = "v${NODE_VERSION}"
           test "$(npm --version)" = "$NPM_VERSION"
 
-      - name: Run the exact real-kernel bubblewrap lane
+      - name: Run the exact real-kernel sandbox lane
         shell: bash
         run: |
           set -euo pipefail
@@ -458,15 +458,17 @@ jobs:
           const [resultsPath] = process.argv.slice(2);
           if (!resultsPath) throw new Error("missing kernel-test results path");
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
-          const expectedFile =
-            "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts";
+          const expectedFiles = [
+            "tests/sandbox/landlock-seccomp.kernel.test.ts",
+            "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
+          ];
           const exactCounts = {
-            numTotalTestSuites: 1,
-            numPassedTestSuites: 1,
+            numTotalTestSuites: 3,
+            numPassedTestSuites: 3,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 2,
-            numPassedTests: 2,
+            numTotalTests: 9,
+            numPassedTests: 9,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -481,21 +483,26 @@ jobs:
           if (
             results.success !== true ||
             !Array.isArray(results.testResults) ||
-            results.testResults.length !== 1
+            results.testResults.length !== expectedFiles.length
           ) {
-            throw new Error("kernel-test result did not report one successful file");
-          }
-          const file = relative(
-            resolve("runtime"),
-            results.testResults[0].name,
-          ).split("\\").join("/");
-          if (file !== expectedFile) {
             throw new Error(
-              `kernel-test file was ${JSON.stringify(file)}, expected ${expectedFile}`,
+              "kernel-test result did not report two successful files",
+            );
+          }
+          const files = results.testResults
+            .map((result) =>
+              relative(resolve("runtime"), result.name)
+                .split("\\")
+                .join("/"),
+            )
+            .sort();
+          if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) {
+            throw new Error(
+              `kernel-test files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
           console.log(
-            "real-kernel bubblewrap lane passed 2 tests in 1 file with zero skipped",
+            "real-kernel sandbox lane passed 9 tests in 2 files with zero skipped",
           );
           NODE
 

@@ -71,6 +71,7 @@ const HOSTED_FND_TEST_FILES = [
 ] as const;
 
 const KERNEL_TEST_FILES = [
+  "tests/sandbox/landlock-seccomp.kernel.test.ts",
   "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
 ] as const;
 
@@ -219,34 +220,66 @@ describe("hermetic test discovery", () => {
     }
   });
 
-  it("kernel discovery is an exact fail-closed real-bubblewrap allowlist", () => {
+  it("kernel discovery is an exact fail-closed sandbox allowlist", () => {
     expect(listTestFiles("vitest.kernel.config.ts")).toEqual([
       ...KERNEL_TEST_FILES,
     ]);
-    const source = readFileSync(
-      resolve(runtimeRoot, KERNEL_TEST_FILES[0]),
+    for (const file of KERNEL_TEST_FILES) {
+      const source = readFileSync(resolve(runtimeRoot, file), "utf8");
+      expect(source).not.toMatch(/\b(?:runIf|skip|skipIf)\b/u);
+    }
+
+    const landlockSource = readFileSync(
+      resolve(runtimeRoot, "tests/sandbox/landlock-seccomp.kernel.test.ts"),
       "utf8",
     );
-    expect(source).not.toMatch(/\b(?:runIf|skip|skipIf)\b/u);
-    expect(source).toContain("new SandboxExecutionBroker({");
-    expect(source).toContain("const status = broker.status()");
-    expect(source).toContain('broker.prepareSpawn("tool"');
-    expect(source).toContain("agenc-native-userns (unconfined)");
-    expect(source).toContain("tcpRoundTrip(address.port, baselineToken)");
-    expect(source).toContain('error: "EPERM"');
-    expect(source).toContain("evidence.namespaces.mnt");
-    expect(source).toContain("evidence.namespaces.net");
-    expect(source).toContain("evidence.namespaces.pid");
-    expect(source).toContain("evidence.namespaces.user");
-    expect(source).toContain("expect(hostConnections).toBe(0)");
-    expect(source).toContain(
+    expect(landlockSource).toContain("assertKernelLaneCapabilities()");
+    expect(landlockSource).toContain(
+      "expect(process.env.AGENC_TEST_OS_BOUNDARY).toBeUndefined()",
+    );
+    expect(landlockSource).toContain(
+      'expect(probeLandlock(launcher)).toBe("full")',
+    );
+    for (const testName of [
+      "the same BPF program AgenC hands bwrap denies AF_INET and keeps AF_UNIX",
+      "filesystem and network confinement hold in one run",
+      "runs a descriptor-bound read in a git workspace with writes and network removed",
+      "uses Landlock when installed bubblewrap cannot create namespaces",
+      "confines writes to the workspace when bubblewrap is unavailable",
+      "keeps /proc unreadable, closing the same-uid environ channel",
+      "applies the network seccomp program when the policy disables network",
+    ]) {
+      expect(landlockSource).toContain(`it("${testName}"`);
+    }
+
+    const bubblewrapSource = readFileSync(
+      resolve(
+        runtimeRoot,
+        "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
+      ),
+      "utf8",
+    );
+    expect(bubblewrapSource).toContain("new SandboxExecutionBroker({");
+    expect(bubblewrapSource).toContain("const status = broker.status()");
+    expect(bubblewrapSource).toContain('broker.prepareSpawn("tool"');
+    expect(bubblewrapSource).toContain("agenc-native-userns (unconfined)");
+    expect(bubblewrapSource).toContain(
+      "tcpRoundTrip(address.port, baselineToken)",
+    );
+    expect(bubblewrapSource).toContain('error: "EPERM"');
+    expect(bubblewrapSource).toContain("evidence.namespaces.mnt");
+    expect(bubblewrapSource).toContain("evidence.namespaces.net");
+    expect(bubblewrapSource).toContain("evidence.namespaces.pid");
+    expect(bubblewrapSource).toContain("evidence.namespaces.user");
+    expect(bubblewrapSource).toContain("expect(hostConnections).toBe(0)");
+    expect(bubblewrapSource).toContain(
       "expect(existsSync(descendantLeakMarker)).toBe(false)",
     );
-    expect(source).toContain("visibleInProc: true");
-    expect(source).toContain(
+    expect(bubblewrapSource).toContain("visibleInProc: true");
+    expect(bubblewrapSource).toContain(
       'expect(readFileSync(hostSentinel, "utf8")).toBe(',
     );
-    expect(source).toContain(
+    expect(bubblewrapSource).toContain(
       'expect(readFileSync(launcherSentinel, "utf8")).toBe(',
     );
   });

@@ -368,17 +368,21 @@ async function inspectLinuxAgenCDaemonProcessWithTracker(
     const expectedEntrypointBasename =
       expectedEntrypoint === null ? null : basename(expectedEntrypoint);
     // An unrelated process may legitimately hide its cwd from this user. A
-    // basename match is only a cheap necessary condition: it authorizes no
-    // action, but lets us avoid cwd I/O when no argv token could resolve to
-    // either the exact entrypoint or a canonical <package>/bin/agenc path.
+    // basename plus exact daemon invocation tail is only a cheap necessary
+    // condition: it authorizes no action, but lets us avoid cwd and canonical
+    // entrypoint I/O when no argv token could represent a foreground daemon.
     // Candidate-shaped argv still receives the complete fail-closed proof.
     if (
-      !argv.some((value) => {
+      !argv.some((value, index) => {
         const candidateBasename = basename(resolve("/", value));
         return (
-          (expectedEntrypointBasename !== null &&
+          ((expectedEntrypointBasename !== null &&
             candidateBasename === expectedEntrypointBasename) ||
-          (entrypointMatch === "any-install" && candidateBasename === "agenc")
+            (entrypointMatch === "any-install" &&
+              candidateBasename === "agenc")) &&
+          argv[index + 1] === "daemon" &&
+          argv[index + 2] === "start" &&
+          argv[index + 3] === "--foreground"
         );
       })
     ) {

@@ -22,7 +22,6 @@ import {
   probeLandlock,
   resolveLandlockRun,
 } from "../../src/sandbox/landlock-run.js";
-import { createNetworkSeccompProgram } from "../../src/sandbox/linux-launcher/landlock.js";
 
 function hasTrustedCompiler(): boolean {
   return ["/usr/bin/cc", "/bin/cc"].some((candidate) => {
@@ -78,15 +77,16 @@ describe("classifyLandlockRunOutcome", () => {
     expect(
       classifyLandlockRunOutcome({
         status: LANDLOCK_RUN_FAILURE_EXIT,
-        stderr: "landlock-run: cannot open rule path: /x: No such file or directory\n",
+        stderr:
+          "landlock-run: cannot open rule path: /x: No such file or directory\n",
       }),
     ).toMatchObject({ kind: "launcher-failure" });
   });
 
   test("a child's own 125 without fatal evidence stays the command's outcome", () => {
-    expect(
-      classifyLandlockRunOutcome({ status: 125, stderr: "" }),
-    ).toEqual({ kind: "command-outcome" });
+    expect(classifyLandlockRunOutcome({ status: 125, stderr: "" })).toEqual({
+      kind: "command-outcome",
+    });
   });
 
   test("the exact partial notice is informational, never fatal evidence", () => {
@@ -138,14 +138,17 @@ describe.runIf(canRunLive)("agenc-landlock-run (live kernel)", () => {
   });
 
   test("read is denied outside grants and allowed inside them", () => {
-    const denied = runConfined(
-      { readOnly: ["/usr", "/lib", "/lib64"] },
-      ["/usr/bin/cat", "/etc/hostname"],
-    );
+    const denied = runConfined({ readOnly: ["/usr", "/lib", "/lib64"] }, [
+      "/usr/bin/cat",
+      "/etc/hostname",
+    ]);
     expect(denied.status).not.toBe(0);
     expect(denied.status).not.toBe(LANDLOCK_RUN_FAILURE_EXIT);
     expect(
-      classifyLandlockRunOutcome({ status: denied.status, stderr: denied.stderr }),
+      classifyLandlockRunOutcome({
+        status: denied.status,
+        stderr: denied.stderr,
+      }),
     ).toEqual({ kind: "command-outcome" });
 
     const allowed = runConfined(
@@ -197,10 +200,9 @@ describe.runIf(canRunLive)("agenc-landlock-run (live kernel)", () => {
   });
 
   test("an unopenable grant root fails closed as a launcher failure", () => {
-    const run = runConfined(
-      { readOnly: ["/definitely-not-a-real-path-xyz"] },
-      ["/bin/true"],
-    );
+    const run = runConfined({ readOnly: ["/definitely-not-a-real-path-xyz"] }, [
+      "/bin/true",
+    ]);
     expect(run.status).toBe(LANDLOCK_RUN_FAILURE_EXIT);
     expect(
       classifyLandlockRunOutcome({ status: run.status, stderr: run.stderr }),
@@ -240,7 +242,9 @@ function runWithSeccomp(
       [
         ...landlockLaunchArgs({
           readOnly: ["/"],
-          ...(extra?.readWrite !== undefined ? { readWrite: extra.readWrite } : {}),
+          ...(extra?.readWrite !== undefined
+            ? { readWrite: extra.readWrite }
+            : {}),
           ...(stdioFd !== undefined ? { seccompFd: 3 } : {}),
         }),
         ...command,
@@ -279,29 +283,6 @@ describe.runIf(canRunSeccompLive)(
       const run = runWithSeccomp(undefined, [...SOCKET_PROBE]);
       expect(run.status).toBe(0);
       expect(run.stdout).toContain("inet-open");
-    });
-
-    test("the same BPF program AgenC hands bwrap denies AF_INET and keeps AF_UNIX", () => {
-      const program = createNetworkSeccompProgram("restricted");
-      const run = runWithSeccomp(program, [...SOCKET_PROBE]);
-      expect(run.status).toBe(0);
-      expect(run.stdout).toContain("inet-denied");
-      expect(run.stdout).toContain("unix-open");
-    });
-
-    test("filesystem and network confinement hold in one run", () => {
-      const program = createNetworkSeccompProgram("restricted");
-      const dir = mkWorkDir();
-      const target = join(dir, "combined.txt");
-      const run = runWithSeccomp(program, [
-        "/bin/sh",
-        "-c",
-        `if echo x > ${target} 2>/dev/null; then echo write-open; else echo write-denied; fi; ` +
-          `${PYTHON} -c "import socket\ntry:\n  socket.socket(socket.AF_INET)\n  print('inet-open')\nexcept PermissionError:\n  print('inet-denied')"`,
-      ]);
-      expect(run.status).toBe(0);
-      expect(run.stdout).toContain("write-denied");
-      expect(run.stdout).toContain("inet-denied");
     });
 
     test("a malformed program fails closed as a launcher failure", () => {

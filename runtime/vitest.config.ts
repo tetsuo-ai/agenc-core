@@ -136,6 +136,7 @@ export const HOSTED_FND_TEST_INCLUDE = Object.freeze([
 
 /** Real Linux-kernel sandbox coverage executed on a disposable hosted runner. */
 export const KERNEL_TEST_INCLUDE = Object.freeze([
+  "tests/sandbox/landlock-seccomp.kernel.test.ts",
   "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
 ]);
 

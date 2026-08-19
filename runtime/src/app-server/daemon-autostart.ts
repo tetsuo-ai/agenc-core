@@ -490,8 +490,11 @@ export async function ensureAgenCDaemonAutostart(
     // Compare builds only after the complete identity proof. A PID and mutable
     // sidecar alone are never authority to stop a process.
     const runtimeRoot = resolveRuntimePackageRootFromUrl(import.meta.url);
-    const currentVersion =
-      runtimeRoot !== null ? readDistVersion(runtimeRoot) : null;
+    const currentVersion = host.readCurrentRuntimeBuild
+      ? host.readCurrentRuntimeBuild()
+      : runtimeRoot !== null
+        ? readDistVersion(runtimeRoot)
+        : null;
     if (
       currentVersion !== null &&
       (verifiedInstance.identity.runtimeVersion !==

@@ -337,6 +337,11 @@ export interface AgenCDaemonCliHost {
   readonly execPath: string;
   readonly pid: number;
   readonly platform?: NodeJS.Platform;
+  /** @internal Build identity seam for build-artifact-independent contracts. */
+  readonly readCurrentRuntimeBuild?: () => Pick<
+    AgenCDaemonInstanceIdentity,
+    "runtimeVersion" | "commit" | "buildTime"
+  > | null;
   spawnDetachedDaemon(env: NodeJS.ProcessEnv): number;
   /** Exact child capability retained only for this detached start invocation. */
   cancelSpawnedDaemon?(pid: number): Promise<void> | void;
@@ -2810,8 +2815,11 @@ async function runAgenCDaemonForegroundLocked(
   );
   const cookieAuthenticator = new AgenCDaemonCookieAuthenticator(daemonCookie);
   const runtimeRoot = resolveRuntimePackageRootFromUrl(import.meta.url);
-  const distVersion =
-    runtimeRoot !== null ? readDistVersion(runtimeRoot) : null;
+  const distVersion = host.readCurrentRuntimeBuild
+    ? host.readCurrentRuntimeBuild()
+    : runtimeRoot !== null
+      ? readDistVersion(runtimeRoot)
+      : null;
   const processStart = await readAgenCDaemonProcessStart(
     host.pid,
     host.readProcessIdentity,
