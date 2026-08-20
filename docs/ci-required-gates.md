@@ -858,8 +858,8 @@ GitHub-hosted jobs to publish or promote exact reviewed bytes. They do not
 repeat the local verification plan. The candidate phase of
 `release-runtime.yml` runs the exact native-only allowlist after its first clean
 install and
-requires the recorded result to contain 46 passing macOS tests in eight suites
-across five files or 49 passing Windows tests in twelve suites across seven files,
+requires the recorded result to contain 47 passing macOS tests in eight suites
+across five files or 50 passing Windows tests in twelve suites across seven files,
 with zero failed, pending, skipped, or todo tests. Both candidate lanes begin
 with the same 44-test, seven-suite, four-file FND set for bounded file I/O,
 fixture loading, portable paths, and process containment. macOS adds one

@@ -253,8 +253,8 @@ describe("reproducible install and release contract", () => {
     );
     const normalizedCiRequiredGates = ciRequiredGates.replace(/\s+/gu, " ");
     for (const inventory of [
-      "46 passing macOS tests in eight suites across five files",
-      "49 passing Windows tests in twelve suites across seven files",
+      "47 passing macOS tests in eight suites across five files",
+      "50 passing Windows tests in twelve suites across seven files",
       "same 44-test, seven-suite, four-file FND set",
       "shared 80-test, eight-suite, five-file FND set",
       "84 tests, eleven suites, and seven files",
@@ -1532,8 +1532,8 @@ describe("reproducible install and release contract", () => {
     expect(nativeBuild).toContain(
       '"tests/workspace/bound-helper-transport.win32.test.ts"',
     );
-    expect(nativeBuild).toContain("expected_native_tests=46");
-    expect(nativeBuild).toContain("expected_native_tests=49");
+    expect(nativeBuild).toContain("expected_native_tests=47");
+    expect(nativeBuild).toContain("expected_native_tests=50");
     expect(nativeBuild).toContain("expected_native_suites=8");
     expect(nativeBuild).toContain("expected_native_suites=12");
     expect(nativeBuild).toContain('run "${native_tests[@]}"');

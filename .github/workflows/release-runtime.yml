@@ -1154,7 +1154,7 @@ jobs:
                 "tests/fnd/process-repository-helpers.native.test.ts"
                 "tests/tools/runtimes/runtime.darwin.test.ts"
               )
-              expected_native_tests=46
+              expected_native_tests=47
               expected_native_suites=8
               ;;
             win-x64)
@@ -1167,7 +1167,7 @@ jobs:
                 "tests/utils/execFileNoThrow.win32.test.ts"
                 "tests/workspace/bound-helper-transport.win32.test.ts"
               )
-              expected_native_tests=49
+              expected_native_tests=50
               expected_native_suites=12
               ;;
             *)
