@@ -199,6 +199,7 @@ function makeTopLevelRunner(opts: {
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
   readonly csvAgentJobsRepositories?: CsvAgentJobsRepositoryProvider;
   readonly rolloutItems?: unknown[];
+  readonly threadInitialStatus?: AgentStatus;
   readonly onActiveAgentTerminated?: ReturnType<typeof vi.fn>;
   readonly totalTokenUsage?: () => {
     readonly inputTokens: number;
@@ -240,6 +241,9 @@ function makeTopLevelRunner(opts: {
   };
   const stub = makeStubConversationThreadManager({
     threadId: opts.conversationId,
+    ...(opts.threadInitialStatus !== undefined
+      ? { initialStatus: opts.threadInitialStatus }
+      : {}),
     ...(opts.threadShutdown !== undefined
       ? { shutdown: opts.threadShutdown }
       : {}),
@@ -3494,6 +3498,61 @@ describe("AgenC delegate background-agent runner", () => {
       "session-strict-busy",
       "legacy queued turn",
     );
+  });
+
+  it("[managed-thread] accepts the first opt-in-admission message on a deferred spawn still in pending_init", async () => {
+    const { runner, control } = makeTopLevelRunner({
+      conversationId: "session-deferred-first-send",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    await runner.startAgent({
+      objective: "Interactive session",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    // Nothing was submitted at spawn; the first message is what
+    // initializes the thread, so ifBusy=reject must admit it.
+    await expect(
+      runner.submitAgentMessage("session-deferred-first-send", {
+        sessionId: "session_1",
+        content: "first user message",
+        originalContent: "first user message",
+        messageId: "deferred-first",
+        streamId: "deferred-first",
+        acceptedAt: "2026-08-20T00:00:00.000Z",
+        ifBusy: "reject",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+    expect(control.sendInput).toHaveBeenCalledWith(
+      "session-deferred-first-send",
+      "first user message",
+    );
+  });
+
+  it("[managed-thread] still rejects opt-in admission while a spawn-submitted initial turn is in pending_init", async () => {
+    const { runner } = makeTopLevelRunner({
+      conversationId: "session-initial-pending-init",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    await runner.startAgent({
+      objective: "initial turn is starting",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-initial-pending-init", {
+        sessionId: "session_1",
+        content: "raced the initial turn",
+        originalContent: "raced the initial turn",
+        messageId: "raced-message",
+        streamId: "raced-message",
+        acceptedAt: "2026-08-20T00:00:00.000Z",
+        ifBusy: "reject",
+      }),
+    ).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
   });
 
   it("[managed-thread] reports a persisted crash-tail retry as incomplete", async () => {

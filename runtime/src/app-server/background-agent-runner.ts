@@ -741,6 +741,15 @@ interface ActiveBackgroundAgent {
   pendingMessageSubmissionCount: number;
   readonly messageSubmissionsById: Map<string, ActiveMessageSubmission>;
   /**
+   * True when no initial turn was submitted at spawn (deferInitialTurn
+   * spawns and restored agents). Their thread sits in pending_init until
+   * the first accepted message initializes it, so pending_init must not
+   * count as busy for `ifBusy: "reject"` — rejecting there deadlocks the
+   * session: the message that would initialize the thread is the message
+   * being refused.
+   */
+  readonly initialTurnDeferred: boolean;
+  /**
    * Per-agent emission serialization chain. `#emitOrBufferEvent` awaits
    * an async-locked broadcast, so two fire-and-forget emits from a
    * single callback (e.g. status + budget-usage) can otherwise complete
@@ -1201,6 +1210,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         thread: managedThread,
         status: "running",
         startedAt,
+        initialTurnDeferred: params.deferInitialTurn === true,
         runEpoch: currentRunEpochFromRollout(bootstrap, managedThread.threadId),
         canonicalEventBridgeInstalled: false,
         durableTerminalFinalizerInstalled: false,
@@ -1623,6 +1633,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           thread: managedThread,
           status: "running",
           startedAt,
+          // A restored agent has no initial submission in flight either:
+          // its thread re-initializes on the first post-restore message,
+          // so pending_init must stay sendable after a daemon restart.
+          initialTurnDeferred: true,
           ...(params.restoreAttemptId !== undefined
             ? { restoreAttemptId: params.restoreAttemptId }
             : {}),
@@ -2232,7 +2246,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       (active.pendingMessageSubmissionCount > 0 ||
         hasRuntimeActiveTurn(active.bootstrap.session) ||
         threadStatus === "running" ||
-        threadStatus === "pending_init")
+        // pending_init is busy only while a spawn-submitted initial turn
+        // is still starting. Deferred spawns and restored agents stay
+        // pending_init until their first accepted message initializes the
+        // thread; rejecting that message would deadlock the session.
+        (threadStatus === "pending_init" && !active.initialTurnDeferred))
     ) {
       throw new AgenCBackgroundAgentMessageError(
         "TURN_IN_PROGRESS",
