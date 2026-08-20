@@ -3684,21 +3684,48 @@ export class AgenCDaemonAgentManager {
     ]);
     agent.sessionIds = activeSessionIds;
     if (activeSessionIds.length === 0 && isActiveAgent(agent)) {
-      let stopFailed = false;
-      if (!isRecoveredRuntimeUnavailable(agent)) {
-        const stopRunner = this.#runner?.stopAgent?.bind(this.#runner);
-        if (stopRunner !== undefined) {
-          try {
-            await stopRunner(agent.agentId, "session_terminated");
-          } catch {
-            stopFailed = true;
-          }
-        }
-      }
-      agent.status = stopFailed ? "error" : "stopped";
+      const stoppable = !isRecoveredRuntimeUnavailable(agent);
+      agent.status = "stopped";
       agent.lastActiveAt = this.#now();
       agent.runtimeAvailable = false;
+      // The runner stop must NOT be awaited here: every reconcile caller
+      // holds the #state lock, and stopAgent's termination path re-acquires
+      // it (handleRunnerTerminated), so an in-lock await self-deadlocks the
+      // whole daemon the moment a zombie agent exists. The state mutation
+      // above is the observable outcome; the runtime teardown runs after
+      // the lock is released, matching the public stopAgent path.
+      if (stoppable) this.#scheduleReconcileRunnerStop(agent.agentId);
     }
+  }
+
+  /** Deduplicates deferred session_terminated runner stops per agent. */
+  readonly #pendingReconcileRunnerStops = new Set<string>();
+
+  #scheduleReconcileRunnerStop(agentId: string): void {
+    const stopRunner = this.#runner?.stopAgent?.bind(this.#runner);
+    if (stopRunner === undefined) return;
+    if (this.#pendingReconcileRunnerStops.has(agentId)) return;
+    this.#pendingReconcileRunnerStops.add(agentId);
+    void stopRunner(agentId, "session_terminated")
+      .catch(async () => {
+        // The synchronous reconcile already published "stopped"; a failed
+        // runtime teardown downgrades it so operators can see the wreck.
+        await this.#state
+          .with((state) => {
+            const current = state.agents.get(agentId);
+            if (
+              current !== undefined &&
+              current.status === "stopped" &&
+              current.runtimeAvailable === false
+            ) {
+              current.status = "error";
+            }
+          })
+          .catch(() => {});
+      })
+      .finally(() => {
+        this.#pendingReconcileRunnerStops.delete(agentId);
+      });
   }
 
   async #resolveAttachmentTarget(

@@ -1974,6 +1974,58 @@ describe("AgenC background agent lifecycle", () => {
     });
   });
 
+  it("does not deadlock when the runner stop re-enters the lifecycle state", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session-reentrant-stop"]),
+      now: sequence(["2026-08-20T12:09:00.000Z", "2026-08-20T12:09:01.000Z"]),
+    });
+    let agentsRef!: AgenCDaemonAgentManager;
+    const stopAgent = vi.fn(async () => {
+      // Mirrors handleRunnerTerminated: the production stop path re-acquires
+      // the lifecycle #state lock, which the reconcile caller used to hold
+      // across this await — a self-deadlock that bricked agent.create
+      // daemon-wide whenever a zombie agent was reconciled.
+      await agentsRef.getAgent("agent-reentrant-stop");
+    });
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      now: () => "2026-08-20T12:09:02.000Z",
+      runner: {
+        startAgent: async () => ({
+          agentId: "agent-reentrant-stop",
+          startedAt: "2026-08-20T12:09:00.500Z",
+          status: "running",
+        }),
+        stopAgent,
+      },
+    });
+    agentsRef = agents;
+
+    await agents.createAgent({
+      cwd: process.cwd(),
+      objective: "reentrant stop",
+    });
+    await sessions.terminateSession({
+      sessionId: "session-reentrant-stop",
+      reason: "session.terminate",
+    });
+
+    const listed = await Promise.race([
+      agents.listAgents(),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error("listAgents deadlocked on the reconcile runner stop"),
+            ),
+          3000,
+        ),
+      ),
+    ]);
+    expect(listed).toEqual({ agents: [] });
+    await vi.waitFor(() => expect(stopAgent).toHaveBeenCalled());
+  });
+
   it("session.cancelTurn returns cancelled=false for an unknown session (idle no-op)", async () => {
     const sessions = new AgenCDaemonSessionManager();
     const interruptAgentTurn = vi.fn(async () => false);
