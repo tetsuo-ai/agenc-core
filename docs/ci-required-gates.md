@@ -16,7 +16,7 @@ jobs (macOS arm64, macOS x64, and Windows x64). Every artifact builder depends
 on that complete matrix, so it is a barrier: no Linux, Darwin, or Windows
 artifact construction starts unless all three runner images and native
 toolchains match reviewed profiles. The candidate then builds all five native
-artifacts. Its macOS and Windows jobs first run the shared 44-test FND contract
+artifacts. Its macOS and Windows jobs first run the shared 45-test FND contract
 set, then add one Seatbelt and one volume-sensitive pathname-identity test on
 macOS or three Windows atomic-publication/`.cmd` tests. The tagged workflow
 later promotes and
@@ -861,7 +861,7 @@ install and
 requires the recorded result to contain 47 passing macOS tests in eight suites
 across five files or 50 passing Windows tests in twelve suites across seven files,
 with zero failed, pending, skipped, or todo tests. Both candidate lanes begin
-with the same 44-test, seven-suite, four-file FND set for bounded file I/O,
+with the same 45-test, seven-suite, four-file FND set for bounded file I/O,
 fixture loading, portable paths, and process containment. macOS adds one
 Seatbelt test and one volume-sensitive pathname-identity test; Windows adds
 three atomic-publication and `.cmd` tests. Its
@@ -935,24 +935,24 @@ in its one-file allowlist. Its provider and observed-descendant phase runs an
 exact 63-test, three-file allowlist on every required hosted target. The
 `macos-native` job first runs the 67-test
 red-probe runner contract, including residual-process settlement on Darwin.
-The macOS and Windows native jobs then run a shared 80-test, eight-suite,
-five-file FND set. It combines the 44-test release-builder set with 36
+The macOS and Windows native jobs then run a shared 81-test, eight-suite,
+five-file FND set. It combines the 45-test release-builder set with 36
 benchmark-harness fault contracts for process-tree containment, owned-root
 retention, exclusive artifact publication, minimal subprocess environments,
 bounded metadata commands, and provenance binding. macOS adds one Seatbelt test
-and one volume-sensitive pathname-identity test for an exact total of 82 tests,
+and one volume-sensitive pathname-identity test for an exact total of 83 tests,
 ten suites, and six files. Both native lanes also exercise CSV publication on
 the real filesystem and reject a foreign inheritable-read ACL before staging,
-bringing macOS to an exact 84 tests, eleven suites, and seven files. Before its
+bringing macOS to an exact 85 tests, eleven suites, and seven files. Before its
 native allowlist, Windows requires the
 exact one-file FND red-probe audit summary and
 runs three forced-containment tests in one file. Its named-pipe and
 atomic-publication/`.cmd` and bound-helper transport contracts bring the native
-total to 92 tests, eighteen suites, and eleven files. Release builders
-deliberately retain their narrower 44-test shared set: the Windows release
+total to 93 tests, eighteen suites, and eleven files. Release builders
+deliberately retain their narrower 45-test shared set: the Windows release
 subset excludes the two
 named-pipe-only PR tests and the benchmark fault contract, while retaining the
-two bound-helper transport tests, so it remains 49 tests, twelve suites, and
+two bound-helper transport tests, so it remains 50 tests, twelve suites, and
 seven files. Native result parsers require the exact
 reviewed suite, test, and normalized file inventory with no failed, pending,
 skipped, or todo tests. The red-containment parser additionally requires

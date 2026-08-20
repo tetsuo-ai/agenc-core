@@ -255,10 +255,10 @@ describe("reproducible install and release contract", () => {
     for (const inventory of [
       "47 passing macOS tests in eight suites across five files",
       "50 passing Windows tests in twelve suites across seven files",
-      "same 44-test, seven-suite, four-file FND set",
-      "shared 80-test, eight-suite, five-file FND set",
-      "84 tests, eleven suites, and seven files",
-      "92 tests, eighteen suites, and eleven files",
+      "same 45-test, seven-suite, four-file FND set",
+      "shared 81-test, eight-suite, five-file FND set",
+      "85 tests, eleven suites, and seven files",
+      "93 tests, eighteen suites, and eleven files",
     ]) {
       expect(normalizedCiRequiredGates).toContain(inventory);
     }
