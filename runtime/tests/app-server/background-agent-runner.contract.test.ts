@@ -2493,6 +2493,30 @@ describe("AgenC delegate background-agent runner", () => {
     expect(permissionUpdates[0]).toMatchObject({ mode: "plan" });
   });
 
+  it("setAgentPermissionMode to bypass binds exact-workspace consent so canonical persistence accepts it", async () => {
+    const { runner, permissionUpdates } = makeTopLevelRunner({
+      conversationId: "parent-session",
+      argv: ["node", "agenc"],
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    permissionUpdates.length = 0;
+
+    // The explicit RPC is the operator's authority, same as --yolo at
+    // spawn: the runner binds consent for this exact workspace instead of
+    // refusing with the workspace-consent persistence error.
+    const result = await runner.setAgentPermissionMode("parent-session", {
+      sessionId: "session_1",
+      mode: "bypassPermissions",
+    });
+
+    expect(result).toMatchObject({ applied: true, mode: "bypassPermissions" });
+    expect(permissionUpdates.at(-1)).toMatchObject({
+      mode: "bypassPermissions",
+      bypassPermissionsAcceptedIn: ["/workspace"],
+    });
+  });
+
   it("getAgentHooksStatus maps the daemon session's real hooks runtime snapshot", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "parent-session",

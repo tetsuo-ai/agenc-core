@@ -3107,7 +3107,24 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       target,
       current,
     );
-    const nextCtx: ToolPermissionContext = { ...transitioned, mode: target };
+    let nextCtx: ToolPermissionContext = { ...transitioned, mode: target };
+    if (target === "bypassPermissions") {
+      // An explicit session.setPermissionMode to bypass carries the same
+      // operator authority as `--yolo` / permissionMode at agent.create
+      // (see startAgent's identical binding): grant consent for this exact
+      // workspace so canonical runtime-settings persistence accepts the
+      // transition instead of refusing with the workspace-consent error.
+      const workspaceRoot = runtimeWorkspaceRoot(active.bootstrap);
+      if (!nextCtx.bypassPermissionsAcceptedIn?.includes(workspaceRoot)) {
+        nextCtx = {
+          ...nextCtx,
+          bypassPermissionsAcceptedIn: [
+            ...(nextCtx.bypassPermissionsAcceptedIn ?? []),
+            workspaceRoot,
+          ],
+        };
+      }
+    }
     await registry.update(nextCtx, {
       runtimeSettings: {
         reason: "permission_mode_changed",
