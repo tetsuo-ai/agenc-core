@@ -18,7 +18,8 @@ artifact construction starts unless all three runner images and native
 toolchains match reviewed profiles. The candidate then builds all five native
 artifacts. Its macOS and Windows jobs first run the shared 45-test FND contract
 set, then add one Seatbelt and one volume-sensitive pathname-identity test on
-macOS or three Windows atomic-publication/`.cmd` tests. The tagged workflow
+macOS or three Windows atomic-publication/`.cmd` tests and two bound-helper
+transport tests. The tagged workflow
 later promotes and
 re-attests those exact candidate bytes without rebuilding them. These probes
 gate their artifacts but do not authorize merge or replace the local evidence.
@@ -864,7 +865,8 @@ with zero failed, pending, skipped, or todo tests. Both candidate lanes begin
 with the same 45-test, seven-suite, four-file FND set for bounded file I/O,
 fixture loading, portable paths, and process containment. macOS adds one
 Seatbelt test and one volume-sensitive pathname-identity test; Windows adds
-three atomic-publication and `.cmd` tests. Its
+three atomic-publication and `.cmd` tests plus two bound-helper transport
+tests. Its
 tagged phase only promotes and re-attests the five sealed runtime artifacts.
 Before artifact or promotion work starts, each workflow:
 
