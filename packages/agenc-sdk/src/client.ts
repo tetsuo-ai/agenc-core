@@ -8,7 +8,7 @@
  * as the dispatcher transport's `sendNotification` callback.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import {
   AGENC_SDK_DAEMON_PROTOCOL_VERSION,
@@ -35,6 +35,8 @@ import {
   type RunCancelResult,
   type RunEvidenceParams,
   type RunEvidenceResult,
+  type RunExportVerifiedParams,
+  type RunExportVerifiedResult as RunExportVerifiedWireResult,
   type RunReplayEvent,
   type RunReplayGap,
   type RunReplayParams,
@@ -43,6 +45,7 @@ import {
   type RunStartParams,
   type RunStartResult,
   type RunStatusResult,
+  type RunWorkflowArtifactPointer,
   type SessionCreateParams,
   type SessionSnapshotResult,
   type SessionTranscriptResult,
@@ -189,6 +192,435 @@ export class AgencRunReplayProtocolError extends Error {
     this.cursor = cursor;
     this.response = response;
   }
+}
+
+export interface ExportVerifiedRunInput {
+  readonly coreRunId: string;
+  readonly expectedSpecDigest: `sha256:${string}`;
+  readonly expectedRecordDigest: `sha256:${string}`;
+  readonly expectedEvidenceDigest: `sha256:${string}`;
+  readonly maximumBytes?: number;
+}
+
+export interface ExportedVerifiedRunArtifact {
+  readonly pointer: RunWorkflowArtifactPointer;
+  readonly mediaType: string;
+  readonly bytes: Uint8Array;
+}
+
+export interface ExportedVerifiedRunOutput {
+  readonly checkId: string;
+  readonly commandDigest: `sha256:${string}`;
+  readonly stdoutBytes: Uint8Array;
+  readonly stderrBytes: Uint8Array;
+}
+
+export interface ExportVerifiedRunResult {
+  readonly schemaVersion: "agenc.core.verified-export.v1";
+  readonly recordBytes: Uint8Array;
+  readonly evidenceEnvelopeBytes: Uint8Array;
+  readonly artifacts: readonly ExportedVerifiedRunArtifact[];
+  readonly verificationOutputs: readonly ExportedVerifiedRunOutput[];
+  readonly exportRootDigest: `sha256:${string}`;
+}
+
+const VERIFIED_EXPORT_MAXIMUM_BYTES = 64 * 1024 * 1024;
+const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+
+function decodeStrictBase64(
+  value: unknown,
+  label: string,
+  maximumBytes: number,
+): Uint8Array {
+  if (
+    typeof value !== "string" ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
+      value,
+    )
+  ) {
+    throw new AgencMalformedResponseError(
+      `${label} is not canonical base64`,
+      value,
+    );
+  }
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const decodedLength = (value.length / 4) * 3 - padding;
+  if (
+    !Number.isSafeInteger(decodedLength) ||
+    decodedLength > maximumBytes
+  ) {
+    throw new AgencMalformedResponseError(
+      `${label} exceeds its remaining ${maximumBytes}-byte client ceiling`,
+      value,
+    );
+  }
+  const bytes = Buffer.from(value, "base64");
+  if (bytes.toString("base64") !== value) {
+    throw new AgencMalformedResponseError(
+      `${label} is not canonical base64`,
+      value,
+    );
+  }
+  return new Uint8Array(bytes);
+}
+
+function sdkSha256(bytes: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function sdkCanonicalJson(value: unknown): string {
+  if (value === null) return "null";
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => sdkCanonicalJson(item)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const record = value as Readonly<Record<string, unknown>>;
+    return `{${Object.keys(record)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${sdkCanonicalJson(record[key])}`,
+      )
+      .join(",")}}`;
+  }
+  return `unsupported:${typeof value}`;
+}
+
+function decodeVerifiedExport(
+  wire: RunExportVerifiedWireResult,
+  maximumBytes: number,
+): ExportVerifiedRunResult {
+  if (
+    wire === null ||
+    typeof wire !== "object" ||
+    Array.isArray(wire) ||
+    wire.schemaVersion !== "agenc.core.verified-export.v1" ||
+    typeof wire.exportRootDigest !== "string" ||
+    !SHA256_DIGEST_PATTERN.test(wire.exportRootDigest)
+  ) {
+    throw new AgencMalformedResponseError(
+      "run.exportVerified returned an invalid schema or export root",
+      wire,
+    );
+  }
+  let captured = 0;
+  const capture = (value: unknown, label: string): Uint8Array => {
+    const bytes = decodeStrictBase64(value, label, maximumBytes - captured);
+    captured += bytes.byteLength;
+    if (!Number.isSafeInteger(captured) || captured > maximumBytes) {
+      throw new AgencMalformedResponseError(
+        `run.exportVerified exceeded the ${maximumBytes}-byte client ceiling`,
+        wire,
+      );
+    }
+    return bytes;
+  };
+  const recordBytes = capture(wire.recordBase64, "verified record");
+  const evidenceEnvelopeBytes = capture(
+    wire.evidenceEnvelopeBase64,
+    "verified evidence envelope",
+  );
+  if (sdkSha256(evidenceEnvelopeBytes) !== wire.exportRootDigest) {
+    throw new AgencMalformedResponseError(
+      "run.exportVerified envelope bytes do not match exportRootDigest",
+      wire,
+    );
+  }
+  let envelopeText: string;
+  let envelopeValue: unknown;
+  try {
+    envelopeText = new TextDecoder("utf-8", { fatal: true }).decode(
+      evidenceEnvelopeBytes,
+    );
+    envelopeValue = JSON.parse(envelopeText) as unknown;
+  } catch (error) {
+    throw new AgencMalformedResponseError(
+      `run.exportVerified evidence envelope is unreadable: ${String(error)}`,
+      wire,
+    );
+  }
+  if (
+    envelopeValue === null ||
+    typeof envelopeValue !== "object" ||
+    Array.isArray(envelopeValue) ||
+    sdkCanonicalJson(envelopeValue) !== envelopeText
+  ) {
+    throw new AgencMalformedResponseError(
+      "run.exportVerified evidence envelope is not exact canonical JSON",
+      wire,
+    );
+  }
+  const envelope = envelopeValue as Record<string, unknown>;
+  if (
+    envelope.schemaVersion !== "agenc.core.verified-evidence-envelope.v1" ||
+    typeof envelope.runId !== "string" ||
+    envelope.runId.length === 0 ||
+    typeof envelope.specDigest !== "string" ||
+    !SHA256_DIGEST_PATTERN.test(envelope.specDigest) ||
+    typeof envelope.recordDigest !== "string" ||
+    !SHA256_DIGEST_PATTERN.test(envelope.recordDigest) ||
+    !Array.isArray(envelope.artifacts) ||
+    !Array.isArray(envelope.verificationOutputs)
+  ) {
+    throw new AgencMalformedResponseError(
+      "run.exportVerified evidence envelope violates its public schema",
+      envelope,
+    );
+  }
+  if (!Array.isArray(wire.artifacts)) {
+    throw new AgencMalformedResponseError(
+      "run.exportVerified artifacts must be an array",
+      wire,
+    );
+  }
+  const artifacts = wire.artifacts.map((artifact, index) => {
+    if (
+      artifact === null ||
+      typeof artifact !== "object" ||
+      Array.isArray(artifact) ||
+      artifact.pointer === null ||
+      typeof artifact.pointer !== "object" ||
+      Array.isArray(artifact.pointer)
+    ) {
+      throw new AgencMalformedResponseError(
+        `run.exportVerified artifact ${index} has no pointer object`,
+        artifact,
+      );
+    }
+    const pointer = artifact.pointer;
+    const step = pointer.step;
+    if (
+      step === null ||
+      typeof step !== "object" ||
+      Array.isArray(step) ||
+      typeof step.runId !== "string" ||
+      step.runId.length === 0 ||
+      typeof step.stepId !== "string" ||
+      step.stepId.length === 0 ||
+      (step.parentRunId !== undefined &&
+        typeof step.parentRunId !== "string") ||
+      typeof pointer.role !== "string" ||
+      pointer.role.length === 0 ||
+      typeof pointer.digest !== "string" ||
+      !SHA256_DIGEST_PATTERN.test(pointer.digest) ||
+      !Number.isSafeInteger(pointer.bytes) ||
+      pointer.bytes < 0 ||
+      typeof pointer.storagePath !== "string" ||
+      typeof pointer.recordedAt !== "string"
+    ) {
+      throw new AgencMalformedResponseError(
+        `run.exportVerified artifact ${index} has an invalid pointer`,
+        artifact,
+      );
+    }
+    const bytes = capture(
+      artifact.bytesBase64,
+      `verified artifact ${index} bytes`,
+    );
+    if (
+      pointer.bytes !== bytes.byteLength ||
+      pointer.digest !== sdkSha256(bytes) ||
+      pointer.storagePath !==
+        `cas://sha256/${pointer.digest.slice("sha256:".length)}` ||
+      typeof artifact.mediaType !== "string" ||
+      artifact.mediaType.length === 0
+    ) {
+      throw new AgencMalformedResponseError(
+        `run.exportVerified artifact ${index} is not content-addressed`,
+        artifact,
+      );
+    }
+    return { pointer, mediaType: artifact.mediaType, bytes };
+  });
+  if (
+    sdkCanonicalJson(envelope.artifacts) !==
+    sdkCanonicalJson(
+      artifacts.map((artifact) => ({
+        pointer: artifact.pointer,
+        mediaType: artifact.mediaType,
+      })),
+    )
+  ) {
+    throw new AgencMalformedResponseError(
+      "run.exportVerified artifacts differ from the hashed evidence envelope",
+      wire,
+    );
+  }
+  if (!Array.isArray(wire.verificationOutputs)) {
+    throw new AgencMalformedResponseError(
+      "run.exportVerified verificationOutputs must be an array",
+      wire,
+    );
+  }
+  const checkIds = new Set<string>();
+  const verificationOutputs = wire.verificationOutputs.map((output, index) => {
+    if (
+      output === null ||
+      typeof output !== "object" ||
+      Array.isArray(output) ||
+      typeof output.checkId !== "string" ||
+      output.checkId.length === 0 ||
+      checkIds.has(output.checkId) ||
+      typeof output.commandDigest !== "string" ||
+      !SHA256_DIGEST_PATTERN.test(output.commandDigest)
+    ) {
+      throw new AgencMalformedResponseError(
+        `run.exportVerified output ${index} has an invalid identity`,
+        output,
+      );
+    }
+    checkIds.add(output.checkId);
+    return {
+      checkId: output.checkId,
+      commandDigest: output.commandDigest as `sha256:${string}`,
+      stdoutBytes: capture(output.stdoutBase64, `output ${index} stdout`),
+      stderrBytes: capture(output.stderrBase64, `output ${index} stderr`),
+    };
+  });
+  if (envelope.verificationOutputs.length !== verificationOutputs.length) {
+    throw new AgencMalformedResponseError(
+      "run.exportVerified outputs differ from the hashed evidence envelope",
+      wire,
+    );
+  }
+  for (const [index, output] of verificationOutputs.entries()) {
+    const rawEnvelopeOutput = envelope.verificationOutputs[index];
+    if (
+      rawEnvelopeOutput === null ||
+      typeof rawEnvelopeOutput !== "object" ||
+      Array.isArray(rawEnvelopeOutput)
+    ) {
+      throw new AgencMalformedResponseError(
+        `run.exportVerified envelope output ${index} is invalid`,
+        rawEnvelopeOutput,
+      );
+    }
+    const envelopeOutput = rawEnvelopeOutput as Record<string, unknown>;
+    if (
+      envelopeOutput.checkId !== output.checkId ||
+      envelopeOutput.commandDigest !== output.commandDigest ||
+      typeof envelopeOutput.stepId !== "string" ||
+      envelopeOutput.stepId.length === 0
+    ) {
+      throw new AgencMalformedResponseError(
+        `run.exportVerified output ${index} identity differs from its envelope`,
+        envelopeOutput,
+      );
+    }
+    for (const [role, bytes] of [
+      ["verification_stdout", output.stdoutBytes],
+      ["verification_stderr", output.stderrBytes],
+    ] as const) {
+      const streamName =
+        role === "verification_stdout" ? "stdout" : "stderr";
+      const rawStream = envelopeOutput[streamName];
+      if (
+        rawStream === null ||
+        typeof rawStream !== "object" ||
+        Array.isArray(rawStream)
+      ) {
+        throw new AgencMalformedResponseError(
+          `run.exportVerified output ${index} has no ${streamName} envelope`,
+          envelopeOutput,
+        );
+      }
+      const stream = rawStream as Record<string, unknown>;
+      const rawPointer = stream.pointer;
+      if (
+        rawPointer === null ||
+        typeof rawPointer !== "object" ||
+        Array.isArray(rawPointer)
+      ) {
+        throw new AgencMalformedResponseError(
+          `run.exportVerified output ${index} ${streamName} pointer is invalid`,
+          stream,
+        );
+      }
+      const pointer = rawPointer as Record<string, unknown>;
+      const rawStep = pointer.step;
+      if (
+        rawStep === null ||
+        typeof rawStep !== "object" ||
+        Array.isArray(rawStep) ||
+        (rawStep as Record<string, unknown>).stepId !== envelopeOutput.stepId ||
+        pointer.role !== role ||
+        typeof pointer.digest !== "string" ||
+        pointer.digest !== sdkSha256(bytes) ||
+        pointer.bytes !== bytes.byteLength ||
+        pointer.storagePath !==
+          `cas://sha256/${pointer.digest.slice("sha256:".length)}` ||
+        typeof stream.mediaType !== "string" ||
+        stream.mediaType.length === 0
+      ) {
+        throw new AgencMalformedResponseError(
+          `run.exportVerified output ${index} ${streamName} bytes differ from their envelope pointer`,
+          stream,
+        );
+      }
+    }
+  }
+  if (
+    recordBytes.at(-1) !== 0x0a ||
+    recordBytes.includes(0x0d) ||
+    (recordBytes.at(0) === 0xef &&
+      recordBytes.at(1) === 0xbb &&
+      recordBytes.at(2) === 0xbf)
+  ) {
+    throw new AgencMalformedResponseError(
+      "run.exportVerified record is not canonical LF-terminated JSON",
+      wire,
+    );
+  }
+  let recordText: string;
+  let recordValue: unknown;
+  try {
+    recordText = new TextDecoder("utf-8", { fatal: true }).decode(
+      recordBytes.subarray(0, -1),
+    );
+    recordValue = JSON.parse(recordText) as unknown;
+  } catch (error) {
+    throw new AgencMalformedResponseError(
+      `run.exportVerified record is unreadable: ${String(error)}`,
+      wire,
+    );
+  }
+  if (
+    recordValue === null ||
+    typeof recordValue !== "object" ||
+    Array.isArray(recordValue) ||
+    sdkCanonicalJson(recordValue) !== recordText
+  ) {
+    throw new AgencMalformedResponseError(
+      "run.exportVerified record is not exact canonical JSON",
+      wire,
+    );
+  }
+  const record = recordValue as Record<string, unknown>;
+  if (
+    record.runId !== envelope.runId ||
+    record.specDigest !== envelope.specDigest ||
+    record.documentDigest !== envelope.recordDigest
+  ) {
+    throw new AgencMalformedResponseError(
+      "run.exportVerified record differs from the hashed evidence envelope",
+      wire,
+    );
+  }
+  return {
+    schemaVersion: wire.schemaVersion,
+    recordBytes,
+    evidenceEnvelopeBytes,
+    artifacts,
+    verificationOutputs,
+    exportRootDigest: wire.exportRootDigest as `sha256:${string}`,
+  };
 }
 
 /** Decision returned by a permission callback. */
@@ -1018,6 +1450,55 @@ export class AgencClient {
   /** Export a bounded, hashed canonical run-journal evidence page. */
   runEvidence(params: RunEvidenceParams): Promise<RunEvidenceResult> {
     return this.request("run.evidence", params);
+  }
+
+  /**
+   * Verify a complete sealed workflow export and decode its exact bytes.
+   * Caller digests are constraints: a mismatch rejects instead of selecting
+   * or relabeling another record.
+   */
+  async exportVerifiedRun(
+    input: ExportVerifiedRunInput,
+  ): Promise<ExportVerifiedRunResult> {
+    const maximumBytes = input.maximumBytes ?? VERIFIED_EXPORT_MAXIMUM_BYTES;
+    if (
+      !Number.isSafeInteger(maximumBytes) ||
+      maximumBytes < 1 ||
+      maximumBytes > VERIFIED_EXPORT_MAXIMUM_BYTES
+    ) {
+      throw new RangeError(
+        `maximumBytes must be within 1..${VERIFIED_EXPORT_MAXIMUM_BYTES}`,
+      );
+    }
+    for (const [label, digest] of [
+      ["expectedSpecDigest", input.expectedSpecDigest],
+      ["expectedRecordDigest", input.expectedRecordDigest],
+      ["expectedEvidenceDigest", input.expectedEvidenceDigest],
+    ] as const) {
+      if (!SHA256_DIGEST_PATTERN.test(digest)) {
+        throw new TypeError(`${label} must be a lowercase SHA-256 digest`);
+      }
+    }
+    const params: RunExportVerifiedParams = {
+      runId: input.coreRunId,
+      expectedSpecDigest: input.expectedSpecDigest,
+      expectedRecordDigest: input.expectedRecordDigest,
+      expectedEvidenceDigest: input.expectedEvidenceDigest,
+      ...(input.maximumBytes !== undefined
+        ? { maximumBytes: input.maximumBytes }
+        : {}),
+    };
+    const decoded = decodeVerifiedExport(
+      await this.request("run.exportVerified", params),
+      maximumBytes,
+    );
+    if (decoded.exportRootDigest !== input.expectedEvidenceDigest) {
+      throw new AgencMalformedResponseError(
+        "run.exportVerified response changed the expected evidence digest",
+        decoded,
+      );
+    }
+    return decoded;
   }
 
   /** Tree-scoped durable run cancellation. */

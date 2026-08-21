@@ -145,7 +145,8 @@ export async function runRequiredVerification(opts: {
     mediaType: "application/json",
   });
   const allPassed = records.every(
-    (record) => record.exitCode === 0 && !record.timedOut,
+    (record) =>
+      record.exitCode === 0 && !record.timedOut && !record.truncated,
   );
   return { records, excerpts, testResult, allPassed };
 }

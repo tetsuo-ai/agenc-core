@@ -18,6 +18,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,6 +31,10 @@ import {
   reconstructVerifiedChange,
 } from "../../src/workflow/evidence-reconstruction.js";
 import { WORKFLOW_LOCAL_ANCHOR_SECRET_FILENAME } from "../../src/workflow/local-anchor.js";
+import {
+  canonicalizeJson,
+  computeDocumentDigest,
+} from "../../src/eval-contract/canonical-json.js";
 import { buildM5Harness, type M5Harness } from "./fixtures/m5-harness.js";
 import { seedFixtureRepo } from "./fixtures/m5-exit-shared.js";
 
@@ -204,4 +209,42 @@ describe("M5 evidence-only reconstruction", () => {
       failure: "anchor_material_missing",
     });
   });
+
+  it("rejects conflicting pointers that share one artifact identity", async () => {
+    const { home, bundleDir } = await runCompletedWorkflow();
+    const exported = exportBundle(home, bundleDir);
+    const recordPath = join(exported, "verified-change-record.json");
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as Record<
+      string,
+      unknown
+    > & {
+      documentDigest: string;
+      review: { artifact: { recordedAt: string } };
+    };
+    record.review.artifact.recordedAt = "2099-01-01T00:00:00.000Z";
+    const { documentDigest: _old, ...body } = record;
+    record.documentDigest = computeDocumentDigest(body);
+    writeFileSync(recordPath, `${canonicalizeJson(record)}\n`, { mode: 0o600 });
+
+    await expect(reconstructVerifiedChange(exported)).rejects.toMatchObject({
+      failure: "record_invalid",
+    });
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "refuses a verified-change record reached through a symbolic link",
+    async () => {
+      const { home, bundleDir } = await runCompletedWorkflow();
+      const exported = exportBundle(home, bundleDir);
+      const recordPath = join(exported, "verified-change-record.json");
+      const outside = join(stateDir, "outside-record.json");
+      copyFileSync(recordPath, outside);
+      rmSync(recordPath);
+      symlinkSync(outside, recordPath);
+
+      await expect(reconstructVerifiedChange(exported)).rejects.toMatchObject({
+        failure: "record_invalid",
+      });
+    },
+  );
 });

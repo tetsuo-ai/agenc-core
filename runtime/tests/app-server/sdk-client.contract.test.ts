@@ -105,6 +105,7 @@ describe("AgenC SDK daemon client wrapper", () => {
           },
           "run.start": {
             runId: "run_sdk_wf",
+            idempotentReplay: false,
             specDigest: `sha256:${"a".repeat(64)}`,
             baseCommit: "b".repeat(40),
             baseDirty: { dirty: false, fileCount: 0 },
@@ -140,6 +141,7 @@ describe("AgenC SDK daemon client wrapper", () => {
     await expect(
       client.startRun({
         goal: "Fix the reported bug",
+        clientRequestId: "sdk-run-start-0001",
         cwd: "/workspace/repo",
         reviewerModel: "reviewer-model",
         requiredVerification: [{ label: "unit", script: "npm test" }],
@@ -183,6 +185,7 @@ describe("AgenC SDK daemon client wrapper", () => {
         method: "run.start",
         params: {
           goal: "Fix the reported bug",
+          clientRequestId: "sdk-run-start-0001",
           cwd: "/workspace/repo",
           reviewerModel: "reviewer-model",
           requiredVerification: [{ label: "unit", script: "npm test" }],

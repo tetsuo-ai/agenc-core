@@ -441,6 +441,8 @@ export const RESERVED_RUN_METHODS = [
   "run.replay",
   /** Machine-readable evidence bundle export (evidence-ledger backed). */
   "run.evidence",
+  /** Strict sealed verified-change export with exact artifact/output bytes. */
+  "run.exportVerified",
   /** Tree-scoped cancel: parent + queued + running descendants. */
   "run.cancel",
   /** Start the M5 verified-change workflow as a durable run (contract-change PR, additive). */
@@ -565,6 +567,8 @@ export interface WorkflowSpec {
   };
   /** Required verification commands; every one must exit 0 for completion. */
   readonly requiredVerification: readonly {
+    /** Stable caller identity, frozen into the spec and evidence export. */
+    readonly id: string;
     readonly label: string;
     readonly script: string;
   }[];
@@ -589,6 +593,8 @@ export interface RunArtifactPointer {
     | "effect_log"
     | "risk_register"
     | "base_state"
+    | "verification_stdout"
+    | "verification_stderr"
     | "diagnostic";
   readonly digest: `sha256:${string}`;
   readonly bytes: number;

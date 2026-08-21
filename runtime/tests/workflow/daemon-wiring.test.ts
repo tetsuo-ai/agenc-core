@@ -374,6 +374,32 @@ describe("createDaemonWorkflowController — per-run durability resolution", () 
     wiring.close();
   });
 
+  it("keeps a deterministic run identity bound to one repository across the daemon", async () => {
+    const { wiring } = makeWiring();
+    const params = {
+      goal: "fix a bug in project B",
+      repoPath: projectB.cwd,
+      reviewerModel: "test-reviewer",
+      requiredVerification: [{ label: "unit", script: "run-tests" }],
+      runId: "wf-daemon-wide-idempotency",
+    } as const;
+    const started = await wiring.controller.start(params);
+    await wiring.controller.awaitRun(started.runId);
+
+    await expect(wiring.controller.start(params)).resolves.toMatchObject({
+      runId: started.runId,
+      idempotentReplay: true,
+      specDigest: started.specDigest,
+    });
+    await expect(
+      wiring.controller.start({ ...params, repoPath: projectA.cwd }),
+    ).rejects.toThrow(/already bound to different start parameters/u);
+    expect(
+      projectA.repo.getEffect(started.runId, "workflow.intake"),
+    ).toBeUndefined();
+    wiring.close();
+  });
+
   it("resumeOpenWorkflows sweeps every known project database", async () => {
     // Leave an intake-interrupted run in project B (spec never durable):
     // the sweep must find it in the non-primary database and fail it closed.

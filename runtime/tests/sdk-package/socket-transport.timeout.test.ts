@@ -92,5 +92,46 @@ describe.skipIf(process.platform === "win32")(
       await vi.advanceTimersByTimeAsync(25);
       await rejection;
     });
+
+    it("admits a bounded export response above the normal 16 MiB frame ceiling", async () => {
+      root = await mkdtemp(join(tmpdir(), "agenc-sdk-export-socket-"));
+      const socketPath = join(root, "daemon.sock");
+      server = createServer((socket) => {
+        serverSocket = socket;
+        socket.on("error", () => {});
+      });
+      server.listen(socketPath);
+      await once(server, "listening");
+
+      transport = await AgencSocketTransport.connect({
+        socketPath,
+        requestTimeoutMs: 30_000,
+      });
+      const digest = `sha256:${"0".repeat(64)}`;
+      const responsePromise = transport.request({
+        jsonrpc: "2.0",
+        id: "large-export",
+        method: "run.exportVerified",
+        params: {
+          runId: "run-large-export",
+          expectedSpecDigest: digest,
+          expectedRecordDigest: digest,
+          expectedEvidenceDigest: digest,
+        },
+      });
+      const padding = "x".repeat(17 * 1024 * 1024);
+      serverSocket!.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: "large-export",
+          result: { padding },
+        })}\n`,
+      );
+
+      const response = (await responsePromise) as unknown as {
+        result: { padding: string };
+      };
+      expect(response.result.padding).toHaveLength(padding.length);
+    });
   },
 );

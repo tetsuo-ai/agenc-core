@@ -29,8 +29,9 @@ the merge serializer spends its life reconciling them. This freeze is the
   `runtime/src/app-server/background-agent-runner.ts` and serve it via
   `run.result`.
 - Reserved daemon methods (`run.status`, `run.result`, `run.replay`,
-  `run.evidence`, `run.cancel`) are added to `AGENC_DAEMON_METHODS` +
-  dispatcher routing as they land; names are frozen here.
+  `run.evidence`, `run.exportVerified`, `run.cancel`) are added to
+  `AGENC_DAEMON_METHODS` + dispatcher routing as they land; names are frozen
+  here.
 
 ## 2. Admission + budget reservations (M3)
 

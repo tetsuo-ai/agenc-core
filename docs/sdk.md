@@ -76,10 +76,16 @@ Key `AgencClient` methods:
 - `listAgents()` / `stopAgent(id)` / `agentLogs(id)`
 - `startRun(params)` → start the M5 verified-change workflow as a durable
   daemon run (`run.start`; resolves after the intake commit with
-  `{ runId, specDigest, baseCommit, baseDirty }`)
+  `{ runId, idempotentReplay, specDigest, baseCommit, baseDirty }`). Supply a
+  stable daemon-wide `clientRequestId` when a caller must safely retry after a
+  disconnect: exact parameters return the committed intake, while any attempt
+  to rebind that identity fails closed. The identifier must be 8-200 ASCII
+  characters, begin with a letter or digit, and otherwise contain only letters,
+  digits, `.`, `_`, `:`, or `-`.
 - `runStatus(id)` / `runResult(id)` / `replayRun(params)` /
-  `reattachRun(options)` / `runEvidence(params)` / `cancelRun(id, reason?)`
-- `request(method, params)` → raw typed JSON-RPC for any of the **53** daemon methods
+  `reattachRun(options)` / `runEvidence(params)` /
+  `exportVerifiedRun(constraints)` / `cancelRun(id, reason?)`
+- `request(method, params)` → raw typed JSON-RPC for any of the **54** daemon methods
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 
 Permission requests with no registered handler are **denied** (never granted)
@@ -201,7 +207,7 @@ const started = await client.startRun({
   cwd: "/abs/path/to/repo",
   reviewerModel: "grok-4.5",
   permissionMode: "acceptEdits",
-  requiredVerification: [{ label: "unit", script: "npm test" }],
+  requiredVerification: [{ id: "unit", label: "unit", script: "npm test" }],
 });
 // started: { runId, specDigest, baseCommit, baseDirty }
 ```
@@ -215,6 +221,15 @@ durable terminal, and `runEvidence` adds the sealed evidence `bundle`
 pointers). The workflow demands at least one required verification command;
 `completed` is refused without passing commands, a `VERDICT: PASS`
 verification agent, and a zero-blocker independent review.
+
+After a completed run, `runEvidence` exposes the immutable
+`recordDigest`/`exportRootDigest` coordinates. Pass those coordinates back as
+constraints to `exportVerifiedRun`; it re-verifies the sealed ledger and
+returns the exact canonical record, evidence envelope, non-stream artifacts,
+and stdout/stderr bytes without rerunning a command. A missing byte, changed
+digest, non-completed terminal, truncated check, or caller-coordinate mismatch
+fails closed with a typed daemon/protocol error. Both daemon and SDK enforce a
+64 MiB raw-evidence ceiling.
 
 ### Durable run inspection
 
@@ -277,7 +292,7 @@ other runs. `run.evidence` declares
 that compatibility source, together with an explicit completeness value and
 content hashes.
 
-## Daemon method surface (53 methods)
+## Daemon method surface (54 methods)
 
 Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 (order pinned to the runtime registry):
@@ -286,7 +301,7 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | lifecycle           | `initialize`, `request.cancel`                                                                                                                                                                                                                          |
 | agents              | `agent.create`, `agent.list`, `agent.attach`, `agent.stop`, `agent.logs`                                                                                                                                                                                |
-| runs                | `run.start`, `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.cancel`                                                                                                                                                                     |
+| runs                | `run.start`, `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.exportVerified`, `run.cancel`                                                                                                                                                |
 | CSV review          | `csvJob.review.list`, `csvJob.review.show`, `csvJob.review.resolve`                                                                                                                                                                                     |
 | sessions            | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.transcript.v2`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.addServer` |
 | messaging           | `message.send`, `message.stream`                                                                                                                                                                                                                        |

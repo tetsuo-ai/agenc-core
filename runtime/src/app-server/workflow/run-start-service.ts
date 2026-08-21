@@ -8,6 +8,8 @@
  * rail through the existing `recordAgentRun` path.
  */
 
+import { createHash } from "node:crypto";
+
 import { findGitRoot } from "../../agents/worktree.js";
 import type {
   RunStartParams,
@@ -50,6 +52,15 @@ export function workflowRunObjective(goal: string): string {
       ? `${flattened.slice(0, OBJECTIVE_GOAL_PREFIX_LIMIT)}…`
       : flattened;
   return `verified-change: ${prefix}`;
+}
+
+/** Domain-separated daemon run id for one public idempotent start scope. */
+export function workflowRunIdForClientRequest(clientRequestId: string): string {
+  const digest = createHash("sha256")
+    .update("agenc.run.start.client-request.v1\0", "utf8")
+    .update(clientRequestId, "utf8")
+    .digest("hex");
+  return `wf-client-${digest}`;
 }
 
 export interface DaemonWorkflowStartServiceOptions {
@@ -100,6 +111,9 @@ export class DaemonWorkflowStartService {
     const startParams: WorkflowStartParams = {
       goal: params.goal,
       repoPath,
+      ...(params.clientRequestId !== undefined
+        ? { runId: workflowRunIdForClientRequest(params.clientRequestId) }
+        : {}),
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined
         ? { provider: params.provider }
@@ -146,7 +160,10 @@ export class DaemonWorkflowStartService {
       }
       throw error;
     }
-    if (this.#options.recordAgentRun !== undefined) {
+    if (
+      !started.idempotentReplay &&
+      this.#options.recordAgentRun !== undefined
+    ) {
       const at = this.#now().toISOString();
       try {
         await this.#options.recordAgentRun({
@@ -169,6 +186,7 @@ export class DaemonWorkflowStartService {
     }
     return {
       runId: started.runId,
+      idempotentReplay: started.idempotentReplay,
       specDigest: started.specDigest,
       baseCommit: started.baseCommit,
       baseDirty: {

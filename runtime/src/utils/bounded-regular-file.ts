@@ -42,7 +42,7 @@ export function readBoundedRegularFileSync(
 ): string {
   assertMaxBytes(maxBytes);
   let descriptor: number | undefined;
-  let value: string | undefined;
+  let value: Buffer | undefined;
   let primaryError: unknown;
   try {
     const before = lstatSync(path, { bigint: true });
@@ -54,11 +54,21 @@ export function readBoundedRegularFileSync(
     const opened = fstatSync(descriptor, { bigint: true });
     const afterOpen = lstatSync(path, { bigint: true });
     assertSameRegularFile(before, opened, afterOpen);
-    value = readBoundedDescriptorSync(descriptor, maxBytes);
+    if (opened.size > BigInt(maxBytes)) {
+      throw new BoundedRegularFileError(
+        `regular file exceeds ${maxBytes} bytes`,
+      );
+    }
+    value = readBoundedDescriptorSync(descriptor, Number(opened.size));
     hooks.afterRead?.();
     const afterRead = fstatSync(descriptor, { bigint: true });
     const pathAfterRead = lstatSync(path, { bigint: true });
     assertSameRegularFile(before, opened, afterOpen, afterRead, pathAfterRead);
+    if (afterRead.size !== BigInt(value.byteLength)) {
+      throw new BoundedRegularFileError(
+        "regular file length changed while reading",
+      );
+    }
   } catch (error) {
     primaryError = error;
   }
@@ -72,7 +82,7 @@ export function readBoundedRegularFileSync(
     }
   }
   throwReadOrCloseError(primaryError, closeError);
-  return value ?? "";
+  return (value ?? Buffer.alloc(0)).toString("utf8");
 }
 
 export async function readBoundedRegularFile(
@@ -80,9 +90,31 @@ export async function readBoundedRegularFile(
   maxBytes: number,
   hooks: BoundedRegularFileAsyncTestHooks = {},
 ): Promise<string> {
+  return (await readBoundedRegularFileBuffer(path, maxBytes, hooks)).toString(
+    "utf8",
+  );
+}
+
+/**
+ * Read exact bytes from a stable regular non-link file without ever allocating
+ * beyond the caller's bound.
+ */
+export async function readBoundedRegularFileBytes(
+  path: string,
+  maxBytes: number,
+  hooks: BoundedRegularFileAsyncTestHooks = {},
+): Promise<Uint8Array> {
+  return readBoundedRegularFileBuffer(path, maxBytes, hooks);
+}
+
+async function readBoundedRegularFileBuffer(
+  path: string,
+  maxBytes: number,
+  hooks: BoundedRegularFileAsyncTestHooks,
+): Promise<Buffer> {
   assertMaxBytes(maxBytes);
   let handle: Awaited<ReturnType<typeof open>> | undefined;
-  let value: string | undefined;
+  let value: Buffer | undefined;
   let primaryError: unknown;
   try {
     const before = await lstat(path, { bigint: true });
@@ -94,11 +126,21 @@ export async function readBoundedRegularFile(
     const opened = await handle.stat({ bigint: true });
     const afterOpen = await lstat(path, { bigint: true });
     assertSameRegularFile(before, opened, afterOpen);
-    value = await readBoundedHandle(handle, maxBytes);
+    if (opened.size > BigInt(maxBytes)) {
+      throw new BoundedRegularFileError(
+        `regular file exceeds ${maxBytes} bytes`,
+      );
+    }
+    value = await readBoundedHandle(handle, Number(opened.size));
     await hooks.afterRead?.();
     const afterRead = await handle.stat({ bigint: true });
     const pathAfterRead = await lstat(path, { bigint: true });
     assertSameRegularFile(before, opened, afterOpen, afterRead, pathAfterRead);
+    if (afterRead.size !== BigInt(value.byteLength)) {
+      throw new BoundedRegularFileError(
+        "regular file length changed while reading",
+      );
+    }
   } catch (error) {
     primaryError = error;
   }
@@ -112,14 +154,14 @@ export async function readBoundedRegularFile(
     }
   }
   throwReadOrCloseError(primaryError, closeError);
-  return value ?? "";
+  return value ?? Buffer.alloc(0);
 }
 
 function readBoundedDescriptorSync(
   descriptor: number,
-  maxBytes: number,
-): string {
-  const buffer = Buffer.allocUnsafe(maxBytes + 1);
+  expectedBytes: number,
+): Buffer {
+  const buffer = Buffer.allocUnsafe(expectedBytes);
   let length = 0;
   while (length < buffer.length) {
     const bytesRead = readSync(
@@ -132,15 +174,14 @@ function readBoundedDescriptorSync(
     if (bytesRead === 0) break;
     length += bytesRead;
   }
-  assertWithinBound(length, maxBytes);
-  return buffer.subarray(0, length).toString("utf8");
+  return buffer.subarray(0, length);
 }
 
 async function readBoundedHandle(
   handle: Awaited<ReturnType<typeof open>>,
-  maxBytes: number,
-): Promise<string> {
-  const buffer = Buffer.allocUnsafe(maxBytes + 1);
+  expectedBytes: number,
+): Promise<Buffer> {
+  const buffer = Buffer.allocUnsafe(expectedBytes);
   let length = 0;
   while (length < buffer.length) {
     const { bytesRead } = await handle.read(
@@ -152,8 +193,7 @@ async function readBoundedHandle(
     if (bytesRead === 0) break;
     length += bytesRead;
   }
-  assertWithinBound(length, maxBytes);
-  return buffer.subarray(0, length).toString("utf8");
+  return buffer.subarray(0, length);
 }
 
 function assertMaxBytes(maxBytes: number): void {
@@ -163,12 +203,6 @@ function assertMaxBytes(maxBytes: number): void {
     maxBytes > 16_777_216
   ) {
     throw new TypeError("bounded regular-file byte limit is invalid");
-  }
-}
-
-function assertWithinBound(length: number, maxBytes: number): void {
-  if (length > maxBytes) {
-    throw new BoundedRegularFileError(`regular file exceeds ${maxBytes} bytes`);
   }
 }
 

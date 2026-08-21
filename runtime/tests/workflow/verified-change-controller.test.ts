@@ -228,6 +228,7 @@ class MemoryLedger implements WorkflowEvidenceLedger {
   readonly records: VerifiedChangeRecord[] = [];
   #eventIds = new Set<string>();
   #eventCount = 1;
+  #payloadBytes = 0;
   #headDigest: Sha256Digest;
   sealed = false;
   sealDigest?: string;
@@ -250,6 +251,7 @@ class MemoryLedger implements WorkflowEvidenceLedger {
     if (!this.#eventIds.has(eventId)) {
       this.#eventIds.add(eventId);
       this.#eventCount += 1;
+      this.#payloadBytes += input.bytes.byteLength;
       this.#headDigest = sha256Digest(`${this.#headDigest}|${eventId}`);
       this.recordedRoles.push(input.role);
     }
@@ -268,6 +270,7 @@ class MemoryLedger implements WorkflowEvidenceLedger {
       eventCount: this.corruptHead ? 0 : this.#eventCount,
       headEventDigest: this.#headDigest,
       sealed: this.sealed,
+      payloadBytes: this.#payloadBytes,
     };
   }
 

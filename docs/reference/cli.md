@@ -323,10 +323,12 @@ cursor. `evidence` adds source/completeness metadata and SHA-256 hashes for
 mechanical review; for workflow runs it also includes a `bundle` block
 describing the sealed per-run evidence ledger
 (`<agencHome>/run-evidence/<run-id>/`): `sealed`, the verified-change
-`recordDigest`, the ledger path, and every artifact pointer
-(`cas://sha256/...`). The exported bundle is self-contained — hash chain,
-per-command records, patch/changed-file digests, review output, and terminal
-status are re-verifiable offline from the exported bytes alone.
+`recordDigest`, the installed `exportRootDigest` when available, the ledger
+path, and every non-stream artifact pointer (`cas://sha256/...`). Embedders
+that need exact self-contained bytes use the public SDK
+`exportVerifiedRun(...)`; it re-verifies the sealed hash chain and returns the
+canonical record, envelope, artifacts, and command stdout/stderr without
+rerunning checks.
 `cancel` durably locks the run tree, cancels queued
 descendants, and propagates to running descendants without deleting partial
 evidence.

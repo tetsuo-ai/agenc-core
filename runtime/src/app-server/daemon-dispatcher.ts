@@ -88,6 +88,7 @@ import {
   type AgentLogsParams,
   type AgentStopParams,
   type RunEvidenceParams,
+  type RunExportVerifiedParams,
   type RunReplayParams,
   type RunResultParams,
   type RunStatusParams,
@@ -283,6 +284,7 @@ function buildServerCapabilities(
     "run.result": hasMethod(inputs.runInspection, "result"),
     "run.replay": hasMethod(inputs.runInspection, "replay"),
     "run.evidence": hasMethod(inputs.runInspection, "evidence"),
+    "run.exportVerified": hasMethod(inputs.runInspection, "exportVerified"),
     "run.cancel": hasMethod(agentManager, "cancelRunTree"),
     "run.start": hasMethod(inputs.workflow, "startRun"),
     "csvJob.review.list": hasMethod(inputs.csvJobReview, "list"),
@@ -509,7 +511,7 @@ export interface AgenCDaemonDispatcherOptions {
   readonly realtime?: AgenCRealtimeRpcHandlers;
   readonly runInspection?: Pick<
     AgenCDaemonRunInspectionService,
-    "status" | "result" | "replay" | "evidence"
+    "status" | "result" | "replay" | "evidence" | "exportVerified"
   >;
   /** M5 verified-change workflow `run.start` seam (omit = not implemented). */
   readonly workflow?: AgenCDaemonWorkflowStartService;
@@ -616,7 +618,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #runInspection:
     | Pick<
         AgenCDaemonRunInspectionService,
-        "status" | "result" | "replay" | "evidence"
+        "status" | "result" | "replay" | "evidence" | "exportVerified"
       >
     | undefined;
   readonly #workflow: AgenCDaemonWorkflowStartService | undefined;
@@ -890,6 +892,16 @@ export class AgenCDaemonJsonRpcDispatcher {
         return successResponse(
           id,
           await this.#runInspection.evidence(validateRunEvidenceParams(params)),
+        );
+      case "run.exportVerified":
+        if (this.#runInspection === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#runInspection.exportVerified(
+            validateRunExportVerifiedParams(params),
+          ),
         );
       case "run.cancel":
         return successResponse(
@@ -2445,6 +2457,7 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
     methodName: "run.start",
     stringFields: [
       "goal",
+      "clientRequestId",
       "cwd",
       "model",
       "provider",
@@ -2457,6 +2470,17 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
     valueFields: ["requiredVerification"],
   });
   validateRequiredString(validated, "run.start", "goal");
+  if (validated.clientRequestId !== undefined) {
+    const clientRequestId = validated.clientRequestId;
+    if (
+      typeof clientRequestId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$/u.test(clientRequestId)
+    ) {
+      throw invalidParams(
+        "run.start param 'clientRequestId' must be 8-200 characters, start with an ASCII letter or digit, and contain only letters, digits, '.', '_', ':', or '-'",
+      );
+    }
+  }
   let cwd: string | undefined;
   if (validated.cwd !== undefined) {
     // Same DAE-02 discipline as agent.create/session.create: an absolute,
@@ -2517,7 +2541,7 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
       }
       validateObjectShape(entry, {
         methodName: `run.start.requiredVerification[${index}]`,
-        stringFields: ["label", "script"],
+        stringFields: ["id", "label", "script"],
       });
       validateRequiredString(
         entry,
@@ -2691,6 +2715,54 @@ function validateRunReplayParams(params: JsonObject): RunReplayParams {
 
 function validateRunEvidenceParams(params: JsonObject): RunEvidenceParams {
   return validateRunCursorParams(params, "run.evidence") as RunEvidenceParams;
+}
+
+function validateRunExportVerifiedParams(
+  params: JsonObject,
+): RunExportVerifiedParams {
+  const methodName = "run.exportVerified";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: [
+      "runId",
+      "expectedSpecDigest",
+      "expectedRecordDigest",
+      "expectedEvidenceDigest",
+    ],
+    numberFields: ["maximumBytes"],
+  });
+  for (const field of [
+    "runId",
+    "expectedSpecDigest",
+    "expectedRecordDigest",
+    "expectedEvidenceDigest",
+  ] as const) {
+    validateRequiredString(validated, methodName, field);
+  }
+  for (const field of [
+    "expectedSpecDigest",
+    "expectedRecordDigest",
+    "expectedEvidenceDigest",
+  ] as const) {
+    if (!/^sha256:[0-9a-f]{64}$/u.test(String(validated[field]))) {
+      throw invalidParams(
+        `${methodName} param '${field}' must be a lowercase SHA-256 digest`,
+      );
+    }
+  }
+  const maximumBytes = validated.maximumBytes;
+  if (
+    maximumBytes !== undefined &&
+    (typeof maximumBytes !== "number" ||
+      !Number.isSafeInteger(maximumBytes) ||
+      maximumBytes < 1 ||
+      maximumBytes > 64 * 1024 * 1024)
+  ) {
+    throw invalidParams(
+      `${methodName} param 'maximumBytes' must be an integer within 1..67108864`,
+    );
+  }
+  return validated as RunExportVerifiedParams;
 }
 
 function validateRunIdOnlyParams(

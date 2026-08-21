@@ -19,6 +19,7 @@
     "run.result",
     "run.replay",
     "run.evidence",
+    "run.exportVerified",
     "run.cancel",
     "run.start",
     "csvJob.review.list",
@@ -32,6 +33,7 @@
     "session.clear",
     "session.snapshot",
     "session.transcript",
+    "session.transcript.v2",
     "session.cancelTurn",
     "session.resolveToolCall",
     "session.mcp.addServer",
@@ -56,6 +58,7 @@
     "health.ready",
     "health.stats",
     "daemon.reload",
+    "daemon.shutdown",
     "auth.login",
     "auth.whoami",
     "auth.logout"
@@ -400,6 +403,39 @@
         "runId"
       ]
     },
+    "RunExportVerifiedParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expectedSpecDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "expectedRecordDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "expectedEvidenceDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "maximumBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        }
+      },
+      "required": [
+        "runId",
+        "expectedSpecDigest",
+        "expectedRecordDigest",
+        "expectedEvidenceDigest"
+      ]
+    },
     "RunCancelParams": {
       "type": "object",
       "additionalProperties": false,
@@ -420,6 +456,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
         "label": {
           "type": "string",
           "minLength": 1
@@ -745,6 +785,19 @@
       ]
     },
     "SessionTranscriptParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
+    "SessionTranscriptV2Params": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -2160,6 +2213,19 @@
       "additionalProperties": false,
       "properties": {}
     },
+    "DaemonShutdownParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instanceId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "instanceId"
+      ]
+    },
     "AuthLoginParams": {
       "type": "object",
       "additionalProperties": false,
@@ -2211,6 +2277,9 @@
           "$ref": "#/definitions/RunEvidenceRequest"
         },
         {
+          "$ref": "#/definitions/RunExportVerifiedRequest"
+        },
+        {
           "$ref": "#/definitions/RunCancelRequest"
         },
         {
@@ -2248,6 +2317,9 @@
         },
         {
           "$ref": "#/definitions/SessionTranscriptRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionTranscriptV2Request"
         },
         {
           "$ref": "#/definitions/SessionCancelTurnRequest"
@@ -2320,6 +2392,9 @@
         },
         {
           "$ref": "#/definitions/DaemonReloadRequest"
+        },
+        {
+          "$ref": "#/definitions/DaemonShutdownRequest"
         },
         {
           "$ref": "#/definitions/AuthLoginRequest"
@@ -3057,6 +3132,30 @@
         "params"
       ]
     },
+    "RunExportVerifiedRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "run.exportVerified"
+        },
+        "params": {
+          "$ref": "#/definitions/RunExportVerifiedParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
     "RunCancelRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -3360,6 +3459,30 @@
         },
         "params": {
           "$ref": "#/definitions/SessionTranscriptParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "SessionTranscriptV2Request": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.transcript.v2"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionTranscriptV2Params"
         }
       },
       "required": [
@@ -3938,6 +4061,30 @@
         "jsonrpc",
         "id",
         "method"
+      ]
+    },
+    "DaemonShutdownRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "daemon.shutdown"
+        },
+        "params": {
+          "$ref": "#/definitions/DaemonShutdownParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
       ]
     },
     "AuthLoginRequest": {

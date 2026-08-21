@@ -77,6 +77,7 @@ import {
   type VerifiedChangeReviewRecord,
   type VerifiedChangeStepRecord,
 } from "../../workflow/evidence-record.js";
+import { WORKFLOW_ARTIFACT_MEDIA_TYPES } from "../../workflow/artifact-evidence.js";
 import {
   extractBlockers,
   ReviewParseError,
@@ -285,6 +286,8 @@ export interface WorkflowEvidenceLedgerHead {
   readonly eventCount: number;
   readonly headEventDigest: Sha256Digest;
   readonly sealed: boolean;
+  /** Sum of all hash-chained event payload sizes. */
+  readonly payloadBytes: number;
 }
 
 /**
@@ -298,8 +301,8 @@ export interface WorkflowEvidenceLedger extends EvidenceArtifactSink {
   head(): WorkflowEvidenceLedgerHead;
   readArtifact(pointer: RunArtifactPointer): Promise<Uint8Array>;
   seal(sealedAt: string): Promise<{ readonly sealDigest: string }>;
-  /** Persist the final record OUTSIDE the sealed ledger (best-effort). */
-  persistRecord?(record: VerifiedChangeRecord): Promise<void>;
+  /** Persist the final record OUTSIDE the sealed ledger before completion. */
+  persistRecord(record: VerifiedChangeRecord): Promise<void>;
 }
 
 export interface VerifiedChangeWorkflowControllerDeps {
@@ -338,6 +341,7 @@ export interface WorkflowStartParams {
   readonly unattendedDeny?: readonly string[];
   readonly budget?: WorkflowSpec["budget"];
   readonly requiredVerification: readonly {
+    readonly id?: string;
     readonly label: string;
     readonly script: string;
   }[];
@@ -349,6 +353,7 @@ export interface WorkflowStartParams {
 
 export interface WorkflowStartResult {
   readonly runId: string;
+  readonly idempotentReplay: boolean;
   readonly specDigest: Sha256Digest;
   readonly baseCommit: string;
   readonly baseDirty: WorkflowSpec["baseDirty"];
@@ -378,6 +383,8 @@ const ZERO_ESTIMATE = {
 const SPAWN_ESTIMATE_INPUT_TOKENS = 1_000_000;
 const SPAWN_ESTIMATE_OUTPUT_TOKENS = 200_000;
 const EVIDENCE_MESSAGE_LIMIT = 20_000;
+const MAX_VERIFICATION_STREAM_BYTES = 8 * 1024 * 1024;
+const MAX_VERIFIED_EXPORT_CAPTURE_BYTES = 64 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Internal control flow
@@ -503,6 +510,7 @@ export class VerifiedChangeWorkflowController {
   readonly #now: () => Date;
   readonly #newRunId: () => string;
   readonly #active = new Map<string, Promise<void>>();
+  readonly #startQueues = new Map<string, Promise<void>>();
 
   constructor(deps: VerifiedChangeWorkflowControllerDeps) {
     this.#deps = deps;
@@ -526,8 +534,45 @@ export class VerifiedChangeWorkflowController {
         "verified-change workflow requires at least one verification command",
       );
     }
+    const verificationIds = new Set<string>();
+    for (const [index, command] of params.requiredVerification.entries()) {
+      const id = command.id ?? `check-${index + 1}`;
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(id)) {
+        throw new TypeError(
+          `verification command ${index + 1} has an invalid stable id`,
+        );
+      }
+      if (verificationIds.has(id)) {
+        throw new TypeError(`duplicate verification command id: ${id}`);
+      }
+      verificationIds.add(id);
+    }
     const runId = params.runId ?? this.#newRunId();
+    const previous = this.#startQueues.get(runId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.#startWithRunId(params, runId));
+    const tail = current.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#startQueues.set(runId, tail);
+    try {
+      return await current;
+    } finally {
+      if (this.#startQueues.get(runId) === tail) {
+        this.#startQueues.delete(runId);
+      }
+    }
+  }
+
+  async #startWithRunId(
+    params: WorkflowStartParams,
+    runId: string,
+  ): Promise<WorkflowStartResult> {
     const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
+    const replay = this.#existingStart(params, runId, repo);
+    if (replay !== undefined) return replay;
     const journal = await this.#deps.journal.open(runId, {
       repoPath: params.repoPath,
       policy: {
@@ -588,7 +633,111 @@ export class VerifiedChangeWorkflowController {
     this.#active.set(runId, pipeline);
     return {
       runId,
+      idempotentReplay: false,
       specDigest,
+      baseCommit: spec.baseCommit,
+      baseDirty: spec.baseDirty,
+    };
+  }
+
+  #existingStart(
+    params: WorkflowStartParams,
+    runId: string,
+    repo: StateRunDurabilityRepository,
+  ): WorkflowStartResult | undefined {
+    const intake = repo.getEffect(runId, "workflow.intake");
+    if (intake === undefined) {
+      if (
+        repo.listEffects(runId).length > 0 ||
+        repo.getCurrentTerminalResult(runId) !== undefined
+      ) {
+        throw new WorkflowIntakeError(
+          runId,
+          null,
+          "the deterministic run id is already owned by non-intake durable state",
+        );
+      }
+      return undefined;
+    }
+    if (intake.outcome !== "committed") {
+      throw new WorkflowIntakeError(
+        runId,
+        null,
+        `the deterministic intake is ${intake.outcome ?? "unresolved"}`,
+      );
+    }
+    const evidence = readWorkflowStepEvidence(intake);
+    if (
+      evidence.spec === null ||
+      typeof evidence.spec !== "object" ||
+      Array.isArray(evidence.spec)
+    ) {
+      throw new WorkflowIntakeError(
+        runId,
+        null,
+        "the deterministic intake has no durable workflow spec",
+      );
+    }
+    const candidate = evidence.spec as Partial<WorkflowSpec>;
+    const baseDirty = candidate.baseDirty;
+    if (
+      candidate.runId !== runId ||
+      typeof candidate.repoPath !== "string" ||
+      typeof candidate.baseCommit !== "string" ||
+      !/^[a-f0-9]{40,64}$/u.test(candidate.baseCommit) ||
+      baseDirty === undefined ||
+      typeof baseDirty.dirty !== "boolean" ||
+      !Number.isSafeInteger(baseDirty.fileCount) ||
+      baseDirty.fileCount < 0 ||
+      !/^sha256:[a-f0-9]{64}$/u.test(baseDirty.summaryDigest)
+    ) {
+      throw new WorkflowIntakeError(
+        runId,
+        null,
+        "the deterministic intake identity or base state is corrupt",
+      );
+    }
+    const spec = candidate as WorkflowSpec;
+    let persistedDigest: Sha256Digest;
+    try {
+      persistedDigest = computeSpecDigest(spec);
+    } catch (error) {
+      throw new WorkflowIntakeError(
+        runId,
+        null,
+        `the deterministic intake spec is unreadable: ${errorMessage(error)}`,
+      );
+    }
+    if (
+      evidence.specDigest !== undefined &&
+      evidence.specDigest !== persistedDigest
+    ) {
+      throw new WorkflowIntakeError(
+        runId,
+        null,
+        "the deterministic intake digest is corrupt",
+      );
+    }
+    if (spec.repoPath !== params.repoPath) {
+      throw new TypeError(
+        `workflow ${runId} clientRequestId is already bound to different start parameters`,
+      );
+    }
+    const replaySpec = freezeWorkflowSpec(runId, params, {
+      baseCommit: spec.baseCommit,
+      dirty: spec.baseDirty.dirty,
+      fileCount: spec.baseDirty.fileCount,
+      summaryDigest: spec.baseDirty.summaryDigest as Sha256Digest,
+    });
+    if (computeSpecDigest(replaySpec) !== persistedDigest) {
+      throw new TypeError(
+        `workflow ${runId} clientRequestId is already bound to different start parameters`,
+      );
+    }
+    return {
+      runId,
+      idempotentReplay: true,
+      specDigest: persistedDigest,
       baseCommit: spec.baseCommit,
       baseDirty: spec.baseDirty,
     };
@@ -796,6 +945,20 @@ export class VerifiedChangeWorkflowController {
       afterCommitFailpoint: "after_intake_commit",
       execute: async () => {
         ctx.ledger = await this.#deps.evidenceLedger(ctx.spec);
+        const baseState = await ctx.ledger.recordArtifact({
+          step: { runId: ctx.runId, stepId: "workflow.intake" },
+          role: "base_state",
+          bytes: new TextEncoder().encode(
+            canonicalizeJson({
+              schemaVersion: "agenc.workflow.base-state.v1",
+              runId: ctx.runId,
+              specDigest: ctx.specDigest,
+              baseCommit: ctx.spec.baseCommit,
+              baseDirty: ctx.spec.baseDirty,
+            }),
+          ),
+          mediaType: WORKFLOW_ARTIFACT_MEDIA_TYPES.base_state,
+        });
         return {
           outcome: "committed",
           evidence: {
@@ -803,6 +966,7 @@ export class VerifiedChangeWorkflowController {
             attempt: 1,
             spec: ctx.spec,
             specDigest: ctx.specDigest,
+            artifacts: [baseState],
           },
         };
       },
@@ -994,7 +1158,7 @@ export class VerifiedChangeWorkflowController {
         ),
         estimate: ZERO_ESTIMATE,
         execute: async () =>
-          this.#executeVerificationCommand(ctx, command, attempt),
+          this.#executeVerificationCommand(ctx, command, index + 1, attempt),
       });
       const record = result.evidence.command;
       if (result.outcome === "committed" && record !== undefined) {
@@ -1014,13 +1178,14 @@ export class VerifiedChangeWorkflowController {
       }
     }
     const allPassed = records.every(
-      (record) => record.exitCode === 0 && !record.timedOut,
+      (record) =>
+        record.exitCode === 0 && !record.timedOut && !record.truncated,
     );
     const testResult = await ledger.recordArtifact({
       step: { runId: ctx.runId, stepId: verifyAgentStepId(attempt) },
       role: "test_result",
       bytes: new TextEncoder().encode(canonicalizeJson({ commands: records })),
-      mediaType: "application/json",
+      mediaType: WORKFLOW_ARTIFACT_MEDIA_TYPES.test_result,
     });
 
     const agent = await this.#driveEffect(
@@ -1076,7 +1241,12 @@ export class VerifiedChangeWorkflowController {
 
   async #executeVerificationCommand(
     ctx: RunContext,
-    command: { readonly label: string; readonly script: string },
+    command: {
+      readonly id: string;
+      readonly label: string;
+      readonly script: string;
+    },
+    commandIndex: number,
     attempt: number,
   ): Promise<EffectExecution> {
     const handle = this.#requireHandle(ctx);
@@ -1106,6 +1276,40 @@ export class VerifiedChangeWorkflowController {
       stderr = new TextEncoder().encode(errorMessage(error));
       durationMs = Math.round(performance.now() - startedAt);
     }
+    if (
+      stdout.byteLength > MAX_VERIFICATION_STREAM_BYTES ||
+      stderr.byteLength > MAX_VERIFICATION_STREAM_BYTES
+    ) {
+      throw new Error(
+        `verification command ${command.id} output exceeds the ` +
+          `${MAX_VERIFICATION_STREAM_BYTES}-byte per-stream limit`,
+      );
+    }
+    const ledger = this.#requireLedger(ctx);
+    const nextCaptureBytes =
+      ledger.head().payloadBytes + stdout.byteLength + stderr.byteLength;
+    if (nextCaptureBytes > MAX_VERIFIED_EXPORT_CAPTURE_BYTES) {
+      throw new Error(
+        `verification command ${command.id} would exceed the ` +
+          `${MAX_VERIFIED_EXPORT_CAPTURE_BYTES}-byte cumulative evidence limit`,
+      );
+    }
+    const step = {
+      runId: ctx.runId,
+      stepId: verifyCommandStepId(commandIndex, attempt),
+    };
+    const stdoutArtifact = await ledger.recordArtifact({
+      step,
+      role: "verification_stdout",
+      bytes: stdout,
+      mediaType: WORKFLOW_ARTIFACT_MEDIA_TYPES.verification_stdout,
+    });
+    const stderrArtifact = await ledger.recordArtifact({
+      step,
+      role: "verification_stderr",
+      bytes: stderr,
+      mediaType: WORKFLOW_ARTIFACT_MEDIA_TYPES.verification_stderr,
+    });
     const record: VerifiedChangeCommandRecord = {
       label: command.label,
       script: command.script,
@@ -1123,6 +1327,7 @@ export class VerifiedChangeWorkflowController {
         stage: "workflow.verify",
         attempt,
         command: record,
+        artifacts: [stdoutArtifact, stderrArtifact],
         excerpts: {
           stdout: decoder.decode(stdout.subarray(0, 4096)).replace(/�/g, ""),
           stderr: decoder.decode(stderr.subarray(0, 4096)).replace(/�/g, ""),
@@ -1332,15 +1537,79 @@ export class VerifiedChangeWorkflowController {
             },
           };
         }
-        let riskRegister: RunArtifactPointer | undefined;
-        if (risks.length > 0) {
-          riskRegister = await ledger.recordArtifact({
-            step: { runId: ctx.runId, stepId: "workflow.finalize" },
-            role: "risk_register",
-            bytes: new TextEncoder().encode(canonicalizeJson({ risks })),
-            mediaType: "application/json",
-          });
-        }
+        const usage = ctx.usage.any
+          ? {
+              inputTokens: ctx.usage.input,
+              outputTokens: ctx.usage.output,
+              totalTokens: ctx.usage.input + ctx.usage.output,
+              costUsd: ctx.usage.cost,
+            }
+          : null;
+        const artifactStep = {
+          runId: ctx.runId,
+          stepId: "workflow.finalize",
+        };
+        const costUsage = await ledger.recordArtifact({
+          step: artifactStep,
+          role: "cost_usage",
+          bytes: new TextEncoder().encode(
+            canonicalizeJson({
+              schemaVersion: "agenc.workflow.cost-usage.v1",
+              runId: ctx.runId,
+              usage,
+            }),
+          ),
+          mediaType: WORKFLOW_ARTIFACT_MEDIA_TYPES.cost_usage,
+        });
+        const effectLog = await ledger.recordArtifact({
+          step: artifactStep,
+          role: "effect_log",
+          bytes: new TextEncoder().encode(
+            canonicalizeJson({
+              schemaVersion: "agenc.workflow.effect-log.v1",
+              runId: ctx.runId,
+              through: "workflow.finalize.intent",
+              effects: ctx.repo.listEffects(ctx.runId).map((effect) => ({
+                stepId: effect.stepId,
+                epoch: effect.epoch,
+                toolName: effect.toolName,
+                recoveryCategory: effect.recoveryCategory,
+                intentDigest: effect.intentDigest,
+                intentEventId: effect.intentEventId,
+                intentSequence: effect.intentSequence,
+                intentAt: effect.intentAt,
+                ...(effect.outcome !== undefined
+                  ? { outcome: effect.outcome }
+                  : {}),
+                ...(effect.resultDigest !== undefined
+                  ? { resultDigest: effect.resultDigest }
+                  : {}),
+                ...(effect.resultEventId !== undefined
+                  ? { resultEventId: effect.resultEventId }
+                  : {}),
+                ...(effect.resultSequence !== undefined
+                  ? { resultSequence: effect.resultSequence }
+                  : {}),
+                ...(effect.completedAt !== undefined
+                  ? { completedAt: effect.completedAt }
+                  : {}),
+              })),
+            }),
+          ),
+          mediaType: WORKFLOW_ARTIFACT_MEDIA_TYPES.effect_log,
+        });
+        const riskRegister = await ledger.recordArtifact({
+          step: artifactStep,
+          role: "risk_register",
+          bytes: new TextEncoder().encode(
+            canonicalizeJson({
+              schemaVersion: "agenc.workflow.risk-register.v1",
+              runId: ctx.runId,
+              risks,
+            }),
+          ),
+          mediaType: WORKFLOW_ARTIFACT_MEDIA_TYPES.risk_register,
+        });
         hitM5WorkflowFailpoint("after_patch_export_before_seal");
         const seal = await ledger.seal(this.#nowIso());
         return {
@@ -1357,7 +1626,9 @@ export class VerifiedChangeWorkflowController {
             artifacts: [
               exported.patch,
               exported.changedFiles,
-              ...(riskRegister !== undefined ? [riskRegister] : []),
+              costUsage,
+              effectLog,
+              riskRegister,
             ],
           },
         };
@@ -1403,6 +1674,9 @@ export class VerifiedChangeWorkflowController {
         risks,
         ledgerHead: head,
         sealDigest,
+        finishedAt:
+          ctx.repo.getEffect(ctx.runId, "workflow.finalize")?.completedAt ??
+          this.#nowIso(),
       });
     } catch (error) {
       throw new WorkflowHaltError({
@@ -1411,14 +1685,14 @@ export class VerifiedChangeWorkflowController {
         finalMessage: `verified-change record failed self-validation: ${errorMessage(error)}`,
       });
     }
-    if (ledger.persistRecord !== undefined) {
-      try {
-        await ledger.persistRecord(record);
-      } catch (error) {
-        this.#deps.warn(
-          `workflow ${ctx.runId} record persistence failed: ${errorMessage(error)}`,
-        );
-      }
+    try {
+      await ledger.persistRecord(record);
+    } catch (error) {
+      throw new WorkflowHaltError({
+        status: "failed",
+        stopReason: "evidence_invalid",
+        finalMessage: `verified-change record persistence failed: ${errorMessage(error)}`,
+      });
     }
     hitM5WorkflowFailpoint("after_seal_before_terminal");
     const verification = ctx.verification;
@@ -1473,9 +1747,22 @@ export class VerifiedChangeWorkflowController {
       readonly ledgerHead: WorkflowEvidenceLedgerHead;
       /** Ledger seal digest — pins the exported bundle's seal in the record. */
       readonly sealDigest: string;
+      readonly finishedAt: string;
     },
   ): VerifiedChangeRecord {
     const effects = ctx.repo.listEffects(ctx.runId);
+    const verification = ctx.verification;
+    const review = ctx.review;
+    if (verification === undefined || review === undefined) {
+      throw new Error("record assembly requires verification and review context");
+    }
+    const finalVerificationAttempt = Math.max(
+      1,
+      ...effects
+        .map((effect) => readWorkflowStepEvidence(effect))
+        .filter((evidence) => evidence.stage === "workflow.verify")
+        .map((evidence) => evidence.attempt ?? 1),
+    );
     const steps: VerifiedChangeStepRecord[] = [];
     for (const effect of effects) {
       const evidence = readWorkflowStepEvidence(effect);
@@ -1487,6 +1774,17 @@ export class VerifiedChangeWorkflowController {
           : effect.outcome === "committed"
             ? "committed"
             : effect.outcome;
+      const parsedStep = parseWorkflowStepId(effect.stepId);
+      const artifacts = (evidence.artifacts ?? []).filter((artifact) => {
+        if (
+          artifact.role !== "test_result" &&
+          artifact.role !== "verification_stdout" &&
+          artifact.role !== "verification_stderr"
+        ) {
+          return true;
+        }
+        return parsedStep?.attempt === finalVerificationAttempt;
+      });
       steps.push({
         stepId: effect.stepId,
         stage,
@@ -1497,13 +1795,8 @@ export class VerifiedChangeWorkflowController {
         ...(evidence.verdict !== undefined
           ? { verdict: evidence.verdict }
           : {}),
-        artifacts: evidence.artifacts ?? [],
+        artifacts,
       });
-    }
-    const verification = ctx.verification;
-    const review = ctx.review;
-    if (verification === undefined || review === undefined) {
-      throw new Error("record assembly requires verification and review context");
     }
     const usage = ctx.usage.any
       ? {
@@ -1518,7 +1811,7 @@ export class VerifiedChangeWorkflowController {
       specDigest: ctx.specDigest,
       spec: ctx.spec,
       startedAt: ctx.startedAt,
-      finishedAt: this.#nowIso(),
+      finishedAt: input.finishedAt,
       terminal: { status: "completed", stopReason: null, finalMessage: null },
       usage,
       baseCommit: ctx.spec.baseCommit,
@@ -2347,7 +2640,11 @@ function freezeWorkflowSpec(
       ? { unattendedDeny: params.unattendedDeny }
       : {}),
     budget: params.budget ?? {},
-    requiredVerification: params.requiredVerification,
+    requiredVerification: params.requiredVerification.map((command, index) => ({
+      id: command.id ?? `check-${index + 1}`,
+      label: command.label,
+      script: command.script,
+    })),
     maxImplementAttempts:
       params.maxImplementAttempts ?? DEFAULT_MAX_IMPLEMENT_ATTEMPTS,
   };

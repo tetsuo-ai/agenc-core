@@ -132,7 +132,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 | `initialize`                                                                                                | Handshake + capability advertisement                                                                               |
 | `request.cancel`                                                                                            | Cancel an in-flight request                                                                                        |
 | `agent.create` / `agent.list` / `agent.attach` / `agent.stop` / `agent.logs`                                | Background agents                                                                                                  |
-| `run.start` / `run.status` / `run.result` / `run.replay` / `run.evidence` / `run.cancel`                    | Start a verified-change run; inspect durable state, journal replay/evidence, terminal result, or tree cancellation |
+| `run.start` / `run.status` / `run.result` / `run.replay` / `run.evidence` / `run.exportVerified` / `run.cancel` | Idempotently start a verified-change run with `clientRequestId`; inspect durable state, export sealed exact evidence, or cancel the run tree |
 | `csvJob.review.list` / `csvJob.review.show` / `csvJob.review.resolve`                                       | Inspect and settle durable CSV batch-review items                                                                  |
 | `session.create` / `session.list` / `session.attach` / `session.detach`                                     | Session lifecycle                                                                                                  |
 | `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` / `session.transcript.v2` | Session control and identity-bearing history sync                                                                  |
@@ -252,8 +252,16 @@ Run inspection searches discovered project state databases by `runId`:
   Canonical pages declare `workflowEvidenceIncluded: true`; completeness is
   `complete`, `partial`, `journal_gap`, or
   `admission_source_unavailable` for a missing compatibility source.
+- `run.exportVerified` is the non-paged strict byte export. It is available
+  only for a durably completed run with an immutable installed export
+  manifest, requires the caller's spec/record/evidence digests, re-verifies
+  the seal, hash chain, artifact media types, singleton documents, and exact
+  command streams, and never reruns verification. The raw evidence ceiling is
+  64 MiB. Because hashing and decoding that evidence is intentionally heavier,
+  this method remains in the bounded normal FIFO rather than the priority lane.
 
-All four methods use the transport priority lane and bounded indexed queries.
+The four paged/status inspection methods use the transport priority lane and
+bounded indexed queries.
 Before reading, the daemon refreshes the requested run's rebuildable rollout
 projection from its canonical active or archived JSONL source and recovers any
 missing v15 effect or terminal projection. This repair writes indexes/state but

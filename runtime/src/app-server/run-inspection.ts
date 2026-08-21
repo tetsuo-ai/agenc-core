@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import Database from "better-sqlite3";
@@ -11,6 +11,8 @@ import type {
   RunEvidenceBundle,
   RunEvidenceParams,
   RunEvidenceResult,
+  RunExportVerifiedParams,
+  RunExportVerifiedResult,
   RunReplayParams,
   RunReplayResult,
   RunResultParams,
@@ -39,6 +41,21 @@ import { recoverCanonicalRunJournalForRun } from "../state/startup-run-journal-r
 import { buildCanonicalRunReplay } from "./run-journal-replay.js";
 import { readWorkflowStepEvidence } from "./workflow/steps.js";
 import { projectWorkflowStatus } from "./workflow/status-projection.js";
+import {
+  validateVerifiedChangeRecord,
+  type VerifiedChangeRecord,
+} from "../workflow/evidence-record.js";
+import {
+  exportVerifiedRunFromBundle,
+  VerifiedEvidenceExportError,
+  VERIFIED_EVIDENCE_EXPORT_MANIFEST_FILENAME,
+} from "../workflow/verified-evidence-export.js";
+import { sanitizeWorkflowEvidenceIdentifier } from "../workflow/artifact-evidence.js";
+import { canonicalizeJson } from "../eval-contract/canonical-json.js";
+import {
+  readBoundedRegularFileBytes,
+  readBoundedRegularFileSync,
+} from "../utils/bounded-regular-file.js";
 
 export const DEFAULT_RUN_REPLAY_LIMIT = 100;
 export const MAX_RUN_REPLAY_LIMIT = 200;
@@ -47,7 +64,11 @@ export type AgenCDaemonRunInspectionErrorCode =
   | "INVALID_ARGUMENT"
   | "RUN_ID_AMBIGUOUS"
   | "RUN_NOT_FOUND"
-  | "RUN_NOT_TERMINAL";
+  | "RUN_NOT_TERMINAL"
+  | "EXPORT_UNAVAILABLE"
+  | "EXPORT_CORRUPT"
+  | "EXPORT_MISMATCH"
+  | "EXPORT_LIMIT";
 
 export class AgenCDaemonRunInspectionError extends Error {
   readonly code: AgenCDaemonRunInspectionErrorCode;
@@ -342,6 +363,99 @@ export class AgenCDaemonRunInspectionService {
     });
   }
 
+  /** Strict complete export; unlike run.evidence this operation is never paged. */
+  async exportVerified(
+    params: RunExportVerifiedParams,
+  ): Promise<RunExportVerifiedResult> {
+    const runId = normalizeRunId(params.runId, "run.exportVerified");
+    let terminal: RunResultResult;
+    try {
+      terminal = this.result({ runId });
+    } catch (error) {
+      if (
+        error instanceof AgenCDaemonRunInspectionError &&
+        error.code === "RUN_NOT_TERMINAL"
+      ) {
+        throw new AgenCDaemonRunInspectionError(
+          "EXPORT_UNAVAILABLE",
+          `run.exportVerified: run ${runId} is not durably terminal`,
+        );
+      }
+      throw error;
+    }
+    if (terminal.outcome !== "completed") {
+      throw new AgenCDaemonRunInspectionError(
+        "EXPORT_UNAVAILABLE",
+        `run.exportVerified: run ${runId} ended as ${terminal.outcome}, not completed`,
+      );
+    }
+    if (this.#agencHome === undefined) {
+      throw new AgenCDaemonRunInspectionError(
+        "EXPORT_UNAVAILABLE",
+        "run.exportVerified: daemon evidence home is unavailable",
+      );
+    }
+    const ledgerPath = join(
+      this.#agencHome,
+      "run-evidence",
+      sanitizeWorkflowEvidenceIdentifier(runId),
+    );
+    const manifest = await readInstalledVerifiedExportManifest(ledgerPath);
+    if (manifest.runId !== runId) {
+      throw new AgenCDaemonRunInspectionError(
+        "EXPORT_CORRUPT",
+        "run.exportVerified: installed manifest is bound to another run",
+      );
+    }
+    for (const [label, expected, installed] of [
+      ["spec", params.expectedSpecDigest, manifest.specDigest],
+      ["record", params.expectedRecordDigest, manifest.recordDigest],
+      ["evidence", params.expectedEvidenceDigest, manifest.exportRootDigest],
+    ] as const) {
+      if (expected !== installed) {
+        throw new AgenCDaemonRunInspectionError(
+          "EXPORT_MISMATCH",
+          `run.exportVerified: caller ${label} digest does not match the installed immutable manifest`,
+        );
+      }
+    }
+    try {
+      const exported = await exportVerifiedRunFromBundle(ledgerPath, {
+        coreRunId: runId,
+        expectedSpecDigest: params.expectedSpecDigest,
+        expectedRecordDigest: params.expectedRecordDigest,
+        expectedEvidenceDigest: params.expectedEvidenceDigest,
+        ...(params.maximumBytes !== undefined
+          ? { maximumBytes: params.maximumBytes }
+          : {}),
+      });
+      return {
+        schemaVersion: exported.schemaVersion,
+        recordBase64: Buffer.from(exported.recordBytes).toString("base64"),
+        evidenceEnvelopeBase64: Buffer.from(
+          exported.evidenceEnvelopeBytes,
+        ).toString("base64"),
+        artifacts: exported.artifacts.map((artifact) => ({
+          pointer: workflowArtifactPointer(artifact.pointer),
+          mediaType: artifact.mediaType,
+          bytesBase64: Buffer.from(artifact.bytes).toString("base64"),
+        })),
+        verificationOutputs: exported.verificationOutputs.map((output) => ({
+          checkId: output.checkId,
+          commandDigest: output.commandDigest,
+          stdoutBase64: Buffer.from(output.stdoutBytes).toString("base64"),
+          stderrBase64: Buffer.from(output.stderrBytes).toString("base64"),
+        })),
+        exportRootDigest: exported.exportRootDigest,
+      };
+    } catch (error) {
+      if (error instanceof VerifiedEvidenceExportError) {
+        throw new AgenCDaemonRunInspectionError(error.code, error.message);
+      }
+      throw error;
+    }
+  }
+
   #locate(runId: string): LocatedRun {
     const matches: LocatedRun[] = [];
     const seen = new Set<string>();
@@ -373,6 +487,94 @@ export class AgenCDaemonRunInspectionService {
     }
     return matches[0]!;
   }
+}
+
+interface InstalledVerifiedExportManifest {
+  readonly schemaVersion: "agenc.core.verified-export-manifest.v1";
+  readonly runId: string;
+  readonly specDigest: string;
+  readonly recordDigest: string;
+  readonly exportRootDigest: string;
+}
+
+async function readInstalledVerifiedExportManifest(
+  ledgerPath: string,
+): Promise<InstalledVerifiedExportManifest> {
+  const manifestPath = join(
+    ledgerPath,
+    VERIFIED_EVIDENCE_EXPORT_MANIFEST_FILENAME,
+  );
+  let bytes: Uint8Array;
+  try {
+    bytes = await readBoundedRegularFileBytes(manifestPath, 16 * 1024);
+  } catch (error) {
+    throw new AgenCDaemonRunInspectionError(
+      (error as NodeJS.ErrnoException).code === "ENOENT"
+        ? "EXPORT_UNAVAILABLE"
+        : "EXPORT_CORRUPT",
+      `run.exportVerified: installed manifest is unavailable or unsafe: ${String(error)}`,
+    );
+  }
+  if (
+    bytes.at(-1) !== 0x0a ||
+    bytes.includes(0x0d) ||
+    (bytes.at(0) === 0xef && bytes.at(1) === 0xbb && bytes.at(2) === 0xbf)
+  ) {
+    throw new AgenCDaemonRunInspectionError(
+      "EXPORT_CORRUPT",
+      "run.exportVerified: installed manifest is not canonical LF-terminated UTF-8 JSON",
+    );
+  }
+  let text: string;
+  let value: unknown;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(
+      bytes.subarray(0, -1),
+    );
+    value = JSON.parse(text) as unknown;
+  } catch (error) {
+    throw new AgenCDaemonRunInspectionError(
+      "EXPORT_CORRUPT",
+      `run.exportVerified: installed manifest is unreadable: ${String(error)}`,
+    );
+  }
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    canonicalizeJson(value) !== text
+  ) {
+    throw new AgenCDaemonRunInspectionError(
+      "EXPORT_CORRUPT",
+      "run.exportVerified: installed manifest is not exact canonical JSON",
+    );
+  }
+  const manifest = value as Record<string, unknown>;
+  const digestPattern = /^sha256:[0-9a-f]{64}$/u;
+  if (
+    Object.keys(manifest).sort().join("\0") !==
+      [
+        "exportRootDigest",
+        "recordDigest",
+        "runId",
+        "schemaVersion",
+        "specDigest",
+      ].join("\0") ||
+    manifest.schemaVersion !== "agenc.core.verified-export-manifest.v1" ||
+    typeof manifest.runId !== "string" ||
+    typeof manifest.specDigest !== "string" ||
+    !digestPattern.test(manifest.specDigest) ||
+    typeof manifest.recordDigest !== "string" ||
+    !digestPattern.test(manifest.recordDigest) ||
+    typeof manifest.exportRootDigest !== "string" ||
+    !digestPattern.test(manifest.exportRootDigest)
+  ) {
+    throw new AgenCDaemonRunInspectionError(
+      "EXPORT_CORRUPT",
+      "run.exportVerified: installed manifest violates its closed schema",
+    );
+  }
+  return manifest as unknown as InstalledVerifiedExportManifest;
 }
 
 function hasCanonicalRunState(
@@ -626,34 +828,80 @@ function workflowEvidenceBundle(
     // whole evidence export.
   }
   let recordDigest: string | undefined;
+  let recordArtifacts: readonly RunArtifactPointer[] | undefined;
   try {
-    const record: unknown = JSON.parse(
-      readFileSync(join(ledgerPath, "verified-change-record.json"), "utf8"),
-    );
+    const record = JSON.parse(
+      readBoundedRegularFileSync(
+        join(ledgerPath, "verified-change-record.json"),
+        16 * 1024 * 1024,
+      ),
+    ) as VerifiedChangeRecord;
     if (
-      typeof record === "object" &&
-      record !== null &&
-      typeof (record as { documentDigest?: unknown }).documentDigest ===
-        "string"
+      typeof record.documentDigest === "string" &&
+      /^sha256:[0-9a-f]{64}$/u.test(record.documentDigest)
     ) {
-      recordDigest = (record as { documentDigest: string }).documentDigest;
+      recordDigest = record.documentDigest;
+    }
+    if (validateVerifiedChangeRecord(record).valid) {
+      recordArtifacts = record.steps
+        .flatMap((step) => step.artifacts)
+        .filter(
+          (pointer) =>
+            pointer.role !== "verification_stdout" &&
+            pointer.role !== "verification_stderr",
+        );
     }
   } catch {
     // No persisted record yet (run still open or failed before finalize).
   }
+  let exportRootDigest: string | undefined;
+  try {
+    const manifest = JSON.parse(
+      readBoundedRegularFileSync(
+        join(ledgerPath, VERIFIED_EVIDENCE_EXPORT_MANIFEST_FILENAME),
+        16 * 1024,
+      ),
+    ) as {
+      schemaVersion?: unknown;
+      runId?: unknown;
+      recordDigest?: unknown;
+      exportRootDigest?: unknown;
+    };
+    if (
+      manifest.schemaVersion === "agenc.core.verified-export-manifest.v1" &&
+      manifest.runId === runId &&
+      manifest.recordDigest === recordDigest &&
+      typeof manifest.exportRootDigest === "string" &&
+      /^sha256:[0-9a-f]{64}$/u.test(manifest.exportRootDigest)
+    ) {
+      exportRootDigest = manifest.exportRootDigest;
+    }
+  } catch {
+    // Strict export is unavailable until its durable manifest is installed.
+  }
   const artifacts: RunWorkflowArtifactPointer[] = [];
   const seen = new Set<string>();
-  for (const effect of readWorkflowEffects(db, runId)) {
-    const evidence = readWorkflowStepEvidence(effect);
-    for (const pointer of evidence.artifacts ?? []) {
+  if (recordArtifacts !== undefined) {
+    for (const pointer of recordArtifacts) {
       const key = `${pointer.step.stepId}:${pointer.role}:${pointer.digest}`;
       if (seen.has(key)) continue;
       seen.add(key);
       artifacts.push(workflowArtifactPointer(pointer));
     }
+  } else {
+    for (const effect of readWorkflowEffects(db, runId)) {
+      const evidence = readWorkflowStepEvidence(effect);
+      for (const pointer of evidence.artifacts ?? []) {
+        const key = `${pointer.step.stepId}:${pointer.role}:${pointer.digest}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        artifacts.push(workflowArtifactPointer(pointer));
+      }
+    }
   }
   return {
     ...(recordDigest !== undefined ? { recordDigest } : {}),
+    ...(exportRootDigest !== undefined ? { exportRootDigest } : {}),
     sealed,
     ledgerPath,
     artifacts,

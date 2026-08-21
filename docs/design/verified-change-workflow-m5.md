@@ -164,18 +164,22 @@ explicit future contract change.
   [--follow]`; `agenc run status` renders the step table; `agenc run
   evidence` exports the machine-readable bundle.
 - SDK: `client.startRun(params)`; attach/replay/result/evidence by run id
-  with the existing cursor contract.
+  with the existing cursor contract; `client.exportVerifiedRun(constraints)`
+  for the strict sealed byte export after completion.
 - TUI: the run appears on the agents rail like any daemon-owned run.
 
 ## Evidence bundle
 
-`agenc run evidence <run-id>` exports the verified-change record and the
-ledger artifact set alongside the existing admission evidence. The bundle is
-self-contained: hash chain, per-command records, patch and changed-file
-digests, review output, spec digest, terminal status, and unresolved risks
-are all re-derivable and re-verifiable from the exported bytes alone —
-reconstructing what happened requires no daemon, no SQLite, and no trust in
-the final prose summary.
+`agenc run evidence <run-id>` describes the verified-change record and ledger
+artifact set alongside the existing admission evidence. Once the controller
+has atomically installed `verified-export-manifest.json`, the summary also
+publishes its stable `exportRootDigest`. The public `run.exportVerified` / SDK
+operation accepts that digest plus the frozen spec and record digests as
+constraints and returns the exact bytes. The resulting bundle is
+self-contained: hash chain, per-command records and streams, patch and
+changed-file digests, review output, cost usage, effect log, risk register,
+spec digest, terminal status, and unresolved risks are all re-derivable and
+re-verifiable without SQLite or trust in the final prose summary.
 
 `reconstructVerifiedChange(bundleDir)`
 (`runtime/src/workflow/evidence-reconstruction.ts`) is the mechanical form of

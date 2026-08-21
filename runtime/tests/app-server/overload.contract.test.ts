@@ -72,6 +72,9 @@ describe("AgenC daemon overload control messages", () => {
     expect(isDaemonPriorityMessage(request("agent.attach"))).toBe(false);
     expect(isDaemonPriorityMessage(request("session.attach"))).toBe(false);
     expect(isDaemonPriorityMessage(request("message.stream"))).toBe(false);
+    // A strict export may hash/decode up to 64 MiB and must remain in the
+    // bounded normal FIFO instead of bypassing a live model turn.
+    expect(isDaemonPriorityMessage(request("run.exportVerified"))).toBe(false);
   });
 
   it("keeps preemptive interactive decisions subject to normal overload limits", () => {

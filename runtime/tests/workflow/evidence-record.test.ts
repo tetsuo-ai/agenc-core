@@ -25,7 +25,7 @@ function goldenSpec(): WorkflowSpec {
     reviewerModel: "grok-4.5",
     permissionMode: "acceptEdits",
     budget: { maxCostUsd: 5 },
-    requiredVerification: [{ label: "unit", script: "npm test" }],
+    requiredVerification: [{ id: "unit", label: "unit", script: "npm test" }],
     maxImplementAttempts: 2,
   };
 }
@@ -69,10 +69,14 @@ function goldenInput() {
         startedAt: "2026-07-20T11:50:00Z",
         finishedAt: "2026-07-20T12:00:00Z",
         artifacts: [
+          artifact("base_state", "workflow.intake"),
           artifact("patch", "workflow.finalize"),
           artifact("changed_files", "workflow.finalize"),
           artifact("test_result", "workflow.verify"),
           artifact("independent_review", "workflow.review"),
+          artifact("cost_usage", "workflow.finalize"),
+          artifact("effect_log", "workflow.finalize"),
+          artifact("risk_register", "workflow.finalize"),
         ],
       },
     ],
@@ -131,7 +135,7 @@ describe("verified-change evidence record (M5)", () => {
       })),
     };
     expect(() => assembleVerifiedChangeRecord(stripped)).toThrow(
-      /missing required artifact role/,
+      /requires exactly one test_result artifact/,
     );
   });
 

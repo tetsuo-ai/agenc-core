@@ -40,10 +40,14 @@ export const VERIFIED_CHANGE_RECORD_KIND =
 
 /** Artifact roles the record REQUIRES for a `completed` terminal status. */
 export const COMPLETED_REQUIRED_ARTIFACT_ROLES = [
+  "base_state",
   "patch",
   "changed_files",
   "test_result",
   "independent_review",
+  "cost_usage",
+  "effect_log",
+  "risk_register",
 ] as const;
 
 export interface VerifiedChangeStepRecord {
@@ -223,14 +227,18 @@ export function validateVerifiedChangeRecord(
     }
   }
   if (record.terminal?.status === "completed") {
-    const roles = new Set(
-      (record.steps ?? []).flatMap((step) =>
-        (step.artifacts ?? []).map((artifact) => artifact.role),
-      ),
-    );
+    const roleCounts = new Map<string, number>();
+    for (const artifact of (record.steps ?? []).flatMap(
+      (step) => step.artifacts ?? [],
+    )) {
+      roleCounts.set(artifact.role, (roleCounts.get(artifact.role) ?? 0) + 1);
+    }
     for (const required of COMPLETED_REQUIRED_ARTIFACT_ROLES) {
-      if (!roles.has(required)) {
-        errors.push(`completed record is missing required artifact role: ${required}`);
+      const count = roleCounts.get(required) ?? 0;
+      if (count !== 1) {
+        errors.push(
+          `completed record requires exactly one ${required} artifact; found ${count}`,
+        );
       }
     }
     if (record.review === null) {
@@ -239,11 +247,18 @@ export function validateVerifiedChangeRecord(
       errors.push("completed record cannot carry unresolved review blockers");
     }
     for (const command of record.verificationCommands ?? []) {
-      if (command.exitCode !== 0 || command.timedOut) {
+      if (command.exitCode !== 0 || command.timedOut || command.truncated) {
         errors.push(
           `completed record has a failing verification command: ${command.label}`,
         );
       }
+    }
+    if (
+      record.usage !== null &&
+      record.usage.inputTokens + record.usage.outputTokens !==
+      record.usage.totalTokens
+    ) {
+      errors.push("completed record usage totals are inconsistent");
     }
     if (record.headCommit === null) {
       errors.push("completed record requires headCommit");

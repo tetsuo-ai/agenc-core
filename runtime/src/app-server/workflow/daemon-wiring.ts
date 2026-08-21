@@ -22,7 +22,14 @@
  */
 
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import {
+  link,
+  mkdir,
+  open,
+  readFile,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import * as path from "node:path";
 
@@ -56,6 +63,17 @@ import type {
 } from "../../contracts/run-contracts.js";
 import { computeSpecDigest } from "../../workflow/evidence-record.js";
 import {
+  sanitizeWorkflowEvidenceIdentifier,
+  workflowArtifactEventId,
+} from "../../workflow/artifact-evidence.js";
+import {
+  exportVerifiedRunFromBundle,
+  VERIFIED_EVIDENCE_EXPORT_MANIFEST_FILENAME,
+  verifiedEvidenceExportManifest,
+} from "../../workflow/verified-evidence-export.js";
+import { readBundleArtifact } from "../../workflow/evidence-reconstruction.js";
+import { readBoundedRegularFileBytes } from "../../utils/bounded-regular-file.js";
+import {
   VerifiedChangeWorkflowController,
   type WorkflowDurabilityContext,
   type WorkflowEvidenceLedger,
@@ -78,10 +96,6 @@ const WORKFLOW_PRODUCER = {
 const REDACTION_POLICY_DIGEST = sha256Digest(
   "agenc.workflow.m5.no-redaction.v1",
 );
-
-function sanitizeIdentifierPart(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._:-]/g, "-");
-}
 
 /**
  * Integrity-only local anchor for the per-run workflow evidence ledger.
@@ -124,7 +138,10 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
 }): (spec: WorkflowSpec) => Promise<WorkflowEvidenceLedger> {
   const evidenceRoot = path.join(options.agencHome, "run-evidence");
   return async (spec: WorkflowSpec): Promise<WorkflowEvidenceLedger> => {
-    const root = path.join(evidenceRoot, sanitizeIdentifierPart(spec.runId));
+    const root = path.join(
+      evidenceRoot,
+      sanitizeWorkflowEvidenceIdentifier(spec.runId),
+    );
     await mkdir(root, { recursive: true, mode: 0o700 });
     const access = { root };
     const context = {
@@ -146,6 +163,10 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
     let inspection = await inspectEvidenceLedger(access, spec.runId);
     const state = {
       eventCount: inspection.eventCount,
+      payloadBytes: inspection.events.reduce(
+        (total, event) => total + event.payload.sizeBytes,
+        0,
+      ),
       headEventDigest:
         inspection.headEventDigest ?? sha256Digest("empty-ledger"),
       sealed: inspection.terminal,
@@ -183,6 +204,7 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
       state.knownEvents.set(result.event.eventId, result.event);
       if (result.status === "appended") {
         state.eventCount += 1;
+        state.payloadBytes += result.event.payload.sizeBytes;
         state.headEventDigest = result.event.eventDigest;
         state.lastOccurredAt = result.event.occurredAt;
       }
@@ -197,6 +219,76 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
       });
     }
     const sealedAtPath = path.join(root, "workflow-sealed-at");
+    const persistImmutableFile = async (
+      targetPath: string,
+      bytes: Buffer,
+      label: string,
+    ): Promise<void> => {
+      const existingMatches = async (): Promise<boolean> => {
+        try {
+          const existing = await readBoundedRegularFileBytes(
+            targetPath,
+            Math.max(1, bytes.byteLength),
+          );
+          if (Buffer.from(existing).equals(bytes)) return true;
+          throw new EvidenceLedgerError(
+            "EVIDENCE_CONFLICT",
+            `${label} already exists with different bytes`,
+          );
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+          if (error instanceof EvidenceLedgerError) throw error;
+          throw new EvidenceLedgerError(
+            "EVIDENCE_CONFLICT",
+            `${label} already exists but is unsafe or unreadable`,
+            { cause: error },
+          );
+        }
+      };
+      const syncRootDirectory = async (): Promise<void> => {
+        const directory = await open(root, "r");
+        try {
+          await directory.sync();
+        } finally {
+          await directory.close();
+        }
+      };
+      if (await existingMatches()) {
+        await syncRootDirectory();
+        return;
+      }
+      const temporaryPath = path.join(
+        root,
+        `.${path.basename(targetPath)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
+      );
+      try {
+        const handle = await open(temporaryPath, "wx", 0o600);
+        try {
+          await handle.writeFile(bytes);
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        try {
+          // A same-directory hard link publishes the fully-synced inode while
+          // preserving O_EXCL semantics: unlike rename(), it cannot overwrite
+          // a concurrently installed immutable record or manifest.
+          await link(temporaryPath, targetPath);
+        } catch (error) {
+          if (
+            (error as NodeJS.ErrnoException).code === "EEXIST" &&
+            (await existingMatches())
+          ) {
+            await syncRootDirectory();
+            return;
+          }
+          throw error;
+        }
+        await syncRootDirectory();
+      } finally {
+        await unlink(temporaryPath).catch(() => undefined);
+      }
+    };
     return {
       async recordArtifact(input: {
         readonly step: RunStepIdentity;
@@ -205,10 +297,11 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
         readonly mediaType: string;
       }): Promise<RunArtifactPointer> {
         const digest = sha256Digest(input.bytes);
-        const hex = digest.slice("sha256:".length);
-        const eventId = sanitizeIdentifierPart(
-          `artifact.${input.step.stepId}.${input.role}.${hex.slice(0, 24)}`,
-        );
+        const eventId = workflowArtifactEventId({
+          stepId: input.step.stepId,
+          role: input.role,
+          digest,
+        });
         const event = await append({
           eventId,
           type: "artifact.recorded",
@@ -229,15 +322,15 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
           eventCount: state.eventCount,
           headEventDigest: state.headEventDigest,
           sealed: state.sealed,
+          payloadBytes: state.payloadBytes,
         };
       },
       async readArtifact(pointer: RunArtifactPointer): Promise<Uint8Array> {
-        const hex = pointer.digest.slice("sha256:".length);
-        for (const entry of await readdir(root)) {
-          if (!entry.endsWith(".payloads")) continue;
-          return readFile(path.join(root, entry, `sha256-${hex}.bin`));
-        }
-        throw new Error(`workflow evidence payload not found: ${pointer.digest}`);
+        return readBundleArtifact(
+          root,
+          pointer.digest,
+          Math.max(1, pointer.bytes),
+        );
       },
       async seal(sealedAt: string): Promise<{ sealDigest: string }> {
         // The eval-contract ledger only seals a ledger whose LAST event is
@@ -275,15 +368,32 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
         state.sealed = true;
         inspection = await inspectEvidenceLedger(access, spec.runId);
         state.eventCount = inspection.eventCount;
+        state.payloadBytes = inspection.events.reduce(
+          (total, event) => total + event.payload.sizeBytes,
+          0,
+        );
         state.headEventDigest =
           inspection.headEventDigest ?? state.headEventDigest;
         return { sealDigest: seal.sealDigest };
       },
       async persistRecord(record): Promise<void> {
-        await writeFile(
-          path.join(root, "verified-change-record.json"),
-          `${canonicalizeJson(record)}\n`,
-          { mode: 0o600 },
+        const recordPath = path.join(root, "verified-change-record.json");
+        const bytes = Buffer.from(`${canonicalizeJson(record)}\n`, "utf8");
+        await persistImmutableFile(
+          recordPath,
+          bytes,
+          "verified-change record",
+        );
+        const exported = await exportVerifiedRunFromBundle(root, {
+          coreRunId: spec.runId,
+          expectedSpecDigest: record.specDigest,
+          expectedRecordDigest: record.documentDigest,
+        });
+        const manifest = verifiedEvidenceExportManifest(exported);
+        await persistImmutableFile(
+          path.join(root, VERIFIED_EVIDENCE_EXPORT_MANIFEST_FILENAME),
+          Buffer.from(`${canonicalizeJson(manifest)}\n`, "utf8"),
+          "verified evidence export manifest",
         );
       },
     };
@@ -359,6 +469,26 @@ export function createDaemonWorkflowController(options: {
   const durability = (
     context?: WorkflowDurabilityContext,
   ): StateRunDurabilityRepository => {
+    if (context?.runId !== undefined) {
+      const matches: StateRunDurabilityRepository[] = [];
+      for (const paths of candidatePaths()) {
+        const repository = repoForPaths(paths);
+        if (
+          repository.getEffect(context.runId, "workflow.intake") !==
+            undefined ||
+          repository.getCurrentTerminalResult(context.runId) !== undefined ||
+          repository.listEffects(context.runId).length > 0
+        ) {
+          matches.push(repository);
+        }
+      }
+      if (matches.length > 1) {
+        throw new Error(
+          `workflow ${context.runId} has durable state in multiple project databases`,
+        );
+      }
+      if (matches[0] !== undefined) return matches[0];
+    }
     if (context?.repoPath !== undefined) {
       return repoForPaths(
         resolveStateDatabasePaths({
@@ -366,18 +496,6 @@ export function createDaemonWorkflowController(options: {
           agencHome: options.agencHome,
         }),
       );
-    }
-    if (context?.runId !== undefined) {
-      for (const paths of candidatePaths()) {
-        const repository = repoForPaths(paths);
-        if (
-          repository.getEffect(context.runId, "workflow.intake") !==
-            undefined ||
-          repository.getCurrentTerminalResult(context.runId) !== undefined
-        ) {
-          return repository;
-        }
-      }
     }
     return repoForPaths(activeResumePaths ?? primaryPaths);
   };

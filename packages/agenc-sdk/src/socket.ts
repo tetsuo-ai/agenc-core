@@ -45,6 +45,12 @@ const DEFAULT_READY_TIMEOUT_MS = 45_000;
 const READY_POLL_MS = 50;
 /** Mirrors the daemon transports' 16 MiB max-line bound. */
 const MAX_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
+/**
+ * A verified export carries up to 64 MiB of raw bytes as canonical base64,
+ * plus its pointer/envelope JSON. Keep this exceptional response bounded
+ * without weakening the normal control-plane frame limit.
+ */
+const MAX_VERIFIED_EXPORT_RESPONSE_BYTES = 128 * 1024 * 1024;
 // These RPCs respond only after the full model/tool turn. They must not inherit
 // the short control-RPC timeout: SDK-backed agents may legitimately run for
 // hours. Explicit cancellation, socket closure, and daemon shutdown still
@@ -90,6 +96,7 @@ interface PendingRequest {
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
   readonly timeout: ReturnType<typeof setTimeout> | null;
+  readonly maximumResponseBytes: number;
 }
 
 export interface AgencSocketTransportOptions {
@@ -187,6 +194,10 @@ export class AgencSocketTransport implements AgencTransport {
           reject(error);
         },
         timeout,
+        maximumResponseBytes:
+          request.method === "run.exportVerified"
+            ? MAX_VERIFIED_EXPORT_RESPONSE_BYTES
+            : MAX_CLIENT_BUFFER_BYTES,
       });
       this.#socket.write(`${JSON.stringify(request)}\n`);
     });
@@ -204,9 +215,16 @@ export class AgencSocketTransport implements AgencTransport {
     onClose: ((error: Error | null) => void) | undefined,
   ): void {
     this.#buffer += chunk;
-    if (Buffer.byteLength(this.#buffer, "utf8") > MAX_CLIENT_BUFFER_BYTES) {
+    let maximumBufferBytes = MAX_CLIENT_BUFFER_BYTES;
+    for (const pending of this.#pending.values()) {
+      maximumBufferBytes = Math.max(
+        maximumBufferBytes,
+        pending.maximumResponseBytes,
+      );
+    }
+    if (Buffer.byteLength(this.#buffer, "utf8") > maximumBufferBytes) {
       const overflow = new Error(
-        `AgenC daemon connection exceeded ${MAX_CLIENT_BUFFER_BYTES} bytes without a complete message`,
+        `AgenC daemon connection exceeded ${maximumBufferBytes} bytes without a complete message`,
       );
       this.#buffer = "";
       this.#failAll(overflow);
