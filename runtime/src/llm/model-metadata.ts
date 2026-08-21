@@ -226,7 +226,30 @@ export class ModelMetadataResolver {
       const openAi = metadataFromOpenAiModelsResponse(response, params.model);
       if (hasAnyMetadata(openAi)) return openAi;
     }
-    return await this.resolveOllamaNativeMetadata(baseUrl, params, headers);
+    const ollama = await this.resolveOllamaNativeMetadata(
+      baseUrl,
+      params,
+      headers,
+    );
+    if (hasAnyMetadata(ollama)) return ollama;
+    if (provider === "ollama") return undefined;
+    return await this.resolveLmStudioNativeMetadata(baseUrl, params, headers);
+  }
+
+  /**
+   * LM Studio's OpenAI-compatible surface omits the window too; its own REST
+   * API reports the loaded and maximum sizes per model. A server that is not
+   * LM Studio 404s and the caller falls through unchanged.
+   */
+  private async resolveLmStudioNativeMetadata(
+    baseUrl: string,
+    params: LookupParams,
+    headers: Readonly<Record<string, string>> | undefined,
+  ): Promise<ModelMetadataValues | undefined> {
+    const response = await this.fetchJson(lmStudioModelsUrl(baseUrl), {
+      ...(headers !== undefined ? { headers } : {}),
+    });
+    return metadataFromOpenAiModelsResponse(response, params.model);
   }
 
   /**
@@ -619,32 +642,54 @@ function metadataFromLiteLlm(
   return undefined;
 }
 
+/**
+ * Local runtimes publish the window a server will actually honour under names
+ * the flat lookup above never sees. llama.cpp nests it in `meta` and reports
+ * both the served window and the model's trained maximum; the served one is
+ * what refuses an oversized request, so it wins. LM Studio spells the same
+ * pair `loaded_context_length` / `max_context_length`.
+ */
+function servedContextWindow(
+  record: Record<string, unknown>,
+): number | undefined {
+  const loaded = readPositiveInteger(record, "loaded_context_length");
+  if (loaded !== undefined) return loaded;
+  const meta = asRecord(record.meta);
+  if (!meta) return undefined;
+  return readPositiveInteger(meta, "n_ctx") ??
+    readPositiveInteger(meta, "n_ctx_train");
+}
+
 function metadataFromGenericRecord(
   record: Record<string, unknown>,
 ): ModelMetadataValues {
   const topProvider = asRecord(record.top_provider);
   return {
-    ...(readPositiveInteger(
-      record,
-      "max_model_len",
-      "context_length",
-      "max_context_length",
-      "max_input_tokens",
-      "max_tokens",
-    ) !== undefined
-      ? {
-        contextWindow: readPositiveInteger(
-          record,
-          "max_model_len",
-          "context_length",
-          "max_context_length",
-          "max_input_tokens",
-          "max_tokens",
-        ),
-      }
-      : readPositiveInteger(topProvider, "context_length") !== undefined
-        ? { contextWindow: readPositiveInteger(topProvider, "context_length") }
-        : {}),
+    // The served window is checked before the model's advertised maximum: a
+    // local server refuses anything past what it actually loaded.
+    ...(servedContextWindow(record) !== undefined
+      ? { contextWindow: servedContextWindow(record) }
+      : readPositiveInteger(
+        record,
+        "max_model_len",
+        "context_length",
+        "max_context_length",
+        "max_input_tokens",
+        "max_tokens",
+      ) !== undefined
+        ? {
+          contextWindow: readPositiveInteger(
+            record,
+            "max_model_len",
+            "context_length",
+            "max_context_length",
+            "max_input_tokens",
+            "max_tokens",
+          ),
+        }
+        : readPositiveInteger(topProvider, "context_length") !== undefined
+          ? { contextWindow: readPositiveInteger(topProvider, "context_length") }
+          : {}),
     ...(readPositiveInteger(
       record,
       "max_output_tokens",
@@ -755,6 +800,13 @@ export function ollamaShowUrlFromBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
   const origin = trimmed.replace(/\/(?:v\d+(?:beta)?|api\/v\d+)$/i, "");
   return `${origin}/api/show`;
+}
+
+/** LM Studio's native model list, alongside its `/v1` compatible surface. */
+export function lmStudioModelsUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  const origin = trimmed.replace(/\/(?:v\d+(?:beta)?|api\/v\d+)$/i, "");
+  return `${origin}/api/v0/models`;
 }
 
 function metadataFromOllamaShowResponse(

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   ModelMetadataResolver,
+  lmStudioModelsUrl,
   ollamaShowUrlFromBaseUrl,
 } from "../../src/llm/model-metadata.js";
 import type { AgenCConfig } from "../../src/utils/config.js";
@@ -205,6 +206,119 @@ describe("local providers resolve the real context window", () => {
 
     expect(resolved.source).not.toBe("live_endpoint");
     expect(resolved.contextWindow).toBeGreaterThan(0);
+  });
+
+  test("llama.cpp reports the window nested under meta", async () => {
+    // Recorded from llama-server b10549 started with `-c 4096` on a 32k
+    // model: n_ctx is what the server honours, n_ctx_train is the model's
+    // trained maximum. Serving 32768 here would be refused at 4097.
+    const { impl, calls } = recordingFetch({
+      "http://127.0.0.1:8080/v1/models": {
+        json: {
+          object: "list",
+          data: [
+            {
+              id: "local.gguf",
+              object: "model",
+              owned_by: "llamacpp",
+              meta: {
+                vocab_type: 2,
+                n_vocab: 151936,
+                n_ctx: 4096,
+                n_ctx_train: 32768,
+                n_embd: 1536,
+              },
+            },
+          ],
+        },
+      },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:8080/v1" },
+    }).resolve({
+      provider: "openai-compatible",
+      model: "local.gguf",
+      config: EMPTY_CONFIG,
+    });
+
+    expect(resolved.contextWindow).toBe(4096);
+    expect(resolved.source).toBe("live_endpoint");
+    // The compatible surface answered, so no native endpoint is consulted.
+    expect(calls).toHaveLength(1);
+  });
+
+  test("llama.cpp falls back to the trained window when none is served", async () => {
+    const { impl } = recordingFetch({
+      "http://127.0.0.1:8080/v1/models": {
+        json: {
+          object: "list",
+          data: [{ id: "local.gguf", meta: { n_ctx_train: 32768 } }],
+        },
+      },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:8080/v1" },
+    }).resolve({
+      provider: "openai-compatible",
+      model: "local.gguf",
+      config: EMPTY_CONFIG,
+    });
+
+    expect(resolved.contextWindow).toBe(32768);
+  });
+
+  test("LM Studio's loaded window beats its advertised maximum", async () => {
+    // A model loaded at 8k on a 32k architecture refuses at 8k+1, so the
+    // maximum must not be what the runtime plans against.
+    const { impl, calls } = recordingFetch({
+      "http://127.0.0.1:1234/v1/models": {
+        json: { object: "list", data: [{ id: "qwen2.5-7b-instruct" }] },
+      },
+      "http://127.0.0.1:1234/api/v0/models": {
+        json: {
+          object: "list",
+          data: [
+            {
+              id: "qwen2.5-7b-instruct",
+              object: "model",
+              type: "llm",
+              arch: "qwen2",
+              state: "loaded",
+              max_context_length: 32768,
+              loaded_context_length: 8192,
+            },
+          ],
+        },
+      },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { LMSTUDIO_BASE_URL: "http://127.0.0.1:1234/v1" },
+    }).resolve({
+      provider: "lmstudio",
+      model: "qwen2.5-7b-instruct",
+      config: EMPTY_CONFIG,
+    });
+
+    expect(resolved.contextWindow).toBe(8192);
+    // Compatible surface first, then Ollama's endpoint (absent here), then
+    // LM Studio's own.
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://127.0.0.1:1234/v1/models",
+      "http://127.0.0.1:1234/api/show",
+      "http://127.0.0.1:1234/api/v0/models",
+    ]);
+  });
+
+  test("lmStudioModelsUrl collapses the compatible surface", () => {
+    expect(lmStudioModelsUrl("http://127.0.0.1:1234/v1")).toBe(
+      "http://127.0.0.1:1234/api/v0/models",
+    );
+    expect(lmStudioModelsUrl("http://127.0.0.1:1234")).toBe(
+      "http://127.0.0.1:1234/api/v0/models",
+    );
   });
 
   test("a malformed context length is ignored rather than trusted", async () => {
