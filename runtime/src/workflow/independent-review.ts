@@ -131,6 +131,13 @@ export function buildReviewerMessages(input: ReviewerPromptInput): {
   return { systemPrompt: REVIEW_SYSTEM_PROMPT, userMessage };
 }
 
+/** A one-line, bounded look at what the reviewer actually said. */
+export function reviewerResponseExcerpt(raw: string, limit = 240): string {
+  const flat = raw.replace(/\s+/gu, " ").trim();
+  if (flat.length === 0) return "(empty response)";
+  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
+}
+
 export interface IndependentReviewResult {
   readonly review: ReviewOutput;
   readonly artifact: RunArtifactPointer;
@@ -167,8 +174,14 @@ export async function runIndependentReview(opts: {
   // that did not produce structured output FAILS the step — it is never
   // treated as an approval.
   if (review.overallCorrectness === "" && review.findings.length === 0) {
+    /*
+     * Say what came back. "no structured ReviewOutput (189 chars)" is a
+     * dead end: it cannot be told apart from prose, a refusal, or a
+     * truncated stream, and the response is kept nowhere else, so a run
+     * that died here left the next reader guessing.
+     */
     throw new ReviewParseError(
-      `no structured ReviewOutput in reviewer response (${raw.length} chars)`,
+      `no structured ReviewOutput in reviewer response (${raw.length} chars): ${reviewerResponseExcerpt(raw)}`,
     );
   }
   const artifact = await opts.sink.recordArtifact({
