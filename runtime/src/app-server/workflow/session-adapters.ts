@@ -341,6 +341,34 @@ export function workflowPermissionModeArgv(
 }
 
 /**
+ * The full argv a run's own session is bootstrapped with: its permission
+ * mode, and the model and provider the run was started with.
+ *
+ * A workflow session is bootstrapped like any other agent, so it takes the
+ * daemon's default model unless it is told otherwise — the same way the
+ * background-agent runner passes `--provider`/`--model`. Without this,
+ * `run start --model` was accepted, frozen into the spec, and then ignored,
+ * and every run ran on whatever the daemon happened to default to.
+ */
+export function workflowSessionArgv(
+  policy: WorkflowRunSessionPolicy,
+  baseArgv: readonly string[] = process.argv,
+): readonly string[] {
+  const withMode = workflowPermissionModeArgv(policy.permissionMode, baseArgv);
+  const optionArgs = tokenizeCliOptionRegion(withMode.slice(2)).optionArgs;
+  const generatedOptions: string[] = [];
+  if (policy.provider !== undefined && !optionArgs.includes("--provider")) {
+    generatedOptions.push("--provider", policy.provider);
+  }
+  if (policy.model !== undefined && !optionArgs.includes("--model")) {
+    generatedOptions.push("--model", policy.model);
+  }
+  return generatedOptions.length === 0
+    ? withMode
+    : insertProcessCliOptionsBeforePrompt(withMode, generatedOptions);
+}
+
+/**
  * Install the spec's unattended allow/deny lists on the run session —
  * mirrors the runner's `installUnattendedPermissionPolicy`. Explicit modes
  * (`bypassPermissions`/`plan`/`acceptEdits`) are preserved by
@@ -645,7 +673,7 @@ export function createWorkflowSessionSeams(
         resumeConversation: repoPath === undefined,
         cwd: resolvedRepoPath,
         ...(resolvedPolicy !== undefined
-          ? { argv: workflowPermissionModeArgv(resolvedPolicy.permissionMode) }
+          ? { argv: workflowSessionArgv(resolvedPolicy) }
           : {}),
         executionAdmissionAutonomous: true,
         executionAdmissionKernel: options.kernel,

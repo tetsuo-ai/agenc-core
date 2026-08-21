@@ -205,6 +205,14 @@ export interface WorkflowRunSessionPolicy {
   readonly permissionMode: WorkflowSpec["permissionMode"];
   readonly unattendedAllow?: readonly string[];
   readonly unattendedDeny?: readonly string[];
+  /**
+   * The model and provider the run was started with. The run's own session
+   * is bootstrapped like any other agent, which means it takes the daemon's
+   * default unless it is told otherwise: without these, `run start --model`
+   * was accepted, frozen into the spec, and then ignored.
+   */
+  readonly model?: string;
+  readonly provider?: string;
 }
 
 export interface WorkflowJournalWriter {
@@ -538,6 +546,11 @@ export class VerifiedChangeWorkflowController {
         ...(params.unattendedDeny !== undefined
           ? { unattendedDeny: params.unattendedDeny }
           : {}),
+        // The model the run was asked for, on start as well as on resume:
+        // the session is bootstrapped from this policy, and without them it
+        // takes the daemon's default no matter what the caller requested.
+        ...(params.model !== undefined ? { model: params.model } : {}),
+        ...(params.provider !== undefined ? { provider: params.provider } : {}),
       },
     });
     const base = await this.#deps.worktrees.captureBaseState(params.repoPath, {
