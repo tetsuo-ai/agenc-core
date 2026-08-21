@@ -34,6 +34,7 @@ const LIVE_METADATA_PROVIDERS = new Set([
   "openai",
   "lmstudio",
   "openai-compatible",
+  "ollama",
   "groq",
   "deepseek",
 ]);
@@ -80,6 +81,8 @@ interface ModelMetadataValues {
 
 interface FetchJsonOptions {
   readonly headers?: Readonly<Record<string, string>>;
+  /** Ollama's native metadata endpoint is a POST with a JSON body. */
+  readonly jsonBody?: Readonly<Record<string, unknown>>;
 }
 
 export class ModelMetadataResolver {
@@ -213,10 +216,38 @@ export class ModelMetadataResolver {
     if (!shouldQueryLiveEndpoint(params, this.env)) return undefined;
     const baseUrl = providerBaseUrl(params.config, provider, this.env);
     if (!baseUrl) return undefined;
-    const response = await this.fetchJson(modelsUrlFromBaseUrl(baseUrl), {
-      headers: authHeaders(params.config, provider, this.env),
+    const headers = authHeaders(params.config, provider, this.env);
+    // Ollama serves no context length over its OpenAI-compatible surface, so
+    // the native endpoint is the only place the real number exists.
+    if (provider !== "ollama") {
+      const response = await this.fetchJson(modelsUrlFromBaseUrl(baseUrl), {
+        headers,
+      });
+      const openAi = metadataFromOpenAiModelsResponse(response, params.model);
+      if (hasAnyMetadata(openAi)) return openAi;
+    }
+    return await this.resolveOllamaNativeMetadata(baseUrl, params, headers);
+  }
+
+  /**
+   * Ollama's `/v1/models` returns only `{id, object, created, owned_by}` -- no
+   * context length -- so a local model silently inherited the conservative
+   * 128k fallback while really being 32k (qwen2.5-coder) or 2k (moondream).
+   * `/api/show` reports the true window under an architecture-prefixed key
+   * (`qwen2.context_length`). This also runs for `openai-compatible` and
+   * `lmstudio` pointed at an Ollama endpoint, which is a common setup; a
+   * non-Ollama server simply 404s and the caller falls through.
+   */
+  private async resolveOllamaNativeMetadata(
+    baseUrl: string,
+    params: LookupParams,
+    headers: Readonly<Record<string, string>> | undefined,
+  ): Promise<ModelMetadataValues | undefined> {
+    const response = await this.fetchJson(ollamaShowUrlFromBaseUrl(baseUrl), {
+      ...(headers !== undefined ? { headers } : {}),
+      jsonBody: { model: params.model },
     });
-    return metadataFromOpenAiModelsResponse(response, params.model);
+    return metadataFromOllamaShowResponse(response);
   }
 
   private async resolveOpenRouterMetadata(
@@ -246,7 +277,9 @@ export class ModelMetadataResolver {
     options: FetchJsonOptions = {},
   ): Promise<unknown | undefined> {
     if (!this.fetchImpl) return undefined;
-    const cacheKey = `${url}\n${JSON.stringify(options.headers ?? {})}`;
+    const cacheKey = `${url}\n${JSON.stringify(options.headers ?? {})}\n${
+      JSON.stringify(options.jsonBody ?? null)
+    }`;
     const cached = this.jsonCache.get(cacheKey);
     if (cached) return await cached;
     const request = this.fetchJsonUncached(url, options);
@@ -262,7 +295,16 @@ export class ModelMetadataResolver {
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const response = await this.fetchImpl!(url, {
-        headers: options.headers,
+        ...(options.jsonBody !== undefined
+          ? {
+            method: "POST",
+            body: JSON.stringify(options.jsonBody),
+            headers: {
+              ...(options.headers ?? {}),
+              "content-type": "application/json",
+            },
+          }
+          : { headers: options.headers }),
         signal: controller.signal,
       });
       if (!response.ok) return undefined;
@@ -316,6 +358,7 @@ function shouldQueryLiveEndpoint(
   return (
     provider === "lmstudio" ||
     provider === "openai-compatible" ||
+    provider === "ollama" ||
     Boolean(providerConfig?.base_url?.trim()) ||
     Boolean(envBaseUrl(provider, env))
   );
@@ -703,6 +746,34 @@ function providerBaseUrl(
   return envBaseURL || configured || defaultProviderBaseUrl(provider);
 }
 
+/**
+ * Ollama's native API sits at the origin while its OpenAI-compatible surface
+ * lives under `/v1`, so a base URL configured for either one has to collapse
+ * to the same `/api/show`.
+ */
+export function ollamaShowUrlFromBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  const origin = trimmed.replace(/\/(?:v\d+(?:beta)?|api\/v\d+)$/i, "");
+  return `${origin}/api/show`;
+}
+
+function metadataFromOllamaShowResponse(
+  response: unknown,
+): ModelMetadataValues | undefined {
+  const modelInfo = asRecord(asRecord(response)?.model_info);
+  if (!modelInfo) return undefined;
+  // The key is architecture-prefixed (`qwen2.context_length`, `phi2.…`), and
+  // the architecture is not knowable from the model name, so match the suffix.
+  for (const [key, value] of Object.entries(modelInfo)) {
+    if (!/(?:^|\.)context_length$/.test(key)) continue;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+      continue;
+    }
+    return { contextWindow: value };
+  }
+  return undefined;
+}
+
 function modelsUrlFromBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
   if (trimmed.endsWith("/models")) return trimmed;
@@ -735,6 +806,11 @@ function envBaseUrl(
       return nonEmpty(env.OPENAI_BASE_URL);
     case "lmstudio":
       return nonEmpty(env.LMSTUDIO_BASE_URL) ?? nonEmpty(env.OPENAI_BASE_URL);
+    // The provider factory already resolves OLLAMA_BASE_URL; without this the
+    // metadata lookup silently probed localhost while the session talked to a
+    // different host.
+    case "ollama":
+      return nonEmpty(env.OLLAMA_BASE_URL);
     case "openai-compatible":
       return (
         nonEmpty(env.OPENAI_COMPATIBLE_BASE_URL) ??
