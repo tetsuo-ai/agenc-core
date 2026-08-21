@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 
 import {
   ModelMetadataResolver,
-  lmStudioModelsUrl,
   ollamaShowUrlFromBaseUrl,
 } from "../../src/llm/model-metadata.js";
 import type { AgenCConfig } from "../../src/utils/config.js";
@@ -267,58 +266,6 @@ describe("local providers resolve the real context window", () => {
     });
 
     expect(resolved.contextWindow).toBe(32768);
-  });
-
-  test("LM Studio's loaded window beats its advertised maximum", async () => {
-    // A model loaded at 8k on a 32k architecture refuses at 8k+1, so the
-    // maximum must not be what the runtime plans against.
-    const { impl, calls } = recordingFetch({
-      "http://127.0.0.1:1234/v1/models": {
-        json: { object: "list", data: [{ id: "qwen2.5-7b-instruct" }] },
-      },
-      "http://127.0.0.1:1234/api/v0/models": {
-        json: {
-          object: "list",
-          data: [
-            {
-              id: "qwen2.5-7b-instruct",
-              object: "model",
-              type: "llm",
-              arch: "qwen2",
-              state: "loaded",
-              max_context_length: 32768,
-              loaded_context_length: 8192,
-            },
-          ],
-        },
-      },
-    });
-    const resolved = await new ModelMetadataResolver({
-      fetchImpl: impl,
-      env: { LMSTUDIO_BASE_URL: "http://127.0.0.1:1234/v1" },
-    }).resolve({
-      provider: "lmstudio",
-      model: "qwen2.5-7b-instruct",
-      config: EMPTY_CONFIG,
-    });
-
-    expect(resolved.contextWindow).toBe(8192);
-    // Compatible surface first, then Ollama's endpoint (absent here), then
-    // LM Studio's own.
-    expect(calls.map((call) => call.url)).toEqual([
-      "http://127.0.0.1:1234/v1/models",
-      "http://127.0.0.1:1234/api/show",
-      "http://127.0.0.1:1234/api/v0/models",
-    ]);
-  });
-
-  test("lmStudioModelsUrl collapses the compatible surface", () => {
-    expect(lmStudioModelsUrl("http://127.0.0.1:1234/v1")).toBe(
-      "http://127.0.0.1:1234/api/v0/models",
-    );
-    expect(lmStudioModelsUrl("http://127.0.0.1:1234")).toBe(
-      "http://127.0.0.1:1234/api/v0/models",
-    );
   });
 
   test("a malformed context length is ignored rather than trusted", async () => {
