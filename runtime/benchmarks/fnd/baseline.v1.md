@@ -4,26 +4,26 @@ This artifact records bounded current and historical-reference observations.
 Every row is informational: no result is a performance threshold or gate.
 Generated inputs are synthetic and created only for the benchmark process.
 
-- JSON SHA-256: `ebbc01239a7df720bcf785a16a37f217971d9b8535423e7cf75b925ffc3bcffb`
-- Source revision: `b62609675f33c291e7046b71c74d71ac262f60f9`
-- Production tree: `runtime/src` at Git object `e6e6ac0d127635190806e6ecadc80de72e345f67`
+- JSON SHA-256: `880756eb083de312c1397f779b79e4943a96aca7c4b5072ff0accb914586c457`
+- Source revision: `e871a8b783effecde82440be6388bbe355689a98`
+- Production tree: `runtime/src` at Git object `39d9ddff396eb8fbf661898886e1da91783f133d`
 - Loaded production closure: `49` module bindings across `2` cases
 - Plan SHA-256: `672538014498283c935efce76c0a5244abd280aadaeb5a03a9d835f041db2ebe`
 - Node/npm: `v26.5.0` / `11.17.0`
-- OS/CPU: `linux 7.0.0-28-generic x64` / `AMD Ryzen Threadripper PRO 9975WX 32-Cores` (64 logical)
-- RAM: `1081089339392` bytes
+- OS/CPU: `linux 7.0.0-29-generic x64` / `AMD Ryzen 9 9900X 12-Core Processor` (24 logical)
+- RAM: `32214454272` bytes
 - Source filesystem: type `61267`, block `4096` bytes
 - Fixture filesystem: type `16914836`, block `4096` bytes
 - SQLite/ripgrep: `3.53.3` / `ripgrep 15.0.0 (rev 3a612f88b8)`
 
 | Case | Input | Status | Median ms | MAD ms | Worker peak RSS bytes | RSS lower-bound bytes |
 | --- | ---: | --- | ---: | ---: | ---: | ---: |
-| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 83.505 | 3.696 | 178044928 | 178044928 |
-| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 160.976 | 1.441 | 198877184 | 194785280 |
-| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 338.540 | 8.295 | 248877056 | 248877056 |
-| `patch_delete_parser_historical_comparison` | `hunkCount=8000` | `completed` | 2.548 | 0.358 | 88895488 | 88895488 |
-| `patch_delete_parser_historical_comparison` | `hunkCount=16000` | `completed` | 5.363 | 0.102 | 104792064 | 104792064 |
-| `patch_delete_parser_historical_comparison` | `hunkCount=32000` | `completed` | 10.565 | 0.546 | 127737856 | 127737856 |
+| `csv_scheduler_progress_scan` | `rowCount=1000` | `completed` | 77.235 | 0.874 | 181444608 | 181444608 |
+| `csv_scheduler_progress_scan` | `rowCount=2000` | `completed` | 154.685 | 2.637 | 198434816 | 195375104 |
+| `csv_scheduler_progress_scan` | `rowCount=4000` | `completed` | 303.181 | 4.705 | 248799232 | 242114560 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=8000` | `completed` | 2.621 | 0.278 | 91127808 | 91127808 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=16000` | `completed` | 4.873 | 0.360 | 106676224 | 106479616 |
+| `patch_delete_parser_historical_comparison` | `hunkCount=32000` | `completed` | 10.833 | 1.003 | 128036864 | 128036864 |
 
 ## Assessment notes
 
@@ -36,7 +36,7 @@ Run on the same pinned runtime and machine state; compare medians, MAD,
 operation counts, and relative scaling rather than one wall-clock sample.
 
 ```sh
-npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --source-revision b62609675f33c291e7046b71c74d71ac262f60f9 --output /tmp/agenc-fnd-baseline.v1.json --markdown-output /tmp/agenc-fnd-baseline.v1.md
+npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --source-revision e871a8b783effecde82440be6388bbe355689a98 --output /tmp/agenc-fnd-baseline.v1.json --markdown-output /tmp/agenc-fnd-baseline.v1.md
 npm run check:fnd-benchmark-baseline --workspace=@tetsuo-ai/runtime
 ```
 
