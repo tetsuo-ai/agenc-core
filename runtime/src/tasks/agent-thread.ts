@@ -47,7 +47,7 @@ function finalMessageMetadata(
  * Returns `undefined` when neither signal is available (so we don't clobber
  * a previously-recorded progress with zeros).
  */
-function liveAgentCounts(
+export function liveAgentCounts(
   thread: AgentThreadTaskHandle,
 ): { readonly toolUseCount: number; readonly tokenCount: number } | undefined {
   const tokenCount = thread.live.tokenUsage?.totalTokens;
