@@ -74,19 +74,48 @@ function Copy-PinnedBootstrapHttps(
     Fail "Node.js bootstrap URL must be canonical HTTPS"
   }
   [void][System.Reflection.Assembly]::Load("System.Net.Http")
-  [int]$bootstrapTimeoutMs = 120000
+  # The total deadline scales with the pinned byte count so slow links can
+  # finish, mirroring the bounded-fetch contract: minimum sustained rate
+  # 128 KiB/s plus 30s grace, never below 120s, test overrides only shorten.
+  [long]$minimumSustainedBytesPerSecond = 131072
+  [int]$defaultBootstrapTimeoutMs = [Math]::Max(
+    120000,
+    [int]([Math]::Ceiling($ExactBytes / [double]$minimumSustainedBytesPerSecond)) * 1000 + 30000
+  )
+  [int]$bootstrapTimeoutMs = $defaultBootstrapTimeoutMs
   if ($env:AGENC_INSTALL_TEST_BOOTSTRAP_TIMEOUT_MS) {
     [int]$parsedBootstrapTimeout = 0
     if (-not [int]::TryParse(
         $env:AGENC_INSTALL_TEST_BOOTSTRAP_TIMEOUT_MS,
         [ref]$parsedBootstrapTimeout
-      ) -or $parsedBootstrapTimeout -lt 1 -or $parsedBootstrapTimeout -gt 120000) {
+      ) -or $parsedBootstrapTimeout -lt 1 -or
+        $parsedBootstrapTimeout -gt $defaultBootstrapTimeoutMs) {
       Fail "invalid Node.js bootstrap deadline"
     }
     $bootstrapTimeoutMs = $parsedBootstrapTimeout
   }
+  [int]$bootstrapStallMs = 60000
+  if ($env:AGENC_INSTALL_TEST_BOOTSTRAP_STALL_MS) {
+    [int]$parsedBootstrapStall = 0
+    if (-not [int]::TryParse(
+        $env:AGENC_INSTALL_TEST_BOOTSTRAP_STALL_MS,
+        [ref]$parsedBootstrapStall
+      ) -or $parsedBootstrapStall -lt 1 -or $parsedBootstrapStall -gt 60000) {
+      Fail "invalid Node.js bootstrap stall window"
+    }
+    $bootstrapStallMs = $parsedBootstrapStall
+  }
+  $deadlineAt = [DateTime]::UtcNow.AddMilliseconds($bootstrapTimeoutMs)
   $deadline = [System.Threading.CancellationTokenSource]::new()
-  $deadline.CancelAfter($bootstrapTimeoutMs)
+  # One cancellation source covers every network wait: each wait is armed with
+  # the smaller of the stall window and the remaining total budget, delivered
+  # bytes rearm the stall, and nothing can extend the total deadline.
+  $armDeadline = {
+    [double]$remainingMs = ($deadlineAt - [DateTime]::UtcNow).TotalMilliseconds
+    if ($remainingMs -lt 1) { $remainingMs = 1 }
+    $deadline.CancelAfter([int][Math]::Min([double]$bootstrapStallMs, $remainingMs))
+  }
+  & $armDeadline
   $handler = [System.Net.Http.HttpClientHandler]::new()
   $handler.AllowAutoRedirect = $true
   $handler.MaxAutomaticRedirections = 5
@@ -129,6 +158,7 @@ function Copy-PinnedBootstrapHttps(
         $buffer.Length,
         $deadline.Token
       ).GetAwaiter().GetResult()) -gt 0) {
+      & $armDeadline
       $total += $read
       if ($total -gt $ExactBytes) { Fail "Node.js bootstrap exceeds pinned byte count" }
       $outputStream.Write($buffer, 0, $read)
@@ -138,7 +168,10 @@ function Copy-PinnedBootstrapHttps(
       Fail "Node.js bootstrap byte count mismatch (expected $ExactBytes, got $total)"
     }
   } catch [System.OperationCanceledException] {
-    Fail "Node.js bootstrap deadline exceeded after ${bootstrapTimeoutMs}ms"
+    if ([DateTime]::UtcNow -ge $deadlineAt) {
+      Fail "Node.js bootstrap deadline exceeded after ${bootstrapTimeoutMs}ms"
+    }
+    Fail "Node.js bootstrap stalled: no bytes received for ${bootstrapStallMs}ms"
   } finally {
     if ($outputStream) { $outputStream.Dispose() }
     if ($inputStream) { $inputStream.Dispose() }
@@ -168,12 +201,29 @@ const { fileURLToPath, pathToFileURL } = require("node:url");
 const [resource, destination, maximumText, exactText, trustMode] = process.argv.slice(2);
 const maximum = Number(maximumText);
 const exact = exactText === "" ? undefined : Number(exactText);
-const timeoutText = process.env.AGENC_INSTALL_TEST_DOWNLOAD_TIMEOUT_MS;
-const timeoutMs = timeoutText === undefined ? 120_000 : Number(timeoutText);
 if (!Number.isSafeInteger(maximum) || maximum < 1 ||
-    (exact !== undefined && (!Number.isSafeInteger(exact) || exact < 1 || exact > maximum)) ||
-    !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
+    (exact !== undefined && (!Number.isSafeInteger(exact) || exact < 1 || exact > maximum))) {
   throw new Error("invalid bounded-download byte contract");
+}
+// The total deadline scales with the declared artifact size so slow links can
+// finish: a fixed 120s ceiling made any connection under ~1 MiB/s permanently
+// unable to download a ~120 MiB runtime. A byzantine server stays bounded by
+// the declared size at the minimum sustained rate (256 MiB ceiling at
+// 128 KiB/s is ~34 minutes worst case), undeclared sizes (manifests, bundles)
+// keep the 120s bound, and the stall detector below kills dead connections
+// long before either deadline. The test overrides can only shorten.
+const MINIMUM_SUSTAINED_BYTES_PER_SECOND = 131_072;
+const defaultTimeoutMs = exact === undefined ? 120_000 : Math.max(
+  120_000,
+  Math.ceil(exact / MINIMUM_SUSTAINED_BYTES_PER_SECOND) * 1000 + 30_000,
+);
+const timeoutText = process.env.AGENC_INSTALL_TEST_DOWNLOAD_TIMEOUT_MS;
+const timeoutMs = timeoutText === undefined ? defaultTimeoutMs : Number(timeoutText);
+const stallText = process.env.AGENC_INSTALL_TEST_DOWNLOAD_STALL_MS;
+const stallMs = stallText === undefined ? 60_000 : Number(stallText);
+if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > defaultTimeoutMs ||
+    !Number.isSafeInteger(stallMs) || stallMs < 1 || stallMs > 60_000) {
+  throw new Error("invalid bounded-download deadline contract");
 }
 function canonicalLocalFileUrlToPath(value, platform = process.platform) {
   if (typeof value !== "string" || value !== value.trim() || /[\0\r\n]/.test(value) ||
@@ -219,11 +269,12 @@ function canonicalLocalFileUrlToPath(value, platform = process.platform) {
   }
   return path;
 }
-function byteLimiter() {
+function byteLimiter(onChunk) {
   let count = 0;
   return new Transform({
     transform(chunk, _encoding, callback) {
       count += chunk.length;
+      if (onChunk !== undefined) onChunk();
       if (count > maximum) callback(new Error(`download exceeds ${maximum} byte limit`));
       else if (exact !== undefined && count > exact) {
         callback(new Error(`download exceeds declared ${exact} bytes`));
@@ -304,11 +355,21 @@ function validateContentLength(response) {
     let current = new URL(resource);
     const controller = new AbortController();
     const timeoutError = new Error(`download deadline exceeded after ${timeoutMs}ms`);
+    const stallError = new Error(`download stalled: no bytes received for ${stallMs}ms`);
+    const abortError = () =>
+      controller.signal.reason instanceof Error ? controller.signal.reason : timeoutError;
     const deadline = performance.now() + timeoutMs;
     const timer = setTimeout(() => controller.abort(timeoutError), timeoutMs);
+    // One stall window covers connect, TLS, headers, every redirect hop, and
+    // each gap between body chunks; only delivered bytes rearm it.
+    let lastProgressAt = performance.now();
+    const stallTimer = setInterval(() => {
+      if (performance.now() - lastProgressAt >= stallMs) controller.abort(stallError);
+    }, Math.min(stallMs, 500));
     const throwIfExpired = () => {
-      if (controller.signal.aborted || performance.now() >= deadline) {
-        if (!controller.signal.aborted) controller.abort(timeoutError);
+      if (controller.signal.aborted) throw abortError();
+      if (performance.now() >= deadline) {
+        controller.abort(timeoutError);
         throw timeoutError;
       }
     };
@@ -316,7 +377,7 @@ function validateContentLength(response) {
       throwIfExpired();
       let rejectOnAbort;
       const aborted = new Promise((_resolve, reject) => {
-        rejectOnAbort = () => reject(timeoutError);
+        rejectOnAbort = () => reject(abortError());
         controller.signal.addEventListener("abort", rejectOnAbort, { once: true });
       });
       try { return await Promise.race([promise, aborted]); }
@@ -334,7 +395,7 @@ function validateContentLength(response) {
             headers: { "accept-encoding": "identity" },
           });
         } catch (error) {
-          if (controller.signal.aborted) throw timeoutError;
+          if (controller.signal.aborted) throw abortError();
           throw error;
         }
         throwIfExpired();
@@ -359,12 +420,12 @@ function validateContentLength(response) {
         try {
           await pipeline(
             Readable.fromWeb(response.body),
-            byteLimiter(),
+            byteLimiter(() => { lastProgressAt = performance.now(); }),
             createWriteStream(destination, { flags: "wx", mode: 0o600 }),
             { signal: controller.signal },
           );
         } catch (error) {
-          if (controller.signal.aborted) throw timeoutError;
+          if (controller.signal.aborted) throw abortError();
           throw error;
         }
         throwIfExpired();
@@ -376,6 +437,7 @@ function validateContentLength(response) {
       throw error;
     } finally {
       clearTimeout(timer);
+      clearInterval(stallTimer);
     }
   } catch (error) {
     try { rmSync(destination, { force: true }); } catch {}

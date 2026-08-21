@@ -7,7 +7,7 @@
 // mirroring packages/agenc/test/runtime-manager.test.mjs.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomFillSync } from "node:crypto";
 import {
   chmodSync,
   cpSync,
@@ -1886,6 +1886,181 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     }
   }, 15_000);
 
+  test("a stalled connection dies on the stall window, not the full deadline", () => {
+    const fixture = startHttpsFixture(work, {
+      "/stall-headers": { stallHeaders: true },
+      "/stall-body": { bodyText: "{}", contentLength: 32, stallBody: true },
+    });
+    try {
+      for (const route of ["stall-headers", "stall-body"]) {
+        const home = join(work, `stall-${route}`);
+        mkdirSync(home, { recursive: true, mode: 0o700 });
+        const started = Date.now();
+        const result = runInstaller({
+          home,
+          manifestUrl: `${fixture.baseUrl}/${route}`,
+          args: ["--no-daemon"],
+          envOverrides: {
+            NODE_EXTRA_CA_CERTS: fixture.ca,
+            AGENC_INSTALL_TEST_DOWNLOAD_STALL_MS: "200",
+          },
+        });
+        expect(result.status, `${route}: ${result.stderr}`).not.toBe(0);
+        expect(result.stderr, route).toContain(
+          "download stalled: no bytes received for 200ms",
+        );
+        expect(Date.now() - started).toBeLessThan(5_000);
+        expectFailedInstallCleanup(home);
+      }
+    } finally {
+      fixture.stop();
+    }
+  }, 15_000);
+
+  describe("bounded fetch deadline contract (sh and PowerShell copies)", () => {
+    // Both installers embed the same Node bounded-fetch program; extracting
+    // each copy exercises the Windows one on this host too. The contract under
+    // test: the total deadline scales with the declared artifact size
+    // (ceil(bytes / 128 KiB/s) + 30s grace, never below 120s), undeclared
+    // sizes keep the 120s bound, the test override may reach the computed
+    // ceiling but never exceed it, and a stalled connection dies on the stall
+    // window without waiting out the scaled deadline. A fixed 120s ceiling
+    // made any link under ~1 MiB/s permanently unable to install the
+    // ~120 MiB runtime (observed live against 0.17.0: repeated deaths at ~88%
+    // with "download deadline exceeded after 120000ms").
+    const copies = () => {
+      const sh = readFileSync(INSTALL_SH, "utf8")
+        .match(/<<'AGENC_BOUNDED_FETCH'\n([\s\S]*?)\nAGENC_BOUNDED_FETCH\n/);
+      const ps1 = readFileSync(INSTALL_PS1, "utf8")
+        .match(/\$BoundedFetch = @'\n([\s\S]*?)\n'@\n/);
+      expect(sh).not.toBeNull();
+      expect(ps1).not.toBeNull();
+      return { sh: sh![1], ps1: ps1![1] };
+    };
+
+    function runBoundedFetch(
+      script: string,
+      name: string,
+      args: { url: string; maximum: number; exact?: number },
+      env: Record<string, string>,
+      extraEnv: Record<string, string> = {},
+    ): { status: number; stderr: string; destination: string } {
+      const dir = join(work, `bounded-fetch-${name}`);
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, "bounded-fetch.cjs");
+      writeFileSync(file, script);
+      const destination = join(dir, "artifact.bin");
+      rmSync(destination, { force: true });
+      const res = spawnSync(
+        process.execPath,
+        [
+          file,
+          args.url,
+          destination,
+          String(args.maximum),
+          args.exact === undefined ? "" : String(args.exact),
+          "official",
+        ],
+        { encoding: "utf8", env: { ...env, ...extraEnv }, timeout: 30_000 },
+      );
+      return { status: res.status ?? -1, stderr: res.stderr ?? "", destination };
+    }
+
+    test("the deadline ceiling scales with the declared byte count", () => {
+      const body = randomFillSync(Buffer.alloc(14_000_000));
+      const declared = body.length;
+      const scaledCeilingMs =
+        Math.ceil(declared / 131_072) * 1000 + 30_000;
+      expect(scaledCeilingMs).toBeGreaterThan(120_000);
+      const fixture = startHttpsFixture(work, {
+        "/scaled.bin": { bodyBase64: body.toString("base64") },
+      });
+      const env = { NODE_EXTRA_CA_CERTS: fixture.ca };
+      try {
+        for (const [flavor, script] of Object.entries(copies())) {
+          // Exactly at the computed ceiling: accepted, and the download
+          // completes. The old fixed contract rejected any value over 120s.
+          const accepted = runBoundedFetch(
+            script,
+            `${flavor}-scaled-accepted`,
+            { url: `${fixture.baseUrl}/scaled.bin`, maximum: declared, exact: declared },
+            env,
+            { AGENC_INSTALL_TEST_DOWNLOAD_TIMEOUT_MS: String(scaledCeilingMs) },
+          );
+          expect(accepted.status, `${flavor}: ${accepted.stderr}`).toBe(0);
+          expect(statSync(accepted.destination).size).toBe(declared);
+
+          // One millisecond past the ceiling: rejected. Together with the
+          // accepted case this pins the scaling formula on both sides.
+          const rejected = runBoundedFetch(
+            script,
+            `${flavor}-scaled-rejected`,
+            { url: `${fixture.baseUrl}/scaled.bin`, maximum: declared, exact: declared },
+            env,
+            { AGENC_INSTALL_TEST_DOWNLOAD_TIMEOUT_MS: String(scaledCeilingMs + 1) },
+          );
+          expect(rejected.status, flavor).not.toBe(0);
+          expect(rejected.stderr, flavor).toContain(
+            "invalid bounded-download deadline contract",
+          );
+
+          // Undeclared sizes keep the 120s bound.
+          const undeclared = runBoundedFetch(
+            script,
+            `${flavor}-undeclared`,
+            { url: "https://127.0.0.1:1/unused", maximum: 1024 },
+            env,
+            { AGENC_INSTALL_TEST_DOWNLOAD_TIMEOUT_MS: "120001" },
+          );
+          expect(undeclared.status, flavor).not.toBe(0);
+          expect(undeclared.stderr, flavor).toContain(
+            "invalid bounded-download deadline contract",
+          );
+        }
+      } finally {
+        fixture.stop();
+      }
+    }, 60_000);
+
+    test("the stall window and the shortened deadline stay independent", () => {
+      const fixture = startHttpsFixture(work, {
+        "/stall.bin": { bodyText: "{}", contentLength: 32, stallBody: true },
+      });
+      const env = { NODE_EXTRA_CA_CERTS: fixture.ca };
+      try {
+        for (const [flavor, script] of Object.entries(copies())) {
+          const started = Date.now();
+          const stalled = runBoundedFetch(
+            script,
+            `${flavor}-stalled`,
+            { url: `${fixture.baseUrl}/stall.bin`, maximum: 1024, exact: 32 },
+            env,
+            { AGENC_INSTALL_TEST_DOWNLOAD_STALL_MS: "200" },
+          );
+          expect(stalled.status, flavor).not.toBe(0);
+          expect(stalled.stderr, flavor).toContain(
+            "download stalled: no bytes received for 200ms",
+          );
+          expect(Date.now() - started, flavor).toBeLessThan(10_000);
+
+          const deadline = runBoundedFetch(
+            script,
+            `${flavor}-short-deadline`,
+            { url: `${fixture.baseUrl}/stall.bin`, maximum: 1024, exact: 32 },
+            env,
+            { AGENC_INSTALL_TEST_DOWNLOAD_TIMEOUT_MS: "150" },
+          );
+          expect(deadline.status, flavor).not.toBe(0);
+          expect(deadline.stderr, flavor).toContain(
+            "download deadline exceeded after 150ms",
+          );
+        }
+      } finally {
+        fixture.stop();
+      }
+    }, 30_000);
+  });
+
   test("repo-derived manifests bind releaseRepository while explicit manifest URLs remain explicit trust", () => {
     const artifact = makeSyntheticArtifact(work);
     const manifest = remoteManifest(artifact, "linux", "unused");
@@ -2739,7 +2914,14 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
 
   test("PowerShell bootstrap uses one cancellation deadline for headers and every body read", () => {
     const ps1 = readFileSync(INSTALL_PS1, "utf8");
-    expect(ps1).toContain("$deadline.CancelAfter($bootstrapTimeoutMs)");
+    // A single cancellation source guards every network wait; each wait is
+    // armed with the smaller of the stall window and the remaining total
+    // budget, so nothing can extend the size-scaled deadline.
+    expect(ps1).toContain(
+      "$deadline.CancelAfter([int][Math]::Min([double]$bootstrapStallMs, $remainingMs))",
+    );
+    const rearms = ps1.split("& $armDeadline").length - 1;
+    expect(rearms).toBeGreaterThanOrEqual(2);
     expect(ps1).toContain("$client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan");
     expect(ps1).toMatch(
       /\.SendAsync\(\s*\$request,\s*\[System\.Net\.Http\.HttpCompletionOption\]::ResponseHeadersRead,\s*\$deadline\.Token\s*\)/,
