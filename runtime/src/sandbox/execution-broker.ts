@@ -12,6 +12,7 @@
 import { spawnSync } from "node:child_process";
 import { probeLandlock, resolveLandlockRun } from "./landlock-run.js";
 import { realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import path, { basename, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -526,7 +527,7 @@ function probeLinuxSandbox(options: {
     return unavailableStatus(
       options,
       helper.error,
-      "Install AgenC with its executable sandbox helper outside the workspace, then run `agenc doctor` again.",
+      linuxSandboxHelperRemediation(options.cwd, options.env),
     );
   }
   // When any bubblewrap rung fails, the helper falls back to Landlock at
@@ -666,6 +667,36 @@ function unavailableStatus(
     ...(helperPath !== undefined ? { helperPath } : {}),
     ...(isolationProgram !== undefined ? { isolationProgram } : {}),
   };
+}
+
+export const LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION =
+  "Install AgenC with its executable sandbox helper outside the workspace, then run `agenc doctor` again.";
+
+export const LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION =
+  "This workspace contains your home directory, where AgenC installs its runtime, " +
+  "so the helper can never sit outside it. Open AgenC in a project directory instead, " +
+  "then run `agenc doctor` again.";
+
+/**
+ * A userland install puts the helper under ~/.agenc, so a workspace that
+ * contains the user's home can never satisfy the containment rule -- and a
+ * bare `agenc` in a fresh terminal opens exactly that workspace. Sending that
+ * user to reinstall the helper "outside the workspace" points at the wrong
+ * thing; the actionable fix is to open a project directory. The refusal itself
+ * is unchanged: a jailed process that can rewrite its own jailer is not jailed.
+ */
+export function linuxSandboxHelperRemediation(
+  workspaceRoot: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  const configured = env.HOME;
+  const home = configured !== undefined && path.isAbsolute(configured)
+    ? configured
+    : homedir();
+  if (home.length === 0) return LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION;
+  return isPathUnder(safeRealpath(home), safeRealpath(workspaceRoot))
+    ? LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION
+    : LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION;
 }
 
 export function resolveTrustedLinuxSandboxExecutable(

@@ -13,9 +13,12 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION,
+  LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION,
   SandboxExecutionBroker,
   SandboxExecutionError,
   attachSandboxExecutionBroker,
+  linuxSandboxHelperRemediation,
   linuxSandboxProbeRemediation,
   probeSandboxExecutionStatus,
   readSandboxExecutionBroker,
@@ -435,4 +438,79 @@ describe("SandboxExecutionBroker", () => {
       expect(String(error)).toContain("install the helper");
     }
   });
+});
+
+/**
+ * The default userland install puts the helper under ~/.agenc, and a bare
+ * `agenc` in a fresh terminal opens $HOME as the workspace -- so the helper is
+ * inside the writable workspace and startup fails closed. Observed live on
+ * 0.17.0: the refusal is correct, but it told the operator to reinstall the
+ * helper "outside the workspace", which is not the action that fixes it.
+ */
+describe("Linux sandbox helper remediation", () => {
+  it("names the home workspace instead of sending the operator to reinstall", () => {
+    const home = tempRoot("agenc-sandbox-home-");
+    expect(linuxSandboxHelperRemediation(home, { HOME: home })).toBe(
+      LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION,
+    );
+    expect(linuxSandboxHelperRemediation(home, { HOME: home })).toContain(
+      "project directory",
+    );
+  });
+
+  it("covers a workspace that merely contains the home directory", () => {
+    const root = tempRoot("agenc-sandbox-above-home-");
+    const home = join(root, "home", "operator");
+    mkdirSync(home, { recursive: true });
+    expect(linuxSandboxHelperRemediation(root, { HOME: home })).toBe(
+      LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION,
+    );
+  });
+
+  it("keeps the reinstall guidance when the workspace excludes the home", () => {
+    const root = tempRoot("agenc-sandbox-project-");
+    const workspace = join(root, "project");
+    const home = join(root, "home");
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    // A helper inside a project workspace is a genuine placement problem, so
+    // the original guidance is the right one to keep.
+    expect(linuxSandboxHelperRemediation(workspace, { HOME: home })).toBe(
+      LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION,
+    );
+  });
+
+  it("ignores a relative HOME rather than trusting it as a root", () => {
+    const root = tempRoot("agenc-sandbox-relative-home-");
+    // A relative HOME cannot anchor a containment test; the fallback is the
+    // process's real home, which is not under this temporary workspace.
+    expect(linuxSandboxHelperRemediation(root, { HOME: "relative/home" })).toBe(
+      LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION,
+    );
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "reaches the probe status an operator actually sees",
+    () => {
+      const home = tempRoot("agenc-sandbox-home-probe-");
+      const helper = join(home, ".agenc", "agenc-linux-sandbox");
+      mkdirSync(join(home, ".agenc"), { recursive: true });
+      writeFileSync(helper, "#!/bin/sh\nexit 0\n");
+      chmodSync(helper, 0o755);
+
+      const status = probeSandboxExecutionStatus({
+        mode: "workspace_write",
+        cwd: home,
+        env: { HOME: home },
+        platform: "linux",
+        agencLinuxSandboxExe: helper,
+      });
+
+      expect(status.kind).toBe("unavailable");
+      expect(status).toMatchObject({
+        reason: expect.stringContaining("outside the writable workspace"),
+        remediation: LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION,
+      });
+    },
+  );
 });
