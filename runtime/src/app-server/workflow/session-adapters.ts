@@ -219,6 +219,21 @@ export {
 } from "./child-terminals.js";
 
 /**
+ * The agent name a workflow child is registered under.
+ *
+ * `assertValidAgentName` accepts lowercase letters, digits and underscores
+ * only, while a child run id carries dashes, colons and a `#` (for example
+ * `wf-3f78249a-...:plan#1`). Folding those to underscores is what keeps the
+ * two ends agreeing: without it every spawn was rejected as "agent_name
+ * must use only lowercase letters, digits, and underscores", which failed
+ * `workflow.plan` on both attempts and ended the run with
+ * `step_retries_exhausted` before any work was done.
+ */
+export function workflowChildAgentName(childRunId: string): string {
+  return childRunId.toLowerCase().replace(/[^a-z0-9_]+/g, "_");
+}
+
+/**
  * The child usage rollup for a real delegate spawn, resolved from the
  * durable source that already exists: the admission kernel reconciles
  * ACTUAL provider usage per reservation for the child run's admissions.
@@ -776,7 +791,7 @@ export function createWorkflowSessionSeams(
           registry,
           taskPrompt: input.prompt,
           ...(input.kind === "verify_agent" ? { role: "verification" } : {}),
-          agentName: input.childRunId.replace(/[^a-zA-Z0-9._-]/g, "-"),
+          agentName: workflowChildAgentName(input.childRunId),
           ...(input.spec.model !== undefined
             ? { model: input.spec.model }
             : {}),
