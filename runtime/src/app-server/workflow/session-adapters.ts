@@ -85,6 +85,7 @@ import type {
   WorkflowJournalWriter,
   WorkflowRunJournal,
   WorkflowRunSessionPolicy,
+  WorkflowSpawnKind,
   WorkflowTerminalJournalIntent,
   WorkflowWorktreeBroker,
 } from "./verified-change-controller.js";
@@ -217,6 +218,46 @@ export {
   inspectWorkflowChildTerminal,
   recordWorkflowChildTerminal,
 } from "./child-terminals.js";
+
+/**
+ * Why a workflow child ended, when it did not end well.
+ *
+ * `RunAgentResult` carries the child's `error`, but only its `finalMessage`
+ * was passed on, and a child that dies before it speaks has none. The
+ * workflow then recorded a terminal failure with an empty message, so a run
+ * that failed at, say, `plan` said only `step_retries_exhausted` and left no
+ * trace of the cause anywhere: not in the run journal, not in the effects,
+ * not in the daemon log.
+ */
+export function workflowChildFailureMessage(
+  kind: WorkflowSpawnKind,
+  result: {
+    readonly outcome: "completed" | "errored" | "interrupted" | "aborted";
+    readonly error?: unknown;
+  },
+): string | null {
+  if (result.outcome === "completed") return null;
+  const reason =
+    result.error === undefined ? "" : `: ${childErrorText(result.error)}`;
+  return `workflow ${kind} child ${result.outcome}${reason}`;
+}
+
+/**
+ * A child can reject with something that is not an Error — a plain object
+ * carrying a code, say. `String()` renders that as `[object Object]`, which
+ * is worse than saying nothing, so serialize it instead.
+ */
+function childErrorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null) {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return Object.prototype.toString.call(error);
+    }
+  }
+  return String(error);
+}
 
 /**
  * The agent name a workflow child is registered under.
@@ -853,7 +894,9 @@ export function createWorkflowSessionSeams(
         }
         return {
           status,
-          finalMessage: result.finalMessage ?? null,
+          finalMessage:
+            result.finalMessage ??
+            workflowChildFailureMessage(input.kind, result),
           usage,
           ...(heldUnknownCount > 0
             ? { usageHeldUnknownCount: heldUnknownCount }
