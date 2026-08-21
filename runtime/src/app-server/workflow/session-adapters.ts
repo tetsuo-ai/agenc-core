@@ -787,6 +787,7 @@ export function createWorkflowSessionSeams(
       return cleanupAfterEvidence({
         proof: input.proof,
         handle: input.handle,
+        headCommit: input.headCommit,
         broker: sessionBroker(entry, input.handle.gitRoot),
         warn: options.warn,
       });

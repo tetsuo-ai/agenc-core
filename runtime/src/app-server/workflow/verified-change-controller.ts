@@ -286,6 +286,9 @@ export interface WorkflowWorktreeBroker {
   cleanup(input: {
     readonly proof: SealedEvidenceProof;
     readonly handle: WorktreeHandle;
+    /** The delivered snapshot, pinned under a durable ref before the
+     *  worktree branch — its only other name — is deleted. */
+    readonly headCommit: string;
   }): Promise<void>;
 }
 
@@ -1470,6 +1473,7 @@ export class VerifiedChangeWorkflowController {
       await this.#deps.worktrees.cleanup({
         proof: mintSealedEvidenceProof({ runId: ctx.runId, sealDigest }),
         handle,
+        headCommit: exported.headCommit,
       });
     } catch (error) {
       this.#deps.warn(

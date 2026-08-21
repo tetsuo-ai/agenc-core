@@ -349,12 +349,44 @@ export async function checkBaseMovement(opts: {
  * thrown: a leftover worktree is a nuisance, a thrown cleanup after a
  * sealed run would mask success.
  */
+/**
+ * Where a finished run's snapshot commit stays reachable: one ref per run,
+ * outside refs/heads so it never clutters branch listings.
+ */
+export function workflowRunRef(runId: string): string {
+  return `refs/agenc/runs/${runId}`;
+}
+
 export async function cleanupAfterEvidence(opts: {
   readonly proof: SealedEvidenceProof;
   readonly handle: WorktreeHandle;
+  /** The delivered snapshot commit; pinned before the branch goes. */
+  readonly headCommit: string;
   readonly broker: SandboxExecutionBrokerLike;
   readonly warn: (message: string) => void;
 }): Promise<void> {
+  /*
+   * Pin the delivered commit under a durable ref BEFORE deleting the
+   * worktree branch, which is its only other name. Removing the branch
+   * first left the run's whole product dangling in the object database:
+   * present, unreachable, and one gc away from gone — the change survived
+   * only as a hash inside the final message. If the pin cannot be
+   * written, the worktree is left in place, because a leftover worktree
+   * is a nuisance and a lost deliverable is not.
+   */
+  const pin = await runGitMutation(
+    ["update-ref", workflowRunRef(opts.proof.runId), opts.headCommit],
+    opts.handle.gitRoot,
+    opts.broker,
+    opts.handle.gitRoot,
+  );
+  if (pin.code !== 0) {
+    opts.warn(
+      `workflow ${opts.proof.runId} could not pin its delivered commit ` +
+        `${opts.headCommit} (${pin.stderr.trim()}); leaving the worktree in place`,
+    );
+    return;
+  }
   try {
     await removeAgentWorktree({
       gitRoot: opts.handle.gitRoot,
