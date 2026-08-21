@@ -26,6 +26,7 @@ import type { ToolRecoveryCategory } from "../tools/types.js";
 import { redactSecretsInValue } from "../secrets/sanitizer.js";
 import { stableStringify } from "../utils/stableStringify.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import { updateAgentRunStatus } from "./agent-runs.js";
 import { assertRecoverySha256 } from "./recovery-contract.js";
 import type { CanonicalJournalFormat } from "./recovery-journal-contract.js";
 import { isCancelLockedAgentRunStatus } from "./run-cancellation.js";
@@ -1004,6 +1005,17 @@ export class StateRunDurabilityRepository {
           params.fromEpoch,
           required(params.reason, "reason"),
         );
+      /*
+       * The mirror of the terminal-time rail update: reopening puts the run
+       * back to work, so the rail row says running again. Without this, a
+       * reopened run kept the previous epoch's verdict on the rail and
+       * startup recovery treated its in-flight tool calls as orphans.
+       */
+      updateAgentRunStatus(this.driver, {
+        id: params.runId,
+        status: "running",
+        lastActiveAt: params.openedAt,
+      });
       const value: RunLifecycleEpoch = {
         runId: params.runId,
         epoch: nextEpoch,
@@ -1078,6 +1090,23 @@ export class StateRunDurabilityRepository {
           required(params.result.finishedAt, "finishedAt"),
           required(params.eventId, "eventId"),
         );
+      /*
+       * The rail row keeps up with the verdict, in the same transaction.
+       * Terminal results landed here while agent_runs.status stayed
+       * "running" forever — dozens of long-dead runs per project database
+       * still advertising themselves as live to anything that reads the
+       * rail. Only for the run's CURRENT epoch: a terminal recovered into a
+       * reopened run's history must not repaint the live epoch's status.
+       * Child runs (`wf-…:plan#1`) have no rail row; the update is a no-op
+       * for them, and a cancel-locked row keeps its cancel.
+       */
+      if (this.currentEpoch(params.result.runId)?.epoch === params.epoch) {
+        updateAgentRunStatus(this.driver, {
+          id: params.result.runId,
+          status: params.result.status,
+          lastActiveAt: params.result.finishedAt,
+        });
+      }
       return {
         applied: true,
         value: {
