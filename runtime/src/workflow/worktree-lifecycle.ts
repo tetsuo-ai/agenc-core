@@ -29,6 +29,7 @@ import {
   getOrCreateWorktree,
   removeAgentWorktree,
   runGit,
+  runGitMutation,
   type WorktreeHandle,
 } from "../agents/worktree.js";
 
@@ -172,9 +173,25 @@ export async function exportPatchArtifacts(opts: {
     throw new WorkflowGitError("status", status.stderr.trim());
   }
   if (status.stdout.trim().length > 0) {
-    const add = await runGit(["add", "-A"], handle.path, broker);
+    /*
+     * Staging and committing write the worktree's index, and a linked
+     * worktree keeps that index under the MAIN repository's
+     * `.git/worktrees/<slug>/`, outside the checkout. Read-only git could
+     * therefore inspect the work but never record it: every run that got as
+     * far as producing a change died with
+     *   git add failed: Unable to create '<repo>/.git/worktrees/<slug>/index.lock':
+     *   Read-only file system
+     * so `verify`, `review` and `finalize` were never reached.
+     */
+    const add = await runGitMutation(
+      ["add", "-A"],
+      handle.path,
+      broker,
+      handle.gitRoot,
+      [handle.path],
+    );
     if (add.code !== 0) throw new WorkflowGitError("add", add.stderr.trim());
-    const commit = await runGit(
+    const commit = await runGitMutation(
       [
         "-c", "user.name=agenc-workflow",
         "-c", "user.email=workflow@agenc.invalid",
@@ -183,6 +200,8 @@ export async function exportPatchArtifacts(opts: {
       ],
       handle.path,
       broker,
+      handle.gitRoot,
+      [handle.path],
     );
     if (commit.code !== 0) {
       throw new WorkflowGitError("commit", commit.stderr.trim());
