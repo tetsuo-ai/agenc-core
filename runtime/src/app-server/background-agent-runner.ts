@@ -6396,6 +6396,24 @@ export function daemonEventFromUnboundSessionEvent(event: {
       payload,
     };
   }
+  // Provider token accounting for the latest model call. Telemetry like
+  // collab_agent_status: clients drive live context gauges off it, and
+  // without forwarding it a UI can only estimate context from transcript
+  // characters — blind to tool output, which is where context really goes.
+  if (
+    type === "token_count" &&
+    isJsonObject(payload) &&
+    typeof payload.promptTokens === "number" &&
+    typeof payload.totalTokens === "number"
+  ) {
+    return {
+      id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
+      type,
+      payload,
+    };
+  }
   if (
     type === "tool_progress" &&
     isJsonObject(payload) &&
