@@ -361,11 +361,33 @@ export function attachDetachedSpawnTelemetry(
     status === "errored" ||
     status === "shutdown" ||
     status === "not_found";
+  /*
+   * The wire status is CollabAgentTaskStatus, a CLOSED union — a raw
+   * agent-status word outside it ("errored", "shutdown") poisons the
+   * canonical journal on replay and excludes the whole workspace from
+   * execution admission (see event-log.ts's history of exactly this).
+   * Map agent words onto the task vocabulary before emitting.
+   */
+  const wireStatus = (status: string | undefined): string => {
+    switch (status) {
+      case "running":
+      case "idle":
+      case "completed":
+        return status;
+      case "errored":
+        return "failed";
+      case "shutdown":
+      case "not_found":
+        return "killed";
+      default:
+        return "pending";
+    }
+  };
   const emitNow = (): void => {
     const value = statusOf();
     const counts = liveAgentCounts(thread);
     emitTaskStatus({
-      status: (value.status ?? "running") as BackgroundTaskSnapshot["status"],
+      status: wireStatus(value.status) as BackgroundTaskSnapshot["status"],
       ...(counts !== undefined ? { progress: counts } : {}),
       ...(value.error !== undefined ? { error: value.error } : {}),
     } as BackgroundTaskSnapshot);

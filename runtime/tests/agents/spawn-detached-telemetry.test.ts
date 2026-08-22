@@ -88,6 +88,19 @@ describe("attachDetachedSpawnTelemetry", () => {
     expect(emitted).toHaveLength(2);
   });
 
+  it("maps raw agent words onto the closed wire vocabulary", () => {
+    const { thread, setStatus } = fakeThread();
+    const emitted: BackgroundTaskSnapshot[] = [];
+    attachDetachedSpawnTelemetry(thread, (snapshot) => emitted.push(snapshot));
+    setStatus("errored");
+    expect(emitted.at(-1)?.status).toBe("failed");
+    const again = fakeThread();
+    const emitted2: BackgroundTaskSnapshot[] = [];
+    attachDetachedSpawnTelemetry(again.thread, (s2) => emitted2.push(s2));
+    again.setStatus("shutdown");
+    expect(emitted2.at(-1)?.status).toBe("killed");
+  });
+
   it("emits the terminal status and stops polling after it", () => {
     const { thread, counters, setStatus } = fakeThread();
     const emitted: BackgroundTaskSnapshot[] = [];
