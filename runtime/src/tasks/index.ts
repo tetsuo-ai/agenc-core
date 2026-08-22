@@ -63,6 +63,7 @@ import { BackgroundTaskLifecycle } from "./lifecycle.js";
 export const backgroundTaskLifecycle = new BackgroundTaskLifecycle();
 
 export {
+  liveAgentCounts,
   registerAgentThreadTask,
   type AgentThreadTaskHandle,
   type RegisterAgentThreadTaskOptions,

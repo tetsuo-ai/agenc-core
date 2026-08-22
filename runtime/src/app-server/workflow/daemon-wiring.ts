@@ -401,6 +401,8 @@ export function createDaemonWorkflowController(options: {
       ...(spec.unattendedDeny !== undefined
         ? { unattendedDeny: spec.unattendedDeny }
         : {}),
+      ...(spec.model !== undefined ? { model: spec.model } : {}),
+      ...(spec.provider !== undefined ? { provider: spec.provider } : {}),
     };
   };
   const seams =

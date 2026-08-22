@@ -85,6 +85,7 @@ import type {
   WorkflowJournalWriter,
   WorkflowRunJournal,
   WorkflowRunSessionPolicy,
+  WorkflowSpawnKind,
   WorkflowTerminalJournalIntent,
   WorkflowWorktreeBroker,
 } from "./verified-change-controller.js";
@@ -219,6 +220,46 @@ export {
 } from "./child-terminals.js";
 
 /**
+ * Why a workflow child ended, when it did not end well.
+ *
+ * `RunAgentResult` carries the child's `error`, but only its `finalMessage`
+ * was passed on, and a child that dies before it speaks has none. The
+ * workflow then recorded a terminal failure with an empty message, so a run
+ * that failed at, say, `plan` said only `step_retries_exhausted` and left no
+ * trace of the cause anywhere: not in the run journal, not in the effects,
+ * not in the daemon log.
+ */
+export function workflowChildFailureMessage(
+  kind: WorkflowSpawnKind,
+  result: {
+    readonly outcome: "completed" | "errored" | "interrupted" | "aborted";
+    readonly error?: unknown;
+  },
+): string | null {
+  if (result.outcome === "completed") return null;
+  const reason =
+    result.error === undefined ? "" : `: ${childErrorText(result.error)}`;
+  return `workflow ${kind} child ${result.outcome}${reason}`;
+}
+
+/**
+ * A child can reject with something that is not an Error — a plain object
+ * carrying a code, say. `String()` renders that as `[object Object]`, which
+ * is worse than saying nothing, so serialize it instead.
+ */
+function childErrorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null) {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return Object.prototype.toString.call(error);
+    }
+  }
+  return String(error);
+}
+
+/**
  * The agent name a workflow child is registered under.
  *
  * `assertValidAgentName` accepts lowercase letters, digits and underscores
@@ -297,6 +338,34 @@ export function workflowPermissionModeArgv(
     generatedOptions.push("--permission-mode", permissionMode);
   }
   return insertProcessCliOptionsBeforePrompt(baseArgv, generatedOptions);
+}
+
+/**
+ * The full argv a run's own session is bootstrapped with: its permission
+ * mode, and the model and provider the run was started with.
+ *
+ * A workflow session is bootstrapped like any other agent, so it takes the
+ * daemon's default model unless it is told otherwise — the same way the
+ * background-agent runner passes `--provider`/`--model`. Without this,
+ * `run start --model` was accepted, frozen into the spec, and then ignored,
+ * and every run ran on whatever the daemon happened to default to.
+ */
+export function workflowSessionArgv(
+  policy: WorkflowRunSessionPolicy,
+  baseArgv: readonly string[] = process.argv,
+): readonly string[] {
+  const withMode = workflowPermissionModeArgv(policy.permissionMode, baseArgv);
+  const optionArgs = tokenizeCliOptionRegion(withMode.slice(2)).optionArgs;
+  const generatedOptions: string[] = [];
+  if (policy.provider !== undefined && !optionArgs.includes("--provider")) {
+    generatedOptions.push("--provider", policy.provider);
+  }
+  if (policy.model !== undefined && !optionArgs.includes("--model")) {
+    generatedOptions.push("--model", policy.model);
+  }
+  return generatedOptions.length === 0
+    ? withMode
+    : insertProcessCliOptionsBeforePrompt(withMode, generatedOptions);
 }
 
 /**
@@ -604,7 +673,7 @@ export function createWorkflowSessionSeams(
         resumeConversation: repoPath === undefined,
         cwd: resolvedRepoPath,
         ...(resolvedPolicy !== undefined
-          ? { argv: workflowPermissionModeArgv(resolvedPolicy.permissionMode) }
+          ? { argv: workflowSessionArgv(resolvedPolicy) }
           : {}),
         executionAdmissionAutonomous: true,
         executionAdmissionKernel: options.kernel,
@@ -718,6 +787,7 @@ export function createWorkflowSessionSeams(
       return cleanupAfterEvidence({
         proof: input.proof,
         handle: input.handle,
+        headCommit: input.headCommit,
         broker: sessionBroker(entry, input.handle.gitRoot),
         warn: options.warn,
       });
@@ -853,7 +923,9 @@ export function createWorkflowSessionSeams(
         }
         return {
           status,
-          finalMessage: result.finalMessage ?? null,
+          finalMessage:
+            result.finalMessage ??
+            workflowChildFailureMessage(input.kind, result),
           usage,
           ...(heldUnknownCount > 0
             ? { usageHeldUnknownCount: heldUnknownCount }

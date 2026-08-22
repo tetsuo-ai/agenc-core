@@ -1128,7 +1128,10 @@ describe("VerifiedChangeWorkflowController — review-child adoption (A1 for the
   });
 
   it("a settled-but-unparseable reviewer adopted after a crash keeps its failed outcome and retries once", async () => {
+    // Two: an unstructured reply earns one repair turn before the attempt
+    // is failed, so "the reviewer never produced a verdict" is both of them.
     harness.reviewer.responses.push("no structured output at all");
+    harness.reviewer.responses.push("still no structured output");
     armFailpoint("before_review_commit");
     const started = await harness.controller.start(startParams(harness));
     await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(
@@ -1154,7 +1157,8 @@ describe("VerifiedChangeWorkflowController — review-child adoption (A1 for the
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe(
       "completed",
     );
-    expect(harness.reviewer.invocations).toHaveLength(2);
+    // Attempt 1: the reply and its repair turn. Attempt 2: one verdict.
+    expect(harness.reviewer.invocations).toHaveLength(3);
   });
 });
 

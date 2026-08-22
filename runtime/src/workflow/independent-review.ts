@@ -127,8 +127,35 @@ export function buildReviewerMessages(input: ReviewerPromptInput): {
     '"overallExplanation":"...","overallConfidenceScore":0..1}',
     "Priority 0-1 findings are release blockers; reserve them for defects",
     "that make the change wrong, unsafe, or untested.",
+    "",
+    // The reviewer is invoked once and its reply is taken as final: it has
+    // no tools and no second turn. Left unsaid, a chat-shaped model opens
+    // with what it intends to do — "I'll review this change and inspect the
+    // repo first" — and that preamble becomes the whole review.
+    "You are answering in a single message and you have no tools: this",
+    "patch and this summary are everything you get. Reply with the JSON",
+    "object alone — no preamble, no narration of what you will do next,",
+    "no prose around it.",
   ].join("\n");
   return { systemPrompt: REVIEW_SYSTEM_PROMPT, userMessage };
+}
+
+/** The shape `parseReviewOutput` falls back to when it found no JSON. */
+export function isUnstructuredReview(review: ReviewOutput): boolean {
+  return review.overallCorrectness === "" && review.findings.length === 0;
+}
+
+/** Said to a reviewer that answered with prose instead of the verdict. */
+export const REVIEW_REPAIR_INSTRUCTION =
+  "Your previous reply contained no ReviewOutput. Do not describe what you " +
+  "will do and do not ask for more context: there is none. Reply now with " +
+  "the ReviewOutput JSON object alone.";
+
+/** A one-line, bounded look at what the reviewer actually said. */
+export function reviewerResponseExcerpt(raw: string, limit = 240): string {
+  const flat = raw.replace(/\s+/gu, " ").trim();
+  if (flat.length === 0) return "(empty response)";
+  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
 }
 
 export interface IndependentReviewResult {
@@ -155,20 +182,42 @@ export async function runIndependentReview(opts: {
     verification: opts.verification,
     verificationVerdict: opts.verificationVerdict,
   });
-  const raw = await opts.invoker.invoke({
+  const firstRaw = await opts.invoker.invoke({
     systemPrompt: prompt.systemPrompt,
     userMessage: prompt.userMessage,
     reviewerModel: opts.spec.reviewerModel,
     runId: opts.step.runId,
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   });
-  const review = parseReviewOutput(raw);
+  let raw = firstRaw;
+  let review = parseReviewOutput(raw);
+  if (isUnstructuredReview(review)) {
+    /*
+     * One repair turn. A model that narrated its intent instead of
+     * answering will usually comply when told plainly, and a whole run's
+     * work is waiting on this one reply.
+     */
+    raw = await opts.invoker.invoke({
+      systemPrompt: prompt.systemPrompt,
+      userMessage: `${prompt.userMessage}\n\n${REVIEW_REPAIR_INSTRUCTION}`,
+      reviewerModel: opts.spec.reviewerModel,
+      runId: opts.step.runId,
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    });
+    review = parseReviewOutput(raw);
+  }
   // parseReviewOutput's plain-text fallback has this exact shape; a review
   // that did not produce structured output FAILS the step — it is never
   // treated as an approval.
-  if (review.overallCorrectness === "" && review.findings.length === 0) {
+  if (isUnstructuredReview(review)) {
+    /*
+     * Say what came back. "no structured ReviewOutput (189 chars)" is a
+     * dead end: it cannot be told apart from prose, a refusal, or a
+     * truncated stream, and the response is kept nowhere else, so a run
+     * that died here left the next reader guessing.
+     */
     throw new ReviewParseError(
-      `no structured ReviewOutput in reviewer response (${raw.length} chars)`,
+      `no structured ReviewOutput in reviewer response (${raw.length} chars): ${reviewerResponseExcerpt(raw)}`,
     );
   }
   const artifact = await opts.sink.recordArtifact({

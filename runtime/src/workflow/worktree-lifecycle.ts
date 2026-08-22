@@ -29,6 +29,7 @@ import {
   getOrCreateWorktree,
   removeAgentWorktree,
   runGit,
+  runGitMutation,
   type WorktreeHandle,
 } from "../agents/worktree.js";
 
@@ -172,9 +173,25 @@ export async function exportPatchArtifacts(opts: {
     throw new WorkflowGitError("status", status.stderr.trim());
   }
   if (status.stdout.trim().length > 0) {
-    const add = await runGit(["add", "-A"], handle.path, broker);
+    /*
+     * Staging and committing write the worktree's index, and a linked
+     * worktree keeps that index under the MAIN repository's
+     * `.git/worktrees/<slug>/`, outside the checkout. Read-only git could
+     * therefore inspect the work but never record it: every run that got as
+     * far as producing a change died with
+     *   git add failed: Unable to create '<repo>/.git/worktrees/<slug>/index.lock':
+     *   Read-only file system
+     * so `verify`, `review` and `finalize` were never reached.
+     */
+    const add = await runGitMutation(
+      ["add", "-A"],
+      handle.path,
+      broker,
+      handle.gitRoot,
+      [handle.path],
+    );
     if (add.code !== 0) throw new WorkflowGitError("add", add.stderr.trim());
-    const commit = await runGit(
+    const commit = await runGitMutation(
       [
         "-c", "user.name=agenc-workflow",
         "-c", "user.email=workflow@agenc.invalid",
@@ -183,6 +200,8 @@ export async function exportPatchArtifacts(opts: {
       ],
       handle.path,
       broker,
+      handle.gitRoot,
+      [handle.path],
     );
     if (commit.code !== 0) {
       throw new WorkflowGitError("commit", commit.stderr.trim());
@@ -330,12 +349,44 @@ export async function checkBaseMovement(opts: {
  * thrown: a leftover worktree is a nuisance, a thrown cleanup after a
  * sealed run would mask success.
  */
+/**
+ * Where a finished run's snapshot commit stays reachable: one ref per run,
+ * outside refs/heads so it never clutters branch listings.
+ */
+export function workflowRunRef(runId: string): string {
+  return `refs/agenc/runs/${runId}`;
+}
+
 export async function cleanupAfterEvidence(opts: {
   readonly proof: SealedEvidenceProof;
   readonly handle: WorktreeHandle;
+  /** The delivered snapshot commit; pinned before the branch goes. */
+  readonly headCommit: string;
   readonly broker: SandboxExecutionBrokerLike;
   readonly warn: (message: string) => void;
 }): Promise<void> {
+  /*
+   * Pin the delivered commit under a durable ref BEFORE deleting the
+   * worktree branch, which is its only other name. Removing the branch
+   * first left the run's whole product dangling in the object database:
+   * present, unreachable, and one gc away from gone — the change survived
+   * only as a hash inside the final message. If the pin cannot be
+   * written, the worktree is left in place, because a leftover worktree
+   * is a nuisance and a lost deliverable is not.
+   */
+  const pin = await runGitMutation(
+    ["update-ref", workflowRunRef(opts.proof.runId), opts.headCommit],
+    opts.handle.gitRoot,
+    opts.broker,
+    opts.handle.gitRoot,
+  );
+  if (pin.code !== 0) {
+    opts.warn(
+      `workflow ${opts.proof.runId} could not pin its delivered commit ` +
+        `${opts.headCommit} (${pin.stderr.trim()}); leaving the worktree in place`,
+    );
+    return;
+  }
   try {
     await removeAgentWorktree({
       gitRoot: opts.handle.gitRoot,
