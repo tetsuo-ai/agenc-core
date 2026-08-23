@@ -451,18 +451,11 @@ export class StreamingToolPairValidator {
         ),
       );
     }
-    const expectedToolCallId = this.openCalls.keys().next().value as
-      | string
-      | undefined;
-    if (message.toolCallId !== expectedToolCallId) {
-      return this.finishFailure(
-        invalid(
-          "tool_result_out_of_order",
-          this.index,
-          `tool result ${formatIdentityForLog(message.toolCallId)} is out of order; expected ${formatIdentityForLog(expectedToolCallId ?? "")}`,
-        ),
-      );
-    }
+    // No emission-order check on results: parallel tool calls finish in
+    // whatever order they finish, every provider wire pairs results by
+    // id (as this validator itself does below), and rejecting the
+    // append left the whole session permanently poisoned — every later
+    // turn re-validated the same history and failed the same way.
     if (
       message.toolName !== undefined &&
       message.toolName !== openCall.toolName
