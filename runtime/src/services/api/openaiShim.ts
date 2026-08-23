@@ -103,7 +103,7 @@ type SelectedShimProvider =
   | 'xai'
 
 const GITHUB_COPILOT_BASE = 'https://api.githubcopilot.com'
-const DEFAULT_MISTRAL_MODEL = 'devstral-latest'
+const DEFAULT_MISTRAL_MODEL = 'mistral-medium-latest'
 const DEFAULT_NVIDIA_NIM_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
 const DEFAULT_MINIMAX_MODEL = 'MiniMax-M2.5'
 const DEFAULT_GITHUB_MODEL = 'gpt-4o'

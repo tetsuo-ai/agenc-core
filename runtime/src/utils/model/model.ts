@@ -229,7 +229,7 @@ export function getDefaultOpusModel(): ModelName {
   }
   // Mistral provider
   if (getAPIProvider() === 'mistral') {
-    return process.env.MISTRAL_MODEL || 'devstral-latest'
+    return process.env.MISTRAL_MODEL || 'mistral-medium-latest'
   }
   // openai provider: use user-specified model or default
   if (getAPIProvider() === 'openai') {
@@ -403,7 +403,7 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
     return process.env.GEMINI_MODEL || 'gemini-2.0-flash'
   }
   if (getAPIProvider() === 'mistral') {
-    return process.env.MISTRAL_MODEL || 'devstral-latest'
+    return process.env.MISTRAL_MODEL || 'mistral-medium-latest'
   }
   // openai provider: env model, then AgenC config.model, then default
   if (getAPIProvider() === 'openai') {

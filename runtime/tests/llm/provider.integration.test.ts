@@ -50,7 +50,7 @@ const PROVIDER_CASES: ReadonlyArray<{
   {
     provider: "deepseek",
     model:
-      process.env.AGENC_DEEPSEEK_INTEGRATION_MODEL ?? "deepseek-reasoner",
+      process.env.AGENC_DEEPSEEK_INTEGRATION_MODEL ?? "deepseek-v4-flash",
     enabled: RUN_REMOTE && Boolean(process.env.DEEPSEEK_API_KEY),
     apiKey: () => process.env.DEEPSEEK_API_KEY,
   },

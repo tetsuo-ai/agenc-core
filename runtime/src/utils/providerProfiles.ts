@@ -257,7 +257,7 @@ export function getProviderPresetDefaults(
         provider: 'openai',
         name: 'DeepSeek',
         baseUrl: 'https://api.deepseek.com/v1',
-        model: 'deepseek-v4-flash, deepseek-v4-pro, deepseek-chat, deepseek-reasoner',
+        model: 'deepseek-v4-flash, deepseek-v4-pro, deepseek-chat',
         apiKey: '',
         requiresApiKey: true,
       }

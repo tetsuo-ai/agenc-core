@@ -58,9 +58,14 @@ export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
   "openai-compatible": "local-model",
   openrouter: "x-ai/grok-4.5",
   groq: "llama-3.3-70b-versatile",
-  deepseek: "deepseek-reasoner",
+  // deepseek-reasoner was retired upstream on 2026-07-24; requests to it
+  // 400, which read as a silent dead provider. v4-flash is the current
+  // default-tier model.
+  deepseek: "deepseek-v4-flash",
   gemini: "gemini-2.5-pro",
-  mistral: "devstral-latest",
+  // devstral-latest is no longer a documented alias (Devstral 2 deprecated
+  // 2026-05-22); Mistral Medium is the documented replacement.
+  mistral: "mistral-medium-latest",
   "nvidia-nim": "nvidia/llama-3.1-nemotron-70b-instruct",
   minimax: "MiniMax-M2.5",
   github: "gpt-4o",
@@ -154,19 +159,20 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "z-ai/glm-4.7-flash",
     ...OPENROUTER_FREE_MODEL_IDS,
   ]),
+  // mixtral-8x7b-32768 was shut down by groq on 2025-03-20 (deprecations
+  // page); listing it produced guaranteed-dead sessions.
   groq: Object.freeze([
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768",
   ]),
-  deepseek: Object.freeze(["deepseek-reasoner"]),
+  deepseek: Object.freeze(["deepseek-v4-flash", "deepseek-v4-pro"]),
   gemini: Object.freeze(["gemini-2.5-pro"]),
-  mistral: Object.freeze(["devstral-latest", "mistral-medium-latest"]),
+  mistral: Object.freeze(["mistral-medium-latest"]),
   "nvidia-nim": Object.freeze([
     "nvidia/llama-3.1-nemotron-70b-instruct",
     "meta/llama-3.1-8b-instruct",
   ]),
-  minimax: Object.freeze(["MiniMax-M2.5", "MiniMax-M2.7"]),
+  minimax: Object.freeze(["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"]),
   // `gpt-5.4` is registry-owned by openai (REGISTERED_MODEL_CATALOG,
   // visibility: "list") and surfaces under openai via deriveFlatCatalog. Listing
   // the bare alias here too made the slug match two providers and threw
