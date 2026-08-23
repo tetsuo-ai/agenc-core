@@ -117,9 +117,15 @@ function waitForCallback(state: string): Promise<string> {
         return
       }
       if (gotState !== state) {
-        finish(400, 'Sign-in failed', 'State mismatch — please retry the login.')
-        cleanup()
-        reject(new OpenAiOauthError('state_mismatch', 'state mismatch on callback'))
+        // Non-fatal: a stale consent tab from an earlier attempt can hit
+        // the live listener with an old state. Answer it and keep
+        // waiting for the redirect that belongs to THIS attempt —
+        // rejecting here let any leftover tab kill a healthy login.
+        finish(
+          400,
+          'This sign-in tab is stale',
+          'Close this tab and use the most recent sign-in tab, or retry from the app.',
+        )
         return
       }
       if (code === null || code.length === 0) {
