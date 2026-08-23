@@ -476,7 +476,7 @@ export function getCompactSystemPrompt(): string[] {
       `- Use tools to act; never invent file contents or command output. One tool call at a time is fine — wait for each result before the next step.`,
       `- Read before you edit. After a change, verify it (run the code, re-read the file).`,
       `- exec_command runs shell commands. FileRead/Edit/MultiEdit/Write handle files. Grep/Glob search. Orient maps the project.`,
-      `- TodoWrite tracks multi-step work. EnterPlanMode/ExitPlanMode wrap read-only planning when the user asks for a plan.`,
+      `- TodoWrite is ONLY for work with 3+ distinct steps. Never call it for a single-step request (answering, writing one thing, one edit) — just do the work. EnterPlanMode/ExitPlanMode only when the user explicitly asks for a plan.`,
       `- Brief sends the user a one-line progress note during long work. AskUserQuestion asks the user a question when you are blocked.`,
       `- If a tool call fails, read the error and adjust; do not repeat the same call unchanged.`,
       ``,
