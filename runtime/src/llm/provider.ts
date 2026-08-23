@@ -58,7 +58,11 @@ import {
   readXaiOauthAccessToken,
   xaiOauthRequiresRelogin,
 } from "../utils/xaiOauthCredentials.js";
-import { readOpenAiOauthApiKey } from "../utils/openAiOauthCredentials.js";
+import {
+  CHATGPT_BACKEND_ORIGINATOR,
+  readOpenAiOauthApiKey,
+  readOpenAiSubscriptionAuth,
+} from "../utils/openAiOauthCredentials.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 
@@ -1524,12 +1528,17 @@ export function createProvider(
         extra.oauth.accessToken.trim().length > 0
           ? (extra.oauth as unknown as OpenAIProviderConfig["oauth"])
           : undefined;
-      // The ChatGPT sign-in stores an exchanged platform API key; like
-      // grok's OAuth it wins over env BYOK unconditionally, so signing
-      // in works with no OPENAI_API_KEY anywhere.
+      // The ChatGPT sign-in wins over env BYOK unconditionally (as
+      // grok's OAuth does), in either of its two shapes: an exchanged
+      // platform API key, or — for an account with no platform
+      // organization, which cannot mint one — the subscription's access
+      // token against the ChatGPT backend.
       const chatgptKey = readOpenAiOauthApiKey();
+      const subscription =
+        chatgptKey === undefined ? readOpenAiSubscriptionAuth() : undefined;
       const apiKey =
         chatgptKey ??
+        subscription?.accessToken ??
         (oauthConfig
           ? resolveFactoryApiKey(opts)
           : requireFactoryApiKey("openai", opts));
@@ -1541,17 +1550,44 @@ export function createProvider(
         apiKeyEnvLabel,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL:
+          // A subscription sign-in is bound to the ChatGPT backend: the
+          // access token is not a platform credential and api.openai.com
+          // rejects it.
+          (subscription?.baseUrl !== undefined
+            ? subscription.baseUrl
+            : undefined) ??
           normalizeBaseURL(opts.baseURL) ??
           normalizeBaseURL(process.env.OPENAI_BASE_URL) ??
           defaultBaseURLFor("openai"),
         useResponsesApi: extra.useResponsesApi ?? true,
-        ...(extra.store !== undefined ? { store: extra.store } : {}),
+        // That backend is stateless: it rejects store:true, and without
+        // server-side state the encrypted reasoning has to ride along in
+        // the request to survive across turns.
+        ...(subscription !== undefined
+          ? { store: false }
+          : extra.store !== undefined
+            ? { store: extra.store }
+            : {}),
         ...(extra.contextWindowTokens !== undefined
           ? { contextWindowTokens: extra.contextWindowTokens }
           : {}),
         ...(extra.authMode ? { authMode: extra.authMode } : {}),
         ...(oauthConfig ? { oauth: oauthConfig } : {}),
-        ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
+        // The ChatGPT backend identifies the subscription by header; the
+        // bearer alone is not enough and it answers 401 without this.
+        ...(subscription !== undefined || extra.defaultHeaders
+          ? {
+              defaultHeaders: {
+                ...(extra.defaultHeaders ?? {}),
+                ...(subscription !== undefined
+                  ? {
+                      "ChatGPT-Account-ID": subscription.accountId,
+                      originator: CHATGPT_BACKEND_ORIGINATOR,
+                    }
+                  : {}),
+              },
+            }
+          : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(extra.organization
           ? { organization: extra.organization }

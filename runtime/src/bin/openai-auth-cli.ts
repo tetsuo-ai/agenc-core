@@ -14,8 +14,12 @@ import { spawn } from "node:child_process";
 import {
   OpenAiOauthError,
   runOpenAiBrowserLogin,
+  type OpenAiOauthTokens,
 } from "../services/openai/oauth.js";
-import { exchangeProviderCodeIdTokenForApiKey } from "../services/api/openAiCodeOAuthShared.js";
+import {
+  exchangeProviderCodeIdTokenForApiKey,
+  parseChatgptAccountId,
+} from "../services/api/openAiCodeOAuthShared.js";
 import {
   clearOpenAiOauthCredentials,
   readOpenAiOauthCredentials,
@@ -68,6 +72,19 @@ function openUrlDetached(url: string): void {
     // The URL is printed either way; a missing opener is not fatal.
   });
   child.unref();
+}
+
+/**
+ * chatgpt_account_id lives under the `https://api.openai.com/auth` claim.
+ * Both tokens carry it; prefer the id_token, fall back to the access
+ * token (a refresh returns a new access token but never restates the
+ * account id, so it is resolved once here and persisted).
+ */
+function accountIdFromLogin(tokens: OpenAiOauthTokens): string | undefined {
+  return (
+    parseChatgptAccountId(tokens.idToken) ??
+    parseChatgptAccountId(tokens.accessToken)
+  );
 }
 
 async function withTimeout<T>(
@@ -166,63 +183,64 @@ export async function runOpenAiAuthCli(
     return fail(error instanceof Error ? error.message : String(error));
   }
 
-  if (login.tokens.idToken === undefined) {
-    return fail(
-      "the login carried no id_token to exchange for an API key",
-      "no_id_token",
-    );
-  }
-
-  let apiKey: string;
-  try {
-    apiKey = await withTimeout(
-      exchangeProviderCodeIdTokenForApiKey(login.tokens.idToken),
-      API_KEY_EXCHANGE_TIMEOUT_MS,
-      "the API key exchange",
-    );
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    // The common rejection is worth naming plainly: OpenAI only mints an
-    // API key for a login whose id_token carries an organization, i.e. a
-    // ChatGPT account attached to a platform org. A personal Plus/Pro
-    // account is not, and no amount of retrying changes that.
-    if (/missing organization_id|invalid_subject_token/i.test(detail)) {
-      return fail(
-        "this ChatGPT account is not attached to an OpenAI platform " +
-          "organization, so OpenAI will not issue an API key for it. Use an " +
-          "OPENAI_API_KEY from platform.openai.com instead, or sign in with " +
-          "an account that belongs to a platform organization.",
-        "no_platform_org",
+  // The platform API key is a bonus, not a requirement. Only a ChatGPT
+  // account inside an OpenAI platform organization can mint one; every
+  // other account authenticates as a subscription, with the access token
+  // and account id against the ChatGPT backend. Treating the exchange's
+  // 401 as fatal is what made a perfectly good subscription login look
+  // broken.
+  let apiKey: string | undefined;
+  if (login.tokens.idToken !== undefined) {
+    try {
+      apiKey = await withTimeout(
+        exchangeProviderCodeIdTokenForApiKey(login.tokens.idToken),
+        API_KEY_EXCHANGE_TIMEOUT_MS,
+        "the API key exchange",
       );
+    } catch {
+      apiKey = undefined;
     }
+  }
+
+  const accountId = accountIdFromLogin(login.tokens);
+  if (apiKey === undefined && accountId === undefined) {
     return fail(
-      `ChatGPT accepted the login, but exchanging it for an API key failed — ${detail}.`,
-      "exchange_failed",
+      "the login produced neither a platform API key nor a ChatGPT " +
+        "account id, so there is no way to authenticate with it.",
+      "no_credential",
     );
   }
 
+  const mode = apiKey !== undefined ? "apiKey" : "chatgpt";
   const saved = saveOpenAiOauthCredentials({
-    apiKey,
+    ...(apiKey !== undefined ? { apiKey } : {}),
+    authMode: mode,
+    accessToken: login.tokens.accessToken,
+    ...(accountId !== undefined ? { accountId } : {}),
     obtainedAt: Date.now(),
     ...(login.accountLabel !== undefined
       ? { accountLabel: login.accountLabel }
       : {}),
-    idToken: login.tokens.idToken,
+    ...(login.tokens.idToken !== undefined
+      ? { idToken: login.tokens.idToken }
+      : {}),
     ...(login.tokens.refreshToken !== undefined
       ? { refreshToken: login.tokens.refreshToken }
       : {}),
   });
   if (!saved.success) {
     return fail(
-      `signed in, but storing the key failed: ${saved.warning ?? "unknown error"}`,
+      `signed in, but storing the credential failed: ${saved.warning ?? "unknown error"}`,
       "store_failed",
     );
   }
 
   const account = login.accountLabel ?? "ChatGPT account";
   emit(
-    { ok: true, signedIn: true, account },
-    `Signed in to ChatGPT as ${account}.`,
+    { ok: true, signedIn: true, account, authMode: mode },
+    mode === "apiKey"
+      ? `Signed in to ChatGPT as ${account}.`
+      : `Signed in to ChatGPT as ${account} (subscription).`,
   );
   return 0;
 }
