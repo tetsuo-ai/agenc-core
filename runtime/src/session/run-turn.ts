@@ -65,6 +65,10 @@ import {
   fromRuntimeMessageContent,
   toRuntimeMessageContent,
 } from "../llm/content-conversion.js";
+import {
+  filterToolsForLocalProfile,
+  usesLocalToolProfile,
+} from "../llm/wire/capability-gating.js";
 import type { QueuedCommand } from "../types/textInputTypes.js";
 import { safeStringify } from "../tools/types.js";
 import {
@@ -2844,7 +2848,13 @@ export function builtTools(
   session: Session,
   ctx: TurnContext,
 ): ReadonlyArray<LLMTool> {
-  const advertised = session.services.registry.toLLMTools();
+  let advertised: ReadonlyArray<LLMTool> =
+    session.services.registry.toLLMTools();
+  // Small local models drown in the frontier catalog; give them the
+  // core loop only. Cloud providers are untouched.
+  if (usesLocalToolProfile(ctx.modelProviderId)) {
+    advertised = filterToolsForLocalProfile(advertised);
+  }
   const interaction = ctx.editorInteraction;
   if (interaction === undefined) return advertised;
 

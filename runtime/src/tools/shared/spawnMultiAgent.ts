@@ -86,14 +86,14 @@ import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 
 function getDefaultTeammateModel(leaderModel: string | null): string {
   const configured = getGlobalConfig().teammateDefaultModel
-  if (configured === null) {
-    // User picked "Default" in the /config picker — follow the leader.
-    return leaderModel ?? getHardcodedTeammateModelFallback()
-  }
-  if (configured !== undefined) {
+  if (configured !== null && configured !== undefined) {
     return parseUserSpecifiedModel(configured)
   }
-  return getHardcodedTeammateModelFallback()
+  // Explicit "Default" pick (null) and never-configured (undefined)
+  // both follow the leader. The old undefined path jumped straight to
+  // the hardcoded cloud fallback, which silently crossed providers —
+  // a leader on a local model spawned cloud teammates.
+  return leaderModel ?? getHardcodedTeammateModelFallback()
 }
 
 /**

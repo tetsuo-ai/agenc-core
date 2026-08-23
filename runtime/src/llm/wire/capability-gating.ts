@@ -62,6 +62,14 @@ export interface ChatCompletionsCapabilityHints {
    * = caller-controlled.
    */
   readonly outputTokensCeiling?: number;
+  /**
+   * Soft switch appended to the system prompt to suppress the model's
+   * think-trace. Qwen3-family models honor a literal /no_think line;
+   * without it a local reasoning model spends its whole (already
+   * capped) output budget thinking. Empirically: 16-24s turns drop to
+   * 1-3s on the same hardware. Undefined = no suffix.
+   */
+  readonly reasoningSoftSwitchSuffix?: string;
 }
 
 // Providers that document `service_tier` on chat-completions.
@@ -98,6 +106,56 @@ function isUpstreamReasoningModel(model: string | undefined): boolean {
   // branding-scan: allow real model-family identifiers in regex
   return /(?:^|[/:])(?:gpt-5|o1|o3|o4|codex|chatgpt-5)(?:$|[-_.:])/i.test(
     model.trim(),
+  );
+}
+
+/**
+ * Tools a small local model can actually drive. The frontier catalog
+ * (~20 tools with team/task orchestration) overwhelms 7-32B models —
+ * observed as zero tool calls emitted across whole sessions. The
+ * subset keeps the core loop: shell, files, search, planning, user
+ * interaction and progress messages. Names must match the registry's
+ * advertised tool names.
+ */
+const LOCAL_PROFILE_TOOL_NAMES = new Set([
+  "exec_command",
+  "write_stdin",
+  "kill_process",
+  "FileRead",
+  "Edit",
+  "MultiEdit",
+  "Write",
+  "Glob",
+  "Grep",
+  "Orient",
+  "AskUserQuestion",
+  "TodoWrite",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "system.searchTools",
+  "Brief",
+  "StructuredOutput",
+]);
+
+/**
+ * Whether the provider gets the reduced local tool catalog. Keyed on
+ * the same set as the grammar constraints: these are the providers
+ * that serve small local models.
+ */
+export function usesLocalToolProfile(
+  providerName: string | undefined,
+): boolean {
+  return GRAMMAR_CONSTRAINED_TOOL_PROVIDERS.has(
+    normalizeProviderSlug(providerName),
+  );
+}
+
+/** Filter an advertised tool list down to the local profile. */
+export function filterToolsForLocalProfile<
+  T extends { readonly function: { readonly name: string } },
+>(tools: readonly T[]): readonly T[] {
+  return tools.filter((tool) =>
+    LOCAL_PROFILE_TOOL_NAMES.has(tool.function.name),
   );
 }
 
@@ -140,6 +198,16 @@ export function chatCompletionsCapabilityHintsForProvider(
   const requiresGrammarSafeToolSchemas =
     GRAMMAR_CONSTRAINED_TOOL_PROVIDERS.has(slug);
 
+  // Qwen3's hybrid thinking honors a soft /no_think switch in the
+  // prompt. LM Studio ignores chat_template_kwargs.enable_thinking
+  // (verified empirically), so the prompt-level switch is the only
+  // wire-side control that works everywhere llama.cpp serves qwen.
+  const reasoningSoftSwitchSuffix =
+    requiresGrammarSafeToolSchemas &&
+      /(^|[/:])qwen-?3/i.test((model ?? "").trim())
+      ? "/no_think"
+      : undefined;
+
   // Local servers get a sane output ceiling: enough for a long answer
   // or a batch of tool calls, small enough that a runaway think-trace
   // cannot burn minutes per turn on consumer hardware.
@@ -153,5 +221,8 @@ export function chatCompletionsCapabilityHintsForProvider(
     acceptsStreamUsage,
     requiresGrammarSafeToolSchemas,
     ...(outputTokensCeiling !== undefined ? { outputTokensCeiling } : {}),
+    ...(reasoningSoftSwitchSuffix !== undefined
+      ? { reasoningSoftSwitchSuffix }
+      : {}),
   };
 }

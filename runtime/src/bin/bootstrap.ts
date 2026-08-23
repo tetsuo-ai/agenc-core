@@ -75,7 +75,9 @@ import {
   type BuildToolRegistryOptions,
   type ToolRegistry,
 } from "../tool-registry.js";
-import { getSystemPrompt } from "../constants/prompts.js";
+import { getCompactSystemPrompt,
+  getSystemPrompt } from "../constants/prompts.js";
+import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import type { Tools as PromptTools } from "../tools/Tool.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
@@ -229,11 +231,15 @@ async function buildBaseInstructionsForModel(params: {
   readonly registry: ToolRegistry;
   readonly model: string;
   readonly coordinatorMode?: boolean;
+  readonly compactProfile?: boolean;
 }): Promise<string> {
   if (params.coordinatorMode === true) {
     const { getLiveCoordinatorSystemPrompt } =
       await import("../coordinator/coordinatorMode.js");
     return getLiveCoordinatorSystemPrompt();
+  }
+  if (params.compactProfile === true) {
+    return getCompactSystemPrompt().join("\n\n");
   }
   const sections = await getSystemPrompt(
     params.registry.tools as unknown as PromptTools,
@@ -1436,6 +1442,7 @@ export async function bootstrapLocalRuntimeSession(
     registry,
     model: selectedProviderModel,
     coordinatorMode: coordinatorModeEnabled,
+    compactProfile: usesLocalToolProfile(resolvedProvider),
   });
   const baseSessionConfiguration = {
     ...sessionConfigurationFromAgenCConfig({

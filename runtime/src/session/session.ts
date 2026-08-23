@@ -116,7 +116,9 @@ import {
   type DenialTrackingState,
 } from "../permissions/denial-tracking.js";
 import type { ConfigStore } from "../config/store.js";
-import { getSystemPrompt } from "../constants/prompts.js";
+import { getCompactSystemPrompt,
+  getSystemPrompt } from "../constants/prompts.js";
+import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import type { Tools as PromptTools } from "../tools/Tool.js";
 import {
   resolveProviderSettings,
@@ -1498,7 +1500,11 @@ function capManagedOpenRouterModelInfo(modelInfo: ModelInfo): ModelInfo {
 async function buildBaseInstructionsForModel(params: {
   readonly registry: ToolRegistry;
   readonly model: string;
+  readonly compactProfile?: boolean;
 }): Promise<string> {
+  if (params.compactProfile === true) {
+    return getCompactSystemPrompt().join("\n\n");
+  }
   const sections = await getSystemPrompt(
     params.registry.tools as unknown as PromptTools,
     params.model,
@@ -3094,6 +3100,7 @@ export class Session {
     const nextBaseInstructions = await buildBaseInstructionsForModel({
       registry: this.services.registry,
       model: preparedSwitch.model,
+      compactProfile: usesLocalToolProfile(preparedSwitch.provider),
     });
     const previousClient = readProviderHttpClient(liveProvider);
     const nextClient = readProviderHttpClient(preparedSwitch.instance);

@@ -98,9 +98,14 @@ function systemPromptParts(
 function toChatCompletionsMessages(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
+  systemSuffix?: string,
 ): Array<Record<string, unknown>> {
   const prepared = prepareMessagesForWire(messages);
-  const systemPrompt = systemPromptParts(prepared, options).join("\n\n");
+  let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
+  if (systemSuffix !== undefined && systemSuffix.length > 0) {
+    systemPrompt =
+      systemPrompt.length > 0 ? `${systemPrompt}\n${systemSuffix}` : systemSuffix;
+  }
   const wireMessages: Array<Record<string, unknown>> = [];
   if (systemPrompt.length > 0) {
     wireMessages.push({ role: "system", content: systemPrompt });
@@ -158,7 +163,11 @@ export function buildChatCompletionsRequest(
   const body: Record<string, unknown> = {
     model: input.model,
     stream: false,
-    messages: toChatCompletionsMessages(input.messages, input.options),
+    messages: toChatCompletionsMessages(
+      input.messages,
+      input.options,
+      input.providerCapabilityHints?.reasoningSoftSwitchSuffix,
+    ),
     [maxTokenField]: maxTokens,
   };
 
