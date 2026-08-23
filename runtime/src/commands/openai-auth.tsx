@@ -91,6 +91,18 @@ async function executeOpenAiLogin(
             });
           }
         },
+        // Painted stage markers: the desktop tails this hidden TUI, so
+        // each stage names where a stall happens instead of six silent
+        // minutes.
+        onStage: (stage) => {
+          showLoginNotice(ctx, {
+            heading:
+              stage === "callback_received"
+                ? "Browser sign-in received; completing…"
+                : "Exchanging the login code…",
+            url: "",
+          });
+        },
       });
     } catch (error) {
       if (error instanceof OpenAiOauthError && error.code === "callback_failed") {
@@ -122,6 +134,10 @@ async function executeOpenAiLogin(
           "Signed in, but the login carried no id_token to exchange for an API key.",
       };
     }
+    showLoginNotice(ctx, {
+      heading: "Exchanging the login for an API key…",
+      url: "",
+    });
     let apiKey: string;
     try {
       apiKey = await exchangeProviderCodeIdTokenForApiKey(

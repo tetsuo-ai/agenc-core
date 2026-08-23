@@ -159,6 +159,10 @@ import {
   runAgenCAuthCli,
 } from "./auth-cli.js";
 import {
+  parseOpenAiAuthCliArgs,
+  runOpenAiAuthCli,
+} from "./openai-auth-cli.js";
+import {
   formatAgenCMcpCliHelpText,
   parseAgenCMcpCliArgs,
   runAgenCMcpCli,
@@ -5286,6 +5290,12 @@ export async function main(): Promise<number> {
       env: process.env,
       attachTui: (context) => attachAgentTuiEntry(context),
     });
+  }
+  // Headless ChatGPT sign-in, ahead of the TUI routes: programs need a
+  // result on stdout, not an Ink screen to scrape.
+  const openAiAuthCommand = parseOpenAiAuthCliArgs(argv);
+  if (openAiAuthCommand !== null) {
+    return runOpenAiAuthCli(openAiAuthCommand);
   }
   const authCommand = parseAgenCAuthCliArgs(argv);
   if (authCommand !== null) {

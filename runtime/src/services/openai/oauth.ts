@@ -220,8 +220,12 @@ function accountLabelFromIdToken(idToken: string | undefined): string | undefine
   return undefined
 }
 
+export type OpenAiLoginStage = 'callback_received' | 'exchanging_code'
+
 export async function runOpenAiBrowserLogin(opts: {
   readonly onAuthorizeUrl: (url: string) => Promise<void> | void
+  /** Progress reporting so long stages are visible, not silent. */
+  readonly onStage?: (stage: OpenAiLoginStage) => void
 }): Promise<OpenAiBrowserLoginResult> {
   const { verifier, challenge } = createPkcePair()
   const state = base64Url(randomBytes(16))
@@ -230,6 +234,8 @@ export async function runOpenAiBrowserLogin(opts: {
   // cannot race the server.
   await opts.onAuthorizeUrl(buildAuthorizeUrl({ challenge, state }))
   const code = await callback
+  opts.onStage?.('callback_received')
+  opts.onStage?.('exchanging_code')
   const tokens = await exchangeAuthorizationCode(code, verifier)
   const label = accountLabelFromIdToken(tokens.idToken)
   return { tokens, ...(label !== undefined ? { accountLabel: label } : {}) }
