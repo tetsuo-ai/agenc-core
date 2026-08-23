@@ -58,6 +58,7 @@ import {
   readXaiOauthAccessToken,
   xaiOauthRequiresRelogin,
 } from "../utils/xaiOauthCredentials.js";
+import { readOpenAiOauthApiKey } from "../utils/openAiOauthCredentials.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 
@@ -1523,9 +1524,15 @@ export function createProvider(
         extra.oauth.accessToken.trim().length > 0
           ? (extra.oauth as unknown as OpenAIProviderConfig["oauth"])
           : undefined;
-      const apiKey = oauthConfig
-        ? resolveFactoryApiKey(opts)
-        : requireFactoryApiKey("openai", opts);
+      // The ChatGPT sign-in stores an exchanged platform API key; like
+      // grok's OAuth it wins over env BYOK unconditionally, so signing
+      // in works with no OPENAI_API_KEY anywhere.
+      const chatgptKey = readOpenAiOauthApiKey();
+      const apiKey =
+        chatgptKey ??
+        (oauthConfig
+          ? resolveFactoryApiKey(opts)
+          : requireFactoryApiKey("openai", opts));
       const cfg: OpenAIProviderConfig = {
         ...buildCommonConfig(extra),
         ...(apiKey !== undefined ? { apiKey } : {}),

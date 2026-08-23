@@ -48,6 +48,7 @@ import {
 } from "./output-style.js";
 import { authCommands } from "./auth.js";
 import { xaiAuthCommands } from "./xai-auth.js";
+import { openaiAuthCommands } from './openai-auth.js'
 import { effortCommand } from "./effort.js";
 import { resolveCommand } from "./resolve.js";
 import { swarmCommand } from "./swarm.js";
@@ -162,6 +163,7 @@ export function buildDefaultRegistry(
     statusCommand,
     ...authCommands,
     ...xaiAuthCommands,
+    ...openaiAuthCommands,
     costCommand,
     modelCommand,
     providerCommand,

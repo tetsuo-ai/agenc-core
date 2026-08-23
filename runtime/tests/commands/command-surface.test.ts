@@ -36,6 +36,8 @@ const MINIMAL_NAMES = [
   "usage",
   "grok-login",
   "grok-logout",
+  "openai-login",
+  "openai-logout",
   "cost",
   "model",
   "provider",

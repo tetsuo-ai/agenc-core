@@ -47,6 +47,15 @@ export interface SecureStorageData {
   mcpXaaIdpConfig?: Record<string, { clientSecret: string }>
   trustedDeviceToken?: string
   pluginSecrets?: Record<string, Record<string, string>>
+  /** OpenAI OAuth (Sign in with ChatGPT): the exchanged platform API
+   * key plus the login tokens that produced it. */
+  openAiOauth?: {
+    apiKey: string
+    accountLabel?: string
+    idToken?: string
+    refreshToken?: string
+    obtainedAt?: number
+  }
   /** xAI OAuth (Sign in with X / Grok subscription) tokens. */
   xaiOauth?: {
     accessToken: string

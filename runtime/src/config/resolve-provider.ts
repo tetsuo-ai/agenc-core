@@ -16,6 +16,7 @@ import type {
   ProviderFallbackTargetConfig,
 } from "./schema.js";
 import { resolveGrokProviderApiKey } from "../llm/xai-capability-config.js";
+import { readOpenAiOauthApiKey } from "../utils/openAiOauthCredentials.js";
 
 export {
   BUILT_IN_PROVIDER_BASE_URLS,
@@ -115,8 +116,12 @@ export function resolveProviderSettings(
             resolveEnvProviderApiKey(slug, env),
           env,
         )
-      : ((apiKeyEnvVar ? env[apiKeyEnvVar] : undefined) ??
-        resolveEnvProviderApiKey(slug, env));
+      : slug === "openai"
+        ? (readOpenAiOauthApiKey() ??
+          (apiKeyEnvVar ? env[apiKeyEnvVar] : undefined) ??
+          resolveEnvProviderApiKey(slug, env))
+        : ((apiKeyEnvVar ? env[apiKeyEnvVar] : undefined) ??
+          resolveEnvProviderApiKey(slug, env));
   const envBaseURL = resolveEnvProviderBaseURL(slug, env);
   const configuredBaseURL = providerConfig?.base_url?.trim();
   const baseURL = envBaseURL ?? configuredBaseURL;
