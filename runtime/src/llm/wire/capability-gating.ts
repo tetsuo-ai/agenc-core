@@ -211,8 +211,12 @@ export function chatCompletionsCapabilityHintsForProvider(
   // Local servers get a sane output ceiling: enough for a long answer
   // or a batch of tool calls, small enough that a runaway think-trace
   // cannot burn minutes per turn on consumer hardware.
+  // 8192, not lower: 4096 clipped legitimate long generations (code,
+  // multi-file answers) and the executor discarded the withheld output
+  // as max_output_tokens — the user saw an empty turn. This still caps
+  // the minutes-long runaway think-traces the ceiling exists for.
   const outputTokensCeiling = requiresGrammarSafeToolSchemas
-    ? 4096
+    ? 8192
     : undefined;
 
   return {
