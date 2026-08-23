@@ -60,15 +60,85 @@ function toolParameters(tool: LLMTool): Record<string, unknown> {
   return normalizeToolParamSchema(raw).schema;
 }
 
+/**
+ * JSON-schema keywords llama.cpp's json-schema-to-grammar reliably
+ * compiles. Grammar-constrained servers (LM Studio, llama.cpp server)
+ * build a GBNF grammar from tool schemas at request time and 400 the
+ * whole request ("failed to parse grammar") when any tool uses a
+ * keyword outside this subset. Dropping the rest only loosens
+ * validation on the wire — tool execution still checks the original
+ * schema.
+ */
+const GRAMMAR_SAFE_SCHEMA_KEYS = new Set([
+  "type",
+  "description",
+  "properties",
+  "required",
+  "items",
+  "enum",
+  "const",
+  "additionalProperties",
+  "anyOf",
+  "oneOf",
+]);
+
+export function sanitizeToolSchemaForGrammar(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeToolSchemaForGrammar);
+  if (typeof value !== "object" || value === null) return value;
+  const source = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(source)) {
+    if (!GRAMMAR_SAFE_SCHEMA_KEYS.has(key)) continue;
+    if (key === "type" && Array.isArray(entry)) {
+      // Nullable type unions ("['string','null']") predate the grammar
+      // converter; collapse to the first concrete member.
+      const concrete = entry.find((item) => item !== "null");
+      out[key] = concrete ?? "string";
+      continue;
+    }
+    if (key === "properties" && typeof entry === "object" && entry !== null) {
+      const props: Record<string, unknown> = {};
+      for (const [name, sub] of Object.entries(
+        entry as Record<string, unknown>,
+      )) {
+        props[name] = sanitizeToolSchemaForGrammar(sub);
+      }
+      out[key] = props;
+      continue;
+    }
+    if (key === "items" || key === "additionalProperties") {
+      out[key] =
+        typeof entry === "object" && entry !== null
+          ? sanitizeToolSchemaForGrammar(entry)
+          : entry;
+      continue;
+    }
+    if (key === "anyOf" || key === "oneOf") {
+      if (Array.isArray(entry)) {
+        out[key] = entry.map(sanitizeToolSchemaForGrammar);
+      }
+      continue;
+    }
+    out[key] = entry;
+  }
+  return out;
+}
+
 export function toChatCompletionsTools(
   tools: readonly LLMTool[],
+  opts?: { readonly grammarSafe?: boolean },
 ): FunctionTool[] {
   return tools.map((tool) => ({
     type: "function",
     function: {
       name: toolName(tool),
       description: toolDescription(tool),
-      parameters: toolParameters(tool),
+      parameters:
+        opts?.grammarSafe === true
+          ? (sanitizeToolSchemaForGrammar(
+              toolParameters(tool),
+            ) as Record<string, unknown>)
+          : toolParameters(tool),
     },
   }));
 }

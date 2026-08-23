@@ -44,6 +44,15 @@ export interface ChatCompletionsCapabilityHints {
    * field and tear down the stream on encounter.
    */
   readonly acceptsStreamUsage?: boolean;
+  /**
+   * If `true`, tool JSON schemas are rewritten to the subset
+   * llama.cpp's json-schema-to-grammar compiles. Grammar-constrained
+   * servers (LM Studio, llama.cpp server, some custom proxies) build
+   * a GBNF grammar from the request's tool schemas and answer 400
+   * "failed to parse grammar" on anything richer — the turn dies
+   * before the model ever runs.
+   */
+  readonly requiresGrammarSafeToolSchemas?: boolean;
 }
 
 // Providers that document `service_tier` on chat-completions.
@@ -58,6 +67,17 @@ const SERVICE_TIER_PROVIDERS = new Set(["openai", "azure-openai"]);
 // the `providerCapabilityHints.acceptsStreamUsage` opt for one-off
 // servers that misbehave.
 const STREAM_USAGE_INCOMPATIBLE_PROVIDERS = new Set<string>();
+
+// Providers whose tool calling is grammar-constrained (llama.cpp
+// based): tool schemas must stay within the subset its
+// json-schema-to-grammar converter accepts, or the request 400s with
+// "failed to parse grammar". The generic compatible slot is included
+// because llama.cpp-family servers are its most common target; richer
+// servers only lose optional constraint keywords, never validity.
+const GRAMMAR_CONSTRAINED_TOOL_PROVIDERS = new Set([
+  "lmstudio",
+  "openai-compatible",
+]);
 
 /**
  * Lightweight test for the upstream-provider reasoning model family.
@@ -108,9 +128,13 @@ export function chatCompletionsCapabilityHintsForProvider(
   // that DO support it — keep the default permissive.
   const acceptsStreamUsage = !STREAM_USAGE_INCOMPATIBLE_PROVIDERS.has(slug);
 
+  const requiresGrammarSafeToolSchemas =
+    GRAMMAR_CONSTRAINED_TOOL_PROVIDERS.has(slug);
+
   return {
     acceptsReasoningEffort,
     acceptsServiceTier,
     acceptsStreamUsage,
+    requiresGrammarSafeToolSchemas,
   };
 }

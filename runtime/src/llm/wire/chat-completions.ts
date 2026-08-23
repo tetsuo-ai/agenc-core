@@ -157,7 +157,10 @@ export function buildChatCompletionsRequest(
     [maxTokenField]: maxTokens,
   };
 
-  const tools = toChatCompletionsTools(input.tools);
+  const tools = toChatCompletionsTools(input.tools, {
+    grammarSafe:
+      input.providerCapabilityHints?.requiresGrammarSafeToolSchemas === true,
+  });
   if (tools.length > 0) body.tools = tools;
   if (input.options?.toolChoice !== undefined) {
     body.tool_choice = parseOpenAIToolChoice(input.options.toolChoice);
