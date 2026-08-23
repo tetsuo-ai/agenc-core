@@ -97,8 +97,17 @@ async function executeOpenAiLogin(
         return {
           kind: "error",
           message:
-            `Could not open the sign-in callback listener (${error.message}). ` +
+            `Sign-in failed: could not open the callback listener (${error.message}). ` +
             "Close whatever holds the port and retry /openai-login.",
+        };
+      }
+      // Stable "Sign-in failed:" prefix — the desktop's hidden-PTY runner
+      // matches on it; anything else scrolls past unseen and the runner
+      // sits out its full timeout, which reads as "nothing happened".
+      if (error instanceof OpenAiOauthError) {
+        return {
+          kind: "error",
+          message: `Sign-in failed: ${error.message} (${error.code}).`,
         };
       }
       throw error;
@@ -113,9 +122,22 @@ async function executeOpenAiLogin(
           "Signed in, but the login carried no id_token to exchange for an API key.",
       };
     }
-    const apiKey = await exchangeProviderCodeIdTokenForApiKey(
-      login.tokens.idToken,
-    );
+    let apiKey: string;
+    try {
+      apiKey = await exchangeProviderCodeIdTokenForApiKey(
+        login.tokens.idToken,
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return {
+        kind: "error",
+        message:
+          `Sign-in failed: ChatGPT accepted the login, but exchanging it for an ` +
+          `API key was rejected — ${detail} If your ChatGPT account has no ` +
+          `OpenAI platform organization, sign in is not available for it; use an ` +
+          `OPENAI_API_KEY instead.`,
+      };
+    }
     const saved = saveOpenAiOauthCredentials({
       apiKey,
       obtainedAt: Date.now(),
