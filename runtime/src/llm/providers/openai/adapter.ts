@@ -552,6 +552,7 @@ export class OpenAIProvider implements LLMProvider {
             options,
             store: this.config.store,
             maxOutputTokens: this.resolveRequestMaxTokens(options),
+            ...(this.isChatGptBackend() ? { chatgptBackend: true as const } : {}),
           });
           const response = await session.requestJson<Record<string, unknown>>({
             api: "responses",
@@ -920,6 +921,16 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
+  /**
+   * True when this provider talks to the ChatGPT subscription backend
+   * rather than the platform API. That host speaks the Responses shape
+   * but rejects some platform-only fields, so the wire needs to know.
+   */
+  private isChatGptBackend(): boolean {
+    // branding-scan: allow factual reference to real provider in host check
+    return /(^|\/\/)chatgpt\.com\//.test(this.config.baseURL ?? "");
+  }
+
   private async streamResponses(
     messages: LLMMessage[],
     onChunk: StreamProgressCallback,
@@ -935,6 +946,7 @@ export class OpenAIProvider implements LLMProvider {
       options,
       store: this.config.store,
       maxOutputTokens: this.resolveRequestMaxTokens(options),
+      ...(this.isChatGptBackend() ? { chatgptBackend: true as const } : {}),
     };
     assertProviderStructuredOutputCompatibility({
       providerName: this.name,

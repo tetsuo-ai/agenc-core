@@ -45,6 +45,12 @@ export interface OpenAIResponsesRequestOptions {
   readonly options?: LLMChatOptions;
   readonly store?: boolean;
   readonly maxOutputTokens?: number;
+  /**
+   * The ChatGPT subscription backend rejects `max_output_tokens`
+   * outright ("Unsupported parameter"), and being stateless it needs the
+   * encrypted reasoning carried in the request to survive across turns.
+   */
+  readonly chatgptBackend?: boolean;
 }
 
 function positiveInteger(value: number | undefined): number | undefined {
@@ -311,10 +317,10 @@ export function buildOpenAIResponsesRequest(
   const maxOutputTokens =
     positiveInteger(input.maxOutputTokens) ??
     positiveInteger(input.options?.maxOutputTokens);
-  if (maxOutputTokens !== undefined) {
+  if (maxOutputTokens !== undefined && input.chatgptBackend !== true) {
     body.max_output_tokens = maxOutputTokens;
   }
-  if (input.options?.includeEncryptedReasoning) {
+  if (input.options?.includeEncryptedReasoning || input.chatgptBackend === true) {
     body.include = ["reasoning.encrypted_content"];
   }
   if (input.options?.reasoningEffort !== undefined) {
