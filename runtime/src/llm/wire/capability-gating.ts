@@ -53,6 +53,15 @@ export interface ChatCompletionsCapabilityHints {
    * before the model ever runs.
    */
   readonly requiresGrammarSafeToolSchemas?: boolean;
+  /**
+   * Upper bound for the request's max-output-tokens field. Local
+   * llama.cpp-family servers run reasoning models (qwen3 and kin)
+   * whose thinking freely eats whatever budget the caller sends; the
+   * runtime's frontier default (tens of thousands) turns one turn
+   * into minutes of silent generation on consumer hardware. Undefined
+   * = caller-controlled.
+   */
+  readonly outputTokensCeiling?: number;
 }
 
 // Providers that document `service_tier` on chat-completions.
@@ -131,10 +140,18 @@ export function chatCompletionsCapabilityHintsForProvider(
   const requiresGrammarSafeToolSchemas =
     GRAMMAR_CONSTRAINED_TOOL_PROVIDERS.has(slug);
 
+  // Local servers get a sane output ceiling: enough for a long answer
+  // or a batch of tool calls, small enough that a runaway think-trace
+  // cannot burn minutes per turn on consumer hardware.
+  const outputTokensCeiling = requiresGrammarSafeToolSchemas
+    ? 4096
+    : undefined;
+
   return {
     acceptsReasoningEffort,
     acceptsServiceTier,
     acceptsStreamUsage,
     requiresGrammarSafeToolSchemas,
+    ...(outputTokensCeiling !== undefined ? { outputTokensCeiling } : {}),
   };
 }

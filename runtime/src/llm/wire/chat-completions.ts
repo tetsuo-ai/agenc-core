@@ -146,10 +146,15 @@ export function buildChatCompletionsRequest(
   input: ChatCompletionsRequestOptions,
 ): Record<string, unknown> {
   const maxTokenField = input.maxTokenField ?? "max_tokens";
-  const maxTokens =
+  const requestedMaxTokens =
     positiveInteger(input.maxTokens) ??
     positiveInteger(input.options?.maxOutputTokens) ??
     DEFAULT_CHAT_COMPLETIONS_MAX_TOKENS;
+  const ceiling = positiveInteger(
+    input.providerCapabilityHints?.outputTokensCeiling,
+  );
+  const maxTokens =
+    ceiling !== undefined ? Math.min(requestedMaxTokens, ceiling) : requestedMaxTokens;
   const body: Record<string, unknown> = {
     model: input.model,
     stream: false,
