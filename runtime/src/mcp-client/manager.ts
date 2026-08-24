@@ -11,7 +11,6 @@ import type {
   MCPElicitationHandlers,
   MCPReconnectResult,
   MCPServerConfig,
-  MCPServerMutationResult,
   MCPToolBridge,
 } from "./types.js";
 import type {
@@ -68,6 +67,20 @@ export interface MCPManagerStartOpts {
   /** I-20: require THESE named servers to come up. Overrides
    *  `requireOneReady` when both set. */
   readonly requiredServers?: ReadonlyArray<string>;
+}
+
+function withoutStartSignal(
+  opts: MCPManagerStartOpts,
+): Omit<MCPManagerStartOpts, "signal"> {
+  return {
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    ...(opts.requireOneReady !== undefined
+      ? { requireOneReady: opts.requireOneReady }
+      : {}),
+    ...(opts.requiredServers !== undefined
+      ? { requiredServers: [...opts.requiredServers] }
+      : {}),
+  };
 }
 
 interface StartupGate {
@@ -135,6 +148,62 @@ function requireMcpConfigValue(
   return value;
 }
 
+function immutableMcpServerConfig(config: MCPServerConfig): MCPServerConfig {
+  const tools =
+    config.tools === undefined
+      ? undefined
+      : Object.freeze(
+          Object.fromEntries(
+            Object.entries(config.tools).map(([name, policy]) => [
+              name,
+              Object.freeze({ ...policy }),
+            ]),
+          ),
+        );
+  return Object.freeze({
+    ...config,
+    ...(config.args !== undefined
+      ? { args: Object.freeze([...config.args]) }
+      : {}),
+    ...(config.headers !== undefined
+      ? { headers: Object.freeze({ ...config.headers }) }
+      : {}),
+    ...(config.env !== undefined
+      ? { env: Object.freeze({ ...config.env }) }
+      : {}),
+    ...(config.env_vars !== undefined
+      ? { env_vars: Object.freeze([...config.env_vars]) }
+      : {}),
+    ...(config.enabled_tools !== undefined
+      ? { enabled_tools: Object.freeze([...config.enabled_tools]) }
+      : {}),
+    ...(config.disabled_tools !== undefined
+      ? { disabled_tools: Object.freeze([...config.disabled_tools]) }
+      : {}),
+    ...(tools !== undefined ? { tools } : {}),
+    ...(config.supplyChain !== undefined
+      ? { supplyChain: Object.freeze({ ...config.supplyChain }) }
+      : {}),
+    ...(config.pluginSandbox !== undefined
+      ? { pluginSandbox: Object.freeze({ ...config.pluginSandbox }) }
+      : {}),
+    ...(config.origin !== undefined
+      ? {
+          origin: Object.freeze({
+            ...config.origin,
+            ...(config.origin.pluginServer !== undefined
+              ? {
+                  pluginServer: Object.freeze({
+                    ...config.origin.pluginServer,
+                  }),
+                }
+              : {}),
+          }),
+        }
+      : {}),
+  });
+}
+
 export function toScopedMcpServerConfig(
   config: MCPServerConfig,
 ): ScopedMcpServerConfig {
@@ -169,6 +238,12 @@ export function toScopedMcpServerConfig(
       ? { disabled_tools: [...config.disabled_tools] }
       : {}),
     ...(config.tools !== undefined ? { tools: config.tools } : {}),
+    ...(config.pinnedCatalogSha256 !== undefined
+      ? { pinnedCatalogSha256: config.pinnedCatalogSha256 }
+      : {}),
+    ...(config.supplyChain !== undefined
+      ? { supplyChain: { ...config.supplyChain } }
+      : {}),
   };
   const transport = config.transport ?? "stdio";
 
@@ -221,7 +296,7 @@ export function toScopedMcpServerConfig(
       "stdio command",
       config.command,
     ),
-    args: config.args ?? [],
+    args: [...(config.args ?? [])],
     ...(config.env !== undefined ? { env: config.env } : {}),
     ...(config.env_vars !== undefined ? { env_vars: [...config.env_vars] } : {}),
     ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
@@ -291,7 +366,7 @@ function readClientInstructions(client: unknown): string | undefined {
  * ```
  */
 export class MCPManager {
-  private configs: MCPServerConfig[];
+  private configs: readonly MCPServerConfig[];
   private readonly logger: Logger;
   private readonly environment: ProviderEnvironment;
   private readonly bridges: Map<string, MCPToolBridge> = new Map();
@@ -321,8 +396,10 @@ export class MCPManager {
   private samplingHandlers: McpSamplingHandlers | undefined;
   private sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   private unregisterSandboxLifecycle: (() => void) | undefined;
+  private sandboxQuiesced = false;
   private running = false;
   private restartAfterSandboxTransition = false;
+  private lifecycleTail: Promise<void> = Promise.resolve();
   private lastStartOpts: Omit<MCPManagerStartOpts, "signal"> = {};
   private lifecycleGeneration = 0;
   private readonly startupGates = new Set<StartupGate>();
@@ -335,14 +412,23 @@ export class MCPManager {
   private shutdownTask: Promise<ReadonlyArray<unknown>> | undefined;
 
   constructor(
-    configs: MCPServerConfig[],
+    configs: ReadonlyArray<MCPServerConfig>,
     logger: Logger = silentLogger,
     environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
   ) {
-    this.configs = configs;
+    this.configs = Object.freeze(configs.map(immutableMcpServerConfig));
     this.logger = logger;
     this.environment = snapshotMcpRequestEnvironment(environment);
     this.resetConnectionStates();
+  }
+
+  private enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.lifecycleTail.then(operation);
+    this.lifecycleTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /**
@@ -375,28 +461,40 @@ export class MCPManager {
     if (this.sandboxExecutionBroker === broker) return;
     this.unregisterSandboxLifecycle?.();
     this.unregisterSandboxLifecycle = undefined;
+    this.sandboxQuiesced = false;
+    this.restartAfterSandboxTransition = false;
     this.sandboxExecutionBroker = broker;
     if (broker !== undefined) {
       this.unregisterSandboxLifecycle =
         registerSandboxExecutionLifecycleParticipant(broker, {
           name: "mcp-manager",
           quiesce: async () => {
-            this.restartAfterSandboxTransition = this.running;
-            if (
-              this.running ||
-              this.bridges.size > 0 ||
-              this.connectionAttempts.size > 0 ||
-              this.reconnectOperations.size > 0 ||
-              this.retainedCleanup.size > 0 ||
-              this.shutdownTask !== undefined
-            ) {
+            this.sandboxQuiesced = true;
+            this.restartAfterSandboxTransition ||= this.running;
+            // Revoke connection authority synchronously. The queued strict
+            // stop then proves every owner is gone after any earlier refresh
+            // transaction has yielded.
+            void this.beginShutdown();
+            await this.enqueueLifecycle(async () => {
               await this.stopInternal(true);
-            }
+            });
           },
           resume: async () => {
-            if (!this.restartAfterSandboxTransition) return;
+            await this.enqueueLifecycle(async () => {
+              if (!this.sandboxQuiesced) return;
+              this.sandboxQuiesced = false;
+              if (!this.restartAfterSandboxTransition) return;
+              this.restartAfterSandboxTransition = false;
+              await this.start(this.lastStartOpts);
+            });
+          },
+          dispose: async () => {
+            this.sandboxQuiesced = true;
             this.restartAfterSandboxTransition = false;
-            await this.start(this.lastStartOpts);
+            void this.beginShutdown();
+            await this.enqueueLifecycle(async () => {
+              await this.stopInternal(true);
+            });
           },
         });
     }
@@ -450,15 +548,7 @@ export class MCPManager {
         "MCP manager cannot start while another connection lifecycle is active; stop it before starting again",
       );
     }
-    this.lastStartOpts = {
-      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
-      ...(opts.requireOneReady !== undefined
-        ? { requireOneReady: opts.requireOneReady }
-        : {}),
-      ...(opts.requiredServers !== undefined
-        ? { requiredServers: [...opts.requiredServers] }
-        : {}),
-    };
+    this.lastStartOpts = withoutStartSignal(opts);
     const signal = opts.signal;
     if (signal?.aborted) {
       throw new Error(
@@ -555,7 +645,20 @@ export class MCPManager {
    * Disconnect from all MCP servers and clean up resources.
    */
   async stop(): Promise<void> {
-    await this.stopInternal(false);
+    this.restartAfterSandboxTransition = false;
+    void this.beginShutdown();
+    await this.enqueueLifecycle(async () => {
+      await this.stopInternal(false);
+    });
+  }
+
+  /** Stop and reject unless cleanup of every connection owner is proven. */
+  async stopStrict(): Promise<void> {
+    this.restartAfterSandboxTransition = false;
+    void this.beginShutdown();
+    await this.enqueueLifecycle(async () => {
+      await this.stopInternal(true);
+    });
   }
 
   private async stopInternal(strict: boolean): Promise<void> {
@@ -651,9 +754,18 @@ export class MCPManager {
     configs: ReadonlyArray<MCPServerConfig>,
     opts: MCPManagerStartOpts = {},
   ): Promise<void> {
-    await this.stop();
-    this.configs = [...configs];
-    await this.start(opts);
+    const nextConfigs = Object.freeze(configs.map(immutableMcpServerConfig));
+    await this.enqueueLifecycle(async () => {
+      await this.stopInternal(true);
+      this.configs = nextConfigs;
+      this.resetConnectionStates();
+      if (this.sandboxQuiesced) {
+        this.restartAfterSandboxTransition = true;
+        this.lastStartOpts = withoutStartSignal(opts);
+        return;
+      }
+      await this.start(opts);
+    });
   }
 
   /**
@@ -697,7 +809,7 @@ export class MCPManager {
   }
 
   getConfiguredServers(): readonly MCPServerConfig[] {
-    return [...this.configs];
+    return this.configs;
   }
 
   getServerConfig(name: string): MCPServerConfig | undefined {
@@ -874,83 +986,6 @@ export class MCPManager {
       this.lifecycleGeneration === lifecycleGeneration &&
       this.running === running
     );
-  }
-
-  async enableServer(name: string): Promise<MCPServerMutationResult> {
-    const config = this.getServerConfig(name);
-    if (!config) {
-      return {
-        serverName: name,
-        success: false,
-        toolCount: 0,
-        error: `MCP server "${name}" is not configured.`,
-      };
-    }
-    config.enabled = true;
-    if (this.bridges.has(name)) {
-      return {
-        serverName: name,
-        success: true,
-        toolCount: this.getToolsByServer(name).length,
-      };
-    }
-    return this.reconnectServer(name);
-  }
-
-  async disableServer(name: string): Promise<MCPServerMutationResult> {
-    const config = this.getServerConfig(name);
-    if (!config) {
-      return {
-        serverName: name,
-        success: false,
-        toolCount: 0,
-        error: `MCP server "${name}" is not configured.`,
-      };
-    }
-    config.enabled = false;
-    await this.disconnectServer(name, "after disable");
-    this.connectionStates.set(name, { type: "disabled" });
-    return {
-      serverName: name,
-      success: true,
-      toolCount: 0,
-    };
-  }
-
-  async addServer(config: MCPServerConfig): Promise<MCPServerMutationResult> {
-    if (!isValidMcpServerName(config.name)) {
-      return {
-        serverName: config.name,
-        success: false,
-        toolCount: 0,
-        error: `Invalid MCP server name "${config.name}". Names can only contain letters, numbers, hyphens, and underscores.`,
-      };
-    }
-    if (this.getServerConfig(config.name)) {
-      return {
-        serverName: config.name,
-        success: false,
-        toolCount: 0,
-        error: `MCP server "${config.name}" is already configured.`,
-      };
-    }
-    const nextConfig: MCPServerConfig = {
-      ...config,
-      ...(config.args !== undefined ? { args: [...config.args] } : {}),
-      ...(config.headers !== undefined
-        ? { headers: { ...config.headers } }
-        : {}),
-      ...(config.env !== undefined ? { env: { ...config.env } } : {}),
-    };
-    const previousConfigs = this.configs;
-    this.configs = [...previousConfigs, nextConfig];
-    const result = await this.reconnectServer(nextConfig.name);
-    if (!result.success) {
-      await this.disconnectServer(nextConfig.name, "after failed add");
-      this.configs = previousConfigs;
-      this.connectionStates.delete(nextConfig.name);
-    }
-    return result;
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -1688,10 +1723,6 @@ function reconnectFailure(
     toolCount: 0,
     error: errMessage(error),
   };
-}
-
-function isValidMcpServerName(name: string): boolean {
-  return /^[a-zA-Z0-9_-]+$/.test(name);
 }
 
 /**

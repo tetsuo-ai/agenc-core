@@ -284,6 +284,102 @@ describe("MCPManager", () => {
     manager.setSandboxExecutionBroker(undefined);
   });
 
+  it("serializes a server refresh with sandbox quiesce and resumes only the current config", async () => {
+    const oldCwd = resolve("refresh-transition-old");
+    const newCwd = resolve("refresh-transition-new");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    let resolveRacedClient:
+      | ((client: { close: ReturnType<typeof vi.fn> }) => void)
+      | undefined;
+    const racedClient = { close: vi.fn().mockResolvedValue(undefined) };
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolveClient) => {
+            resolveRacedClient = resolveClient;
+          }),
+      )
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(makeMockBridge("old", ["before"]))
+      .mockResolvedValueOnce(makeMockBridge("current", ["after"]));
+
+    const manager = new MCPManager([makeConfig("old")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+
+    const refresh = manager.refreshServers([makeConfig("current")]);
+    await vi.waitFor(() => {
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    });
+    const transition = transitionSandboxExecutionBroker(broker, newCwd);
+
+    await expect(refresh).resolves.toBeUndefined();
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(broker.cwd).toBe(oldCwd);
+
+    resolveRacedClient?.(racedClient);
+    await transition;
+
+    expect(racedClient.close).toHaveBeenCalledOnce();
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(3);
+    expect(manager.getConfiguredServers().map(({ name }) => name)).toEqual([
+      "current",
+    ]);
+    expect(manager.getConnectedServers()).toEqual(["current"]);
+    expect(manager.getTools().map(({ name }) => name)).toEqual([
+      "mcp.current.after",
+    ]);
+
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("does not revive a server removed while sandbox authority is quiesced", async () => {
+    const oldCwd = resolve("fail-close-transition-old");
+    const newCwd = resolve("fail-close-transition-new");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    let releaseDisposal: (() => void) | undefined;
+    const oldBridge = makeMockBridge("old", ["before"]);
+    oldBridge.dispose.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolveDisposal) => {
+          releaseDisposal = resolveDisposal;
+        }),
+    );
+    mockCreateMCPConnection.mockResolvedValueOnce({
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    mockCreateToolBridge.mockResolvedValueOnce(oldBridge);
+
+    const manager = new MCPManager([makeConfig("old")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+
+    const transition = transitionSandboxExecutionBroker(broker, newCwd);
+    await vi.waitFor(() => {
+      expect(oldBridge.dispose).toHaveBeenCalledOnce();
+    });
+    const failCloseRefresh = manager.refreshServers([]);
+    releaseDisposal?.();
+
+    await Promise.all([transition, failCloseRefresh]);
+    expect(broker.cwd).toBe(newCwd);
+    expect(manager.getConfiguredServers()).toEqual([]);
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
   it("fails a sandbox transition when strict MCP teardown cannot prove shutdown", async () => {
     const oldCwd = resolve("stable-workspace");
     const newCwd = resolve("next-workspace");
@@ -529,6 +625,21 @@ describe("MCPManager", () => {
     await manager.stop(); // should not throw
   });
 
+  it("stopStrict reports cleanup that cannot be proven", async () => {
+    const bridge = makeMockBridge("srv1", ["a"]);
+    bridge.dispose.mockRejectedValueOnce(new Error("close failed"));
+
+    mockCreateMCPConnection.mockResolvedValueOnce("c1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+    await expect(manager.stopStrict()).rejects.toThrow(
+      /strict shutdown failed/,
+    );
+    expect(manager.getConnectedServers()).toEqual([]);
+  });
+
   it("refreshServers replaces configs and restarts the same manager instance", async () => {
     const firstBridge = makeMockBridge("old", ["before"]);
     const nextBridge = makeMockBridge("new", ["after"]);
@@ -551,6 +662,29 @@ describe("MCPManager", () => {
     expect(manager.getTools().map((tool) => tool.name)).toEqual([
       "mcp.new.after",
     ]);
+  });
+
+  it("captures nested supply-chain policy immutably at construction and refresh", async () => {
+    const firstSupplyChain = { catalogSha256: "a".repeat(64) };
+    const manager = new MCPManager([
+      makeConfig("old", { supplyChain: firstSupplyChain }),
+    ]);
+    firstSupplyChain.catalogSha256 = "b".repeat(64);
+
+    const capturedFirst = manager.getServerConfig("old")?.supplyChain;
+    expect(capturedFirst).toEqual({ catalogSha256: "a".repeat(64) });
+    expect(Object.isFrozen(capturedFirst)).toBe(true);
+
+    const secondSupplyChain = { catalogSha256: "c".repeat(64) };
+    const refresh = manager.refreshServers([
+      makeConfig("current", { supplyChain: secondSupplyChain }),
+    ]);
+    secondSupplyChain.catalogSha256 = "d".repeat(64);
+    await refresh;
+
+    const capturedSecond = manager.getServerConfig("current")?.supplyChain;
+    expect(capturedSecond).toEqual({ catalogSha256: "c".repeat(64) });
+    expect(Object.isFrozen(capturedSecond)).toBe(true);
   });
 
   // --------------------------------------------------------------------------
@@ -981,123 +1115,6 @@ describe("MCPManager", () => {
     expect(manager.getConnectionState("srv1")).toEqual({
       type: "failed",
       error: "refused",
-    });
-  });
-
-  it("enables a configured disabled server and connects it", async () => {
-    const bridge = makeMockBridge("srv1", ["toolA"]);
-    mockCreateMCPConnection.mockResolvedValueOnce("client1");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge);
-
-    const manager = new MCPManager([makeConfig("srv1", { enabled: false })]);
-    const result = await manager.enableServer("srv1");
-
-    expect(result).toEqual({
-      serverName: "srv1",
-      success: true,
-      toolCount: 1,
-    });
-    expect(manager.getConnectedServers()).toEqual(["srv1"]);
-    expect(manager.getServerConfig("srv1")?.enabled).toBe(true);
-  });
-
-  it("disables a configured server and disposes all live bridges", async () => {
-    const bridge = makeMockBridge("srv1", ["toolA"]);
-    const resourceBridge = makeMockResourceBridge("srv1", [
-      { uri: "file://a" },
-    ]);
-    const promptBridge = makeMockPromptBridge("srv1", [{ name: "prompt" }]);
-    mockCreateMCPConnection.mockResolvedValueOnce("client1");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge);
-    mockCreateResourceBridge.mockResolvedValueOnce(resourceBridge);
-    mockCreatePromptBridge.mockResolvedValueOnce(promptBridge);
-
-    const manager = new MCPManager([makeConfig("srv1")]);
-    await manager.start();
-    const result = await manager.disableServer("srv1");
-
-    expect(result).toEqual({
-      serverName: "srv1",
-      success: true,
-      toolCount: 0,
-    });
-    expect(bridge.dispose).toHaveBeenCalledOnce();
-    expect(resourceBridge.dispose).toHaveBeenCalledOnce();
-    expect(promptBridge.dispose).toHaveBeenCalledOnce();
-    expect(manager.getConnectedServers()).toEqual([]);
-    expect(manager.getToolsByServer("srv1")).toEqual([]);
-    expect(manager.getServerConfig("srv1")?.enabled).toBe(false);
-  });
-
-  it("adds a session server and rejects duplicate or invalid names", async () => {
-    const bridge = makeMockBridge("added", ["toolA"]);
-    mockCreateMCPConnection.mockResolvedValueOnce("client1");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge);
-
-    const manager = new MCPManager([]);
-    await expect(
-      manager.addServer({ name: "bad name", command: "node", args: [] }),
-    ).resolves.toMatchObject({
-      success: false,
-      error: expect.stringContaining("Invalid MCP server name"),
-    });
-
-    await expect(
-      manager.addServer({
-        name: "added",
-        command: "node",
-        args: ["server.js"],
-      }),
-    ).resolves.toEqual({
-      serverName: "added",
-      success: true,
-      toolCount: 1,
-    });
-    expect(manager.getServerConfig("added")).toMatchObject({
-      name: "added",
-      command: "node",
-      args: ["server.js"],
-    });
-    await expect(
-      manager.addServer({ name: "added", command: "node", args: [] }),
-    ).resolves.toMatchObject({
-      success: false,
-      error: 'MCP server "added" is already configured.',
-    });
-  });
-
-  it("rolls back a failed session add so the server name can be retried", async () => {
-    const bridge = makeMockBridge("added", ["toolA"]);
-    mockCreateMCPConnection
-      .mockRejectedValueOnce(new Error("no such command"))
-      .mockResolvedValueOnce("client1");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge);
-
-    const manager = new MCPManager([]);
-    await expect(
-      manager.addServer({ name: "added", command: "missing", args: [] }),
-    ).resolves.toEqual({
-      serverName: "added",
-      success: false,
-      toolCount: 0,
-      error: "no such command",
-    });
-    expect(manager.getServerConfig("added")).toBeUndefined();
-
-    await expect(
-      manager.addServer({
-        name: "added",
-        command: "node",
-        args: ["server.js"],
-      }),
-    ).resolves.toEqual({
-      serverName: "added",
-      success: true,
-      toolCount: 1,
-    });
-    expect(manager.getServerConfig("added")).toMatchObject({
-      name: "added",
-      command: "node",
     });
   });
 

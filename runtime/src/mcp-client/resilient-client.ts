@@ -42,15 +42,13 @@ import {
  * or access controls (#6). Keeping one implementation means a new security
  * field added to the policy derivation lands on both paths at once.
  *
- * Supply-chain and risk-control fields live alongside `MCPServerConfig` but
- * are not part of its public surface, so only those internal fields are read
- * through a widened cast. Tool lists come exclusively from the canonical
- * snake-case config fields.
+ * Every field read here is part of the runtime config contract. Keeping the
+ * contract explicit lets the manager take a complete immutable snapshot
+ * before any asynchronous connection work begins.
  */
 export function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
-  const typed = config as MCPServerConfig & MCPToolCatalogPolicyConfig;
   const allowedTools = config.enabled_tools;
   const deniedTools = config.disabled_tools;
   const defaultToolsApprovalMode = isValidPermissionDefaultMode(
@@ -59,9 +57,8 @@ export function toToolCatalogPolicyConfig(
     ? config.default_tools_approval_mode
     : undefined;
   if (
-    !typed.riskControls &&
-    !typed.supplyChain &&
-    !typed.pinnedCatalogSha256 &&
+    !config.supplyChain &&
+    !config.pinnedCatalogSha256 &&
     allowedTools === undefined &&
     deniedTools === undefined &&
     defaultToolsApprovalMode === undefined &&
@@ -72,15 +69,14 @@ export function toToolCatalogPolicyConfig(
   return {
     ...(allowedTools !== undefined ? { allowedTools } : {}),
     ...(deniedTools !== undefined ? { deniedTools } : {}),
-    ...(typed.pinnedCatalogSha256 !== undefined
-      ? { pinnedCatalogSha256: typed.pinnedCatalogSha256 }
+    ...(config.pinnedCatalogSha256 !== undefined
+      ? { pinnedCatalogSha256: config.pinnedCatalogSha256 }
       : {}),
     ...(defaultToolsApprovalMode !== undefined
       ? { defaultToolsApprovalMode }
       : {}),
     ...(config.tools !== undefined ? { tools: config.tools } : {}),
-    riskControls: typed.riskControls,
-    supplyChain: typed.supplyChain,
+    supplyChain: config.supplyChain,
   };
 }
 

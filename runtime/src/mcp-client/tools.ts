@@ -67,7 +67,6 @@ export interface MCPToolCatalogPolicyConfig {
   readonly pinnedCatalogSha256?: string;
   readonly defaultToolsApprovalMode?: PermissionDefaultMode;
   readonly tools?: Readonly<Record<string, PerToolConfig>>;
-  readonly riskControls?: unknown;
   readonly supplyChain?: {
     readonly catalogSha256?: string;
   };
