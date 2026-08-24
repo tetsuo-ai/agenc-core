@@ -593,6 +593,7 @@ function toRuntimeMcpServerConfig(
     pluginServer: _pluginServer,
     type,
     url,
+    command,
     args,
     env,
     headers,
@@ -619,7 +620,16 @@ function toRuntimeMcpServerConfig(
         `Unsupported MCP server type reached canonical startup: ${type}`,
       );
   }
-  if (transport !== "stdio" && typeof url !== "string") {
+  if (
+    transport === "stdio" &&
+    (typeof command !== "string" || command.trim() === "")
+  ) {
+    throw new Error(`MCP server "${name}" is missing its stdio command`);
+  }
+  if (
+    transport !== "stdio" &&
+    (typeof url !== "string" || url.trim() === "")
+  ) {
     throw new Error(`MCP server "${name}" is missing its remote endpoint`);
   }
   const originScope =
@@ -639,7 +649,7 @@ function toRuntimeMcpServerConfig(
       ...(_pluginSource !== undefined ? { pluginSource: _pluginSource } : {}),
       ...(_pluginServer !== undefined ? { pluginServer: _pluginServer } : {}),
     },
-    ...(transport === "stdio" ? {} : { endpoint: url }),
+    ...(transport === "stdio" ? { command } : { endpoint: url }),
     ...(Array.isArray(args)
       ? {
           args: args.map((arg) => {

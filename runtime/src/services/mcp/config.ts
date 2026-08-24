@@ -914,11 +914,23 @@ export async function getAllMcpConfigs(
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
 }> {
-  const { servers: enterpriseServers } = getMcpConfigsByScope(
+  const enterpriseResolution = getMcpConfigsByScope(
     'enterprise',
     authority,
     environment,
   )
+  const enterpriseServers = enterpriseResolution.servers
+  const validationErrorsToPluginErrors = (
+    errors: readonly ValidationError[],
+  ): PluginError[] =>
+    errors.map(error => ({
+      type: 'generic-error',
+      source:
+        error.file !== undefined && error.path !== undefined
+          ? `${error.file}:${error.path}`
+          : error.file ?? error.path ?? 'MCP configuration',
+      error: error.message,
+    }))
 
   // If an enterprise mcp config exists, do not use any others; this has exclusive control over all MCP servers
   // (enterprise customers often do not want their users to be able to add their own MCP servers).
@@ -933,22 +945,29 @@ export async function getAllMcpConfigs(
       filtered[name] = serverConfig
     }
 
-    return { servers: filtered, errors: [] }
+    return {
+      servers: filtered,
+      errors: validationErrorsToPluginErrors(enterpriseResolution.errors),
+    }
   }
 
   // Load other scopes — unless the managed policy locks MCP to plugin-only.
   // Unlike the enterprise-exclusive block above, this keeps plugin servers.
   const mcpLocked = isRestrictedToPluginOnly('mcp', authority)
-  const noServers: { servers: Record<string, ScopedMcpServerConfig> } = {
+  const noServers: {
+    servers: Record<string, ScopedMcpServerConfig>
+    errors: ValidationError[]
+  } = {
     servers: {},
+    errors: [],
   }
-  const { servers: userServers } = mcpLocked
+  const userResolution = mcpLocked
     ? noServers
     : getMcpConfigsByScope('user', authority, environment)
-  const { servers: projectServers } = mcpLocked
+  const projectResolution = mcpLocked
     ? noServers
     : getMcpConfigsByScope('project', authority, environment)
-  const { servers: localServers } = mcpLocked
+  const localResolution = mcpLocked
     ? noServers
     : getMcpConfigsByScope('local', authority, environment)
   const sessionResolution = mcpLocked
@@ -963,30 +982,82 @@ export async function getAllMcpConfigs(
     sessionResolution.config?.mcpServers,
     'dynamic',
   )
+  const approvedProjectServers: Record<string, ScopedMcpServerConfig> = {}
+  for (const [name, config] of Object.entries(projectResolution.servers)) {
+    if (getProjectMcpServerStatus(authority, name, config) === 'approved') {
+      approvedProjectServers[name] = config
+    }
+  }
+
+  // Filter every source before applying name precedence. A blocked definition
+  // must not shadow an allowed lower-precedence definition with the same name.
+  const allowedSessionServers = filterMcpServersByPolicy(
+    authority,
+    activeSessionServers,
+  ).allowed
+  const allowedUserServers = filterMcpServersByPolicy(
+    authority,
+    userResolution.servers,
+  ).allowed
+  const allowedProjectServers = filterMcpServersByPolicy(
+    authority,
+    approvedProjectServers,
+  ).allowed
+  const allowedLocalServers = filterMcpServersByPolicy(
+    authority,
+    localResolution.servers,
+  ).allowed
+  const manualServers: Record<string, ScopedMcpServerConfig> = Object.assign(
+    {},
+    allowedSessionServers,
+    allowedUserServers,
+    allowedProjectServers,
+    allowedLocalServers,
+  )
 
   // Load plugin MCP servers
   const pluginMcpServers: Record<string, ScopedMcpServerConfig> = {}
 
   const registrationIssues: PluginLoadIssue[] = []
-  const registrations = await loadPluginMcpServerRegistrations({
-    agencHome: authority.homeContext.path,
-    workspaceRoot: authority.projectRoot,
-    config: authority.current(),
-    env: { ...environment },
-    errors: registrationIssues,
-  })
+  let registrations: Awaited<
+    ReturnType<typeof loadPluginMcpServerRegistrations>
+  > = []
+  let registrationFailure: PluginError | undefined
+  try {
+    registrations = await loadPluginMcpServerRegistrations({
+      agencHome: authority.homeContext.path,
+      workspaceRoot: authority.projectRoot,
+      config: authority.current(),
+      env: { ...environment },
+      errors: registrationIssues,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    registrationFailure = {
+      type: 'generic-error',
+      source: 'MCP plugin discovery',
+      error: message,
+    }
+    logError(
+      error instanceof Error
+        ? error
+        : new Error(`MCP plugin discovery failed: ${message}`),
+    )
+  }
   const mcpErrors: PluginError[] = [
-    ...sessionResolution.errors.map(error => ({
-      type: 'generic-error' as const,
-      source: error.path ?? 'session MCP server',
-      error: error.message,
-    })),
+    ...validationErrorsToPluginErrors([
+      ...userResolution.errors,
+      ...projectResolution.errors,
+      ...localResolution.errors,
+      ...sessionResolution.errors,
+    ]),
     ...registrationIssues.map(issue => ({
       type: 'generic-error' as const,
       source: issue.source,
       ...(issue.plugin !== undefined ? { plugin: issue.plugin } : {}),
       error: issue.message,
     })),
+    ...(registrationFailure === undefined ? [] : [registrationFailure]),
   ]
   for (const issue of registrationIssues) {
     logError(new Error(`Plugin MCP server error: ${issue.message}`))
@@ -1003,14 +1074,6 @@ export async function getAllMcpConfigs(
     }
   }
 
-  // Filter project servers to only include approved ones
-  const approvedProjectServers: Record<string, ScopedMcpServerConfig> = {}
-  for (const [name, config] of Object.entries(projectServers)) {
-    if (getProjectMcpServerStatus(authority, name, config) === 'approved') {
-      approvedProjectServers[name] = config
-    }
-  }
-
   // Dedup plugin servers against manually-configured ones (and each other).
   // Plugin server keys use normalized plugin-scoped identifiers so they never
   // collide with manual keys in the merge below — this content-based filter
@@ -1019,16 +1082,8 @@ export async function getAllMcpConfigs(
   // disabled manual server mustn't suppress a plugin server, or neither runs
   // (manual is skipped by name at connection time; plugin was removed here).
   const enabledManualServers: Record<string, ScopedMcpServerConfig> = {}
-  for (const [name, config] of Object.entries({
-    ...userServers,
-    ...approvedProjectServers,
-    ...localServers,
-    ...activeSessionServers,
-  })) {
-    if (
-      !isMcpServerDisabled(name, config) &&
-      isMcpServerAllowedByPolicy(authority, name, config)
-    ) {
+  for (const [name, config] of Object.entries(manualServers)) {
+    if (!isMcpServerDisabled(name, config)) {
       enabledManualServers[name] = config
     }
   }
@@ -1038,11 +1093,12 @@ export async function getAllMcpConfigs(
   // (policy filtering at the end of this function drops blocked ones).
   const enabledPluginServers: Record<string, ScopedMcpServerConfig> = {}
   const disabledPluginServers: Record<string, ScopedMcpServerConfig> = {}
-  for (const [name, config] of Object.entries(pluginMcpServers)) {
-    if (
-      isMcpServerDisabled(name, config) ||
-      !isMcpServerAllowedByPolicy(authority, name, config)
-    ) {
+  const allowedPluginServers = filterMcpServersByPolicy(
+    authority,
+    pluginMcpServers,
+  ).allowed
+  for (const [name, config] of Object.entries(allowedPluginServers)) {
+    if (isMcpServerDisabled(name, config)) {
       disabledPluginServers[name] = config
     } else {
       enabledPluginServers[name] = config
@@ -1061,33 +1117,14 @@ export async function getAllMcpConfigs(
   }
 
   // Merge in order of precedence: plugin < session < user < project < local.
-  // A durable config entry wins if it appears after a same-name session add.
+  // `manualServers` already contains the policy-allowed winner per name.
   const configs = Object.assign(
     {},
     dedupedPluginServers,
-    activeSessionServers,
-    userServers,
-    approvedProjectServers,
-    localServers,
+    manualServers,
   )
 
-  // Apply policy filtering to merged configs
-  const filtered: Record<string, ScopedMcpServerConfig> = {}
-
-  for (const [name, serverConfig] of Object.entries(configs)) {
-    if (
-      !isMcpServerAllowedByPolicy(
-        authority,
-        name,
-        serverConfig as unknown as McpServerConfig,
-      )
-    ) {
-      continue
-    }
-    filtered[name] = serverConfig as unknown as ScopedMcpServerConfig
-  }
-
-  return { servers: filtered, errors: mcpErrors }
+  return { servers: configs, errors: mcpErrors }
 }
 
 /**

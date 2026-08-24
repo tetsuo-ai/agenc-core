@@ -24,6 +24,7 @@ import type { ScopedMcpServerConfig } from "../services/mcp/types.js";
 import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
 import { approveProjectMcpServerSync } from "../permissions/trust/project-trust.js";
 import { projectMcpServerApprovalDigest } from "../services/mcp/utils.js";
+import { getAllMcpConfigs } from "../services/mcp/config.js";
 import {
   attachMcpManagerToSession,
   createSessionMcpManager,
@@ -755,6 +756,87 @@ describe("mcp-startup session-owned manager helpers", () => {
     }
   });
 
+  it("lets an allowed lower-precedence definition survive a blocked shadow", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.shared]", 'command = "blocked-user-bin"'],
+      managed: [
+        'allowedMcpServers = [{ serverCommand = ["allowed-session-bin"] }]',
+      ],
+    });
+    try {
+      await expect(
+        resolveSessionMcpConfig(fixture.store, {}, {
+          shared: { name: "shared", command: "allowed-session-bin" },
+        }),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          name: "shared",
+          command: "allowed-session-bin",
+          origin: { scope: "session" },
+        }),
+      ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("continues canonical policy resolution when plugin discovery fails", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: [
+        "[mcp_servers.allowed]",
+        'command = "allowed-bin"',
+        "[mcp_servers.denied]",
+        'command = "denied-bin"',
+      ],
+      managed: ['deniedMcpServers = [{ serverName = "denied" }]'],
+    });
+    mockLoadPluginMcpServerRegistrations.mockRejectedValueOnce(
+      new Error("plugin registry unavailable"),
+    );
+    try {
+      const result = await getAllMcpConfigs(fixture.store, {});
+      expect(Object.keys(result.servers)).toEqual(["allowed"]);
+      expect(result.errors).toContainEqual({
+        type: "generic-error",
+        source: "MCP plugin discovery",
+        error: "plugin registry unavailable",
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("reports malformed canonical definitions instead of inventing commands", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.broken]", "enabled = true"],
+    });
+    try {
+      const result = await getAllMcpConfigs(fixture.store, {});
+      expect(result.servers).toEqual({});
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          type: "generic-error",
+          source: expect.stringContaining("mcpServers.broken"),
+        }),
+      ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("rejects a session stdio definition without an explicit command", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    try {
+      await expect(
+        resolveSessionMcpConfig(fixture.store, {}, {
+          node: { name: "node" },
+        }),
+      ).rejects.toThrow('MCP server "node" is missing its stdio command');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it("uses only the captured environment for interpolation", async () => {
     const fixture = await createMcpAuthorityFixture({
       user: [
@@ -808,6 +890,51 @@ describe("mcp-startup session-owned manager helpers", () => {
     try {
       const configs = await resolveSessionMcpConfig(fixture.store, {});
       expect(configs.map((config) => config.name)).toEqual(["manual"]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("deduplicates plugins against the final manual precedence winner", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: [
+        "[mcp_servers.shared]",
+        'command = "node"',
+        'args = ["user-server.js"]',
+      ],
+    });
+    mockLoadPluginMcpServerRegistrations.mockResolvedValueOnce([
+      {
+        name: "plugin:sample:session-duplicate",
+        pluginName: "sample",
+        pluginSource: "sample@registry",
+        serverName: "session-duplicate",
+        server: {
+          transport: "stdio",
+          command: "node",
+          args: ["session-server.js"],
+        },
+      },
+    ]);
+    try {
+      const configs = await resolveSessionMcpConfig(fixture.store, {}, {
+        shared: {
+          name: "shared",
+          command: "node",
+          args: ["session-server.js"],
+        },
+      });
+      expect(configs).toEqual([
+        expect.objectContaining({
+          name: "plugin:sample:session-duplicate",
+          origin: expect.objectContaining({ scope: "plugin" }),
+        }),
+        expect.objectContaining({
+          name: "shared",
+          args: ["user-server.js"],
+          origin: { scope: "user" },
+        }),
+      ]);
     } finally {
       fixture.cleanup();
     }

@@ -124,6 +124,17 @@ export type MCPConnectionState =
   | { readonly type: "connected" | "pending" | "disabled" | "needs-auth" }
   | { readonly type: "failed"; readonly error?: string };
 
+function requireMcpConfigValue(
+  serverName: string,
+  label: "remote endpoint" | "stdio command",
+  value: string | undefined,
+): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`MCP server "${serverName}" is missing its ${label}`);
+  }
+  return value;
+}
+
 export function toScopedMcpServerConfig(
   config: MCPServerConfig,
 ): ScopedMcpServerConfig {
@@ -164,7 +175,11 @@ export function toScopedMcpServerConfig(
   if (transport === "sse") {
     return {
       type: "sse",
-      url: config.endpoint ?? "",
+      url: requireMcpConfigValue(
+        config.name,
+        "remote endpoint",
+        config.endpoint,
+      ),
       ...(config.headers !== undefined ? { headers: config.headers } : {}),
       ...policy,
       ...provenance,
@@ -174,7 +189,11 @@ export function toScopedMcpServerConfig(
   if (transport === "http") {
     return {
       type: "http",
-      url: config.endpoint ?? "",
+      url: requireMcpConfigValue(
+        config.name,
+        "remote endpoint",
+        config.endpoint,
+      ),
       ...(config.headers !== undefined ? { headers: config.headers } : {}),
       ...policy,
       ...provenance,
@@ -184,7 +203,11 @@ export function toScopedMcpServerConfig(
   if (transport === "websocket") {
     return {
       type: "ws",
-      url: config.endpoint ?? "",
+      url: requireMcpConfigValue(
+        config.name,
+        "remote endpoint",
+        config.endpoint,
+      ),
       ...(config.headers !== undefined ? { headers: config.headers } : {}),
       ...policy,
       ...provenance,
@@ -193,7 +216,11 @@ export function toScopedMcpServerConfig(
 
   return {
     type: "stdio",
-    command: config.command ?? config.name,
+    command: requireMcpConfigValue(
+      config.name,
+      "stdio command",
+      config.command,
+    ),
     args: config.args ?? [],
     ...(config.env !== undefined ? { env: config.env } : {}),
     ...(config.env_vars !== undefined ? { env_vars: [...config.env_vars] } : {}),

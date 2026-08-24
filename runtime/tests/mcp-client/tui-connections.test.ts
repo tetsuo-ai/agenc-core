@@ -14,7 +14,10 @@ function fakeManager(
 ): McpManagerLike {
   return {
     getConfiguredServers() {
-      return servers.map((s) => ({ name: s.name }));
+      return servers.map((s) => ({
+        name: s.name,
+        command: `${s.name}-mcp`,
+      }));
     },
     isConnected(name: string) {
       return servers.find((s) => s.name === name)?.connected ?? false;
