@@ -355,6 +355,25 @@ function geminiPartsFromContent(
   return parts;
 }
 
+/**
+ * Gemini 3 issues a `thoughtSignature` alongside every function call and
+ * refuses the next request if the call comes back without one:
+ *
+ *   HTTP 400 — "Function call is missing a thought_signature in
+ *   functionCall parts. This is required for tools to work correctly"
+ *
+ * That made Gemini unusable for anything past a single answer: the first
+ * tool call went out fine, and replaying it in the history killed the turn.
+ * A plain question still worked, which is why a text-only sweep passed it.
+ *
+ * `LLMToolCall` has nowhere to carry the real signature — it is id, name
+ * and arguments — so this sends the sentinel Google documents for a call
+ * whose signature the client did not keep, which `services/api/openaiShim`
+ * already uses on its own path. Carrying the real one through would be
+ * better and needs a field on the shared type.
+ */
+const GEMINI_UNSIGNED_CALL = "skip_thought_signature_validator";
+
 function geminiFunctionCallPart(toolCall: LLMToolCall): GeminiPart {
   const args = parseJsonObjectText(toolCall.arguments) ?? {};
   return {
@@ -362,6 +381,7 @@ function geminiFunctionCallPart(toolCall: LLMToolCall): GeminiPart {
       name: toolCall.name,
       args,
     },
+    thoughtSignature: GEMINI_UNSIGNED_CALL,
   };
 }
 
