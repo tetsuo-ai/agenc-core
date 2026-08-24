@@ -23,6 +23,8 @@ describe("agenc CLI help", () => {
     expect(help).toContain(
       "agenc openai-<login|logout|auth-status|models> [--json]",
     );
+    expect(help).toContain("agenc grok-login [device] [--json]");
+    expect(help).toContain("agenc grok-logout [--json]");
     expect(help).toContain("agenc plugin <command> [options]");
     expect(help).toContain("agenc permissions <command>");
     expect(help).toContain("agenc agent start");
@@ -43,6 +45,7 @@ describe("agenc CLI help", () => {
       "init",
       "login",
       "mcp",
+      "grok-login",
       "openai-models",
       "permissions",
       "plugin",

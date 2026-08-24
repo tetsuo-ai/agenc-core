@@ -164,6 +164,11 @@ import {
   runOpenAiAuthCli,
 } from "./openai-auth-cli.js";
 import {
+  formatXaiAuthCliHelpText,
+  parseXaiAuthCliArgs,
+  runXaiAuthCli,
+} from "./xai-auth-cli.js";
+import {
   formatAgenCMcpCliHelpText,
   parseAgenCMcpCliArgs,
   runAgenCMcpCli,
@@ -357,6 +362,8 @@ export function formatCliHelpText(): string {
     "       agenc init [--force]",
     "       agenc <login|logout|whoami>",
     "       agenc openai-<login|logout|auth-status|models> [--json]",
+    "       agenc grok-login [device] [--json]",
+    "       agenc grok-logout [--json]",
     "       agenc providers [--json] [--no-local-check]",
     "       agenc config <command> [args]",
     "       agenc plugin <command> [options]",
@@ -383,6 +390,7 @@ export function formatCliHelpText(): string {
     "  init                                    Create .agenc/config.json and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
     "  openai-models                           List models available to the stored OpenAI sign-in",
+    "  grok-login                              Sign in to X / xAI for Grok subscription access",
     "  providers                               Check provider readiness and local health",
     "  config                                  Show, mutate, validate, or edit config.toml",
     "  plugin                                  Manage local plugins and marketplaces",
@@ -456,6 +464,11 @@ export function formatCliHelpTopicText(topic: string): string | null {
     case "openai-models":
     case "chatgpt-models":
       return formatOpenAiAuthCliHelpText();
+    case "grok-login":
+    case "xai-login":
+    case "grok-logout":
+    case "xai-logout":
+      return formatXaiAuthCliHelpText();
     case "daemon":
       return formatAgenCDaemonCliHelpText();
     case "remote":
@@ -5308,6 +5321,11 @@ export async function main(): Promise<number> {
   const openAiAuthCommand = parseOpenAiAuthCliArgs(argv);
   if (openAiAuthCommand !== null) {
     return runOpenAiAuthCli(openAiAuthCommand);
+  }
+  // Headless xAI sign-in/logout for Desktop and other non-TUI clients.
+  const xaiAuthCommand = parseXaiAuthCliArgs(argv);
+  if (xaiAuthCommand !== null) {
+    return runXaiAuthCli(xaiAuthCommand);
   }
   const authCommand = parseAgenCAuthCliArgs(argv);
   if (authCommand !== null) {
