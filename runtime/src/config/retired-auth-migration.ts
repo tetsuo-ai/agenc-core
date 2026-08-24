@@ -10,6 +10,11 @@ import type {
 } from "../utils/secureStorage/index.js";
 import type { HomeContext, HomeEnvironment } from "./home.js";
 import { duplicateJsonObjectPaths } from "./json.js";
+import {
+  migrateRetiredOpenAiCredential,
+  OpenAiCredentialMigrationError,
+  type RetiredOpenAiCredential,
+} from "./openai-credential-migration.js";
 import { readStableFile } from "./stable-file.js";
 
 export type RetiredAuthSourceKind =
@@ -42,7 +47,10 @@ export interface RetiredAuthMigrationInput {
 }
 
 export interface RetiredAuthMigrationConflict {
-  readonly kind: RetiredAuthSourceKind | "retired-windows-password-vault";
+  readonly kind:
+    | RetiredAuthSourceKind
+    | "retired-native-openai-oauth"
+    | "retired-windows-password-vault";
   readonly path?: string;
   readonly field?: string;
   readonly reason: string;
@@ -76,7 +84,8 @@ export interface RetiredAuthVaultWrite {
   readonly path: readonly string[];
   readonly expectedPresent: boolean;
   readonly expectedValue?: unknown;
-  readonly value: unknown;
+  readonly desiredPresent: boolean;
+  readonly value?: unknown;
 }
 
 /**
@@ -137,7 +146,9 @@ interface ByokCredential {
 }
 
 interface ParsedProviderCodeCredential {
-  readonly accessToken: string;
+  readonly apiKey?: string;
+  readonly accessToken?: string;
+  readonly refreshToken?: string;
   readonly idToken?: string;
   readonly accountId?: string;
 }
@@ -208,6 +219,7 @@ export async function discoverRetiredAuthMigration(
   options: DiscoverRetiredAuthMigrationOptions,
 ): Promise<RetiredAuthMigrationDiscovery> {
   const builder = new DiscoveryBuilder(options.currentVault);
+  migrateRetiredNativeOpenAiOauth(builder);
   const env = options.env ?? {};
   const platformHome = absoluteMigrationPath(
     options.platformHome,
@@ -300,7 +312,9 @@ export function applyRetiredAuthVaultMutation(
     if (!matchesDiscovery) {
       throw new RetiredAuthVaultConflictError(write.field);
     }
-    if (!existing.present || !sameValue(existing.value, write.value)) {
+    if (!write.desiredPresent) {
+      if (existing.present) next = withoutNestedValue(next, write.path);
+    } else if (!existing.present || !sameValue(existing.value, write.value)) {
       next = withNestedValue(next, write.path, write.value);
     }
   }
@@ -314,7 +328,10 @@ export function assertRetiredAuthVaultMutationCommitted(
 ): void {
   for (const write of mutation.vaultWrites) {
     const existing = nestedField(current, write.path);
-    if (!existing.present || !sameValue(existing.value, write.value)) {
+    if (
+      existing.present !== write.desiredPresent ||
+      (write.desiredPresent && !sameValue(existing.value, write.value))
+    ) {
       throw new RetiredAuthVaultConflictError(write.field);
     }
   }
@@ -332,7 +349,10 @@ export function rollbackRetiredAuthVaultMutation(
   let next = structuredClone(current) as SecureStorageData;
   for (const write of [...mutation.vaultWrites].reverse()) {
     const existing = nestedField(next, write.path);
-    if (!existing.present || !sameValue(existing.value, write.value)) {
+    if (
+      existing.present !== write.desiredPresent ||
+      (write.desiredPresent && !sameValue(existing.value, write.value))
+    ) {
       throw new RetiredAuthVaultConflictError(write.field);
     }
     next = write.expectedPresent
@@ -879,8 +899,8 @@ function parseProviderCodeAuthJson(
     if (builder.conflicts.length === conflictCount) {
       builder.conflict(
         candidate.kind,
-        "ProviderCode auth.json contains no importable bearer credential; migration will not delete an unrecognized credential file",
-        { path: candidate.path, field: "ProviderCode bearer" },
+        "ProviderCode auth.json contains no importable credential; migration will not delete an unrecognized credential file",
+        { path: candidate.path, field: "ProviderCode credential" },
       );
     }
     return;
@@ -889,30 +909,86 @@ function parseProviderCodeAuthJson(
   builder.action(deleteAction(candidate));
 }
 
+function migrateRetiredNativeOpenAiOauth(builder: DiscoveryBuilder): void {
+  const retiredVault = builder.nextVault as SecureStorageData & {
+    readonly agenc?: RetiredOpenAiCredential;
+  };
+  const retired = retiredVault.agenc;
+  if (retired === undefined) return;
+
+  const source = "native secure storage";
+  let openAiOauth: NonNullable<SecureStorageData["openAiOauth"]>;
+  try {
+    openAiOauth = migrateRetiredOpenAiCredential(
+      retired,
+      builder.nextVault.openAiOauth,
+    );
+  } catch (error) {
+    const field = error instanceof OpenAiCredentialMigrationError
+      ? error.field
+      : "agenc";
+    builder.conflict(
+      "retired-native-openai-oauth",
+      error instanceof OpenAiCredentialMigrationError
+        ? error.message
+        : "Retired native OpenAI credentials could not be migrated safely.",
+      { field },
+    );
+    return;
+  }
+
+  const next: SecureStorageData & { agenc?: RetiredOpenAiCredential } = {
+    ...builder.nextVault,
+    openAiOauth,
+  };
+  delete next.agenc;
+  builder.nextVault = next;
+  builder.registerField("openAiOauth", source, ["openAiOauth"]);
+  builder.registerField("agenc", source, ["agenc"]);
+}
+
 function providerCodeCredential(
   parsed: Record<string, unknown>,
   env: RetiredAuthMigrationEnvironment,
   candidate: ReadCandidate,
   builder: DiscoveryBuilder,
 ): ParsedProviderCodeCredential | undefined {
-  const accessToken = uniqueCredentialString(
+  const apiKey = uniqueCredentialString(
     nestedStrings(parsed, [
-    ["openai_api_key"],
-    ["openaiApiKey"],
-    ["access_token"],
-    ["accessToken"],
-    ["tokens", "access_token"],
-    ["tokens", "accessToken"],
-    ["auth", "access_token"],
-    ["auth", "accessToken"],
-    ["token", "access_token"],
-    ["token", "accessToken"],
+      ["openai_api_key"],
+      ["openaiApiKey"],
     ]),
-    "ProviderCode bearer",
+    "ProviderCode API key",
     candidate,
     builder,
   );
-  if (accessToken === undefined) return undefined;
+  const accessToken = uniqueCredentialString(
+    nestedStrings(parsed, [
+      ["access_token"],
+      ["accessToken"],
+      ["tokens", "access_token"],
+      ["tokens", "accessToken"],
+      ["auth", "access_token"],
+      ["auth", "accessToken"],
+      ["token", "access_token"],
+      ["token", "accessToken"],
+    ]),
+    "ProviderCode access token",
+    candidate,
+    builder,
+  );
+  const refreshToken = uniqueCredentialString(
+    nestedStrings(parsed, [
+      ["refresh_token"],
+      ["refreshToken"],
+      ["tokens", "refresh_token"],
+      ["tokens", "refreshToken"],
+    ]),
+    "ProviderCode refresh token",
+    candidate,
+    builder,
+  );
+  if (apiKey === undefined && accessToken === undefined) return undefined;
   const idToken = uniqueCredentialString(
     nestedStrings(parsed, [
       ["id_token"],
@@ -946,7 +1022,7 @@ function providerCodeCredential(
       ["auth", "accountId"],
       ]),
       ...derivedCredentialStrings([
-        ["bearer JWT claim", parseChatgptAccountId(accessToken)],
+        ["access-token JWT claim", parseChatgptAccountId(accessToken)],
         ["identity JWT claim", parseChatgptAccountId(idToken)],
       ]),
     ],
@@ -960,8 +1036,18 @@ function providerCodeCredential(
   )) {
     return undefined;
   }
+  if (apiKey === undefined && accountId === undefined) {
+    builder.conflict(
+      candidate.kind,
+      "ProviderCode access token has no ChatGPT account id; migration cannot construct a usable subscription credential",
+      { path: candidate.path, field: "ProviderCode account id" },
+    );
+    return undefined;
+  }
   return {
-    accessToken,
+    ...(apiKey !== undefined ? { apiKey } : {}),
+    ...(accessToken !== undefined ? { accessToken } : {}),
+    ...(refreshToken !== undefined ? { refreshToken } : {}),
     ...(idToken !== undefined ? { idToken } : {}),
     ...(accountId !== undefined ? { accountId } : {}),
   };
@@ -1045,53 +1131,24 @@ function mergeProviderCodeCredential(
   candidate: ReadCandidate,
   builder: DiscoveryBuilder,
 ): void {
-  const existing = builder.nextVault.agenc;
-  if (existing?.apiKey !== undefined && existing.apiKey !== credential.accessToken) {
-    vaultConflict("agenc.apiKey", candidate, builder);
-    return;
-  }
-  if (
-    existing?.accessToken !== undefined &&
-    existing.accessToken !== credential.accessToken
-  ) {
-    vaultConflict("agenc.accessToken", candidate, builder);
-    return;
-  }
-  if (
-    credential.idToken !== undefined &&
-    existing?.idToken !== undefined &&
-    existing.idToken !== credential.idToken
-  ) {
-    vaultConflict("agenc.idToken", candidate, builder);
-    return;
-  }
-  if (
-    credential.accountId !== undefined &&
-    existing?.accountId !== undefined &&
-    existing.accountId !== credential.accountId
-  ) {
-    vaultConflict("agenc.accountId", candidate, builder);
-    return;
+  const existing = builder.nextVault.openAiOauth ?? {};
+  const imported = {
+    ...credential,
+    authMode: credential.apiKey === undefined ? "chatgpt" : "apiKey",
+  } satisfies NonNullable<SecureStorageData["openAiOauth"]>;
+  for (const [field, value] of Object.entries(imported)) {
+    const current = existing[field as keyof typeof existing];
+    if (current !== undefined && !sameValue(current, value)) {
+      vaultConflict(`openAiOauth.${field}`, candidate, builder);
+      return;
+    }
   }
   builder.nextVault = {
     ...builder.nextVault,
-    agenc: {
-      ...existing,
-      accessToken: existing?.accessToken ?? credential.accessToken,
-      ...(credential.idToken !== undefined
-        ? { idToken: existing?.idToken ?? credential.idToken }
-        : {}),
-      ...(credential.accountId !== undefined
-        ? { accountId: existing?.accountId ?? credential.accountId }
-        : {}),
-    },
+    openAiOauth: { ...existing, ...imported },
   };
-  builder.registerField("agenc.accessToken", candidate.path);
-  if (credential.idToken !== undefined) {
-    builder.registerField("agenc.idToken", candidate.path);
-  }
-  if (credential.accountId !== undefined) {
-    builder.registerField("agenc.accountId", candidate.path);
+  for (const field of Object.keys(imported)) {
+    builder.registerField(`openAiOauth.${field}`, candidate.path);
   }
 }
 
@@ -1244,9 +1301,6 @@ function finishDiscovery(
             }
             const expected = nestedField(builder.initialVault, path);
             const desired = nestedField(builder.nextVault, path);
-            if (!desired.present) {
-              throw new Error(`Missing retired-auth vault value for ${field}`);
-            }
             return Object.freeze({
               field,
               path,
@@ -1254,7 +1308,10 @@ function finishDiscovery(
               ...(expected.present
                 ? { expectedValue: structuredClone(expected.value) }
                 : {}),
-              value: structuredClone(desired.value),
+              desiredPresent: desired.present,
+              ...(desired.present
+                ? { value: structuredClone(desired.value) }
+                : {}),
             });
           }),
       ),

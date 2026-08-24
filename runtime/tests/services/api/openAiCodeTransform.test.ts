@@ -1,32 +1,13 @@
-import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { describe, expect, test } from 'bun:test'
 import {
   collectProviderCodeCompletedResponse,
   providerCodeStreamToprovider,
   convertproviderMessagesToResponsesInput,
   convertProviderCodeResponseToproviderMessage,
   convertToolsToResponsesTools,
+  performProviderCodeRequest,
 } from '../../../src/services/api/openAiCodeTransform.ts'
 import { __test as webSearchToolTest } from '../../../src/tools/WebSearchTool/WebSearchTool.ts'
-
-const tempDirs: string[] = []
-
-afterEach(() => {
-  while (tempDirs.length > 0) {
-    const dir = tempDirs.pop()
-    if (dir) rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-function createTempAuthJson(payload: Record<string, unknown>): string {
-  const dir = mkdtempSync(join(tmpdir(), 'agenc-providerCode-'))
-  tempDirs.push(dir)
-  const authPath = join(dir, 'auth.json')
-  writeFileSync(authPath, JSON.stringify(payload), 'utf8')
-  return authPath
-}
 
 async function collectStreamEventTypes(responseText: string): Promise<string[]> {
   const stream = new ReadableStream({
@@ -79,7 +60,7 @@ describe('ProviderCode provider config', () => {
     expect(resolved.transport).toBe('providerCode_responses')
     expect(resolved.resolvedModel).toBe('gpt-5.5')
     expect(resolved.reasoning).toEqual({ effort: 'high' })
-    expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/providerCode')
+    expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/codex')
   })
 
   test('resolves providerCodespark alias to ProviderCode transport with ProviderCode base URL', async () => {
@@ -92,7 +73,7 @@ describe('ProviderCode provider config', () => {
     })
     expect(resolved.transport).toBe('providerCode_responses')
     expect(resolved.resolvedModel).toBe('gpt-5.3-providerCode-spark')
-    expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/providerCode')
+    expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/codex')
   })
 
   test('does not force ProviderCode transport when a local non-ProviderCode base URL is explicit', async () => {
@@ -136,11 +117,11 @@ describe('ProviderCode provider config', () => {
     const resolved = resolveProviderRequest({
       provider: 'openai',
       model: 'providerCodeplan',
-      baseUrl: 'https://chatgpt.com/backend-api/providerCode',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
       environment: providerEnvironment({ OPENAI_BASE_URL: 'https://example.com/v1' }),
     })
     expect(resolved.transport).toBe('providerCode_responses')
-    expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/providerCode')
+    expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/codex')
   })
 
   test('default gpt-4o uses OpenAi base URL (no regression)', async () => {
@@ -162,7 +143,7 @@ describe('ProviderCode provider config', () => {
       environment: providerEnvironment({ AGENC_MODEL: 'providerCodeplan' }),
     })
     expect(resolved.transport).toBe('providerCode_responses')
-    expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/providerCode')
+    expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/codex')
     expect(resolved.resolvedModel).toBe('gpt-5.5')
   })
 
@@ -179,53 +160,53 @@ describe('ProviderCode provider config', () => {
     expect(resolved.baseUrl).toBe('http://localhost:11434/v1')
   })
 
-  test('does not load ProviderCode credentials from auth.json', async () => {
-    const { resolveRuntimeOpenAiCodeCredentials } = await importFreshProviderConfigModule()
-    const authPath = createTempAuthJson({
-      tokens: {
-        access_token: 'header.payload.signature',
-        account_id: 'acct_test',
-      },
-    })
-
-    const credentials = resolveRuntimeOpenAiCodeCredentials({
-      env: { PROVIDER_CODE_AUTH_JSON_PATH: authPath } as NodeJS.ProcessEnv,
-      storedCredentials: undefined,
-    })
-
-    expect(credentials.apiKey).toBe('')
-    expect(credentials.accountId).toBeUndefined()
-    expect(credentials.source).toBe('none')
-  })
-
-  test('does not treat auth.json id_token as ProviderCode identity metadata', async () => {
-    const { resolveRuntimeOpenAiCodeCredentials } = await importFreshProviderConfigModule()
-    const idTokenPayload = Buffer.from(
-      JSON.stringify({
-        'https://api.openai.com/auth': {
-          chatgpt_account_id: 'acct_from_id_token',
-        },
-      }),
-      'utf8',
-    ).toString('base64url')
-    const authPath = createTempAuthJson({
-      tokens: {
-        id_token: `header.${idTokenPayload}.signature`,
-      },
-    })
-
-    const credentials = resolveRuntimeOpenAiCodeCredentials({
-      env: { PROVIDER_CODE_AUTH_JSON_PATH: authPath } as NodeJS.ProcessEnv,
-      storedCredentials: undefined,
-    })
-
-    expect(credentials.apiKey).toBe('')
-    expect(credentials.accountId).toBeUndefined()
-    expect(credentials.source).toBe('none')
-  })
 })
 
 describe('ProviderCode request translation', () => {
+  test('sends the subscription access token and account header to the canonical backend', async () => {
+    const originalFetch = globalThis.fetch
+    let capturedInput: string | URL | Request | undefined
+    let capturedInit: RequestInit | undefined
+    globalThis.fetch = (async (input, init) => {
+      capturedInput = input
+      capturedInit = init
+      return new Response('', { status: 200 })
+    }) as typeof fetch
+    try {
+      await performProviderCodeRequest({
+        request: {
+          transport: 'providerCode_responses',
+          requestedModel: 'providerCodeplan',
+          resolvedModel: 'gpt-5.5',
+          baseUrl: 'https://chatgpt.com/backend-api/codex',
+        },
+        credentials: {
+          bearerToken: 'stored-subscription-token',
+          accountId: 'acct_stored',
+          source: 'native-vault',
+        },
+        environment: Object.freeze({}),
+        params: {
+          model: 'gpt-5.5',
+          messages: [],
+          max_tokens: 1024,
+        },
+        defaultHeaders: {},
+      })
+
+      expect(String(capturedInput)).toBe(
+        'https://chatgpt.com/backend-api/codex/responses',
+      )
+      expect(capturedInit?.headers).toMatchObject({
+        Authorization: 'Bearer stored-subscription-token',
+        'chatgpt-account-id': 'acct_stored',
+        originator: 'agenc',
+      })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   test('normalizes optional parameters into strict Responses schemas', () => {
     const tools = convertToolsToResponsesTools([
       {

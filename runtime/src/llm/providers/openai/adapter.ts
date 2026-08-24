@@ -708,7 +708,7 @@ export class OpenAIProvider implements LLMProvider {
       provider: this.name,
       model: this.config.model,
       usageReporting: "authoritative" as const,
-      supportsMaxOutputTokens: true,
+      supportsMaxOutputTokens: this.config.chatgptBackend !== true,
       ...(this.config.contextWindowTokens !== undefined
         ? { contextWindowTokens: this.config.contextWindowTokens }
         : {}),
@@ -895,40 +895,12 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   /**
-   * A ChatGPT subscription bearer lives ~10 days and this adapter can
-   * outlive that. Refresh in front of the request and swap the bearer on
-   * the live config + client, mirroring the grok adapter. Best-effort:
-   * on failure the current bearer stands and the wire reports the real
-   * auth error rather than a local refresh crash.
-   */
-  private async refreshSubscriptionBearerIfExpiring(): Promise<void> {
-    try {
-      const { readOpenAiSubscriptionAuth, refreshOpenAiSubscriptionIfNeeded } =
-        await import("../../../utils/openAiOauthCredentials.js");
-      if (readOpenAiSubscriptionAuth() === undefined) return;
-      if (!(await refreshOpenAiSubscriptionIfNeeded())) return;
-      const bearer = readOpenAiSubscriptionAuth()?.accessToken;
-      if (bearer === undefined) return;
-      (this.config as { apiKey?: string }).apiKey = bearer;
-      // The in-flight closures hold the already-constructed client, so
-      // the new bearer has to land on that instance too.
-      const client = this.client as { apiKey?: string } | null;
-      if (client && typeof client === "object" && "apiKey" in client) {
-        client.apiKey = bearer;
-      }
-    } catch {
-      // best-effort: the wire attempt surfaces its own auth failure
-    }
-  }
-
-  /**
    * True when this provider talks to the ChatGPT subscription backend
    * rather than the platform API. That host speaks the Responses shape
    * but rejects some platform-only fields, so the wire needs to know.
    */
   private isChatGptBackend(): boolean {
-    // branding-scan: allow factual reference to real provider in host check
-    return /(^|\/\/)chatgpt\.com\//.test(this.config.baseURL ?? "");
+    return this.config.chatgptBackend === true;
   }
 
   private async streamResponses(
@@ -937,7 +909,6 @@ export class OpenAIProvider implements LLMProvider {
     options: LLMChatOptions | undefined,
     timeoutMs: number | undefined,
   ): Promise<LLMResponse> {
-    await this.refreshSubscriptionBearerIfExpiring();
     const model = options?.model?.trim() || this.config.model;
     const requestOptions = {
       model,

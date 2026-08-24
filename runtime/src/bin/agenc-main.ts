@@ -87,6 +87,8 @@ import {
   resolveWorkspace as resolveWorkspaceFromEnv,
 } from "../config/env.js";
 import { resolveHomeContext } from "../config/home.js";
+import { snapshotProviderEnvironment } from "../llm/provider-options.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 import {
   recentOomSnapshotNotice,
   startHeapWatchdog,
@@ -165,6 +167,7 @@ import {
   runAgenCAuthCli,
 } from "./auth-cli.js";
 import {
+  formatOpenAiAuthCliHelpText,
   parseOpenAiAuthCliArgs,
   runOpenAiAuthCli,
 } from "./openai-auth-cli.js";
@@ -369,6 +372,7 @@ export function formatCliHelpText(): string {
     "       agenc run <start|status|result|replay|evidence|cancel> [<run-id>] [options]",
     "       agenc init [--force]",
     "       agenc <login|logout|whoami>",
+    "       agenc <openai-login|openai-logout|openai-auth-status> [--json]",
     "       agenc providers [--json] [--no-local-check]",
     "       agenc config <command> [args]",
     "       agenc plugin <command> [options]",
@@ -394,6 +398,8 @@ export function formatCliHelpText(): string {
     "  run                                     Start, inspect, replay, export, or cancel a durable run",
     "  init                                    Create .agenc/config.toml and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
+    "  openai-login | openai-logout              Manage OpenAI ChatGPT sign-in",
+    "  openai-auth-status                        Inspect OpenAI ChatGPT sign-in",
     "  providers                               Check provider readiness and local health",
     "  config                                  Show, mutate, validate, or edit config.toml",
     "  plugin                                  Manage local plugins and marketplaces",
@@ -458,6 +464,13 @@ export function formatCliHelpTopicText(topic: string): string | null {
     case "logout":
     case "whoami":
       return formatAgenCAuthCliHelpText();
+    case "openai-login":
+    case "openai-logout":
+    case "openai-auth-status":
+    case "chatgpt-login":
+    case "chatgpt-logout":
+    case "chatgpt-auth-status":
+      return formatOpenAiAuthCliHelpText();
     case "daemon":
       return formatAgenCDaemonCliHelpText();
     case "remote":
@@ -5479,7 +5492,11 @@ export async function main(): Promise<number> {
   // result on stdout, not an Ink screen to scrape.
   const openAiAuthCommand = parseOpenAiAuthCliArgs(argv);
   if (openAiAuthCommand !== null) {
-    return runOpenAiAuthCli(openAiAuthCommand);
+    const ingress = captureSecureStorageIngress(process.env);
+    return runOpenAiAuthCli(openAiAuthCommand, {
+      home: ingress.home,
+      environment: snapshotProviderEnvironment(ingress.environment),
+    });
   }
   const authCommand = parseAgenCAuthCliArgs(argv);
   if (authCommand !== null) {

@@ -1,9 +1,8 @@
 /**
- * Sign in with ChatGPT — browser PKCE against auth.openai.com using the
- * shared CLI OAuth client, with a loopback callback on the well-known
- * port. The id_token from the login is exchanged (RFC 8693, existing
- * helper) for a platform API key, so the rest of the runtime consumes a
- * plain key and no wire changes are needed.
+ * Sign in with ChatGPT through browser PKCE against auth.openai.com. The
+ * captured client ID, callback port, proxy configuration, and token result are
+ * passed to the shared completion path, which stores either a platform API key
+ * or a ChatGPT subscription credential.
  */
 
 import { createHash, randomBytes } from 'node:crypto'
@@ -19,6 +18,8 @@ import {
   normalizeOAuthTokenPayload,
   readOAuthTokenJsonResponse,
 } from '../api/openAiCodeOAuthShared.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import { getProxyFetchOptions } from '../../utils/proxy.js'
 
 const OPENAI_OAUTH_AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize'
 const CALLBACK_PATH = '/auth/callback'
@@ -26,7 +27,6 @@ const CALLBACK_TIMEOUT_MS = 5 * 60_000
 
 export type OpenAiOauthErrorCode =
   | 'callback_failed'
-  | 'state_mismatch'
   | 'exchange_failed'
   | 'timeout'
   | 'denied'
@@ -66,18 +66,34 @@ function createPkcePair(): { verifier: string; challenge: string } {
   return { verifier, challenge }
 }
 
-function redirectUri(): string {
-  return `http://localhost:${getOpenAiCodeOAuthCallbackPort()}${CALLBACK_PATH}`
+interface OpenAiOauthAuthority {
+  readonly environment: ProviderEnvironment
+  readonly clientId: string
+  readonly callbackPort: number
+  readonly redirectUri: string
+}
+
+function oauthAuthority(
+  environment: ProviderEnvironment,
+): OpenAiOauthAuthority {
+  const callbackPort = getOpenAiCodeOAuthCallbackPort(environment)
+  return Object.freeze({
+    environment,
+    clientId: getOpenAiCodeOAuthClientId(environment),
+    callbackPort,
+    redirectUri: `http://localhost:${callbackPort}${CALLBACK_PATH}`,
+  })
 }
 
 function buildAuthorizeUrl(opts: {
   readonly challenge: string
   readonly state: string
+  readonly authority: OpenAiOauthAuthority
 }): string {
   const url = new URL(OPENAI_OAUTH_AUTHORIZE_URL)
   url.searchParams.set('response_type', 'code')
-  url.searchParams.set('client_id', getOpenAiCodeOAuthClientId())
-  url.searchParams.set('redirect_uri', redirectUri())
+  url.searchParams.set('client_id', opts.authority.clientId)
+  url.searchParams.set('redirect_uri', opts.authority.redirectUri)
   url.searchParams.set('scope', PROVIDER_CODE_OAUTH_SCOPE)
   url.searchParams.set('code_challenge', opts.challenge)
   url.searchParams.set('code_challenge_method', 'S256')
@@ -89,7 +105,10 @@ function buildAuthorizeUrl(opts: {
   return url.toString()
 }
 
-function waitForCallback(state: string): Promise<string> {
+function waitForCallback(
+  state: string,
+  authority: OpenAiOauthAuthority,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', `http://localhost`)
@@ -160,24 +179,25 @@ function waitForCallback(state: string): Promise<string> {
         new OpenAiOauthError(
           'callback_failed',
           error.code === 'EADDRINUSE'
-            ? `port ${getOpenAiCodeOAuthCallbackPort()} is in use`
+            ? `port ${authority.callbackPort} is in use`
             : `callback listener failed: ${error.message}`,
         ),
       )
     })
-    server.listen(getOpenAiCodeOAuthCallbackPort(), '127.0.0.1')
+    server.listen(authority.callbackPort, '127.0.0.1')
   })
 }
 
 async function exchangeAuthorizationCode(
   code: string,
   verifier: string,
+  authority: OpenAiOauthAuthority,
 ): Promise<OpenAiOauthTokens> {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
-    client_id: getOpenAiCodeOAuthClientId(),
+    client_id: authority.clientId,
     code,
-    redirect_uri: redirectUri(),
+    redirect_uri: authority.redirectUri,
     code_verifier: verifier,
   })
   const response = await fetch(PROVIDER_CODE_REFRESH_URL, {
@@ -185,6 +205,7 @@ async function exchangeAuthorizationCode(
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
     signal: AbortSignal.timeout(30_000),
+    ...getProxyFetchOptions({ environment: authority.environment }),
   })
   if (!response.ok) {
     const text = await response.text().catch(() => '')
@@ -223,20 +244,22 @@ function accountLabelFromIdToken(idToken: string | undefined): string | undefine
 export type OpenAiLoginStage = 'callback_received' | 'exchanging_code'
 
 export async function runOpenAiBrowserLogin(opts: {
+  readonly environment: ProviderEnvironment
   readonly onAuthorizeUrl: (url: string) => Promise<void> | void
   /** Progress reporting so long stages are visible, not silent. */
   readonly onStage?: (stage: OpenAiLoginStage) => void
 }): Promise<OpenAiBrowserLoginResult> {
+  const authority = oauthAuthority(opts.environment)
   const { verifier, challenge } = createPkcePair()
   const state = base64Url(randomBytes(16))
-  const callback = waitForCallback(state)
+  const callback = waitForCallback(state, authority)
   // Hand the URL out only after the listener is armed, so the redirect
   // cannot race the server.
-  await opts.onAuthorizeUrl(buildAuthorizeUrl({ challenge, state }))
+  await opts.onAuthorizeUrl(buildAuthorizeUrl({ challenge, state, authority }))
   const code = await callback
   opts.onStage?.('callback_received')
   opts.onStage?.('exchanging_code')
-  const tokens = await exchangeAuthorizationCode(code, verifier)
+  const tokens = await exchangeAuthorizationCode(code, verifier, authority)
   const label = accountLabelFromIdToken(tokens.idToken)
   return { tokens, ...(label !== undefined ? { accountLabel: label } : {}) }
 }

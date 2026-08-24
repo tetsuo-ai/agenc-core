@@ -25,9 +25,9 @@
  */
 import { APIError } from '@anthropic-ai/sdk'
 import {
-  readAgencCredentialsAsync as readProviderCodeCredentialsAsync,
-  refreshAgencAccessTokenIfNeeded as refreshProviderCodeAccessTokenIfNeeded,
-} from '../../utils/agencCredentials.js'
+  readOpenAiOauthCredentialsAsync,
+  refreshOpenAiSubscriptionIfNeeded,
+} from '../../utils/openAiOauthCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
 import { resolveGeminiCredential } from '../../utils/geminiAuth.js'
@@ -55,7 +55,7 @@ import {
   getLocalProviderRetryBaseUrls,
   getGithubEndpointType,
   isLocalProviderUrl,
-  resolveRuntimeOpenAiCodeCredentials,
+  resolveRuntimeChatGptSubscriptionCredentials,
   resolveProviderRequest,
   shouldAttemptLocalToollessRetry,
 } from './providerConfig.js'
@@ -1694,8 +1694,8 @@ class OpenAiShimMessages {
       return performProviderCodeRequest({
         request,
         credentials: {
-          apiKey,
-          source: 'env',
+          bearerToken: apiKey,
+          source: 'environment',
         },
         environment: this.environment,
         params,
@@ -1709,7 +1709,7 @@ class OpenAiShimMessages {
     }
 
     if (request.transport === 'providerCode_responses' && !isGithubMode) {
-      const refreshResult = await refreshProviderCodeAccessTokenIfNeeded(
+      const refreshResult = await refreshOpenAiSubscriptionIfNeeded(
         this.home,
         this.environment,
       ).catch(
@@ -1720,26 +1720,26 @@ class OpenAiShimMessages {
           )
           return {
             refreshed: false,
-            credentials: await readProviderCodeCredentialsAsync(this.home),
+            credentials: await readOpenAiOauthCredentialsAsync(this.home),
           }
         },
       )
-      const credentials = resolveRuntimeOpenAiCodeCredentials({
-        env: this.environment as NodeJS.ProcessEnv,
+      const credentials = resolveRuntimeChatGptSubscriptionCredentials({
+        environment: this.environment,
         storedCredentials: refreshResult.credentials,
       })
-      if (!credentials.apiKey) {
-        const oauthHint = isBareMode() ? '' : ', choose ProviderCode OAuth in /provider'
+      if (!credentials.bearerToken) {
+        const oauthHint = isBareMode() ? '' : ', run /openai-login'
         const safeModel =
           redactSecretValueForDisplay(request.requestedModel, this.environment as SecretValueSource) ??
           'the requested model'
         throw new Error(
-          `ProviderCode auth is required for ${safeModel}. Set PROVIDER_CODE_API_KEY${oauthHint}.`,
+          `ChatGPT subscription auth is required for ${safeModel}. Set PROVIDER_CODE_API_KEY${oauthHint}.`,
         )
       }
       if (!credentials.accountId) {
         throw new Error(
-          'ProviderCode auth is missing chatgpt_account_id. Re-login with ProviderCode OAuth or set CHATGPT_ACCOUNT_ID/PROVIDER_CODE_ACCOUNT_ID.',
+          'ChatGPT subscription auth is missing chatgpt_account_id. Run /openai-login again or set CHATGPT_ACCOUNT_ID/PROVIDER_CODE_ACCOUNT_ID.',
         )
       }
 

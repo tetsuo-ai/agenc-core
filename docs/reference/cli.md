@@ -390,6 +390,28 @@ No extra arguments on these commands.
 
 ---
 
+## OpenAI auth: `openai-login` | `openai-logout` | `openai-auth-status`
+
+```text
+agenc openai-login [--json]
+agenc openai-logout [--json]
+agenc openai-auth-status [--json]
+```
+
+`openai-login` opens the ChatGPT browser sign-in flow. Eligible platform
+accounts store an exchanged API key; ChatGPT-only accounts store subscription
+authentication. Both use the single home-scoped native `openAiOauth` record.
+The stored sign-in wins over `OPENAI_API_KEY` only when `openai` is selected
+and is restricted to the first-party endpoint. `openai-logout` deletes that
+record; `openai-auth-status` reports whether it exists. `--json` emits
+machine-readable progress and results for desktop or scripted callers.
+`-h` or `--help` prints command help without starting login or changing the
+stored credential; other arguments are rejected.
+
+Aliases: `chatgpt-login`, `chatgpt-logout`, and `chatgpt-auth-status`.
+
+---
+
 ## `providers`
 
 ```text

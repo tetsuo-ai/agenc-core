@@ -4,11 +4,9 @@ import { compressToolHistory } from './compressToolHistory.js'
 import { fetchWithProxyRetry } from './fetchWithProxyRetry.js'
 import { stableStringify } from '../../utils/stableStringify.js'
 import { isRecord } from '../../utils/record.js'
-import type {
-  ResolvedProviderCodeCredentials,
-  ResolvedProviderRequest,
-} from './providerConfig.js'
+import type { ResolvedProviderRequest } from './providerConfig.js'
 import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import type { ResolvedChatGptSubscriptionCredentials } from '../../llm/providers/openai/chatgpt-backend.js'
 import { sanitizeSchemaForOpenAiCompat } from '../../utils/schemaSanitizer.js'
 import { normalizeToolParamSchema } from '../../utils/toolParamSchema.js'
 import {
@@ -524,7 +522,7 @@ function convertToolChoice(toolChoice: unknown): unknown {
 
 export async function performProviderCodeRequest(options: {
   request: ResolvedProviderRequest
-  credentials: ResolvedProviderCodeCredentials
+  credentials: ResolvedChatGptSubscriptionCredentials
   environment: ProviderEnvironment
   params: ShimCreateParams
   defaultHeaders: Record<string, string>
@@ -601,7 +599,7 @@ export async function performProviderCodeRequest(options: {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...options.defaultHeaders,
-    Authorization: `Bearer ${options.credentials.apiKey}`,
+    Authorization: `Bearer ${options.credentials.bearerToken}`,
   }
   if (options.credentials.accountId) {
     headers['chatgpt-account-id'] = options.credentials.accountId

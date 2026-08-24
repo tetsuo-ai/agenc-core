@@ -592,6 +592,12 @@ describe("explicit plaintext credential migration", () => {
         accessToken: "github-access-token",
         oauthAccessToken: "github-oauth-token",
       },
+      agenc: {
+        apiKey: "openai-platform-key",
+        accessToken: "openai-access-token",
+        accountId: "openai-account",
+        profileId: "obsolete-profile-link",
+      },
     });
     mkdirSync(home, { recursive: true });
     writeFileSync(source, legacy, { mode: 0o600 });
@@ -611,6 +617,12 @@ describe("explicit plaintext credential migration", () => {
         accessToken: "github-access-token",
         oauthAccessToken: "github-oauth-token",
       },
+      openAiOauth: {
+        apiKey: "openai-platform-key",
+        accessToken: "openai-access-token",
+        accountId: "openai-account",
+        authMode: "apiKey",
+      },
     });
     expect(existsSync(source)).toBe(false);
     expect(existsSync(`${source}.migrated-v2-credential-success`)).toBe(false);
@@ -621,6 +633,8 @@ describe("explicit plaintext credential migration", () => {
     expect(journal).not.toContain("gemini-access-token");
     expect(journal).not.toContain("github-access-token");
     expect(journal).not.toContain("github-oauth-token");
+    expect(journal).not.toContain("openai-platform-key");
+    expect(journal).not.toContain("openai-access-token");
 
     await rollbackConfigV2Migration("credential-success", { env: {}, home });
     expect(existsSync(source)).toBe(false);
@@ -632,6 +646,12 @@ describe("explicit plaintext credential migration", () => {
       githubModels: {
         accessToken: "github-access-token",
         oauthAccessToken: "github-oauth-token",
+      },
+      openAiOauth: {
+        apiKey: "openai-platform-key",
+        accessToken: "openai-access-token",
+        accountId: "openai-account",
+        authMode: "apiKey",
       },
     });
   });
@@ -682,7 +702,8 @@ describe("explicit plaintext credential migration", () => {
           grok: { provider: "grok", apiKey: "grok-secret", savedAt: createdAt },
         },
       },
-      agenc: {
+      openAiOauth: {
+        authMode: "chatgpt",
         accessToken: "provider-access-secret",
         idToken: "provider-id-secret",
         accountId: "provider-account",

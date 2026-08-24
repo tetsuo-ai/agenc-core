@@ -1,13 +1,6 @@
-import { afterEach, expect, mock, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { expect, test } from 'bun:test'
 
-import { resolveRuntimeOpenAiCodeCredentials } from '../../../src/services/api/providerConfig.ts'
-
-afterEach(() => {
-  mock.restore()
-})
+import { resolveRuntimeChatGptSubscriptionCredentials } from '../../../src/services/api/providerConfig.ts'
 
 function makeJwt(payload: Record<string, unknown>): string {
   const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' }))
@@ -16,97 +9,68 @@ function makeJwt(payload: Record<string, unknown>): string {
   return `${header}.${body}.signature`
 }
 
-test('runtime credential resolution honors explicit env over stored secure-storage tokens', () => {
-  const tempDir = mkdtempSync(join(tmpdir(), 'agenc-providerCode-explicit-auth-'))
-  const authPath = join(tempDir, 'auth.json')
-
-  writeFileSync(
-    authPath,
-    JSON.stringify({
-      openai_api_key: makeJwt({
-        'https://api.openai.com/auth': {
-          chatgpt_account_id: 'acct_explicit_auth_json',
-        },
-      }),
-    }),
-    'utf8',
-  )
-
-  try {
-    const credentials = resolveRuntimeOpenAiCodeCredentials({
-      env: {
-        PROVIDER_CODE_API_KEY: makeJwt({
-          'https://api.openai.com/auth': {
-            chatgpt_account_id: 'acct_explicit_env',
-          },
-        }),
-        PROVIDER_CODE_AUTH_JSON_PATH: authPath,
-      } as NodeJS.ProcessEnv,
-      storedCredentials: {
-        apiKey: 'stored-api-key',
-        accessToken: 'stored-access-token',
-        accountId: 'acct_stored',
-      },
-    })
-
-    expect(credentials.source).toBe('env')
-    expect(credentials.accountId).toBe('acct_explicit_env')
-    expect(credentials.apiKey).not.toBe('stored-api-key')
-  } finally {
-    rmSync(tempDir, { force: true, recursive: true })
-  }
-})
-
-test('runtime credential resolution ignores retired auth.json path inputs', () => {
-  const tempDir = mkdtempSync(join(tmpdir(), 'agenc-providerCode-missing-auth-'))
-  const authPath = join(tempDir, 'missing-auth.json')
-
-  try {
-    const credentials = resolveRuntimeOpenAiCodeCredentials({
-      env: {
-        PROVIDER_CODE_AUTH_JSON_PATH: authPath,
-      } as NodeJS.ProcessEnv,
-      storedCredentials: {
-        apiKey: 'stored-api-key',
-        accessToken: 'stored-access-token',
-        accountId: 'acct_stored',
-      },
-    })
-
-    expect(credentials.source).toBe('secure-storage')
-    expect(credentials.apiKey).toBe('stored-api-key')
-    expect(credentials.accountId).toBe('acct_stored')
-  } finally {
-    rmSync(tempDir, { force: true, recursive: true })
-  }
-})
-
-test('runtime credential resolution avoids sync secure-storage reads when async credentials are provided', async () => {
-  let syncReadCalled = false
-
-  mock.module('../../../src/utils/agencCredentials.ts', () => ({
-    isAgencRefreshFailureCoolingDown: () => false,
-    readAgencCredentials: () => {
-      syncReadCalled = true
-      throw new Error('sync secure-storage read should not run in runtime resolution')
-    },
-  }))
-
-  // @ts-expect-error cache-busting query string for Bun module mocks
-  const { resolveRuntimeOpenAiCodeCredentials } = await import(
-    '../../../src/services/api/providerConfig.ts?runtime-no-sync-secure-storage'
-  )
-
-  const credentials = resolveRuntimeOpenAiCodeCredentials({
-    env: {} as NodeJS.ProcessEnv,
+test('uses the subscription access token when the native record also has a platform API key', () => {
+  const credentials = resolveRuntimeChatGptSubscriptionCredentials({
+    environment: Object.freeze({}),
     storedCredentials: {
-      accessToken: 'stored-access-token',
+      apiKey: 'stored-platform-key',
+      accessToken: 'stored-subscription-token',
       accountId: 'acct_stored',
     },
   })
 
-  expect(syncReadCalled).toBe(false)
-  expect(credentials.source).toBe('secure-storage')
-  expect(credentials.apiKey).toBe('stored-access-token')
-  expect(credentials.accountId).toBe('acct_stored')
+  expect(credentials).toEqual({
+    bearerToken: 'stored-subscription-token',
+    accountId: 'acct_stored',
+    source: 'native-vault',
+  })
+})
+
+test('native sign-in wins over conflicting ProviderCode environment credentials', () => {
+  const credentials = resolveRuntimeChatGptSubscriptionCredentials({
+    environment: Object.freeze({
+      PROVIDER_CODE_API_KEY: 'environment-token',
+      PROVIDER_CODE_ACCOUNT_ID: 'acct_environment',
+    }),
+    storedCredentials: {
+      accessToken: 'stored-subscription-token',
+      accountId: 'acct_stored',
+    },
+  })
+
+  expect(credentials).toEqual({
+    bearerToken: 'stored-subscription-token',
+    accountId: 'acct_stored',
+    source: 'native-vault',
+  })
+})
+
+test('uses the explicit ProviderCode environment token only without a usable native sign-in', () => {
+  const token = makeJwt({
+    'https://api.openai.com/auth': {
+      chatgpt_account_id: 'acct_environment',
+    },
+  })
+  const credentials = resolveRuntimeChatGptSubscriptionCredentials({
+    environment: Object.freeze({ PROVIDER_CODE_API_KEY: token }),
+    storedCredentials: { apiKey: 'platform-only-key' },
+  })
+
+  expect(credentials).toEqual({
+    bearerToken: token,
+    accountId: 'acct_environment',
+    source: 'environment',
+  })
+})
+
+test('does not consume retired auth paths or AgenC managed-auth aliases', () => {
+  const credentials = resolveRuntimeChatGptSubscriptionCredentials({
+    environment: Object.freeze({
+      PROVIDER_CODE_AUTH_JSON_PATH: '/tmp/retired-auth.json',
+      AGENC_API_KEY: 'managed-auth-key',
+      AGENC_ACCOUNT_ID: 'managed-account',
+    }),
+  })
+
+  expect(credentials).toEqual({ bearerToken: '', source: 'none' })
 })

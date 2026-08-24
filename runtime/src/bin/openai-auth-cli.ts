@@ -5,8 +5,8 @@
  * The TUI slash command is for humans at a terminal. Programs — the
  * desktop app above all — need an entry point that prints a result and
  * exits, with no Ink overlay to hide the outcome behind and no screen
- * scraping to guess at it. Every branch here ends in exactly one JSON
- * line (or one plain line) and an exit code.
+ * scraping to guess at it. JSON mode emits structured progress records and
+ * ends with one result record plus an exit code.
  */
 
 import { spawn } from "node:child_process";
@@ -14,22 +14,24 @@ import { spawn } from "node:child_process";
 import {
   OpenAiOauthError,
   runOpenAiBrowserLogin,
-  type OpenAiOauthTokens,
 } from "../services/openai/oauth.js";
 import {
-  exchangeProviderCodeIdTokenForApiKey,
-  parseChatgptAccountId,
-} from "../services/api/openAiCodeOAuthShared.js";
+  completeOpenAiLogin,
+  OpenAiLoginCompletionError,
+} from "../services/openai/login.js";
 import {
   clearOpenAiOauthCredentials,
   readOpenAiOauthCredentials,
-  saveOpenAiOauthCredentials,
 } from "../utils/openAiOauthCredentials.js";
+import type { HomeContext } from "../config/home.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
 
 export type OpenAiAuthCliCommand =
   | { readonly kind: "login"; readonly json: boolean }
   | { readonly kind: "logout"; readonly json: boolean }
-  | { readonly kind: "status"; readonly json: boolean };
+  | { readonly kind: "status"; readonly json: boolean }
+  | { readonly kind: "help" }
+  | { readonly kind: "error"; readonly message: string };
 
 export interface OpenAiAuthCliIo {
   readonly stdout: Pick<NodeJS.WriteStream, "write">;
@@ -37,26 +39,52 @@ export interface OpenAiAuthCliIo {
   readonly openUrl?: (url: string) => void | Promise<void>;
 }
 
-/** Every stage is bounded: a stalled step reports, it never hangs. */
-const API_KEY_EXCHANGE_TIMEOUT_MS = 45_000;
+export interface OpenAiAuthCliRuntime {
+  readonly home: HomeContext;
+  readonly environment: ProviderEnvironment;
+}
 
 export function parseOpenAiAuthCliArgs(
   argv: readonly string[],
 ): OpenAiAuthCliCommand | null {
-  const args = argv.filter((entry) => entry.length > 0);
-  const positional = args.filter((entry) => !entry.startsWith("--"));
-  const json = args.includes("--json");
-  const first = positional[0];
-  if (first === "openai-login" || first === "chatgpt-login") {
-    return { kind: "login", json };
+  const action = argv[0];
+  const kind =
+    action === "openai-login" || action === "chatgpt-login"
+      ? "login"
+      : action === "openai-logout" || action === "chatgpt-logout"
+        ? "logout"
+        : action === "openai-auth-status" || action === "chatgpt-auth-status"
+          ? "status"
+          : null;
+  if (kind === null) return null;
+
+  const rest = argv.slice(1);
+  if (rest.includes("--help") || rest.includes("-h")) {
+    return { kind: "help" };
   }
-  if (first === "openai-logout" || first === "chatgpt-logout") {
-    return { kind: "logout", json };
+  if (rest.length === 0) return { kind, json: false };
+  if (rest.length === 1 && rest[0] === "--json") {
+    return { kind, json: true };
   }
-  if (first === "openai-auth-status" || first === "chatgpt-auth-status") {
-    return { kind: "status", json };
-  }
-  return null;
+  return {
+    kind: "error",
+    message: `OpenAI auth command '${action}' accepts only --json or --help`,
+  };
+}
+
+export function formatOpenAiAuthCliHelpText(): string {
+  return [
+    "Usage:",
+    "  agenc openai-login [--json]",
+    "  agenc openai-logout [--json]",
+    "  agenc openai-auth-status [--json]",
+    "",
+    "Sign in with ChatGPT for the OpenAI provider. A stored sign-in wins over",
+    "OPENAI_API_KEY only while the selected provider is openai. Logout removes",
+    "the stored credential and returns OpenAI authentication to the environment.",
+    "",
+    "Aliases: chatgpt-login, chatgpt-logout, chatgpt-auth-status",
+  ].join("\n");
 }
 
 function openUrlDetached(url: string): void {
@@ -74,45 +102,21 @@ function openUrlDetached(url: string): void {
   child.unref();
 }
 
-/**
- * chatgpt_account_id lives under the `https://api.openai.com/auth` claim.
- * Both tokens carry it; prefer the id_token, fall back to the access
- * token (a refresh returns a new access token but never restates the
- * account id, so it is resolved once here and persisted).
- */
-function accountIdFromLogin(tokens: OpenAiOauthTokens): string | undefined {
-  return (
-    parseChatgptAccountId(tokens.idToken) ??
-    parseChatgptAccountId(tokens.accessToken)
-  );
-}
-
-async function withTimeout<T>(
-  work: Promise<T>,
-  ms: number,
-  label: string,
-): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${label} timed out after ${ms / 1000}s`)),
-          ms,
-        );
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
-
 export async function runOpenAiAuthCli(
   command: OpenAiAuthCliCommand,
+  runtime: OpenAiAuthCliRuntime,
   io: OpenAiAuthCliIo = { stdout: process.stdout, stderr: process.stderr },
 ): Promise<number> {
+  if (command.kind === "help") {
+    io.stdout.write(`${formatOpenAiAuthCliHelpText()}\n`);
+    return 0;
+  }
+  if (command.kind === "error") {
+    io.stderr.write(`agenc: ${command.message}\n`);
+    io.stderr.write(`${formatOpenAiAuthCliHelpText()}\n`);
+    return 1;
+  }
+
   const emit = (payload: Record<string, unknown>, plain: string): void => {
     io.stdout.write(
       command.json ? `${JSON.stringify(payload)}\n` : `${plain}\n`,
@@ -130,7 +134,7 @@ export async function runOpenAiAuthCli(
   };
 
   if (command.kind === "status") {
-    const existing = readOpenAiOauthCredentials();
+    const existing = readOpenAiOauthCredentials(runtime.home);
     emit(
       {
         ok: true,
@@ -147,12 +151,12 @@ export async function runOpenAiAuthCli(
   }
 
   if (command.kind === "logout") {
-    const existing = readOpenAiOauthCredentials();
+    const existing = readOpenAiOauthCredentials(runtime.home);
     if (existing === undefined) {
       emit({ ok: true, signedIn: false }, "No ChatGPT sign-in stored.");
       return 0;
     }
-    const result = clearOpenAiOauthCredentials();
+    const result = clearOpenAiOauthCredentials(runtime.home);
     if (!result.success) {
       return fail(result.warning ?? "could not clear the stored sign-in");
     }
@@ -163,6 +167,7 @@ export async function runOpenAiAuthCli(
   let login;
   try {
     login = await runOpenAiBrowserLogin({
+      environment: runtime.environment,
       onAuthorizeUrl: async (url) => {
         if (command.json) {
           io.stdout.write(`${JSON.stringify({ stage: "authorize", url })}\n`);
@@ -183,62 +188,24 @@ export async function runOpenAiAuthCli(
     return fail(error instanceof Error ? error.message : String(error));
   }
 
-  // The platform API key is a bonus, not a requirement. Only a ChatGPT
-  // account inside an OpenAI platform organization can mint one; every
-  // other account authenticates as a subscription, with the access token
-  // and account id against the ChatGPT backend. Treating the exchange's
-  // 401 as fatal is what made a perfectly good subscription login look
-  // broken.
-  let apiKey: string | undefined;
-  if (login.tokens.idToken !== undefined) {
-    try {
-      apiKey = await withTimeout(
-        exchangeProviderCodeIdTokenForApiKey(login.tokens.idToken),
-        API_KEY_EXCHANGE_TIMEOUT_MS,
-        "the API key exchange",
-      );
-    } catch {
-      apiKey = undefined;
+  let completion;
+  try {
+    completion = await completeOpenAiLogin({
+      home: runtime.home,
+      environment: runtime.environment,
+      login,
+    });
+  } catch (error) {
+    if (error instanceof OpenAiLoginCompletionError) {
+      return fail(error.message, error.code);
     }
+    return fail(error instanceof Error ? error.message : String(error));
   }
 
-  const accountId = accountIdFromLogin(login.tokens);
-  if (apiKey === undefined && accountId === undefined) {
-    return fail(
-      "the login produced neither a platform API key nor a ChatGPT " +
-        "account id, so there is no way to authenticate with it.",
-      "no_credential",
-    );
-  }
-
-  const mode = apiKey !== undefined ? "apiKey" : "chatgpt";
-  const saved = saveOpenAiOauthCredentials({
-    ...(apiKey !== undefined ? { apiKey } : {}),
-    authMode: mode,
-    accessToken: login.tokens.accessToken,
-    ...(accountId !== undefined ? { accountId } : {}),
-    obtainedAt: Date.now(),
-    ...(login.accountLabel !== undefined
-      ? { accountLabel: login.accountLabel }
-      : {}),
-    ...(login.tokens.idToken !== undefined
-      ? { idToken: login.tokens.idToken }
-      : {}),
-    ...(login.tokens.refreshToken !== undefined
-      ? { refreshToken: login.tokens.refreshToken }
-      : {}),
-  });
-  if (!saved.success) {
-    return fail(
-      `signed in, but storing the credential failed: ${saved.warning ?? "unknown error"}`,
-      "store_failed",
-    );
-  }
-
-  const account = login.accountLabel ?? "ChatGPT account";
+  const { account, authMode } = completion;
   emit(
-    { ok: true, signedIn: true, account, authMode: mode },
-    mode === "apiKey"
+    { ok: true, signedIn: true, account, authMode },
+    authMode === "apiKey"
       ? `Signed in to ChatGPT as ${account}.`
       : `Signed in to ChatGPT as ${account} (subscription).`,
   );

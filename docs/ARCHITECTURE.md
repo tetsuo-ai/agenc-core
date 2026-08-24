@@ -144,8 +144,8 @@ The daemon and runtime persist under one home. Relocate with an absolute
 Login tokens, provider BYOK keys, remote bearers, and persisted remote
 subprocess credentials are not file state. They live only in the native OS
 credential vault, in home-scoped `localAuth`, `remoteAuth`, and
-`remoteRuntimeAuth` namespaces; ProviderCode OAuth uses the separate `agenc`
-namespace. Gemini access tokens, GitHub Models access/OAuth tokens, xAI OAuth,
+`remoteRuntimeAuth` namespaces; OpenAI/ChatGPT OAuth uses the separate
+`openAiOauth` namespace. Gemini access tokens, GitHub Models access/OAuth tokens, xAI OAuth,
 and AgenC AI subscription OAuth use the `gemini`, `githubModels`, `xaiOauth`,
 and `agencAiOauth` namespaces respectively. Native updates use a cross-process
 locked read-modify-write so one namespace cannot overwrite another, and an

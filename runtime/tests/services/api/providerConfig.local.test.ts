@@ -96,7 +96,7 @@ test('uses responses transport when provider-compatible API format requests resp
 
 test('keeps ProviderCode backend on ProviderCode responses transport even when API format is set', () => {
   const selection = providerSelection('providerCodeplan', {
-    OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/providerCode',
+    OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/codex',
     OPENAI_API_FORMAT: 'chat_completions',
   })
 
@@ -104,7 +104,7 @@ test('keeps ProviderCode backend on ProviderCode responses transport even when A
     transport: 'providerCode_responses',
     requestedModel: 'providerCodeplan',
     resolvedModel: 'gpt-5.5',
-    baseUrl: 'https://chatgpt.com/backend-api/providerCode',
+    baseUrl: 'https://chatgpt.com/backend-api/codex',
   })
 })
 

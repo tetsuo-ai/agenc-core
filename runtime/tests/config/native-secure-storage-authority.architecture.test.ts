@@ -129,7 +129,7 @@ describe("native secure-storage authority", () => {
 
   test("ProviderCode OAuth writes use explicit-home serialized native RMW", () => {
     const credentials = readFileSync(
-      join(ROOT, "utils", "agencCredentials.ts"),
+      join(ROOT, "utils", "openAiOauthCredentials.ts"),
       "utf8",
     );
     const shim = readFileSync(
@@ -193,7 +193,7 @@ describe("native secure-storage authority", () => {
   test("credential caches use the complete native-vault identity", () => {
     const cacheAuthorities = [
       "auth.ts",
-      "agencCredentials.ts",
+      "openAiOauthCredentials.ts",
       "githubModelsCredentials.ts",
       "xaiOauthCredentials.ts",
       "authFileDescriptor.ts",

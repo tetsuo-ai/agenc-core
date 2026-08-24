@@ -5,6 +5,7 @@ import { getProxyFetchOptions } from '../../utils/proxy.js'
 const PROVIDER_CODE_OAUTH_ISSUER = 'https://auth.openai.com'
 export const PROVIDER_CODE_REFRESH_URL = `${PROVIDER_CODE_OAUTH_ISSUER}/oauth/token`
 const DEFAULT_PROVIDER_CODE_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+export const DEFAULT_PROVIDER_CODE_OAUTH_CALLBACK_PORT = 1455
 export const PROVIDER_CODE_OAUTH_SCOPE =
   'openid profile email offline_access api.connectors.read api.connectors.invoke'
 export const PROVIDER_CODE_OAUTH_ORIGINATOR = 'providerCode_cli_rs'
@@ -57,6 +58,27 @@ export function getOpenAiCodeOAuthClientId(
     asTrimmedString(environment.PROVIDER_CODE_OAUTH_CLIENT_ID) ??
     DEFAULT_PROVIDER_CODE_OAUTH_CLIENT_ID
   )
+}
+
+export function getOpenAiCodeOAuthCallbackPort(
+  environment: ProviderEnvironment,
+): number {
+  const configured = asTrimmedString(
+    environment.PROVIDER_CODE_OAUTH_CALLBACK_PORT,
+  )
+  if (configured === undefined) return DEFAULT_PROVIDER_CODE_OAUTH_CALLBACK_PORT
+  if (!/^\d+$/u.test(configured)) {
+    throw new Error(
+      'PROVIDER_CODE_OAUTH_CALLBACK_PORT must be an integer from 1 to 65535.',
+    )
+  }
+  const port = Number(configured)
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(
+      'PROVIDER_CODE_OAUTH_CALLBACK_PORT must be an integer from 1 to 65535.',
+    )
+  }
+  return port
 }
 
 export function decodeJwtPayload(

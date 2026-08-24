@@ -85,16 +85,6 @@ export interface SecureStorageData {
     accessToken: string
     oauthAccessToken?: string
   }
-  agenc?: {
-    apiKey?: string
-    accessToken: string
-    refreshToken?: string
-    idToken?: string
-    accountId?: string
-    profileId?: string
-    lastRefreshAt?: number
-    lastRefreshFailureAt?: number
-  }
   /** AgenC AI subscription OAuth tokens (separate surface from the base API key blob). */
   agencAiOauth?: {
     accessToken: string
@@ -146,6 +136,8 @@ export interface SecureStorageData {
     idToken?: string
     refreshToken?: string
     obtainedAt?: number
+    lastRefreshAt?: number
+    lastRefreshFailureAt?: number
   }
   /** xAI OAuth (Sign in with X / Grok subscription) tokens. */
   xaiOauth?: {

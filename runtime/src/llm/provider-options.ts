@@ -19,8 +19,17 @@ import {
   getGeminiProjectIdHint,
   resolveGeminiCredential,
 } from "../utils/geminiAuth.js";
+import {
+  readOpenAiOauthCredentials,
+  refreshOpenAiSubscriptionIfNeeded,
+} from "../utils/openAiOauthCredentials.js";
+import {
+  CHATGPT_BACKEND_BASE_URL,
+  chatGptSubscriptionHeaders,
+  resolveStoredChatGptSubscriptionCredentials,
+} from "./providers/openai/chatgpt-backend.js";
+import { BUILT_IN_PROVIDER_BASE_URLS } from "./registry/provider-info.js";
 import { resolveGrokProviderApiKey } from "./xai-capability-config.js";
-import { resolveSecureStorageHome } from "../utils/secureStorage/home.js";
 import type { ProviderFactoryOptions, ProviderName } from "./provider.js";
 
 export type ProviderEnvironment = Readonly<
@@ -98,9 +107,32 @@ function firstEnvironmentValue(
 function mergeExtra(
   requested: Readonly<Record<string, unknown>> | undefined,
   resolved: Readonly<Record<string, unknown>>,
+  forced: Readonly<Record<string, unknown>> = {},
 ): Record<string, unknown> | undefined {
-  const merged = { ...resolved, ...(requested ?? {}) };
+  const merged = { ...resolved, ...(requested ?? {}), ...forced };
   return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function stringRecord(value: unknown): Readonly<Record<string, string>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const entries = Object.entries(value);
+  return entries.some(([, entry]) => typeof entry !== "string")
+    ? {}
+    : Object.fromEntries(entries) as Readonly<Record<string, string>>;
+}
+
+function assertOpenAiOauthBaseUrl(baseURL: string | undefined): string {
+  const canonical = BUILT_IN_PROVIDER_BASE_URLS.openai;
+  if (
+    baseURL !== undefined &&
+    baseURL.replace(/\/+$/u, "") !== canonical.replace(/\/+$/u, "")
+  ) {
+    throw new Error(
+      "OpenAI sign-in credentials are bound to the first-party OpenAI " +
+        "endpoint. Run /openai-logout before using a custom OPENAI_BASE_URL.",
+    );
+  }
+  return canonical;
 }
 
 /** Copy an environment so later process-global mutation cannot affect a session. */
@@ -129,25 +161,90 @@ export function resolveProviderFactoryOptions(
   env: ProviderEnvironment,
 ): ProviderFactoryOptions {
   const snapshot = snapshotProviderEnvironment(env);
-  const home = requested.credentialHome ?? resolveSecureStorageHome();
+  const home = requested.credentialHome;
   const environmentApiKey = firstEnvironmentValue(snapshot, API_KEY_ENV[provider]);
-  let apiKey = provider === "grok"
+  let apiKey = provider === "grok" && home !== undefined
     ? resolveGrokProviderApiKey(
         home,
         requested.apiKey ?? environmentApiKey,
         snapshot,
       )
     : nonEmpty(requested.apiKey) ?? environmentApiKey;
-  const baseURL =
+  let baseURL =
     nonEmpty(requested.baseURL) ??
     firstEnvironmentValue(snapshot, BASE_URL_ENV[provider]);
 
   const resolvedExtra: Record<string, unknown> = {};
+  const forcedExtra: Record<string, unknown> = {};
+  let chatGptSubscription = false;
   if (provider === "openai") {
     const organization = nonEmpty(snapshot.OPENAI_ORGANIZATION);
     const project = nonEmpty(snapshot.OPENAI_PROJECT);
     if (organization !== undefined) resolvedExtra.organization = organization;
     if (project !== undefined) resolvedExtra.project = project;
+
+    const stored = home === undefined
+      ? undefined
+      : readOpenAiOauthCredentials(home);
+    if (stored?.apiKey !== undefined) {
+      apiKey = stored.apiKey;
+      baseURL = assertOpenAiOauthBaseUrl(baseURL);
+      forcedExtra.authMode = "api_key";
+    } else {
+      const subscription = resolveStoredChatGptSubscriptionCredentials(stored);
+      if (home !== undefined && subscription !== undefined) {
+        const initialAccessToken = subscription.bearerToken;
+        apiKey = undefined;
+        baseURL = CHATGPT_BACKEND_BASE_URL;
+        chatGptSubscription = true;
+        forcedExtra.authMode = "oauth";
+        forcedExtra.oauth = {
+          accessToken: initialAccessToken,
+          ...(stored?.refreshToken !== undefined
+            ? { refreshToken: stored.refreshToken }
+            : {}),
+          refreshAccessToken: async () => {
+            try {
+              const refreshed = await refreshOpenAiSubscriptionIfNeeded(
+                home,
+                snapshot,
+                { force: true },
+              );
+              const credentials = refreshed.credentials;
+              if (
+                refreshed.refreshed !== true ||
+                credentials?.apiKey !== undefined ||
+                credentials?.accessToken === undefined
+              ) {
+                return {
+                  kind: "exhausted" as const,
+                  reason: "OpenAI subscription token refresh is unavailable",
+                };
+              }
+              return {
+                kind: "refreshed" as const,
+                accessToken: credentials.accessToken,
+                ...(credentials.refreshToken !== undefined
+                  ? { refreshToken: credentials.refreshToken }
+                  : {}),
+              };
+            } catch (error) {
+              return {
+                kind: "exhausted" as const,
+                reason: error instanceof Error ? error.message : String(error),
+              };
+            }
+          },
+        };
+        forcedExtra.store = false;
+        forcedExtra.useResponsesApi = true;
+        forcedExtra.chatgptBackend = true;
+        forcedExtra.defaultHeaders = {
+          ...stringRecord(requested.extra?.defaultHeaders),
+          ...chatGptSubscriptionHeaders(subscription.accountId),
+        };
+      }
+    }
   }
 
   if (provider === "gemini") {
@@ -191,9 +288,13 @@ export function resolveProviderFactoryOptions(
     if (apiKey !== undefined) resolvedExtra.accessKeyId = apiKey;
   }
 
-  const extra = mergeExtra(requested.extra, resolvedExtra);
+  const extra = mergeExtra(requested.extra, resolvedExtra, forcedExtra);
+  if (chatGptSubscription && extra !== undefined) {
+    delete extra.organization;
+    delete extra.project;
+  }
   return {
-    credentialHome: requested.credentialHome ?? home,
+    ...(home !== undefined ? { credentialHome: home } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
     ...(baseURL !== undefined ? { baseURL } : {}),
     ...(requested.model !== undefined ? { model: requested.model } : {}),

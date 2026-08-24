@@ -51,7 +51,7 @@ permission classifier always inherits the session model.
 | Provider | Vars |
 | --- | --- |
 | grok | `XAI_API_KEY`, `GROK_API_KEY` (key order); `XAI_BASE_URL`, `GROK_BASE_URL` (endpoint aliases); `AGENC_XAI_STORE` and the `AGENC_XAI_*` capability switches below |
-| OpenAI | `OPENAI_API_KEY`, `PROVIDER_CODE_API_KEY`, `PROVIDER_CODE_ACCOUNT_ID`, `PROVIDER_CODE_OAUTH_CLIENT_ID`, `CHATGPT_ACCOUNT_ID`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `OPENAI_AUTH_HEADER`, `OPENAI_AUTH_HEADER_VALUE`, `OPENAI_AUTH_SCHEME`, `OPENAI_API_FORMAT` |
+| OpenAI | `OPENAI_API_KEY`, `PROVIDER_CODE_API_KEY`, `PROVIDER_CODE_ACCOUNT_ID`, `PROVIDER_CODE_OAUTH_CLIENT_ID`, `PROVIDER_CODE_OAUTH_CALLBACK_PORT`, `CHATGPT_ACCOUNT_ID`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `OPENAI_AUTH_HEADER`, `OPENAI_AUTH_HEADER_VALUE`, `OPENAI_AUTH_SCHEME`, `OPENAI_API_FORMAT` |
 | OpenAI-compatible | `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_COMPATIBLE_BASE_URL` |
 | Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_BEDROCK_BASE_URL`, `ANTHROPIC_FOUNDRY_API_KEY`, `ANTHROPIC_FOUNDRY_BASE_URL`, `ANTHROPIC_FOUNDRY_RESOURCE` |
 | LM Studio | `LMSTUDIO_API_KEY`, `LMSTUDIO_BASE_URL` |
@@ -66,6 +66,16 @@ permission classifier always inherits the session model.
 | Ollama | `OLLAMA_BASE_URL` |
 | Amazon Bedrock | `AWS_BEDROCK_ACCESS_KEY_ID`, `AWS_ACCESS_KEY_ID`, `AWS_BEDROCK_SECRET_ACCESS_KEY`, `AWS_SECRET_ACCESS_KEY`, `AWS_BEDROCK_SESSION_TOKEN`, `AWS_SESSION_TOKEN`, `AWS_BEDROCK_BASE_URL`, `AWS_BEDROCK_REGION`, `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_BEARER_TOKEN_BEDROCK` |
 | AgenC managed auth | `AGENC_API_KEY`, `AGENC_ACCOUNT_ID`, `AGENC_BASE_URL`; descriptor variants `AGENC_API_KEY_FILE_DESCRIPTOR`, `AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR`; OAuth/session vars are cataloged below |
+
+`PROVIDER_CODE_OAUTH_CLIENT_ID` overrides the OpenAI browser-login client ID.
+`PROVIDER_CODE_OAUTH_CALLBACK_PORT` overrides its loopback callback port
+(default `1455`; valid range `1`–`65535`). These values are captured at login
+ingress and are also used by token refresh; later process-environment changes
+cannot redirect an in-flight login. A credential saved by `agenc openai-login`
+wins over `OPENAI_API_KEY` only for the selected `openai` provider. Its stored
+subscription access token also wins over `PROVIDER_CODE_API_KEY` on ChatGPT
+subscription requests; that variable is an explicit fallback, not a second
+stored credential path.
 
 Gemini project identity has one ordered surface: `GEMINI_PROJECT_ID` wins over
 `GOOGLE_CLOUD_PROJECT`. Other Google project-name aliases are not consumed.

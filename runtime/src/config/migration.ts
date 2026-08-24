@@ -59,6 +59,11 @@ import {
   stableJson,
   type JsonRecord,
 } from "./json.js";
+import {
+  migrateRetiredOpenAiCredential,
+  OpenAiCredentialMigrationError,
+  type RetiredOpenAiCredential,
+} from "./openai-credential-migration.js";
 import { parseToml } from "./loader.js";
 import { retiredProjectMcpJsonCandidates } from "./retired-input-preflight.js";
 import { serializeConfigToml } from "./serialize.js";
@@ -335,9 +340,14 @@ function sha256(bytes: string | Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-const LEGACY_CREDENTIAL_FIELDS = new Set<keyof SecureStorageData>([
+type LegacyCredentialBlob = SecureStorageData & {
+  readonly agenc?: RetiredOpenAiCredential;
+};
+
+const LEGACY_CREDENTIAL_FIELDS = new Set<string>([
   "primaryApiKey",
   "agenc",
+  "openAiOauth",
   "agencAiOauth",
   "mcpOAuth",
   "mcpOAuthClientConfig",
@@ -353,7 +363,7 @@ const LEGACY_CREDENTIAL_FIELDS = new Set<keyof SecureStorageData>([
   "githubModels",
 ]);
 
-function parseLegacyCredentialBlob(text: string, path: string): SecureStorageData {
+function parseLegacyCredentialBlob(text: string, path: string): LegacyCredentialBlob {
   if (duplicateJsonObjectPaths(text).length > 0) {
     throw new ConfigMigrationError(
       `retired credential JSON contains duplicate object keys: ${path}`,
@@ -371,7 +381,7 @@ function parseLegacyCredentialBlob(text: string, path: string): SecureStorageDat
     throw new ConfigMigrationError(`retired credential blob is not an object: ${path}`);
   }
   const unknown = Object.keys(parsed).filter(
-    field => !LEGACY_CREDENTIAL_FIELDS.has(field as keyof SecureStorageData),
+    field => !LEGACY_CREDENTIAL_FIELDS.has(field),
   );
   if (unknown.length > 0) {
     throw new ConfigMigrationError(
@@ -430,17 +440,40 @@ function parseLegacyCredentialBlob(text: string, path: string): SecureStorageDat
       );
     }
   }
-  return cloneRecord(parsed) as SecureStorageData;
+  return cloneRecord(parsed) as LegacyCredentialBlob;
 }
 
 function mergeLegacyCredentialBlob(
   current: Readonly<SecureStorageData>,
-  legacy: Readonly<SecureStorageData>,
+  legacy: Readonly<LegacyCredentialBlob>,
   sourcePath: string,
-): { readonly next: SecureStorageData; readonly addedFields: readonly string[] } {
+): {
+  readonly next: SecureStorageData;
+  readonly canonical: SecureStorageData;
+  readonly addedFields: readonly string[];
+} {
   const next = structuredClone(current) as SecureStorageData;
   const addedFields: string[] = [];
-  for (const [field, value] of Object.entries(legacy)) {
+  const {
+    agenc: retiredOpenAi,
+    ...canonicalLegacy
+  } = structuredClone(legacy);
+  if (retiredOpenAi !== undefined) {
+    try {
+      canonicalLegacy.openAiOauth = migrateRetiredOpenAiCredential(
+        retiredOpenAi,
+        canonicalLegacy.openAiOauth,
+      );
+    } catch (error) {
+      const field = error instanceof OpenAiCredentialMigrationError
+        ? error.field
+        : "agenc";
+      throw new ConfigMigrationError(
+        `retired credential field ${field} could not be migrated safely; no credentials or files were changed: ${sourcePath}`,
+      );
+    }
+  }
+  for (const [field, value] of Object.entries(canonicalLegacy)) {
     const key = field as keyof SecureStorageData;
     const existing = current[key];
     if (existing === undefined) {
@@ -454,7 +487,11 @@ function mergeLegacyCredentialBlob(
       );
     }
   }
-  return { next, addedFields: Object.freeze(addedFields) };
+  return {
+    next,
+    canonical: canonicalLegacy,
+    addedFields: Object.freeze(addedFields),
+  };
 }
 
 async function readMigrationFile(path: string): Promise<StableFileSnapshot | null> {
@@ -5528,6 +5565,8 @@ async function applyConfigV2MigrationLocked(
     let nextNativeVault = initialNativeVault;
     let credentialLegacy: SecureStorageData | undefined;
     let nativeNamespaceLegacy: SecureStorageData | undefined;
+    let credentialCanonical: SecureStorageData | undefined;
+    let nativeNamespaceCanonical: SecureStorageData | undefined;
     let nativeNamespaceStorage: SecureStorage | undefined;
     let retiredAuthVaultMutation: RetiredAuthVaultMutation | undefined;
     const credentialFileActions: RetiredAuthFileAction[] = [];
@@ -5597,14 +5636,15 @@ async function applyConfigV2MigrationLocked(
       );
     }
     nativeNamespaceLegacy = structuredClone(source);
-    for (const [field, value] of Object.entries(source)) {
-      recordMigratedCredentialLeaf([field], value);
-    }
     const preview = mergeLegacyCredentialBlob(
       nextNativeVault,
       nativeNamespaceLegacy,
       `native vault ${plan.nativeVaultNamespaceMigration.source.serviceName}`,
     );
+    nativeNamespaceCanonical = preview.canonical;
+    for (const [field, value] of Object.entries(preview.canonical)) {
+      recordMigratedCredentialLeaf([field], value);
+    }
     nextNativeVault = preview.next;
     for (const field of preview.addedFields) credentialVaultFields.add(field);
   }
@@ -5622,14 +5662,15 @@ async function applyConfigV2MigrationLocked(
       source.bytes.toString("utf8"),
       plan.credentialMigration.sourcePath,
     );
-    for (const [field, value] of Object.entries(credentialLegacy)) {
-      recordMigratedCredentialLeaf([field], value);
-    }
     const preview = mergeLegacyCredentialBlob(
       nextNativeVault,
       credentialLegacy,
       plan.credentialMigration.sourcePath,
     );
+    credentialCanonical = preview.canonical;
+    for (const [field, value] of Object.entries(preview.canonical)) {
+      recordMigratedCredentialLeaf([field], value);
+    }
     nextNativeVault = preview.next;
     for (const field of preview.addedFields) credentialVaultFields.add(field);
     credentialFileActions.push(Object.freeze({
@@ -6270,8 +6311,8 @@ async function applyConfigV2MigrationLocked(
             }
             const migratedCredentialFields = new Map<string, unknown>();
             for (const migrated of [
-              nativeNamespaceLegacy,
-              credentialLegacy,
+              nativeNamespaceCanonical,
+              credentialCanonical,
             ]) {
               if (migrated === undefined) continue;
               for (const [field, value] of Object.entries(migrated)) {

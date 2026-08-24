@@ -14,6 +14,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { resolveHomeContext } from "../../src/config/home.js";
 import {
   applyRetiredAuthVaultMutation,
+  assertRetiredAuthVaultMutationCommitted,
   discoverRetiredAuthMigration,
   rollbackRetiredAuthVaultMutation,
   RetiredAuthVaultConflictError,
@@ -65,6 +66,84 @@ async function discover(options: {
 }
 
 describe("retired auth credential migration discovery", () => {
+  test("moves the retired native OpenAI record into the sole canonical field", async () => {
+    const current = {
+      trustedDeviceToken: "keep-unrelated",
+      agenc: {
+        apiKey: "platform-secret",
+        accessToken: "oauth-secret",
+        refreshToken: "refresh-secret",
+        accountId: "acct-openai",
+        profileId: "discarded-profile-link",
+      },
+    } as SecureStorageData & {
+      agenc: {
+        apiKey: string;
+        accessToken: string;
+        refreshToken: string;
+        accountId: string;
+        profileId: string;
+      };
+    };
+    const { discovery } = await discover({ currentVault: current });
+
+    expect(discovery.descriptor.conflicts).toEqual([]);
+    expect(discovery.descriptor.vaultFields).toEqual(["agenc", "openAiOauth"]);
+    const applied = appliedVault(discovery, current);
+    expect(applied).toMatchObject({
+      trustedDeviceToken: "keep-unrelated",
+      openAiOauth: {
+        apiKey: "platform-secret",
+        accessToken: "oauth-secret",
+        refreshToken: "refresh-secret",
+        accountId: "acct-openai",
+        authMode: "apiKey",
+      },
+    });
+    expect((applied as Record<string, unknown>).agenc).toBeUndefined();
+    expect(applied.openAiOauth).not.toHaveProperty("profileId");
+    assertRetiredAuthVaultMutationCommitted(applied, discovery.mutation!);
+    expect(rollbackRetiredAuthVaultMutation(
+      applied,
+      discovery.mutation!,
+    )).toEqual(current);
+    expectSecretFreeDescriptor(discovery.descriptor, [
+      "platform-secret",
+      "oauth-secret",
+      "refresh-secret",
+      "keep-unrelated",
+    ]);
+  });
+
+  test("refuses to delete a retired native OpenAI record that conflicts", async () => {
+    const current = {
+      agenc: {
+        apiKey: "retired-platform-secret",
+        accessToken: "oauth-secret",
+      },
+      openAiOauth: {
+        apiKey: "canonical-platform-secret",
+        authMode: "apiKey" as const,
+      },
+    } as SecureStorageData & {
+      agenc: { apiKey: string; accessToken: string };
+    };
+    const { discovery } = await discover({ currentVault: current });
+
+    expect(discovery.mutation).toBeUndefined();
+    expect(discovery.descriptor.conflicts).toContainEqual(
+      expect.objectContaining({
+        kind: "retired-native-openai-oauth",
+        field: "openAiOauth.apiKey",
+      }),
+    );
+    expectSecretFreeDescriptor(discovery.descriptor, [
+      "retired-platform-secret",
+      "canonical-platform-secret",
+      "oauth-secret",
+    ]);
+  });
+
   test("rejects duplicate credential JSON keys without retaining secret values", async () => {
     const context = await fixture();
     await writeFile(
@@ -220,7 +299,8 @@ describe("retired auth credential migration discovery", () => {
         apiKey: "api-secret",
         sessionIngressToken: "session-secret",
       },
-      agenc: {
+      openAiOauth: {
+        authMode: "chatgpt",
         accessToken: "provider-bearer-secret",
         idToken: "provider-id-secret",
         accountId: "acct-provider",
@@ -772,7 +852,10 @@ describe("retired auth credential migration discovery", () => {
       writeFile(join(explicitRemote, ".oauth_token"), "explicit-oauth"),
       writeFile(join(explicitRemote, ".api_key"), "explicit-api"),
       writeFile(explicitIngress, "explicit-session"),
-      writeJson(explicitProvider, { accessToken: "explicit-provider" }),
+      writeJson(explicitProvider, {
+        accessToken: "explicit-provider",
+        accountId: "explicit-account",
+      }),
     ]);
 
     const discovery = await discoverRetiredAuthMigration({
@@ -875,7 +958,7 @@ describe("retired auth credential migration discovery", () => {
     expect(discovery.descriptor.conflicts).toContainEqual(
       expect.objectContaining({
         kind: "provider-code-auth-json",
-        field: "ProviderCode bearer",
+        field: "ProviderCode credential",
       }),
     );
     expectSecretFreeDescriptor(discovery.descriptor, [
@@ -883,7 +966,7 @@ describe("retired auth credential migration discovery", () => {
     ]);
   });
 
-  test("refuses conflicting ProviderCode bearer aliases", async () => {
+  test("keeps distinct ProviderCode API-key and OAuth token fields", async () => {
     const context = await fixture();
     const providerPath = join(context.root, "provider-ambiguous.json");
     await writeJson(providerPath, {
@@ -900,11 +983,12 @@ describe("retired auth credential migration discovery", () => {
       currentVault: {},
     });
 
-    expect(discovery.mutation).toBeUndefined();
-    expect(discovery.descriptor.fileActions).toEqual([]);
-    expect(discovery.descriptor.conflicts).toContainEqual(
-      expect.objectContaining({ field: "ProviderCode bearer" }),
-    );
+    expect(discovery.descriptor.conflicts).toEqual([]);
+    expect(appliedVault(discovery).openAiOauth).toMatchObject({
+      apiKey: "provider-secret-a",
+      accessToken: "provider-secret-b",
+      authMode: "apiKey",
+    });
     expectSecretFreeDescriptor(discovery.descriptor, [
       "provider-secret-a",
       "provider-secret-b",
@@ -944,15 +1028,7 @@ describe("retired auth credential migration discovery", () => {
   test.each([
     ["openai_api_key", { openai_api_key: "provider-secret" }],
     ["openaiApiKey", { openaiApiKey: "provider-secret" }],
-    ["access_token", { access_token: "provider-secret" }],
-    ["accessToken", { accessToken: "provider-secret" }],
-    ["tokens.access_token", { tokens: { access_token: "provider-secret" } }],
-    ["tokens.accessToken", { tokens: { accessToken: "provider-secret" } }],
-    ["auth.access_token", { auth: { access_token: "provider-secret" } }],
-    ["auth.accessToken", { auth: { accessToken: "provider-secret" } }],
-    ["token.access_token", { token: { access_token: "provider-secret" } }],
-    ["token.accessToken", { token: { accessToken: "provider-secret" } }],
-  ])("parses ProviderCode bearer path %s", async (_name, authJson) => {
+  ])("parses ProviderCode API-key path %s", async (_name, authJson) => {
     const context = await fixture();
     const providerPath = join(context.root, "provider-auth.json");
     await writeJson(providerPath, authJson);
@@ -965,9 +1041,43 @@ describe("retired auth credential migration discovery", () => {
     });
 
     expect(discovery.descriptor.conflicts).toEqual([]);
-    expect(appliedVault(discovery).agenc?.accessToken).toBe(
-      "provider-secret",
-    );
+    expect(appliedVault(discovery).openAiOauth).toMatchObject({
+      apiKey: "provider-secret",
+      authMode: "apiKey",
+    });
+    expectSecretFreeDescriptor(discovery.descriptor, ["provider-secret"]);
+  });
+
+  test.each([
+    ["access_token", { access_token: "provider-secret" }],
+    ["accessToken", { accessToken: "provider-secret" }],
+    ["tokens.access_token", { tokens: { access_token: "provider-secret" } }],
+    ["tokens.accessToken", { tokens: { accessToken: "provider-secret" } }],
+    ["auth.access_token", { auth: { access_token: "provider-secret" } }],
+    ["auth.accessToken", { auth: { accessToken: "provider-secret" } }],
+    ["token.access_token", { token: { access_token: "provider-secret" } }],
+    ["token.accessToken", { token: { accessToken: "provider-secret" } }],
+  ])("parses ProviderCode access-token path %s", async (_name, authJson) => {
+    const context = await fixture();
+    const providerPath = join(context.root, "provider-auth.json");
+    await writeJson(providerPath, authJson);
+
+    const discovery = await discoverRetiredAuthMigration({
+      home: context.home,
+      platformHome: context.platformHome,
+      env: {
+        PROVIDER_CODE_AUTH_JSON_PATH: providerPath,
+        PROVIDER_CODE_ACCOUNT_ID: "acct-provider",
+      },
+      currentVault: {},
+    });
+
+    expect(discovery.descriptor.conflicts).toEqual([]);
+    expect(appliedVault(discovery).openAiOauth).toMatchObject({
+      accessToken: "provider-secret",
+      accountId: "acct-provider",
+      authMode: "chatgpt",
+    });
     expectSecretFreeDescriptor(discovery.descriptor, ["provider-secret"]);
   });
 });

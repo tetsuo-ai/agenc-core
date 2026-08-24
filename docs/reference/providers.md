@@ -124,13 +124,20 @@ only (base URL, default model, retry/timeouts, catalog lists).
   state. An explicit constructor token wins over `AGENC_REMOTE_AUTH_TOKEN`,
   which wins over the stored bearer; explicit overrides are not copied into
   `auth.json`.
-- **ProviderCode OAuth** — explicit ProviderCode credential environment values
-  win over the home-scoped native `agenc` credential namespace. The runtime
-  never reads `~/.providerCode/auth.json`, `PROVIDER_CODE_AUTH_JSON_PATH`, or
-  `PROVIDER_CODE_HOME`; those paths are eligible only for an explicit one-way
-  migration. OAuth reads, refreshes, profile linkage, and clears stay bound to
-  the `HomeContext` captured by the client; a refresh cannot overwrite a newer
-  login that lands while its network request is in flight.
+- **OpenAI / ChatGPT OAuth** — `agenc openai-login` stores one home-scoped
+  native `openAiOauth` record. While `openai` is selected, that stored sign-in
+  wins over `OPENAI_API_KEY`; it never affects `openai-compatible` or another
+  provider. ChatGPT-only accounts use the first-party subscription backend,
+  while eligible platform accounts use the exchanged API key. Both modes
+  reject a custom `OPENAI_BASE_URL` until `agenc openai-logout` removes the
+  stored sign-in. Subscription requests use the same stored access token and
+  account ID; `PROVIDER_CODE_API_KEY` is only a fallback when no usable stored
+  subscription credential exists. The runtime never reads
+  `~/.providerCode/auth.json`,
+  `PROVIDER_CODE_AUTH_JSON_PATH`, or `PROVIDER_CODE_HOME`; those paths and the
+  retired native `agenc` credential field are explicit one-way migration
+  inputs only. Reads, refreshes, and clears stay bound to the client's captured
+  `HomeContext`, and refresh compare-and-swap preserves a newer login.
 - **Provider-native tokens** — Gemini, GitHub Models, xAI OAuth, and AgenC AI
   subscription OAuth persist only in the home-scoped native `gemini`,
   `githubModels`, `xaiOauth`, and `agencAiOauth` namespaces. Their production

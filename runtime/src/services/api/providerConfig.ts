@@ -1,27 +1,23 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { isIP } from 'node:net'
 
-import {
-  readAgencCredentials as readProviderCodeCredentials,
-  type AgencCredentialBlob as ProviderCodeCredentialBlob,
-} from '../../utils/agencCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import {
-  asTrimmedString,
-  parseChatgptAccountId,
-} from './openAiCodeOAuthShared.js'
 import {
   getSelectedProviderEnvironment,
   getSelectedProviderModel,
   getSelectedProviderName,
 } from '../../utils/model/providers.js'
 import type { ProviderEnvironment } from '../../llm/provider-options.js'
-import { resolveSecureStorageHome } from '../../utils/secureStorage/home.js'
+import {
+  CHATGPT_BACKEND_BASE_URL,
+  resolveChatGptSubscriptionCredentials,
+  type ChatGptSubscriptionCredentialInput,
+  type ResolvedChatGptSubscriptionCredentials,
+} from '../../llm/providers/openai/chatgpt-backend.js'
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 export const DEFAULT_GEMINI_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/openai'
-export const DEFAULT_PROVIDER_CODE_BASE_URL = 'https://chatgpt.com/backend-api/providerCode'
 const DEFAULT_MISTRAL_BASE_URL = 'https://api.mistral.ai/v1'
 /** Default GitHub Copilot API model when user selects copilot / github:copilot */
 export const DEFAULT_GITHUB_MODELS_API_MODEL = 'gpt-4o'
@@ -97,12 +93,6 @@ export type ResolvedProviderRequest = {
   reasoning?: {
     effort: ReasoningEffort
   }
-}
-
-export type ResolvedProviderCodeCredentials = {
-  apiKey: string
-  accountId?: string
-  source: 'env' | 'secure-storage' | 'none'
 }
 
 type ModelDescriptor = {
@@ -263,7 +253,7 @@ export function shouldUseProviderCodeTransport(
   baseUrl: string | undefined,
 ): boolean {
   const explicitBaseUrl = asEnvUrl(baseUrl)
-  return isProviderCodeBaseUrl(explicitBaseUrl) || (!explicitBaseUrl && isProviderCodeAlias(model))
+  return isChatGptSubscriptionBaseUrl(explicitBaseUrl) || (!explicitBaseUrl && isProviderCodeAlias(model))
 }
 
 function shouldUseGithubResponsesApi(model: string): boolean {
@@ -415,13 +405,16 @@ export function shouldAttemptLocalToollessRetry(options: {
   return isLikelyOllamaEndpoint(options.baseUrl)
 }
 
-export function isProviderCodeBaseUrl(baseUrl: string | undefined): boolean {
+export function isChatGptSubscriptionBaseUrl(
+  baseUrl: string | undefined,
+): boolean {
   if (!baseUrl) return false
   try {
     const parsed = new URL(baseUrl)
+    const canonical = new URL(CHATGPT_BACKEND_BASE_URL)
     return (
-      parsed.hostname === 'chatgpt.com' &&
-      parsed.pathname.replace(/\/+$/, '') === '/backend-api/providerCode'
+      parsed.origin === canonical.origin &&
+      parsed.pathname.replace(/\/+$/, '') === canonical.pathname.replace(/\/+$/, '')
     )
   } catch {
     return false
@@ -569,7 +562,7 @@ export function resolveProviderRequest(options?: {
   const hasUserSetBaseUrl = rawBaseUrl && rawBaseUrl !== DEFAULT_OPENAI_BASE_URL
   const finalBaseUrl =
     !isGithubMode && isProviderCodeAliasModel && !hasUserSetBaseUrl
-      ? DEFAULT_PROVIDER_CODE_BASE_URL
+      ? CHATGPT_BACKEND_BASE_URL
       : rawBaseUrl
 
   const githubEndpointType = isGithubMode
@@ -660,113 +653,21 @@ export function getAdditionalModelOptionsCacheScope(
   return `openai:${request.baseUrl.toLowerCase()}`
 }
 
-function resolveStoredProviderCodeCredentials(options: {
-  storedCredentials: Pick<
-    ProviderCodeCredentialBlob,
-    'apiKey' | 'accessToken' | 'idToken' | 'accountId'
-  >
-  envAccountId?: string
-}): ResolvedProviderCodeCredentials {
-  const { storedCredentials, envAccountId } = options
-
-  return {
-    apiKey: storedCredentials.apiKey ?? storedCredentials.accessToken,
-    accountId:
-      envAccountId ??
-      storedCredentials.accountId ??
-      parseChatgptAccountId(storedCredentials.idToken) ??
-      parseChatgptAccountId(storedCredentials.accessToken),
-    source: 'secure-storage',
-  }
-}
-
-function resolveEnvProviderCodeCredentials(
-  env: NodeJS.ProcessEnv,
-): ResolvedProviderCodeCredentials {
-  const envApiKey =
-    asTrimmedString(env.PROVIDER_CODE_API_KEY) ??
-    asTrimmedString(env.AGENC_API_KEY)
-  const envAccountId =
-    asTrimmedString(env.PROVIDER_CODE_ACCOUNT_ID) ??
-    asTrimmedString(env.CHATGPT_ACCOUNT_ID) ??
-    asTrimmedString(env.AGENC_ACCOUNT_ID)
-
-  if (envApiKey) {
-    return {
-      apiKey: envApiKey,
-      accountId: envAccountId ?? parseChatgptAccountId(envApiKey),
-      source: 'env',
-    }
-  }
-
-  return {
-    apiKey: '',
-    accountId: envAccountId,
-    source: 'none',
-  }
-}
-
-export function resolveRuntimeOpenAiCodeCredentials(options?: {
-  env?: NodeJS.ProcessEnv
-  storedCredentials?: Pick<
-    ProviderCodeCredentialBlob,
-    'apiKey' | 'accessToken' | 'idToken' | 'accountId'
-  >
-}): ResolvedProviderCodeCredentials {
-  const env = options?.env ?? process.env
-  const explicitCredentials = resolveEnvProviderCodeCredentials(env)
-  const hasStoredCredentialsOption = Boolean(
-    options &&
-      Object.prototype.hasOwnProperty.call(options, 'storedCredentials'),
-  )
-
-  if (explicitCredentials.source === 'env') {
-    return explicitCredentials
-  }
-
-  if (
-    options?.storedCredentials?.apiKey ||
-    options?.storedCredentials?.accessToken
-  ) {
-    return resolveStoredProviderCodeCredentials({
-      storedCredentials: options.storedCredentials,
-      envAccountId:
-        asTrimmedString(env.PROVIDER_CODE_ACCOUNT_ID) ??
-        asTrimmedString(env.CHATGPT_ACCOUNT_ID),
-    })
-  }
-
-  if (hasStoredCredentialsOption) {
-    return explicitCredentials
-  }
-
-  return resolveProviderCodeApiCredentials(env)
-}
-
-export function resolveProviderCodeApiCredentials(
-  env: NodeJS.ProcessEnv = process.env,
-): ResolvedProviderCodeCredentials {
-  const envAccountId =
-    asTrimmedString(env.PROVIDER_CODE_ACCOUNT_ID) ??
-    asTrimmedString(env.CHATGPT_ACCOUNT_ID) ??
-    asTrimmedString(env.AGENC_ACCOUNT_ID)
-  const envCredentials = resolveEnvProviderCodeCredentials(env)
-
-  if (envCredentials.source === 'env') {
-    return envCredentials
-  }
-
-  const storedCredentials = readProviderCodeCredentials(
-    resolveSecureStorageHome(env),
-  )
-  if (storedCredentials?.apiKey || storedCredentials?.accessToken) {
-    return resolveStoredProviderCodeCredentials({
-      storedCredentials,
-      envAccountId,
-    })
-  }
-
-  return envCredentials
+/**
+ * Resolve ChatGPT subscription authentication from already captured inputs.
+ * Secure-storage reads stay at ingress; this pure resolver cannot fall back to
+ * ambient process state or a second credential store.
+ */
+export function resolveRuntimeChatGptSubscriptionCredentials(options: {
+  readonly environment: ProviderEnvironment
+  readonly storedCredentials?: ChatGptSubscriptionCredentialInput
+}): ResolvedChatGptSubscriptionCredentials {
+  return resolveChatGptSubscriptionCredentials({
+    environment: options.environment,
+    ...(options.storedCredentials === undefined
+      ? {}
+      : { stored: options.storedCredentials }),
+  })
 }
 
 function getReasoningEffortForModel(model: string): ReasoningEffort | undefined {

@@ -58,11 +58,6 @@ import {
   isXaiOauthBearer,
   xaiOauthRequiresRelogin,
 } from "../utils/xaiOauthCredentials.js";
-import {
-  CHATGPT_BACKEND_ORIGINATOR,
-  readOpenAiOauthApiKey,
-  readOpenAiSubscriptionAuth,
-} from "../utils/openAiOauthCredentials.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type { HomeContext } from "../config/home.js";
@@ -108,6 +103,7 @@ export type ProviderRuntimeExtra = Partial<
   readonly project?: string;
   readonly useResponsesApi?: boolean;
   readonly store?: boolean;
+  readonly chatgptBackend?: boolean;
   readonly authMode?: "api_key" | "oauth";
   readonly oauth?: Record<string, unknown>;
   readonly accessToken?: string;
@@ -160,6 +156,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "project",
   "useResponsesApi",
   "store",
+  "chatgptBackend",
   "authMode",
   "oauth",
   "accessToken",
@@ -948,6 +945,9 @@ function readRuntimeExtra(
     ...(readBoolean(extra, "store") !== undefined
       ? { store: readBoolean(extra, "store") }
       : {}),
+    ...(readBoolean(extra, "chatgptBackend") !== undefined
+      ? { chatgptBackend: readBoolean(extra, "chatgptBackend") }
+      : {}),
     ...(readString(extra, "authMode") === "api_key" ||
     readString(extra, "authMode") === "oauth"
       ? {
@@ -1492,20 +1492,9 @@ export function createProvider(
         extra.oauth.accessToken.trim().length > 0
           ? (extra.oauth as unknown as OpenAIProviderConfig["oauth"])
           : undefined;
-      // The ChatGPT sign-in wins over env BYOK unconditionally (as
-      // grok's OAuth does), in either of its two shapes: an exchanged
-      // platform API key, or — for an account with no platform
-      // organization, which cannot mint one — the subscription's access
-      // token against the ChatGPT backend.
-      const chatgptKey = readOpenAiOauthApiKey();
-      const subscription =
-        chatgptKey === undefined ? readOpenAiSubscriptionAuth() : undefined;
-      const apiKey =
-        chatgptKey ??
-        subscription?.accessToken ??
-        (oauthConfig
-          ? resolveFactoryApiKey(opts)
-          : requireFactoryApiKey("openai", opts));
+      const apiKey = oauthConfig
+        ? resolveFactoryApiKey(opts)
+        : requireFactoryApiKey("openai", opts);
       const cfg: OpenAIProviderConfig = {
         ...buildCommonConfig(extra),
         ...(apiKey !== undefined ? { apiKey } : {}),
@@ -1514,43 +1503,18 @@ export function createProvider(
         apiKeyEnvLabel,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL:
-          // A subscription sign-in is bound to the ChatGPT backend: the
-          // access token is not a platform credential and api.openai.com
-          // rejects it.
-          (subscription?.baseUrl !== undefined
-            ? subscription.baseUrl
-            : undefined) ??
-          normalizeBaseURL(opts.baseURL) ??
-          defaultBaseURLFor("openai"),
+          normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("openai"),
         useResponsesApi: extra.useResponsesApi ?? true,
-        // That backend is stateless: it rejects store:true, and without
-        // server-side state the encrypted reasoning has to ride along in
-        // the request to survive across turns.
-        ...(subscription !== undefined
-          ? { store: false }
-          : extra.store !== undefined
-            ? { store: extra.store }
-            : {}),
+        ...(extra.store !== undefined ? { store: extra.store } : {}),
+        ...(extra.chatgptBackend !== undefined
+          ? { chatgptBackend: extra.chatgptBackend }
+          : {}),
         ...(extra.contextWindowTokens !== undefined
           ? { contextWindowTokens: extra.contextWindowTokens }
           : {}),
         ...(extra.authMode ? { authMode: extra.authMode } : {}),
         ...(oauthConfig ? { oauth: oauthConfig } : {}),
-        // The ChatGPT backend identifies the subscription by header; the
-        // bearer alone is not enough and it answers 401 without this.
-        ...(subscription !== undefined || extra.defaultHeaders
-          ? {
-              defaultHeaders: {
-                ...(extra.defaultHeaders ?? {}),
-                ...(subscription !== undefined
-                  ? {
-                      "ChatGPT-Account-ID": subscription.accountId,
-                      originator: CHATGPT_BACKEND_ORIGINATOR,
-                    }
-                  : {}),
-              },
-            }
-          : {}),
+        ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(extra.organization ? { organization: extra.organization } : {}),
         ...(extra.project ? { project: extra.project } : {}),
