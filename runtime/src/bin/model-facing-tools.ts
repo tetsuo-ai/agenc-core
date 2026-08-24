@@ -133,6 +133,7 @@ import {
   waitForInitialization,
 } from "../services/lsp/manager.js";
 import { readSandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import { readOpenAiSubscriptionAuth } from "../utils/openAiOauthCredentials.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
 
 export interface ModelFacingToolOptions {
@@ -4997,19 +4998,31 @@ export function createModelFacingTools(
   const grokDirect = isGrokDirectXaiSession(opts);
   // Image + video Imagine surface (same credential probe as Hermes).
   const includeImagineMedia = grokDirect && hasXaiCredentials(opts.env);
+  // OpenAI reaches the same picture through the server-side
+  // image_generation tool on its Responses endpoint, which only a
+  // subscription sign-in can open. Advertising it without those
+  // credentials would offer the model a tool that always refuses.
+  const openaiImages =
+    (opts.sessionProvider ?? "").trim().toLowerCase() === "openai" &&
+    readOpenAiSubscriptionAuth() !== undefined;
 
   return [
     ...createMultiAgentV2RuntimeTools(opts),
     ...createMcpResourceTools(opts),
     createSkillInvocationRuntimeTool(opts),
     ...createWebTools(opts),
-    ...(includeImagineMedia
+    ...(includeImagineMedia || openaiImages
       ? [
           createImagineImageTool({
             workspaceRoot: opts.workspaceRoot,
             getSession: opts.getSession,
             ...(opts.env !== undefined ? { env: opts.env } : {}),
           }),
+        ]
+      : []),
+    // Video stays xAI-only: nothing else here has a route for it.
+    ...(includeImagineMedia
+      ? [
           createImagineVideoTool({
             workspaceRoot: opts.workspaceRoot,
             getSession: opts.getSession,

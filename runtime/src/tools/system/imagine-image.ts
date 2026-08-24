@@ -22,6 +22,11 @@ import {
   isDirectXaiInferenceHost,
   resolveXaiBearerToken,
 } from "../../llm/xai-capability-config.js";
+import {
+  CHATGPT_BACKEND_ORIGINATOR,
+  readOpenAiSubscriptionAuth,
+  type OpenAiSubscriptionAuth,
+} from "../../utils/openAiOauthCredentials.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 
@@ -52,6 +57,87 @@ function abortSignalFromArgs(
 ): AbortSignal | undefined {
   const signal = args.__abortSignal;
   return signal instanceof AbortSignal ? signal : undefined;
+}
+
+/**
+ * Ask the ChatGPT backend for a picture and return its bytes.
+ *
+ * A subscription sign-in has no platform API key, so `/v1/images/generations`
+ * — the endpoint the xAI branch below uses, and which OpenAI mirrors — is
+ * closed to it. What is open is the same Responses endpoint the session
+ * already talks to, with the server-side `image_generation` tool.
+ *
+ * Verified against gpt-5.6-sol: the request is refused outright unless
+ * `stream` is true (`{"detail":"Stream must be set to true"}`), and the
+ * finished picture arrives on the `response.output_item.done` event for the
+ * `image_generation_call` item, base64 in `result`, extension in
+ * `output_format`. The `partial_image` events carry earlier drafts of the
+ * same picture and are ignored.
+ */
+async function generateViaChatgptBackend(params: {
+  readonly auth: OpenAiSubscriptionAuth;
+  readonly model: string;
+  readonly prompt: string;
+  readonly fetchImpl: typeof fetch;
+  readonly signal: AbortSignal;
+}): Promise<
+  { readonly bytes: Buffer; readonly format: string; readonly revisedPrompt?: string }
+  | { readonly error: string }
+> {
+  const res = await params.fetchImpl(`${params.auth.baseUrl}/responses`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${params.auth.accessToken}`,
+      "ChatGPT-Account-ID": params.auth.accountId,
+      originator: CHATGPT_BACKEND_ORIGINATOR,
+    },
+    body: JSON.stringify({
+      model: params.model,
+      store: false,
+      stream: true,
+      tools: [{ type: "image_generation" }],
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: params.prompt }],
+        },
+      ],
+    }),
+    signal: params.signal,
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    return { error: `image generation HTTP ${res.status}: ${text.slice(0, 300)}` };
+  }
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    const raw = line.slice(5).trim();
+    if (raw.length === 0 || raw === "[DONE]") continue;
+    let event: { type?: unknown; item?: unknown };
+    try {
+      event = JSON.parse(raw) as typeof event;
+    } catch {
+      continue;
+    }
+    if (event.type !== "response.output_item.done") continue;
+    const item =
+      event.item !== null && typeof event.item === "object"
+        ? (event.item as Record<string, unknown>)
+        : undefined;
+    if (item?.type !== "image_generation_call") continue;
+    const result = item.result;
+    if (typeof result !== "string" || result.length === 0) continue;
+    return {
+      bytes: Buffer.from(result, "base64"),
+      format: typeof item.output_format === "string" ? item.output_format : "png",
+      ...(typeof item.revised_prompt === "string"
+        ? { revisedPrompt: item.revised_prompt }
+        : {}),
+    };
+  }
+  return { error: "the model answered without producing an image" };
 }
 
 const ALLOWED_ASPECT = new Set([
@@ -110,17 +196,75 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       admittedSignal?.throwIfAborted();
       const session = opts.getSession();
       const provider = session?.services?.provider;
-      if (readProviderIdentity(provider as never) !== "grok") {
+      const identity = readProviderIdentity(provider as never);
+      const factory = readProviderFactoryOptions(provider as never);
+
+      // OpenAI reaches the same capability by a different door: the
+      // server-side image_generation tool on the Responses endpoint, which
+      // is the only one a subscription sign-in can open.
+      if (identity === "openai") {
+        const prompt = stringValue(args.prompt);
+        if (!prompt) return json({ error: "prompt is required" }, true);
+        const auth = readOpenAiSubscriptionAuth();
+        if (auth === undefined) {
+          return json(
+            {
+              error:
+                "ImagineImage on openai needs a ChatGPT subscription sign-in (run the OpenAI sign-in); a platform API key uses a different endpoint that is not wired here yet.",
+            },
+            true,
+          );
+        }
+        const sessionModel =
+          typeof factory.model === "string" ? factory.model.trim() : "";
+        const timeout = AbortSignal.timeout(180_000);
+        try {
+          const generated = await generateViaChatgptBackend({
+            auth,
+            model: sessionModel.length > 0 ? sessionModel : "gpt-5.6-sol",
+            prompt,
+            fetchImpl: opts.fetchImpl ?? fetch,
+            signal: admittedSignal
+              ? AbortSignal.any([admittedSignal, timeout])
+              : timeout,
+          });
+          if ("error" in generated) return json({ error: generated.error }, true);
+          const outDir = join(opts.workspaceRoot, ".agenc", "imagine");
+          await mkdir(outDir, { recursive: true });
+          const path = join(outDir, `imagine-${randomUUID()}.${generated.format}`);
+          await writeFile(path, generated.bytes);
+          return json({
+            model: sessionModel.length > 0 ? sessionModel : "gpt-5.6-sol",
+            paths: [path],
+            path,
+            n: 1,
+            ...(generated.revisedPrompt !== undefined
+              ? { revised_prompt: generated.revisedPrompt }
+              : {}),
+          });
+        } catch (error) {
+          admittedSignal?.throwIfAborted();
+          return json(
+            {
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "image generation request failed",
+            },
+            true,
+          );
+        }
+      }
+
+      if (identity !== "grok") {
         return json(
           {
-            error:
-              "ImagineImage is only available when the session provider is grok.",
+            error: `ImagineImage has no image route for the ${identity ?? "current"} provider. Switch the session to grok or openai.`,
           },
           true,
         );
       }
 
-      const factory = readProviderFactoryOptions(provider as never);
       if (!isDirectXaiInferenceHost(factory.baseURL)) {
         return json(
           {
