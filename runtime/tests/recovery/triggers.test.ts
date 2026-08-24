@@ -24,6 +24,7 @@ describe("I-10 recovery trigger priority", () => {
   test("exact I-10 priority list", () => {
     expect([...I10_TRIGGER_ORDER]).toEqual([
       "isWithheld413",
+      "admissionContextWindowExceeded",
       "isWithheldMedia",
       "isWithheldMaxOutputTokens",
       "stopHookBlocking",

@@ -88,6 +88,27 @@ function assistantText(msg: AssistantMessage): string {
 }
 
 /**
+ * The local twin of a provider's prompt-too-long: token accounting saw the
+ * request would not fit and admission refused it before the wire.
+ *
+ * It has to reach the recovery ladder for the same reason a 413 does. Left
+ * unrecognised it travels out as a plain model error, which ends the turn
+ * terminally and errors the whole run — and the conversation is then
+ * unreachable, when compacting and retrying would have carried it on.
+ */
+export function isContextWindowDenial(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const denied =
+    (err as { code?: unknown }).code === "ADMISSION_DENIED" ||
+    err.name === "AdmissionDeniedError";
+  if (!denied) return false;
+  const reason = (err as { reason?: unknown }).reason;
+  return (
+    typeof reason === "string" && reason.startsWith("context_window_exceeded")
+  );
+}
+
+/**
  * Port of agenc `isPromptTooLongMessage`. Matches an assistant
  * message whose text begins with the sentinel PTL error phrase.
  */

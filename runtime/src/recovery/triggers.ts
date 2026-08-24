@@ -7,11 +7,13 @@
  * documented order:
  *
  *   1. isWithheld413         → prompt-too-long (AgenC collapse / reactive recovery)
- *   2. isWithheldMedia       → media size error (reactive recovery skips collapse)
- *   3. isWithheldMaxOutputTokens → max-output-tokens escalate/continuation
- *   4. stopHookBlocking      → stop-hook inject + re-enter
- *   5. streamingFallbackOccured → streaming fallback tombstone + recreate
- *   6. FallbackTriggeredError → model fallback swap
+ *   2. admissionContextWindowExceeded → the same, caught by token
+ *                              accounting before the wire
+ *   3. isWithheldMedia       → media size error (reactive recovery skips collapse)
+ *   4. isWithheldMaxOutputTokens → max-output-tokens escalate/continuation
+ *   5. stopHookBlocking      → stop-hook inject + re-enter
+ *   6. streamingFallbackOccured → streaming fallback tombstone + recreate
+ *   7. FallbackTriggeredError → model fallback swap
  *
  * Hand-port of agenc `query.ts:1101, 1115, 854, 1335, 928`
  * order. Codifying the list makes the order testable +
@@ -30,6 +32,7 @@ import {
   isFallbackTriggeredError,
   isStopHookBlocking,
   isStreamingFallbackOccured,
+  isContextWindowDenial,
   isWithheld413Message,
   isWithheldMaxOutputTokens,
   isMediaTooLargeMessage,
@@ -97,6 +100,13 @@ export function buildDefaultTriggerOrder(
       apply: (ctx) => actions.on413(ctx),
     },
     {
+      // Same condition as the trigger above, caught locally by token
+      // accounting instead of by the provider, so it takes the same route.
+      name: "admissionContextWindowExceeded",
+      match: (ctx) => isContextWindowDenial(ctx.streamError),
+      apply: (ctx) => actions.on413(ctx),
+    },
+    {
       name: "isWithheldMedia",
       match: (ctx) => !!ctx.lastMessage && isMediaTooLargeMessage(ctx.lastMessage),
       apply: (ctx) => actions.onMedia(ctx),
@@ -132,6 +142,7 @@ export function buildDefaultTriggerOrder(
  */
 export const I10_TRIGGER_ORDER: ReadonlyArray<string> = Object.freeze([
   "isWithheld413",
+  "admissionContextWindowExceeded",
   "isWithheldMedia",
   "isWithheldMaxOutputTokens",
   "stopHookBlocking",

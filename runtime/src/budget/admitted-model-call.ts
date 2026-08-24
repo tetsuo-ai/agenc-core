@@ -50,6 +50,13 @@ export interface AdmittedModelCallOptions {
   };
   /** Called only after an acquired step has durable fallback evidence. */
   readonly onFallbackRecorded?: () => void;
+  /**
+   * This call exists to shrink the conversation. Refusing it for exceeding
+   * the context window is circular — it is the one request that can end the
+   * condition — and leaves the run with no way forward, so the window check
+   * does not apply to it. Every other admission gate still does.
+   */
+  readonly reducesContext?: boolean;
   readonly invoke: (options: LLMChatOptions) => Promise<LLMResponse>;
 }
 
@@ -481,7 +488,10 @@ export async function runAdmittedModelCall(
     });
     if (!accountingResult.admissible) {
       accountingFailureReason = "token_accounting_uncertain";
-    } else if (accountingResult.totalTokens > contextWindowTokens) {
+    } else if (
+      accountingResult.totalTokens > contextWindowTokens &&
+      params.reducesContext !== true
+    ) {
       // Say by how much and from where. "context_window_exceeded" on its own
       // sends people looking at their prompt when the reserved output is
       // usually what does not fit.

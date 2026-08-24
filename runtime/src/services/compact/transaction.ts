@@ -956,6 +956,14 @@ async function invokeCompactionProvider(params: {
     systemPrompt: params.systemPrompt,
     maxOutputTokens: params.outputReserveTokens,
     contextWindowTokens: params.contextWindowTokens,
+    // Summarising a conversation calls no tools. Say so: an absent `tools`
+    // reads as "unspecified" at the admission boundary, which fills it in
+    // from the provider factory — the agent's entire tool catalogue, counted
+    // against this request and then sent on the wire. On a session whose
+    // first message was "hi" that inflated the count to 26,850 tokens
+    // against a real prompt of 7,276, and the compaction was refused for
+    // exceeding a window it was supposed to be emptying.
+    tools: [],
     ...(signal !== undefined ? { signal } : {}),
   };
   const request = createTokenAccountingRequest({
@@ -992,6 +1000,7 @@ async function invokeCompactionProvider(params: {
     sessionId: session.conversationId,
     model: params.model,
     providerName: params.providerName,
+    reducesContext: true,
     ...(signal !== undefined ? { signal } : {}),
     invoke: async (admittedOptions) => {
       const candidate = await provider.chat([...params.messages], admittedOptions);
