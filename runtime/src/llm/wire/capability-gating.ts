@@ -23,6 +23,7 @@
  */
 
 import { normalizeProviderIdentity } from "../../provider-identity.js";
+import { BRIEF_TOOL_NAME } from "../../tools/BriefTool/prompt.js";
 import { supportsXaiReasoningEffortParam } from "../structured-output.js";
 
 export interface ChatCompletionsCapabilityHints {
@@ -133,7 +134,7 @@ const LOCAL_PROFILE_TOOL_NAMES = new Set([
   "EnterPlanMode",
   "ExitPlanMode",
   "system.searchTools",
-  "Brief",
+  BRIEF_TOOL_NAME,
   "StructuredOutput",
 ]);
 
@@ -146,7 +147,7 @@ export function usesLocalToolProfile(
   providerName: string | undefined,
 ): boolean {
   return GRAMMAR_CONSTRAINED_TOOL_PROVIDERS.has(
-    normalizeProviderSlug(providerName),
+    normalizeProviderIdentity(providerName, "local tool profile") ?? "",
   );
 }
 

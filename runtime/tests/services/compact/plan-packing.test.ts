@@ -71,7 +71,7 @@ describe("compaction maximal chunk packing", () => {
     );
   });
 
-  it("rejects authenticated tool results that do not follow declared call order", () => {
+  it("keeps authenticated parallel tool results together by call ID", () => {
     const firstResult = "first result";
     const secondResult = "second result";
     const messages: RuntimeMessage[] = [
@@ -80,8 +80,8 @@ describe("compaction maximal chunk packing", () => {
         originalRole: "assistant",
         content: "calling tools",
         toolCalls: [
-          { id: "call-a", name: "Read", arguments: "{}" },
-          { id: "call-b", name: "Search", arguments: "{}" },
+          { id: "call-a", name: "FileRead", arguments: "{}" },
+          { id: "call-b", name: "Grep", arguments: "{}" },
         ],
       },
       {
@@ -89,7 +89,7 @@ describe("compaction maximal chunk packing", () => {
         originalRole: "tool",
         content: secondResult,
         toolCallId: "call-b",
-        toolName: "Search",
+        toolName: "Grep",
         runtimeOnly: {
           toolResultIntegrity: createToolResultIntegrity({
             runId: "packing-session",
@@ -103,7 +103,7 @@ describe("compaction maximal chunk packing", () => {
         originalRole: "tool",
         content: firstResult,
         toolCallId: "call-a",
-        toolName: "Read",
+        toolName: "FileRead",
         runtimeOnly: {
           toolResultIntegrity: createToolResultIntegrity({
             runId: "packing-session",
@@ -114,10 +114,20 @@ describe("compaction maximal chunk packing", () => {
       },
     ];
 
-    expect(() => buildCompactionMapReducePlan(
+    const plan = buildCompactionMapReducePlan(
       messages,
       packingOptions(messages),
-    )).toThrow(/tool-result ordering or identity/u);
+    );
+
+    expect(plan.units).toHaveLength(1);
+    expect(plan.units[0]?.messages).toHaveLength(3);
+    expect(
+      plan.units[0]?.tool_pairs.map((pair) => pair.tool_call_id),
+    ).toEqual(["call-b", "call-a"]);
+    expect(plan.tool_pairs.map((pair) => pair.tool_call_id)).toEqual([
+      "call-b",
+      "call-a",
+    ]);
   });
 });
 

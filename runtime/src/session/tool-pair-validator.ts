@@ -49,7 +49,7 @@ export interface ToolPairDanglingUse {
 }
 
 /**
- * Exact index used by the ordered scanner. The production implementation is
+ * Exact index used by the pair scanner. The production implementation is
  * SQLite-backed; this interface keeps the session-layer state machine free of
  * a state-store dependency and makes operational failure semantics explicit.
  */
@@ -91,7 +91,6 @@ export type ToolPairIntegrityFailureCode =
   | "tool_result_id_missing"
   | "tool_result_without_call"
   | "tool_result_unknown_id"
-  | "tool_result_out_of_order"
   | "tool_result_duplicate"
   | "tool_result_name_mismatch"
   | "tool_result_missing"
@@ -188,7 +187,7 @@ interface FinishToolPairValidationOptions {
 }
 
 /**
- * Stateful ordered validator shared by offline scans and the live append path.
+ * Stateful ID-paired validator shared by offline scans and the live append path.
  * Resolved IDs live only in the exact projection; the JS heap retains the
  * bounded unresolved set and scalar counters.
  */

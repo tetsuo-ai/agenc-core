@@ -45,7 +45,7 @@ function validate(
 }
 
 describe("StateToolPairProjection", () => {
-  it("validates ordered many-call turns and persists exact resolution rows", () => {
+  it("pairs parallel results by ID and persists exact resolution rows", () => {
     const outcome = validate([
       {
         role: "assistant",
@@ -55,8 +55,8 @@ describe("StateToolPairProjection", () => {
           { id: "call-b", name: "grep" },
         ],
       },
-      { role: "tool", content: "a", toolCallId: "call-a", toolName: "read" },
       { role: "tool", content: "b", toolCallId: "call-b", toolName: "grep" },
+      { role: "tool", content: "a", toolCallId: "call-a", toolName: "read" },
       { role: "assistant", content: "done" },
     ]);
 
@@ -72,6 +72,12 @@ describe("StateToolPairProjection", () => {
     expect(projection.find("projection-1", "call-a")).toEqual({
       callId: "call-a",
       toolName: "read",
+      assistantIndex: 0,
+      resultIndex: 2,
+    });
+    expect(projection.find("projection-1", "call-b")).toEqual({
+      callId: "call-b",
+      toolName: "grep",
       assistantIndex: 0,
       resultIndex: 1,
     });
@@ -117,7 +123,7 @@ describe("StateToolPairProjection", () => {
     ).toBeUndefined();
   });
 
-  it("distinguishes duplicate, orphan, unknown, and ordering failures", () => {
+  it("distinguishes duplicate, orphan, unknown, and name-mismatch failures", () => {
     expect(
       validate([
         {
@@ -154,22 +160,6 @@ describe("StateToolPairProjection", () => {
     ).toMatchObject({
       status: "invalid",
       failure: { code: "tool_result_unknown_id" },
-    });
-    expect(
-      validate([
-        {
-          role: "assistant",
-          content: "",
-          toolCalls: [
-            { id: "call-a", name: "read" },
-            { id: "call-b", name: "grep" },
-          ],
-        },
-        { role: "tool", content: "b", toolCallId: "call-b" },
-      ]),
-    ).toMatchObject({
-      status: "invalid",
-      failure: { code: "tool_result_out_of_order" },
     });
     expect(
       validate([

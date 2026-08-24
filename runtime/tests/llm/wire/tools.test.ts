@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { LLMTool } from "../types.js";
 import {
+  sanitizeToolSchemaForGrammar,
   toAnthropicTools,
   toChatCompletionsTools,
   toOpenAIResponsesTools,
@@ -72,5 +73,74 @@ describe("wire tool conversion", () => {
         input_schema: TOOL.function.parameters,
       },
     ]);
+  });
+
+  test("removes unsupported grammar keywords recursively without mutating the source", () => {
+    const schema = {
+      type: "object",
+      title: "unsafe title",
+      properties: {
+        path: {
+          type: ["string", "null"],
+          description: "Path to inspect.",
+          minLength: 1,
+          pattern: "^src/",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 10,
+          default: 5,
+        },
+        nested: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              enabled: { type: "boolean", readOnly: true },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["path"],
+      additionalProperties: false,
+      $defs: { unused: { type: "string" } },
+    };
+    const before = structuredClone(schema);
+
+    expect(sanitizeToolSchemaForGrammar(schema)).toEqual({
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Path to inspect.",
+        },
+        limit: { type: "integer" },
+        nested: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { enabled: { type: "boolean" } },
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    });
+    expect(schema).toEqual(before);
+  });
+
+  test("preserves every concrete member of multi-type unions", () => {
+    expect(
+      sanitizeToolSchemaForGrammar({
+        type: ["string", "number", "null"],
+        description: "A string, number, or null.",
+      }),
+    ).toEqual({
+      description: "A string, number, or null.",
+      anyOf: [{ type: "string" }, { type: "number" }, { const: null }],
+    });
   });
 });

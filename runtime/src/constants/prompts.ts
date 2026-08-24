@@ -64,6 +64,7 @@ import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 import { getCachedMCConfig as getCachedMCConfigForFRCSource } from '../services/compact/cachedMicrocompact.js'
 import { getAntModelOverrideConfig } from '../utils/model/antModels.js'
 import { getTokenBudgetPromptSection } from '../conversation/token-budget.js'
+import { BRIEF_TOOL_NAME } from '../tools/BriefTool/prompt.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -477,7 +478,7 @@ export function getCompactSystemPrompt(): string[] {
       `- Read before you edit. After a change, verify it (run the code, re-read the file).`,
       `- exec_command runs shell commands. FileRead/Edit/MultiEdit/Write handle files. Grep/Glob search. Orient maps the project.`,
       `- TodoWrite is ONLY for work with 3+ distinct steps. Never call it for a single-step request (answering, writing one thing, one edit) — just do the work. EnterPlanMode/ExitPlanMode only when the user explicitly asks for a plan.`,
-      `- Brief sends the user a one-line progress note during long work. AskUserQuestion asks the user a question when you are blocked.`,
+      `- ${BRIEF_TOOL_NAME} sends the user a one-line progress note during long work. AskUserQuestion asks the user a question when you are blocked.`,
       `- If a tool call fails, read the error and adjust; do not repeat the same call unchanged.`,
       ``,
       `# Rules`,
