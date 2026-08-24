@@ -2287,6 +2287,9 @@ describe("AgenC background agent lifecycle", () => {
         runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     ]);
+    expect(starts[0]?.runtimeOptions).toBe(
+      starts[0]?.metadata.runtimeOptions,
+    );
     await expect(sessions.getSession("session_1")).resolves.toEqual({
       sessionId: "session_1",
       agentId: "agent_1",

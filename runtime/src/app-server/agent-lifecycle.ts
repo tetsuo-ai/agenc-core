@@ -122,7 +122,10 @@ import type {
   ToolDecisionResult,
   ToolDenyParams,
 } from "./protocol/index.js";
-import { validateAgentRuntimeOptions } from "../session/runtime-options.js";
+import {
+  validateAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
 import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import {
   getAgencHomeDir,
@@ -770,6 +773,7 @@ export class AgenCDaemonAgentManager {
         params.unattendedDeny,
         metadataStringList(retainedMetadata, "unattendedDeny") ?? [],
       );
+      const runtimeOptions = validateAgentRuntimeOptions(params.runtimeOptions);
       const metadata: JsonObject = {
         ...(retainedMetadata ?? {}),
         ...(resumeSessionId === undefined ? (params.metadata ?? {}) : {}),
@@ -793,7 +797,7 @@ export class AgenCDaemonAgentManager {
         // Session operator inputs are part of the durable run identity. A
         // daemon restart must restore the exact values captured at create
         // time, never reinterpret the daemon's current process environment.
-        runtimeOptions: validateAgentRuntimeOptions(params.runtimeOptions),
+        runtimeOptions,
       };
       const resumeRestoreAttemptId =
         resumeSessionId === undefined ? undefined : randomUUID();
@@ -825,9 +829,7 @@ export class AgenCDaemonAgentManager {
               metadata,
               unattendedAllow,
               unattendedDeny,
-              runtimeOptions: validateAgentRuntimeOptions(
-                params.runtimeOptions,
-              ),
+              runtimeOptions,
               ...(permissionMode !== undefined ? { permissionMode } : {}),
               ...(params.envOverrides !== undefined
                 ? { envOverrides: params.envOverrides }
@@ -849,7 +851,7 @@ export class AgenCDaemonAgentManager {
               cwd,
               createdAt,
               metadata,
-              runtimeOptions: params.runtimeOptions,
+              runtimeOptions,
               ...(model !== undefined ? { model } : {}),
               ...(provider !== undefined ? { provider } : {}),
               ...(profile !== undefined ? { profile } : {}),
@@ -1137,7 +1139,7 @@ export class AgenCDaemonAgentManager {
       | "dontAsk"
       | "auto";
     readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
-    readonly runtimeOptions: AgentCreateParams["runtimeOptions"];
+    readonly runtimeOptions: AgentRuntimeOptions;
     readonly envOverrides?: { readonly [key: string]: string };
     readonly metadata: JsonObject;
   }): Promise<AgenCBackgroundAgentStartResult> {
@@ -1191,7 +1193,7 @@ export class AgenCDaemonAgentManager {
       ...(params.runtimeSettings !== undefined
         ? { runtimeSettings: params.runtimeSettings }
         : {}),
-      runtimeOptions: validateAgentRuntimeOptions(params.runtimeOptions),
+      runtimeOptions: params.runtimeOptions,
       ...(params.envOverrides !== undefined
         ? { envOverrides: params.envOverrides }
         : {}),

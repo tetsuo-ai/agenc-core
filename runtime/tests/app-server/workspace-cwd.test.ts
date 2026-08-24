@@ -13,6 +13,9 @@ import {
 } from "../../src/app-server/agent-lifecycle.js";
 import { AgenCDaemonSessionManager } from "../../src/app-server/session-lifecycle.js";
 import type { AgenCBackgroundAgentRunner } from "../../src/app-server/background-agent-runner.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+
+const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 describe("requireAbsoluteWorkspaceCwd (DAE-02)", () => {
   const dirs: string[] = [];
@@ -83,10 +86,16 @@ describe("createAgent/createSession require cwd", () => {
       defaultCwd: () => "/should/not/use",
     });
     await expect(
-      agents.createAgent({ objective: "no cwd" } as never),
+      agents.createAgent({
+        objective: "no cwd",
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
+      } as never),
     ).rejects.toBeInstanceOf(AgenCDaemonAgentLifecycleError);
     await expect(
-      agents.createAgent({ objective: "no cwd" } as never),
+      agents.createAgent({
+        objective: "no cwd",
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
+      } as never),
     ).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
       message: expect.stringMatching(/requires absolute cwd/i),
@@ -119,6 +128,7 @@ describe("createAgent/createSession require cwd", () => {
     const created = await agents.createAgent({
       objective: "with cwd",
       cwd: dir,
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
     });
     expect(created.cwd).toBe(dir);
     expect(created.agentId).toBe("a1");

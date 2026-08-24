@@ -9,6 +9,9 @@ import {
   type JsonObject,
 } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+
+const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 function request(
   id: string,
@@ -96,6 +99,7 @@ async function createHarness(
         params: {
           cwd: process.cwd(),
           objective: "exercise editor message metadata",
+          runtimeOptions: TEST_RUNTIME_OPTIONS,
           ...createParams,
         },
       }),
@@ -155,6 +159,7 @@ describe("daemon editor interaction message metadata", () => {
         params: {
           cwd: process.cwd(),
           objective: "must not start",
+          runtimeOptions: TEST_RUNTIME_OPTIONS,
           deferInitialTurn: true,
           initialContent: "hidden first turn",
         },
@@ -182,6 +187,7 @@ describe("daemon editor interaction message metadata", () => {
         params: {
           cwd: process.cwd(),
           objective: "must not start",
+          runtimeOptions: TEST_RUNTIME_OPTIONS,
           initialContent: "internal editor prompt",
           initialDisplayUserMessage: "Explain the selected code",
           initialEditorInteraction: editorInteraction(
