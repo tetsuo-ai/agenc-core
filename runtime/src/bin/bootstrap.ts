@@ -1175,6 +1175,12 @@ export async function bootstrapLocalRuntimeSession(
     startup.apiKey,
     runtimeAuthBackendByokKey,
     runtimeLocalByokKey,
+    // The provider's own environment variable is the last resort and was
+    // missing from this chain: with no BYOK entry and no managed key, a
+    // provider whose key sits in the environment still failed with
+    // "requires an API key" before any request. resolveProviderSettings
+    // already reads it — it just was not being asked.
+    runtimeProviderSettings?.apiKey,
   );
   const runtimeSelectedByokApiKey = selectByokPrecedenceApiKey({
     explicitApiKey: options.apiKey,

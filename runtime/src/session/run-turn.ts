@@ -3301,6 +3301,25 @@ async function tryRunSamplingRequest(
     // swallow the stream error and let the outer loop re-enter
     // PrepareContext.
     if (state.transition !== undefined) {
+      // Recovery is about to retry, so the error stops here. Put it on
+      // the record first: a ladder that keeps transitioning and never
+      // succeeds ends the turn with nothing rendered and no trace of
+      // what the provider actually said.
+      if (streamModelError !== null) {
+        const cause = streamModelError.cause ?? streamModelError;
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "stream_error_recovered",
+              message: `recovery ${state.transition.reason}: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            },
+          },
+        });
+      }
       (state as TurnState & { lastStreamError?: unknown }).lastStreamError =
         undefined;
       streamModelError = null;
