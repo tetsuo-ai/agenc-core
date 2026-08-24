@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildBrowserOpenEnvironment,
+  buildBrowserOpenSpawnSpec,
   formatXaiAuthCliHelpText,
   parseXaiAuthCliArgs,
   runXaiAuthCli,
@@ -67,6 +69,124 @@ function createDeps(
     ...overrides,
   };
 }
+
+describe("browser opener hardening", () => {
+  it("passes a Windows OAuth URL as one shell-free rundll32 argument", () => {
+    const url =
+      "https://auth.x.ai/oauth2/authorize?state=opaque&scope=openid%20email&referrer=agenc";
+    const launch = buildBrowserOpenSpawnSpec(url, "win32", {
+      PATH: "C:\\Windows\\System32",
+      SystemRoot: "C:\\Windows",
+    });
+
+    expect(launch.command).toBe("rundll32.exe");
+    expect(launch.args).toEqual(["url.dll,FileProtocolHandler", url]);
+    expect(launch.args).not.toContain("/c");
+    expect(launch.args).not.toContain("start");
+    expect(launch.options.shell).toBe(false);
+  });
+
+  it("retains only browser-session environment and strips credentials", () => {
+    const source: NodeJS.ProcessEnv = {
+      PATH: "/usr/local/bin:/usr/bin",
+      HOME: "/Users/developer",
+      TMPDIR: "/tmp/session/",
+      DISPLAY: ":0",
+      WAYLAND_DISPLAY: "wayland-0",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/501/bus",
+      XDG_RUNTIME_DIR: "/run/user/501",
+      SystemRoot: "C:\\Windows",
+      USERPROFILE: "C:\\Users\\developer",
+      XAI_API_KEY: "xai-secret",
+      GROK_API_KEY: "grok-secret",
+      OPENAI_API_KEY: "openai-secret",
+      AGENC_AUTH_TOKEN: "agenc-secret",
+      AWS_SECRET_ACCESS_KEY: "aws-secret",
+      GH_TOKEN: "github-secret",
+      NPM_TOKEN: "npm-secret",
+      NODE_OPTIONS: "--require=/tmp/injected.js",
+    };
+
+    const clean = buildBrowserOpenEnvironment(source);
+
+    expect(clean).toMatchObject({
+      PATH: "/usr/local/bin:/usr/bin",
+      HOME: "/Users/developer",
+      TMPDIR: "/tmp/session/",
+      DISPLAY: ":0",
+      WAYLAND_DISPLAY: "wayland-0",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/501/bus",
+      XDG_RUNTIME_DIR: "/run/user/501",
+      SystemRoot: "C:\\Windows",
+      USERPROFILE: "C:\\Users\\developer",
+    });
+    expect(clean).not.toHaveProperty("XAI_API_KEY");
+    expect(clean).not.toHaveProperty("GROK_API_KEY");
+    expect(clean).not.toHaveProperty("OPENAI_API_KEY");
+    expect(clean).not.toHaveProperty("AGENC_AUTH_TOKEN");
+    expect(clean).not.toHaveProperty("AWS_SECRET_ACCESS_KEY");
+    expect(clean).not.toHaveProperty("GH_TOKEN");
+    expect(clean).not.toHaveProperty("NPM_TOKEN");
+    expect(clean).not.toHaveProperty("NODE_OPTIONS");
+    expect(Object.values(clean)).not.toEqual(
+      expect.arrayContaining([
+        "xai-secret",
+        "grok-secret",
+        "openai-secret",
+        "agenc-secret",
+        "aws-secret",
+        "github-secret",
+        "npm-secret",
+      ]),
+    );
+  });
+
+  it("uses the same scrubbed, shell-free boundary on macOS and Linux", () => {
+    const env = {
+      PATH: "/usr/bin",
+      HOME: "/Users/developer",
+      DISPLAY: ":0",
+      XAI_API_KEY: "must-not-leak",
+    };
+    const mac = buildBrowserOpenSpawnSpec(
+      "https://auth.x.ai/a",
+      "darwin",
+      env,
+    );
+    const linux = buildBrowserOpenSpawnSpec(
+      "https://auth.x.ai/b",
+      "linux",
+      env,
+    );
+
+    expect(mac).toMatchObject({
+      command: "open",
+      args: ["https://auth.x.ai/a"],
+      options: {
+        shell: false,
+        env: {
+          PATH: "/usr/bin",
+          HOME: "/Users/developer",
+          DISPLAY: ":0",
+        },
+      },
+    });
+    expect(linux).toMatchObject({
+      command: "xdg-open",
+      args: ["https://auth.x.ai/b"],
+      options: {
+        shell: false,
+        env: {
+          PATH: "/usr/bin",
+          HOME: "/Users/developer",
+          DISPLAY: ":0",
+        },
+      },
+    });
+    expect(mac.options.env).not.toHaveProperty("XAI_API_KEY");
+    expect(linux.options.env).not.toHaveProperty("XAI_API_KEY");
+  });
+});
 
 describe("xAI auth CLI", () => {
   it("parses aliases, device mode, help, and invalid arguments", () => {

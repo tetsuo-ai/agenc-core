@@ -25,6 +25,98 @@ import {
 
 type XaiLoginFlow = "browser" | "device";
 
+/**
+ * Browser helpers need only process lookup, the user's home/temp directory,
+ * and desktop-session routing. In particular, provider keys, bearer tokens,
+ * npm credentials, and AgenC internals must never cross this process boundary.
+ * Matching is case-insensitive because Windows environment keys are.
+ */
+const BROWSER_OPEN_ENV_KEYS = new Set([
+  "APPDATA",
+  "COMSPEC",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "DESKTOP_SESSION",
+  "DESKTOP_STARTUP_ID",
+  "DISPLAY",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LOCALAPPDATA",
+  "PATH",
+  "PATHEXT",
+  "SECURITYSESSIONID",
+  "SESSIONNAME",
+  "SYSTEMROOT",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "USERPROFILE",
+  "WAYLAND_DISPLAY",
+  "WINDIR",
+  "XAUTHORITY",
+  "XDG_CONFIG_HOME",
+  "XDG_CURRENT_DESKTOP",
+  "XDG_DATA_DIRS",
+  "XDG_DATA_HOME",
+  "XDG_RUNTIME_DIR",
+  "XDG_SESSION_DESKTOP",
+  "XDG_SESSION_TYPE",
+  "__CF_USER_TEXT_ENCODING",
+]);
+
+export interface BrowserOpenSpawnSpec {
+  readonly command: string;
+  readonly args: string[];
+  readonly options: {
+    readonly detached: true;
+    readonly stdio: "ignore";
+    readonly shell: false;
+    readonly env: NodeJS.ProcessEnv;
+  };
+}
+
+export function buildBrowserOpenEnvironment(
+  source: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const clean: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined && BROWSER_OPEN_ENV_KEYS.has(key.toUpperCase())) {
+      clean[key] = value;
+    }
+  }
+  return clean;
+}
+
+export function buildBrowserOpenSpawnSpec(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): BrowserOpenSpawnSpec {
+  const launch =
+    platform === "darwin"
+      ? { command: "open", args: [url] }
+      : platform === "win32"
+        ? {
+            // Direct argv invocation: OAuth query `&` characters are data,
+            // never command separators as they were under `cmd /c start`.
+            command: "rundll32.exe",
+            args: ["url.dll,FileProtocolHandler", url],
+          }
+        : { command: "xdg-open", args: [url] };
+  return {
+    ...launch,
+    options: {
+      detached: true,
+      stdio: "ignore",
+      shell: false,
+      env: buildBrowserOpenEnvironment(env),
+    },
+  };
+}
+
 export type XaiAuthCliCommand =
   | { readonly kind: "login"; readonly json: boolean; readonly device: boolean }
   | { readonly kind: "logout"; readonly json: boolean }
@@ -119,14 +211,8 @@ export function formatXaiAuthCliHelpText(): string {
 }
 
 function openUrlDetached(url: string): void {
-  const command =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "cmd"
-        : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  const launch = buildBrowserOpenSpawnSpec(url);
+  const child = spawn(launch.command, launch.args, launch.options);
   child.on("error", () => {
     // The URL is emitted before opening; a missing opener is not fatal.
   });
