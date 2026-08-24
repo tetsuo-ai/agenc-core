@@ -24,6 +24,7 @@ import type {
   ToolResult,
 } from "../../tools/types.js";
 import { safeStringify } from "../../tools/types.js";
+import { validationErrorToolResult } from "../../tools/results.js";
 
 export const MIN_WAIT_TIMEOUT_MS = 10_000;
 export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
@@ -60,6 +61,32 @@ export function json(content: unknown, isError?: boolean): ToolResult {
   return {
     content: safeStringify(content),
     ...(isError ? { isError: true } : {}),
+  };
+}
+
+/**
+ * A refusal from argument validation, before the tool attempted anything.
+ *
+ * A bare `isError` from a tool the runtime knows is side-effecting cannot
+ * be told apart from "it may have half-happened", so the boundary records
+ * an unknown outcome that needs review and blocks every later mutating
+ * call. For spawn_agent that meant one malformed argument took the whole
+ * swarm down with it:
+ *
+ *   effect_unknown_outcome  spawn_agent
+ *   reason: tool_error_result_without_authoritative_effect_disposition
+ *
+ * and the model was left asking a human to resolve a settlement by hand.
+ * These paths provably touched nothing, so they say so.
+ */
+export function jsonValidationError(
+  evidenceRef: string,
+  content: unknown,
+): ToolResult {
+  const message = safeStringify(content);
+  return {
+    ...validationErrorToolResult(evidenceRef, message),
+    content: message,
   };
 }
 

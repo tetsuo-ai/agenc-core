@@ -44,6 +44,7 @@ import {
   stringValue,
   toolMetadata,
   type MultiAgentV2Options,
+  jsonValidationError,
 } from "./common.js";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE =
@@ -500,18 +501,24 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       "isolation",
     ]) {
       if (args[key] !== undefined && typeof args[key] !== "string") {
-        return json({ error: `${key} must be a string` }, true);
+        return jsonValidationError(`spawn_agent:${key}`, {
+          error: `${key} must be a string`,
+        });
       }
     }
     if (
       args.fork_context !== undefined &&
       typeof args.fork_context !== "boolean"
     ) {
-      return json({ error: "fork_context must be a boolean" }, true);
+      return jsonValidationError("spawn_agent:fork_context", {
+        error: "fork_context must be a boolean",
+      });
     }
     const prompt = stringValue(args.message);
     if (!prompt || prompt.trim().length === 0) {
-      return json({ error: "message is required" }, true);
+      return jsonValidationError("spawn_agent:message", {
+        error: "message is required",
+      });
     }
     if (args.fork_context !== undefined) {
       return json(
@@ -548,7 +555,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const rawReasoningEffort = args.reasoning_effort;
     const reasoningEffort = parseReasoningEffort(rawReasoningEffort);
     if (rawReasoningEffort !== undefined && reasoningEffort === undefined) {
-      return json({ error: "invalid reasoning_effort" }, true);
+      return jsonValidationError("spawn_agent:reasoning_effort", {
+        error: "invalid reasoning_effort",
+      });
     }
     const rawTaskName = stringValue(args.task_name);
     const taskName = normalizeSpawnTaskName(rawTaskName);
@@ -572,7 +581,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       rawIsolation !== "none" &&
       rawIsolation !== "worktree"
     ) {
-      return json({ error: "isolation must be `none` or `worktree`" }, true);
+      return jsonValidationError("spawn_agent:isolation", {
+        error: "isolation must be `none` or `worktree`",
+      });
     }
     const isolation = rawIsolation === "worktree" ? ("worktree" as const) : undefined;
     if (isolation !== undefined && (!taskName || taskName.length === 0)) {
