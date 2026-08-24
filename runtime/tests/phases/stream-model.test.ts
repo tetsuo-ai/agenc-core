@@ -1551,7 +1551,7 @@ describe("streamModel — execution admission identity", () => {
   test("fallback re-entry gets a distinct durable step and routing event", async () => {
     const ctx = mkCtx("chat");
     const state = mkState(ctx);
-    state.recoveryReentryCount = 2;
+    state.samplingRound = 2;
     state.pendingAdmissionFallback = {
       fromModel: "primary-model",
       toModel: "fallback-model",

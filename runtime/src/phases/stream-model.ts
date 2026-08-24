@@ -1066,7 +1066,7 @@ export async function streamModel(
       provider: session.services.provider,
       messages,
       options,
-      stepId: `model:${ctx.subId}:${state.turnCount}:${state.recoveryReentryCount}:${attempt}`,
+      stepId: `model:${ctx.subId}:${state.turnCount}:${state.samplingRound}:${attempt}`,
       sessionId: session.conversationId,
       model,
       providerName,

@@ -416,6 +416,7 @@ const isCheckpointSlice = objectShape(
     stopHookBlockingCount: isNonNegativeInteger,
   },
   {
+    samplingRound: isNonNegativeInteger,
     planToolRequiredRetryCount: isNonNegativeInteger,
     taskBudgetRemaining: isNumber,
     autoCompactTracking: objectShape({

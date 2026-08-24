@@ -4581,7 +4581,19 @@ async function* runTurnKernelInner(
   });
 
   // The phase loop — agenc runtime's "while streaming & tools" outer loop.
+  let hasSampledThisTurn = false;
   while (true) {
+    // Each pass issues its own provider call, and the admission step id is
+    // built from this counter. It advances here because this is the one
+    // point every `continue` funnels through: a transition, a mid-turn
+    // compaction and an empty-response retry all re-enter sampling without
+    // touching `turnCount` (commit-only) or `recoveryReentryCount`
+    // (ladder-only). Reusing a spent identity makes `acquire` reject the
+    // call — the model has already answered by then, so the turn ends with
+    // nothing rendered and the answer is lost.
+    if (hasSampledThisTurn) state.samplingRound += 1;
+    hasSampledThisTurn = true;
+
     const cancelledAtLoopStart = await finishCancelledIfAborted();
     if (cancelledAtLoopStart !== null) {
       yield cancelledAtLoopStart.event;
