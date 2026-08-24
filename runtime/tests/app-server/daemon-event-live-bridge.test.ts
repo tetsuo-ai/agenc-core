@@ -91,6 +91,36 @@ describe("daemon live bridge for usage and tool-input events", () => {
     });
   });
 
+  it("forwards the warning that explains an answerless turn", () => {
+    // Without this the reason reaches the rollout and no further, and a
+    // live client can only guess why the turn produced nothing.
+    expect(
+      daemonEventFromUnboundSessionEvent({
+        eventId: "journal-warn-1",
+        id: "warn-1",
+        seq: 28,
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "stream_model_failed",
+            message:
+              "lmstudio: AdmissionDeniedError: execution admission deny: context_window_exceeded",
+          },
+        },
+      }),
+    ).toMatchObject({
+      id: "warn-1",
+      eventId: "journal-warn-1",
+      sequence: 28,
+      type: "warning",
+      payload: {
+        cause: "stream_model_failed",
+        message:
+          "lmstudio: AdmissionDeniedError: execution admission deny: context_window_exceeded",
+      },
+    });
+  });
+
   it("still drops malformed tool_input payloads", () => {
     expect(
       daemonEventFromUnboundSessionEvent({
