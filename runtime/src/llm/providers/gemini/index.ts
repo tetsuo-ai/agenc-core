@@ -425,6 +425,64 @@ function buildGeminiContents(messages: readonly LLMMessage[]): {
   };
 }
 
+/**
+ * The schema keys this provider's function declarations accept.
+ *
+ * Its dialect is an OpenAPI subset and it fails the WHOLE request on any
+ * key outside it — `Unknown name "additionalProperties" … Cannot find
+ * field`, then the same for our own `x-agenc-*` extensions. Every tool we
+ * advertise carried at least one, so the provider answered 400 to every
+ * turn and the app rendered it as an empty reply. An allowlist is the
+ * only shape that stays correct as tool schemas grow.
+ */
+const GEMINI_SCHEMA_KEYS = new Set([
+  "type",
+  "format",
+  "title",
+  "description",
+  "nullable",
+  "enum",
+  "items",
+  "properties",
+  "required",
+  "anyOf",
+  "propertyOrdering",
+  "default",
+  "example",
+  "minimum",
+  "maximum",
+  "minItems",
+  "maxItems",
+  "minLength",
+  "maxLength",
+  "minProperties",
+  "maxProperties",
+  "pattern",
+]);
+
+/** Keys under `properties` are field names, not schema keywords. */
+function sanitizeGeminiSchema(value: unknown, insideProperties = false): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeGeminiSchema(entry, false));
+  }
+  if (value === null || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!insideProperties && !GEMINI_SCHEMA_KEYS.has(key)) continue;
+    out[key] = sanitizeGeminiSchema(entry, !insideProperties && key === "properties");
+  }
+  if (insideProperties) return out;
+  // `required` and `properties` are only legal on an object here; carried
+  // onto a branch of an anyOf they fail the request with "only allowed
+  // for OBJECT type".
+  const type = typeof out.type === "string" ? out.type.toLowerCase() : undefined;
+  if (type !== "object") {
+    delete out.required;
+    delete out.properties;
+  }
+  return out;
+}
+
 function geminiTools(tools: readonly LLMTool[]): readonly Record<string, unknown>[] {
   if (tools.length === 0) return [];
   return [
@@ -432,7 +490,7 @@ function geminiTools(tools: readonly LLMTool[]): readonly Record<string, unknown
       functionDeclarations: tools.map((tool) => ({
         name: tool.function.name,
         description: tool.function.description,
-        parameters: tool.function.parameters,
+        parameters: sanitizeGeminiSchema(tool.function.parameters),
       })),
     },
   ];
@@ -486,7 +544,9 @@ function geminiGenerationConfig(
         : effort === "medium"
           ? "medium"
           : "high";
-    config.thinking_level = level;
+    // Nested under thinkingConfig, camelCase: the flat snake_case field
+    // is not part of this API's generation config and 400s the request.
+    config.thinkingConfig = { thinkingLevel: level };
   }
   const structuredSchema = options?.structuredOutput?.schema;
   if (options?.structuredOutput?.enabled || structuredSchema) {

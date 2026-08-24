@@ -626,24 +626,44 @@ function isContinuationExpiryError(error: unknown): boolean {
   );
 }
 
-function maybeEmitCapabilityDriftWarning(
-  config: ProviderHttpClientSessionConfig,
-  error: ProviderHttpError,
-): void {
-  if (!config.onCapabilityDrift) return;
-  const bodyMessage =
+function providerErrorText(error: ProviderHttpError): string {
+  const body =
     typeof error.body === "string"
       ? error.body
       : error.body && typeof error.body === "object"
         ? JSON.stringify(error.body)
         : "";
-  const message = `${error.message} ${bodyMessage}`.trim();
-  if (!isProviderCapabilityMismatch({ status: error.status, message })) {
+  return `${error.message} ${body}`.trim();
+}
+
+/**
+ * Report a failed provider call, always.
+ *
+ * Only capability mismatches used to be surfaced, so every other
+ * rejection — a malformed field, an unsupported model, a refused
+ * request — reached the user as an empty turn with nothing written
+ * anywhere: not the transcript, not the rollout, not the debug log. Three
+ * separate wire bugs were indistinguishable from one another because of
+ * it. The status and the provider's own body are the whole diagnosis, so
+ * they go on the record whatever the code.
+ */
+function reportProviderHttpError(
+  config: ProviderHttpClientSessionConfig,
+  error: ProviderHttpError,
+): void {
+  const message = providerErrorText(error);
+  if (
+    config.onCapabilityDrift &&
+    isProviderCapabilityMismatch({ status: error.status, message })
+  ) {
+    config.onCapabilityDrift({ message, status: error.status });
     return;
   }
-  config.onCapabilityDrift({
-    message,
-    status: error.status,
+  config.emitWarning?.({
+    cause: "provider_request_failed",
+    message: `${config.providerName}${
+      config.model !== undefined ? `/${config.model}` : ""
+    } refused the request (HTTP ${error.status}): ${message.slice(0, 600)}`,
   });
 }
 
@@ -1201,7 +1221,7 @@ export class ProviderHttpClientSession {
           throw error;
         }
         if (error instanceof ProviderHttpError) {
-          maybeEmitCapabilityDriftWarning(this.config, error);
+          reportProviderHttpError(this.config, error);
           throw error;
         }
         consecutiveFallbackFailures = 0;
@@ -1310,7 +1330,7 @@ export class ProviderHttpClientSession {
           throw error;
         }
         if (error instanceof ProviderHttpError) {
-          maybeEmitCapabilityDriftWarning(this.config, error);
+          reportProviderHttpError(this.config, error);
           throw error;
         }
         consecutiveFallbackFailures = 0;

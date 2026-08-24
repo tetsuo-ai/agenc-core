@@ -62,7 +62,8 @@ export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
   // 400, which read as a silent dead provider. v4-flash is the current
   // default-tier model.
   deepseek: "deepseek-v4-flash",
-  gemini: "gemini-2.5-pro",
+  // gemini-2.5-pro is retired for new keys (404 pointing at the 3.x line).
+  gemini: "gemini-3.1-pro-preview",
   // devstral-latest is no longer a documented alias (Devstral 2 deprecated
   // 2026-05-22); Mistral Medium is the documented replacement.
   mistral: "mistral-medium-latest",
@@ -166,7 +167,12 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "llama-3.1-8b-instant",
   ]),
   deepseek: Object.freeze(["deepseek-v4-flash", "deepseek-v4-pro"]),
-  gemini: Object.freeze(["gemini-2.5-pro"]),
+  gemini: Object.freeze([
+    "gemini-3.1-pro-preview",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+  ]),
   mistral: Object.freeze(["mistral-medium-latest"]),
   "nvidia-nim": Object.freeze([
     "nvidia/llama-3.1-nemotron-70b-instruct",
