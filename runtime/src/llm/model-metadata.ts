@@ -871,11 +871,28 @@ function resolveEffectiveOutputTokens(params: {
   readonly onWarn?: (msg: string) => void;
 }): EffectiveOutputTokens {
   const metadata = params.metadata;
-  const metadataDefault = metadata.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
-  const metadataUpper =
+  // Output is reserved out of the same window the prompt occupies, and
+  // admission denies the call outright when the two do not both fit. The
+  // 32k default was written for models with room to spare; against a local
+  // model served at 32k it leaves nothing for the prompt and every turn is
+  // refused with `context_window_exceeded`. Half the window is the most
+  // that can be promised to output while the input still has somewhere to
+  // go. Cloud windows are far wider than the default, so this only ever
+  // binds on genuinely small ones.
+  const windowBound =
+    metadata.contextWindow !== undefined && metadata.contextWindow > 0
+      ? Math.max(1_024, Math.floor(metadata.contextWindow / 2))
+      : undefined;
+  const applyWindow = (value: number): number =>
+    windowBound === undefined ? value : Math.min(value, windowBound);
+  const metadataDefault = applyWindow(
+    metadata.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+  );
+  const metadataUpper = applyWindow(
     metadata.maxOutputTokensUpperLimit ??
-    metadata.maxOutputTokens ??
-    DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT;
+      metadata.maxOutputTokens ??
+      DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT,
+  );
 
   if (
     metadata.maxOutputTokens !== undefined &&

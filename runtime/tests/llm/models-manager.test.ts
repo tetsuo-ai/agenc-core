@@ -415,6 +415,23 @@ describe("StaticModelsManager", () => {
 
     const info = await manager.getModelInfo("qwen/qwen3-14b");
     expect(info.contextWindow).toBe(32_768);
+    // Output is reserved out of the same window as the prompt. The 32k
+    // default would fill it, and admission would refuse every turn with
+    // context_window_exceeded before anything reached the model.
+    expect(info.maxOutputTokens).toBe(16_384);
+    expect(info.maxOutputTokensUpperLimit).toBe(16_384);
+  });
+
+  it("leaves roomy windows on the default output budget", async () => {
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai",
+    });
+
+    // 272k of context: the default was never the thing squeezing it.
+    const info = await manager.getModelInfo("gpt-5");
+    expect(info.contextWindow).toBe(272_000);
+    expect(info.maxOutputTokens).toBeGreaterThanOrEqual(32_000);
   });
 
   it("reads default generic openai-compatible endpoint metadata without requiring auth", async () => {
