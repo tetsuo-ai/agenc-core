@@ -31,7 +31,7 @@ import { initializeToolPermissionContext } from "../permissions/settings.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionState } from "../session/session.js";
 import {
-  createSessionMcpManagerFromAuthority,
+  createSessionMcpManager,
   createSessionMcpService,
 } from "../session/mcp-startup.js";
 import type {
@@ -1149,13 +1149,10 @@ async function bootstrapLocalRuntimeSessionScoped(
     managedKey.baseURL !== undefined
       ? normalizeManagedGatewayModel(resolvedProvider, providerModel)
       : providerModel;
-  const mcpManager = await createSessionMcpManagerFromAuthority(
-    configStore,
-    mcpRequestEnvironment,
-    {
-      sandboxExecutionBroker,
-    },
-  );
+  const mcpManager = createSessionMcpManager([], {
+    environment: mcpRequestEnvironment,
+    sandboxExecutionBroker,
+  });
   const unifiedExecManager = new UnifiedExecProcessManager({
     cwd: workspaceRoot,
   });

@@ -33,6 +33,8 @@ import {
   ConfigRepositoryError,
   loadLayeredConfig,
   readStrictConfigLayer,
+  resolveMcpLayerCandidates,
+  type ConfigLayerSnapshot,
 } from "./repository.js";
 import { ConfigStore } from "./store.js";
 
@@ -48,6 +50,17 @@ function write(path: string, content: string, mode = 0o600): void {
   mkdirSync(join(path, ".."), { recursive: true });
   writeFileSync(path, content, { mode });
   chmodSync(path, mode);
+}
+
+function mcpLayer(
+  scope: ConfigLayerSnapshot["scope"],
+  mcpServers: NonNullable<ConfigLayerSnapshot["config"]["mcp_servers"]>,
+): ConfigLayerSnapshot {
+  return {
+    scope,
+    label: `${scope} layer`,
+    config: { mcp_servers: mcpServers },
+  };
 }
 
 afterEach(() => {
@@ -421,6 +434,230 @@ describe("strict layered repository", () => {
         key: "sandbox.ripgrep",
       }),
     ]);
+  });
+});
+
+describe("MCP layer candidate resolution", () => {
+  test("preserves the full non-managed repository precedence order", () => {
+    const orderedScopes = [
+      "default",
+      "plugin",
+      "user",
+      "project",
+      "local",
+      "flag",
+      "profile",
+      "environment",
+      "cli",
+    ] as const;
+    const offeredScopes: string[] = [];
+    const layers = orderedScopes.map((scope) => mcpLayer(scope, {
+      shared: { command: `${scope}-command` },
+    }));
+
+    const resolved = resolveMcpLayerCandidates(layers, (candidate) => {
+      offeredScopes.push(candidate.source.scope);
+      return "accept";
+    });
+
+    expect(resolved.managedExclusive).toBe(false);
+    expect(offeredScopes).toEqual(orderedScopes);
+    expect(
+      resolved.candidatesByName.get("shared")?.map(
+        (candidate) => candidate.source.scope,
+      ),
+    ).toEqual(orderedScopes);
+    expect(resolved.winners.get("shared")).toMatchObject({
+      source: { scope: "cli" },
+      config: { command: "cli-command" },
+    });
+    expect(
+      resolved.winners.get("shared")?.contributors.map(
+        (source) => source.scope,
+      ),
+    ).toEqual(orderedScopes);
+  });
+
+  test("deep-merges same-name declarations while repository denials accumulate", () => {
+    const resolved = resolveMcpLayerCandidates([
+      mcpLayer("user", {
+        shared: {
+          command: "node",
+          args: ["user.mjs"],
+          env: { BASE: "1", SHARED: "user" },
+          enabled_tools: ["read", "write"],
+          disabled_tools: ["user-deny"],
+          tools: {
+            read: { default_permission_mode: "on-request" },
+          },
+        },
+      }),
+      mcpLayer("project", {
+        shared: {
+          args: ["project.mjs"],
+          env: { PROJECT: "1", SHARED: "project" },
+          disabled_tools: ["project-deny"],
+        },
+      }),
+      mcpLayer("local", {
+        shared: {
+          env: { LOCAL: "1" },
+          disabled_tools: ["local-deny", "user-deny"],
+        },
+      }),
+    ]);
+
+    expect(resolved.winners.get("shared")?.config).toEqual({
+      command: "node",
+      args: ["project.mjs"],
+      env: {
+        BASE: "1",
+        SHARED: "project",
+        PROJECT: "1",
+        LOCAL: "1",
+      },
+      enabled_tools: ["read", "write"],
+      disabled_tools: ["user-deny", "project-deny", "local-deny"],
+      tools: {
+        read: { default_permission_mode: "on-request" },
+      },
+    });
+    expect(
+      resolved.winners.get("shared")?.contributors.map(
+        (source) => source.scope,
+      ),
+    ).toEqual(["user", "project", "local"]);
+  });
+
+  test("does not let a rejected declaration contaminate a later candidate", () => {
+    const offered = new Map<string, ConfigLayerSnapshot["config"]>();
+    const resolved = resolveMcpLayerCandidates([
+      mcpLayer("user", {
+        shared: {
+          command: "allowed-base",
+          args: ["base.mjs"],
+          env: { BASE: "yes" },
+          disabled_tools: ["base-deny"],
+        },
+      }),
+      mcpLayer("project", {
+        shared: {
+          command: "blocked-project",
+          args: ["blocked.mjs"],
+          env: { LEAK: "no" },
+          disabled_tools: ["blocked-deny"],
+        },
+      }),
+      mcpLayer("local", {
+        shared: {
+          command: "allowed-local",
+          env: { LOCAL: "yes" },
+          disabled_tools: ["local-deny"],
+        },
+      }),
+    ], (candidate) => {
+      offered.set(candidate.source.scope, {
+        mcp_servers: { [candidate.name]: candidate.config },
+      });
+      return candidate.source.scope === "project" ? "reject" : "accept";
+    });
+
+    expect(offered.get("local")?.mcp_servers?.shared).toEqual({
+      command: "allowed-local",
+      args: ["base.mjs"],
+      env: { BASE: "yes", LOCAL: "yes" },
+      disabled_tools: ["base-deny", "local-deny"],
+    });
+    expect(resolved.winners.get("shared")?.config).toEqual(
+      offered.get("local")?.mcp_servers?.shared,
+    );
+    expect(
+      resolved.candidatesByName.get("shared")?.map(
+        (candidate) => candidate.source.scope,
+      ),
+    ).toEqual(["user", "local"]);
+    expect(
+      resolved.winners.get("shared")?.contributors.map(
+        (source) => source.scope,
+      ),
+    ).toEqual(["user", "local"]);
+  });
+
+  test("defers an incomplete trusted substrate until a later layer completes it", () => {
+    const resolved = resolveMcpLayerCandidates([
+      mcpLayer("user", {
+        shared: {
+          args: ["substrate.mjs"],
+          env: { BASE: "1" },
+        },
+      }),
+      mcpLayer("flag", {
+        shared: { command: "node" },
+      }),
+    ], (candidate) => (
+      candidate.config.command === undefined &&
+      candidate.config.endpoint === undefined
+        ? "defer"
+        : "accept"
+    ));
+
+    expect(resolved.unresolved.has("shared")).toBe(false);
+    expect(resolved.candidatesByName.get("shared")).toHaveLength(1);
+    expect(resolved.winners.get("shared")).toMatchObject({
+      source: { scope: "flag" },
+      declaration: { command: "node" },
+      config: {
+        command: "node",
+        args: ["substrate.mjs"],
+        env: { BASE: "1" },
+      },
+    });
+    expect(
+      resolved.winners.get("shared")?.contributors.map(
+        (source) => source.scope,
+      ),
+    ).toEqual(["user", "flag"]);
+  });
+
+  test("retains an incomplete-only declaration as unresolved", () => {
+    const resolved = resolveMcpLayerCandidates([
+      mcpLayer("user", {
+        shared: {
+          args: ["orphan.mjs"],
+          env: { BASE: "1" },
+        },
+      }),
+    ], () => "defer");
+
+    expect(resolved.candidatesByName.has("shared")).toBe(false);
+    expect(resolved.winners.has("shared")).toBe(false);
+    expect(resolved.unresolved.get("shared")).toMatchObject({
+      source: { scope: "user" },
+      contributors: [{ scope: "user" }],
+      config: {
+        args: ["orphan.mjs"],
+        env: { BASE: "1" },
+      },
+    });
+  });
+
+  test("treats an explicitly empty managed table as exclusive", () => {
+    const offeredScopes: string[] = [];
+    const resolved = resolveMcpLayerCandidates([
+      mcpLayer("user", {
+        shared: { command: "user-command" },
+      }),
+      mcpLayer("managed", {}),
+    ], (candidate) => {
+      offeredScopes.push(candidate.source.scope);
+      return "accept";
+    });
+
+    expect(resolved.managedExclusive).toBe(true);
+    expect(offeredScopes).toEqual([]);
+    expect(resolved.candidatesByName.size).toBe(0);
+    expect(resolved.unresolved.size).toBe(0);
+    expect(resolved.winners.size).toBe(0);
   });
 });
 

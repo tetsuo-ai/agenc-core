@@ -5,6 +5,7 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod/v4'
 import type { HomeContext } from '../../config/home.js'
+import type { ConfigScope as RepositoryConfigScope } from '../../config/repository.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 
 // Configuration schemas and types
@@ -200,6 +201,8 @@ export type PluginMcpServerIdentity = {
 
 export type ScopedMcpServerConfig = McpServerConfig & {
   scope: ConfigScope
+  /** Exact canonical repository authority that supplied the winning definition. */
+  authoritySource?: RepositoryConfigScope | 'session'
   // For plugin-provided servers: the providing plugin's LoadedPlugin.source
   // (e.g. 'slack@anthropic'). Stashed at config-build time so the channel
   // gate doesn't have to race AppState.plugins.enabled hydration.

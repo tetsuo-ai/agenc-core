@@ -42,7 +42,7 @@ import {
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
-  createSessionMcpManagerFromAuthority,
+  createSessionMcpManager,
   createSessionMcpService,
 } from "../session/mcp-startup.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
@@ -419,18 +419,15 @@ async function createBoundAgenCDaemonOnlyTuiContext(
     env,
     allowGpu: effectiveConfig.sandbox?.allow_gpu === true,
   });
-  const mcpRuntimeManager = await createSessionMcpManagerFromAuthority(
-    configStore,
-    mcpRequestEnvironment,
-    {
-      sandboxExecutionBroker,
-    },
-  );
-  await mcpRuntimeManager.start();
+  const mcpRuntimeManager = createSessionMcpManager([], {
+    environment: mcpRequestEnvironment,
+    sandboxExecutionBroker,
+  });
   const mcpService = createSessionMcpService(mcpRuntimeManager, {
     authority: configStore,
     environment: mcpRequestEnvironment,
   });
+  await mcpService.refreshFromAuthority?.();
   const agentDefinitions = await loadFreshAgentDefinitions(roleWorkspace.cwd);
   const abortController = new AbortController();
   let nextEventId = 0;

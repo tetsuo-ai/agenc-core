@@ -13,6 +13,10 @@ import type { RuntimeStateRepository } from "../../config/runtime-state-reposito
  * a process-global slot.
  */
 export interface CanonicalSettingsAuthority {
+  readonly authoritySnapshot: () => Readonly<{
+    config: AgenCConfig;
+    layers: readonly ConfigLayerSnapshot[];
+  }>;
   readonly current: () => AgenCConfig;
   readonly sources: (scope: ConfigScope) => readonly ConfigLayerSnapshot[];
   readonly projectRoot: string;

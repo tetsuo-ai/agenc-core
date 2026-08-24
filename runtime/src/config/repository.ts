@@ -30,6 +30,7 @@ import {
   validateAgenCConfigBlocks,
   validatePermissionsConfig,
   type AgenCConfig,
+  type McpServerConfig,
 } from "./schema.js";
 
 export const CANONICAL_CONFIG_VERSION = 2 as const;
@@ -65,6 +66,27 @@ export interface IgnoredConfigValue extends ConfigLayerSource {
 export interface ConfigLayerSnapshot extends ConfigLayerSource {
   readonly config: AgenCConfig;
 }
+
+export interface McpLayerCandidate {
+  readonly name: string;
+  readonly source: ConfigLayerSource;
+  readonly contributors: readonly ConfigLayerSource[];
+  readonly declaration: McpServerConfig;
+  readonly config: McpServerConfig;
+}
+
+export interface ResolvedMcpLayerCandidates {
+  readonly managedExclusive: boolean;
+  readonly candidatesByName: ReadonlyMap<
+    string,
+    readonly McpLayerCandidate[]
+  >;
+  /** Incomplete admitted substrate that no later layer completed. */
+  readonly unresolved: ReadonlyMap<string, McpLayerCandidate>;
+  readonly winners: ReadonlyMap<string, McpLayerCandidate>;
+}
+
+export type McpLayerCandidateDecision = "accept" | "defer" | "reject";
 
 interface StableLayerIdentity {
   readonly path: string;
@@ -960,6 +982,113 @@ export function mergeConfigLayerSnapshots(
     config = merged;
   }
   return config;
+}
+
+/**
+ * Fold MCP declarations in the repository's already-resolved layer order.
+ *
+ * Admission happens before a declaration enters the accumulator. This is
+ * essential for same-name fallthrough: an unapproved project declaration or
+ * policy-blocked command must not contaminate a later local/flag/CLI
+ * definition through the repository's ordinary deep-merge rules.
+ *
+ * An explicit managed `mcp_servers` table is exclusive even when empty. In
+ * that case lower authorities are never offered to the admission callback.
+ */
+export function resolveMcpLayerCandidates(
+  layers: readonly ConfigLayerSnapshot[],
+  decide: (
+    candidate: McpLayerCandidate,
+  ) => McpLayerCandidateDecision | boolean = () => "accept",
+): ResolvedMcpLayerCandidates {
+  const managedExclusive = layers.some(
+    (layer) =>
+      layer.scope === "managed" &&
+      Object.prototype.hasOwnProperty.call(layer.config, "mcp_servers"),
+  );
+  const activeLayers = managedExclusive
+    ? layers.filter((layer) => layer.scope === "managed")
+    : layers.filter((layer) => layer.scope !== "managed");
+  let effective: AgenCConfig = {};
+  const contributorsByName = new Map<string, readonly ConfigLayerSource[]>();
+  const candidatesByName = new Map<string, McpLayerCandidate[]>();
+  const unresolved = new Map<string, McpLayerCandidate>();
+  const winners = new Map<string, McpLayerCandidate>();
+
+  for (const layer of activeLayers) {
+    const declarations = layer.config.mcp_servers;
+    if (declarations === undefined) continue;
+    for (const [name, declaration] of Object.entries(declarations)) {
+      const prospective = mergeConfigLayerSnapshots(
+        [
+          Object.freeze({
+            scope: layer.scope,
+            label: layer.label,
+            ...(layer.path !== undefined ? { path: layer.path } : {}),
+            config: Object.freeze({
+              mcp_servers: Object.freeze({ [name]: declaration }),
+            }),
+          }),
+        ],
+        effective,
+      )?.mcp_servers?.[name];
+      if (prospective === undefined) continue;
+      const source = Object.freeze({
+        scope: layer.scope,
+        label: layer.label,
+        ...(layer.path !== undefined ? { path: layer.path } : {}),
+      });
+      const contributors = Object.freeze([
+        ...(contributorsByName.get(name) ?? []),
+        source,
+      ]);
+      const candidate = Object.freeze({
+        name,
+        source,
+        contributors,
+        declaration,
+        config: prospective,
+      });
+      const decision = decide(candidate);
+      if (decision === false || decision === "reject") continue;
+
+      effective = mergeConfigLayerSnapshots(
+        [
+          Object.freeze({
+            scope: layer.scope,
+            label: layer.label,
+            ...(layer.path !== undefined ? { path: layer.path } : {}),
+            config: Object.freeze({
+              mcp_servers: Object.freeze({ [name]: declaration }),
+            }),
+          }),
+        ],
+        effective,
+      ) ?? effective;
+      contributorsByName.set(name, contributors);
+      if (decision === "defer") {
+        unresolved.set(name, candidate);
+        continue;
+      }
+      unresolved.delete(name);
+      const history = candidatesByName.get(name) ?? [];
+      history.push(candidate);
+      candidatesByName.set(name, history);
+      winners.set(name, candidate);
+    }
+  }
+
+  return Object.freeze({
+    managedExclusive,
+    candidatesByName: new Map(
+      Array.from(candidatesByName, ([name, candidates]) => [
+        name,
+        Object.freeze([...candidates]),
+      ]),
+    ),
+    unresolved: new Map(unresolved),
+    winners: new Map(winners),
+  });
 }
 
 function updateProvenance(

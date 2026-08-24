@@ -70,6 +70,7 @@ export class ConfigStore {
     Object.freeze({});
   private ignoredSnapshot: readonly IgnoredConfigValue[] = Object.freeze([]);
   private sourceSnapshots: readonly ConfigLayerSnapshot[] = Object.freeze([]);
+  private reloadTail: Promise<void> = Promise.resolve();
   private resolvedProjectRoot: string;
   private readonly resolvedHomeContext: HomeContext;
   readonly stateRepository: RuntimeStateRepository;
@@ -105,6 +106,17 @@ export class ConfigStore {
   /** Current frozen snapshot. Never mutates. */
   current(): AgenCConfig {
     return this.snapshot;
+  }
+
+  /** Atomic config + ordered-layer view for generation-sensitive consumers. */
+  authoritySnapshot(): Readonly<{
+    config: AgenCConfig;
+    layers: readonly ConfigLayerSnapshot[];
+  }> {
+    return Object.freeze({
+      config: this.snapshot,
+      layers: this.sourceSnapshots,
+    });
   }
 
   /** Warnings emitted during the most recent reload. */
@@ -149,10 +161,19 @@ export class ConfigStore {
    * Returns the new snapshot. Subscriber exceptions are isolated via try/catch
    * so one broken listener cannot poison the reload.
    */
-  async reload(): Promise<AgenCConfig> {
+  reload(): Promise<AgenCConfig> {
     // Run before the first await so the reload and its caller continuation
     // inherit this store without a process-global authority.
     enterCanonicalSettingsAuthority(this);
+    const run = this.reloadTail.then(() => this.reloadUnlocked());
+    this.reloadTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async reloadUnlocked(): Promise<AgenCConfig> {
     this.stateRepository.invalidate();
     const base = this.opts.base ?? defaultConfig();
     this.warningMessages = [];

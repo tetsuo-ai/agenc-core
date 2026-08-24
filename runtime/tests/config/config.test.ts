@@ -2014,35 +2014,44 @@ snapshot_max_count = 0
     expect(warnings.some((w) => w.includes("subscriber threw"))).toBe(true);
   });
 
-  test("concurrent reload() calls both resolve, last-finisher snapshot wins", async () => {
-    mkdirSync(dir, { recursive: true });
-    const path = join(dir, "config.toml");
-    writeFileSync(path, `config_version = 2\nmodel = "first"\n`);
+  test("serializes concurrent reloads in invocation order", async () => {
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let calls = 0;
+    let active = 0;
+    let maxActive = 0;
+    const seen: string[] = [];
+    const store = new ConfigStore({
+      home: dir,
+      env: {},
+      loader: async () => {
+        const call = calls;
+        calls += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        try {
+          if (call === 0) await firstBlocked;
+          return { model: call === 0 ? "first" : "second" };
+        } finally {
+          active -= 1;
+        }
+      },
+    });
+    store.subscribe((config) => seen.push(config.model ?? ""));
 
-    const store = new ConfigStore({ home: dir, env: {} });
-
-    // Fire #1 against the on-disk contents, then rewrite the file and
-    // fire #2 before #1 settles. Both calls share a loader that reads
-    // the file lazily inside the promise, so the second reload observes
-    // the updated content.
     const first = store.reload();
-    writeFileSync(path, `config_version = 2\nmodel = "second"\n`);
+    await vi.waitFor(() => expect(calls).toBe(1));
     const second = store.reload();
+    await Promise.resolve();
+    expect(calls).toBe(1);
 
-    // Neither promise rejects.
-    const [a, b] = await Promise.all([first, second]);
-    expect(a.model).toBeDefined();
-    expect(b.model).toBeDefined();
-
-    // Both inputs land as valid AgenCConfig values. Which model name
-    // each promise observes depends on FS race ordering on the host,
-    // but the store's final snapshot must equal the value returned by
-    // whichever reload settled last.
-    const finalSnapshot = store.current();
-    expect(finalSnapshot.model === "first" || finalSnapshot.model === "second").toBe(true);
-    // Snapshot matches one of the two promise returns (no torn state).
-    expect(
-      finalSnapshot.model === a.model || finalSnapshot.model === b.model,
-    ).toBe(true);
+    releaseFirst();
+    await expect(first).resolves.toMatchObject({ model: "first" });
+    await expect(second).resolves.toMatchObject({ model: "second" });
+    expect(store.current().model).toBe("second");
+    expect(seen).toEqual(["first", "second"]);
+    expect(maxActive).toBe(1);
   });
 });

@@ -32,10 +32,7 @@ import {
   toScopedMcpServerConfig,
 } from "../mcp-client/manager.js";
 import type { MCPToolBridgePermissionOptions } from "../mcp-client/tools.js";
-import type {
-  MCPServerConfig,
-  MCPServerMutationResult,
-} from "../mcp-client/types.js";
+import type { MCPServerConfig } from "../mcp-client/types.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import type {
   LLMChatOptions,
@@ -55,7 +52,11 @@ import {
   createUnavailableSamplingResult,
   type McpSamplingHandlers,
 } from "../services/mcp/hostCapabilities.js";
-import { getAllMcpConfigs } from "../services/mcp/config.js";
+import {
+  getAllMcpConfigs,
+  type McpSessionServerDisposition,
+  type ResolvedMcpServerDefinition,
+} from "../services/mcp/config.js";
 import type { ScopedMcpServerConfig } from "../services/mcp/types.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import {
@@ -65,6 +66,7 @@ import {
 import { EMPTY_MCP_TOOL_APPROVAL_TEMPLATE_FILE } from "../permissions/rpc/mcp-tool-approval-templates.js";
 import { RequestPermissionsRpc } from "../permissions/rpc/request-permissions.js";
 import type {
+  McpServerMutationResult,
   McpSessionServerConfig,
   Session,
   SessionServices,
@@ -83,6 +85,20 @@ export interface McpStartupCancellationToken {
 export interface McpRefreshResult {
   readonly configuredServers: readonly string[];
   readonly requiredServers: readonly string[];
+}
+
+export interface McpAuthorityRefreshOptions {
+  readonly signal?: AbortSignal;
+}
+
+export interface SessionMcpResolutionPlan {
+  readonly configs: readonly MCPServerConfig[];
+  readonly definitions: ReadonlyMap<string, ResolvedMcpServerDefinition>;
+  readonly knownDefinitionIds: ReadonlySet<string>;
+  readonly authoritySnapshot: ReturnType<CanonicalSettingsAuthority["current"]>;
+  readonly sessionDispositions: Readonly<
+    Record<string, McpSessionServerDisposition>
+  >;
 }
 
 export interface CreateSessionMcpServiceOptions {
@@ -589,6 +605,7 @@ function toRuntimeMcpServerConfig(
   const raw = config as ScopedMcpServerConfig & Record<string, unknown>;
   const {
     scope: _scope,
+    authoritySource: _authoritySource,
     pluginSource: _pluginSource,
     pluginServer: _pluginServer,
     type,
@@ -632,14 +649,14 @@ function toRuntimeMcpServerConfig(
   ) {
     throw new Error(`MCP server "${name}" is missing its remote endpoint`);
   }
-  const originScope =
-    _scope === "enterprise" || _scope === "managed"
+  const originScope = _authoritySource ??
+    (_scope === "enterprise" || _scope === "managed"
       ? "managed"
       : _scope === "dynamic" && _pluginServer !== undefined
         ? "plugin"
         : _scope === "dynamic" || _scope === "agencai"
           ? "session"
-          : _scope;
+          : _scope);
   return {
     ...rest,
     name,
@@ -667,12 +684,13 @@ function toRuntimeMcpServerConfig(
   } as MCPServerConfig;
 }
 
-/** Resolve the one policy-checked outbound MCP set for a live session. */
-export async function resolveSessionMcpConfig(
+/** Resolve one complete policy-checked MCP lifecycle plan for a live session. */
+export async function resolveSessionMcpPlan(
   authority: CanonicalSettingsAuthority,
   environment: ProviderEnvironment,
   sessionServers: Readonly<Record<string, MCPServerConfig>> = {},
-): Promise<MCPServerConfig[]> {
+  enabledOverrides: ReadonlyMap<string, boolean> = new Map(),
+): Promise<SessionMcpResolutionPlan> {
   const scopedSessionServers = Object.fromEntries(
     Object.entries(sessionServers).map(([name, config]) => [
       name,
@@ -683,25 +701,39 @@ export async function resolveSessionMcpConfig(
       }),
     ]),
   );
-  const { servers } = await getAllMcpConfigs(
+  const {
+    servers,
+    definitions,
+    knownDefinitionIds,
+    authoritySnapshot,
+    sessionDispositions,
+  } = await getAllMcpConfigs(
     authority,
     environment,
     scopedSessionServers,
+    enabledOverrides,
   );
-  return Object.entries(servers).map(([name, config]) =>
-    toRuntimeMcpServerConfig(name, config),
-  );
+  return {
+    configs: Object.entries(servers).map(([name, config]) =>
+      toRuntimeMcpServerConfig(name, config),
+    ),
+    definitions,
+    knownDefinitionIds,
+    authoritySnapshot,
+    sessionDispositions,
+  };
 }
 
-export async function createSessionMcpManagerFromAuthority(
+/** Resolve the one policy-checked outbound MCP set for a live session. */
+export async function resolveSessionMcpConfig(
   authority: CanonicalSettingsAuthority,
   environment: ProviderEnvironment,
-  options: Omit<CreateSessionMcpManagerOptions, "environment"> = {},
-): Promise<MCPManager> {
-  return createSessionMcpManager(
-    await resolveSessionMcpConfig(authority, environment),
-    { ...options, environment },
-  );
+  sessionServers: Readonly<Record<string, MCPServerConfig>> = {},
+): Promise<MCPServerConfig[]> {
+  return [
+    ...(await resolveSessionMcpPlan(authority, environment, sessionServers))
+      .configs,
+  ];
 }
 
 export function requiredMcpServerNames(
@@ -710,7 +742,8 @@ export function requiredMcpServerNames(
   return configs
     .filter(
       (config): config is ConfiguredServerWithExtras =>
-        (config as ConfiguredServerWithExtras).required === true,
+        (config as ConfiguredServerWithExtras).required === true &&
+        config.enabled !== false,
     )
     .map((config) => config.name);
 }
@@ -732,34 +765,6 @@ function withConfiguredRequiredServers(
   };
 }
 
-export async function refreshMcpManagerFromAuthority(params: {
-  readonly manager: MCPManager;
-  readonly authority: CanonicalSettingsAuthority;
-  readonly environment: ProviderEnvironment;
-  readonly sessionServers?: Readonly<Record<string, MCPServerConfig>>;
-  readonly enabledOverrides?: ReadonlyMap<string, boolean>;
-  readonly opts?: MCPManagerStartOpts;
-}): Promise<McpRefreshResult> {
-  const resolved = await resolveSessionMcpConfig(
-    params.authority,
-    params.environment,
-    params.sessionServers,
-  );
-  const configs = resolved.map((config) => {
-    const enabled = params.enabledOverrides?.get(config.name);
-    return enabled === undefined ? config : { ...config, enabled };
-  });
-  const requiredServers = requiredMcpServerNames(configs);
-  await params.manager.refreshServers(
-    configs,
-    withConfiguredRequiredServers(configs, params.opts ?? {}),
-  );
-  return {
-    configuredServers: configs.map((config) => config.name),
-    requiredServers,
-  };
-}
-
 export function createMcpStartupCancellationToken(): McpStartupCancellationToken {
   const controller = new AbortController();
   return {
@@ -773,6 +778,34 @@ export function createMcpStartupCancellationToken(): McpStartupCancellationToken
   };
 }
 
+interface SessionMcpOverlayState {
+  readonly servers: ReadonlyMap<string, MCPServerConfig>;
+  readonly enabledOverrides: ReadonlyMap<string, boolean>;
+}
+
+const MAX_MCP_AUTHORITY_RETRIES = 5;
+
+function mcpMutationFailure(
+  serverName: string,
+  error: unknown,
+): McpServerMutationResult {
+  return {
+    serverName,
+    success: false,
+    toolCount: 0,
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function mcpTransactionError(
+  message: string,
+  errors: readonly unknown[],
+): AggregateError {
+  const error = new AggregateError(errors, message);
+  error.name = "McpMutationTransactionError";
+  return error;
+}
+
 /**
  * Session-facing MCP service surface. This is intentionally not the
  * old React/service MCP owner; it is a thin facade over the real live
@@ -784,46 +817,317 @@ export function createSessionMcpService(
   options: CreateSessionMcpServiceOptions,
 ): SessionServices["mcpManager"] {
   const runtimeManager = manager as RuntimeMcpManagerWithMetadata;
-  const sessionServers = new Map<string, MCPServerConfig>();
-  const enabledOverrides = new Map<string, boolean>();
-  const sessionServerRecord = (): Record<string, MCPServerConfig> =>
-    Object.fromEntries(sessionServers);
-  const refreshFromAuthority = async (): Promise<McpRefreshResult> => {
-    const result = await refreshMcpManagerFromAuthority({
-      manager,
-      authority: options.authority,
-      environment: options.environment,
-      sessionServers: sessionServerRecord(),
-      enabledOverrides,
-    });
-    const configured = manager.getConfiguredServers();
-    const configuredNames = new Set(configured.map((config) => config.name));
-    const admittedSessionNames = new Set(
-      configured
-        .filter((config) => config.origin?.scope === "session")
-        .map((config) => config.name),
-    );
-    for (const name of sessionServers.keys()) {
-      if (!admittedSessionNames.has(name)) sessionServers.delete(name);
-    }
-    for (const name of enabledOverrides.keys()) {
-      if (!configuredNames.has(name)) enabledOverrides.delete(name);
-    }
-    return result;
+  let overlay: SessionMcpOverlayState = {
+    servers: new Map(),
+    enabledOverrides: new Map(),
   };
-  const setServerEnabled = async (
+  let mutationTail: Promise<void> = Promise.resolve();
+
+  const enqueueMutation = <T>(operation: () => Promise<T>): Promise<T> => {
+    const run = mutationTail.then(operation);
+    mutationTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+  const sessionServerRecord = (
+    state: SessionMcpOverlayState,
+  ): Record<string, MCPServerConfig> => Object.fromEntries(state.servers);
+  const resolveOverlayPlan = (
+    state: SessionMcpOverlayState,
+  ): Promise<SessionMcpResolutionPlan> =>
+    resolveSessionMcpPlan(
+      options.authority,
+      options.environment,
+      sessionServerRecord(state),
+      state.enabledOverrides,
+    );
+  const pruneOverlay = (
+    state: SessionMcpOverlayState,
+    plan: SessionMcpResolutionPlan,
+  ): SessionMcpOverlayState => ({
+    servers: new Map(
+      Array.from(state.servers).filter(
+        ([name]) => plan.sessionDispositions[name] !== "blocked",
+      ),
+    ),
+    enabledOverrides: new Map(
+      Array.from(state.enabledOverrides).filter(([definitionId]) =>
+        plan.knownDefinitionIds.has(definitionId),
+      ),
+    ),
+  });
+  class McpAuthorityChangedError extends Error {
+    constructor() {
+      super("Canonical MCP authority changed during transaction");
+      this.name = "McpAuthorityChangedError";
+    }
+  }
+  const applyPlan = async (
+    plan: SessionMcpResolutionPlan,
+    externalSignal?: AbortSignal,
+  ): Promise<McpRefreshResult> => {
+    const isCurrent = (): boolean =>
+      options.authority.current() === plan.authoritySnapshot;
+    if (!isCurrent()) throw new McpAuthorityChangedError();
+
+    const controller = new AbortController();
+    const forwardExternalAbort = (): void => {
+      controller.abort(externalSignal?.reason ?? "mcp_refresh_cancelled");
+    };
+    if (externalSignal?.aborted === true) {
+      forwardExternalAbort();
+    } else {
+      externalSignal?.addEventListener("abort", forwardExternalAbort, {
+        once: true,
+      });
+    }
+    let authorityChanged = false;
+    const unsubscribe = options.authority.subscribe((snapshot) => {
+      if (snapshot !== plan.authoritySnapshot) {
+        authorityChanged = true;
+        controller.abort("canonical_mcp_authority_changed");
+      }
+    });
+    const requiredServers = requiredMcpServerNames(plan.configs);
+    try {
+      if (!isCurrent()) {
+        authorityChanged = true;
+        controller.abort("canonical_mcp_authority_changed");
+      }
+      await manager.refreshServers(
+        plan.configs,
+        withConfiguredRequiredServers(plan.configs, {
+          signal: controller.signal,
+        }),
+      );
+      if (authorityChanged || !isCurrent()) {
+        throw new McpAuthorityChangedError();
+      }
+      return {
+        configuredServers: plan.configs.map((config) => config.name),
+        requiredServers,
+      };
+    } catch (error) {
+      if (authorityChanged || !isCurrent()) {
+        throw new McpAuthorityChangedError();
+      }
+      throw error;
+    } finally {
+      unsubscribe?.();
+      externalSignal?.removeEventListener("abort", forwardExternalAbort);
+    }
+  };
+  const resolveCurrentOverlayPlan = async (
+    state: SessionMcpOverlayState,
+  ): Promise<SessionMcpResolutionPlan> => {
+    const churnErrors: Error[] = [];
+    for (let attempt = 0; attempt < MAX_MCP_AUTHORITY_RETRIES; attempt += 1) {
+      const plan = await resolveOverlayPlan(state);
+      if (options.authority.current() === plan.authoritySnapshot) return plan;
+      churnErrors.push(new McpAuthorityChangedError());
+    }
+    throw mcpTransactionError(
+      "Canonical MCP authority changed repeatedly while resolving a transaction.",
+      churnErrors,
+    );
+  };
+  const reconcileOverlayState = async (
+    state: SessionMcpOverlayState,
+    initialPlan?: SessionMcpResolutionPlan,
+    externalSignal?: AbortSignal,
+  ): Promise<{
+    readonly overlay: SessionMcpOverlayState;
+    readonly plan: SessionMcpResolutionPlan;
+    readonly result: McpRefreshResult;
+  }> => {
+    let plan = initialPlan;
+    const churnErrors: Error[] = [];
+    for (let attempt = 0; attempt < MAX_MCP_AUTHORITY_RETRIES; attempt += 1) {
+      if (
+        plan === undefined ||
+        options.authority.current() !== plan.authoritySnapshot
+      ) {
+        if (plan !== undefined) churnErrors.push(new McpAuthorityChangedError());
+        plan = await resolveCurrentOverlayPlan(state);
+      }
+      try {
+        const result = await applyPlan(plan, externalSignal);
+        return {
+          overlay: pruneOverlay(state, plan),
+          plan,
+          result,
+        };
+      } catch (error) {
+        if (error instanceof McpAuthorityChangedError) {
+          churnErrors.push(error);
+          plan = undefined;
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw mcpTransactionError(
+      "Canonical MCP authority changed repeatedly while applying a transaction.",
+      churnErrors,
+    );
+  };
+  const failClosed = async (
+    message: string,
+    causes: readonly unknown[],
+  ): Promise<AggregateError> => {
+    const errors = [...causes];
+    try {
+      await manager.refreshServers([], {});
+    } catch (refreshError) {
+      errors.push(refreshError);
+      try {
+        await manager.stop();
+      } catch (stopError) {
+        errors.push(stopError);
+      }
+    }
+    return mcpTransactionError(message, errors);
+  };
+  const rollbackMutation = async (
+    baseline: SessionMcpOverlayState,
+    primaryError: unknown,
+  ): Promise<Error> => {
+    try {
+      const reconciled = await reconcileOverlayState(baseline);
+      overlay = reconciled.overlay;
+      return primaryError instanceof Error
+        ? primaryError
+        : new Error(String(primaryError));
+    } catch (rollbackError) {
+      return failClosed(
+        "MCP mutation failed, rollback failed, and the session was fail-closed.",
+        [primaryError, rollbackError],
+      );
+    }
+  };
+  const rejectAfterCanonicalReconciliation = async (
+    serverName: string,
+    baseline: SessionMcpOverlayState,
+    rejection: Error,
+  ): Promise<McpServerMutationResult> => {
+    try {
+      const reconciled = await reconcileOverlayState(baseline);
+      overlay = reconciled.overlay;
+      return mcpMutationFailure(serverName, rejection);
+    } catch (applyError) {
+      return mcpMutationFailure(
+        serverName,
+        await failClosed(
+          "MCP mutation was rejected, canonical reconciliation failed, and the session was fail-closed.",
+          [rejection, applyError],
+        ),
+      );
+    }
+  };
+  const refreshFromAuthorityUnlocked = async (
+    refreshOptions: McpAuthorityRefreshOptions = {},
+  ): Promise<McpRefreshResult> => {
+    try {
+      const reconciled = await reconcileOverlayState(
+        overlay,
+        undefined,
+        refreshOptions.signal,
+      );
+      overlay = reconciled.overlay;
+      return reconciled.result;
+    } catch (error) {
+      throw await failClosed(
+        "Canonical MCP refresh failed and the session was fail-closed.",
+        [error],
+      );
+    }
+  };
+  const setServerEnabledUnlocked = async (
     name: string,
     enabled: boolean,
-  ): Promise<MCPServerMutationResult> => {
-    const result = enabled
-      ? await manager.enableServer(name)
-      : await manager.disableServer(name);
-    if (result.success) enabledOverrides.set(name, enabled);
-    return result;
+  ): Promise<McpServerMutationResult> => {
+    const baseline = overlay;
+    let baselinePlan: SessionMcpResolutionPlan;
+    try {
+      baselinePlan = await resolveCurrentOverlayPlan(baseline);
+    } catch (error) {
+      return mcpMutationFailure(
+        name,
+        await failClosed(
+          "MCP state resolution failed and the session was fail-closed.",
+          [error],
+        ),
+      );
+    }
+    const definition = baselinePlan.definitions.get(name);
+    if (definition === undefined) {
+      return rejectAfterCanonicalReconciliation(
+        name,
+        baseline,
+        new Error(`MCP server "${name}" is not configured.`),
+      );
+    }
+    if (definition.origin === "managed") {
+      return rejectAfterCanonicalReconciliation(
+        name,
+        baseline,
+        new Error(
+          `MCP server "${name}" is controlled by canonical managed policy.`,
+        ),
+      );
+    }
+    const candidate: SessionMcpOverlayState = {
+      servers: baseline.servers,
+      enabledOverrides: new Map(baseline.enabledOverrides).set(
+        definition.id,
+        enabled,
+      ),
+    };
+    let reconciled: Awaited<ReturnType<typeof reconcileOverlayState>>;
+    try {
+      reconciled = await reconcileOverlayState(candidate);
+    } catch (error) {
+      return mcpMutationFailure(
+        name,
+        await rollbackMutation(baseline, error),
+      );
+    }
+    const { plan } = reconciled;
+    if (plan.definitions.get(name)?.id !== definition.id) {
+      return mcpMutationFailure(
+        name,
+        await rollbackMutation(
+          baseline,
+          new Error(`MCP server "${name}" changed during mutation; retry.`),
+        ),
+      );
+    }
+    const state = manager.getConnectionState(name);
+    const ready = enabled
+      ? state?.type === "connected"
+      : state?.type === "disabled";
+    if (!ready) {
+      const error =
+        state?.type === "failed"
+          ? state.error ?? `MCP server "${name}" failed to connect.`
+          : `MCP server "${name}" did not reach the requested state.`;
+      return mcpMutationFailure(
+        name,
+        await rollbackMutation(baseline, new Error(error)),
+      );
+    }
+    overlay = reconciled.overlay;
+    return {
+      serverName: name,
+      success: true,
+      toolCount: enabled ? manager.getToolsByServer(name).length : 0,
+    };
   };
-  const addSessionServer = async (
+  const addSessionServerUnlocked = async (
     config: McpSessionServerConfig,
-  ): Promise<MCPServerMutationResult> => {
+  ): Promise<McpServerMutationResult> => {
     if (!/^[A-Za-z0-9_-]+$/u.test(config.name)) {
       return {
         serverName: config.name,
@@ -832,58 +1136,69 @@ export function createSessionMcpService(
         error: `Invalid MCP server name "${config.name}". Names can only contain letters, numbers, hyphens, and underscores.`,
       };
     }
-    if (manager.getConfiguredServers().some((server) => server.name === config.name)) {
-      return {
-        serverName: config.name,
-        success: false,
-        toolCount: 0,
-        error: `MCP server "${config.name}" is already configured.`,
-      };
-    }
     const { args: inputArgs, ...inputConfig } = config;
     const candidate: MCPServerConfig = {
       ...inputConfig,
       ...(inputArgs !== undefined ? { args: [...inputArgs] } : {}),
       origin: { scope: "session" },
     };
-    const proposed = {
-      ...sessionServerRecord(),
-      [candidate.name]: candidate,
-    };
-    const admitted = await resolveSessionMcpConfig(
-      options.authority,
-      options.environment,
-      proposed,
-    );
-    if (
-      !admitted.some(
-        (server) =>
-          server.name === candidate.name && server.origin?.scope === "session",
-      )
-    ) {
-      return {
-        serverName: candidate.name,
-        success: false,
-        toolCount: 0,
-        error: `MCP server "${candidate.name}" is blocked by canonical MCP policy.`,
-      };
-    }
-
-    sessionServers.set(candidate.name, candidate);
     try {
-      await refreshFromAuthority();
+      toScopedMcpServerConfig(candidate);
     } catch (error) {
-      sessionServers.delete(candidate.name);
-      await refreshFromAuthority();
-      return {
-        serverName: candidate.name,
-        success: false,
-        toolCount: 0,
-        error: error instanceof Error ? error.message : String(error),
-      };
+      return mcpMutationFailure(candidate.name, error);
+    }
+    const baseline = overlay;
+    let baselinePlan: SessionMcpResolutionPlan;
+    try {
+      baselinePlan = await resolveCurrentOverlayPlan(baseline);
+    } catch (error) {
+      return mcpMutationFailure(
+        config.name,
+        await failClosed(
+          "MCP state resolution failed and the session was fail-closed.",
+          [error],
+        ),
+      );
+    }
+    if (
+      baseline.servers.has(config.name) ||
+      baselinePlan.configs.some((server) => server.name === config.name)
+    ) {
+      return rejectAfterCanonicalReconciliation(
+        config.name,
+        baseline,
+        new Error(`MCP server "${config.name}" is already configured.`),
+      );
+    }
+    const candidateState: SessionMcpOverlayState = {
+      servers: new Map(baseline.servers).set(candidate.name, candidate),
+      enabledOverrides: baseline.enabledOverrides,
+    };
+    let reconciled: Awaited<ReturnType<typeof reconcileOverlayState>>;
+    try {
+      reconciled = await reconcileOverlayState(candidateState);
+    } catch (error) {
+      return mcpMutationFailure(
+        candidate.name,
+        await rollbackMutation(baseline, error),
+      );
+    }
+    const { plan } = reconciled;
+    if (plan.sessionDispositions[candidate.name] !== "active") {
+      return rejectAfterCanonicalReconciliation(
+        candidate.name,
+        baseline,
+        new Error(
+          `MCP server "${candidate.name}" is blocked by canonical MCP policy.`,
+        ),
+      );
     }
     const state = manager.getConnectionState(candidate.name);
-    if (state?.type === "connected" || state?.type === "disabled") {
+    if (
+      state?.type === "connected" ||
+      (candidate.enabled === false && state?.type === "disabled")
+    ) {
+      overlay = reconciled.overlay;
       return {
         serverName: candidate.name,
         success: true,
@@ -894,26 +1209,69 @@ export function createSessionMcpService(
       state?.type === "failed"
         ? state.error ?? `MCP server "${candidate.name}" failed to connect.`
         : `MCP server "${candidate.name}" did not become ready.`;
-    sessionServers.delete(candidate.name);
-    await refreshFromAuthority();
+    return mcpMutationFailure(
+      candidate.name,
+      await rollbackMutation(baseline, new Error(error)),
+    );
+  };
+  const reconnectServerUnlocked = async (
+    name: string,
+  ): Promise<McpServerMutationResult> => {
+    let reconciled: Awaited<ReturnType<typeof reconcileOverlayState>>;
+    try {
+      reconciled = await reconcileOverlayState(overlay);
+      overlay = reconciled.overlay;
+    } catch (error) {
+      return mcpMutationFailure(
+        name,
+        await failClosed(
+          "MCP reconnect reconciliation failed and the session was fail-closed.",
+          [error],
+        ),
+      );
+    }
+    const config = reconciled.plan.configs.find(
+      (candidate) => candidate.name === name,
+    );
+    if (config === undefined) {
+      return mcpMutationFailure(
+        name,
+        new Error(`MCP server "${name}" is not configured.`),
+      );
+    }
+    if (config.enabled === false) {
+      return mcpMutationFailure(
+        name,
+        new Error(`MCP server "${name}" is disabled in config.`),
+      );
+    }
+    const state = manager.getConnectionState(name);
+    if (state?.type !== "connected") {
+      const error =
+        state?.type === "failed"
+          ? state.error ?? `MCP server "${name}" failed to connect.`
+          : `MCP server "${name}" did not become ready.`;
+      return mcpMutationFailure(name, new Error(error));
+    }
     return {
-      serverName: candidate.name,
-      success: false,
-      toolCount: 0,
-      error,
+      serverName: name,
+      success: true,
+      toolCount: manager.getToolsByServer(name).length,
     };
   };
   return {
     effectiveServers: async () => buildEffectiveServerMap(runtimeManager),
     toolPluginProvenance: async () => null,
-    refreshFromAuthority,
-    reconnectServer:
-      typeof manager.reconnectServer === "function"
-        ? manager.reconnectServer.bind(manager)
-        : undefined,
-    enableServer: (name) => setServerEnabled(name, true),
-    disableServer: (name) => setServerEnabled(name, false),
-    addServer: addSessionServer,
+    refreshFromAuthority: (refreshOptions) =>
+      enqueueMutation(() => refreshFromAuthorityUnlocked(refreshOptions)),
+    reconnectServer: (name) =>
+      enqueueMutation(() => reconnectServerUnlocked(name)),
+    enableServer: (name) =>
+      enqueueMutation(() => setServerEnabledUnlocked(name, true)),
+    disableServer: (name) =>
+      enqueueMutation(() => setServerEnabledUnlocked(name, false)),
+    addServer: (config) =>
+      enqueueMutation(() => addSessionServerUnlocked(config)),
     getTools:
       typeof manager.getTools === "function"
         ? manager.getTools.bind(manager)
@@ -1099,6 +1457,13 @@ export async function startMcpManagerForSession(
   opts: MCPManagerStartOpts = {},
 ): Promise<void> {
   attachMcpManagerToSession(manager, session);
+  const refreshFromAuthority = session.services?.mcpManager?.refreshFromAuthority;
+  if (refreshFromAuthority !== undefined) {
+    await refreshFromAuthority(
+      opts.signal === undefined ? {} : { signal: opts.signal },
+    );
+    return;
+  }
   const metadataManager = manager as MCPManager & {
     getConfiguredServers?(): readonly MCPServerConfig[];
   };

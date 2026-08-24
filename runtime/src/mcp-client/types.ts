@@ -25,7 +25,18 @@ export interface PluginMcpSandboxMetadata {
 
 /** Provenance retained after policy resolution and transport adaptation. */
 export interface MCPServerOrigin {
-  readonly scope: "managed" | "user" | "project" | "local" | "plugin" | "session";
+  readonly scope:
+    | "default"
+    | "managed"
+    | "user"
+    | "project"
+    | "local"
+    | "flag"
+    | "profile"
+    | "environment"
+    | "cli"
+    | "plugin"
+    | "session";
   readonly pluginSource?: string;
   readonly pluginServer?: {
     readonly pluginName: string;

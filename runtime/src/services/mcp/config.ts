@@ -3,15 +3,25 @@ import { getPlatform } from 'src/utils/platform.js'
 import type { PluginError } from '../../types/plugin.js'
 import { isAgenCInChromeMCPServer } from '../../utils/agencInChrome/common.js'
 import { applyCanonicalConfigPatchSync } from '../../config/update-sync.js'
-import type { ManagedMcpServerPolicyEntry } from '../../config/schema.js'
-import { mergeConfigLayerSnapshots } from '../../config/repository.js'
+import type {
+  ManagedMcpServerPolicyEntry,
+  McpServerConfig as CanonicalMcpServerConfig,
+} from '../../config/schema.js'
+import {
+  mergeConfigLayerSnapshots,
+  resolveMcpLayerCandidates,
+  type McpLayerCandidate,
+  type ConfigScope as RepositoryConfigScope,
+} from '../../config/repository.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../../utils/log.js'
 import { loadPluginMcpServerRegistrations } from '../../plugins/registration/mcp-plugin-integration.js'
 import type { PluginLoadIssue } from '../../plugins/loader.js'
-import { isSettingSourceEnabled } from '../../utils/settings/constants.js'
 import { isRestrictedToPluginOnly } from '../../utils/settings/pluginOnlyPolicy.js'
-import type { CanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js'
+import {
+  runWithCanonicalSettingsAuthority,
+  type CanonicalSettingsAuthority,
+} from '../../utils/settings/canonicalAuthority.js'
 import {
   getSettingsFilePathForSource,
   getSettingsForSource,
@@ -32,7 +42,12 @@ import {
   type McpWebSocketServerConfig,
   type ScopedMcpServerConfig,
 } from './types.js'
-import { getProjectMcpServerStatus } from './utils.js'
+import {
+  getProjectMcpServerStatus,
+  mcpServerDefinitionId,
+  mcpServerDefinitionOrigin,
+  type McpServerDefinitionOrigin,
+} from './utils.js'
 import {
   canonicalMcpServerToServiceConfig,
   serviceMcpServerToCanonicalConfig,
@@ -583,13 +598,6 @@ function canonicalMcpConfigsByScope(
   servers: Record<string, ScopedMcpServerConfig>
   errors: ValidationError[]
 } {
-  if (
-    scope !== 'enterprise' &&
-    !isSettingSourceEnabled(settingsSourceForMcpScope(scope))
-  ) {
-    return { servers: {}, errors: [] }
-  }
-
   const layers = authority.sources(repositoryScopeForMcpScope(scope))
   const settings = mergeConfigLayerSnapshots(layers)
   if (settings?.mcp_servers === undefined) {
@@ -905,21 +913,200 @@ export function getApprovedMcpConfigByName(
   return null
 }
 
+export interface ResolvedMcpServerDefinition {
+  readonly id: string
+  readonly origin: McpServerDefinitionOrigin
+}
+
+export type McpSessionServerDisposition = 'active' | 'shadowed' | 'blocked'
+
+function withMcpServerEnabled(
+  config: ScopedMcpServerConfig,
+  enabled: boolean,
+): ScopedMcpServerConfig {
+  switch (config.type) {
+    case undefined:
+      return { ...config, enabled }
+    case 'stdio':
+      return { ...config, enabled }
+    case 'sse':
+      return { ...config, enabled }
+    case 'http':
+      return { ...config, enabled }
+    case 'ws':
+      return { ...config, enabled }
+    default:
+      return config
+  }
+}
+
+function applyMcpEnabledOverrides(
+  servers: Readonly<Record<string, ScopedMcpServerConfig>>,
+  enabledOverrides: ReadonlyMap<string, boolean>,
+): {
+  servers: Record<string, ScopedMcpServerConfig>
+  definitions: Map<string, ResolvedMcpServerDefinition>
+} {
+  const effective: Record<string, ScopedMcpServerConfig> = {}
+  const definitions = new Map<string, ResolvedMcpServerDefinition>()
+  for (const [name, config] of Object.entries(servers)) {
+    const definition = {
+      id: mcpServerDefinitionId(name, config),
+      origin: mcpServerDefinitionOrigin(config),
+    }
+    definitions.set(name, definition)
+    const enabled = enabledOverrides.get(definition.id)
+    effective[name] =
+      definition.origin !== 'managed' &&
+      enabled !== undefined
+        ? withMcpServerEnabled(config, enabled)
+        : config
+  }
+  return { servers: effective, definitions }
+}
+
+function mcpDefinitionIds(
+  ...sources: ReadonlyArray<
+    ReadonlyMap<string, ResolvedMcpServerDefinition>
+  >
+): ReadonlySet<string> {
+  return new Set(
+    sources.flatMap(source =>
+      Array.from(source.values(), definition => definition.id),
+    ),
+  )
+}
+
+function finalMcpDefinitions(
+  servers: Readonly<Record<string, ScopedMcpServerConfig>>,
+  ...sources: ReadonlyArray<
+    ReadonlyMap<string, ResolvedMcpServerDefinition>
+  >
+): Map<string, ResolvedMcpServerDefinition> {
+  const available = new Map<string, ResolvedMcpServerDefinition>()
+  for (const source of sources) {
+    for (const [name, definition] of source) {
+      available.set(name, definition)
+    }
+  }
+  return new Map(
+    Object.keys(servers).flatMap(name => {
+      const definition = available.get(name)
+      return definition === undefined ? [] : [[name, definition]]
+    }),
+  )
+}
+
+/**
+ * Capture one immutable config generation before plugin discovery yields.
+ * The atomic authority view prevents later reads from mixing generations
+ * after an async boundary.
+ */
+function captureMcpResolutionAuthority(
+  authority: CanonicalSettingsAuthority,
+): CanonicalSettingsAuthority {
+  const { config, layers } = authority.authoritySnapshot()
+  const projectRoot = authority.projectRoot
+  const homeContext = authority.homeContext
+  const stateRepository = authority.stateRepository
+  const readonlyFailure = (): never => {
+    throw new Error('An MCP resolution snapshot cannot be reloaded or observed')
+  }
+  return Object.freeze({
+    authoritySnapshot: () => Object.freeze({ config, layers }),
+    current: () => config,
+    sources: (scope: RepositoryConfigScope) =>
+      layers.filter(layer => layer.scope === scope),
+    projectRoot,
+    homeContext,
+    stateRepository,
+    reload: async () => readonlyFailure(),
+    subscribe: () => readonlyFailure(),
+  })
+}
+
+function serviceScopeForRepositorySource(
+  source: RepositoryConfigScope,
+): ConfigScope {
+  switch (source) {
+    case 'managed':
+      return 'managed'
+    case 'project':
+    case 'local':
+    case 'user':
+      return source
+    case 'default':
+    case 'plugin':
+    case 'flag':
+    case 'profile':
+    case 'environment':
+    case 'cli':
+      return 'user'
+  }
+}
+
+function canonicalMcpCandidateIsComplete(
+  config: CanonicalMcpServerConfig,
+): boolean {
+  const transport = config.transport ?? 'stdio'
+  return transport === 'stdio'
+    ? typeof config.command === 'string' && config.command.trim().length > 0
+    : typeof config.endpoint === 'string' && config.endpoint.trim().length > 0
+}
+
+function parseCanonicalMcpCandidate(
+  candidate: Pick<McpLayerCandidate, 'name' | 'source' | 'config'>,
+  environment: Readonly<Record<string, string | undefined>>,
+): {
+  config?: ScopedMcpServerConfig
+  errors: ValidationError[]
+} {
+  const scope = serviceScopeForRepositorySource(candidate.source.scope)
+  const parsed = parseMcpConfig({
+    configObject: {
+      mcpServers: {
+        [candidate.name]: canonicalMcpServerToServiceConfig(candidate.config),
+      },
+    },
+    expandVars: true,
+    environment,
+    scope,
+    ...(candidate.source.path !== undefined
+      ? { filePath: candidate.source.path }
+      : {}),
+  })
+  const config = parsed.config?.mcpServers[candidate.name]
+  return {
+    ...(config === undefined
+      ? {}
+      : {
+          config: {
+            ...config,
+            scope,
+            authoritySource: candidate.source.scope,
+          },
+        }),
+    errors: parsed.errors,
+  }
+}
+
 /** Resolve the execution-safe outbound MCP set from one config authority. */
 export async function getAllMcpConfigs(
   authority: CanonicalSettingsAuthority,
   environment: Readonly<Record<string, string | undefined>> = {},
   sessionServers: Readonly<Record<string, ScopedMcpServerConfig>> = {},
+  enabledOverrides: ReadonlyMap<string, boolean> = new Map(),
 ): Promise<{
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
+  definitions: ReadonlyMap<string, ResolvedMcpServerDefinition>
+  knownDefinitionIds: ReadonlySet<string>
+  authoritySnapshot: ReturnType<CanonicalSettingsAuthority['current']>
+  sessionDispositions: Readonly<
+    Record<string, McpSessionServerDisposition>
+  >
 }> {
-  const enterpriseResolution = getMcpConfigsByScope(
-    'enterprise',
-    authority,
-    environment,
-  )
-  const enterpriseServers = enterpriseResolution.servers
+  const resolutionAuthority = captureMcpResolutionAuthority(authority)
   const validationErrorsToPluginErrors = (
     errors: readonly ValidationError[],
   ): PluginError[] =>
@@ -932,45 +1119,61 @@ export async function getAllMcpConfigs(
       error: error.message,
     }))
 
-  // If an enterprise mcp config exists, do not use any others; this has exclusive control over all MCP servers
-  // (enterprise customers often do not want their users to be able to add their own MCP servers).
-  if (hasManagedMcpAuthority(authority)) {
-    // Apply policy filtering to enterprise servers
-    const filtered: Record<string, ScopedMcpServerConfig> = {}
-
-    for (const [name, serverConfig] of Object.entries(enterpriseServers)) {
-      if (!isMcpServerAllowedByPolicy(authority, name, serverConfig)) {
-        continue
+  const managedExclusive = hasManagedMcpAuthority(resolutionAuthority)
+  const mcpLocked = !managedExclusive &&
+    isRestrictedToPluginOnly('mcp', resolutionAuthority)
+  const repositoryErrors: ValidationError[] = []
+  const parsedRepositoryCandidates = new Map<
+    McpLayerCandidate,
+    ScopedMcpServerConfig
+  >()
+  const repositoryResolution = resolveMcpLayerCandidates(
+    resolutionAuthority.authoritySnapshot().layers,
+    candidate => {
+      if (mcpLocked) return 'reject'
+      if (!canonicalMcpCandidateIsComplete(candidate.config)) {
+        if (candidate.source.scope !== 'project') return 'defer'
+        repositoryErrors.push(
+          ...parseCanonicalMcpCandidate(candidate, environment).errors,
+        )
+        return 'reject'
       }
-      filtered[name] = serverConfig
-    }
-
-    return {
-      servers: filtered,
-      errors: validationErrorsToPluginErrors(enterpriseResolution.errors),
-    }
+      const parsed = parseCanonicalMcpCandidate(candidate, environment)
+      repositoryErrors.push(...parsed.errors)
+      if (parsed.config === undefined) return 'reject'
+      if (
+        candidate.source.scope === 'project' &&
+        getProjectMcpServerStatus(
+          resolutionAuthority,
+          candidate.name,
+          parsed.config,
+        ) !== 'approved'
+      ) {
+        return 'reject'
+      }
+      if (!isMcpServerAllowedByPolicy(
+        resolutionAuthority,
+        candidate.name,
+        parsed.config,
+      )) {
+        return 'reject'
+      }
+      parsedRepositoryCandidates.set(candidate, parsed.config)
+      return 'accept'
+    },
+  )
+  for (const candidate of repositoryResolution.unresolved.values()) {
+    repositoryErrors.push(
+      ...parseCanonicalMcpCandidate(candidate, environment).errors,
+    )
+  }
+  const repositoryServers = new Map<string, ScopedMcpServerConfig>()
+  for (const [name, candidate] of repositoryResolution.winners) {
+    const config = parsedRepositoryCandidates.get(candidate)
+    if (config !== undefined) repositoryServers.set(name, config)
   }
 
-  // Load other scopes — unless the managed policy locks MCP to plugin-only.
-  // Unlike the enterprise-exclusive block above, this keeps plugin servers.
-  const mcpLocked = isRestrictedToPluginOnly('mcp', authority)
-  const noServers: {
-    servers: Record<string, ScopedMcpServerConfig>
-    errors: ValidationError[]
-  } = {
-    servers: {},
-    errors: [],
-  }
-  const userResolution = mcpLocked
-    ? noServers
-    : getMcpConfigsByScope('user', authority, environment)
-  const projectResolution = mcpLocked
-    ? noServers
-    : getMcpConfigsByScope('project', authority, environment)
-  const localResolution = mcpLocked
-    ? noServers
-    : getMcpConfigsByScope('local', authority, environment)
-  const sessionResolution = mcpLocked
+  const sessionResolution = managedExclusive || mcpLocked
     ? { config: null, errors: [] as ValidationError[] }
     : parseMcpConfig({
         configObject: { mcpServers: sessionServers },
@@ -978,42 +1181,68 @@ export async function getAllMcpConfigs(
         environment,
         scope: 'dynamic',
       })
-  const activeSessionServers = addScopeToServers(
-    sessionResolution.config?.mcpServers,
-    'dynamic',
+  const activeSessionServers = Object.fromEntries(
+    Object.entries(
+      addScopeToServers(sessionResolution.config?.mcpServers, 'dynamic'),
+    ).map(([name, config]) => [
+      name,
+      { ...config, authoritySource: 'session' as const },
+    ]),
   )
-  const approvedProjectServers: Record<string, ScopedMcpServerConfig> = {}
-  for (const [name, config] of Object.entries(projectResolution.servers)) {
-    if (getProjectMcpServerStatus(authority, name, config) === 'approved') {
-      approvedProjectServers[name] = config
-    }
-  }
-
-  // Filter every source before applying name precedence. A blocked definition
-  // must not shadow an allowed lower-precedence definition with the same name.
   const allowedSessionServers = filterMcpServersByPolicy(
-    authority,
+    resolutionAuthority,
     activeSessionServers,
   ).allowed
-  const allowedUserServers = filterMcpServersByPolicy(
-    authority,
-    userResolution.servers,
-  ).allowed
-  const allowedProjectServers = filterMcpServersByPolicy(
-    authority,
-    approvedProjectServers,
-  ).allowed
-  const allowedLocalServers = filterMcpServersByPolicy(
-    authority,
-    localResolution.servers,
-  ).allowed
-  const manualServers: Record<string, ScopedMcpServerConfig> = Object.assign(
-    {},
-    allowedSessionServers,
-    allowedUserServers,
-    allowedProjectServers,
-    allowedLocalServers,
+
+  // Session additions sit above repository defaults/plugin defaults and below
+  // every operator, workspace, flag, profile, environment, CLI, and managed
+  // definition. They never merge into a higher canonical declaration.
+  const manualServerMap = new Map<string, ScopedMcpServerConfig>(
+    Object.entries(allowedSessionServers),
   )
+  for (const [name, config] of repositoryServers) {
+    const repositoryWinner = repositoryResolution.winners.get(name)
+    if (
+      !manualServerMap.has(name) ||
+      (repositoryWinner !== undefined &&
+        repositoryWinner.source.scope !== 'default' &&
+        repositoryWinner.source.scope !== 'plugin')
+    ) {
+      manualServerMap.set(name, config)
+    }
+  }
+  const manualServers = Object.fromEntries(manualServerMap)
+  const sessionDispositions: Record<string, McpSessionServerDisposition> =
+    Object.fromEntries(
+      Object.keys(sessionServers).map(name => {
+        const sessionConfig = allowedSessionServers[name]
+        if (sessionConfig === undefined) return [name, 'blocked' as const]
+        return [
+          name,
+          manualServerMap.get(name) === sessionConfig
+            ? 'active' as const
+            : 'shadowed' as const,
+        ]
+      }),
+    )
+  const effectiveManual = applyMcpEnabledOverrides(
+    manualServers,
+    enabledOverrides,
+  )
+  const admittedManualDefinitions = [
+    ...Array.from(repositoryResolution.candidatesByName.values()).flatMap(
+      candidates => candidates.flatMap(candidate => {
+        const config = parsedRepositoryCandidates.get(candidate)
+        return config === undefined
+          ? []
+          : [applyMcpEnabledOverrides(
+              { [candidate.name]: config },
+              new Map(),
+            ).definitions]
+      }),
+    ),
+    applyMcpEnabledOverrides(allowedSessionServers, new Map()).definitions,
+  ]
 
   // Load plugin MCP servers
   const pluginMcpServers: Record<string, ScopedMcpServerConfig> = {}
@@ -1024,13 +1253,19 @@ export async function getAllMcpConfigs(
   > = []
   let registrationFailure: PluginError | undefined
   try {
-    registrations = await loadPluginMcpServerRegistrations({
-      agencHome: authority.homeContext.path,
-      workspaceRoot: authority.projectRoot,
-      config: authority.current(),
-      env: { ...environment },
-      errors: registrationIssues,
-    })
+    if (!managedExclusive) {
+      registrations = await runWithCanonicalSettingsAuthority(
+        resolutionAuthority,
+        () =>
+          loadPluginMcpServerRegistrations({
+            agencHome: resolutionAuthority.homeContext.path,
+            workspaceRoot: resolutionAuthority.projectRoot,
+            config: resolutionAuthority.current(),
+            env: { ...environment },
+            errors: registrationIssues,
+          }),
+      )
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     registrationFailure = {
@@ -1046,9 +1281,7 @@ export async function getAllMcpConfigs(
   }
   const mcpErrors: PluginError[] = [
     ...validationErrorsToPluginErrors([
-      ...userResolution.errors,
-      ...projectResolution.errors,
-      ...localResolution.errors,
+      ...repositoryErrors,
       ...sessionResolution.errors,
     ]),
     ...registrationIssues.map(issue => ({
@@ -1082,7 +1315,7 @@ export async function getAllMcpConfigs(
   // disabled manual server mustn't suppress a plugin server, or neither runs
   // (manual is skipped by name at connection time; plugin was removed here).
   const enabledManualServers: Record<string, ScopedMcpServerConfig> = {}
-  for (const [name, config] of Object.entries(manualServers)) {
+  for (const [name, config] of Object.entries(effectiveManual.servers)) {
     if (!isMcpServerDisabled(name, config)) {
       enabledManualServers[name] = config
     }
@@ -1094,10 +1327,14 @@ export async function getAllMcpConfigs(
   const enabledPluginServers: Record<string, ScopedMcpServerConfig> = {}
   const disabledPluginServers: Record<string, ScopedMcpServerConfig> = {}
   const allowedPluginServers = filterMcpServersByPolicy(
-    authority,
+    resolutionAuthority,
     pluginMcpServers,
   ).allowed
-  for (const [name, config] of Object.entries(allowedPluginServers)) {
+  const effectivePlugins = applyMcpEnabledOverrides(
+    allowedPluginServers,
+    enabledOverrides,
+  )
+  for (const [name, config] of Object.entries(effectivePlugins.servers)) {
     if (isMcpServerDisabled(name, config)) {
       disabledPluginServers[name] = config
     } else {
@@ -1116,15 +1353,28 @@ export async function getAllMcpConfigs(
     if (error !== null) mcpErrors.push(error)
   }
 
-  // Merge in order of precedence: plugin < session < user < project < local.
-  // `manualServers` already contains the policy-allowed winner per name.
-  const configs = Object.assign(
-    {},
-    dedupedPluginServers,
-    manualServers,
-  )
+  // Discovered plugins are the lowest live source; the repository fold and
+  // session precedence above already selected one admitted manual winner.
+  const configs = Object.fromEntries([
+    ...Object.entries(dedupedPluginServers),
+    ...Object.entries(effectiveManual.servers),
+  ])
 
-  return { servers: configs, errors: mcpErrors }
+  return {
+    servers: configs,
+    errors: mcpErrors,
+    definitions: finalMcpDefinitions(
+      configs,
+      effectivePlugins.definitions,
+      effectiveManual.definitions,
+    ),
+    knownDefinitionIds: mcpDefinitionIds(
+      ...admittedManualDefinitions,
+      effectivePlugins.definitions,
+    ),
+    authoritySnapshot: resolutionAuthority.current(),
+    sessionDispositions,
+  }
 }
 
 /**

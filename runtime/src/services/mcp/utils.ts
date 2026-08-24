@@ -134,12 +134,73 @@ function canonicalApprovalValue(value: unknown): unknown {
   )
 }
 
+export type McpServerDefinitionOrigin =
+  | 'default'
+  | 'managed'
+  | 'user'
+  | 'project'
+  | 'local'
+  | 'flag'
+  | 'profile'
+  | 'environment'
+  | 'cli'
+  | 'plugin'
+  | 'session'
+
+export function mcpServerDefinitionOrigin(
+  config: ScopedMcpServerConfig,
+): McpServerDefinitionOrigin {
+  if (config.authoritySource !== undefined) return config.authoritySource
+  if (config.scope === 'enterprise' || config.scope === 'managed') {
+    return 'managed'
+  }
+  if (config.scope === 'dynamic' && config.pluginServer !== undefined) {
+    return 'plugin'
+  }
+  if (config.scope === 'dynamic' || config.scope === 'agencai') {
+    return 'session'
+  }
+  return config.scope
+}
+
+/**
+ * Content identity for the exact policy-resolved definition behind a live
+ * server. Values such as headers and environment entries are hashed and are
+ * never returned or logged.
+ */
+export function mcpServerDefinitionId(
+  name: string,
+  config: ScopedMcpServerConfig,
+): string {
+  const {
+    scope: _scope,
+    authoritySource: _authoritySource,
+    pluginSource,
+    pluginServer,
+    ...definition
+  } = config
+  const canonical = canonicalApprovalValue({
+    name,
+    origin: {
+      scope: mcpServerDefinitionOrigin(config),
+      pluginSource,
+      pluginServer,
+    },
+    definition,
+  })
+  return createHash('sha256')
+    .update('agenc:mcp-server-definition:v1\0')
+    .update(JSON.stringify(canonical))
+    .digest('hex')
+}
+
 /** Content-addressed identity for a parsed project MCP server definition. */
 export function projectMcpServerApprovalDigest(
   config: ScopedMcpServerConfig,
 ): string {
+  const { authoritySource: _authoritySource, ...approvalDefinition } = config
   return createHash('sha256')
-    .update(JSON.stringify(canonicalApprovalValue(config)))
+    .update(JSON.stringify(canonicalApprovalValue(approvalDefinition)))
     .digest('hex')
 }
 

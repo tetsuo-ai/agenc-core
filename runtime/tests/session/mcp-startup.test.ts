@@ -9,7 +9,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MCPManager } from "../mcp-client/manager.js";
+import {
+  MCPManager,
+  type MCPConnectionState,
+  type MCPManagerStartOpts,
+} from "../mcp-client/manager.js";
+import type { MCPServerConfig } from "../mcp-client/types.js";
 import {
   projectMcpManagerToConnections,
   type McpManagerLike,
@@ -28,17 +33,18 @@ import { getAllMcpConfigs } from "../services/mcp/config.js";
 import {
   attachMcpManagerToSession,
   createSessionMcpManager,
-  createSessionMcpManagerFromAuthority,
   createSessionMcpSamplingHandlers,
   createSessionMcpService,
-  refreshMcpManagerFromAuthority,
   requiredMcpServerNames,
   resolveSessionMcpConfig,
   startMcpManagerForSession,
 } from "./mcp-startup.js";
 import type { Session } from "./session.js";
 import { ConfigStore } from "../config/store.js";
-import type { CanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import {
+  getCanonicalSettingsAuthority,
+  type CanonicalSettingsAuthority,
+} from "../utils/settings/canonicalAuthority.js";
 
 vi.mock("../mcp-client/connection.js", () => ({
   createMCPConnection: vi.fn(),
@@ -579,6 +585,9 @@ async function createMcpAuthorityFixture(options: {
   readonly root: string;
   readonly home: string;
   readonly cwd: string;
+  readonly userConfigPath: string;
+  readonly localConfigPath: string;
+  readonly managedConfigPath: string;
   readonly store: ConfigStore;
   cleanup(): void;
 }> {
@@ -587,8 +596,10 @@ async function createMcpAuthorityFixture(options: {
   const cwd = join(root, "project");
   mkdirSync(home, { recursive: true });
   mkdirSync(cwd, { recursive: true });
+  mkdirSync(join(cwd, ".agenc"), { recursive: true });
+  const userConfigPath = join(home, "config.toml");
   writeFileSync(
-    join(home, "config.toml"),
+    userConfigPath,
     ["config_version = 2", ...(options.user ?? []), ""].join("\n"),
     "utf8",
   );
@@ -601,6 +612,7 @@ async function createMcpAuthorityFixture(options: {
     );
   }
   const managedConfigPath = join(root, "managed.toml");
+  const localConfigPath = join(cwd, ".agenc", "config.local.toml");
   if (options.managed !== undefined) {
     writeFileSync(
       managedConfigPath,
@@ -622,8 +634,116 @@ async function createMcpAuthorityFixture(options: {
     root,
     home,
     cwd,
+    userConfigPath,
+    localConfigPath,
+    managedConfigPath,
     store,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+function writeCanonicalFixtureConfig(
+  path: string,
+  lines: readonly string[],
+): void {
+  writeFileSync(path, ["config_version = 2", ...lines, ""].join("\n"), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+}
+
+function deferred<T = void>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+type TransactionalRefreshHook = (
+  configs: readonly MCPServerConfig[],
+  opts: MCPManagerStartOpts,
+  callIndex: number,
+) => Promise<void> | void;
+
+function createTransactionalManager(hook?: TransactionalRefreshHook) {
+  let configured: readonly MCPServerConfig[] = [];
+  const states = new Map<string, MCPConnectionState>();
+  let callIndex = 0;
+  let activeRefreshes = 0;
+  let maxActiveRefreshes = 0;
+
+  const refreshServers = vi.fn(
+    async (
+      nextConfigs: ReadonlyArray<MCPServerConfig>,
+      opts: MCPManagerStartOpts = {},
+    ): Promise<void> => {
+      const copied = nextConfigs.map((config) => ({
+        ...config,
+        ...(config.args !== undefined ? { args: [...config.args] } : {}),
+      }));
+      const currentCall = callIndex;
+      callIndex += 1;
+      activeRefreshes += 1;
+      maxActiveRefreshes = Math.max(maxActiveRefreshes, activeRefreshes);
+      try {
+        await hook?.(copied, opts, currentCall);
+        configured = copied;
+        states.clear();
+        for (const config of configured) {
+          states.set(config.name, {
+            type: config.enabled === false ? "disabled" : "connected",
+          });
+        }
+      } finally {
+        activeRefreshes -= 1;
+      }
+    },
+  );
+  const stop = vi.fn(async (): Promise<void> => {
+    configured = [];
+    states.clear();
+  });
+  const manager = {
+    refreshServers,
+    stop,
+    getConfiguredServers: () => configured,
+    getServerConfig: (name: string) =>
+      configured.find((config) => config.name === name),
+    getConnectionState: (name: string) => states.get(name),
+    getTools: () =>
+      configured.flatMap((config) =>
+        states.get(config.name)?.type === "connected"
+          ? [{ name: `mcp.${config.name}.tool` }]
+          : [],
+      ),
+    getToolsByServer: (name: string) =>
+      states.get(name)?.type === "connected"
+        ? [{ name: `mcp.${name}.tool` }]
+        : [],
+    getConnectedServers: () =>
+      configured
+        .filter((config) => states.get(config.name)?.type === "connected")
+        .map((config) => config.name),
+    isConnected: (name: string) => states.get(name)?.type === "connected",
+  } as unknown as MCPManager;
+
+  return {
+    manager,
+    refreshServers,
+    stop,
+    get configured(): readonly MCPServerConfig[] {
+      return configured;
+    },
+    get maxActiveRefreshes(): number {
+      return maxActiveRefreshes;
+    },
   };
 }
 
@@ -639,7 +759,7 @@ describe("mcp-startup session-owned manager helpers", () => {
     ]);
   });
 
-  it("constructs the real manager from the policy-aware authority", async () => {
+  it("configures the real manager through the policy-aware session service", async () => {
     const fixture = await createMcpAuthorityFixture({
       user: [
         "[mcp_servers.github]",
@@ -650,10 +770,12 @@ describe("mcp-startup session-owned manager helpers", () => {
       ],
     });
     try {
-      const manager = await createSessionMcpManagerFromAuthority(
-        fixture.store,
-        {},
-      );
+      const manager = createSessionMcpManager([]);
+      const service = createSessionMcpService(manager, {
+        authority: fixture.store,
+        environment: {},
+      });
+      await service.refreshFromAuthority?.();
       expect(manager).toBeInstanceOf(MCPManager);
       expect(manager.getConfiguredServers()).toEqual([
         expect.objectContaining({
@@ -1042,23 +1164,8 @@ describe("mcp-startup session-owned manager helpers", () => {
     ]);
   });
 
-  it("forwards live slash command MCP manager controls", async () => {
+  it("forwards read-only MCP manager operations", async () => {
     const manager = {
-      reconnectServer: vi.fn(async (name: string) => ({
-        serverName: name,
-        success: true,
-        toolCount: 2,
-      })),
-      enableServer: vi.fn(async (name: string) => ({
-        serverName: name,
-        success: true,
-        toolCount: 1,
-      })),
-      disableServer: vi.fn(async (name: string) => ({
-        serverName: name,
-        success: true,
-        toolCount: 0,
-      })),
       getTools: vi.fn(() => [{ name: "mcp.github.search" }]),
       getToolsByServer: vi.fn((name: string) =>
         name === "github" ? [{ name: "mcp.github.search" }] : [],
@@ -1067,18 +1174,6 @@ describe("mcp-startup session-owned manager helpers", () => {
 
     const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
 
-    await expect(service.reconnectServer?.("github")).resolves.toMatchObject({
-      success: true,
-      toolCount: 2,
-    });
-    await expect(service.enableServer?.("github")).resolves.toMatchObject({
-      success: true,
-      toolCount: 1,
-    });
-    await expect(service.disableServer?.("github")).resolves.toMatchObject({
-      success: true,
-      toolCount: 0,
-    });
     expect(service.getTools?.()).toEqual([{ name: "mcp.github.search" }]);
     expect(service.getToolsByServer?.("github")).toEqual([
       { name: "mcp.github.search" },
@@ -1087,10 +1182,7 @@ describe("mcp-startup session-owned manager helpers", () => {
 
   it("keeps an admitted session server and its enabled override across authority refreshes", async () => {
     const fixture = await createMcpAuthorityFixture();
-    const manager = await createSessionMcpManagerFromAuthority(
-      fixture.store,
-      {},
-    );
+    const manager = createSessionMcpManager([]);
     const service = createSessionMcpService(manager, {
       authority: fixture.store,
       environment: {},
@@ -1136,10 +1228,7 @@ describe("mcp-startup session-owned manager helpers", () => {
 
   it("rejects session additions excluded by managed MCP authority", async () => {
     const fixture = await createMcpAuthorityFixture({ managed: ["[mcp_servers]"] });
-    const manager = await createSessionMcpManagerFromAuthority(
-      fixture.store,
-      {},
-    );
+    const manager = createSessionMcpManager([]);
     const service = createSessionMcpService(manager, {
       authority: fixture.store,
       environment: {},
@@ -1234,11 +1323,11 @@ describe("mcp-startup session-owned manager helpers", () => {
       refreshServers,
     } as unknown as MCPManager;
     try {
-      const result = await refreshMcpManagerFromAuthority({
-        manager,
+      const service = createSessionMcpService(manager, {
         authority: fixture.store,
         environment: {},
       });
+      const result = await service.refreshFromAuthority?.();
 
       expect(refreshServers).toHaveBeenCalledWith(
         [
@@ -1253,7 +1342,7 @@ describe("mcp-startup session-owned manager helpers", () => {
             command: "fs-mcp",
           }),
         ],
-        { requiredServers: ["github"] },
+        expect.objectContaining({ requiredServers: ["github"] }),
       );
       expect(result).toEqual({
         configuredServers: ["github", "filesystem"],
@@ -1286,11 +1375,11 @@ describe("mcp-startup session-owned manager helpers", () => {
       refreshServers,
     } as unknown as MCPManager;
     try {
-      const result = await refreshMcpManagerFromAuthority({
-        manager,
+      const service = createSessionMcpService(manager, {
         authority: fixture.store,
         environment: {},
       });
+      const result = await service.refreshFromAuthority?.();
 
       expect(refreshServers).toHaveBeenCalledWith(
         [
@@ -1300,7 +1389,7 @@ describe("mcp-startup session-owned manager helpers", () => {
           }),
           expect.objectContaining({ name: "github" }),
         ],
-        {},
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
       expect(result.configuredServers).toEqual([
         "plugin:sample:goal",
@@ -1346,12 +1435,675 @@ describe("mcp-startup session-owned manager helpers", () => {
             command: "config-mcp",
           }),
         ],
-        { requiredServers: ["configOnly"] },
+        expect.objectContaining({ requiredServers: ["configOnly"] }),
       );
       expect(result).toEqual({
         configuredServers: ["configOnly"],
         requiredServers: ["configOnly"],
       });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+describe("session MCP mutation transactions", () => {
+  it("rejects malformed session additions before touching the manager", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await expect(
+        service.addServer?.({ name: "bad name", command: "node" }),
+      ).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("Invalid MCP server name"),
+      });
+      await expect(
+        service.addServer?.({ name: "missing_command" }),
+      ).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("missing its stdio command"),
+      });
+      expect(harness.refreshServers).not.toHaveBeenCalled();
+      expect(mockCreateMCPConnection).not.toHaveBeenCalled();
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("serializes concurrent session additions without losing either overlay", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const firstRefresh = deferred();
+    const harness = createTransactionalManager(async (_configs, _opts, call) => {
+      if (call === 0) await firstRefresh.promise;
+    });
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      const first = service.addServer?.({ name: "alpha", command: "alpha" });
+      await vi.waitFor(() => expect(harness.refreshServers).toHaveBeenCalledTimes(1));
+      const second = service.addServer?.({ name: "beta", command: "beta" });
+      await Promise.resolve();
+      expect(harness.refreshServers).toHaveBeenCalledTimes(1);
+
+      firstRefresh.resolve(undefined);
+      await expect(Promise.all([first, second])).resolves.toEqual([
+        expect.objectContaining({ serverName: "alpha", success: true }),
+        expect.objectContaining({ serverName: "beta", success: true }),
+      ]);
+      expect(harness.configured.map((config) => config.name)).toEqual([
+        "alpha",
+        "beta",
+      ]);
+      expect(harness.maxActiveRefreshes).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("serializes authority refresh behind an in-flight session addition", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const firstRefresh = deferred();
+    const harness = createTransactionalManager(async (_configs, _opts, call) => {
+      if (call === 0) await firstRefresh.promise;
+    });
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      const add = service.addServer?.({ name: "session", command: "session" });
+      await vi.waitFor(() => expect(harness.refreshServers).toHaveBeenCalledTimes(1));
+      writeCanonicalFixtureConfig(fixture.userConfigPath, [
+        "[mcp_servers.durable]",
+        'command = "durable"',
+      ]);
+      await fixture.store.reload();
+      const refresh = service.refreshFromAuthority?.();
+
+      firstRefresh.resolve(undefined);
+      await expect(add).resolves.toMatchObject({ success: true });
+      await expect(refresh).resolves.toEqual({
+        configuredServers: ["session", "durable"],
+        requiredServers: [],
+      });
+      expect(harness.configured.map((config) => config.name)).toEqual([
+        "session",
+        "durable",
+      ]);
+      expect(harness.maxActiveRefreshes).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("expires an enabled override when the exact definition changes", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.target]", 'command = "target-v1"'],
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      await expect(service.disableServer?.("target")).resolves.toMatchObject({
+        success: true,
+      });
+      expect(harness.configured[0]).toMatchObject({
+        command: "target-v1",
+        enabled: false,
+      });
+
+      writeCanonicalFixtureConfig(fixture.userConfigPath, [
+        "[mcp_servers.target]",
+        'command = "target-v2"',
+      ]);
+      await fixture.store.reload();
+      await service.refreshFromAuthority?.();
+      expect(harness.configured[0]).toMatchObject({
+        command: "target-v2",
+      });
+      expect(harness.configured[0]?.enabled).toBeUndefined();
+      expect(harness.manager.getConnectionState("target")).toEqual({
+        type: "connected",
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("does not carry a user override onto a managed replacement", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.target]", 'command = "user-target"'],
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      await service.disableServer?.("target");
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [
+        "[mcp_servers.target]",
+        'command = "managed-target"',
+      ]);
+      await fixture.store.reload();
+      await service.refreshFromAuthority?.();
+
+      expect(harness.configured).toEqual([
+        expect.objectContaining({
+          name: "target",
+          command: "managed-target",
+          origin: { scope: "managed" },
+        }),
+      ]);
+      expect(harness.configured[0]?.enabled).toBeUndefined();
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("rejects managed toggles while reconciling canonical state", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      managed: ["[mcp_servers.locked]", 'command = "managed-mcp"'],
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      await expect(service.disableServer?.("locked")).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("controlled by canonical managed policy"),
+      });
+      await expect(service.enableServer?.("locked")).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("controlled by canonical managed policy"),
+      });
+      expect(harness.configured[0]).toMatchObject({
+        name: "locked",
+        origin: { scope: "managed" },
+      });
+      expect(harness.configured[0]?.enabled).toBeUndefined();
+      expect(harness.refreshServers).toHaveBeenCalledTimes(3);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("rolls back a failed session add and allows the same name to be retried", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const harness = createTransactionalManager(async (_configs, _opts, call) => {
+      if (call === 0) throw new Error("candidate apply failed");
+    });
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await expect(
+        service.addServer?.({ name: "retry", command: "missing" }),
+      ).resolves.toEqual({
+        serverName: "retry",
+        success: false,
+        toolCount: 0,
+        error: "candidate apply failed",
+      });
+      expect(harness.configured).toEqual([]);
+
+      await expect(
+        service.addServer?.({ name: "retry", command: "working" }),
+      ).resolves.toMatchObject({ serverName: "retry", success: true });
+      expect(harness.configured).toEqual([
+        expect.objectContaining({ name: "retry", command: "working" }),
+      ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("fail-closes when candidate application and rollback both fail", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const harness = createTransactionalManager(async (_configs, _opts, call) => {
+      if (call === 0) throw new Error("candidate failed");
+      if (call === 1) throw new Error("rollback failed");
+    });
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await expect(
+        service.addServer?.({ name: "unsafe", command: "unsafe" }),
+      ).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("rollback failed"),
+      });
+      expect(harness.refreshServers).toHaveBeenCalledTimes(3);
+      expect(harness.configured).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("fail-closes a failed authority refresh instead of preserving stale configs", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.stale]", 'command = "stale"'],
+    });
+    const harness = createTransactionalManager(async (_configs, _opts, call) => {
+      if (call === 1) throw new Error("authority apply failed");
+    });
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      expect(harness.configured.map((config) => config.name)).toEqual(["stale"]);
+
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [
+        'deniedMcpServers = [{ serverName = "stale" }]',
+      ]);
+      await fixture.store.reload();
+      await expect(service.refreshFromAuthority?.()).rejects.toThrow(
+        "Canonical MCP refresh failed and the session was fail-closed",
+      );
+      expect(harness.configured).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("restores a shadowed session definition with its exact override intact", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.addServer?.({ name: "shared", command: "session-shared" });
+      await service.disableServer?.("shared");
+
+      writeCanonicalFixtureConfig(fixture.userConfigPath, [
+        "[mcp_servers.shared]",
+        'command = "durable-shared"',
+      ]);
+      await fixture.store.reload();
+      await service.refreshFromAuthority?.();
+      expect(harness.configured).toEqual([
+        expect.objectContaining({
+          name: "shared",
+          command: "durable-shared",
+          origin: { scope: "user" },
+        }),
+      ]);
+
+      writeCanonicalFixtureConfig(fixture.userConfigPath, []);
+      await fixture.store.reload();
+      await service.refreshFromAuthority?.();
+      expect(harness.configured).toEqual([
+        expect.objectContaining({
+          name: "shared",
+          command: "session-shared",
+          enabled: false,
+          origin: { scope: "session" },
+        }),
+      ]);
+      expect(harness.manager.getConnectionState("shared")).toEqual({
+        type: "disabled",
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it.each([
+    ["managed exclusivity", ["[mcp_servers]"]],
+    ["plugin-only policy", ['strictPluginOnlyCustomization = ["mcp"]']],
+    [
+      "deny policy",
+      ['deniedMcpServers = [{ serverName = "ephemeral" }]'],
+    ],
+  ])(
+    "purges session definitions blocked by %s so they cannot reappear",
+    async (_label, managedLines) => {
+      const fixture = await createMcpAuthorityFixture();
+      const harness = createTransactionalManager();
+      const service = createSessionMcpService(harness.manager, {
+        authority: fixture.store,
+        environment: {},
+      });
+      try {
+        await service.addServer?.({
+          name: "ephemeral",
+          command: "ephemeral",
+        });
+        writeCanonicalFixtureConfig(fixture.managedConfigPath, managedLines);
+        await fixture.store.reload();
+        await service.refreshFromAuthority?.();
+        expect(harness.configured).toEqual([]);
+
+        rmSync(fixture.managedConfigPath, { force: true });
+        await fixture.store.reload();
+        await service.refreshFromAuthority?.();
+        expect(harness.configured).toEqual([]);
+      } finally {
+        fixture.cleanup();
+      }
+    },
+  );
+
+  it("revokes denied servers even when plugin discovery fails", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.revoked]", 'command = "revoked"'],
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [
+        'deniedMcpServers = [{ serverName = "revoked" }]',
+      ]);
+      await fixture.store.reload();
+      mockLoadPluginMcpServerRegistrations.mockRejectedValueOnce(
+        new Error("plugin registry unavailable"),
+      );
+
+      await service.refreshFromAuthority?.();
+      expect(harness.configured).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("reconciles current authority before returning a failed mutation", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.retired]", 'command = "retired"'],
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [
+        'deniedMcpServers = [{ serverName = "retired" }]',
+      ]);
+      await fixture.store.reload();
+
+      await expect(service.enableServer?.("retired")).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("not configured"),
+      });
+      expect(harness.configured).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("reconciles revocation before reconnecting a stale server", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.retired]", 'command = "retired"'],
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [
+        'deniedMcpServers = [{ serverName = "retired" }]',
+      ]);
+      await fixture.store.reload();
+
+      await expect(service.reconnectServer?.("retired")).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("not configured"),
+      });
+      expect(harness.configured).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("applies enabled overrides before plugin duplicate suppression", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: [
+        "[mcp_servers.manual]",
+        'command = "node"',
+        'args = ["same-server.js"]',
+      ],
+    });
+    mockLoadPluginMcpServerRegistrations.mockResolvedValue([
+      {
+        name: "plugin:sample:duplicate",
+        pluginName: "sample",
+        pluginSource: "sample@registry",
+        serverName: "duplicate",
+        server: {
+          transport: "stdio",
+          command: "node",
+          args: ["same-server.js"],
+        },
+      },
+    ]);
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      expect(harness.configured.map((config) => config.name)).toEqual([
+        "manual",
+      ]);
+
+      await expect(service.disableServer?.("manual")).resolves.toMatchObject({
+        success: true,
+      });
+      expect(harness.configured).toEqual([
+        expect.objectContaining({
+          name: "plugin:sample:duplicate",
+          origin: expect.objectContaining({ scope: "plugin" }),
+        }),
+        expect.objectContaining({ name: "manual", enabled: false }),
+      ]);
+
+      await expect(service.enableServer?.("manual")).resolves.toMatchObject({
+        success: true,
+      });
+      expect(harness.configured).toEqual([
+        expect.objectContaining({ name: "manual", enabled: true }),
+      ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("does not retain an add that becomes shadowed during admission", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const candidateResolutionStarted = deferred();
+    const releaseCandidateResolution = deferred();
+    let pluginLoad = 0;
+    mockLoadPluginMcpServerRegistrations.mockImplementation(async () => {
+      const call = pluginLoad;
+      pluginLoad += 1;
+      if (call === 1) {
+        candidateResolutionStarted.resolve(undefined);
+        await releaseCandidateResolution.promise;
+      }
+      return [];
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      const add = service.addServer?.({ name: "raced", command: "session" });
+      await candidateResolutionStarted.promise;
+      writeCanonicalFixtureConfig(fixture.userConfigPath, [
+        "[mcp_servers.raced]",
+        'command = "durable"',
+      ]);
+      await fixture.store.reload();
+      releaseCandidateResolution.resolve(undefined);
+
+      await expect(add).resolves.toMatchObject({ success: false });
+      expect(harness.configured).toEqual([
+        expect.objectContaining({ name: "raced", command: "durable" }),
+      ]);
+
+      writeCanonicalFixtureConfig(fixture.userConfigPath, []);
+      await fixture.store.reload();
+      await service.refreshFromAuthority?.();
+      expect(harness.configured).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("does not retain a toggle when the winning definition changes", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.raced]", 'command = "user"'],
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      const candidateResolutionStarted = deferred();
+      const releaseCandidateResolution = deferred();
+      let pluginLoad = 0;
+      mockLoadPluginMcpServerRegistrations.mockImplementation(async () => {
+        const call = pluginLoad;
+        pluginLoad += 1;
+        if (call === 1) {
+          candidateResolutionStarted.resolve(undefined);
+          await releaseCandidateResolution.promise;
+        }
+        return [];
+      });
+
+      const disable = service.disableServer?.("raced");
+      await candidateResolutionStarted.promise;
+      writeCanonicalFixtureConfig(fixture.localConfigPath, [
+        "[mcp_servers.raced]",
+        'command = "local"',
+      ]);
+      await fixture.store.reload();
+      releaseCandidateResolution.resolve(undefined);
+
+      await expect(disable).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("changed during mutation"),
+      });
+      expect(harness.configured).toEqual([
+        expect.objectContaining({ name: "raced", command: "local" }),
+      ]);
+
+      rmSync(fixture.localConfigPath, { force: true });
+      await fixture.store.reload();
+      await service.refreshFromAuthority?.();
+      expect(harness.configured).toEqual([
+        expect.objectContaining({ name: "raced", command: "user" }),
+      ]);
+      expect(harness.configured[0]?.enabled).toBeUndefined();
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("keeps plugin discovery on one captured authority generation", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.snapshot]", 'command = "generation-a"'],
+    });
+    const loaderStarted = deferred();
+    const releaseLoader = deferred();
+    let beforeAwait: ReturnType<CanonicalSettingsAuthority["current"]> | undefined;
+    let afterAwait: ReturnType<CanonicalSettingsAuthority["current"]> | undefined;
+    mockLoadPluginMcpServerRegistrations.mockImplementationOnce(async () => {
+      beforeAwait = getCanonicalSettingsAuthority()?.current();
+      loaderStarted.resolve(undefined);
+      await releaseLoader.promise;
+      afterAwait = getCanonicalSettingsAuthority()?.current();
+      return [];
+    });
+    try {
+      const resolution = getAllMcpConfigs(fixture.store, {});
+      await loaderStarted.promise;
+      writeCanonicalFixtureConfig(fixture.userConfigPath, [
+        "[mcp_servers.snapshot]",
+        'command = "generation-b"',
+      ]);
+      await fixture.store.reload();
+      releaseLoader.resolve(undefined);
+
+      const result = await resolution;
+      expect(beforeAwait).toBeDefined();
+      expect(afterAwait).toBe(beforeAwait);
+      expect(result.authoritySnapshot).toBe(beforeAwait);
+      expect(result.servers.snapshot).toMatchObject({
+        command: "generation-a",
+      });
+      expect(fixture.store.current()).not.toBe(result.authoritySnapshot);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("bounds repeated authority churn and fail-closes the queue", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    let snapshotReads = 0;
+    const nextSnapshot = (): ReturnType<CanonicalSettingsAuthority["current"]> => {
+      snapshotReads += 1;
+      return Object.freeze({ ...fixture.store.current() });
+    };
+    const churningAuthority: CanonicalSettingsAuthority = {
+      authoritySnapshot: () => Object.freeze({
+        config: nextSnapshot(),
+        layers: fixture.store.authoritySnapshot().layers,
+      }),
+      current: nextSnapshot,
+      sources: fixture.store.sources.bind(fixture.store),
+      projectRoot: fixture.store.projectRoot,
+      homeContext: fixture.store.homeContext,
+      stateRepository: fixture.store.stateRepository,
+      reload: fixture.store.reload.bind(fixture.store),
+      subscribe: fixture.store.subscribe.bind(fixture.store),
+    };
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: churningAuthority,
+      environment: {},
+    });
+    try {
+      await expect(service.refreshFromAuthority?.()).rejects.toThrow(
+        "Canonical MCP refresh failed and the session was fail-closed",
+      );
+      expect(snapshotReads).toBeGreaterThanOrEqual(10);
+      expect(snapshotReads).toBeLessThan(20);
+      expect(harness.refreshServers).toHaveBeenCalledTimes(1);
+      expect(harness.configured).toEqual([]);
     } finally {
       fixture.cleanup();
     }

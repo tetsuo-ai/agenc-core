@@ -216,16 +216,20 @@ function immutableMcpServerConfig(config: MCPServerConfig): MCPServerConfig {
 export function toScopedMcpServerConfig(
   config: MCPServerConfig,
 ): ScopedMcpServerConfig {
+  const authoritySource = config.origin?.scope;
   const scope =
-    config.origin?.scope === "managed"
+    authoritySource === "managed"
       ? "managed" as const
-      : config.origin?.scope === "user" ||
-          config.origin?.scope === "project" ||
-          config.origin?.scope === "local"
-        ? config.origin.scope
+      : authoritySource === "user" ||
+          authoritySource === "project" ||
+          authoritySource === "local"
+        ? authoritySource
         : "dynamic" as const;
   const provenance = {
     scope,
+    ...(authoritySource !== undefined && authoritySource !== "session"
+      ? { authoritySource }
+      : {}),
     ...(config.origin?.pluginSource !== undefined
       ? { pluginSource: config.origin.pluginSource }
       : {}),

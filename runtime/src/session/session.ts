@@ -135,6 +135,7 @@ import type {
 } from "../permissions/permission-audit-log.js";
 import {
   startMcpManagerForSession,
+  type McpAuthorityRefreshOptions,
   type McpRefreshResult,
   type McpStartupCancellationToken,
 } from "./mcp-startup.js";
@@ -1061,7 +1062,9 @@ export interface McpManager {
     auth: unknown,
   ): Promise<Map<string, McpServerInfo>>;
   toolPluginProvenance(config: unknown): Promise<unknown>;
-  refreshFromAuthority?(): Promise<McpRefreshResult>;
+  refreshFromAuthority?(
+    options?: McpAuthorityRefreshOptions,
+  ): Promise<McpRefreshResult>;
   reconnectServer?(name: string): Promise<McpServerMutationResult>;
   enableServer?(name: string): Promise<McpServerMutationResult>;
   disableServer?(name: string): Promise<McpServerMutationResult>;
