@@ -201,12 +201,35 @@ class DiscoveryBuilder {
     sourcePath: string,
     path: readonly string[] = field.split("."),
   ): void {
+    for (const [registeredField, registeredPath] of this.pathByVaultField) {
+      if (pathStartsWith(path, registeredPath)) {
+        // The existing parent write reads its final value from nextVault after
+        // discovery, so it already includes this descendant mutation.
+        return;
+      }
+      if (pathStartsWith(registeredPath, path)) {
+        // Replace descendant writes with the newly registered parent. Keeping
+        // both would make the first write invalidate the second write's CAS
+        // expectation even though they belong to one atomic migration.
+        this.vaultFields.delete(registeredField);
+        this.pathByVaultField.delete(registeredField);
+        this.sourceByVaultField.delete(registeredField);
+      }
+    }
     this.vaultFields.add(field);
     this.pathByVaultField.set(field, Object.freeze([...path]));
     if (!this.sourceByVaultField.has(field)) {
       this.sourceByVaultField.set(field, sourcePath);
     }
   }
+}
+
+function pathStartsWith(
+  path: readonly string[],
+  prefix: readonly string[],
+): boolean {
+  return prefix.length <= path.length &&
+    prefix.every((segment, index) => path[index] === segment);
 }
 
 /**

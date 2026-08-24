@@ -115,6 +115,73 @@ describe("retired auth credential migration discovery", () => {
     ]);
   });
 
+  test("composes retired native and ProviderCode OpenAI credentials into one vault write", async () => {
+    const context = await fixture();
+    const providerPath = join(context.root, "provider-auth.json");
+    await writeJson(providerPath, {
+      openai_api_key: "platform-secret",
+      access_token: "oauth-secret",
+      refresh_token: "provider-refresh-secret",
+      account_id: "acct-openai",
+    });
+    const current = {
+      trustedDeviceToken: "keep-unrelated",
+      agenc: {
+        apiKey: "platform-secret",
+        accessToken: "oauth-secret",
+        accountId: "acct-openai",
+        profileId: "discarded-profile-link",
+      },
+    } as SecureStorageData & {
+      agenc: {
+        apiKey: string;
+        accessToken: string;
+        accountId: string;
+        profileId: string;
+      };
+    };
+    const discovery = await discoverRetiredAuthMigration({
+      home: context.home,
+      platformHome: context.platformHome,
+      env: { PROVIDER_CODE_AUTH_JSON_PATH: providerPath },
+      currentVault: current,
+    });
+
+    expect(discovery.descriptor.conflicts).toEqual([]);
+    expect(discovery.descriptor.vaultFields).toEqual([
+      "agenc",
+      "openAiOauth",
+    ]);
+    expect(discovery.mutation?.vaultWrites.map(write => write.path)).toEqual([
+      ["agenc"],
+      ["openAiOauth"],
+    ]);
+
+    const applied = appliedVault(discovery, current);
+    expect(applied).toMatchObject({
+      trustedDeviceToken: "keep-unrelated",
+      openAiOauth: {
+        apiKey: "platform-secret",
+        authMode: "apiKey",
+        accessToken: "oauth-secret",
+        refreshToken: "provider-refresh-secret",
+        accountId: "acct-openai",
+      },
+    });
+    expect((applied as Record<string, unknown>).agenc).toBeUndefined();
+    assertRetiredAuthVaultMutationCommitted(applied, discovery.mutation!);
+    expect(rollbackRetiredAuthVaultMutation(
+      applied,
+      discovery.mutation!,
+    )).toEqual(current);
+    expectSecretFreeDescriptor(discovery.descriptor, [
+      "platform-secret",
+      "oauth-secret",
+      "provider-refresh-secret",
+      "keep-unrelated",
+    ]);
+  });
+
   test("refuses to delete a retired native OpenAI record that conflicts", async () => {
     const current = {
       agenc: {
