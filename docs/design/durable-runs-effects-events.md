@@ -103,9 +103,9 @@ A new run starts at epoch 1. The terminal transition follows this order:
    then appends and fsyncs `run_terminal` as the final automatic execution
    event for that epoch and projects it into `run_terminal_results`.
 5. Seal the execution writer against later automatic appends, flush and close
-   it, and only then advance legacy agent status and notify lifecycle
-   consumers. The stopped-session operator-review exception described below
-   takes a new exclusive lease; it does not reopen execution.
+   it, and only then advance the compatibility `agent_runs` projection and
+   notify lifecycle consumers. The stopped-session operator-review exception
+   described below takes a new exclusive lease; it does not reopen execution.
 
 This order makes both crash windows recoverable. If the process dies before
 the SQLite projection, the canonical event rebuilds it. If it dies after the
@@ -114,6 +114,12 @@ projection, replaying the same event is an idempotent acknowledgement.
 `output.available: true` with `exitCode`, `stopReason`, `finalMessage`,
 `usage`, and `lastSequence`. That sequence is the immutable terminal snapshot
 coordinate, not necessarily the later audit-journal tail.
+
+The compatibility `agent_runs` row is updated in the same SQLite transaction
+as a current-epoch terminal projection. Schema migration 29 repairs rows from
+older runtimes that remained `running` despite such a terminal. It does not
+overwrite cancel-locked verdicts, fabricate child rows, or repaint a reopened
+epoch from an earlier terminal.
 
 Terminal content is first-write sticky. Repeating the exact result returns an
 idempotent no-op. A different result for the same epoch raises a conflict, and

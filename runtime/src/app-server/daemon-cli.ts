@@ -5248,7 +5248,6 @@ function createAgenCDaemonDelegateRunnerRuntimeConfig(
     });
   return {
     authBackend,
-    agentBudget: config.agent?.budget,
     realtimeCallClient,
     realtimeConnectTransport: (request) =>
       realtimeWebSocketTransport.connect(request),

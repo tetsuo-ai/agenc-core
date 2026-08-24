@@ -27,6 +27,7 @@ import { csvOutputWriterIdentityMigration } from "./025_csv_output_writer_identi
 import { csvOutputOrphanAccountingMigration } from "./026_csv_output_orphan_accounting.js";
 import { runSuspensionSchemaMigration } from "./027_run_suspension_schema.js";
 import { runtimeSettingsCanonicalValuesMigration } from "./028_runtime_settings_canonical_values.js";
+import { terminalAgentRunReconciliationMigration } from "./029_terminal_agent_run_reconciliation.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -61,6 +62,7 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   csvOutputOrphanAccountingMigration,
   runSuspensionSchemaMigration,
   runtimeSettingsCanonicalValuesMigration,
+  terminalAgentRunReconciliationMigration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [

@@ -88,6 +88,7 @@ import type {
 } from "./verified-change-controller.js";
 import type { RunUsageTotals } from "../../contracts/run-contracts.js";
 import { resolveAgentRuntimeOptions } from "../../session/runtime-options.js";
+import { boundedWorkflowDiagnostic } from "../../workflow/diagnostics.js";
 import {
   inspectWorkflowChildTerminal,
   recordWorkflowChildTerminal,
@@ -239,25 +240,10 @@ export function workflowChildFailureMessage(
 ): string | null {
   if (result.outcome === "completed") return null;
   const reason =
-    result.error === undefined ? "" : `: ${childErrorText(result.error)}`;
+    result.error === undefined
+      ? ""
+      : `: ${boundedWorkflowDiagnostic(result.error)}`;
   return `workflow ${kind} child ${result.outcome}${reason}`;
-}
-
-/**
- * A child can reject with something that is not an Error — a plain object
- * carrying a code, say. `String()` renders that as `[object Object]`, which
- * is worse than saying nothing, so serialize it instead.
- */
-function childErrorText(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "object" && error !== null) {
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return Object.prototype.toString.call(error);
-    }
-  }
-  return String(error);
 }
 
 /**

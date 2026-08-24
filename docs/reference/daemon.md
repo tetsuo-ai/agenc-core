@@ -361,8 +361,9 @@ current Ledger action is documented in
 - **Sessions** — create/attach, multi-turn transcripts, rollouts under the
   project `sessions/` tree, cancel/compact/rewind (internal methods).
 - **Background agents** — `AgenCDaemonAgentManager` +
-  `AgenCDelegateBackgroundAgentRunner` (per-run budget caps from
-  `[agent.budget]`, not the cumulative ledger).
+  `AgenCDelegateBackgroundAgentRunner`; sessions bind `[agent.budget]` caps
+  into the shared execution-admission allocation tree. The runner has no
+  separate budget enforcement monitor or allocation ledger.
 - **Permissions** — routes permission requests to the attached client; print
   mode / unattended embeds deny when no handler is registered.
 - **Capability delivery** — global mobile status observers and single-consumer

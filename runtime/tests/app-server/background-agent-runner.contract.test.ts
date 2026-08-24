@@ -18,7 +18,6 @@ import {
 import { collectDaemonClientEnvOverrides } from "./agent-cli.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { AuthBackend } from "../auth/backend.js";
-import type { AgentBudgetConfig } from "../config/schema.js";
 import type { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import {
   createEmptyToolPermissionContext,
@@ -197,7 +196,7 @@ function makeTopLevelRunner(opts: {
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
-  readonly agentBudget?: AgentBudgetConfig;
+  readonly additionalRunnerOptions?: Readonly<Record<string, unknown>>;
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
   readonly csvAgentJobsRepositories?: CsvAgentJobsRepositoryProvider;
   readonly rolloutItems?: unknown[];
@@ -427,6 +426,7 @@ function makeTopLevelRunner(opts: {
     shutdown,
   })) as unknown as ReturnType<typeof vi.fn> & AgenCBootstrapFunction;
   const runner = new AgenCDelegateBackgroundAgentRunner({
+    ...opts.additionalRunnerOptions,
     ...(opts.authBackend !== undefined
       ? { authBackend: opts.authBackend }
       : {}),
@@ -437,9 +437,6 @@ function makeTopLevelRunner(opts: {
     })) as unknown as AgenCEnsureAgentControlFunction,
     ...(opts.env !== undefined ? { env: opts.env } : {}),
     ...(opts.argv !== undefined ? { argv: opts.argv } : {}),
-    ...(opts.agentBudget !== undefined
-      ? { agentBudget: opts.agentBudget }
-      : {}),
     ...(opts.executionAdmissionKernel !== undefined
       ? { executionAdmissionKernel: opts.executionAdmissionKernel }
       : {}),
@@ -1996,11 +1993,13 @@ describe("AgenC delegate background-agent runner", () => {
     expect(cancelAdmissions).toHaveBeenCalledOnce();
   });
 
-  it("aborts and journals a pending permission before a budget terminal", async () => {
+  it("does not revive the removed runner-side budget monitor from unknown input", async () => {
     let totalTokens = 0;
     const { runner, session, rolloutItems } = makeTopLevelRunner({
       conversationId: "session-budget-pending-permission",
-      agentBudget: { token_cap: 1 },
+      // A stale caller may still pass the retired field at runtime. Unknown
+      // constructor data must not recreate a second enforcement authority.
+      additionalRunnerOptions: { agentBudget: { token_cap: 1 } },
       totalTokenUsage: () => ({
         inputTokens: totalTokens,
         outputTokens: 0,
@@ -2030,12 +2029,12 @@ describe("AgenC delegate background-agent runner", () => {
             clear() {},
           },
           callId: "permission-budget-call",
-          toolName: { name: "Bash" },
+          toolName: { name: "exec_command" },
           payload: { kind: "function", arguments: '{"cmd":"true"}' },
           source: "direct",
         } as never,
         callId: "permission-budget-call",
-        toolName: "Bash",
+        toolName: "exec_command",
         turnId: "turn-budget-permission",
       },
       resolver: resolver as never,
@@ -2052,51 +2051,31 @@ describe("AgenC delegate background-agent runner", () => {
 
     totalTokens = 2;
     session.emitPhaseEvent({ type: "assistant_text", content: "budget tick" });
+    let settled = false;
+    void pending.finally(() => {
+      settled = true;
+    });
+    for (let index = 0; index < 10; index += 1) await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(
+      rolloutItems.some(
+        (item) =>
+          (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg
+            ?.type === "run_terminal",
+      ),
+    ).toBe(false);
+    expect(
+      await runner.getAgentSnapshot("session-budget-pending-permission"),
+    ).toMatchObject({ status: "running" });
+
+    await runner.stopAgent(
+      "session-budget-pending-permission",
+      "test_cleanup",
+    );
     await expect(pending).resolves.toMatchObject({
       decision: { kind: "abort" },
     });
-    await vi.waitFor(() =>
-      expect(
-        rolloutItems.some(
-          (item) =>
-            (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg
-              ?.type === "run_terminal",
-        ),
-      ).toBe(true),
-    );
-
-    const canonical = rolloutItems
-      .filter(
-        (
-          item,
-        ): item is {
-          readonly payload: {
-            readonly msg: {
-              readonly type: string;
-              readonly payload: Record<string, unknown>;
-            };
-          };
-        } => (item as { type?: unknown }).type === "event_msg",
-      )
-      .map((item) => item.payload);
-    const relevant = canonical.filter((event) =>
-      ["request_permissions", "permission_decision", "run_terminal"].includes(
-        event.msg.type,
-      ),
-    );
-    expect(relevant.map((event) => event.msg.type)).toEqual([
-      "request_permissions",
-      "permission_decision",
-      "run_terminal",
-    ]);
-    expect(relevant[1]?.msg.payload).toMatchObject({
-      callId: "permission-budget-call",
-      decision: "abort",
-    });
-    expect(relevant[2]?.msg.payload).toMatchObject({
-      stopReason: "budget_limit",
-    });
-    expect(canonical.at(-1)?.msg.type).toBe("run_terminal");
   });
 
   it("commits an epoch-aware terminal at the quiesced shutdown boundary and publishes it canonically", async () => {
@@ -2521,11 +2500,10 @@ describe("AgenC delegate background-agent runner", () => {
     expect(argv).not.toContain("--allow-dangerously-skip-permissions");
   });
 
-  it("lets the shared admission kernel exclusively enforce agent budget caps", async () => {
+  it("passes the sole budget authority into session execution admission", async () => {
     const executionAdmissionKernel = {} as ExecutionAdmissionKernel;
     const { runner, bootstrap, shutdown } = makeTopLevelRunner({
       conversationId: "kernel-budget-session",
-      agentBudget: { token_cap: 0 },
       executionAdmissionKernel,
     });
 

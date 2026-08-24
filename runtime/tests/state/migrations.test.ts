@@ -58,7 +58,7 @@ describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28,
+      22, 23, 24, 25, 26, 27, 28, 29,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -89,6 +89,7 @@ describe("state migration registry", () => {
       "csv_output_orphan_accounting",
       "run_suspension_schema",
       "runtime_settings_canonical_values",
+      "terminal_agent_run_reconciliation",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -135,6 +136,7 @@ describe("state migration registry", () => {
       "026_csv_output_orphan_accounting.ts",
       "027_run_suspension_schema.ts",
       "028_runtime_settings_canonical_values.ts",
+      "029_terminal_agent_run_reconciliation.ts",
     ]);
   });
 

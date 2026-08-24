@@ -2759,9 +2759,11 @@ token_cap = 123
       );
       expect(updateRuntimeConfig).toHaveBeenCalledWith(
         expect.objectContaining({
-          agentBudget: expect.objectContaining({ token_cap: 123 }),
           realtimeConnectTransport: expect.any(Function),
         }),
+      );
+      expect(updateRuntimeConfig.mock.calls.at(-1)?.[0]).not.toHaveProperty(
+        "agentBudget",
       );
       expect(updateRuntimeConfig.mock.calls.at(-1)?.[0].authBackend?.kind).toBe(
         "remote",

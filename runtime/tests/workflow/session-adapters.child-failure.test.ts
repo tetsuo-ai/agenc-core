@@ -48,4 +48,29 @@ describe("workflowChildFailureMessage", () => {
     expect(message).toContain("workflow plan child errored");
     expect(message).not.toContain("[object Object]");
   });
+
+  it("redacts secrets before persisting a bounded child diagnostic", () => {
+    const secret = `sk-proj-${"a".repeat(24)}`;
+    const message = workflowChildFailureMessage("implement", {
+      outcome: "errored",
+      error: new Error(`provider rejected api_key=${secret} ${"x".repeat(500)}`),
+    });
+
+    expect(message).toContain("[REDACTED_SECRET]");
+    expect(message).not.toContain(secret);
+    expect(message?.endsWith("…")).toBe(true);
+    expect(message?.length).toBeLessThanOrEqual(
+      "workflow implement child errored: ".length + 240,
+    );
+  });
+
+  it("redacts sensitive keys in non-Error diagnostics", () => {
+    const message = workflowChildFailureMessage("plan", {
+      outcome: "errored",
+      error: { code: "AUTH", accessToken: "sensitive-token-value" },
+    });
+
+    expect(message).toContain('"accessToken":"[REDACTED_SECRET]"');
+    expect(message).not.toContain("sensitive-token-value");
+  });
 });

@@ -34,7 +34,7 @@ sanitized/framed as untrusted content before they reach the model.
 | Cron delivery | `runtime/src/gateway/cron-delivery.ts` | daemon session model/tool boundaries; denial notice |
 | Hooks HTTP | `runtime/src/gateway/hooks.ts` | daemon session model/tool boundaries; HTTP **429** on denial |
 | Interactive TUI / print | `session/` turn loop | model/tool boundaries; windows only with `enforce_interactive` |
-| Background agents | `app-server/background-agent-runner.ts` | unattended policy plus `[agent.budget]` run allocation |
+| Background agents | `app-server/background-agent-runner.ts` | unattended policy; `[agent.budget]` is enforced only by the shared admission kernel |
 
 Defaults: **budget disabled**, **heartbeat disabled**. Enabling either is an
 explicit operator action.

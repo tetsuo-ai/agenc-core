@@ -26,6 +26,7 @@ import {
 import type { VerifiedChangeCommandRecord } from "./evidence-record.js";
 import type { EvidenceArtifactSink } from "./worktree-lifecycle.js";
 import { canonicalizeJson } from "../eval-contract/canonical-json.js";
+import { boundedWorkflowDiagnostic } from "./diagnostics.js";
 
 export interface ReviewerInvoker {
   invoke(input: {
@@ -153,9 +154,7 @@ export const REVIEW_REPAIR_INSTRUCTION =
 
 /** A one-line, bounded look at what the reviewer actually said. */
 export function reviewerResponseExcerpt(raw: string, limit = 240): string {
-  const flat = raw.replace(/\s+/gu, " ").trim();
-  if (flat.length === 0) return "(empty response)";
-  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
+  return boundedWorkflowDiagnostic(raw, limit);
 }
 
 export interface IndependentReviewResult {

@@ -37,7 +37,6 @@ import {
   type RunAgentResult,
 } from "../agents/run-agent.js";
 import type { AuthBackend } from "../auth/backend.js";
-import type { AgentBudgetConfig } from "../config/schema.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import {
@@ -725,10 +724,6 @@ interface ActiveBackgroundAgent {
   unsubscribeDurableTerminalFinalizer?: () => void;
   terminationNotified?: boolean;
   lastActiveAt: string;
-  budget?: ActiveAgentBudget;
-  budgetHalt?: JsonObject;
-  budgetHaltInProgress?: boolean;
-  budgetTimer?: AgenCAgentBudgetTimer;
   unsubscribeStatus?: () => void;
   uninstallApprovalBridge?: () => void;
   uninstallRuntimeSettingsPreCommit?: () => void;
@@ -796,31 +791,12 @@ interface BackgroundAgentDaemonEvent {
   readonly clientMessageId?: string;
 }
 
-interface ActiveAgentBudget {
-  readonly tokenCap?: number;
-  readonly dollarCap?: number;
-  readonly wallClockSeconds?: number;
-  readonly startedAt: string;
-  readonly startedAtMs: number;
-  readonly model?: string;
-  readonly provider?: string;
-  readonly priorUsage: AgentBudgetUsage;
-}
-
-interface AgentBudgetHalt {
-  readonly kind: "token_cap" | "dollar_cap" | "wall_clock_seconds";
-  readonly reason: string;
-  readonly marker: JsonObject;
-}
-
-interface AgentBudgetUsage {
+interface AgentTerminalUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly totalTokens: number;
   readonly costUsd: number;
 }
-
-const MAX_AGENT_BUDGET_TIMER_MS = 2_147_483_647;
 
 /**
  * Upper bound on daemon events buffered for a single agent while no
@@ -950,28 +926,17 @@ function gapRunId(
     );
 }
 
-export interface AgenCAgentBudgetTimer {
-  readonly unref?: () => void;
-}
-
 export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly bootstrap?: AgenCBootstrapFunction;
   readonly ensureAgentControl?: AgenCEnsureAgentControlFunction;
   readonly authBackend?: AuthBackend;
-  readonly agentBudget?: AgentBudgetConfig;
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
   readonly csvAgentJobsRepositories?: CsvAgentJobsRepositoryProvider;
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
-  readonly budgetNowMs?: () => number;
   readonly realtimeCallClient?: AgenCRealtimeCallClient;
   readonly realtimeConnectTransport?: AgenCBackgroundRealtimeTransportConnector;
-  readonly setBudgetTimer?: (
-    callback: () => void,
-    delayMs: number,
-  ) => AgenCAgentBudgetTimer;
-  readonly clearBudgetTimer?: (timer: AgenCAgentBudgetTimer) => void;
   readonly onActiveAgentTerminated?: (
     agentId: string,
     snapshot: AgenCBackgroundAgentSnapshot,
@@ -980,7 +945,7 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
 
 export type AgenCDelegateBackgroundAgentRunnerRuntimeConfig = Pick<
   AgenCDelegateBackgroundAgentRunnerOptions,
-  "agentBudget" | "realtimeCallClient" | "realtimeConnectTransport"
+  "realtimeCallClient" | "realtimeConnectTransport"
 > & {
   readonly authBackend: AuthBackend | undefined;
 };
@@ -990,27 +955,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   readonly #requireSandboxReadyAtStartup: boolean;
   readonly #ensureAgentControl: AgenCEnsureAgentControlFunction;
   #authBackend: AgenCDaemonRuntimeAuthBackend | undefined;
-  #agentBudget: AgentBudgetConfig | undefined;
   readonly #env: NodeJS.ProcessEnv | undefined;
   readonly #executionAdmissionKernel: ExecutionAdmissionKernel | undefined;
   readonly #csvAgentJobsRepositories:
     CsvAgentJobsRepositoryProvider | undefined;
-  /**
-   * Compatibility-only monitor for injected test bootstraps. Production
-   * sessions enforce `[agent.budget]` inside execution admission, so running
-   * this sidecar monitor too would create a second accounting authority.
-   */
-  readonly #legacyAgentBudgetMonitorEnabled: boolean;
   readonly #argv: readonly string[] | undefined;
   readonly #now: () => string;
-  readonly #budgetNowMs: () => number;
   #realtimeCallClient: AgenCRealtimeCallClient | undefined;
   #realtimeConnectTransport: AgenCBackgroundRealtimeTransportConnector;
-  readonly #setBudgetTimer: (
-    callback: () => void,
-    delayMs: number,
-  ) => AgenCAgentBudgetTimer;
-  readonly #clearBudgetTimer: (timer: AgenCAgentBudgetTimer) => void;
   readonly #active = new Map<string, ActiveBackgroundAgent>();
   readonly #pendingExplicitRestores = new Set<string>();
   readonly #pendingEvents = new Map<string, BackgroundAgentDaemonEvent[]>();
@@ -1032,25 +984,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     this.#requireSandboxReadyAtStartup = options.bootstrap === undefined;
     this.#ensureAgentControl = options.ensureAgentControl ?? ensureAgentControl;
     this.updateAuthBackend(options.authBackend);
-    this.#agentBudget = options.agentBudget;
     this.#executionAdmissionKernel = options.executionAdmissionKernel;
     this.#csvAgentJobsRepositories = options.csvAgentJobsRepositories;
-    this.#legacyAgentBudgetMonitorEnabled =
-      options.bootstrap !== undefined &&
-      options.executionAdmissionKernel === undefined;
     this.#env = options.env;
     this.#argv = options.argv;
     this.#now = options.now ?? (() => new Date().toISOString());
-    this.#budgetNowMs = options.budgetNowMs ?? (() => Date.now());
     this.#realtimeCallClient = options.realtimeCallClient;
     this.#realtimeConnectTransport =
       options.realtimeConnectTransport ?? unavailableRealtimeTransport;
-    this.#setBudgetTimer =
-      options.setBudgetTimer ??
-      ((callback, delayMs) => setTimeout(callback, delayMs));
-    this.#clearBudgetTimer =
-      options.clearBudgetTimer ??
-      ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>));
     this.#onActiveAgentTerminated = options.onActiveAgentTerminated;
   }
 
@@ -1067,7 +1008,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     options: AgenCDelegateBackgroundAgentRunnerRuntimeConfig,
   ): void {
     this.updateAuthBackend(options.authBackend);
-    this.#agentBudget = options.agentBudget;
     this.#realtimeCallClient = options.realtimeCallClient;
     this.#realtimeConnectTransport =
       options.realtimeConnectTransport ?? unavailableRealtimeTransport;
@@ -1250,12 +1190,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         active.uninstallRuntimeSettingsPreCommit =
           installRuntimeSettingsPreCommit(active, managedThread.threadId);
       }
-      this.#installAgentBudget(active, {
-        startedAt,
-        ...(params.model !== undefined ? { model: params.model } : {}),
-        ...(params.provider !== undefined ? { provider: params.provider } : {}),
-        ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
-      });
       this.#pendingEvents.delete(managedThread.threadId);
       this.#pendingActiveToolCallIds.delete(managedThread.threadId);
       this.#active.set(managedThread.threadId, active);
@@ -1273,8 +1207,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           void this.#recordPhaseProgressEvent(managedThread.threadId, progress);
         },
       );
-      this.#scheduleAgentBudgetTimer(active);
-      void this.#enforceAgentBudget(active);
       active.cleanupComplete = this.#cleanupWhenComplete(
         managedThread.threadId,
         active,
@@ -1396,9 +1328,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ...(active.terminal !== undefined ? { terminal: active.terminal } : {}),
       ...(active.suspension !== undefined
         ? { suspension: active.suspension }
-        : {}),
-      ...(active.budgetHalt !== undefined
-        ? { metadata: { budgetHalt: active.budgetHalt } }
         : {}),
     };
   }
@@ -1735,16 +1664,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         }
         active.uninstallRuntimeSettingsPreCommit =
           installRuntimeSettingsPreCommit(active, params.agentId);
-        this.#installAgentBudget(active, {
-          startedAt,
-          ...(params.model !== undefined ? { model: params.model } : {}),
-          ...(params.provider !== undefined
-            ? { provider: params.provider }
-            : {}),
-          ...(params.metadata !== undefined
-            ? { metadata: params.metadata }
-            : {}),
-        });
         this.#pendingEvents.delete(params.agentId);
         this.#pendingActiveToolCallIds.delete(params.agentId);
         this.#active.set(params.agentId, active);
@@ -1760,8 +1679,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             void this.#recordPhaseProgressEvent(params.agentId, progress);
           },
         );
-        this.#scheduleAgentBudgetTimer(active);
-        void this.#enforceAgentBudget(active);
         active.cleanupComplete = this.#cleanupWhenComplete(
           params.agentId,
           active,
@@ -1842,7 +1759,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // exactly like a process crash, including its effect/review gates.
     active.ingressClosed = true;
     active.status = "stopping";
-    this.#clearAgentBudgetTimer(active);
     this.#abortPendingToolDecisions(agentId);
     active.unsubscribeDurableTerminalFinalizer?.();
     active.unsubscribeStatus?.();
@@ -1909,7 +1825,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active.pendingTerminal === undefined) {
       active.status = "stopping";
       active.lastActiveAt = this.#now();
-      this.#clearAgentBudgetTimer(active);
       active.pendingTerminal = cancelledTerminalResult(
         active,
         agentId,
@@ -1953,7 +1868,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined) return;
     active.status = "stopping";
     active.lastActiveAt = this.#now();
-    this.#clearAgentBudgetTimer(active);
     let stopError: unknown;
     active.pendingTerminal ??= cancelledTerminalResult(
       active,
@@ -2026,7 +1940,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.ingressClosed = true;
     active.status = "stopping";
     active.lastActiveAt = this.#now();
-    this.#clearAgentBudgetTimer(active);
     await this.#drainDispatchChain(active);
 
     if (!this.#canSuspendIdleAgent(agentId, active, true)) {
@@ -2117,7 +2030,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       active.suspension !== undefined ||
       active.pendingTerminal !== undefined ||
       active.cancellationRequest !== undefined ||
-      active.budgetHalt !== undefined ||
       active.pendingMessageSubmissionCount !== 0 ||
       active.messageSubmission !== undefined ||
       [...active.messageSubmissionsById.values()].some(
@@ -2531,7 +2443,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
-    const usage = budgetUsageForActiveAgent(active);
+    const usage = terminalUsageForActiveAgent(active);
     // Turn count comes from the session's history length. Each completed
     // user/assistant exchange appends entries; using length gives the
     // size of the live transcript without trying to count turn-pairs.
@@ -3768,7 +3680,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
   #trackAgentStatus(active: ActiveBackgroundAgent): void {
     active.unsubscribeStatus = active.thread.subscribeStatus((status) => {
-      if (active.budgetHalt !== undefined) return;
       active.status = mapThreadStatus(status);
       if (status.status === "running") {
         this.#assistantTextByAgent.set(active.thread.threadId, "");
@@ -3783,14 +3694,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       }
       active.lastActiveAt = this.#now();
       if (!active.canonicalEventBridgeInstalled) {
-        void this.#emitOrBufferEvent(
-          active,
-          withAgentBudgetUsage(
-            active,
-            eventFromThreadStatus(status),
-            this.#budgetNowMs(),
-          ),
-        );
+        void this.#emitOrBufferEvent(active, eventFromThreadStatus(status));
       }
     });
   }
@@ -3865,7 +3769,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         active.uninstallRuntimeSettingsPreCommit?.();
         active.unsubscribeElicitationEvents?.();
         active.unsubscribePhaseEvents?.();
-        this.#clearAgentBudgetTimer(active);
         // gaphunt3 #48: the agentId is the session/conversationId used as the
         // vended-key cache key, so evict this session's entries on terminal
         // cleanup — otherwise non-expiring keys leak for the daemon's lifetime.
@@ -3898,9 +3801,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       status: active.status,
       lastActiveAt: active.lastActiveAt,
       ...(active.terminal !== undefined ? { terminal: active.terminal } : {}),
-      ...(active.budgetHalt !== undefined
-        ? { metadata: { budgetHalt: active.budgetHalt } }
-        : {}),
     };
     try {
       await this.#onActiveAgentTerminated(agentId, terminalSnapshot);
@@ -3916,9 +3816,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   ): Promise<void> {
     this.#trackActiveToolCall(agentId, progress);
     const active = this.#active.get(agentId);
-    if (active !== undefined && (await this.#enforceAgentBudget(active))) {
-      return;
-    }
     const event = this.#eventFromProgress(agentId, progress);
     const events = [
       ...this.#takeInterruptedToolCompletionEvents(agentId, progress),
@@ -3936,10 +3833,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     this.#applyProgressStatus(active, progress);
     for (const nextEvent of events) {
-      await this.#emitOrBufferEvent(
-        active,
-        withAgentBudgetUsage(active, nextEvent, this.#budgetNowMs()),
-      );
+      await this.#emitOrBufferEvent(active, nextEvent);
     }
   }
 
@@ -3953,7 +3847,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       return;
     }
     this.#trackActiveToolCall(agentId, progress);
-    if (await this.#enforceAgentBudget(active)) return;
     if (progress.kind === "message" && progress.message.role === "assistant") {
       this.#assistantTextByAgent.set(
         agentId,
@@ -3991,7 +3884,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active: ActiveBackgroundAgent,
     progress: RunAgentProgressEvent,
   ): void {
-    if (active.budgetHalt !== undefined) return;
     let status: DaemonAgentStatus | null = null;
     switch (progress.kind) {
       case "run_error":
@@ -4012,149 +3904,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     active.status = status;
     active.lastActiveAt = this.#now();
-  }
-
-  #installAgentBudget(
-    active: ActiveBackgroundAgent,
-    params: {
-      readonly startedAt: string;
-      readonly model?: string;
-      readonly provider?: string;
-      readonly metadata?: JsonObject;
-    },
-  ): void {
-    if (!this.#legacyAgentBudgetMonitorEnabled) return;
-    const budget = normalizeAgentBudget(this.#agentBudget);
-    if (budget === undefined) return;
-    const startedAtMs =
-      parseBudgetTimestamp(params.startedAt) ?? this.#budgetNowMs();
-    active.budget = {
-      ...budget,
-      startedAt: params.startedAt,
-      startedAtMs,
-      ...(params.model !== undefined ? { model: params.model } : {}),
-      ...(params.provider !== undefined ? { provider: params.provider } : {}),
-      priorUsage: budgetUsageFromMetadata(params.metadata),
-    };
-  }
-
-  #scheduleAgentBudgetTimer(active: ActiveBackgroundAgent): void {
-    this.#clearAgentBudgetTimer(active);
-    const budget = active.budget;
-    if (budget?.wallClockSeconds === undefined) return;
-    const deadlineMs = budget.startedAtMs + budget.wallClockSeconds * 1000;
-    const remainingMs = deadlineMs - this.#budgetNowMs();
-    const delayMs = Math.max(
-      0,
-      Math.min(remainingMs, MAX_AGENT_BUDGET_TIMER_MS),
-    );
-    const timer = this.#setBudgetTimer(() => {
-      if (this.#active.get(active.thread.threadId) !== active) return;
-      if (active.budgetHalt !== undefined) return;
-      if (this.#budgetNowMs() < deadlineMs) {
-        this.#scheduleAgentBudgetTimer(active);
-        return;
-      }
-      void this.#haltAgentForBudget(
-        active.thread.threadId,
-        budgetHaltForActiveAgent(active, this.#budgetNowMs()) ??
-          wallClockBudgetHalt(active, this.#budgetNowMs()),
-      );
-    }, delayMs);
-    active.budgetTimer = timer;
-    timer.unref?.();
-  }
-
-  #clearAgentBudgetTimer(active: ActiveBackgroundAgent): void {
-    if (active.budgetTimer === undefined) return;
-    this.#clearBudgetTimer(active.budgetTimer);
-    delete active.budgetTimer;
-  }
-
-  async #enforceAgentBudget(active: ActiveBackgroundAgent): Promise<boolean> {
-    const halt = budgetHaltForActiveAgent(active, this.#budgetNowMs());
-    if (halt === null) return false;
-    await this.#haltAgentForBudget(active.thread.threadId, halt);
-    return true;
-  }
-
-  async #haltAgentForBudget(
-    agentId: string,
-    halt: AgentBudgetHalt,
-  ): Promise<void> {
-    const active = this.#active.get(agentId);
-    if (active === undefined) return;
-    if (
-      active.budgetHalt !== undefined ||
-      active.budgetHaltInProgress === true
-    ) {
-      return;
-    }
-    active.budgetHalt = halt.marker;
-    active.budgetHaltInProgress = true;
-    active.status = "stopped";
-    active.lastActiveAt = this.#now();
-    this.#clearAgentBudgetTimer(active);
-    let emitError: unknown;
-    active.pendingTerminal = cancelledTerminalResult(
-      active,
-      agentId,
-      "budget_limit",
-      active.lastActiveAt,
-    );
-    this.#abortPendingToolDecisions(agentId);
-    try {
-      if (!active.canonicalEventBridgeInstalled) {
-        await this.#emitOrBufferEvent(active, {
-          id: `agent-budget-${agentId}-${halt.kind}`,
-          type: "agent_status",
-          payload: {
-            status: "stopped",
-            runStatus: "stopped",
-            message: halt.reason,
-            budgetHalt: halt.marker,
-            budgetUsage: budgetUsageMarker(active, this.#budgetNowMs()),
-          },
-        });
-      }
-      if (!active.durableTerminalFinalizerInstalled) {
-        commitDurableRunTerminal(active, agentId, active.pendingTerminal);
-      }
-    } catch (error) {
-      emitError = error;
-    }
-    try {
-      await active.bootstrap.shutdown();
-      emitError ??= active.terminalCommitError;
-      if (active.terminal === undefined) {
-        emitError ??= new Error(
-          `run ${agentId} budget shutdown completed without a durable terminal result`,
-        );
-      }
-    } catch (error) {
-      active.status = "error";
-      active.lastActiveAt = this.#now();
-      try {
-        await this.#emitOrBufferEvent(active, {
-          id: `agent-budget-error-${agentId}-${hashStable(String(error))}`,
-          type: "agent_status",
-          payload: {
-            status: "error",
-            runStatus: "errored",
-            message: error instanceof Error ? error.message : String(error),
-            budgetHalt: halt.marker,
-            budgetUsage: budgetUsageMarker(active, this.#budgetNowMs()),
-          },
-        });
-      } catch {
-        // The shutdown path must not depend on notification delivery.
-      }
-    } finally {
-      active.budgetHaltInProgress = false;
-    }
-    if (emitError !== undefined) {
-      active.lastActiveAt = this.#now();
-    }
   }
 
   #trackActiveToolCall(agentId: string, progress: RunAgentProgressEvent): void {
@@ -4360,160 +4109,25 @@ function sessionUserMessageEventFromDaemonEvent(
   };
 }
 
-function normalizeAgentBudget(
-  config: AgentBudgetConfig | undefined,
-):
-  | Omit<
-      ActiveAgentBudget,
-      "startedAt" | "startedAtMs" | "model" | "provider" | "priorUsage"
-    >
-  | undefined {
-  if (config === undefined) return undefined;
-  const tokenCap = normalizeBudgetCap(config.token_cap);
-  const dollarCap = normalizeBudgetCap(config.dollar_cap);
-  const wallClockSeconds = normalizeBudgetCap(config.wall_clock_seconds);
-  if (
-    tokenCap === undefined &&
-    dollarCap === undefined &&
-    wallClockSeconds === undefined
-  ) {
-    return undefined;
-  }
-  return {
-    ...(tokenCap !== undefined ? { tokenCap } : {}),
-    ...(dollarCap !== undefined ? { dollarCap } : {}),
-    ...(wallClockSeconds !== undefined ? { wallClockSeconds } : {}),
-  };
-}
-
-function normalizeBudgetCap(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
-}
-
-function parseBudgetTimestamp(value: string): number | undefined {
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function budgetUsageFromMetadata(
-  metadata: JsonObject | undefined,
-): AgentBudgetUsage {
-  const raw = metadata?.budgetUsage;
-  if (!isJsonObject(raw)) {
-    return { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 };
-  }
-  return {
-    inputTokens: finiteNumber(raw.inputTokens),
-    outputTokens: finiteNumber(raw.outputTokens),
-    totalTokens: finiteNumber(raw.totalTokens),
-    costUsd: finiteNumber(raw.costUsd),
-  };
-}
-
-function budgetHaltForActiveAgent(
+function terminalUsageForActiveAgent(
   active: ActiveBackgroundAgent,
-  nowMs: number,
-): AgentBudgetHalt | null {
-  const budget = active.budget;
-  if (budget === undefined) return null;
-  const usage = budgetUsageForActiveAgent(active);
-  const totalTokens = usage.totalTokens;
-  if (budget.tokenCap !== undefined && totalTokens >= budget.tokenCap) {
-    const reason = `agent budget token_cap reached: ${totalTokens} tokens >= ${budget.tokenCap}`;
-    return {
-      kind: "token_cap",
-      reason,
-      marker: budgetHaltMarker(
-        "token_cap",
-        budget.tokenCap,
-        totalTokens,
-        active,
-        nowMs,
-        reason,
-      ),
-    };
-  }
-  const costUsd = usage.costUsd;
-  if (budget.dollarCap !== undefined && costUsd >= budget.dollarCap) {
-    const reason = `agent budget dollar_cap reached: $${formatBudgetDollars(costUsd)} >= $${formatBudgetDollars(budget.dollarCap)}`;
-    return {
-      kind: "dollar_cap",
-      reason,
-      marker: budgetHaltMarker(
-        "dollar_cap",
-        budget.dollarCap,
-        costUsd,
-        active,
-        nowMs,
-        reason,
-      ),
-    };
-  }
-  if (budget.wallClockSeconds !== undefined) {
-    const elapsedSeconds = elapsedBudgetSeconds(active, nowMs);
-    if (elapsedSeconds >= budget.wallClockSeconds) {
-      return wallClockBudgetHalt(active, nowMs);
-    }
-  }
-  return null;
-}
-
-function wallClockBudgetHalt(
-  active: ActiveBackgroundAgent,
-  nowMs: number,
-): AgentBudgetHalt {
-  const cap = active.budget?.wallClockSeconds ?? 0;
-  const elapsedSeconds = elapsedBudgetSeconds(active, nowMs);
-  const reason = `agent budget wall_clock_seconds reached: ${formatBudgetSeconds(elapsedSeconds)}s >= ${formatBudgetSeconds(cap)}s`;
-  return {
-    kind: "wall_clock_seconds",
-    reason,
-    marker: budgetHaltMarker(
-      "wall_clock_seconds",
-      cap,
-      elapsedSeconds,
-      active,
-      nowMs,
-      reason,
-    ),
-  };
-}
-
-function elapsedBudgetSeconds(
-  active: ActiveBackgroundAgent,
-  nowMs: number,
-): number {
-  const startedAtMs = active.budget?.startedAtMs ?? nowMs;
-  return Math.max(0, (nowMs - startedAtMs) / 1000);
-}
-
-function budgetUsageForActiveAgent(
-  active: ActiveBackgroundAgent,
-): AgentBudgetUsage {
-  const prior = active.budget?.priorUsage ?? {
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-    costUsd: 0,
-  };
+): AgentTerminalUsage {
   const live = managedTokenUsage(active.thread);
   return {
-    inputTokens: prior.inputTokens + finiteNumber(live.inputTokens),
-    outputTokens: prior.outputTokens + finiteNumber(live.outputTokens),
-    totalTokens: prior.totalTokens + finiteNumber(live.totalTokens),
-    costUsd: prior.costUsd + agentCostUsd(active),
+    inputTokens: finiteNumber(live.inputTokens),
+    outputTokens: finiteNumber(live.outputTokens),
+    totalTokens: finiteNumber(live.totalTokens),
+    costUsd: agentCostUsd(active),
   };
 }
 
 function agentCostUsd(active: ActiveBackgroundAgent): number {
   const tokenUsage = managedTokenUsage(active.thread);
-  const model = budgetModel(active);
-  const provider = budgetProvider(active);
+  const model = activeAgentModel(active);
+  const provider = activeAgentProvider(active);
   // LiveAgent currently exposes aggregate input/output token counters.
-  // The budget marker records this basis so dollar caps are auditable
-  // without pretending cached/reasoning/search dimensions were observed.
+  // Preserve that limited basis in the terminal usage snapshot without
+  // pretending cached/reasoning/search dimensions were observed.
   const usage: ModelUsage = {
     model,
     ...(provider !== undefined ? { provider } : {}),
@@ -4529,17 +4143,17 @@ function agentCostUsd(active: ActiveBackgroundAgent): number {
   return computeUsdCost(usage, DEFAULT_MODEL_COSTS);
 }
 
-function budgetModel(active: ActiveBackgroundAgent): string {
+function activeAgentModel(active: ActiveBackgroundAgent): string {
   return (
-    active.budget?.model ??
     stringRecordField(active.thread.configSnapshot?.(), "model") ??
     "agenc"
   );
 }
 
-function budgetProvider(active: ActiveBackgroundAgent): string | undefined {
+function activeAgentProvider(
+  active: ActiveBackgroundAgent,
+): string | undefined {
   return (
-    active.budget?.provider ??
     stringRecordField(active.thread.configSnapshot?.(), "provider") ??
     stringRecordField(active.thread.configSnapshot?.(), "model_provider")
   );
@@ -4555,100 +4169,13 @@ function stringRecordField(
     : undefined;
 }
 
-function budgetHaltMarker(
-  kind: AgentBudgetHalt["kind"],
-  cap: number,
-  observed: number,
-  active: ActiveBackgroundAgent,
-  nowMs: number,
-  reason: string,
-): JsonObject {
-  const usage = budgetUsageForActiveAgent(active);
-  const model = budgetModel(active);
-  const provider = budgetProvider(active);
-  return {
-    kind,
-    cap,
-    observed,
-    reason,
-    code:
-      kind === "token_cap"
-        ? `token_cap:${usage.totalTokens}`
-        : kind === "dollar_cap"
-          ? `dollar_cap:${formatBudgetDollars(observed)}`
-          : `wall_clock_seconds:${formatBudgetSeconds(observed)}`,
-    haltedAt: new Date(nowMs).toISOString(),
-    startedAt: active.budget?.startedAt,
-    tokens: {
-      input: usage.inputTokens,
-      output: usage.outputTokens,
-      total: usage.totalTokens,
-    },
-    costUsd: usage.costUsd,
-    costBasis: "input_output_token_usage",
-    wallClockSeconds: elapsedBudgetSeconds(active, nowMs),
-    model,
-    ...(provider !== undefined ? { provider } : {}),
-  };
-}
-
-function budgetUsageMarker(
-  active: ActiveBackgroundAgent,
-  nowMs: number,
-): JsonObject | undefined {
-  if (active.budget === undefined) return undefined;
-  const usage = budgetUsageForActiveAgent(active);
-  const model = budgetModel(active);
-  const provider = budgetProvider(active);
-  return {
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    totalTokens: usage.totalTokens,
-    costUsd: usage.costUsd,
-    costBasis: "input_output_token_usage",
-    wallClockSeconds: elapsedBudgetSeconds(active, nowMs),
-    updatedAt: new Date(nowMs).toISOString(),
-    model,
-    ...(provider !== undefined ? { provider } : {}),
-  };
-}
-
-function withAgentBudgetUsage(
-  active: ActiveBackgroundAgent,
-  event: BackgroundAgentDaemonEvent | null,
-  nowMs: number,
-): BackgroundAgentDaemonEvent | null {
-  if (event === null || event.type !== "agent_status") return event;
-  const budgetUsage = budgetUsageMarker(active, nowMs);
-  if (budgetUsage === undefined) return event;
-  return {
-    ...event,
-    payload: {
-      ...(event.payload ?? {}),
-      budgetUsage,
-    },
-  };
-}
-
 function finiteNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function formatBudgetDollars(value: number): string {
-  return value
-    .toFixed(value >= 1 ? 2 : 6)
-    .replace(/0+$/, "")
-    .replace(/\.$/, "");
-}
-
-function formatBudgetSeconds(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(3);
 }
 
 function isRunnableActiveAgent(active: ActiveBackgroundAgent): boolean {
   return (
     active.ingressClosed !== true &&
-    active.budgetHalt === undefined &&
     active.pendingTerminal === undefined &&
     active.pendingSuspension === undefined
   );
@@ -4657,7 +4184,6 @@ function isRunnableActiveAgent(active: ActiveBackgroundAgent): boolean {
 function isInterruptibleActiveAgent(active: ActiveBackgroundAgent): boolean {
   return (
     active.ingressClosed !== true &&
-    active.budgetHalt === undefined &&
     (active.pendingTerminal === undefined ||
       active.cancellationRequest !== undefined)
   );
@@ -7671,7 +7197,7 @@ function cancelledTerminalResult(
     exitCode: null,
     stopReason,
     finalMessage: null,
-    usage: budgetUsageForActiveAgent(active),
+    usage: terminalUsageForActiveAgent(active),
     lastSequence: null,
     finishedAt,
   };
@@ -7720,7 +7246,7 @@ function terminalResultFromThread(
   runId: string,
   status: TerminalThreadStatus,
 ): RunTerminalResult {
-  const usage = budgetUsageForActiveAgent(active);
+  const usage = terminalUsageForActiveAgent(active);
   const finishedAt =
     "endedAtMs" in status && Number.isFinite(status.endedAtMs)
       ? new Date(status.endedAtMs).toISOString()
@@ -7753,12 +7279,7 @@ function terminalResultFromThread(
     runId,
     status: "cancelled",
     exitCode: null,
-    stopReason:
-      active.budgetHalt !== undefined
-        ? "budget_limit"
-        : status.status === "shutdown"
-          ? "shutdown"
-          : "not_found",
+    stopReason: status.status === "shutdown" ? "shutdown" : "not_found",
     finalMessage: null,
     usage,
     lastSequence: null,

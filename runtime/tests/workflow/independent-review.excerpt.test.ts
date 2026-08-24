@@ -33,4 +33,17 @@ describe("reviewerResponseExcerpt", () => {
       "I cannot review this.",
     );
   });
+
+  it("redacts secrets before bounding the reviewer response", () => {
+    const secret = `xai-${"z".repeat(24)}`;
+    const excerpt = reviewerResponseExcerpt(
+      `Review failed with token=${secret}. ${"x".repeat(500)}`,
+      80,
+    );
+
+    expect(excerpt).toContain("[REDACTED_SECRET]");
+    expect(excerpt).not.toContain(secret);
+    expect(excerpt).toHaveLength(80);
+    expect(excerpt.endsWith("…")).toBe(true);
+  });
 });
