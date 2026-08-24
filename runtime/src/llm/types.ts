@@ -368,7 +368,8 @@ interface LLMChatToolRoutingOptions {
   readonly allowedToolNames?: readonly string[];
 }
 
-type LLMReasoningEffort = "low" | "medium" | "high" | "xhigh";
+/** `max` is the documented tier above `xhigh` on the gpt-5.6 family. */
+type LLMReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 type LLMReasoningSummary = "auto" | "concise" | "detailed" | "none";
 type LLMModelVerbosity = "low" | "medium" | "high";
 type LLMServiceTier = "fast" | "priority" | "flex";

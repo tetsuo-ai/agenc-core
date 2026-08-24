@@ -88,7 +88,14 @@ export interface ModelInfo {
   readonly usedFallbackModelMetadata: boolean;
 }
 
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "none";
+/** `max` sits above `xhigh`; the gpt-5.6 family accepts it. */
+export type ReasoningEffort =
+  | "none"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 export type TruncationPolicy = "head" | "middle" | "off";
 
