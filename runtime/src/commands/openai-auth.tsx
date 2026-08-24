@@ -32,7 +32,7 @@ import {
 export const openaiLoginCommand: SlashCommand = {
   name: "openai-login",
   aliases: ["chatgpt-login"],
-  description: "Sign in with your ChatGPT account to use OpenAI models",
+  description: "Sign in with ChatGPT for OpenAI models",
   immediate: true,
   supportsNonInteractive: false,
   execute: async (ctx) => executeOpenAiLogin(ctx),
@@ -41,7 +41,7 @@ export const openaiLoginCommand: SlashCommand = {
 export const openaiLogoutCommand: SlashCommand = {
   name: "openai-logout",
   aliases: ["chatgpt-logout"],
-  description: "Sign out of the ChatGPT account used for OpenAI",
+  description: "Sign out of ChatGPT for OpenAI models",
   immediate: true,
   supportsNonInteractive: true,
   execute: async () =>
