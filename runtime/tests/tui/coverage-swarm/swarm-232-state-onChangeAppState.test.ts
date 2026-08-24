@@ -6,39 +6,17 @@ import {
   onChangeAppState,
 } from "../../../src/tui/state/onChangeAppState.js";
 
-type TestGlobalConfig = {
-  showExpandedTodos?: boolean;
-  showSpinnerTree?: boolean;
-  tungstenPanelVisible?: boolean;
-  verbose?: boolean;
-};
-
 const harness = vi.hoisted(() => ({
   applyConfigEnvironmentVariables: vi.fn(),
-  globalConfig: {} as TestGlobalConfig,
-  isAntEmployee: vi.fn(() => true),
   logError: vi.fn(),
   notifyPermissionModeChanged: vi.fn(),
   notifySessionMetadataChanged: vi.fn(),
-  updateRuntimeState: vi.fn(),
   setMainLoopModelOverride: vi.fn(),
   updateSettingsForSource: vi.fn(),
 }));
 
 vi.mock("../../../src/bootstrap/state.js", () => ({
   setMainLoopModelOverride: harness.setMainLoopModelOverride,
-}));
-
-vi.mock("../../../src/utils/buildConfig.js", () => ({
-  isAntEmployee: harness.isAntEmployee,
-}));
-
-vi.mock("../../../src/utils/config.js", () => ({
-  getRuntimeState: () => harness.globalConfig,
-  updateRuntimeState: (updater: (current: TestGlobalConfig) => TestGlobalConfig) => {
-    harness.updateRuntimeState(updater);
-    harness.globalConfig = updater(harness.globalConfig);
-  },
 }));
 
 vi.mock("../../../src/utils/errors.js", () => ({
@@ -85,18 +63,9 @@ function makeState(overrides: Partial<AppState> = {}): AppState {
 describe("onChangeAppState coverage swarm", () => {
   beforeEach(() => {
     harness.applyConfigEnvironmentVariables.mockReset();
-    harness.globalConfig = {
-      showExpandedTodos: false,
-      showSpinnerTree: false,
-      tungstenPanelVisible: false,
-      verbose: false,
-    };
-    harness.isAntEmployee.mockReset();
-    harness.isAntEmployee.mockReturnValue(true);
     harness.logError.mockReset();
     harness.notifyPermissionModeChanged.mockReset();
     harness.notifySessionMetadataChanged.mockReset();
-    harness.updateRuntimeState.mockReset();
     harness.setMainLoopModelOverride.mockReset();
     harness.updateSettingsForSource.mockReset();
   });
@@ -166,64 +135,24 @@ describe("onChangeAppState coverage swarm", () => {
     expect(harness.setMainLoopModelOverride).toHaveBeenCalledWith(null);
   });
 
-  test("persists expanded view only when the stored config differs", () => {
+  test("keeps transient presentation state out of durable settings", () => {
     onChangeAppState({
-      oldState: makeState({ expandedView: "none" }),
-      newState: makeState({ expandedView: "teammates" }),
+      oldState: makeState({
+        expandedView: "none",
+        tungstenPanelVisible: false,
+        verbose: false,
+      }),
+      newState: makeState({
+        expandedView: "teammates",
+        tungstenPanelVisible: true,
+        verbose: true,
+      }),
     });
 
-    expect(harness.globalConfig).toMatchObject({
-      showExpandedTodos: false,
-      showSpinnerTree: true,
-    });
-    expect(harness.updateRuntimeState).toHaveBeenCalledTimes(1);
-
-    harness.updateRuntimeState.mockReset();
-    harness.globalConfig = {
-      showExpandedTodos: false,
-      showSpinnerTree: true,
-    };
-
-    onChangeAppState({
-      oldState: makeState({ expandedView: "none" }),
-      newState: makeState({ expandedView: "teammates" }),
-    });
-
-    expect(harness.updateRuntimeState).not.toHaveBeenCalled();
-  });
-
-  test("persists verbose and tungsten toggles only for changed mismatched config", () => {
-    onChangeAppState({
-      oldState: makeState({ verbose: false, tungstenPanelVisible: false }),
-      newState: makeState({ verbose: true, tungstenPanelVisible: true }),
-    });
-
-    expect(harness.globalConfig).toMatchObject({
-      tungstenPanelVisible: true,
-      verbose: true,
-    });
-    expect(harness.updateRuntimeState).toHaveBeenCalledTimes(2);
-
-    harness.updateRuntimeState.mockReset();
-    harness.globalConfig = {
-      tungstenPanelVisible: true,
-      verbose: true,
-    };
-
-    onChangeAppState({
-      oldState: makeState({ verbose: false, tungstenPanelVisible: false }),
-      newState: makeState({ verbose: true, tungstenPanelVisible: true }),
-    });
-
-    expect(harness.updateRuntimeState).not.toHaveBeenCalled();
-
-    harness.isAntEmployee.mockReturnValue(false);
-    onChangeAppState({
-      oldState: makeState({ tungstenPanelVisible: false }),
-      newState: makeState({ tungstenPanelVisible: true }),
-    });
-
-    expect(harness.updateRuntimeState).not.toHaveBeenCalled();
+    expect(harness.updateSettingsForSource).not.toHaveBeenCalled();
+    expect(harness.applyConfigEnvironmentVariables).not.toHaveBeenCalled();
+    expect(harness.notifyPermissionModeChanged).not.toHaveBeenCalled();
+    expect(harness.notifySessionMetadataChanged).not.toHaveBeenCalled();
   });
 
   test("does not reapply the shell environment when its canonical policy is unchanged", () => {

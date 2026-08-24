@@ -243,7 +243,7 @@ export type AppState = DeepImmutable<{
     command: string // The command string to display (e.g., "Enter", "echo hello")
     timestamp: number // When the command was sent
   }
-  // Sticky tmux panel visibility — mirrors globalConfig.tungstenPanelVisible for reactivity.
+  // Session-local tmux panel visibility.
   tungstenPanelVisible?: boolean
   // Transient auto-hide at turn end — separate from tungstenPanelVisible so the
   // pill stays in the footer (user can reopen) but the panel content doesn't take

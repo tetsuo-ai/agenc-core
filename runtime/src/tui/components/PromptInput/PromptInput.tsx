@@ -2841,14 +2841,6 @@ function PromptInput({
       toolPermissionContext,
     );
 
-    // Track when user enters plan mode
-    if (targetMode === "plan") {
-      updateRuntimeState((current) => ({
-        ...current,
-        lastPlanModeUse: Date.now(),
-      }));
-    }
-
     // Set the mode via setAppState directly because setToolPermissionContext
     // intentionally preserves the existing mode (to prevent coordinator mode
     // corruption from workers). Then call setToolPermissionContext to trigger

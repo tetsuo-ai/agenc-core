@@ -1,6 +1,4 @@
 import { setMainLoopModelOverride } from '../../bootstrap/state.js'
-import { isAntEmployee } from '../../utils/buildConfig.js'
-import { getRuntimeState, updateRuntimeState } from '../../utils/config.js'
 import { toError } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { applyConfigEnvironmentVariables } from '../../utils/managedEnv.js'
@@ -93,46 +91,6 @@ export function onChangeAppState({
     void updateSettingsForSource('userSettings', { model: newState.mainLoopModel })
     setMainLoopModelOverride(newState.mainLoopModel)
 
-  }
-
-  // expandedView → persist as showExpandedTodos + showSpinnerTree for backwards compat
-  if (newState.expandedView !== oldState.expandedView) {
-    const showExpandedTodos = newState.expandedView === 'tasks'
-    const showSpinnerTree = newState.expandedView === 'teammates'
-    if (
-      getRuntimeState().showExpandedTodos !== showExpandedTodos ||
-      getRuntimeState().showSpinnerTree !== showSpinnerTree
-    ) {
-      updateRuntimeState(current => ({
-        ...current,
-        showExpandedTodos,
-        showSpinnerTree,
-      }))
-    }
-  }
-
-  // verbose
-  if (
-    newState.verbose !== oldState.verbose &&
-    getRuntimeState().verbose !== newState.verbose
-  ) {
-    const verbose = newState.verbose
-    updateRuntimeState(current => ({
-      ...current,
-      verbose,
-    }))
-  }
-
-  // tungstenPanelVisible (internal-only tmux panel sticky toggle)
-  if (isAntEmployee()) {
-    if (
-      newState.tungstenPanelVisible !== oldState.tungstenPanelVisible &&
-      newState.tungstenPanelVisible !== undefined &&
-      getRuntimeState().tungstenPanelVisible !== newState.tungstenPanelVisible
-    ) {
-      const tungstenPanelVisible = newState.tungstenPanelVisible
-      updateRuntimeState(current => ({ ...current, tungstenPanelVisible }))
-    }
   }
 
   // Re-apply the canonical shell environment when it changes.
