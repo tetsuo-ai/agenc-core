@@ -58,6 +58,10 @@ export interface EnvSnapshot {
   readonly DEEPSEEK_API_KEY?: string;
   readonly DEEPSEEK_BASE_URL?: string;
   readonly GEMINI_API_KEY?: string;
+  readonly MISTRAL_API_KEY?: string;
+  readonly MINIMAX_API_KEY?: string;
+  readonly NVIDIA_API_KEY?: string;
+  readonly GITHUB_TOKEN?: string;
   readonly GEMINI_BASE_URL?: string;
   readonly AWS_ACCESS_KEY_ID?: string;
   readonly AWS_SECRET_ACCESS_KEY?: string;
@@ -168,6 +172,18 @@ export function resolveProviderApiKey(
       return readNonEmpty(e.DEEPSEEK_API_KEY);
     case "gemini":
       return readNonEmpty(e.GEMINI_API_KEY);
+    // These four fell through to `undefined`, so their key could never
+    // reach the factory no matter where it was set: the session either
+    // died with "requires an API key" or, once routed through managed
+    // vending as a fallback, took whatever that backend answered.
+    case "mistral":
+      return readNonEmpty(e.MISTRAL_API_KEY);
+    case "minimax":
+      return readNonEmpty(e.MINIMAX_API_KEY);
+    case "nvidia-nim":
+      return readNonEmpty(e.NVIDIA_API_KEY);
+    case "github":
+      return readNonEmpty(e.GITHUB_TOKEN);
     case "amazon-bedrock":
       return (
         readNonEmpty(e.AWS_BEDROCK_ACCESS_KEY_ID) ??

@@ -67,7 +67,7 @@ export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
   // devstral-latest is no longer a documented alias (Devstral 2 deprecated
   // 2026-05-22); Mistral Medium is the documented replacement.
   mistral: "mistral-medium-latest",
-  "nvidia-nim": "nvidia/llama-3.1-nemotron-70b-instruct",
+  "nvidia-nim": "meta/llama-3.1-8b-instruct",
   minimax: "MiniMax-M2.5",
   github: "gpt-4o",
   "amazon-bedrock": "amazon.nova-pro-v1:0",
@@ -175,8 +175,9 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   ]),
   mistral: Object.freeze(["mistral-medium-latest"]),
   "nvidia-nim": Object.freeze([
-    "nvidia/llama-3.1-nemotron-70b-instruct",
     "meta/llama-3.1-8b-instruct",
+    "meta/llama-3.1-70b-instruct",
+    "mistralai/mistral-nemo-12b-instruct",
   ]),
   minimax: Object.freeze(["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"]),
   // `gpt-5.4` is registry-owned by openai (REGISTERED_MODEL_CATALOG,

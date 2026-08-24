@@ -3215,6 +3215,27 @@ async function tryRunSamplingRequest(
     } else {
       streamModelError = new StreamModelError(error);
     }
+    // The model phase failing is the single most useful thing to know
+    // about a turn, and it was recorded nowhere: the error travelled on
+    // as a value and, if any later step cleared it, the turn finished
+    // looking like a normal empty answer.
+    {
+      const cause = streamModelError.cause ?? streamModelError;
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "stream_model_failed",
+            message: `${session.services.provider.name}: ${
+              cause instanceof Error
+                ? `${cause.name}: ${cause.message}`
+                : String(cause)
+            }`,
+          },
+        },
+      });
+    }
   }
 
   // Plan-mode: after the stream finishes, let the helper finalize any
