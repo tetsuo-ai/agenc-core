@@ -442,20 +442,11 @@ async function loadProductionCommandSources(
     loadPluginCommands({ cwd, config }),
     loadPluginSkills({ cwd, config }),
   ]);
-  // The workflow-commands source previously loaded
-  // ./tools/WorkflowTool/createWorkflowCommand.js — that module was
-  // removed during the runtime migration, so the dynamic import always
-  // failed and returned []. Dropped from the loader list now that esbuild
-  // needs literal specifiers; if the workflow source returns, add a
-  // literal-import loader and a corresponding bundle entry.
-  const workflowCommands: readonly Command[] = [];
-
   return [
     ...bundledSkills,
     ...builtinPluginSkills,
     ...skillDirCommands,
     ...dynamicSkills,
-    ...workflowCommands,
     ...pluginCommands,
     ...pluginSkills,
   ];

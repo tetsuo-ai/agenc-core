@@ -17,7 +17,6 @@ import {
 import { loadNamedWorkflowManifest } from "../agents/workflow-manifest.js";
 import { WorkflowHandoffArtifactStore } from "../agents/workflow-handoff-store.js";
 import {
-  assertLegacyCommandInvocation,
   resolveEffectiveWorkflowLimits,
   validateWorkflowInvocationToolArgs,
   WORKFLOW_INVOCATION_SCHEMA,
@@ -4729,7 +4728,7 @@ function createCronAndWorkflowTools(
     {
       name: "WorkflowTool",
       description:
-        "Run a named local workflow from .agenc/workflows or AGENC_HOME/workflows. Version-2 DAGs and the one-epoch v1 compatibility format use the bounded event-driven scheduler. A workflow with only `command` runs that single shell command (legacy shape).",
+        "Run a named version-2 agent DAG from .agenc/workflows or AGENC_HOME/workflows through the bounded event-driven scheduler.",
       metadata: toolMetadata("workflow", {
         mutating: true,
         deferred: true,
@@ -4766,70 +4765,48 @@ function createCronAndWorkflowTools(
         }
         const { document } = loaded;
         const name = invocation.name;
-        if (document.kind === "agent_dag") {
-          const session = opts.getSession();
-          if (!session) {
-            return json(
-              { error: "agent workflows require an active session" },
-              true,
-            );
-          }
-          const { control, registry } = ensureAgentControl(session);
-          let driver: ReturnType<typeof openStateDatabases> | undefined;
-          try {
-            const effectiveLimits = resolveEffectiveWorkflowLimits(
-              document.manifest,
-              invocation,
-              registry.maxThreads,
-              MAX_WORKFLOW_HANDOFF_TOKENS,
-            );
-            driver = openStateDatabases({
-              cwd: opts.workspaceRoot,
-              agencHome: stateRoot(opts),
-            });
-            const artifactStore = new WorkflowHandoffArtifactStore({
-              driver,
-              trustedRoot: join(driver.projectDir, "workflow-handoffs"),
-            });
-            await artifactStore.recoverIntents();
-            const { runAgentWorkflowV2 } =
-              await import("../agents/workflow-scheduler.js");
-            const run = await runAgentWorkflowV2({
-              session,
-              control,
-              registry,
-              workflowId: name,
-              manifest: document.manifest,
-              manifestDigest: document.manifestDigest,
-              sourceVersion: document.sourceVersion,
-              effectiveLimits,
-              artifactStore,
-              signal: abortSignalFromArgs(args),
-            });
-            return json(
-              run,
-              run.outcome === "completed" ? undefined : true,
-            );
-          } catch (error) {
-            return json(
-              {
-                error: error instanceof Error ? error.message : String(error),
-                ...(typeof error === "object" &&
-                error !== null &&
-                "code" in error &&
-                typeof error.code === "string"
-                  ? { code: error.code }
-                  : {}),
-                workflow: name,
-              },
-              true,
-            );
-          } finally {
-            driver?.close();
-          }
+        const session = opts.getSession();
+        if (!session) {
+          return json(
+            { error: "agent workflows require an active session" },
+            true,
+          );
         }
+        const { control, registry } = ensureAgentControl(session);
+        let driver: ReturnType<typeof openStateDatabases> | undefined;
         try {
-          assertLegacyCommandInvocation(invocation);
+          const effectiveLimits = resolveEffectiveWorkflowLimits(
+            document.manifest,
+            invocation,
+            registry.maxThreads,
+            MAX_WORKFLOW_HANDOFF_TOKENS,
+          );
+          driver = openStateDatabases({
+            cwd: opts.workspaceRoot,
+            agencHome: stateRoot(opts),
+          });
+          const artifactStore = new WorkflowHandoffArtifactStore({
+            driver,
+            trustedRoot: join(driver.projectDir, "workflow-handoffs"),
+          });
+          await artifactStore.recoverIntents();
+          const { runAgentWorkflowV2 } =
+            await import("../agents/workflow-scheduler.js");
+          const run = await runAgentWorkflowV2({
+            session,
+            control,
+            registry,
+            workflowId: name,
+            manifest: document.manifest,
+            manifestDigest: document.manifestDigest,
+            effectiveLimits,
+            artifactStore,
+            signal: abortSignalFromArgs(args),
+          });
+          return json(
+            run,
+            run.outcome === "completed" ? undefined : true,
+          );
         } catch (error) {
           return json(
             {
@@ -4837,38 +4814,16 @@ function createCronAndWorkflowTools(
               ...(typeof error === "object" &&
               error !== null &&
               "code" in error &&
-              typeof error.code === "string"
-                ? { code: error.code }
-                : {}),
+                typeof error.code === "string"
+                  ? { code: error.code }
+                  : {}),
+              workflow: name,
             },
             true,
           );
+        } finally {
+          driver?.close();
         }
-        if (!opts.unifiedExecManager) {
-          return json({ error: "unified exec manager is not available" }, true);
-        }
-        const ownerId = processOwnerIdFromToolArgs(
-          args as Record<string, unknown>,
-        );
-        const runtimeSandbox = runtimeSandboxForExec(
-          args as Record<string, unknown>,
-          opts.workspaceRoot,
-          "workflow",
-        );
-        const output = await opts.unifiedExecManager.execCommand({
-          cmd: document.manifest.command,
-          workdir: opts.workspaceRoot,
-          ...(ownerId !== undefined ? { ownerId } : {}),
-          ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
-        });
-        return {
-          content: formatUnifiedExecToolContent(output),
-          isError:
-            output.exitCode !== null && output.exitCode !== 0
-              ? true
-              : undefined,
-          codeModeResult: unifiedExecCodeModeResult(output),
-        };
       },
     },
   ];

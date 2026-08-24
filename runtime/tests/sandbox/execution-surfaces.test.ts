@@ -1,9 +1,7 @@
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +18,6 @@ import {
   runWithCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
-import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
 import { CanonicalBashTool } from "../../src/tools/canonicalToolSurface.js";
 import { createMonitorTool } from "../../src/tools/system/monitor.js";
 
@@ -233,35 +230,6 @@ describe("fail-closed process surfaces", () => {
     await expect(tool.execute(args)).resolves.toMatchObject({
       isError: true,
       content: expect.stringContaining("sandbox_probe_failed"),
-    });
-    expect(execCommand).not.toHaveBeenCalled();
-    expect(existsSync(marker)).toBe(false);
-  });
-
-  it("blocks legacy workflow commands before unified exec", async () => {
-    const root = tempRoot("agenc-sandbox-workflow-");
-    const workflowDir = join(root, ".agenc", "workflows");
-    const marker = join(root, "workflow-escaped");
-    mkdirSync(workflowDir, { recursive: true });
-    writeFileSync(
-      join(workflowDir, "escape.json"),
-      JSON.stringify({
-        command: `${process.execPath} -e "require('fs').writeFileSync(${JSON.stringify(marker)}, 'bad')"`,
-      }),
-    );
-    const execCommand = vi.fn();
-    const workflow = createModelFacingTools({
-      workspaceRoot: root,
-      getSession: () => null,
-      unifiedExecManager: { execCommand } as never,
-    }).find((tool) => tool.name === "WorkflowTool");
-    expect(workflow).toBeDefined();
-    const args: Record<string, unknown> = { name: "escape" };
-    attachSandboxExecutionBroker(args, unavailableBroker(root), "workflow");
-
-    await expect(workflow!.execute(args)).rejects.toMatchObject({
-      code: "sandbox_probe_failed",
-      surface: "workflow",
     });
     expect(execCommand).not.toHaveBeenCalled();
     expect(existsSync(marker)).toBe(false);

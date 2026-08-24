@@ -422,9 +422,9 @@ selects both bypassed prompts and `danger-full-access`. In `read-only` or
 probe, a transform failure, or missing authenticated policy stops execution
 before spawn. Inspect readiness and remediation with `agenc doctor`.
 
-This invariant covers shell/unified-exec, Monitor, workflow/job, hook/cron,
-stdio MCP, daemon command exec, and child-agent paths. The design and stable
-error codes are documented in
+This invariant covers shell/unified-exec, Monitor, jobs, hooks/crons, stdio MCP,
+daemon command exec, and the child-agent processes launched by workflows. The
+design and stable error codes are documented in
 [`../design/fail-closed-sandbox-execution.md`](../design/fail-closed-sandbox-execution.md).
 Docker sandbox driver and SSH remote exec targets remain roadmap items
 ([`../roadmap.md`](../roadmap.md)).

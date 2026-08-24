@@ -1,7 +1,7 @@
 /**
  * Final process-execution boundary for commands that do not naturally pass
- * through the model-tool router (hooks, MCP stdio, workflow commands, and
- * direct interactive shell input).
+ * through the model-tool router (hooks, MCP stdio, and direct interactive
+ * shell input).
  *
  * Restricted modes have exactly two outcomes: return a platform-sandboxed
  * command or throw a stable, actionable error. Only explicit
@@ -48,7 +48,6 @@ export type SandboxExecutionSurface =
   | "interactive"
   | "print"
   | "background"
-  | "workflow"
   | "job"
   | "hook"
   | "cron"
@@ -957,7 +956,6 @@ const EXECUTION_SURFACES = new Set<SandboxExecutionSurface>([
   "interactive",
   "print",
   "background",
-  "workflow",
   "job",
   "hook",
   "cron",
