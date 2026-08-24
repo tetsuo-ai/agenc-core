@@ -251,6 +251,71 @@ function functionResponsePayload(content: string): Record<string, unknown> {
   return parseJsonObjectText(content) ?? { result: content };
 }
 
+/**
+ * The image a tool handed back, if it handed one back.
+ *
+ * FileRead returns a picture as `{type:"input_image", image_url:"data:…"}`
+ * — the url is a plain string there — while the chat-shaped parts carry
+ * `{type:"image_url", image_url:{url}}`. Both turn up in tool results, so
+ * both have to be recognised.
+ */
+function toolResultImageUrl(part: Record<string, unknown>): string | undefined {
+  if (part.type === "input_image") return nonEmptyString(part.image_url);
+  if (part.type !== "image_url") return undefined;
+  return isRecord(part.image_url)
+    ? nonEmptyString(part.image_url.url)
+    : nonEmptyString(part.image_url);
+}
+
+/**
+ * Split a tool result into the pictures it carries and the words it says.
+ *
+ * Gemini takes a functionResponse as JSON, so an image left inside it
+ * arrives as a wall of base64 text — the model sees characters, not a
+ * picture, and answers about an image it never saw. Ours read "Q4" and
+ * "MI" off a circle with "K9" written in it. The pictures have to ride
+ * beside the response as `inlineData`, which is where Gemini looks.
+ */
+function splitToolResultContent(content: LLMMessage["content"]): {
+  readonly images: readonly GeminiPart[];
+  readonly text: string;
+} {
+  if (typeof content === "string") return { images: [], text: content };
+  const images: GeminiPart[] = [];
+  const spoken: unknown[] = [];
+  for (const raw of content as readonly unknown[]) {
+    if (!isRecord(raw)) {
+      spoken.push(raw);
+      continue;
+    }
+    const url = toolResultImageUrl(raw);
+    const inline = url === undefined ? null : parseDataUrl(url, "image");
+    if (inline) {
+      images.push({
+        inlineData: { mimeType: inline.mimeType, data: inline.data },
+      });
+      continue;
+    }
+    spoken.push(
+      raw.type === "text" && typeof raw.text === "string" ? raw.text : raw,
+    );
+  }
+  const onlyStrings = spoken.every((piece) => typeof piece === "string");
+  const text = onlyStrings
+    ? (spoken as readonly string[]).join("\n").trim()
+    : JSON.stringify(spoken);
+  if (text.length > 0) return { images, text };
+  // A result that was nothing but pictures still needs to say so: an empty
+  // functionResponse reads as a tool that returned nothing at all.
+  return {
+    images,
+    text:
+      images.length === 1
+        ? "Returned 1 image, attached."
+        : `Returned ${images.length} images, attached.`,
+  };
+}
+
 function parseDataUrl(
   url: string,
   expectedPrefix: "image" | "application",
@@ -405,19 +470,12 @@ function buildGeminiContents(messages: readonly LLMMessage[]): {
         nonEmptyString(message.toolName) ??
         (message.toolCallId ? toolCallNames.get(message.toolCallId) : undefined) ??
         "tool";
+      const { images, text } = splitToolResultContent(message.content);
       contents.push({
         role: "user",
         parts: [
-          {
-            functionResponse: {
-              name,
-              response: functionResponsePayload(
-                typeof message.content === "string"
-                  ? message.content
-                  : JSON.stringify(message.content),
-              ),
-            },
-          },
+          { functionResponse: { name, response: functionResponsePayload(text) } },
+          ...images,
         ],
       });
       continue;
