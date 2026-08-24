@@ -342,6 +342,25 @@ describe("AgenC MCP management CLI parsing", () => {
     });
   });
 
+  test("captures the complete MCP environment without widening provider state", async () => {
+    const environment = {
+      ...process.env,
+      AGENC_HOME: agencHome,
+      HOME: agencHome,
+      MY_MCP_TOKEN: "captured-mcp-token",
+    };
+    const result = runAgenCMcpCli(
+      { kind: "management", argv: ["list"] },
+      { configStore, environment },
+    );
+    environment.MY_MCP_TOKEN = "mutated-after-mcp-cli-ingress";
+
+    await expect(result).resolves.toBe(0);
+    const captured = handlerMocks.mcpListHandler.mock.calls.at(-1)?.[1];
+    expect(captured).toMatchObject({ MY_MCP_TOKEN: "captured-mcp-token" });
+    expect(Object.isFrozen(captured)).toBe(true);
+  });
+
   test("rejects extra fixed-arity command arguments", async () => {
     const { io, output } = captureIo();
 

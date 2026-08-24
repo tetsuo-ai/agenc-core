@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -650,7 +650,8 @@ describe("app-server-client daemon helpers", () => {
         "config_version = 2",
         "[mcp_servers.audit-ping]",
         `command = ${JSON.stringify(process.execPath)}`,
-        `args = [${JSON.stringify(fixture)}, ${JSON.stringify(pidFile)}]`,
+        `args = [${JSON.stringify(fixture)}, ${JSON.stringify("${MCP_PID_FILE}")}]`,
+        'env_vars = ["MCP_SESSION_MARKER"]',
         "",
       ].join("\n"),
       "utf8",
@@ -659,12 +660,27 @@ describe("app-server-client daemon helpers", () => {
       ReturnType<typeof createAgenCDaemonOnlyTuiContext>
     > | null = null;
     try {
-      context = await createAgenCDaemonOnlyTuiContext({
-        env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
+      const contextEnvironment = {
+        ...process.env,
+        AGENC_HOME: agencHome,
+        HOME: agencHome,
+        MCP_PID_FILE: pidFile,
+        MCP_SESSION_MARKER: "captured-daemon-tui-session",
+      };
+      const contextPromise = createAgenCDaemonOnlyTuiContext({
+        env: contextEnvironment,
         cwd,
         conversationId: "agenc-tui-daemon-slash-test",
         permissionMode: "bypassPermissions",
       });
+      contextEnvironment.MCP_SESSION_MARKER = "mutated-after-tui-ingress";
+      context = await contextPromise;
+      expect(readFileSync(pidFile, "utf8").split(/\r?\n/u)[1]).toBe(
+        "captured-daemon-tui-session",
+      );
+      expect(context.baseSession.services.providerEnvironment).not.toHaveProperty(
+        "MCP_SESSION_MARKER",
+      );
       const registry = buildDefaultRegistry();
       const run = async (input: string) => {
         const parsed = parseSlashCommand(input);

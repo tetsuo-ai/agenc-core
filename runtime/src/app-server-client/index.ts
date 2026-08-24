@@ -56,6 +56,7 @@ import {
 import { loadFreshAgentDefinitions } from "../tools/AgentTool/loadAgentsDir.js";
 import type { AgenCBridgeSession } from "../tui/session-types.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
+import { snapshotMcpRequestEnvironment } from "../mcp-client/environment.js";
 
 export {
   collectDaemonClientEnvOverrides,
@@ -366,6 +367,7 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   runtimeOptions: AgentRuntimeOptions,
 ): Promise<AgenCDaemonOnlyTuiContext> {
   const providerEnvironment = snapshotProviderEnvironment(env);
+  const mcpRequestEnvironment = snapshotMcpRequestEnvironment(env);
   const roleWorkspace = options.roleWorkspace
     ? normalizeAgentRoleWorkspace(options.roleWorkspace)
     : createAgentRoleWorkspace(options.cwd);
@@ -419,7 +421,7 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   });
   const mcpRuntimeManager = await createSessionMcpManagerFromAuthority(
     configStore,
-    providerEnvironment,
+    mcpRequestEnvironment,
     {
       sandboxExecutionBroker,
     },
@@ -427,7 +429,7 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   await mcpRuntimeManager.start();
   const mcpService = createSessionMcpService(mcpRuntimeManager, {
     authority: configStore,
-    environment: providerEnvironment,
+    environment: mcpRequestEnvironment,
   });
   const agentDefinitions = await loadFreshAgentDefinitions(roleWorkspace.cwd);
   const abortController = new AbortController();

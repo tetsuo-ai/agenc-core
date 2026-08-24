@@ -1,13 +1,9 @@
-import {
-  assertNoObsoleteConfigEnvironment,
-  assertNoObsoleteProviderSelectors,
-} from "../config/env.js";
+import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
 import {
   CANONICAL_SESSION_ENV_KEYS,
   canonicalSessionEnvironmentKeys,
   isDynamicSessionCredentialEnvironmentKey,
 } from "../session/environment.js";
-import { assertNoRetiredAgentRuntimeEnvironment } from "../session/runtime-options.js";
 
 /**
  * Session-sensitive client environment forwarded to daemon-owned runtimes.
@@ -23,9 +19,7 @@ export const DAEMON_CLIENT_ENV_SNAPSHOT_KEYS = CANONICAL_SESSION_ENV_KEYS;
 export function collectDaemonClientEnvOverrides(
   env: NodeJS.ProcessEnv,
 ): Record<string, string> {
-  assertNoRetiredAgentRuntimeEnvironment(env);
-  assertNoObsoleteConfigEnvironment(env);
-  assertNoObsoleteProviderSelectors(env);
+  assertCanonicalEnvironmentIngress(env);
   return Object.fromEntries(
     canonicalSessionEnvironmentKeys(env).map((key) => {
       const value = env[key];
@@ -47,9 +41,7 @@ export function normalizeDaemonClientEnvOverrides(
   inheritedEnvironment: Readonly<Record<string, string | undefined>> = {},
 ): Record<string, string> {
   const provided = overrides ?? {}
-  assertNoRetiredAgentRuntimeEnvironment(provided)
-  assertNoObsoleteConfigEnvironment(provided)
-  assertNoObsoleteProviderSelectors(provided)
+  assertCanonicalEnvironmentIngress(provided)
   const allowed = new Set<string>(DAEMON_CLIENT_ENV_SNAPSHOT_KEYS)
   const unknown = Object.keys(provided).filter(
     key => !allowed.has(key) && !isDynamicSessionCredentialEnvironmentKey(key),

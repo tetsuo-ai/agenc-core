@@ -44,6 +44,11 @@ async function readPid(pidFile: string): Promise<number> {
   return Number.parseInt(raw.trim(), 10);
 }
 
+async function readSessionMarker(pidFile: string): Promise<string> {
+  const [, marker = ""] = (await readFile(pidFile, "utf8")).split(/\r?\n/u);
+  return marker;
+}
+
 function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -208,6 +213,7 @@ async function expectLiveMcpEndToEnd(params: {
   readonly pidFile: string;
   readonly env: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
+  readonly expectedSessionMarker?: string;
 }): Promise<void> {
   const seenToolNamesByCall: string[][] = [];
   const seenMessagesByCall: LLMMessage[][] = [];
@@ -223,7 +229,7 @@ async function expectLiveMcpEndToEnd(params: {
   let boot: LocalRuntimeBootstrap | null = null;
   let pid: number | undefined;
   try {
-    boot = await bootstrapLocalRuntimeSession({
+    const bootstrapPromise = bootstrapLocalRuntimeSession({
       apiKey: "test-key",
       env: params.env,
       ...(params.argv !== undefined ? { argv: [...params.argv] } : {}),
@@ -232,8 +238,20 @@ async function expectLiveMcpEndToEnd(params: {
       // guarded in bootstrap.test.ts.
       cwd: params.env.AGENC_WORKSPACE as string,
     });
+    if (params.expectedSessionMarker !== undefined) {
+      params.env.MCP_SESSION_MARKER = "mutated-after-bootstrap-ingress";
+    }
+    boot = await bootstrapPromise;
 
     pid = await readPid(params.pidFile);
+    if (params.expectedSessionMarker !== undefined) {
+      expect(await readSessionMarker(params.pidFile)).toBe(
+        params.expectedSessionMarker,
+      );
+      expect(boot.session.services.providerEnvironment).not.toHaveProperty(
+        "MCP_SESSION_MARKER",
+      );
+    }
     expect(isPidAlive(pid)).toBe(true);
     expect(boot.mcpManager.getConnectedServers()).toEqual([MCP_SERVER_NAME]);
     expect(boot.mcpManager.getTools().map((tool) => tool.name)).toContain(
@@ -369,7 +387,8 @@ config_version = 2
 [mcp_servers.${MCP_SERVER_NAME}]
 transport = "stdio"
 command = ${tomlString(process.execPath)}
-args = [${tomlString(FIXTURE_PATH)}, ${tomlString(pidFile)}]
+args = [${tomlString(FIXTURE_PATH)}, ${tomlString("${MCP_PID_FILE}")}]
+env_vars = ["MCP_SESSION_MARKER"]
 timeout = 10000
       `,
       "utf8",
@@ -384,8 +403,11 @@ timeout = 10000
         AGENC_HOME: home,
         AGENC_WORKSPACE: workspace,
         HOME: home,
+        MCP_PID_FILE: pidFile,
+        MCP_SESSION_MARKER: "captured-bootstrap-session",
       },
       argv: ["node", "agenc", "--dangerously-bypass-approvals-and-sandbox"],
+      expectedSessionMarker: "captured-bootstrap-session",
     });
   });
 

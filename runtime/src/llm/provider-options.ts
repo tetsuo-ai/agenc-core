@@ -8,11 +8,7 @@
  * never participate in provider selection here.
  */
 
-import {
-  assertNoObsoleteConfigEnvironment,
-  assertNoObsoleteProviderSelectors,
-} from "../config/env.js";
-import { assertNoRetiredAgentRuntimeEnvironment } from "../session/runtime-options.js";
+import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
 import { canonicalSessionEnvironmentKeys } from "../session/environment.js";
 import {
   getGeminiAuthMode,
@@ -139,9 +135,7 @@ function assertOpenAiOauthBaseUrl(baseURL: string | undefined): string {
 export function snapshotProviderEnvironment(
   env: ProviderEnvironment,
 ): ProviderEnvironment {
-  assertNoRetiredAgentRuntimeEnvironment(env);
-  assertNoObsoleteConfigEnvironment(env);
-  assertNoObsoleteProviderSelectors(env);
+  assertCanonicalEnvironmentIngress(env);
   return Object.freeze(
     Object.fromEntries(
       canonicalSessionEnvironmentKeys(env).flatMap(key =>

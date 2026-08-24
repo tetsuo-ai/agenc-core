@@ -22,6 +22,7 @@ import {
   shouldProbeCapabilityEntry,
 } from "../llm/capabilities.js";
 import { MCPManager } from "../mcp-client/manager.js";
+import { snapshotMcpRequestEnvironment } from "../mcp-client/environment.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { isAutoModeGateEnabled } from "../permissions/classifier.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
@@ -902,6 +903,7 @@ export async function bootstrapLocalRuntimeSession(
 ): Promise<LocalRuntimeBootstrap> {
   const env = options.env ?? process.env;
   const providerEnvironment = snapshotProviderEnvironment(env);
+  const mcpRequestEnvironment = snapshotMcpRequestEnvironment(env);
   const argv = options.argv ?? process.argv;
   const cli = readStartupCliFlags(argv);
   const runtimeOptions = options.runtimeOptions ?? resolveAgentRuntimeOptions(
@@ -913,6 +915,7 @@ export async function bootstrapLocalRuntimeSession(
       ...options,
       env,
       providerEnvironment,
+      mcpRequestEnvironment,
       cli,
       runtimeOptions,
     })
@@ -923,12 +926,14 @@ async function bootstrapLocalRuntimeSessionScoped(
   options: BootstrapLocalRuntimeSessionOptions & {
     readonly env: NodeJS.ProcessEnv;
     readonly providerEnvironment: ReturnType<typeof snapshotProviderEnvironment>;
+    readonly mcpRequestEnvironment: ReturnType<typeof snapshotMcpRequestEnvironment>;
     readonly cli: StartupCliFlags;
     readonly runtimeOptions: AgentRuntimeOptions;
   },
 ): Promise<LocalRuntimeBootstrap> {
   const env = options.env ?? process.env;
   const providerEnvironment = options.providerEnvironment;
+  const mcpRequestEnvironment = options.mcpRequestEnvironment;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const agencHome = resolveAgencHomeFromEnv(env);
   // The explicit per-session cwd must beat AGENC_WORKSPACE: in the daemon,
@@ -1146,7 +1151,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       : providerModel;
   const mcpManager = await createSessionMcpManagerFromAuthority(
     configStore,
-    providerEnvironment,
+    mcpRequestEnvironment,
     {
       sandboxExecutionBroker,
     },
@@ -1457,7 +1462,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       registry,
       mcpManager: createSessionMcpService(mcpManager, {
         authority: configStore,
-        environment: providerEnvironment,
+        environment: mcpRequestEnvironment,
       }),
       unifiedExecManager,
       permissionModeRegistry,

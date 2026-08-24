@@ -9,10 +9,9 @@ import type { Readable, Writable } from "node:stream";
 import type { AgenCConfig } from "../config/schema.js";
 import type { HomeContext } from "../config/home.js";
 import { ConfigStore } from "../config/store.js";
-import {
-  snapshotProviderEnvironment,
-  type ProviderEnvironment,
-} from "../llm/provider-options.js";
+import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import { snapshotMcpRequestEnvironment } from "../mcp-client/environment.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import {
   formatMcpSseServeUrl,
@@ -189,7 +188,8 @@ export async function runAgenCMcpCli(
   const ingress = captureSecureStorageIngress(
     options.environment ?? process.env,
   );
-  const environment = snapshotProviderEnvironment(ingress.environment);
+  assertCanonicalEnvironmentIngress(ingress.environment);
+  const environment = snapshotMcpRequestEnvironment(ingress.environment);
   const home = options.homeContext ?? ingress.home;
   switch (command.kind) {
     case "help":
