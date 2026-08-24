@@ -64,6 +64,7 @@ import {
   type ProviderFallbackDecision,
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
+import { VERSION } from "../../../version.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
@@ -101,6 +102,33 @@ function normalizePositiveInteger(
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const normalized = Math.floor(value);
   return normalized > 0 ? normalized : undefined;
+}
+
+/**
+ * The ChatGPT backend requires a `client_version` on its model listing and
+ * rejects the request without one, so the health check against a
+ * subscription sign-in has always failed — reported as an unreachable
+ * provider and logged as a request failure on every turn, while the turns
+ * themselves worked fine.
+ *
+ * It wants a bare semver. Verified against the live endpoint: `0.17.0`
+ * answers 200, while `1` and `agenc/0.17.0` are both refused with
+ * `{"detail":"Invalid client_version format"}`.
+ */
+function chatgptModelsQuery(baseURL: string | undefined): string {
+  if (baseURL === undefined) return "";
+  let host: string;
+  try {
+    host = new URL(baseURL).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+  // branding-scan: allow factual reference to real provider in endpoint
+  if (host !== "chatgpt.com" && !host.endsWith(".chatgpt.com")) return "";
+  const semver = /^\d+\.\d+\.\d+/.exec(VERSION)?.[0];
+  return semver === undefined
+    ? ""
+    : `?client_version=${encodeURIComponent(semver)}`;
 }
 
 function isLocalBaseURL(baseURL: string | undefined): boolean {
@@ -693,7 +721,7 @@ export class OpenAIProvider implements LLMProvider {
       const session = this.client.createTurnSession();
       await this.auth.withAuthorizedOperation(async () => {
         await session.requestJson<Record<string, unknown>>({
-          path: this.resolvePath("/models"),
+          path: this.resolvePath(`/models${chatgptModelsQuery(this.config.baseURL)}`),
           method: "GET",
         });
       });
