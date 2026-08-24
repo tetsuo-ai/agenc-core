@@ -1816,6 +1816,9 @@ export async function runToolUse(
         callId: invocation.callId,
         toolName: toolNameDisplay(invocation.toolName),
         turnId: currentTurnId,
+        ...(tool.requiresUserInteraction?.() === true
+          ? { requiresUserInteraction: true }
+          : {}),
         ...networkPolicyInterfacesFromInvocation(invocation),
         ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
       },

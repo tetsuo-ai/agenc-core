@@ -104,6 +104,22 @@ describe("classifyToolApproval", () => {
         sandboxMode: "danger_full_access",
       }).kind,
     ).toBe("needs_approval");
+
+    expect(
+      classifyToolApproval(interactiveTool, {
+        approvalPolicy: "never",
+        sandboxMode: "danger_full_access",
+        bypassPermissions: true,
+      }).kind,
+    ).toBe("needs_approval");
+
+    expect(
+      classifyToolApproval(interactiveTool, {
+        approvalPolicy: "never",
+        sandboxMode: "danger_full_access",
+        toolAllowlist: new Set(["AskUserQuestion"]),
+      }).kind,
+    ).toBe("needs_approval");
   });
 });
 
