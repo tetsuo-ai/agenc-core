@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../tui/remoteAuthSessionContext.fixture.js";
 
 const settings = vi.hoisted(() => ({
   update: vi.fn(),
@@ -20,6 +21,16 @@ function commandContext(model: string, argsRaw: string) {
   return {
     context: {
       session: {
+        services: {
+          configStore: {
+            homeContext: TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
+          },
+          providerEnvironment: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+          providerService: {
+            current: () => ({ provider: "grok", model }),
+            environment: () => TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+          },
+        },
         sessionConfiguration: {
           provider: { slug: "grok" },
           collaborationMode: { model },

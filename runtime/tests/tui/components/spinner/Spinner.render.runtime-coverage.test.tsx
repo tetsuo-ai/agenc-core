@@ -2,6 +2,7 @@ import { PassThrough } from "node:stream";
 import React from "react";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../../remoteAuthSessionContext.fixture.js";
 
 import { createRoot } from "../../ink/root.js";
 import {
@@ -116,11 +117,11 @@ vi.mock("../../../tasks/InProcessTeammateTask/InProcessTeammateTask.js", () => (
 }));
 
 vi.mock("../../../utils/effort.js", () => ({
-  getEffortSuffix: (_model: string, effort: string) => `:${effort}`,
+  getEffortSuffixForContext: (_model: string, effort: string) => `:${effort}`,
 }));
 
-vi.mock("../../../utils/model/model.js", () => ({
-  getMainLoopModel: () => "gpt-test",
+vi.mock("../../hooks/useMainLoopModel.js", () => ({
+  useMainLoopModel: () => "gpt-test",
 }));
 
 vi.mock("../../state/selectors.js", () => ({
@@ -183,6 +184,7 @@ function defaultSpinnerProps(
     responseLengthRef: makeRef(4096),
     totalPausedMsRef: makeRef(0),
     verbose: false,
+    providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     ...overrides,
   };
 }

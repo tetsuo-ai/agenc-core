@@ -28,8 +28,9 @@ import { useSettings } from '../../hooks/useSettings.js';
 import { isInProcessTeammateTask } from '../../../tasks/InProcessTeammateTask/types.js';
 import { isBackgroundTask } from '../../../tasks/types.js';
 import { getAllInProcessTeammateTasks } from '../../../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
-import { getEffortSuffix } from '../../../utils/effort.js';
-import { getMainLoopModel } from '../../../utils/model/model.js';
+import { getEffortSuffixForContext } from '../../../utils/effort.js';
+import type { ProviderAuthReadContext } from '../../../utils/auth.js';
+import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { getViewedTeammateTask } from '../../state/selectors.js';
 import { TEARDROP_ASTERISK } from '../../../constants/figures.js';
 import figures from 'figures';
@@ -55,6 +56,8 @@ type Props = {
   showLeaderTokenStats?: boolean;
   /** Leader's turn has completed (no active query). Used to suppress stall-red spinner when only teammates are running. */
   leaderIsIdle?: boolean;
+  /** Immutable provider/auth authority captured by the owning TUI session. */
+  providerAuthContext: ProviderAuthReadContext;
 };
 
 // Thin wrapper: branches on isBriefOnly so the two variants have independent
@@ -94,7 +97,8 @@ function SpinnerWithVerbInner({
   verbose,
   hasActiveTools = false,
   showLeaderTokenStats = true,
-  leaderIsIdle = false
+  leaderIsIdle = false,
+  providerAuthContext,
 }: Props): React.ReactNode {
   const settings = useSettings();
   const reducedMotion = settings?.prefersReducedMotion ?? false;
@@ -195,7 +199,12 @@ function SpinnerWithVerbInner({
     };
   }, [mode]);
   const effortValue = useAppState((s_4: any) => s_4.effortValue);
-  const effortSuffix = getEffortSuffix(getMainLoopModel(), effortValue);
+  const mainLoopModel = useMainLoopModel();
+  const effortSuffix = getEffortSuffixForContext(
+    mainLoopModel,
+    effortValue,
+    providerAuthContext,
+  );
 
   // Check if any running in-process teammates exist (needed for both modes)
   const runningTeammates = getAllInProcessTeammateTasks(tasks ?? {}).filter(t => t.status === 'running');

@@ -63,18 +63,18 @@ vi.mock("../../utils/fastMode.js", () => ({
 }));
 
 vi.mock("../../utils/effort.js", () => ({
-  convertEffortValueToLevel: (value: string | undefined) => value,
+  convertEffortValueToLevelForContext: (value: string | undefined) => value,
   effortValueToReasoningEffort: (value: string | undefined) =>
     value === "max" || value === "xhigh" ? "xhigh" : value,
-  getAvailableEffortLevels: (model: string) =>
+  getAvailableEffortLevelsForContext: (model: string) =>
     model.includes("basic")
       ? []
       : model.includes("max")
         ? ["low", "medium", "high", "max"]
         : ["low", "medium", "high"],
-  getDefaultEffortForModel: (model: string) =>
+  getDefaultEffortForModelForContext: (model: string) =>
     model.includes("mini") ? undefined : "medium",
-  modelSupportsEffort: (model: string) => !model.includes("basic"),
+  modelSupportsEffortForContext: (model: string) => !model.includes("basic"),
   modelSupportsMaxEffort: (model: string) => model.includes("max"),
   reasoningEffortToEffortLevel: (value: string | undefined) =>
     value === "xhigh" ? "max" : value,

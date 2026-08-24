@@ -11,17 +11,17 @@
 
 import {
   convertEffortValueToLevel,
-  getAvailableEffortLevels,
-  getDefaultEffortForModel,
-  getDisplayedEffortLevel,
+  getAvailableEffortLevelsForContext,
+  getDefaultEffortForModelForContext,
+  getDisplayedEffortLevelForContext,
   isAvailableEffortLevel,
-  modelSupportsEffort,
+  modelSupportsEffortForContext,
   effortValueToReasoningEffort,
   reasoningEffortToEffortLevel,
   type AvailableEffortLevel,
 } from "../utils/effort.js";
-import { getMainLoopModel } from "../utils/model/model.js";
 import { readSessionSelection } from "./model.js";
+import { providerAuthContextFromCommandContext } from "./config-context.js";
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -52,26 +52,37 @@ export const effortCommand: SlashCommand = {
       // from what the daemon session actually runs (e.g. grok-4.5 from the
       // provider switch), and effort support must be judged against the
       // model that will receive the parameter.
-      const sessionModel = readSessionSelection(ctx.session).model;
-      const model =
-        sessionModel !== "unknown" ? sessionModel : getMainLoopModel();
+      const sessionSelection = readSessionSelection(ctx.session);
+      const sessionModel = sessionSelection.model;
+      if (sessionModel === "unknown") {
+        return {
+          kind: "error",
+          message: "Unable to determine the current session model.",
+        };
+      }
+      const model = sessionModel;
+      const providerAuthContext = providerAuthContextFromCommandContext(ctx);
       const arg = ctx.argsRaw.trim().toLowerCase();
 
       if (arg === "") {
-        if (!modelSupportsEffort(model)) {
+        if (!modelSupportsEffortForContext(model, providerAuthContext)) {
           return {
             kind: "text",
             text: `${model} does not support effort levels.`,
           };
         }
-        const displayed = getDisplayedEffortLevel(
+        const displayed = getDisplayedEffortLevelForContext(
           model,
           currentEffortValue(ctx) as never,
+          providerAuthContext,
         );
         const persisted = reasoningEffortToEffortLevel(
           getSettingsForSource("userSettings")?.reasoning_effort,
         );
-        const levels = getAvailableEffortLevels(model).join("/");
+        const levels = getAvailableEffortLevelsForContext(
+          model,
+          providerAuthContext,
+        ).join("/");
         const source =
           persisted !== undefined
             ? "saved"
@@ -88,7 +99,7 @@ export const effortCommand: SlashCommand = {
         };
       }
 
-      if (!modelSupportsEffort(model)) {
+      if (!modelSupportsEffortForContext(model, providerAuthContext)) {
         return {
           kind: "error",
           message: `${model} does not support effort levels.`,
@@ -105,11 +116,14 @@ export const effortCommand: SlashCommand = {
         }));
         return {
           kind: "text",
-          text: `Effort reset — ${model} now uses its default (${getDefaultEffortForModel(model)}).`,
+          text: `Effort reset — ${model} now uses its default (${getDefaultEffortForModelForContext(model, providerAuthContext)}).`,
         };
       }
 
-      const available = getAvailableEffortLevels(model);
+      const available = getAvailableEffortLevelsForContext(
+        model,
+        providerAuthContext,
+      );
       if (!isAvailableEffortLevel(arg)) {
         const levels = available.join(", ");
         return {

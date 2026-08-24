@@ -6679,6 +6679,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       pauseStartTimeRef={pauseStartTimeRef}
       responseLengthRef={responseLengthRef}
       verbose={false}
+      providerAuthContext={remoteAuthSessionContext}
       hasActiveTools={hasActiveToolActivity}
       leaderIsIdle={!transcript.isStreaming}
       overrideMessage={inProgressToolCount > 0 ? "Running tools" : null}

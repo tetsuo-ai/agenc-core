@@ -80,21 +80,21 @@ vi.mock("../../utils/fastMode.js", () => ({
 }));
 
 vi.mock("../../utils/effort.js", () => ({
-  convertEffortValueToLevel: (value: string | undefined) => value,
+  convertEffortValueToLevelForContext: (value: string | undefined) => value,
   effortValueToReasoningEffort: (value: string | undefined) =>
     harness.persistEfforts
       ? value === "max" || value === "xhigh"
         ? "xhigh"
         : value
       : undefined,
-  getAvailableEffortLevels: (model: string) =>
+  getAvailableEffortLevelsForContext: (model: string) =>
     harness.unsupportedModels.has(model)
       ? []
       : harness.maxModels.has(model)
         ? ["low", "medium", "high", "max"]
         : ["low", "medium", "high"],
-  getDefaultEffortForModel: (model: string) => harness.defaultEfforts.get(model),
-  modelSupportsEffort: (model: string) =>
+  getDefaultEffortForModelForContext: (model: string) => harness.defaultEfforts.get(model),
+  modelSupportsEffortForContext: (model: string) =>
     !harness.unsupportedModels.has(model),
   modelSupportsMaxEffort: (model: string) => harness.maxModels.has(model),
   reasoningEffortToEffortLevel: (value: string | undefined) =>

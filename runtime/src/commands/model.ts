@@ -80,6 +80,7 @@ type SessionSelection = {
 };
 
 export function readSessionSelection(session: Session): SessionSelection {
+  const serviceSelection = session.services.providerService?.current();
   const peekStateForApply = (
     session as unknown as {
       state?: { unsafePeek?: () => unknown };
@@ -106,8 +107,8 @@ export function readSessionSelection(session: Session): SessionSelection {
   ).sessionConfiguration;
   const sc = rawState?.sessionConfiguration ?? directConfig;
   return {
-    provider: sc?.provider?.slug ?? "unknown",
-    model: sc?.collaborationMode?.model ?? "unknown",
+    provider: serviceSelection?.provider ?? sc?.provider?.slug ?? "unknown",
+    model: serviceSelection?.model ?? sc?.collaborationMode?.model ?? "unknown",
   };
 }
 

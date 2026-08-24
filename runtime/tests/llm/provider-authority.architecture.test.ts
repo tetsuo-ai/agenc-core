@@ -408,5 +408,36 @@ describe("provider authority architecture", () => {
     expect(appSource).toMatch(
       /modelDisplayContext=\{remoteAuthSessionContext\}/u,
     );
+
+    const effortIndicatorSource = readFileSync(
+      `${SRC}/tui/components/EffortIndicator.ts`,
+      "utf8",
+    );
+    expect(effortIndicatorSource).toContain(
+      "modelSupportsEffortForContext",
+    );
+    expect(effortIndicatorSource).toContain(
+      "getDisplayedEffortLevelForContext",
+    );
+    expect(effortIndicatorSource).not.toMatch(
+      /\b(?:modelSupportsEffort|getDisplayedEffortLevel)\(/u,
+    );
+
+    const modelPickerSource = readFileSync(
+      `${SRC}/tui/components/ModelPicker.tsx`,
+      "utf8",
+    );
+    expect(modelPickerSource).not.toMatch(
+      /\b(?:convertEffortValueToLevel|getAvailableEffortLevels|getDefaultEffortForModel|modelSupportsEffort)\(/u,
+    );
+
+    const spinnerSource = readFileSync(
+      `${SRC}/tui/components/spinner/Spinner.tsx`,
+      "utf8",
+    );
+    expect(spinnerSource).toContain("getEffortSuffixForContext");
+    expect(spinnerSource).not.toMatch(
+      /\b(?:getEffortSuffix|getMainLoopModel)\(/u,
+    );
   });
 });

@@ -9,7 +9,7 @@ import { FAST_MODE_MODEL_DISPLAY, isFastModeAvailableForContext, isFastModeCoold
 import { Box, Text } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
-import { convertEffortValueToLevel, effortValueToReasoningEffort, type AvailableEffortLevel, getAvailableEffortLevels, getDefaultEffortForModel, modelSupportsEffort, reasoningEffortToEffortLevel, resolvePickerEffortPersistence } from '../../utils/effort.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { convertEffortValueToLevelForContext, effortValueToReasoningEffort, type AvailableEffortLevel, getAvailableEffortLevelsForContext, getDefaultEffortForModelForContext, modelSupportsEffortForContext, reasoningEffortToEffortLevel, resolvePickerEffortPersistence } from '../../utils/effort.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getDefaultMainLoopModel, type ModelSetting, modelDisplayString, parseUserSpecifiedModel } from '../../utils/model/model.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getModelOptions } from '../../utils/model/modelOptions.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -43,7 +43,7 @@ const MODEL_PICKER_FOOTER = [
   { keyName: '←→', label: 'effort' },
 ] as const;
 export function ModelPicker(t0) {
-  const $ = _c(82);
+  const $ = _c(85);
   const {
     initial,
     sessionModel,
@@ -55,6 +55,7 @@ export function ModelPicker(t0) {
     headerText,
     skipSettingsWrite
   } = t0;
+  const effortContext = remoteAuthSessionContext;
   const setAppState = useSetAppState();
   const exitState = useExitOnCtrlCDWithKeybindings();
   const initialValue = initial === null ? NO_PREFERENCE : initial;
@@ -64,9 +65,10 @@ export function ModelPicker(t0) {
   const [hasToggledEffort, setHasToggledEffort] = useState(false);
   const effortValue = useAppState(_temp2);
   let t1;
-  if ($[0] !== effortValue) {
-    t1 = effortValue !== undefined ? convertEffortValueToLevel(effortValue) : undefined;
+  if ($[0] !== effortValue || $[84] !== effortContext) {
+    t1 = effortValue !== undefined ? convertEffortValueToLevelForContext(effortValue, effortContext) : undefined;
     $[0] = effortValue;
+    $[84] = effortContext;
     $[1] = t1;
   } else {
     t1 = $[1];
@@ -154,11 +156,12 @@ export function ModelPicker(t0) {
   const focusedModelName = t7;
   let focusedSupportsEffort;
   let t8;
-  if ($[20] !== focusedValue) {
+  if ($[20] !== focusedValue || $[80] !== effortContext) {
     const focusedModel = resolveOptionModel(focusedValue);
-    t8 = focusedModel ? getAvailableEffortLevels(focusedModel) : [];
+    t8 = focusedModel ? getAvailableEffortLevelsForContext(focusedModel, effortContext) : [];
     focusedSupportsEffort = t8.length > 0;
     $[20] = focusedValue;
+    $[80] = effortContext;
     $[21] = focusedSupportsEffort;
     $[22] = t8;
   } else {
@@ -167,9 +170,10 @@ export function ModelPicker(t0) {
   }
   const focusedEffortLevels = t8;
   let t9;
-  if ($[23] !== focusedValue) {
-    t9 = getDefaultEffortLevelForOption(focusedValue);
+  if ($[23] !== focusedValue || $[81] !== effortContext) {
+    t9 = getDefaultEffortLevelForOption(focusedValue, effortContext);
     $[23] = focusedValue;
+    $[81] = effortContext;
     $[24] = t9;
   } else {
     t9 = $[24];
@@ -177,15 +181,16 @@ export function ModelPicker(t0) {
   const focusedDefaultEffort = t9;
   const displayEffort = normalizeEffortLevelForModel(effort, focusedEffortLevels);
   let t10;
-  if ($[25] !== effortValue || $[26] !== hasToggledEffort) {
+  if ($[25] !== effortValue || $[26] !== hasToggledEffort || $[82] !== effortContext) {
     t10 = value => {
       setFocusedValue(value);
       if (!hasToggledEffort && effortValue === undefined) {
-        setEffort(getDefaultEffortLevelForOption(value));
+        setEffort(getDefaultEffortLevelForOption(value, effortContext));
       }
     };
     $[25] = effortValue;
     $[26] = hasToggledEffort;
+    $[82] = effortContext;
     $[27] = t10;
   } else {
     t10 = $[27];
@@ -230,10 +235,10 @@ export function ModelPicker(t0) {
   }
   useKeybindings(t12, t13);
   let t14;
-  if ($[35] !== effort || $[36] !== hasToggledEffort || $[37] !== onSelect || $[38] !== setAppState || $[39] !== skipSettingsWrite) {
+  if ($[35] !== effort || $[36] !== hasToggledEffort || $[37] !== onSelect || $[38] !== setAppState || $[39] !== skipSettingsWrite || $[83] !== effortContext) {
     t14 = function handleSelect(value_0) {
       if (!skipSettingsWrite) {
-        const effortLevel = resolvePickerEffortPersistence(effort, getDefaultEffortLevelForOption(value_0), reasoningEffortToEffortLevel(getSettingsForSource("userSettings")?.reasoning_effort), hasToggledEffort);
+        const effortLevel = resolvePickerEffortPersistence(effort, getDefaultEffortLevelForOption(value_0, effortContext), reasoningEffortToEffortLevel(getSettingsForSource("userSettings")?.reasoning_effort), hasToggledEffort);
         const persistable = effortValueToReasoningEffort(effortLevel);
         if (persistable !== undefined) {
           void updateSettingsForSource("userSettings", {
@@ -246,7 +251,7 @@ export function ModelPicker(t0) {
         }));
       }
       const selectedModel = resolveOptionModel(value_0);
-      const selectedEffort = hasToggledEffort && selectedModel && modelSupportsEffort(selectedModel) ? effort : undefined;
+      const selectedEffort = hasToggledEffort && selectedModel && modelSupportsEffortForContext(selectedModel, effortContext) ? effort : undefined;
       if (value_0 === NO_PREFERENCE) {
         onSelect(null, selectedEffort);
         return;
@@ -258,6 +263,7 @@ export function ModelPicker(t0) {
     $[37] = onSelect;
     $[38] = setAppState;
     $[39] = skipSettingsWrite;
+    $[83] = effortContext;
     $[40] = t14;
   } else {
     t14 = $[40];
@@ -435,8 +441,11 @@ function cycleEffortLevel(current: AvailableEffortLevel, direction: 'left' | 'ri
     return levels[(currentIndex - 1 + levels.length) % levels.length]!;
   }
 }
-function getDefaultEffortLevelForOption(value?: string): AvailableEffortLevel {
+function getDefaultEffortLevelForOption(
+  value: string | undefined,
+  context: ProviderAuthReadContext,
+): AvailableEffortLevel {
   const resolved = resolveOptionModel(value) ?? getDefaultMainLoopModel();
-  const defaultValue = getDefaultEffortForModel(resolved);
-  return defaultValue !== undefined ? convertEffortValueToLevel(defaultValue) : 'high';
+  const defaultValue = getDefaultEffortForModelForContext(resolved, context);
+  return defaultValue !== undefined ? convertEffortValueToLevelForContext(defaultValue, context) : 'high';
 }

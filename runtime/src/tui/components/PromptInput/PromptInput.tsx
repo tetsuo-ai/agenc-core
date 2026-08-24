@@ -3476,7 +3476,11 @@ function PromptInput({
   // client's effort, not the connected agent's.
   const effortNotificationText = briefOwnsGap
     ? undefined
-    : getEffortNotificationText(effortValue, mainLoopModel);
+    : getEffortNotificationText(
+        effortValue,
+        mainLoopModel,
+        remoteAuthSessionContext,
+      );
   const prevEffortNotificationTextRef = useRef(effortNotificationText);
   useEffect(() => {
     const previous = prevEffortNotificationTextRef.current;
