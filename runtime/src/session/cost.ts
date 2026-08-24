@@ -353,6 +353,33 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       inputUsdPer1K: 0.00059,
       outputUsdPer1K: 0.00079,
     },
+    // DeepSeek publishes time-of-day pricing. Use peak rates so static
+    // budgets remain conservative regardless of when a request runs.
+    // https://api-docs.deepseek.com/quick_start/pricing
+    "deepseek:deepseek-v4-flash": {
+      inputUsdPer1K: 0.00044,
+      outputUsdPer1K: 0.00132,
+      cachedInputUsdPer1K: 0.000014,
+      cachedInputIncludedInInputTokens: true,
+    },
+    "deepseek-v4-flash": {
+      inputUsdPer1K: 0.00044,
+      outputUsdPer1K: 0.00132,
+      cachedInputUsdPer1K: 0.000014,
+      cachedInputIncludedInInputTokens: true,
+    },
+    "deepseek:deepseek-v4-pro": {
+      inputUsdPer1K: 0.00132,
+      outputUsdPer1K: 0.00396,
+      cachedInputUsdPer1K: 0.000044,
+      cachedInputIncludedInInputTokens: true,
+    },
+    "deepseek-v4-pro": {
+      inputUsdPer1K: 0.00132,
+      outputUsdPer1K: 0.00396,
+      cachedInputUsdPer1K: 0.000044,
+      cachedInputIncludedInInputTokens: true,
+    },
     "deepseek:deepseek-reasoner": {
       inputUsdPer1K: 0.00055,
       outputUsdPer1K: 0.00219,
@@ -370,6 +397,15 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "gemini-2.5-pro": {
       inputUsdPer1K: 0.00125,
       outputUsdPer1K: 0.01,
+    },
+    // https://mistral.ai/pricing/api
+    "mistral:mistral-medium-latest": {
+      inputUsdPer1K: 0.0015,
+      outputUsdPer1K: 0.0075,
+    },
+    "mistral-medium-latest": {
+      inputUsdPer1K: 0.0015,
+      outputUsdPer1K: 0.0075,
     },
     "mistral:devstral-latest": {
       inputUsdPer1K: 0.0001,
