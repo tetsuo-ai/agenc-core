@@ -6365,6 +6365,10 @@ const CANONICAL_CORE_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "turn_aborted",
   "error",
   "stream_error",
+  // A turn that ends with nothing explains itself in a warning — the model
+  // phase threw, recovery swallowed it, the budget layer refused. Without
+  // this the rollout has the reason and every live client has to guess.
+  "warning",
   "effect_intent",
   "effect_result",
   "effect_unknown_outcome",
