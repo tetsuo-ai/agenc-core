@@ -1783,7 +1783,6 @@ interface DrainedChildMailbox {
   readonly clearHistory?: boolean;
   readonly interruptReason?: string;
   readonly nextUserMessage?: string | readonly LLMContentPart[];
-  readonly refreshMcpConfig?: unknown;
   readonly taskId?: string;
   readonly turnId?: string;
   readonly omittedPassiveMessages?: number;
@@ -1926,7 +1925,6 @@ function drainChildMailbox(
   const contextParts: Array<string | readonly LLMContentPart[]> = [];
   let assignment: ChildMailboxAssignment | undefined;
   let clearHistory = false;
-  let refreshMcpConfig: unknown;
   let retainedPassiveBytes = 0;
   let omittedPassiveMessages = 0;
   let omittedPassiveBytes = 0;
@@ -1950,16 +1948,6 @@ function drainChildMailbox(
       clearHistory = true;
       contextParts.length = 0;
       assignment = undefined;
-      continue;
-    }
-    if (kind === "mcp_refresh") {
-      // Control message: refresh the live child's MCP servers between turns.
-      // Latest config wins; does not itself trigger a turn.
-      const refresh = live.pendingMcpRefresh;
-      if (refresh !== undefined) {
-        refreshMcpConfig = refresh.config;
-        live.pendingMcpRefresh = undefined;
-      }
       continue;
     }
     if (kind === "mailbox_omission") {
@@ -2056,13 +2044,11 @@ function drainChildMailbox(
   if (assignment === undefined) {
     return {
       ...(clearHistory ? { clearHistory } : {}),
-      ...(refreshMcpConfig !== undefined ? { refreshMcpConfig } : {}),
     };
   }
 
   return {
     ...(clearHistory ? { clearHistory } : {}),
-    ...(refreshMcpConfig !== undefined ? { refreshMcpConfig } : {}),
     nextUserMessage: assignment.nextUserMessage,
     ...(assignment.taskId !== undefined ? { taskId: assignment.taskId } : {}),
     ...(assignment.turnId !== undefined ? { turnId: assignment.turnId } : {}),
@@ -2910,10 +2896,6 @@ function createInertChildMcpManager(): Session["services"]["mcpManager"] {
   return {
     effectiveServers: async () => new Map(),
     toolPluginProvenance: async () => null,
-    refreshFromConfig: async () => ({
-      configuredServers: [],
-      requiredServers: [],
-    }),
     getTools: () => [],
     getToolsByServer: () => [],
     getConfiguredServers: () => [],
@@ -3658,11 +3640,6 @@ export async function* runAgent(
       if (pending.clearHistory) {
         await clearChildConversationHistory(activeChildSession, live, history);
         assistantText = "";
-      }
-      if (pending.refreshMcpConfig !== undefined) {
-        await activeChildSession.services.mcpManager?.refreshFromConfig?.(
-          pending.refreshMcpConfig,
-        );
       }
       return {
         interrupted: false,

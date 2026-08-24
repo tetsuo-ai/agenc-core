@@ -124,10 +124,41 @@ export type MCPConnectionState =
   | { readonly type: "connected" | "pending" | "disabled" | "needs-auth" }
   | { readonly type: "failed"; readonly error?: string };
 
-function toScopedMcpServerConfig(
+export function toScopedMcpServerConfig(
   config: MCPServerConfig,
 ): ScopedMcpServerConfig {
-  const scope = "dynamic" as const;
+  const scope =
+    config.origin?.scope === "managed"
+      ? "managed" as const
+      : config.origin?.scope === "user" ||
+          config.origin?.scope === "project" ||
+          config.origin?.scope === "local"
+        ? config.origin.scope
+        : "dynamic" as const;
+  const provenance = {
+    scope,
+    ...(config.origin?.pluginSource !== undefined
+      ? { pluginSource: config.origin.pluginSource }
+      : {}),
+    ...(config.origin?.pluginServer !== undefined
+      ? { pluginServer: config.origin.pluginServer }
+      : {}),
+  };
+  const policy = {
+    ...(config.enabled !== undefined ? { enabled: config.enabled } : {}),
+    ...(config.required !== undefined ? { required: config.required } : {}),
+    ...(config.timeout !== undefined ? { timeout: config.timeout } : {}),
+    ...(config.default_tools_approval_mode !== undefined
+      ? { default_tools_approval_mode: config.default_tools_approval_mode }
+      : {}),
+    ...(config.enabled_tools !== undefined
+      ? { enabled_tools: [...config.enabled_tools] }
+      : {}),
+    ...(config.disabled_tools !== undefined
+      ? { disabled_tools: [...config.disabled_tools] }
+      : {}),
+    ...(config.tools !== undefined ? { tools: config.tools } : {}),
+  };
   const transport = config.transport ?? "stdio";
 
   if (transport === "sse") {
@@ -135,7 +166,8 @@ function toScopedMcpServerConfig(
       type: "sse",
       url: config.endpoint ?? "",
       ...(config.headers !== undefined ? { headers: config.headers } : {}),
-      scope,
+      ...policy,
+      ...provenance,
     };
   }
 
@@ -144,7 +176,8 @@ function toScopedMcpServerConfig(
       type: "http",
       url: config.endpoint ?? "",
       ...(config.headers !== undefined ? { headers: config.headers } : {}),
-      scope,
+      ...policy,
+      ...provenance,
     };
   }
 
@@ -153,7 +186,8 @@ function toScopedMcpServerConfig(
       type: "ws",
       url: config.endpoint ?? "",
       ...(config.headers !== undefined ? { headers: config.headers } : {}),
-      scope,
+      ...policy,
+      ...provenance,
     };
   }
 
@@ -162,7 +196,10 @@ function toScopedMcpServerConfig(
     command: config.command ?? config.name,
     args: config.args ?? [],
     ...(config.env !== undefined ? { env: config.env } : {}),
-    scope,
+    ...(config.env_vars !== undefined ? { env_vars: [...config.env_vars] } : {}),
+    ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
+    ...policy,
+    ...provenance,
   };
 }
 

@@ -1061,7 +1061,7 @@ export interface McpManager {
     auth: unknown,
   ): Promise<Map<string, McpServerInfo>>;
   toolPluginProvenance(config: unknown): Promise<unknown>;
-  refreshFromConfig?(config: unknown): Promise<McpRefreshResult>;
+  refreshFromAuthority?(): Promise<McpRefreshResult>;
   reconnectServer?(name: string): Promise<McpServerMutationResult>;
   enableServer?(name: string): Promise<McpServerMutationResult>;
   disableServer?(name: string): Promise<McpServerMutationResult>;

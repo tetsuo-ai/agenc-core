@@ -42,8 +42,7 @@ export type ThreadManagerOp =
   | { readonly type: "clear_conversation_history" }
   | { readonly type: "append_message"; readonly message: string }
   | { readonly type: "interrupt"; readonly reason?: string }
-  | { readonly type: "shutdown"; readonly reason?: string }
-  | { readonly type: "refresh_mcp_servers"; readonly config: unknown };
+  | { readonly type: "shutdown"; readonly reason?: string };
 
 export interface ManagedThread {
   readonly threadId: ThreadId;
@@ -475,18 +474,6 @@ export class ThreadManager implements ThreadOperationManager {
     return this.state.appendMessage(threadId, message);
   }
 
-  async refreshMcpServers(config: unknown): Promise<void> {
-    await Promise.all(
-      Array.from(this.state.threads.values()).map(async (thread) => {
-        try {
-          await thread.submit({ type: "refresh_mcp_servers", config });
-        } catch {
-          /* refresh is best-effort across the managed tree */
-        }
-      }),
-    );
-  }
-
   async shutdownAllThreadsBounded(
     timeoutMs: number,
   ): Promise<ThreadShutdownReport> {
@@ -626,9 +613,6 @@ async function submitToSession(
     case "shutdown":
       await session.shutdown();
       return session.conversationId;
-    case "refresh_mcp_servers":
-      await session.services.mcpManager.refreshFromConfig?.(op.config);
-      return session.conversationId;
   }
 }
 
@@ -708,31 +692,6 @@ async function submitToLiveAgent(
       live.status.complete();
       if (!live.abortController.signal.aborted) {
         live.abortController.abort(reason);
-      }
-      return live.agentId;
-    case "refresh_mcp_servers":
-      // Route the refresh to the child's run loop, which applies it to the
-      // child session's MCP manager between turns (drainChildMailbox /
-      // run-agent). Previously this was a silent no-op, leaving live
-      // subagents on stale MCP config.
-      {
-        const previousRefresh = live.pendingMcpRefresh;
-        const refresh = { config: op.config };
-        live.pendingMcpRefresh = refresh;
-        const delivery = live.downInbox.send({
-          author: live.agentPath,
-          recipient: live.agentPath,
-          content: "",
-          triggerTurn: false,
-          direction: "down",
-          metadata: createMailboxMetadataRecord("mcp_refresh"),
-        });
-        if (delivery === "dropped") {
-          if (live.pendingMcpRefresh === refresh) {
-            live.pendingMcpRefresh = previousRefresh;
-          }
-          throw new MailboxCapacityError(live.downInbox.threadId);
-        }
       }
       return live.agentId;
   }

@@ -39,7 +39,12 @@ function makeSession(conversationId = "root-thread") {
     abortTerminal: vi.fn(),
     mailbox: { send: vi.fn(() => 1) },
     services: {
-      mcpManager: { refreshFromConfig: vi.fn(async () => {}) },
+      mcpManager: {
+        refreshFromAuthority: vi.fn(async () => ({
+          configuredServers: [],
+          requiredServers: [],
+        })),
+      },
       provider: { name: "stub" },
     },
     emit: vi.fn(),

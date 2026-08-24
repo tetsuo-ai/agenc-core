@@ -106,37 +106,6 @@ function getServerUrl(config: McpServerConfig): string | null {
 }
 
 /**
- * CCR proxy URL path markers. In remote sessions, agenc.tech connectors arrive
- * through the canonical config authority with URLs rewritten to route through the CCR/session-ingress
- * SHTTP proxy. The original vendor URL is preserved in the mcp_url query param
- * so the proxy knows where to forward. See api-go/ccr/internal/ccrshared/
- * mcp_url_rewriter.go and api-go/ccr/internal/mcpproxy/proxy.go.
- */
-const CCR_PROXY_PATH_MARKERS = [
-  '/v2/session_ingress/shttp/mcp/',
-  '/v2/ccr-sessions/',
-]
-
-/**
- * If the URL is a CCR proxy URL, extract the original vendor URL from the
- * mcp_url query parameter. Otherwise return the URL unchanged. This lets
- * signature-based dedup match a plugin's raw vendor URL against a connector's
- * rewritten proxy URL when both point at the same MCP server.
- */
-export function unwrapCcrProxyUrl(url: string): string {
-  if (!CCR_PROXY_PATH_MARKERS.some(m => url.includes(m))) {
-    return url
-  }
-  try {
-    const parsed = new URL(url)
-    const original = parsed.searchParams.get('mcp_url')
-    return original || url
-  } catch {
-    return url
-  }
-}
-
-/**
  * Compute a dedup signature for an MCP server config.
  * Two configs with the same signature are considered "the same server" for
  * plugin deduplication. Ignores env (plugins always inject AGENC_PLUGIN_ROOT)
@@ -150,7 +119,7 @@ export function getMcpServerSignature(config: McpServerConfig): string | null {
   }
   const url = getServerUrl(config)
   if (url) {
-    return `url:${unwrapCcrProxyUrl(url)}`
+    return `url:${url}`
   }
   return null
 }
@@ -262,51 +231,6 @@ export function pluginMcpDuplicateSuppressionError(
     serverName: parts.slice(2).join(':'),
     duplicateOf: suppression.duplicateOf,
   }
-}
-
-/**
- * Filter agenc.tech connectors, dropping any whose signature matches an enabled
- * manually-configured server. Manual wins: a user who wrote canonical project
- * TOML or ran `agenc mcp add` expressed higher intent than a connector toggled
- * in the web UI.
- *
- * Connector keys are `agenc.tech <DisplayName>` so they never key-collide with
- * manual servers in the merge — this content-based check catches the case where
- * both point at the same underlying URL (e.g. `mcp__slack__*` and
- * `mcp__agenc_ai_Slack__*` both hitting mcp.slack.com, ~600 chars/turn wasted).
- *
- * Only enabled manual servers count as dedup targets — a disabled manual server
- * mustn't suppress its connector twin, or neither runs.
- */
-export function dedupAgenCAiMcpServers(
-  agencAiServers: Record<string, ScopedMcpServerConfig>,
-  manualServers: Record<string, ScopedMcpServerConfig>,
-): {
-  servers: Record<string, ScopedMcpServerConfig>
-  suppressed: Array<{ name: string; duplicateOf: string }>
-} {
-  const manualSigs = new Map<string, string>()
-  for (const [name, config] of Object.entries(manualServers)) {
-    if (isMcpServerDisabled(name, config)) continue
-    const sig = getMcpServerSignature(config)
-    if (sig && !manualSigs.has(sig)) manualSigs.set(sig, name)
-  }
-
-  const servers: Record<string, ScopedMcpServerConfig> = {}
-  const suppressed: Array<{ name: string; duplicateOf: string }> = []
-  for (const [name, config] of Object.entries(agencAiServers)) {
-    const sig = getMcpServerSignature(config)
-    const manualDup = sig !== null ? manualSigs.get(sig) : undefined
-    if (manualDup !== undefined) {
-      logForDebugging(
-        `Suppressing agenc.tech connector "${name}": duplicates manually-configured "${manualDup}"`,
-      )
-      suppressed.push({ name, duplicateOf: manualDup })
-      continue
-    }
-    servers[name] = config
-  }
-  return { servers, suppressed }
 }
 
 /**
@@ -518,9 +442,8 @@ function isMcpServerAllowedByPolicy(
  * deniedMcpServers). Servers blocked by policy are dropped and their names
  * returned so callers can warn the user.
  *
- * Intended for user-controlled config entry points that bypass the policy filter
- * in getAgenCCodeMcpConfigs(): canonical ConfigStore inputs and the mcp_set_servers
- * control message (print.ts, SDK V2 Query.setMcpServers()).
+ * Used by execution-safe named lookups so every entry point applies the same
+ * managed allow/deny policy as the canonical resolver.
  *
  * SDK-type servers are exempt — they are SDK-managed transport placeholders,
  * not CLI-managed connections. The CLI never spawns a process or opens a
@@ -883,7 +806,7 @@ export function getMcpConfigByName(
   }
 
   // When MCP is locked to plugin-only, only enterprise servers are reachable
-  // by name. User/project/local servers are blocked — same as getAgenCCodeMcpConfigs().
+  // by name. User/project/local servers are blocked by managed exclusivity.
   if (isRestrictedToPluginOnly('mcp', authority)) {
     return enterpriseServers[name] ?? null
   }
@@ -982,22 +905,11 @@ export function getApprovedMcpConfigByName(
   return null
 }
 
-/**
- * Get AgenC MCP configurations (excludes agenc.tech servers from the
- * returned set — they're fetched separately and merged by callers).
- * This is fast: only local file reads; no awaited network calls on the
- * critical path. The optional extraDedupTargets promise (e.g. the in-flight
- * agenc.tech connector fetch) is awaited only after canonical plugin
- * registration completes, so the two overlap rather than serialize.
- * @returns AgenC server configurations with appropriate scopes
- */
-export async function getAgenCCodeMcpConfigs(
+/** Resolve the execution-safe outbound MCP set from one config authority. */
+export async function getAllMcpConfigs(
   authority: CanonicalSettingsAuthority,
-  dynamicServers: Record<string, ScopedMcpServerConfig> = {},
-  extraDedupTargets: Promise<
-    Record<string, ScopedMcpServerConfig>
-  > = Promise.resolve({}),
   environment: Readonly<Record<string, string | undefined>> = {},
+  sessionServers: Readonly<Record<string, ScopedMcpServerConfig>> = {},
 ): Promise<{
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
@@ -1039,6 +951,18 @@ export async function getAgenCCodeMcpConfigs(
   const { servers: localServers } = mcpLocked
     ? noServers
     : getMcpConfigsByScope('local', authority, environment)
+  const sessionResolution = mcpLocked
+    ? { config: null, errors: [] as ValidationError[] }
+    : parseMcpConfig({
+        configObject: { mcpServers: sessionServers },
+        expandVars: true,
+        environment,
+        scope: 'dynamic',
+      })
+  const activeSessionServers = addScopeToServers(
+    sessionResolution.config?.mcpServers,
+    'dynamic',
+  )
 
   // Load plugin MCP servers
   const pluginMcpServers: Record<string, ScopedMcpServerConfig> = {}
@@ -1051,12 +975,19 @@ export async function getAgenCCodeMcpConfigs(
     env: { ...environment },
     errors: registrationIssues,
   })
-  const mcpErrors: PluginError[] = registrationIssues.map(issue => ({
-    type: 'generic-error',
-    source: issue.source,
-    ...(issue.plugin !== undefined ? { plugin: issue.plugin } : {}),
-    error: issue.message,
-  }))
+  const mcpErrors: PluginError[] = [
+    ...sessionResolution.errors.map(error => ({
+      type: 'generic-error' as const,
+      source: error.path ?? 'session MCP server',
+      error: error.message,
+    })),
+    ...registrationIssues.map(issue => ({
+      type: 'generic-error' as const,
+      source: issue.source,
+      ...(issue.plugin !== undefined ? { plugin: issue.plugin } : {}),
+      error: issue.message,
+    })),
+  ]
   for (const issue of registrationIssues) {
     logError(new Error(`Plugin MCP server error: ${issue.message}`))
   }
@@ -1087,14 +1018,12 @@ export async function getAgenCCodeMcpConfigs(
   // Only servers that will actually connect are valid dedup targets — a
   // disabled manual server mustn't suppress a plugin server, or neither runs
   // (manual is skipped by name at connection time; plugin was removed here).
-  const extraTargets = await extraDedupTargets
   const enabledManualServers: Record<string, ScopedMcpServerConfig> = {}
   for (const [name, config] of Object.entries({
     ...userServers,
     ...approvedProjectServers,
     ...localServers,
-    ...dynamicServers,
-    ...extraTargets,
+    ...activeSessionServers,
   })) {
     if (
       !isMcpServerDisabled(name, config) &&
@@ -1131,10 +1060,12 @@ export async function getAgenCCodeMcpConfigs(
     if (error !== null) mcpErrors.push(error)
   }
 
-  // Merge in order of precedence: plugin < user < project < local
+  // Merge in order of precedence: plugin < session < user < project < local.
+  // A durable config entry wins if it appears after a same-name session add.
   const configs = Object.assign(
     {},
     dedupedPluginServers,
+    activeSessionServers,
     userServers,
     approvedProjectServers,
     localServers,
@@ -1157,31 +1088,6 @@ export async function getAgenCCodeMcpConfigs(
   }
 
   return { servers: filtered, errors: mcpErrors }
-}
-
-/**
- * Get all MCP configurations across all scopes, including agenc.tech servers.
- * This may be slow due to network calls - use getAgenCCodeMcpConfigs() for fast startup.
- * @returns All server configurations with appropriate scopes
- */
-export async function getAllMcpConfigs(
-  authority: CanonicalSettingsAuthority,
-  environment: Readonly<Record<string, string | undefined>> = {},
-): Promise<{
-  servers: Record<string, ScopedMcpServerConfig>
-  errors: PluginError[]
-}> {
-  // In enterprise mode, don't load agenc.tech servers (enterprise has exclusive control)
-  if (hasManagedMcpAuthority(authority)) {
-    return getAgenCCodeMcpConfigs(authority, {}, Promise.resolve({}), environment)
-  }
-
-  // Donor remote-MCP fetch was removed in the upstream-backend purge.
-  // Until AgenC ships its own MCP discovery service, fall through to
-  // the local-only MCP config path.
-  const agencaiPromise: Promise<Record<string, ScopedMcpServerConfig>> =
-    Promise.resolve({})
-  return getAgenCCodeMcpConfigs(authority, {}, agencaiPromise, environment)
 }
 
 /**

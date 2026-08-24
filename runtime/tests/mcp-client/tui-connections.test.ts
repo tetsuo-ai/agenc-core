@@ -136,4 +136,37 @@ describe("projectMcpManagerToConnections (TUI MCP picker wiring)", () => {
       }),
     ]);
   });
+
+  it("preserves canonical provenance and policy fields in projected configs", () => {
+    const got = projectMcpManagerToConnections({
+      getConfiguredServers: () => [
+        {
+          name: "files",
+          command: "files-mcp",
+          enabled: false,
+          required: false,
+          timeout: 12_000,
+          enabled_tools: ["read"],
+          disabled_tools: ["write"],
+          default_tools_approval_mode: "on-request",
+          origin: { scope: "user" },
+        },
+      ],
+      isConnected: () => false,
+      getConnectionState: () => ({ type: "disabled" }),
+    });
+
+    expect(got[0]).toMatchObject({
+      type: "disabled",
+      config: {
+        scope: "user",
+        enabled: false,
+        required: false,
+        timeout: 12_000,
+        enabled_tools: ["read"],
+        disabled_tools: ["write"],
+        default_tools_approval_mode: "on-request",
+      },
+    });
+  });
 });

@@ -3161,6 +3161,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       if (params.reload === true) {
         await configStore.reload();
         changes.push("config reloaded from disk");
+        const refreshMcp = session.services.mcpManager?.refreshFromAuthority;
+        if (refreshMcp !== undefined) {
+          const refreshed = await refreshMcp.call(session.services.mcpManager);
+          changes.push(
+            `MCP refreshed (${refreshed.configuredServers.length} configured, ${refreshed.requiredServers.length} required)`,
+          );
+        }
         applied = true;
         if (params.profile !== undefined) {
           resolveProfile(configStore.current(), params.profile);

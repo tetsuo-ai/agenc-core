@@ -328,8 +328,6 @@ export interface LiveAgent {
   };
   /** Effective child configuration snapshot once the child session is built. */
   configSnapshot?: Record<string, unknown>;
-  /** Latest MCP refresh payload, kept out of the bounded mailbox protocol. */
-  pendingMcpRefresh?: { readonly config: unknown };
   /** Local rollout path for the live child session once initialized. */
   rolloutPath?: string;
 }

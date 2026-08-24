@@ -967,14 +967,14 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
     await store.reload();
     const latch: ConfigReloadLatch = { requested: true };
     const emit = vi.fn();
-    const refreshFromConfig = vi.fn().mockResolvedValue({
+    const refreshFromAuthority = vi.fn().mockResolvedValue({
       configuredServers: ["github"],
       requiredServers: ["github"],
     });
     const sessionStub = {
       emit,
       nextInternalSubId: () => "sub-x",
-      services: { mcpManager: { refreshFromConfig } },
+      services: { mcpManager: { refreshFromAuthority } },
     } as unknown as Parameters<
       typeof maybeReloadConfigBetweenTurns
     >[0]["session"];
@@ -986,7 +986,7 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
       clearCache: () => {},
     });
 
-    expect(refreshFromConfig).toHaveBeenCalledWith(nextCfg);
+    expect(refreshFromAuthority).toHaveBeenCalledWith();
     expect(emit).toHaveBeenCalledTimes(1);
     const arg = emit.mock.calls[0]![0];
     expect(arg.msg.type).toBe("warning");
@@ -1009,13 +1009,13 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
     await store.reload();
     const latch: ConfigReloadLatch = { requested: true };
     const emit = vi.fn();
-    const refreshFromConfig = vi
+    const refreshFromAuthority = vi
       .fn()
       .mockRejectedValue(new Error("required server missing"));
     const sessionStub = {
       emit,
       nextInternalSubId: () => "sub-x",
-      services: { mcpManager: { refreshFromConfig } },
+      services: { mcpManager: { refreshFromAuthority } },
     } as unknown as Parameters<
       typeof maybeReloadConfigBetweenTurns
     >[0]["session"];

@@ -252,6 +252,7 @@ describe('AgenCAuthProvider XAA refresh locking', () => {
         idpIdToken: 'id-token',
         idpTokenEndpoint: 'https://agenc.tech/idp/token',
       }),
+      {},
       'github',
     )
     expect(result).toEqual(

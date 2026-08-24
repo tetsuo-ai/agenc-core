@@ -20,22 +20,24 @@ import { createResourceBridge } from "../mcp-client/resources.js";
 import { createPromptBridge } from "../mcp-client/prompts.js";
 import type { MCPCallObserver } from "../mcp-client/tools.js";
 import type { MCPServerConnection } from "../services/mcp/types.js";
+import type { ScopedMcpServerConfig } from "../services/mcp/types.js";
+import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
+import { approveProjectMcpServerSync } from "../permissions/trust/project-trust.js";
+import { projectMcpServerApprovalDigest } from "../services/mcp/utils.js";
 import {
   attachMcpManagerToSession,
   createSessionMcpManager,
-  createSessionMcpManagerFromConfig,
-  createSessionMcpManagerFromSources,
+  createSessionMcpManagerFromAuthority,
   createSessionMcpSamplingHandlers,
   createSessionMcpService,
-  getMcpConfigFromConfig,
-  refreshMcpManagerFromConfig,
+  refreshMcpManagerFromAuthority,
   requiredMcpServerNames,
   resolveSessionMcpConfig,
-  resolveSessionMcpConfigFromSources,
   startMcpManagerForSession,
 } from "./mcp-startup.js";
 import type { Session } from "./session.js";
 import { ConfigStore } from "../config/store.js";
+import type { CanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 
 vi.mock("../mcp-client/connection.js", () => ({
   createMCPConnection: vi.fn(),
@@ -49,11 +51,22 @@ vi.mock("../mcp-client/resources.js", () => ({
 vi.mock("../mcp-client/prompts.js", () => ({
   createPromptBridge: vi.fn(),
 }));
+vi.mock("../plugins/registration/mcp-plugin-integration.js", () => ({
+  loadPluginMcpServerRegistrations: vi.fn(),
+}));
 
 const mockCreateMCPConnection = vi.mocked(createMCPConnection);
 const mockCreateToolBridge = vi.mocked(createToolBridge);
 const mockCreateResourceBridge = vi.mocked(createResourceBridge);
 const mockCreatePromptBridge = vi.mocked(createPromptBridge);
+const mockLoadPluginMcpServerRegistrations = vi.mocked(
+  loadPluginMcpServerRegistrations,
+);
+const UNUSED_AUTHORITY = {} as CanonicalSettingsAuthority;
+const TEST_SERVICE_OPTIONS = Object.freeze({
+  authority: UNUSED_AUTHORITY,
+  environment: Object.freeze({}),
+});
 
 function stubManager() {
   const setCallObserver = vi.fn();
@@ -122,6 +135,7 @@ function stubSession() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockLoadPluginMcpServerRegistrations.mockResolvedValue([]);
   mockCreateMCPConnection.mockResolvedValue({} as never);
   mockCreateToolBridge.mockImplementation(
     async (_client, serverName, _logger, options) =>
@@ -556,6 +570,62 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
   });
 });
 
+async function createMcpAuthorityFixture(options: {
+  readonly user?: readonly string[];
+  readonly project?: readonly string[];
+  readonly managed?: readonly string[];
+} = {}): Promise<{
+  readonly root: string;
+  readonly home: string;
+  readonly cwd: string;
+  readonly store: ConfigStore;
+  cleanup(): void;
+}> {
+  const root = mkdtempSync(join(tmpdir(), "agenc-mcp-authority-"));
+  const home = join(root, "home");
+  const cwd = join(root, "project");
+  mkdirSync(home, { recursive: true });
+  mkdirSync(cwd, { recursive: true });
+  writeFileSync(
+    join(home, "config.toml"),
+    ["config_version = 2", ...(options.user ?? []), ""].join("\n"),
+    "utf8",
+  );
+  if (options.project !== undefined) {
+    mkdirSync(join(cwd, ".agenc"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".agenc", "config.toml"),
+      ["config_version = 2", ...options.project, ""].join("\n"),
+      "utf8",
+    );
+  }
+  const managedConfigPath = join(root, "managed.toml");
+  if (options.managed !== undefined) {
+    writeFileSync(
+      managedConfigPath,
+      ["config_version = 2", ...options.managed, ""].join("\n"),
+      { encoding: "utf8", mode: 0o600 },
+    );
+  }
+  const store = new ConfigStore({
+    home,
+    cwd,
+    projectRoot: cwd,
+    projectTrusted: true,
+    env: { AGENC_HOME: home, HOME: root },
+    managedConfigPath,
+    managedDropInDir: join(root, "missing-managed.d"),
+  });
+  await store.reload();
+  return {
+    root,
+    home,
+    cwd,
+    store,
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+
 describe("mcp-startup session-owned manager helpers", () => {
   it("constructs the real manager from explicit configs", () => {
     const manager = createSessionMcpManager([
@@ -568,202 +638,220 @@ describe("mcp-startup session-owned manager helpers", () => {
     ]);
   });
 
-  it("constructs the real manager from loaded config mcp_servers", () => {
-    const manager = createSessionMcpManagerFromConfig(
-      {
-        mcp_servers: {
-          github: {
-            command: "github-mcp",
-            args: ["--stdio"],
-            env: { GH_TOKEN: "test-token" },
-            timeout: 5_000,
-            required: true,
-          },
-        },
-      },
-    );
-
-    expect(manager).toBeInstanceOf(MCPManager);
-    expect(manager.getConfiguredServers()).toEqual([
-      expect.objectContaining({
-        name: "github",
-        command: "github-mcp",
-        args: ["--stdio"],
-        env: { GH_TOKEN: "test-token" },
-        timeout: 5_000,
-        required: true,
-      }),
-    ]);
+  it("constructs the real manager from the policy-aware authority", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: [
+        "[mcp_servers.github]",
+        'transport = "stdio"',
+        'command = "github-mcp"',
+        'args = ["--stdio"]',
+        "required = true",
+      ],
+    });
+    try {
+      const manager = await createSessionMcpManagerFromAuthority(
+        fixture.store,
+        {},
+      );
+      expect(manager).toBeInstanceOf(MCPManager);
+      expect(manager.getConfiguredServers()).toEqual([
+        expect.objectContaining({
+          name: "github",
+          command: "github-mcp",
+          args: ["--stdio"],
+          required: true,
+          origin: { scope: "user" },
+        }),
+      ]);
+    } finally {
+      fixture.cleanup();
+    }
   });
 
-  it("consumes MCP servers from the explicit canonical ConfigStore snapshot", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agenc-canonical-mcp-"));
-    const home = join(root, "home");
-    const cwd = join(root, "project");
+  it("treats an explicit managed mcp_servers table as exclusive even when empty", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.user_docs]", 'command = "user-docs"'],
+      managed: ["[mcp_servers]"],
+    });
     try {
-      mkdirSync(home, { recursive: true });
-      mkdirSync(cwd, { recursive: true });
+      await expect(resolveSessionMcpConfig(fixture.store, {})).resolves.toEqual(
+        [],
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("starts a project server only while its exact definition is approved", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      project: [
+        "[mcp_servers.project_docs]",
+        'command = "node"',
+        'args = ["project-server.js"]',
+      ],
+    });
+    try {
+      await expect(resolveSessionMcpConfig(fixture.store, {})).resolves.toEqual(
+        [],
+      );
+      const approved: ScopedMcpServerConfig = {
+        scope: "project",
+        type: "stdio",
+        command: "node",
+        args: ["project-server.js"],
+      };
+      approveProjectMcpServerSync(
+        "project_docs",
+        projectMcpServerApprovalDigest(approved),
+        { agencHome: fixture.home, projectRoot: fixture.cwd },
+      );
+      await expect(resolveSessionMcpConfig(fixture.store, {})).resolves.toEqual([
+        expect.objectContaining({
+          name: "project_docs",
+          origin: { scope: "project" },
+        }),
+      ]);
+
       writeFileSync(
-        join(home, "config.toml"),
+        join(fixture.cwd, ".agenc", "config.toml"),
         [
           "config_version = 2",
-          "[mcp_servers.audit]",
+          "[mcp_servers.project_docs]",
           'command = "node"',
-          'args = ["server.js"]',
-          "required = true",
+          'args = ["changed-server.js"]',
           "",
         ].join("\n"),
         "utf8",
       );
-      const store = new ConfigStore({
-        home,
-        cwd,
-        projectRoot: cwd,
-        projectTrusted: false,
-        env: { AGENC_HOME: home, HOME: root },
-        managedConfigPath: join(root, "missing-managed.toml"),
-        managedDropInDir: join(root, "missing-managed.d"),
-      });
-      await store.reload();
-
-      await expect(
-        resolveSessionMcpConfigFromSources(
-          store.current(),
-          {} as NodeJS.ProcessEnv,
-          {
-            cwd,
-            includePluginMcpServers: false,
-          },
-        ),
-      ).resolves.toEqual([
-        expect.objectContaining({
-          name: "audit",
-          command: "node",
-          args: ["server.js"],
-          required: true,
-        }),
-      ]);
+      await fixture.store.reload();
+      await expect(resolveSessionMcpConfig(fixture.store, {})).resolves.toEqual(
+        [],
+      );
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      fixture.cleanup();
     }
   });
 
-  it("merges plugin-declared MCP servers into the session source list", async () => {
-    // The historical gap: plugin MCP servers were loaded and sandboxed by
-    // the plugin registration pipeline but never handed to the MCPManager,
-    // so their tools silently never reached the tool catalog.
-    const source = vi.fn().mockResolvedValue({
-      "plugin:sample:goal": {
-        command: "node",
-        args: ["goal-server.mjs"],
-      },
+  it("applies managed allow and deny policy before manager construction", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: [
+        "[mcp_servers.allowed]",
+        'command = "allowed-bin"',
+        "[mcp_servers.denied]",
+        'command = "denied-bin"',
+        "[mcp_servers.other]",
+        'command = "other-bin"',
+      ],
+      managed: [
+        'allowedMcpServers = [{ serverName = "allowed" }, { serverName = "denied" }]',
+        'deniedMcpServers = [{ serverName = "denied" }]',
+      ],
     });
-    const config = {
-      mcp_servers: {
-        github: { command: "github-mcp" },
-      },
-      plugins: { enabled: true },
-    };
-    await expect(
-      resolveSessionMcpConfigFromSources(config, {} as NodeJS.ProcessEnv, {
-        cwd: "/workspace",
-        pluginMcpServerSource: source,
-      }),
-    ).resolves.toEqual([
-      expect.objectContaining({ name: "github", command: "github-mcp" }),
-      expect.objectContaining({
-        name: "plugin:sample:goal",
-        command: "node",
-        args: ["goal-server.mjs"],
-      }),
-    ]);
-    // The loader needs the config's plugins section to know what is
-    // enabled (else every plugin resolves as disabled) and the caller's
-    // env so AGENC_HOME resolution matches the session.
-    expect(source).toHaveBeenCalledWith({
-      cwd: "/workspace",
-      config,
-      env: {},
-    });
+    try {
+      const configs = await resolveSessionMcpConfig(fixture.store, {});
+      expect(configs.map((config) => config.name)).toEqual(["allowed"]);
+    } finally {
+      fixture.cleanup();
+    }
   });
 
-  it("lets an explicit config entry override a plugin server of the same name", async () => {
-    await expect(
-      resolveSessionMcpConfigFromSources(
-        {
-          mcp_servers: {
-            "plugin:sample:goal": { command: "config-override" },
-          },
-        },
-        {} as NodeJS.ProcessEnv,
-        {
-          pluginMcpServerSource: async () => ({
-            "plugin:sample:goal": { command: "plugin-declared" },
-          }),
-        },
-      ),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        name: "plugin:sample:goal",
-        command: "config-override",
-      }),
-    ]);
-  });
-
-  it("excludes plugin servers when includePluginMcpServers is false", async () => {
-    await expect(
-      resolveSessionMcpConfigFromSources(undefined, {} as NodeJS.ProcessEnv, {
-        includePluginMcpServers: false,
-        pluginMcpServerSource: async () => ({
-          "plugin:sample:goal": { command: "plugin-declared" },
+  it("uses only the captured environment for interpolation", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: [
+        "[mcp_servers.environment]",
+        'command = "${MCP_BINARY}"',
+        'args = ["${MCP_ARGUMENT:-fallback}"]',
+      ],
+    });
+    const ambient = process.env.MCP_BINARY;
+    process.env.MCP_BINARY = "ambient-binary";
+    try {
+      await expect(
+        resolveSessionMcpConfig(fixture.store, {
+          MCP_BINARY: "captured-binary",
+          MCP_ARGUMENT: "captured-argument",
         }),
-      }),
-    ).resolves.toEqual([]);
+      ).resolves.toEqual([
+        expect.objectContaining({
+          command: "captured-binary",
+          args: ["captured-argument"],
+        }),
+      ]);
+    } finally {
+      if (ambient === undefined) delete process.env.MCP_BINARY;
+      else process.env.MCP_BINARY = ambient;
+      fixture.cleanup();
+    }
   });
 
-  it("always merges canonical and plugin MCP sources", async () => {
-    await expect(
-      resolveSessionMcpConfigFromSources(
-        { mcp_servers: { canonical: { command: "canonical-mcp" } } },
-        {} as NodeJS.ProcessEnv,
-        {
-          pluginMcpServerSource: async () => ({
-            "plugin:sample:goal": { command: "plugin-declared" },
-          }),
+  it("deduplicates plugin servers against canonical manual definitions", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: [
+        "[mcp_servers.manual]",
+        'command = "node"',
+        'args = ["same-server.js"]',
+      ],
+    });
+    mockLoadPluginMcpServerRegistrations.mockResolvedValueOnce([
+      {
+        name: "plugin:sample:duplicate",
+        pluginName: "sample",
+        pluginSource: "sample@registry",
+        serverName: "duplicate",
+        server: {
+          transport: "stdio",
+          command: "node",
+          args: ["same-server.js"],
         },
-      ),
-    ).resolves.toEqual([
-      expect.objectContaining({ name: "canonical", command: "canonical-mcp" }),
-      expect.objectContaining({
+      },
+    ]);
+    try {
+      const configs = await resolveSessionMcpConfig(fixture.store, {});
+      expect(configs.map((config) => config.name)).toEqual(["manual"]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("allows only plugin MCP servers under plugin-only policy", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.manual]", 'command = "manual-bin"'],
+      managed: ['strictPluginOnlyCustomization = ["mcp"]'],
+    });
+    mockLoadPluginMcpServerRegistrations.mockResolvedValueOnce([
+      {
         name: "plugin:sample:goal",
-        command: "plugin-declared",
-      }),
+        pluginName: "sample",
+        pluginSource: "sample@registry",
+        serverName: "goal",
+        server: { transport: "stdio", command: "plugin-bin" },
+      },
     ]);
+    try {
+      await expect(resolveSessionMcpConfig(fixture.store, {})).resolves.toEqual([
+        expect.objectContaining({
+          name: "plugin:sample:goal",
+          origin: expect.objectContaining({
+            scope: "plugin",
+            pluginSource: "sample@registry",
+          }),
+        }),
+      ]);
+    } finally {
+      fixture.cleanup();
+    }
   });
 
-  it("tolerates a broken plugin MCP source without failing session startup", async () => {
-    await expect(
-      resolveSessionMcpConfigFromSources(
-        { mcp_servers: { github: { command: "github-mcp" } } },
-        {} as NodeJS.ProcessEnv,
-        {
-          pluginMcpServerSource: async () => {
-            throw new Error("plugin loader exploded");
-          },
-        },
-      ),
-    ).resolves.toEqual([
-      expect.objectContaining({ name: "github", command: "github-mcp" }),
-    ]);
-  });
-
-  it("has no independent project JSON startup authority", () => {
+  it("has no direct snapshot or plugin-loader startup authority", () => {
     const source = readFileSync(
       join(import.meta.dirname, "..", "..", "src", "session", "mcp-startup.ts"),
       "utf8",
     );
     expect(source).not.toContain(".mcp.json");
-    expect(source).not.toContain("includeProjectMcpServers");
+    expect(source).not.toMatch(/\.current\(\)\.mcp_servers/u);
+    expect(source).not.toContain("loadPluginMcpServers");
+    expect(source).not.toContain("pluginMcpServerSource");
+    expect(source).not.toContain("resolveSessionMcpConfigFromSources");
   });
 
   it("exposes runtime readiness and routing off the real manager", () => {
@@ -776,7 +864,7 @@ describe("mcp-startup session-owned manager helpers", () => {
       getServerForTool: vi.fn(() => "github"),
     } as unknown as MCPManager;
 
-    const service = createSessionMcpService(manager);
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
 
     expect(service.isConnected?.("github")).toBe(true);
     expect(service.isConnected?.("filesystem")).toBe(false);
@@ -812,7 +900,7 @@ describe("mcp-startup session-owned manager helpers", () => {
       ),
     } as unknown as MCPManager;
 
-    const service = createSessionMcpService(manager);
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
     const projected = projectMcpManagerToConnections(
       service as unknown as McpManagerLike,
     );
@@ -844,18 +932,13 @@ describe("mcp-startup session-owned manager helpers", () => {
         success: true,
         toolCount: 0,
       })),
-      addServer: vi.fn(async (config: { readonly name: string }) => ({
-        serverName: config.name,
-        success: true,
-        toolCount: 1,
-      })),
       getTools: vi.fn(() => [{ name: "mcp.github.search" }]),
       getToolsByServer: vi.fn((name: string) =>
         name === "github" ? [{ name: "mcp.github.search" }] : [],
       ),
     } as unknown as MCPManager;
 
-    const service = createSessionMcpService(manager);
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
 
     await expect(service.reconnectServer?.("github")).resolves.toMatchObject({
       success: true,
@@ -869,16 +952,85 @@ describe("mcp-startup session-owned manager helpers", () => {
       success: true,
       toolCount: 0,
     });
-    await expect(
-      service.addServer?.({ name: "local", command: "node" }),
-    ).resolves.toMatchObject({
-      serverName: "local",
-      success: true,
-    });
     expect(service.getTools?.()).toEqual([{ name: "mcp.github.search" }]);
     expect(service.getToolsByServer?.("github")).toEqual([
       { name: "mcp.github.search" },
     ]);
+  });
+
+  it("keeps an admitted session server and its enabled override across authority refreshes", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const manager = await createSessionMcpManagerFromAuthority(
+      fixture.store,
+      {},
+    );
+    const service = createSessionMcpService(manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await expect(
+        service.addServer?.({
+          name: "local",
+          command: "local-mcp",
+          required: false,
+        }),
+      ).resolves.toMatchObject({
+        serverName: "local",
+        success: true,
+      });
+      expect(service.getConfiguredServers?.()).toEqual([
+        expect.objectContaining({
+          name: "local",
+          required: false,
+          origin: { scope: "session" },
+        }),
+      ]);
+
+      await expect(service.disableServer?.("local")).resolves.toMatchObject({
+        success: true,
+      });
+      await service.refreshFromAuthority?.();
+      expect(service.getConfiguredServers?.()).toEqual([
+        expect.objectContaining({
+          name: "local",
+          enabled: false,
+          required: false,
+        }),
+      ]);
+      expect(service.getConnectionState?.("local")).toEqual({
+        type: "disabled",
+      });
+    } finally {
+      await manager.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("rejects session additions excluded by managed MCP authority", async () => {
+    const fixture = await createMcpAuthorityFixture({ managed: ["[mcp_servers]"] });
+    const manager = await createSessionMcpManagerFromAuthority(
+      fixture.store,
+      {},
+    );
+    const service = createSessionMcpService(manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await expect(
+        service.addServer?.({ name: "blocked", command: "blocked-mcp" }),
+      ).resolves.toEqual({
+        serverName: "blocked",
+        success: false,
+        toolCount: 0,
+        error: 'MCP server "blocked" is blocked by canonical MCP policy.',
+      });
+      expect(service.getConfiguredServers?.()).toEqual([]);
+    } finally {
+      await manager.stop();
+      fixture.cleanup();
+    }
   });
 
   it("surfaces effective connected-server instructions instead of an empty stub", async () => {
@@ -907,7 +1059,7 @@ describe("mcp-startup session-owned manager helpers", () => {
       ),
     } as unknown as MCPManager;
 
-    const service = createSessionMcpService(manager);
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
     const effective = await service.effectiveServers({}, null);
 
     expect(effective.get("github")).toEqual(
@@ -923,7 +1075,11 @@ describe("mcp-startup session-owned manager helpers", () => {
         command: "fs-mcp",
       }),
     );
-    expect((effective.get("filesystem") as { instructions?: string } | undefined)?.instructions).toBeUndefined();
+    expect(
+      (effective.get("filesystem") as
+        | { instructions?: string }
+        | undefined)?.instructions,
+    ).toBeUndefined();
   });
 
   it("derives required server names from config metadata", () => {
@@ -936,153 +1092,141 @@ describe("mcp-startup session-owned manager helpers", () => {
     ).toEqual(["alpha"]);
   });
 
-  it("refreshes the live manager from config and enforces required servers", async () => {
+  it("refreshes the live manager from the authority and enforces required servers", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: [
+        "[mcp_servers.github]",
+        'command = "github-mcp"',
+        "required = true",
+        "[mcp_servers.filesystem]",
+        'command = "fs-mcp"',
+      ],
+    });
     const refreshServers = vi.fn().mockResolvedValue(undefined);
     const manager = {
       refreshServers,
     } as unknown as MCPManager;
+    try {
+      const result = await refreshMcpManagerFromAuthority({
+        manager,
+        authority: fixture.store,
+        environment: {},
+      });
 
-    const result = await refreshMcpManagerFromConfig({
-      manager,
-      env: {} as NodeJS.ProcessEnv,
-      config: {
-        mcp_servers: {
-          github: { command: "github-mcp", required: true },
-          filesystem: { command: "fs-mcp" },
-        },
-      },
-    });
-
-    expect(refreshServers).toHaveBeenCalledWith(
-      [
-        expect.objectContaining({
-          name: "github",
-          command: "github-mcp",
-          required: true,
-        }),
-        expect.objectContaining({
-          name: "filesystem",
-          command: "fs-mcp",
-        }),
-      ],
-      { requiredServers: ["github"] },
-    );
-    expect(result).toEqual({
-      configuredServers: ["github", "filesystem"],
-      requiredServers: ["github"],
-    });
+      expect(refreshServers).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            name: "github",
+            command: "github-mcp",
+            required: true,
+            origin: { scope: "user" },
+          }),
+          expect.objectContaining({
+            name: "filesystem",
+            command: "fs-mcp",
+          }),
+        ],
+        { requiredServers: ["github"] },
+      );
+      expect(result).toEqual({
+        configuredServers: ["github", "filesystem"],
+        requiredServers: ["github"],
+      });
+    } finally {
+      fixture.cleanup();
+    }
   });
 
-  it("refresh keeps plugin servers instead of evicting them", async () => {
-    // Refresh used to rebuild the manager's list from config only, so any
-    // plugin server the manager held would be evicted on the first refresh.
-    const refreshServers = vi.fn().mockResolvedValue(undefined);
-    const manager = {
-      refreshServers,
-    } as unknown as MCPManager;
-
-    const result = await refreshMcpManagerFromConfig({
-      manager,
-      env: {} as NodeJS.ProcessEnv,
-      config: {
-        mcp_servers: {
-          github: { command: "github-mcp" },
+  it("authority refresh retains policy-admitted plugin servers", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.github]", 'command = "github-mcp"'],
+    });
+    mockLoadPluginMcpServerRegistrations.mockResolvedValueOnce([
+      {
+        name: "plugin:sample:goal",
+        pluginName: "sample",
+        pluginSource: "sample@registry",
+        serverName: "goal",
+        server: {
+          transport: "stdio",
+          command: "node",
+          args: ["goal-server.mjs"],
         },
       },
-      pluginMcpServerSource: async () => ({
-        "plugin:sample:goal": { command: "node", args: ["goal-server.mjs"] },
-      }),
-    });
-
-    expect(refreshServers).toHaveBeenCalledWith(
-      [
-        expect.objectContaining({ name: "github" }),
-        expect.objectContaining({ name: "plugin:sample:goal" }),
-      ],
-      {},
-    );
-    expect(result.configuredServers).toEqual([
-      "github",
-      "plugin:sample:goal",
     ]);
-  });
-
-  it("service refreshFromConfig uses the canonical config snapshot", async () => {
     const refreshServers = vi.fn().mockResolvedValue(undefined);
     const manager = {
       refreshServers,
+    } as unknown as MCPManager;
+    try {
+      const result = await refreshMcpManagerFromAuthority({
+        manager,
+        authority: fixture.store,
+        environment: {},
+      });
+
+      expect(refreshServers).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            name: "plugin:sample:goal",
+            origin: expect.objectContaining({ scope: "plugin" }),
+          }),
+          expect.objectContaining({ name: "github" }),
+        ],
+        {},
+      );
+      expect(result.configuredServers).toEqual([
+        "plugin:sample:goal",
+        "github",
+      ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("service refresh rereads the canonical authority", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: [
+        "[mcp_servers.configOnly]",
+        'command = "config-mcp"',
+        "required = true",
+      ],
+    });
+    const refreshServers = vi.fn().mockResolvedValue(undefined);
+    const getConfiguredServers = vi.fn(() => [
+      {
+        name: "configOnly",
+        command: "config-mcp",
+        required: true,
+        origin: { scope: "user" as const },
+      },
+    ]);
+    const manager = {
+      refreshServers,
+      getConfiguredServers,
     } as unknown as MCPManager;
     const service = createSessionMcpService(manager, {
-      env: {} as NodeJS.ProcessEnv,
+      authority: fixture.store,
+      environment: {},
     });
+    try {
+      const result = await service.refreshFromAuthority?.();
 
-    const result = await service.refreshFromConfig?.({
-      mcp_servers: {
-        configOnly: { command: "config-mcp", required: true },
-      },
-    });
-
-    expect(refreshServers).toHaveBeenCalledWith(
-      [expect.objectContaining({ name: "configOnly", command: "config-mcp" })],
-      { requiredServers: ["configOnly"] },
-    );
-    expect(result).toEqual({
-      configuredServers: ["configOnly"],
-      requiredServers: ["configOnly"],
-    });
-  });
-});
-
-describe("mcp-startup config-backed MCP resolution", () => {
-  it("returns [] when config has no mcp_servers", () => {
-    expect(getMcpConfigFromConfig({})).toEqual([]);
-  });
-
-  it("maps keyed config tables to runtime configs with names", () => {
-    const parsed = getMcpConfigFromConfig({
-      mcp_servers: {
-        alpha: {
-          command: "alpha-cmd",
-          args: ["--stdio"],
-          enabled: false,
-        },
-        beta: {
-          transport: "http",
-          endpoint: "https://example.test/mcp",
-          headers: { Authorization: "Bearer token" },
-          required: true,
-        },
-      },
-    });
-
-    expect(parsed).toEqual([
-      expect.objectContaining({
-        name: "alpha",
-        command: "alpha-cmd",
-        args: ["--stdio"],
-        enabled: false,
-      }),
-      expect.objectContaining({
-        name: "beta",
-        transport: "http",
-        endpoint: "https://example.test/mcp",
-        headers: { Authorization: "Bearer token" },
-        required: true,
-      }),
-    ]);
-  });
-
-  it("resolves only canonical config mcp_servers", () => {
-    const resolved = resolveSessionMcpConfig(
-      {
-        mcp_servers: {
-          configOnly: { command: "config-cmd" },
-        },
-      },
-    );
-
-    expect(resolved).toEqual([
-      expect.objectContaining({ name: "configOnly", command: "config-cmd" }),
-    ]);
+      expect(refreshServers).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            name: "configOnly",
+            command: "config-mcp",
+          }),
+        ],
+        { requiredServers: ["configOnly"] },
+      );
+      expect(result).toEqual({
+        configuredServers: ["configOnly"],
+        requiredServers: ["configOnly"],
+      });
+    } finally {
+      fixture.cleanup();
+    }
   });
 });

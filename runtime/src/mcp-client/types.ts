@@ -23,6 +23,16 @@ export interface PluginMcpSandboxMetadata {
   readonly scopedServerName: string;
 }
 
+/** Provenance retained after policy resolution and transport adaptation. */
+export interface MCPServerOrigin {
+  readonly scope: "managed" | "user" | "project" | "local" | "plugin" | "session";
+  readonly pluginSource?: string;
+  readonly pluginServer?: {
+    readonly pluginName: string;
+    readonly serverName: string;
+  };
+}
+
 /**
  * Configuration for an external MCP server.
  *
@@ -72,6 +82,8 @@ export interface MCPServerConfig {
   tools?: Readonly<Record<string, PerToolConfig>>;
   /** Metadata for plugin-owned stdio servers isolated as child processes. */
   pluginSandbox?: PluginMcpSandboxMetadata;
+  /** Canonical source identity used by status and policy projections. */
+  origin?: MCPServerOrigin;
 }
 
 /**

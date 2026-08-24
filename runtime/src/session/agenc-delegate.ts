@@ -491,10 +491,6 @@ function createInertDelegateMcpManager(): SessionServices["mcpManager"] {
   return {
     effectiveServers: async () => new Map(),
     toolPluginProvenance: async () => null,
-    refreshFromConfig: async () => ({
-      configuredServers: [],
-      requiredServers: [],
-    }),
     getTools: () => [],
     getToolsByServer: () => [],
     getConfiguredServers: () => [],

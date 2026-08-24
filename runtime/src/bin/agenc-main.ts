@@ -918,13 +918,10 @@ export async function maybeReloadConfigBetweenTurns(params: {
   const refreshMcp = (
     params.session?.services as
       { mcpManager?: Session["services"]["mcpManager"] } | undefined
-  )?.mcpManager?.refreshFromConfig;
+  )?.mcpManager?.refreshFromAuthority;
   if (params.session && typeof refreshMcp === "function") {
     try {
-      const result = await refreshMcp.call(
-        params.session.services.mcpManager,
-        next,
-      );
+      const result = await refreshMcp.call(params.session.services.mcpManager);
       mcpRefreshSuffix = `; MCP refreshed (${result.configuredServers.length} configured, ${result.requiredServers.length} required)`;
     } catch (error) {
       params.session.emit({

@@ -307,13 +307,13 @@ describe("configCommand — reload", () => {
     try {
       writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
-      const refreshFromConfig = vi.fn().mockResolvedValue({
+      const refreshFromAuthority = vi.fn().mockResolvedValue({
         configuredServers: ["github"],
         requiredServers: ["github"],
       });
       const session = stubSession();
       (session as unknown as StubSession).services = {
-        mcpManager: { refreshFromConfig },
+        mcpManager: { refreshFromAuthority },
       };
 
       const r = await configCommand.execute(
@@ -321,9 +321,7 @@ describe("configCommand — reload", () => {
       );
 
       if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
-      expect(refreshFromConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ model: "grok-4-reloaded" }),
-      );
+      expect(refreshFromAuthority).toHaveBeenCalledWith();
       expect(r.text).toContain("MCP refreshed (1 configured, 1 required)");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -335,13 +333,13 @@ describe("configCommand — reload", () => {
     try {
       writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
-      const refreshFromConfig = vi.fn().mockResolvedValue({
+      const refreshFromAuthority = vi.fn().mockResolvedValue({
         configuredServers: ["github"],
         requiredServers: ["github"],
       });
       const session = stubSession();
       (session as unknown as StubSession).services = {
-        mcpManager: Object.assign(["spoof"], { refreshFromConfig }),
+        mcpManager: Object.assign(["spoof"], { refreshFromAuthority }),
       };
 
       const r = await configCommand.execute(
@@ -349,7 +347,7 @@ describe("configCommand — reload", () => {
       );
 
       if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
-      expect(refreshFromConfig).not.toHaveBeenCalled();
+      expect(refreshFromAuthority).not.toHaveBeenCalled();
       expect(r.text).toContain("Config reloaded");
       expect(r.text).not.toContain("MCP refreshed");
     } finally {
@@ -437,12 +435,12 @@ describe("configCommand — reload", () => {
     try {
       writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
-      const refreshFromConfig = vi
+      const refreshFromAuthority = vi
         .fn()
         .mockRejectedValue(new Error("required server missing"));
       const session = stubSession();
       (session as unknown as StubSession).services = {
-        mcpManager: { refreshFromConfig },
+        mcpManager: { refreshFromAuthority },
       };
 
       const r = await configCommand.execute(

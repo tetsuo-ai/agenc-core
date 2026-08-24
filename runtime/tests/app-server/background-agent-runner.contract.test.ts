@@ -2779,6 +2779,10 @@ describe("AgenC delegate background-agent runner", () => {
       argv: ["node", "agenc"],
     });
     const reload = vi.fn(async () => ({}));
+    const refreshFromAuthority = vi.fn(async () => ({
+      configuredServers: ["github"],
+      requiredServers: ["github"],
+    }));
     Object.assign(session, {
       services: {
         ...(session as { services: Record<string, unknown> }).services,
@@ -2786,6 +2790,7 @@ describe("AgenC delegate background-agent runner", () => {
           current: () => ({ model: "base-model", model_provider: "openai" }),
           reload,
         },
+        mcpManager: { refreshFromAuthority },
       },
       setPendingProviderSwitch: () => {},
       state: { with: async (fn: (state: unknown) => void) => fn({}) },
@@ -2799,8 +2804,13 @@ describe("AgenC delegate background-agent runner", () => {
     });
 
     expect(reload).toHaveBeenCalledTimes(1);
+    expect(refreshFromAuthority).toHaveBeenCalledTimes(1);
+    expect(reload.mock.invocationCallOrder[0]).toBeLessThan(
+      refreshFromAuthority.mock.invocationCallOrder[0]!,
+    );
     expect(result.applied).toBe(true);
     expect(result.summary).toContain("config reloaded from disk");
+    expect(result.summary).toContain("MCP refreshed (1 configured, 1 required)");
   });
 
   it("setAgentPermissionMode rejects internal-only modes", async () => {

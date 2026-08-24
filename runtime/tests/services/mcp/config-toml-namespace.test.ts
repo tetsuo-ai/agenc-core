@@ -3,13 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { loadCanonicalConfig } from "../../config/repository.js";
 import { ConfigStore } from "../../config/store.js";
 import {
   isProjectTrustedSync,
   trustProjectSync,
 } from "../../permissions/trust/project-trust.js";
-import { getMcpConfigFromConfig } from "../../session/mcp-startup.js";
+import { resolveSessionMcpConfig } from "../../session/mcp-startup.js";
 import {
   addMcpConfig,
   getMcpConfigByName,
@@ -62,16 +61,6 @@ async function readConfigToml(): Promise<string> {
   return readFile(join(agencHome, "config.toml"), "utf8");
 }
 
-function loadTestConfig() {
-  return loadCanonicalConfig({
-    home: agencHome,
-    env: { AGENC_HOME: agencHome, HOME: agencHome },
-    cwd: agencHome,
-    projectRoot: agencHome,
-    projectTrusted: true,
-  });
-}
-
 describe("MCP config TOML namespace", () => {
   test("user-scoped stdio servers are written to mcp_servers and loaded by session startup", async () => {
     await addUserMcpServerToToml(
@@ -91,8 +80,7 @@ describe("MCP config TOML namespace", () => {
     expect(toml).toContain('"command" = "gh-mcp"');
     expect(toml).not.toContain("mcpServers");
 
-    const loaded = await loadTestConfig();
-    const runtimeConfigs = getMcpConfigFromConfig(loaded.config);
+    const runtimeConfigs = await resolveSessionMcpConfig(configStore, {});
     expect(runtimeConfigs).toEqual([
       {
         name: "github",
@@ -100,6 +88,7 @@ describe("MCP config TOML namespace", () => {
         command: "gh-mcp",
         args: ["--stdio"],
         env: { GITHUB_TOKEN: "token" },
+        origin: { scope: "user" },
       },
     ]);
   });
@@ -115,16 +104,16 @@ describe("MCP config TOML namespace", () => {
       configStore,
     );
 
-    const loaded = await loadTestConfig();
-    expect(loaded.config.mcp_servers?.docs).toMatchObject({
+    expect(configStore.current().mcp_servers?.docs).toMatchObject({
       transport: "http",
       endpoint: "https://agenc.tech/mcp",
       headers: { Authorization: "Bearer token" },
     });
-    expect(getMcpConfigFromConfig(loaded.config)[0]).toMatchObject({
+    expect((await resolveSessionMcpConfig(configStore, {}))[0]).toMatchObject({
       name: "docs",
       transport: "http",
       endpoint: "https://agenc.tech/mcp",
+      origin: { scope: "user" },
     });
 
     const scoped = getUserMcpConfigsFromToml(configStore);
@@ -146,12 +135,11 @@ describe("MCP config TOML namespace", () => {
       configStore,
     );
 
-    const loaded = await loadTestConfig();
-    expect(loaded.config.mcp_servers?.socket).toMatchObject({
+    expect(configStore.current().mcp_servers?.socket).toMatchObject({
       transport: "websocket",
       endpoint: "wss://agenc.tech/mcp",
     });
-    expect(getMcpConfigFromConfig(loaded.config)[0]).toMatchObject({
+    expect((await resolveSessionMcpConfig(configStore, {}))[0]).toMatchObject({
       name: "socket",
       transport: "websocket",
     });
@@ -170,9 +158,8 @@ describe("MCP config TOML namespace", () => {
     );
     await removeUserMcpServerFromToml("github", configStore);
 
-    const loaded = await loadTestConfig();
-    expect(loaded.config.mcp_servers?.github).toBeUndefined();
-    expect(getMcpConfigFromConfig(loaded.config)).toEqual([]);
+    expect(configStore.current().mcp_servers?.github).toBeUndefined();
+    await expect(resolveSessionMcpConfig(configStore, {})).resolves.toEqual([]);
   });
 
   test("project MCP definitions read and write only canonical project config.toml", async () => {
@@ -301,5 +288,4 @@ describe("MCP config TOML namespace", () => {
     await removeMcpConfig("untrusted_probe", "local", store);
     expect(getMcpConfigsByScope("local", store).servers).toEqual({});
   });
-
 });

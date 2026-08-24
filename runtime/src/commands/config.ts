@@ -205,16 +205,15 @@ async function handleProfileSubcommand(
 
 async function refreshMcpAfterConfigReload(
   session: Session,
-  next: AgenCConfig,
 ): Promise<string> {
   const services = asRecord(session.services);
   const mcpManager = services?.mcpManager;
   const mcpManagerRecord = asRecord(mcpManager);
-  const refresh = mcpManagerRecord?.refreshFromConfig;
+  const refresh = mcpManagerRecord?.refreshFromAuthority;
   if (typeof refresh !== "function") {
     return "";
   }
-  const result = (await refresh.call(mcpManager, next)) as {
+  const result = (await refresh.call(mcpManager)) as {
     readonly configuredServers: readonly unknown[];
     readonly requiredServers: readonly unknown[];
   };
@@ -346,10 +345,7 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
               }
             }
             try {
-              const mcpSuffix = await refreshMcpAfterConfigReload(
-                ctx.session,
-                next,
-              );
+              const mcpSuffix = await refreshMcpAfterConfigReload(ctx.session);
               const warningSuffix = formatConfigReloadWarnings(configStore);
               return {
                 kind: "text",

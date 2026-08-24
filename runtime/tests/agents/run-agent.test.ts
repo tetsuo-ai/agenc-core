@@ -26,7 +26,6 @@ import { AgentControl } from "./control.js";
 import { AgentRegistry } from "./registry.js";
 import {
   buildFilteredRegistry,
-  drainChildMailboxForTesting,
   initMcpForAgent,
   MAX_PARENT_RECEIPT_FIELD_BYTES,
   MCP_INIT_TIMEOUT_MS,
@@ -875,14 +874,14 @@ describe("runAgent", () => {
   });
 
   it("keeps parent MCP transports and MCP-origin tool closures out of child sessions", async () => {
-    const refreshFromConfig = vi.fn(async () => ({
+    const refreshFromAuthority = vi.fn(async () => ({
       configuredServers: ["parent"],
       requiredServers: [],
     }));
     const parentMcpManager = {
       effectiveServers: async () => new Map(),
       toolPluginProvenance: async () => null,
-      refreshFromConfig,
+      refreshFromAuthority,
       getTools: () => [],
       getConnectedServers: () => ["parent"],
       isConnected: () => true,
@@ -915,15 +914,6 @@ describe("runAgent", () => {
       services: { provider, registry, mcpManager: parentMcpManager },
     });
     const { control, live } = await spawnLive(session);
-    live.pendingMcpRefresh = { config: { servers: ["child"] } };
-    live.downInbox.send({
-      author: "/root",
-      recipient: live.agentPath,
-      content: "",
-      triggerTurn: false,
-      direction: "down",
-      metadata: createMailboxMetadataRecord("mcp_refresh"),
-    });
     let childServices: SessionServices | undefined;
     const originalShutdown = Session.prototype.shutdown;
     const shutdownSpy = vi
@@ -944,7 +934,7 @@ describe("runAgent", () => {
       );
 
       expect(result).toMatchObject({ outcome: "completed" });
-      expect(refreshFromConfig).not.toHaveBeenCalled();
+      expect(refreshFromAuthority).not.toHaveBeenCalled();
       expect(childServices?.mcpManager).not.toBe(parentMcpManager);
       expect(childServices?.mcpManager.getConnectedServers?.()).toEqual([]);
       expect(childServices?.registry.tools.map((tool) => tool.name)).toEqual([
@@ -2828,28 +2818,6 @@ describe("runAgent", () => {
       await nextTurn?.catch(() => undefined);
       await collectRun(iter);
     }
-  });
-
-  it("surfaces a refresh_mcp_servers control message from the child downInbox", async () => {
-    const provider = makeProvider([]);
-    const session = makeStubSession({ services: { provider } });
-    const { live } = await spawnLive(session);
-
-    live.pendingMcpRefresh = { config: { servers: ["x"] } };
-    live.downInbox.send({
-      author: live.agentPath,
-      recipient: live.agentPath,
-      content: "",
-      triggerTurn: false,
-      direction: "down",
-      metadata: createMailboxMetadataRecord("mcp_refresh"),
-    });
-
-    const drained = drainChildMailboxForTesting(live);
-    // Routed to the child as a control message (applied between turns); it
-    // surfaces the config and does NOT trigger a follow-up turn.
-    expect(drained.refreshMcpConfig).toEqual({ servers: ["x"] });
-    expect(drained.nextUserMessage).toBeUndefined();
   });
 
   it("injects child session metadata and worktree roots into wrapped child tools", async () => {

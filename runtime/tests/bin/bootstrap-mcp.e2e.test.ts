@@ -18,7 +18,11 @@ import type {
   LLMToolCall,
 } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
-import { trustProjectSync } from "../permissions/trust/project-trust.js";
+import {
+  approveProjectMcpServerSync,
+  trustProjectSync,
+} from "../permissions/trust/project-trust.js";
+import { projectMcpServerApprovalDigest } from "../services/mcp/utils.js";
 import { runCommand } from "../utils/process.js";
 
 const FIXTURE_PATH = sourcePath("mcp-client/test-fixtures/stdio-pid-server.cjs");
@@ -406,6 +410,16 @@ command = ${tomlString(process.execPath)}
 args = [${tomlString(FIXTURE_PATH)}, ${tomlString(pidFile)}]
       `,
       "utf8",
+    );
+    approveProjectMcpServerSync(
+      MCP_SERVER_NAME,
+      projectMcpServerApprovalDigest({
+        scope: "project",
+        type: "stdio",
+        command: process.execPath,
+        args: [FIXTURE_PATH, pidFile],
+      }),
+      { agencHome: home, projectRoot: workspace },
     );
 
     await expectLiveMcpEndToEnd({

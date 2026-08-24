@@ -1047,7 +1047,7 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     const parentMcpManager = {
       effectiveServers: async () => new Map(),
       toolPluginProvenance: async () => null,
-      refreshFromConfig: parentRefresh,
+      refreshFromAuthority: parentRefresh,
       getTools: () => [{ name: "mcp.parent.query" }],
       getConnectedServers: () => ["parent"],
       isConnected: () => true,
@@ -1067,9 +1067,9 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     expect(thread.childSession.services.mcpManager).not.toBe(parentMcpManager);
     expect(thread.childSession.services.mcpManager.getTools?.()).toEqual([]);
     expect(thread.childSession.services.registry.tools).toEqual([]);
-    await thread.childSession.services.mcpManager.refreshFromConfig?.({
-      servers: ["child"],
-    });
+    expect(
+      thread.childSession.services.mcpManager.refreshFromAuthority,
+    ).toBeUndefined();
     expect(parentRefresh).not.toHaveBeenCalled();
 
     await thread.shutdown("test complete");
