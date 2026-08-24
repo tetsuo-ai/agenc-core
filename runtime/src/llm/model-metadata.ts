@@ -213,8 +213,20 @@ export class ModelMetadataResolver {
     if (!shouldQueryLiveEndpoint(params, this.env)) return undefined;
     const baseUrl = providerBaseUrl(params.config, provider, this.env);
     if (!baseUrl) return undefined;
+    const headers = authHeaders(params.config, provider, this.env);
+    if (provider === "lmstudio") {
+      const nativeUrl = lmStudioNativeModelsUrl(baseUrl);
+      const native =
+        nativeUrl === undefined
+          ? undefined
+          : metadataFromLmStudioNativeModels(
+              await this.fetchJson(nativeUrl, { headers }),
+              params.model,
+            );
+      if (native !== undefined) return native;
+    }
     const response = await this.fetchJson(modelsUrlFromBaseUrl(baseUrl), {
-      headers: authHeaders(params.config, provider, this.env),
+      headers,
     });
     return metadataFromOpenAiModelsResponse(response, params.model);
   }
@@ -483,6 +495,49 @@ function metadataFromOpenAiModelsResponse(
   const modelObject = asRecord(match);
   if (!modelObject) return undefined;
   return metadataFromGenericRecord(modelObject);
+}
+
+/**
+ * LM Studio's OpenAI-shaped `/v1/models` answers with ids and nothing else,
+ * so a local model used to fall through to the public catalogues and inherit
+ * whatever window the upstream weights advertise — 128k for a qwen3.8-27b the
+ * user actually loaded at 8192. The prompt then filled the real window and
+ * every turn died on the far side of a limit nothing had reported.
+ *
+ * The native listing carries the truth. `loaded_context_length` is the one
+ * that binds: it is what the server will accept right now, and it is absent
+ * until the model is loaded, in which case its ceiling is the best estimate
+ * available.
+ */
+function metadataFromLmStudioNativeModels(
+  response: unknown,
+  model: string,
+): ModelMetadataValues | undefined {
+  const data = asRecord(response)?.data;
+  if (!Array.isArray(data)) return undefined;
+  const match = data.find((entry) => modelObjectMatches(entry, model));
+  const modelObject = asRecord(match);
+  if (!modelObject) return undefined;
+  const maxContextWindow = readPositiveInteger(
+    modelObject,
+    "max_context_length",
+  );
+  const loaded = readPositiveInteger(modelObject, "loaded_context_length");
+  const contextWindow = loaded ?? maxContextWindow;
+  if (contextWindow === undefined) return undefined;
+  return {
+    contextWindow,
+    ...(maxContextWindow !== undefined ? { maxContextWindow } : {}),
+  };
+}
+
+/** `http://host:1234/v1` → `http://host:1234/api/v0/models`. */
+function lmStudioNativeModelsUrl(baseUrl: string): string | undefined {
+  try {
+    return new URL("/api/v0/models", baseUrl).toString();
+  } catch {
+    return undefined;
+  }
 }
 
 function metadataFromModelsDev(

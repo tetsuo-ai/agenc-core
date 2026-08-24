@@ -266,6 +266,11 @@ describe("StaticModelsManager", () => {
 
   it("reads live openai-compatible endpoint metadata for vLLM-style models", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      // A vLLM-style server behind the lmstudio provider has no native
+      // listing; the OpenAI-shaped one is all there is.
+      if (String(input).endsWith("/api/v0/models")) {
+        return new Response("", { status: 404 });
+      }
       expect(String(input)).toBe("http://127.0.0.1:8000/v1/models");
       expect((init?.headers as Record<string, string>).Authorization).toBe(
         "Bearer local-token",
@@ -349,6 +354,67 @@ describe("StaticModelsManager", () => {
     expect(info.maxOutputTokens).toBe(32_768);
     expect(info.usedFallbackModelMetadata).toBe(false);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes the context LM Studio actually loaded, not the weights' maximum", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      expect(String(input)).toBe("http://localhost:1234/api/v0/models");
+      return jsonResponse({
+        data: [
+          {
+            id: "qwen3.8-27b",
+            type: "llm",
+            quantization: "IQ1_S",
+            state: "loaded",
+            max_context_length: 262_144,
+            loaded_context_length: 8_192,
+          },
+        ],
+      });
+    });
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "lmstudio",
+        model: "qwen3.8-27b",
+        providers: { lmstudio: { default_model: "qwen3.8-27b" } },
+      }),
+      fallbackProvider: "lmstudio",
+      metadata: { fetchImpl, env: {} },
+    });
+
+    const info = await manager.getModelInfo("qwen3.8-27b");
+    expect(info.contextWindow).toBe(8_192);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+    // The native listing answered, so nothing else was asked.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to a LM Studio model's maximum while it is unloaded", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      expect(String(input)).toBe("http://localhost:1234/api/v0/models");
+      return jsonResponse({
+        data: [
+          {
+            id: "qwen/qwen3-14b",
+            type: "llm",
+            state: "not-loaded",
+            max_context_length: 32_768,
+          },
+        ],
+      });
+    });
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "lmstudio",
+        model: "qwen/qwen3-14b",
+        providers: { lmstudio: { default_model: "qwen/qwen3-14b" } },
+      }),
+      fallbackProvider: "lmstudio",
+      metadata: { fetchImpl, env: {} },
+    });
+
+    const info = await manager.getModelInfo("qwen/qwen3-14b");
+    expect(info.contextWindow).toBe(32_768);
   });
 
   it("reads default generic openai-compatible endpoint metadata without requiring auth", async () => {
