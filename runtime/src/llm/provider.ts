@@ -401,6 +401,15 @@ function requireFactoryApiKey(
   return apiKey;
 }
 
+/**
+ * Providers whose credential the runtime vends from configured auth.
+ *
+ * A provider missing from this set never receives one: the factory only
+ * reads an explicitly-passed key, so it throws "requires apiKey" and the
+ * session cannot even be created — the app showed that as a composer
+ * that refuses to send. mistral, minimax, nvidia-nim and github are
+ * ordinary API-key providers exactly like deepseek, and were left out.
+ */
 const AUTH_VENDED_PROVIDER_NAMES = new Set<ProviderName>([
   "grok",
   "openai",
@@ -410,6 +419,10 @@ const AUTH_VENDED_PROVIDER_NAMES = new Set<ProviderName>([
   "groq",
   "deepseek",
   "gemini",
+  "mistral",
+  "minimax",
+  "nvidia-nim",
+  "github",
   "amazon-bedrock",
 ]);
 const DEFAULT_AUTH_VENDED_DELEGATE_TTL_MS = 5 * 60 * 1000;
