@@ -875,24 +875,28 @@ function resolveEffectiveOutputTokens(params: {
   // admission denies the call outright when the two do not both fit. The
   // 32k default was written for models with room to spare; against a local
   // model served at 32k it leaves nothing for the prompt and every turn is
-  // refused with `context_window_exceeded`. Half the window is the most
-  // that can be promised to output while the input still has somewhere to
-  // go. Cloud windows are far wider than the default, so this only ever
-  // binds on genuinely small ones.
+  // refused with `context_window_exceeded`.
+  //
+  // A quarter of the window, not a half: an agent turn is mostly input.
+  // A measured first turn against qwen3.8-27b counted 17,658 tokens of
+  // system prompt and tool schemas alone, so half the window still did not
+  // fit. Cloud windows are far wider than the 32k default, so this only
+  // ever binds on genuinely small ones.
   const windowBound =
     metadata.contextWindow !== undefined && metadata.contextWindow > 0
-      ? Math.max(1_024, Math.floor(metadata.contextWindow / 2))
+      ? Math.max(1_024, Math.floor(metadata.contextWindow / 4))
       : undefined;
-  const applyWindow = (value: number): number =>
-    windowBound === undefined ? value : Math.min(value, windowBound);
-  const metadataDefault = applyWindow(
-    metadata.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-  );
-  const metadataUpper = applyWindow(
+  //
+  // Only the default is bounded. The upper limit governs escalation, which
+  // is a deliberate act against a turn already known to need the room; the
+  // default is what every ordinary turn reserves.
+  const rawDefault = metadata.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const metadataDefault =
+    windowBound === undefined ? rawDefault : Math.min(rawDefault, windowBound);
+  const metadataUpper =
     metadata.maxOutputTokensUpperLimit ??
-      metadata.maxOutputTokens ??
-      DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT,
-  );
+    metadata.maxOutputTokens ??
+    DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT;
 
   if (
     metadata.maxOutputTokens !== undefined &&

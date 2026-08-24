@@ -482,7 +482,12 @@ export async function runAdmittedModelCall(
     if (!accountingResult.admissible) {
       accountingFailureReason = "token_accounting_uncertain";
     } else if (accountingResult.totalTokens > contextWindowTokens) {
-      accountingFailureReason = "context_window_exceeded";
+      // Say by how much and from where. "context_window_exceeded" on its own
+      // sends people looking at their prompt when the reserved output is
+      // usually what does not fit.
+      accountingFailureReason =
+        `context_window_exceeded (input ${accountingResult.inputTokens} + ` +
+        `reserved output ${maxOutputTokens} > window ${contextWindowTokens})`;
     }
   } catch (error) {
     if (params.signal?.aborted === true) {

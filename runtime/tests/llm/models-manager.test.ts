@@ -418,8 +418,9 @@ describe("StaticModelsManager", () => {
     // Output is reserved out of the same window as the prompt. The 32k
     // default would fill it, and admission would refuse every turn with
     // context_window_exceeded before anything reached the model.
-    expect(info.maxOutputTokens).toBe(16_384);
-    expect(info.maxOutputTokensUpperLimit).toBe(16_384);
+    expect(info.maxOutputTokens).toBe(8_192);
+    // Escalation is a deliberate act and keeps its own ceiling.
+    expect(info.maxOutputTokensUpperLimit).toBe(64_000);
   });
 
   it("leaves roomy windows on the default output budget", async () => {
