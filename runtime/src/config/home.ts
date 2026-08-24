@@ -108,11 +108,14 @@ export function homePathIdentityKey(
 export function assertNoRetiredConfigDir(
   env: HomeEnvironment = process.env,
 ): void {
+  if (env.AGENC_CONFIG_DIR === undefined) return;
   const legacy = nonEmpty(env.AGENC_CONFIG_DIR);
-  if (legacy === undefined) return;
+  const replacement = legacy === undefined
+    ? "set AGENC_HOME to the intended absolute home directory"
+    : `set AGENC_HOME=${JSON.stringify(legacy)}`;
   throw new RetiredConfigDirError(
     `AGENC_CONFIG_DIR is no longer a runtime configuration authority; ` +
-      `set AGENC_HOME=${JSON.stringify(legacy)} and remove AGENC_CONFIG_DIR. ` +
+      `${replacement} and remove AGENC_CONFIG_DIR. ` +
       `Only \"agenc config migrate\" may inspect this retired variable.`,
   );
 }

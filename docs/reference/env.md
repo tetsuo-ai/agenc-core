@@ -41,13 +41,6 @@ These values are captured for each daemon client. They are credentials or
 settings for an already-selected provider; none of them selects a provider.
 API keys are not written into the canonical config snapshot.
 
-Provider-specific model variables such as `OPENAI_MODEL`, `GEMINI_MODEL`,
-`MISTRAL_MODEL`, and `AWS_BEDROCK_MODEL` are retired and rejected at ingress.
-Select models only with `--model`, `AGENC_MODEL`, or `model` in `config.toml`.
-`AGENC_SUBAGENT_MODEL` and `AGENC_AUTO_MODE_MODEL` are also retired: agents
-use their explicit definition/tool model or inherit the session model, and the
-permission classifier always inherits the session model.
-
 | Provider | Vars |
 | --- | --- |
 | grok | `XAI_API_KEY`, `GROK_API_KEY` (key order); `XAI_BASE_URL`, `GROK_BASE_URL` (endpoint aliases); `AGENC_XAI_STORE` and the `AGENC_XAI_*` capability switches below |
@@ -173,7 +166,7 @@ Channel tokens live in env, not in TOML:
 | `AGENC_DISCORD_BOT_TOKEN` | One-shot Discord credential; onboarding persists it only in the home-bound native vault |
 | `AGENC_SLACK_BOT_TOKEN`, `AGENC_SLACK_APP_TOKEN` | One-shot Slack credentials; onboarding persists them only in the home-bound native vault |
 | `AGENC_WEBCHAT_TOKEN` | One-shot WebChat bearer override; generated persistent tokens live only in the native vault |
-| `AGENC_HOOKS_TOKEN` | One-shot gateway hooks bearer override. Persistent generated tokens live only in the native vault. The removed `AGENC_GATEWAY_HOOKS_TOKEN` name is rejected. |
+| `AGENC_HOOKS_TOKEN` | One-shot gateway hooks bearer override. Persistent generated tokens live only in the native vault. |
 
 [gateway.md](../gateway.md), [remote-control.md](../remote-control.md).
 
@@ -193,7 +186,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_DISABLE_BACKGROUND_TASKS` | Block background tasks |
 | `AGENC_MAX_RETRIES` | Anthropic-compatible `services/api/withRetry.ts` only (default 10). Does not drive `llm/` providers |
 | `AGENC_CODE_MODE` | `1`/`true`/`on` plus resolvable `quickjs-emscripten` registers LIVE `exec`/`wait` |
-| `AGENC_SHELL` | Executable path containing `bash` or `zsh` |
+| `AGENC_SHELL` | Absolute executable path whose filename is `bash` or `zsh`; an unsupported or non-executable explicit path fails instead of falling back |
 | `AGENC_SHELL_PREFIX` | Wrap bash/hook command argv (POSIX) |
 | `AGENC_TMPDIR` | Temp dir for sandbox/permission paths |
 | `AGENC_PLUGIN_CACHE_DIR` | Explicit sole plugin storage root (the versioned cache remains its `cache/` child) |
@@ -208,11 +201,6 @@ Defaults are "feature on unless the disable var is set" unless noted.
 Exact enablement still depends on the call site. If a switch does nothing in
 your build, `agenc doctor` and the feature flag in
 `runtime/src/build/feature.ts` are the next places to look.
-
-`AGENC_PLUGIN_SEED_DIR` is retired and rejected. Layered seed directories
-created a second plugin-package/cache authority. Copy required packages into
-the versioned cache below `$AGENC_HOME/plugins` (or the one root selected by
-`AGENC_PLUGIN_CACHE_DIR`) and remove the variable.
 
 ## Complete advanced and runtime-managed name index
 
@@ -363,6 +351,10 @@ migration contract.
 | `AGENC_MCP_SERVERS` | `[mcp_servers]` in canonical `config.toml`, managed with `agenc mcp add/remove` |
 | `AGENC_ENV_FILE` | No operator replacement. Setup and SessionStart hooks receive a session-owned output path in this variable. |
 | `AGENC_SUBPROCESS_ENV_SCRUB` | Remove it. Subprocess secret scrubbing is the default; `AGENC_SUBPROCESS_ENV_NO_SCRUB` is the deliberate trusted opt-out. |
+| `OPENAI_MODEL`, `OPENAI_COMPATIBLE_MODEL`, `ANTHROPIC_MODEL`, `OLLAMA_MODEL`, `LMSTUDIO_MODEL`, `OPENROUTER_MODEL`, `GROQ_MODEL`, `DEEPSEEK_MODEL`, `GEMINI_MODEL`, `MISTRAL_MODEL`, `NVIDIA_MODEL`, `MINIMAX_MODEL`, `GITHUB_MODEL`, `AWS_BEDROCK_MODEL` | `AGENC_MODEL`, `--model`, or `model` in `config.toml` |
+| `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_CUSTOM_MODEL_OPTION` | Use the canonical provider model catalog and session-owned model selection |
+| `AGENC_SUBAGENT_MODEL` | Set a model in the agent definition or Agent tool call; otherwise the child inherits its session model |
+| `AGENC_AUTO_MODE_MODEL` | No separate classifier model. The permission classifier inherits the canonical session model |
 | `DISABLE_AUTO_COMPACT` | `AGENC_DISABLE_AUTO_COMPACT` |
 | `DISABLE_COMPACT` | `AGENC_DISABLE_COMPACT` |
 | `DISABLE_TOOL_HISTORY_COMPRESSION` | `AGENC_DISABLE_TOOL_HISTORY_COMPRESSION` |
@@ -380,6 +372,7 @@ migration contract.
 | `AGENC_DISABLE_AUTO_MEMORY` | `autoMemoryEnabled` in `config.toml` |
 | `AGENC_DISABLE_FILE_CHECKPOINTING`, `AGENC_ENABLE_SDK_FILE_CHECKPOINTING` | `fileCheckpointingEnabled` in `config.toml` |
 | `AGENC_USE_READABLE_STDIN` | `AGENC_USE_DATA_STDIN=1` |
+| `AGENC_PLUGIN_SEED_DIR` | Copy required versioned packages into `$AGENC_HOME/plugins/cache` (or `AGENC_PLUGIN_CACHE_DIR/cache`) and remove the variable. Layered seed directories were removed because they created a second plugin-package authority. |
 | `AGENC_PLUGIN_USE_ZIP_CACHE` | No replacement. The unused ZIP loader was removed; plugins use the sole versioned directory cache under `$AGENC_HOME/plugins/cache` (or `AGENC_PLUGIN_CACHE_DIR/cache`) |
 | `AGENC_USE_POWERSHELL_TOOL` | No registration switch. PowerShell availability is detected on Windows; `defaultShell` in `config.toml` selects the interactive default |
 

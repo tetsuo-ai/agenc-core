@@ -66,6 +66,18 @@ describe("agent runtime options", () => {
   test.each([
     [{ AGENC_SHELL: "bash" }, "AGENC_SHELL must be an absolute path"],
     [
+      { AGENC_SHELL: "" },
+      "AGENC_SHELL must name a bash or zsh executable",
+    ],
+    [
+      { AGENC_SHELL: "/bin/fish" },
+      "AGENC_SHELL must name a bash or zsh executable",
+    ],
+    [
+      { AGENC_SHELL: "/tmp/bash-wrapper" },
+      "AGENC_SHELL must name a bash or zsh executable",
+    ],
+    [
       { AGENC_SHELL_PREFIX: "env SAFE=1 && runner" },
       "without shell operators",
     ],
@@ -75,11 +87,19 @@ describe("agent runtime options", () => {
     [{ AGENC_BARE: "0" }, "AGENC_BARE was removed; use --bare"],
     [
       { AGENC_PLUGIN_SEED_DIR: "/opt/agenc/seed" },
-      "AGENC_PLUGIN_SEED_DIR was removed because plugin packages have one storage authority",
+      "AGENC_PLUGIN_SEED_DIR was removed; copy required versioned packages",
     ],
     [
       { AGENC_PLUGIN_USE_ZIP_CACHE: "0" },
-      "AGENC_PLUGIN_USE_ZIP_CACHE was removed with the unused ZIP loader",
+      "AGENC_PLUGIN_USE_ZIP_CACHE was removed; remove it",
+    ],
+    [
+      { AGENC_PLUGIN_SEED_DIR: "" },
+      "AGENC_PLUGIN_SEED_DIR was removed",
+    ],
+    [
+      { AGENC_PLUGIN_USE_ZIP_CACHE: "" },
+      "AGENC_PLUGIN_USE_ZIP_CACHE was removed",
     ],
   ])("rejects invalid or obsolete boundary input", (env, message) => {
     expect(() => resolveAgentRuntimeOptions(env)).toThrow(message);
@@ -109,6 +129,15 @@ describe("agent runtime options", () => {
         typo: true,
       }),
     ).toThrow("runtimeOptions does not accept 'typo'");
+    expect(() =>
+      validateAgentRuntimeOptions({
+        simpleMode: false,
+        stdinDataMode: false,
+        remoteMode: false,
+        posixShellPath: "/bin/sh",
+        allowUntrustedHooks: false,
+      }),
+    ).toThrow("runtimeOptions.posixShellPath must name a bash or zsh executable");
     expect(() =>
       validateAgentRuntimeOptions({
         simpleMode: false,

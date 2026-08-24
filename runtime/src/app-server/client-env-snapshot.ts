@@ -7,7 +7,7 @@ import {
   canonicalSessionEnvironmentKeys,
   isDynamicSessionCredentialEnvironmentKey,
 } from "../session/environment.js";
-import { assertNoRemovedSimpleModeEnvironment } from "../session/runtime-options.js";
+import { assertNoRetiredAgentRuntimeEnvironment } from "../session/runtime-options.js";
 
 /**
  * Session-sensitive client environment forwarded to daemon-owned runtimes.
@@ -23,7 +23,7 @@ export const DAEMON_CLIENT_ENV_SNAPSHOT_KEYS = CANONICAL_SESSION_ENV_KEYS;
 export function collectDaemonClientEnvOverrides(
   env: NodeJS.ProcessEnv,
 ): Record<string, string> {
-  assertNoRemovedSimpleModeEnvironment(env);
+  assertNoRetiredAgentRuntimeEnvironment(env);
   assertNoObsoleteConfigEnvironment(env);
   assertNoObsoleteProviderSelectors(env);
   return Object.fromEntries(
@@ -47,7 +47,7 @@ export function normalizeDaemonClientEnvOverrides(
   inheritedEnvironment: Readonly<Record<string, string | undefined>> = {},
 ): Record<string, string> {
   const provided = overrides ?? {}
-  assertNoRemovedSimpleModeEnvironment(provided)
+  assertNoRetiredAgentRuntimeEnvironment(provided)
   assertNoObsoleteConfigEnvironment(provided)
   assertNoObsoleteProviderSelectors(provided)
   const allowed = new Set<string>(DAEMON_CLIENT_ENV_SNAPSHOT_KEYS)

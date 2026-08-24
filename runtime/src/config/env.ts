@@ -142,7 +142,7 @@ export function resolveAgencHome(env: EnvSnapshot = process.env): string {
   }).path;
 }
 
-const OBSOLETE_PROVIDER_SELECTOR_REPLACEMENTS = Object.freeze({
+export const OBSOLETE_PROVIDER_SELECTOR_REPLACEMENTS = Object.freeze({
   AGENC_USE_GEMINI: "gemini",
   AGENC_USE_OPENAI: "openai",
   AGENC_USE_MISTRAL: "mistral",
@@ -154,7 +154,7 @@ const OBSOLETE_PROVIDER_SELECTOR_REPLACEMENTS = Object.freeze({
   NVIDIA_NIM: "nvidia-nim",
 } as const);
 
-const OBSOLETE_CONFIG_ENV_REPLACEMENTS = Object.freeze({
+export const OBSOLETE_CONFIG_ENV_REPLACEMENTS = Object.freeze({
   AGENC_XAI_API_KEY: "XAI_API_KEY or GROK_API_KEY",
   AGENC_MCP_SERVERS: "mcp_servers in config.toml or agenc mcp add",
   AGENC_ENV_FILE:

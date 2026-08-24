@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { tmpdir } from "node:os";
 import { isAbsolute, normalize } from "node:path";
 import { parse as parseShellWords, type ParseEntry } from "shell-quote";
+import { isSupportedPosixShellPath } from "../utils/shell/posixShellPath.js";
 import { getCurrentRuntimeSession } from "./current-session.js";
 
 /**
@@ -120,6 +121,24 @@ function optionalAbsolutePath(
   return normalize(trimmed);
 }
 
+function optionalPosixShellPath(
+  value: string | undefined,
+  key: string,
+): string | undefined {
+  if (value !== undefined && value.trim().length === 0) {
+    throw new AgentRuntimeOptionsError(
+      `${key} must name a bash or zsh executable`,
+    );
+  }
+  const shellPath = optionalAbsolutePath(value, key);
+  if (shellPath !== undefined && !isSupportedPosixShellPath(shellPath)) {
+    throw new AgentRuntimeOptionsError(
+      `${key} must name a bash or zsh executable`,
+    );
+  }
+  return shellPath;
+}
+
 function optionalString(value: string | undefined): string | undefined {
   return value?.trim() ? value : undefined;
 }
@@ -143,20 +162,27 @@ function parseWrapper(value: string | undefined): readonly string[] | undefined 
   return Object.freeze(parsed as string[]);
 }
 
-const REMOVED_SIMPLE_MODE_ENV_KEYS = Object.freeze([
-  "AGENC_SIMPLE",
-  "AGENC_BARE",
-] as const);
+export const RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS = Object.freeze({
+  AGENC_SIMPLE: "use --bare",
+  AGENC_BARE: "use --bare",
+  AGENC_PLUGIN_SEED_DIR:
+    "copy required versioned packages into $AGENC_HOME/plugins/cache (or AGENC_PLUGIN_CACHE_DIR/cache); layered seed directories were removed because plugin packages have one storage authority",
+  AGENC_PLUGIN_USE_ZIP_CACHE:
+    "remove it; plugins use the sole versioned directory cache under $AGENC_HOME/plugins/cache (or AGENC_PLUGIN_CACHE_DIR/cache)",
+} as const);
 
-/** Reject removed environment aliases; CLI simple mode is selected only by --bare. */
-export function assertNoRemovedSimpleModeEnvironment(
+/** Reject removed runtime-option aliases at every client/startup boundary. */
+export function assertNoRetiredAgentRuntimeEnvironment(
   env: NodeJS.ProcessEnv,
 ): void {
-  for (const key of REMOVED_SIMPLE_MODE_ENV_KEYS) {
-    if (env[key] !== undefined) {
-      throw new AgentRuntimeOptionsError(`${key} was removed; use --bare`);
-    }
-  }
+  const present = Object.entries(RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS)
+    .filter(([key]) => env[key] !== undefined);
+  if (present.length === 0) return;
+  throw new AgentRuntimeOptionsError(
+    present
+      .map(([key, replacement]) => `${key} was removed; ${replacement}`)
+      .join("; "),
+  );
 }
 
 /** Parse the supported operator environment exactly once at a client boundary. */
@@ -164,17 +190,7 @@ export function resolveAgentRuntimeOptions(
   env: NodeJS.ProcessEnv,
   overrides: Partial<AgentRuntimeOptions> = {},
 ): AgentRuntimeOptions {
-  assertNoRemovedSimpleModeEnvironment(env);
-  if (env.AGENC_PLUGIN_SEED_DIR !== undefined) {
-    throw new AgentRuntimeOptionsError(
-      "AGENC_PLUGIN_SEED_DIR was removed because plugin packages have one storage authority. Copy required versioned packages into $AGENC_HOME/plugins/cache (or AGENC_PLUGIN_CACHE_DIR/cache) and remove AGENC_PLUGIN_SEED_DIR.",
-    );
-  }
-  if (env.AGENC_PLUGIN_USE_ZIP_CACHE !== undefined) {
-    throw new AgentRuntimeOptionsError(
-      "AGENC_PLUGIN_USE_ZIP_CACHE was removed with the unused ZIP loader. Remove the variable; plugin packages use the sole versioned directory cache under $AGENC_HOME/plugins/cache (or AGENC_PLUGIN_CACHE_DIR/cache).",
-    );
-  }
+  assertNoRetiredAgentRuntimeEnvironment(env);
   const parsedWrapper =
     overrides.commandWrapperArgv === undefined
       ? parseWrapper(env.AGENC_SHELL_PREFIX)
@@ -226,14 +242,14 @@ export function resolveAgentRuntimeOptions(
       : {}),
     ...(overrides.posixShellPath !== undefined
       ? {
-          posixShellPath: optionalAbsolutePath(
+          posixShellPath: optionalPosixShellPath(
             overrides.posixShellPath,
             "runtimeOptions.posixShellPath",
           ),
         }
       : env.AGENC_SHELL !== undefined
         ? {
-            posixShellPath: optionalAbsolutePath(
+            posixShellPath: optionalPosixShellPath(
               env.AGENC_SHELL,
               "AGENC_SHELL",
             ),

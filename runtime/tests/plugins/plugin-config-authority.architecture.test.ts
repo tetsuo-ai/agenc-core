@@ -59,13 +59,12 @@ describe("plugin config authority architecture", () => {
     expect(directories).not.toContain("getPluginSeedDirs");
     expect(compatibilityDirectories).not.toContain("getPluginSeedDirs");
     expect(runtimeOptions).not.toContain("pluginSeedRoots");
-    expect(runtimeOptions).toContain(
-      "AGENC_PLUGIN_SEED_DIR was removed because plugin packages have one storage authority",
-    );
+    expect(runtimeOptions).toContain("RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS");
+    expect(runtimeOptions).toContain("AGENC_PLUGIN_SEED_DIR:");
+    expect(runtimeOptions).toContain("one storage authority");
     expect(runtimeOptions).not.toContain('parseBoolean(env, "AGENC_PLUGIN_USE_ZIP_CACHE"');
-    expect(runtimeOptions).toContain(
-      "AGENC_PLUGIN_USE_ZIP_CACHE was removed with the unused ZIP loader",
-    );
+    expect(runtimeOptions).toContain("AGENC_PLUGIN_USE_ZIP_CACHE:");
+    expect(runtimeOptions).toContain("sole versioned directory cache");
     const sourcePaths = sourceFiles(sourceRoot)
       .map((path) => relative(sourceRoot, path).replaceAll("\\", "/"));
     for (const retiredPath of [

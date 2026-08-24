@@ -92,7 +92,6 @@ history; the linked pages below are current product truth.
 | [design/mailbox-metadata-contract.md](design/mailbox-metadata-contract.md) | Bounded mailbox metadata decoder/builder (E3a). Implemented |
 | [design/mailbox-metadata-cutover.md](design/mailbox-metadata-cutover.md) | Mailbox.send admits only authenticated metadata handles (E3b) |
 | [roadmap.md](roadmap.md) | Shipped vs open backlog (current product truth) |
-| [COVERAGE.md](COVERAGE.md) | Contributor checklist of code-to-doc coverage |
 
 ## Releases
 

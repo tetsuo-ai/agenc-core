@@ -4,7 +4,12 @@ import ts from "typescript";
 import { describe, expect, test } from "vitest";
 
 import { DAEMON_CLIENT_ENV_SNAPSHOT_KEYS } from "../../src/app-server/client-env-snapshot.js";
+import {
+  OBSOLETE_CONFIG_ENV_REPLACEMENTS,
+  OBSOLETE_PROVIDER_SELECTOR_REPLACEMENTS,
+} from "../../src/config/env.js";
 import { RETIRED_CONFIG_DIR_ENV } from "../../src/config/home.js";
+import { RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS } from "../../src/session/runtime-options.js";
 
 const RUNTIME_SOURCE = resolve(import.meta.dirname, "../../src");
 const ENV_REFERENCE = resolve(import.meta.dirname, "../../../docs/reference/env.md");
@@ -82,37 +87,12 @@ function runtimeEnvironmentNames(): Set<string> {
 }
 
 function obsoleteConfigNames(): Set<string> {
-  const path = resolve(RUNTIME_SOURCE, "config/env.ts");
-  const file = ts.createSourceFile(
-    path,
-    readFileSync(path, "utf8"),
-    ts.ScriptTarget.Latest,
-    true,
-  );
-  const names = new Set<string>([RETIRED_CONFIG_DIR_ENV, "AGENC_BARE"]);
-
-  for (const statement of file.statements) {
-    if (!ts.isVariableStatement(statement)) continue;
-    for (const declaration of statement.declarationList.declarations) {
-      if (
-        !ts.isIdentifier(declaration.name) ||
-        !declaration.name.text.startsWith("OBSOLETE_")
-      ) continue;
-      const call = declaration.initializer;
-      if (!call || !ts.isCallExpression(call)) continue;
-      const object = call.arguments[0];
-      if (!object || !ts.isObjectLiteralExpression(object)) continue;
-      for (const property of object.properties) {
-        if (!ts.isPropertyAssignment(property)) continue;
-        const name = ts.isIdentifier(property.name) ||
-            ts.isStringLiteralLike(property.name)
-          ? property.name.text
-          : undefined;
-        if (name) names.add(name);
-      }
-    }
-  }
-  return names;
+  return new Set<string>([
+    RETIRED_CONFIG_DIR_ENV,
+    ...Object.keys(RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS),
+    ...Object.keys(OBSOLETE_CONFIG_ENV_REPLACEMENTS),
+    ...Object.keys(OBSOLETE_PROVIDER_SELECTOR_REPLACEMENTS),
+  ]);
 }
 
 describe("environment reference coverage", () => {

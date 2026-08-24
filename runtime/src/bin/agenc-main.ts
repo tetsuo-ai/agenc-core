@@ -66,7 +66,7 @@ import {
 } from "../session/autonomous-mode.js";
 import type { TurnContext } from "../session/turn-context.js";
 import {
-  assertNoRemovedSimpleModeEnvironment,
+  assertNoRetiredAgentRuntimeEnvironment,
   resolveAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
@@ -2366,7 +2366,7 @@ export async function oneShotCLI(
   };
 
   try {
-    assertNoRemovedSimpleModeEnvironment(process.env);
+    assertNoRetiredAgentRuntimeEnvironment(process.env);
     const startupCliFlags =
       parsedStartupCliFlags ?? readStartupCliFlags(process.argv);
     const sessionEnv = process.env;
@@ -5405,7 +5405,7 @@ export function shouldLoadMcpCliConfig(argv: readonly string[]): boolean {
  */
 export async function main(): Promise<number> {
   try {
-    assertNoRemovedSimpleModeEnvironment(process.env);
+    assertNoRetiredAgentRuntimeEnvironment(process.env);
   } catch (error) {
     process.stderr.write(
       `agenc: ${error instanceof Error ? error.message : String(error)}\n`,

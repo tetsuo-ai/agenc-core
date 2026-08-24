@@ -12,7 +12,7 @@ import {
   assertNoObsoleteConfigEnvironment,
   assertNoObsoleteProviderSelectors,
 } from "../config/env.js";
-import { assertNoRemovedSimpleModeEnvironment } from "../session/runtime-options.js";
+import { assertNoRetiredAgentRuntimeEnvironment } from "../session/runtime-options.js";
 import { canonicalSessionEnvironmentKeys } from "../session/environment.js";
 import {
   getGeminiAuthMode,
@@ -139,7 +139,7 @@ function assertOpenAiOauthBaseUrl(baseURL: string | undefined): string {
 export function snapshotProviderEnvironment(
   env: ProviderEnvironment,
 ): ProviderEnvironment {
-  assertNoRemovedSimpleModeEnvironment(env);
+  assertNoRetiredAgentRuntimeEnvironment(env);
   assertNoObsoleteConfigEnvironment(env);
   assertNoObsoleteProviderSelectors(env);
   return Object.freeze(

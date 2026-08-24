@@ -32,7 +32,7 @@ const operatorReferenceBoundary = new Set([
 // allowlist maintained by provider-authority.architecture.test.ts.
 const retiredProviderSelector = new RegExp(
   "\\b(?:AGENC_" +
-    "USE_(?:GEMINI|OPENAI|MISTRAL|GITHUB|MINIMAX)|NVIDIA_" +
+    "USE_(?:GEMINI|OPENAI|MISTRAL|GITHUB|MINIMAX|BEDROCK|VERTEX|FOUNDRY)|NVIDIA_" +
     "NIM)\\b",
   "u",
 );
@@ -70,6 +70,10 @@ const retiredDocumentationTerms = new Map<string, RegExp>([
   [
     "parallel config-loader claim",
     /\b(?:multiple|two) config(?:uration)? (?:loaders?|surfaces)\b/iu,
+  ],
+  [
+    "parallel settings JSON hook surface",
+    /settings-style config|TOML vs settings JSON/iu,
   ],
   [
     "deleted documentation link",

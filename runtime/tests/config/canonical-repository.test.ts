@@ -68,6 +68,17 @@ describe("HomeContext", () => {
     }, { platformHome })).toThrow(RetiredConfigDirError);
   });
 
+  test.each(["", "   "])(
+    "rejects a defined retired config dir even when its value is %j",
+    (retiredConfigDir) => {
+      const platformHome = temp("agenc-empty-retired-config-dir");
+
+      expect(() => resolveHomeContext({
+        AGENC_CONFIG_DIR: retiredConfigDir,
+      }, { platformHome })).toThrow(RetiredConfigDirError);
+    },
+  );
+
   test("gives implicit and explicit default homes the same identity", () => {
     const platformHome = temp("agenc-default-home");
     const defaultPath = join(platformHome, ".agenc");

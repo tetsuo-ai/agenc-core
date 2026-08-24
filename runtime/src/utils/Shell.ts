@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "child_process";
+import { spawn } from "child_process";
 import { constants as fsConstants, readFileSync, unlinkSync } from "fs";
 import { type FileHandle, mkdir, open, stat } from "fs/promises";
 import memoize from "lodash-es/memoize.js";
@@ -27,7 +27,6 @@ import { which } from "./which.js";
 
 export type { ExecResult } from "./ShellCommand.js";
 
-import { accessSync } from "fs";
 import { onCwdChangedForHooks } from "./hooks/fileChangedWatcher.js";
 import { getAgenCTempDirName } from "./permissions/filesystem.js";
 import { getPlatform } from "./platform.js";
@@ -37,6 +36,11 @@ import { createBashShellProvider } from "./shell/bashProvider.js";
 import { getCachedPowerShellPath } from "./shell/powershellDetection.js";
 import { createPowerShellProvider } from "./shell/powershellProvider.js";
 import type { ShellProvider, ShellType } from "./shell/shellProvider.js";
+import {
+  isExecutableShellPath,
+  isSupportedPosixShellPath,
+  supportedPosixShellKind,
+} from "./shell/posixShellPath.js";
 import { subprocessEnv } from "./subprocessEnv.js";
 import { posixPathToWindowsPath } from "./windowsPaths.js";
 import type {
@@ -59,26 +63,6 @@ export type ShellConfig = {
   provider: ShellProvider;
 };
 
-function isExecutable(shellPath: string): boolean {
-  try {
-    accessSync(shellPath, fsConstants.X_OK);
-    return true;
-  } catch (_err) {
-    // Fallback for Nix and other environments where X_OK check might fail
-    try {
-      // Try to execute the shell with --version, which should exit quickly
-      // Use execFileSync to avoid shell injection vulnerabilities
-      execFileSync(shellPath, ["--version"], {
-        timeout: 1000,
-        stdio: "ignore",
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}
-
 /**
  * Determines the best available shell to use.
  */
@@ -91,26 +75,27 @@ export async function findSuitableShell(
   // Check the immutable per-session override first.
   const shellOverride = resolvedOptions?.posixShellPath;
   if (shellOverride) {
-    // Validate it's a supported shell type
-    const isSupported =
-      shellOverride.includes("bash") || shellOverride.includes("zsh");
-    if (isSupported && isExecutable(shellOverride)) {
-      logForDebugging(`Using shell override: ${shellOverride}`);
-      return shellOverride;
-    } else {
-      // Note, if we ever want to add support for new shells here we'll need to update or Bash tool parsing to account for this
-      logForDebugging(
-        `Configured shell "${shellOverride}" is not a valid bash/zsh path, falling back to detection`,
+    if (!isSupportedPosixShellPath(shellOverride)) {
+      throw new Error(
+        `Configured shell ${JSON.stringify(shellOverride)} must name a bash or zsh executable`,
       );
     }
+    if (!isExecutableShellPath(shellOverride)) {
+      throw new Error(
+        `Configured shell ${JSON.stringify(shellOverride)} is not executable`,
+      );
+    }
+    logForDebugging(`Using shell override: ${shellOverride}`);
+    return shellOverride;
   }
 
   // Check user's preferred shell from environment
   const env_shell = ambientSession?.services.userShell.path ?? process.env.SHELL;
   // Only consider SHELL if it's bash or zsh
-  const isEnvShellSupported =
-    env_shell && (env_shell.includes("bash") || env_shell.includes("zsh"));
-  const preferBash = env_shell?.includes("bash");
+  const envShellKind = env_shell === undefined
+    ? undefined
+    : supportedPosixShellKind(env_shell);
+  const preferBash = envShellKind === "bash";
 
   // Try to locate shells using which (uses Bun.which when available)
   const [zshPath, bashPath] = await Promise.all([which("zsh"), which("bash")]);
@@ -140,12 +125,16 @@ export async function findSuitableShell(
   }
 
   // Always prioritize SHELL env variable if it's a supported shell type
-  if (isEnvShellSupported && isExecutable(env_shell)) {
+  if (
+    env_shell !== undefined &&
+    envShellKind !== undefined &&
+    isExecutableShellPath(env_shell)
+  ) {
     supportedShells.unshift(env_shell);
   }
 
   const shellPath = supportedShells.find(
-    (shell) => shell && isExecutable(shell),
+    (shell) => shell && isExecutableShellPath(shell),
   );
 
   // If no valid shell found, throw a helpful error

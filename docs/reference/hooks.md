@@ -70,13 +70,18 @@ hooks = [
 Flattened runtime entries carry `source: "config"`, `sourcePath`, and index
 (`IndividualHookConfig` in `hooks/engine/types.ts`).
 
-### Extended hook kinds (settings / schema package)
+### Skill frontmatter hook kinds
 
-`runtime/src/schemas/hooks.ts` also defines discriminated hook kinds for
-settings-style config: `command`, `prompt`, `http`, `agent` (with optional
-`if` permission-rule filters, timeouts in **seconds**, async flags, etc.).
-That Zod surface is broader than the TOML `validateHooksConfig` command-only
-path. Prefer matching the path you edit (TOML vs settings JSON).
+Skill frontmatter has its own typed metadata surface. Its `hooks:` block is
+validated by `runtime/src/schemas/hooks.ts` and supports `command`, `prompt`,
+`http`, and `agent` hooks, including permission-rule `if` filters, timeouts in
+**seconds**, and kind-specific fields. It does not create another operator
+configuration file.
+
+Canonical `config.toml` and inline plugin-manifest hook declarations both use
+the command-only `validateHooksConfig` path described above. A plugin can also
+ship skill frontmatter; those hooks retain their skill provenance and use the
+skill metadata schema.
 
 ### Security
 
