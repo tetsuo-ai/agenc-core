@@ -1,16 +1,6 @@
 /**
- * Ports donor `src/tasks.ts` registry dispatch onto AgenC's lifecycle-backed
- * task surface.
- *
- * Shape differences from the donor:
- *   - Registry entries are structural kill dispatchers. Concrete process
- *     ownership remains in `BackgroundTaskLifecycle`.
- *   - Lifecycle-only `monitor` and `generic` kinds are kept for existing
- *     AgenC background-task callers.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Workflow, MCP monitor, and dream task registries are not shipped by the
- *     live runtime.
+ * Kill dispatch for task kinds owned by the background-task lifecycle.
+ * Concrete process ownership remains in `BackgroundTaskLifecycle`.
  */
 
 import {
@@ -80,7 +70,6 @@ const TASK_REGISTRY = Object.freeze([
   lifecycleTask("local_bash", "local shell"),
   lifecycleTask("local_agent", "local agent"),
   lifecycleTask("in_process_teammate", "in-process teammate"),
-  lifecycleTask("monitor", "monitor"),
   lifecycleTask("generic", "generic background task"),
 ] as const);
 

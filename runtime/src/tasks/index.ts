@@ -26,7 +26,6 @@ export {
   type AgentProgressActivity,
   type AgentProgress as TaskStateAgentProgress,
   type BackgroundTaskState,
-  type BashTaskKind,
   type InProcessTeammateTaskState,
   type LifecycleOnlyTaskType,
   type LocalAgentTaskState,

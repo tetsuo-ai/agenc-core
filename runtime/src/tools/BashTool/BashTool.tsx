@@ -572,7 +572,6 @@ export const BashTool = buildTool({
   },
   async validateInput(input: BashToolInput): Promise<ValidationResult> {
     if (
-      feature("MONITOR_TOOL") &&
       !isBackgroundTasksDisabled &&
       !input.run_in_background
     ) {
@@ -580,7 +579,7 @@ export const BashTool = buildTool({
       if (sleepPattern !== null) {
         return {
           result: false,
-          message: `Blocked: ${sleepPattern}. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), use the Monitor tool. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.`,
+          message: `Blocked: ${sleepPattern}. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), inspect the background task output. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.`,
           errorCode: 10,
         };
       }

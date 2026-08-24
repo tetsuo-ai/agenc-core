@@ -8,16 +8,12 @@ import {
   type LocalShellTaskState,
 } from "./types.js";
 
-function shell(
-  id: string,
-  kind?: LocalShellTaskState["kind"],
-): LocalShellTaskState {
+function shell(id: string): LocalShellTaskState {
   return {
     ...createTaskStateBase(id, "local_bash", id),
     status: "running",
     command: id,
     isBackgrounded: true,
-    ...(kind !== undefined ? { kind } : {}),
   };
 }
 
@@ -47,13 +43,9 @@ function teammate(
 }
 
 describe("getPillLabel", () => {
-  it("labels shell and monitor groups", () => {
+  it("labels shell groups", () => {
     expect(getPillLabel([shell("one")])).toBe("1 shell");
     expect(getPillLabel([shell("one"), shell("two")])).toBe("2 shells");
-    expect(getPillLabel([shell("one", "monitor")])).toBe("1 monitor");
-    expect(getPillLabel([shell("one"), shell("two", "monitor")])).toBe(
-      "1 shell, 1 monitor",
-    );
   });
 
   it("labels teams, local agents, and mixed tasks", () => {

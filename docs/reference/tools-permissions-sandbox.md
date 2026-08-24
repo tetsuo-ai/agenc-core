@@ -163,7 +163,7 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 | `EditorProposal` | Editor-turn reviewable edit proposal (workbench BUFFER) |
 | `SendUserMessage` | Short progress message to the user |
 | `Sleep` | Sleep / yield; **deferred** by default |
-| `Monitor` | Monitor a background command/process; **deferred** by default |
+| `Monitor` | Canonical unified-exec background process monitor; **deferred** by default |
 
 ### Worktree
 

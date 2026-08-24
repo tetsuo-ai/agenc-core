@@ -1,4 +1,3 @@
-import { feature } from "bun:bundle";
 import { stat } from "fs/promises";
 import type { SetAppState as SetSpeculationAppState } from "../../services/PromptSuggestion/runtime.js";
 import { abortSpeculation } from "../../services/PromptSuggestion/speculation.js";
@@ -28,11 +27,7 @@ import {
   isLocalAgentTask,
 } from "../LocalAgentTask/LocalAgentTask.js";
 import { buildTaskNotificationXml } from "../taskNotificationXml.js";
-import {
-  type BashTaskKind,
-  isLocalShellTask,
-  type LocalShellTaskState,
-} from "./guards.js";
+import { isLocalShellTask, type LocalShellTaskState } from "./guards.js";
 import { killTask } from "./killShellTasks.js";
 /** Prefix that identifies a LocalShellTask summary to the UI collapse transform. */
 export const BACKGROUND_BASH_SUMMARY_PREFIX = "Background command ";
@@ -67,11 +62,9 @@ function startStallWatchdog(
   taskId: string,
   description: string,
   queueOwner: SessionQueueOwner,
-  kind: BashTaskKind | undefined,
   toolUseId?: string,
   agentId?: AgentId,
 ): () => void {
-  if (kind === "monitor") return () => {};
   const outputPath = getTaskOutputPath(taskId);
   let lastSize = 0;
   let lastGrowth = Date.now();
@@ -141,7 +134,6 @@ function enqueueShellNotification(
   setAppState: SetAppState,
   queueOwner: SessionQueueOwner,
   toolUseId?: string,
-  kind: BashTaskKind = "bash",
   agentId?: AgentId,
 ): void {
   // Atomically check and set notified flag to prevent duplicate notifications.
@@ -171,34 +163,16 @@ function enqueueShellNotification(
   // which differ by function-parameter contravariance, not by behavior.
   abortSpeculation(setAppState as unknown as SetSpeculationAppState);
   let summary: string;
-  if (feature("MONITOR_TOOL") && kind === "monitor") {
-    // Monitor is streaming-only (post-#22764) — the script exiting means
-    // the stream ended, not "condition met". Distinct from the bash prefix
-    // so Monitor completions don't fold into the "N background commands
-    // completed" collapse.
-    switch (status) {
-      case "completed":
-        summary = `Monitor "${description}" stream ended`;
-        break;
-      case "failed":
-        summary = `Monitor "${description}" script failed${exitCode !== undefined ? ` (exit ${exitCode})` : ""}`;
-        break;
-      case "killed":
-        summary = `Monitor "${description}" stopped`;
-        break;
-    }
-  } else {
-    switch (status) {
-      case "completed":
-        summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" completed${exitCode !== undefined ? ` (exit code ${exitCode})` : ""}`;
-        break;
-      case "failed":
-        summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" failed${exitCode !== undefined ? ` with exit code ${exitCode}` : ""}`;
-        break;
-      case "killed":
-        summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" was stopped`;
-        break;
-    }
+  switch (status) {
+    case "completed":
+      summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" completed${exitCode !== undefined ? ` (exit code ${exitCode})` : ""}`;
+      break;
+    case "failed":
+      summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" failed${exitCode !== undefined ? ` with exit code ${exitCode}` : ""}`;
+      break;
+    case "killed":
+      summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" was stopped`;
+      break;
   }
   const outputPath = getTaskOutputPath(taskId);
   const message = buildTaskNotificationXml({
@@ -211,7 +185,7 @@ function enqueueShellNotification(
   enqueuePendingNotification({
     value: message,
     mode: "task-notification",
-    priority: feature("MONITOR_TOOL") ? "next" : "later",
+    priority: "next",
     agentId,
     queueOwner,
   });
@@ -236,7 +210,6 @@ export async function spawnShellTask(
     queueOwner,
     toolUseId,
     agentId,
-    kind,
   } = input;
   const { setAppState } = context;
 
@@ -258,7 +231,6 @@ export async function spawnShellTask(
     lastReportedTotalLines: 0,
     isBackgrounded: true,
     agentId,
-    kind,
   };
   registerTask(taskState, setAppState);
 
@@ -269,7 +241,6 @@ export async function spawnShellTask(
     taskId,
     description,
     queueOwner,
-    kind,
     toolUseId,
     agentId,
   );
@@ -303,7 +274,6 @@ export async function spawnShellTask(
         setAppState,
         queueOwner,
         toolUseId,
-        kind,
         agentId,
       );
       void evictTaskOutput(taskId);
@@ -369,7 +339,7 @@ function backgroundTask(
   }
   const shellCommand = task.shellCommand;
   const description = task.description;
-  const { toolUseId, kind, agentId, queueOwner } = task;
+  const { toolUseId, agentId, queueOwner } = task;
 
   // Transition to backgrounded — TaskOutput continues receiving data automatically
   if (!shellCommand.background(taskId)) {
@@ -395,7 +365,6 @@ function backgroundTask(
     taskId,
     description,
     queueOwner,
-    kind,
     toolUseId,
     agentId,
   );
@@ -439,7 +408,6 @@ function backgroundTask(
           setAppState,
           queueOwner,
           toolUseId,
-          kind,
           agentId,
         );
       } else {
@@ -452,7 +420,6 @@ function backgroundTask(
           setAppState,
           queueOwner,
           toolUseId,
-          kind,
           agentId,
         );
       }
@@ -537,7 +504,6 @@ export function backgroundExistingForegroundTask(
     taskId,
     description,
     frozenQueueOwner,
-    undefined,
     toolUseId,
     agentId,
   );
@@ -581,7 +547,6 @@ export function backgroundExistingForegroundTask(
         setAppState,
         frozenQueueOwner,
         toolUseId,
-        undefined,
         agentId,
       );
       void evictTaskOutput(taskId);

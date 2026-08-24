@@ -1,8 +1,4 @@
-/**
- * Tests for `Monitor` — AgenC monitor tool contract.
- * Verifies schema parity, the upstream-style result-content sentence,
- * and that the tool wires through to AgenC's `unifiedExecManager`.
- */
+/** Canonical Monitor schema, result, and unified-exec integration tests. */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
@@ -13,7 +9,7 @@ const createMonitorTool = (
   config: Parameters<typeof createUnboundMonitorTool>[0],
 ) => bindExplicitDangerBoundary(createUnboundMonitorTool(config));
 
-describe("Monitor (AgenC port)", () => {
+describe("Monitor", () => {
   let manager: UnifiedExecProcessManager;
 
   beforeEach(() => {
@@ -62,8 +58,7 @@ describe("Monitor (AgenC port)", () => {
     });
     expect(result.isError).toBeUndefined();
     const content = String(result.content);
-    // Verbatim port of AgenC MonitorTool.ts:140-145 sentence
-    // structure (taskId / outputFile / 1s polling).
+    // Stable result structure: task ID, output URI, and streaming notice.
     expect(content).toContain("Monitor task started with ID:");
     expect(content).toContain("Output is being streamed to:");
     expect(content).toContain("notifications as new output lines appear");
@@ -77,7 +72,7 @@ describe("Monitor (AgenC port)", () => {
     expect(meta.exitCode).toBe(0);
   });
 
-  test("schema declares the verbatim AgenC fields", async () => {
+  test("schema declares the canonical fields", async () => {
     const tool = createMonitorTool({
       cwd: process.cwd(),
       unifiedExecManager: manager,
@@ -101,13 +96,11 @@ describe("Monitor (AgenC port)", () => {
     expect(tool.description).toContain(
       "Execute a shell command in the background and stream its stdout line-by-line as notifications",
     );
-    // The donor's inaccurate "(~1s)" continuous-polling claim was removed: streaming
-    // is clamped to ~30s and the model must poll afterward via write_stdin.
+    // Streaming is bounded to ~30s and the model must poll afterward.
     expect(tool.description).not.toContain("(~1s)");
     expect(tool.description).toContain("30 seconds");
     expect(tool.description).toContain('write_stdin(session_id, "")');
     expect(tool.description).toContain("monitoring logs");
-    // AgenC adapts only the trailing reference: AgenC says
     // "Bash with run_in_background"; AgenC wires to exec_command.
     expect(tool.description).toContain("exec_command with a short yield_time_ms");
   });

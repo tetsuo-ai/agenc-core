@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import { prependBullets } from '../../constants/prompts.js'
 import { getAttributionTexts } from '../../utils/attribution.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
@@ -277,22 +276,11 @@ export function getSimplePrompt(): string {
 
   const sleepSubitems = [
     'Do not sleep between commands that can run immediately — just run them.',
-    ...(feature('MONITOR_TOOL')
-      ? [
-          'Use the Monitor tool to stream events from a background process (each stdout line is a notification). For one-shot "wait until done," use Bash with run_in_background instead.',
-        ]
-      : []),
+    'For streaming events, run the command in the background and inspect its task output. For one-shot "wait until done," use Bash with run_in_background.',
     'If your command is long running and you would like to be notified when it finishes — use `run_in_background`. No sleep needed.',
     'Do not retry failing commands in a sleep loop — diagnose the root cause.',
     'If waiting for a background task you started with `run_in_background`, you will be notified when it completes — do not poll.',
-    ...(feature('MONITOR_TOOL')
-      ? [
-          '`sleep N` as the first command with N ≥ 2 is blocked. If you need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.',
-        ]
-      : [
-          'If you must poll an external process, use a check command (e.g. `gh run view`) rather than sleeping first.',
-          'If you must sleep, keep the duration short (1-5 seconds) to avoid blocking the user.',
-        ]),
+    '`sleep N` as the first command with N ≥ 2 is blocked. If you need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.',
   ]
   const backgroundNote = getBackgroundUsageNote()
 

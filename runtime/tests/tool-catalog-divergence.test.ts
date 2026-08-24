@@ -27,11 +27,13 @@ import { runWithStartupProviderSelection } from "../src/utils/model/providers.js
 // (a CJS cycle-breaker); under vitest only the .ts source exists, so the
 // require can't resolve. Serve a stub through Node's module loader — the
 // stub never overlaps a live registry name, so it can't mask divergence.
-const originalLoad = (
-  Module as unknown as { _load: (...args: unknown[]) => unknown }
-)._load;
-(Module as unknown as { _load: (...args: unknown[]) => unknown })._load =
-  function (request: unknown, ...rest: unknown[]) {
+const moduleLoader = Module as unknown as {
+  _load: (...args: unknown[]) => unknown;
+};
+
+function getTestBaseTools() {
+  const originalLoad = moduleLoader._load;
+  moduleLoader._load = function (request: unknown, ...rest: unknown[]) {
     if (
       typeof request === "string" &&
       request.endsWith("SendMessageTool/SendMessageTool.js")
@@ -46,6 +48,12 @@ const originalLoad = (
     }
     return originalLoad.call(this, request, ...rest);
   };
+  try {
+    return getAllBaseTools();
+  } finally {
+    moduleLoader._load = originalLoad;
+  }
+}
 
 /**
  * Deliberate dual implementations (TUI pool + daemon registry). Each of
@@ -66,7 +74,6 @@ const KNOWN_DUAL_IMPLEMENTATIONS = [
   "FileRead",
   "Glob",
   "Grep",
-  "Monitor",
   "NotebookEdit",
   "TaskCreate",
   "TaskGet",
@@ -120,19 +127,27 @@ function legacyRequiredKeys(tool: {
 }
 
 describe("tool catalog divergence guard", () => {
-  const registry = buildToolRegistry({
-    workspaceRoot: mkdtempSync(join(tmpdir(), "agenc-catalog-")),
-  });
+  const { registry, baseTools } = runWithStartupProviderSelection(
+    {
+      provider: "grok",
+      model: "grok-4.6",
+      environment: { ...process.env },
+    },
+    () => ({
+      registry: buildToolRegistry({
+        workspaceRoot: mkdtempSync(join(tmpdir(), "agenc-catalog-")),
+      }),
+      baseTools: getTestBaseTools(),
+    }),
+  );
   const liveByName = new Map(registry.tools.map((tool) => [tool.name, tool]));
   const legacyByName = new Map(
-    runWithStartupProviderSelection({ provider: "grok", model: "grok-4.6", environment: { ...process.env } }, () => getAllBaseTools()).map(
-      (tool) => [tool.name, tool],
-    ),
+    baseTools.map((tool) => [tool.name, tool]),
   );
 
   it("pins the set of dual-implemented tool names", () => {
     // Subset (allowlist) semantics: several dual tools are feature/env
-    // gated (Monitor, worktree tools, Glob/Grep vs embedded search), so
+    // gated (worktree tools, Glob/Grep vs embedded search), so
     // the overlap varies per environment — but every member must be a
     // KNOWN exception. A new duplicate implementation fails here.
     const overlap = [...liveByName.keys()]

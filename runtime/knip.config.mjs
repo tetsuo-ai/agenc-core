@@ -471,7 +471,6 @@ const binConfigTaskOnboardingContractExportFiles = [
   "src/tasks/LocalAgentTask/LocalAgentTask.tsx",
   "src/tasks/LocalMainSessionTask.ts",
   "src/tasks/LocalShellTask/LocalShellTask.tsx",
-  "src/tasks/MonitorMcpTask/MonitorMcpTask.ts",
   "src/tasks/index.ts",
   "src/tasks/registry.ts",
   "src/tasks/stopTask.ts",

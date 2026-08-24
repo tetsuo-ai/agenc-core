@@ -22,7 +22,6 @@ import {
 } from "../../src/session/current-session.js";
 import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
 import { CanonicalBashTool } from "../../src/tools/canonicalToolSurface.js";
-import { MonitorTool } from "../../src/tools/MonitorTool/MonitorTool.js";
 import { createMonitorTool } from "../../src/tools/system/monitor.js";
 
 const roots: string[] = [];
@@ -236,31 +235,6 @@ describe("fail-closed process surfaces", () => {
       content: expect.stringContaining("sandbox_probe_failed"),
     });
     expect(execCommand).not.toHaveBeenCalled();
-    expect(existsSync(marker)).toBe(false);
-  });
-
-  it("blocks legacy Monitor before Shell.exec spawns", async () => {
-    const root = tempRoot("agenc-sandbox-legacy-monitor-");
-    const marker = join(root, "legacy-monitor-escaped");
-
-    await expect(
-      MonitorTool.call(
-        {
-          command: `${process.execPath} -e "require('fs').writeFileSync(${JSON.stringify(marker)}, 'bad')"`,
-          description: "attempt host escape",
-        },
-        {
-          abortController: new AbortController(),
-          setAppState() {},
-          services: { sandboxExecutionBroker: unavailableBroker(root) },
-        } as never,
-        undefined,
-        undefined,
-      ),
-    ).rejects.toMatchObject({
-      code: "sandbox_probe_failed",
-      surface: "background",
-    });
     expect(existsSync(marker)).toBe(false);
   });
 

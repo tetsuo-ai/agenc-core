@@ -14,7 +14,6 @@ import { BriefTool } from './tools/BriefTool/BriefTool.js'
 import { CronCreateTool } from './tools/ScheduleCronTool/CronCreateTool.js'
 import { CronDeleteTool } from './tools/ScheduleCronTool/CronDeleteTool.js'
 import { CronListTool } from './tools/ScheduleCronTool/CronListTool.js'
-import { MonitorTool as RuntimeMonitorTool } from './tools/MonitorTool/MonitorTool.js'
 import * as coordinatorMode from './coordinator/coordinatorMode.js'
 // Dead code elimination: conditional import for internal-only tools.
 // Tools that are not part of this build at all (Sleep, RemoteTrigger,
@@ -24,11 +23,6 @@ import * as coordinatorMode from './coordinator/coordinatorMode.js'
 // code that read like a second catalog. Deleted; the LIVE runtime
 // registry (tool-registry.ts + bin/model-facing-tools.ts) is where
 // those capabilities exist today.
-/* eslint-disable @typescript-eslint/no-require-imports */
-const MonitorTool = feature('MONITOR_TOOL')
-  ? RuntimeMonitorTool
-  : null
-/* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import { TaskOutputTool } from './tools/TaskOutputTool/TaskOutputTool.js'
 import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'
 import { TodoWriteTool } from './tools/TodoWriteTool/TodoWriteTool.js'
@@ -155,7 +149,6 @@ export function getAllBaseTools(): Tools {
     ...(isAgentSwarmsEnabled()
       ? [getTeamCreateTool(), getTeamDeleteTool()]
       : []),
-    ...(MonitorTool ? [MonitorTool] : []),
     BriefTool,
     // The two calls are independent at the type level so TS keeps the inner
     // result as `PowerShellTool | null`; the guard guarantees non-null at
