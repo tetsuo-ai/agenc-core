@@ -661,9 +661,11 @@ function reportProviderHttpError(
   }
   config.emitWarning?.({
     cause: "provider_request_failed",
+    // The URL is part of the diagnosis: a bare 404 with no body is
+    // almost always the wrong path, and without it that is unfalsifiable.
     message: `${config.providerName}${
       config.model !== undefined ? `/${config.model}` : ""
-    } refused the request (HTTP ${error.status}): ${message.slice(0, 600)}`,
+    } refused the request (HTTP ${error.status}) at ${error.url}: ${message.slice(0, 600)}`,
   });
 }
 

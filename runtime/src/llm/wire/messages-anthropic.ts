@@ -354,15 +354,17 @@ export function buildAnthropicMessagesRequest(
   // returns a 400; omitting the param runs adaptive thinking. Depth is the
   // effort parameter's job on that family. Opus-family (>= 4.6) behavior
   // below is unchanged.
-  if (thinkingEnabled && !alwaysOnThinking) {
-    body.thinking = {
-      type: "enabled",
-      budget_tokens:
-        input.options?.reasoningEffort === "high" ||
-          input.options?.reasoningEffort === "xhigh"
-          ? 4096
-          : 2048,
-    };
+  // Current models reject an explicit `thinking.type.enabled` outright —
+  // "Use thinking.type.adaptive and output_config.effort to control
+  // thinking behaviour" — so where effort is carrying the decision, the
+  // thinking block is left off entirely and adaptive thinking runs. The
+  // budget form stays only for a request that set no effort at all.
+  if (
+    thinkingEnabled &&
+    !alwaysOnThinking &&
+    body.output_config === undefined
+  ) {
+    body.thinking = { type: "adaptive" };
   }
   if (input.contextManagement) {
     body.context_management = input.contextManagement;
