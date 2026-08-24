@@ -193,6 +193,7 @@ import {
 } from "../utils/logger.js";
 import { isRecord } from "../utils/record.js";
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
+import { workspaceMutationCoordinators } from "../workspace/mutation-coordinator.js";
 
 const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
@@ -3334,6 +3335,9 @@ async function runAgenCDaemonForegroundLocked(
       }),
       workflow: workflowStartService,
       csvJobReview: new AgenCCsvJobReviewStateService(csvAgentJobsRepositories),
+      workspaceMutations: workspaceMutationCoordinators.forHome(
+        authStartup.daemonHome,
+      ),
       ...(codePrediction !== undefined ? { codePrediction } : {}),
       daemonIdentity,
       initializeAuthenticator: (params) =>

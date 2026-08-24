@@ -6001,7 +6001,24 @@ class WorkspaceMutationCoordinatorAuthority {
   readonly #registries = new Map<string, WorkspaceMutationCoordinatorRegistry>();
 
   #current(): WorkspaceMutationCoordinatorRegistry {
-    const home = activeWorkspaceMutationHome();
+    return this.forHome(activeWorkspaceMutationHome());
+  }
+
+  /**
+   * Bind a daemon or other long-lived ingress to one immutable home registry.
+   * Callers capture the home before asynchronous work; ordinary session tools
+   * continue through the ConfigStore-scoped facade below and converge on the
+   * same registry identity.
+   */
+  forHome(agencHome: string): WorkspaceMutationCoordinatorRegistry {
+    const trimmed = agencHome.trim();
+    if (trimmed.length === 0 || !isAbsolute(trimmed)) {
+      throw new WorkspaceMutationCoordinatorError(
+        "INVALID_WORKSPACE",
+        "Workspace mutation home must be an absolute path",
+      );
+    }
+    const home = resolve(trimmed);
     let registry = this.#registries.get(home);
     if (registry === undefined) {
       registry = new WorkspaceMutationCoordinatorRegistry({ agencHome: home });

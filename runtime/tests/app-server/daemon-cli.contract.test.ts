@@ -4029,6 +4029,13 @@ backend = "local"
         timeoutMs: 1000,
       });
 
+      await expect(
+        client.request("workspace.editor.acquire", {
+          workspaceRoot: process.cwd(),
+          editorInstanceId: "editor_boot_injection",
+        }),
+      ).resolves.toMatchObject({ sequence: -1 });
+
       const created = await client.request("agent.create", {
         cwd: process.cwd(),
         objective: "prove dispatcher boot injection",

@@ -292,6 +292,8 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       "auth.login": false,
       "auth.whoami": false,
       "auth.logout": false,
+      "workspace.editor.acquire": false,
+      "workspace.editor.sync": false,
     });
 
     const testOnlyEnabledDispatcher = new AgenCDaemonJsonRpcDispatcher({

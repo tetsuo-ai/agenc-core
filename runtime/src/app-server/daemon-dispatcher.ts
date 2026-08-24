@@ -77,7 +77,7 @@ import {
   assertWorkspaceEditorProposalStatusResponseFitsFrame,
   canonicalWorkspaceRoot,
   type WorkspaceMutationCoordinator,
-  workspaceMutationCoordinators,
+  type WorkspaceMutationCoordinatorRegistry,
 } from "../workspace/mutation-coordinator.js";
 import {
   AGENC_DAEMON_INTERNAL_METHODS,
@@ -269,6 +269,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly codePrediction: AgenCDaemonDispatcherOptions["codePrediction"];
+  readonly workspaceMutations: WorkspaceMutationCoordinatorRegistry | undefined;
 }
 
 function buildServerCapabilities(
@@ -342,21 +343,30 @@ function buildServerCapabilities(
     "auth.login": inputs.authHandlers !== undefined,
     "auth.whoami": inputs.authHandlers !== undefined,
     "auth.logout": inputs.authHandlers !== undefined,
-    "workspace.editor.acquire": true,
-    "workspace.editor.sync": true,
-    "workspace.editor.staleAuthority.refresh": true,
-    "workspace.editor.heartbeat": true,
-    "workspace.editor.release": true,
-    "workspace.editor.topology.reserve": true,
-    "workspace.editor.topology.complete": true,
-    "workspace.editor.topology.release": true,
-    "workspace.editor.topology.recovered.list": true,
-    "workspace.editor.topology.recovered.resolve": true,
-    "workspace.editor.proposal.get": true,
-    "workspace.editor.proposal.status": true,
-    "workspace.editor.proposal.apply": true,
-    "workspace.editor.proposal.discard": true,
-    "workspace.editor.changes.list": true,
+    "workspace.editor.acquire": inputs.workspaceMutations !== undefined,
+    "workspace.editor.sync": inputs.workspaceMutations !== undefined,
+    "workspace.editor.staleAuthority.refresh":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.heartbeat": inputs.workspaceMutations !== undefined,
+    "workspace.editor.release": inputs.workspaceMutations !== undefined,
+    "workspace.editor.topology.reserve":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.topology.complete":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.topology.release":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.topology.recovered.list":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.topology.recovered.resolve":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.proposal.get": inputs.workspaceMutations !== undefined,
+    "workspace.editor.proposal.status":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.proposal.apply":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.proposal.discard":
+      inputs.workspaceMutations !== undefined,
+    "workspace.editor.changes.list": inputs.workspaceMutations !== undefined,
     "workspace.editor.predict": hasMethod(inputs.codePrediction, "complete"),
     "workspace.editor.cancelPrediction": hasMethod(
       inputs.codePrediction,
@@ -430,6 +440,15 @@ function hasMethod(target: object | undefined, key: PropertyKey): boolean {
   return (
     target !== undefined &&
     typeof (target as Record<PropertyKey, unknown>)[key] === "function"
+  );
+}
+
+function requiresWorkspaceMutationRegistry(method: string): boolean {
+  return (
+    method.startsWith("workspace.editor.") &&
+    method !== "workspace.editor.predict" &&
+    method !== "workspace.editor.cancelPrediction" &&
+    method !== "workspace.editor.predictionFeedback"
   );
 }
 
@@ -524,6 +543,8 @@ export interface AgenCDaemonDispatcherOptions {
     CodePredictionService,
     "complete" | "cancel" | "feedback"
   >;
+  /** Home-bound mutation registry captured by daemon startup. */
+  readonly workspaceMutations?: WorkspaceMutationCoordinatorRegistry;
   readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
@@ -628,6 +649,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly #codePrediction:
     Pick<CodePredictionService, "complete" | "cancel" | "feedback"> | undefined;
+  readonly #workspaceMutations: WorkspaceMutationCoordinatorRegistry | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
@@ -659,6 +681,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#workflow = options.workflow;
     this.#csvJobReview = options.csvJobReview;
     this.#codePrediction = options.codePrediction;
+    this.#workspaceMutations = options.workspaceMutations;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -680,6 +703,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       workflow: this.#workflow,
       csvJobReview: this.#csvJobReview,
       codePrediction: this.#codePrediction,
+      workspaceMutations: this.#workspaceMutations,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
   }
@@ -801,6 +825,13 @@ export class AgenCDaemonJsonRpcDispatcher {
         connection.initializeState?.serverCapabilities[
           AGENC_DAEMON_METHOD_CAPABILITIES_KEY
         ][method] !== true
+      ) {
+        return methodNotImplementedResponse(id, method);
+      }
+
+      if (
+        requiresWorkspaceMutationRegistry(method) &&
+        this.#workspaceMutations === undefined
       ) {
         return methodNotImplementedResponse(id, method);
       }
@@ -1049,18 +1080,23 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await acquireWorkspaceEditor(
+            this.#workspaceMutations!,
             validateWorkspaceEditorAcquireParams(params),
           ),
         );
       case "workspace.editor.sync":
         return internalSuccessResponse(
           id,
-          await syncWorkspaceEditor(validateWorkspaceEditorSyncParams(params)),
+          await syncWorkspaceEditor(
+            this.#workspaceMutations!,
+            validateWorkspaceEditorSyncParams(params),
+          ),
         );
       case "workspace.editor.staleAuthority.refresh":
         return internalSuccessResponse(
           id,
           await refreshWorkspaceEditorStaleAuthority(
+            this.#workspaceMutations!,
             validateWorkspaceEditorHeartbeatParams(
               params,
               "workspace.editor.staleAuthority.refresh",
@@ -1071,6 +1107,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await heartbeatWorkspaceEditor(
+            this.#workspaceMutations!,
             validateWorkspaceEditorHeartbeatParams(
               params,
               "workspace.editor.heartbeat",
@@ -1081,6 +1118,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await releaseWorkspaceEditor(
+            this.#workspaceMutations!,
             validateWorkspaceEditorReleaseParams(params),
           ),
         );
@@ -1088,6 +1126,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await reserveWorkspaceEditorTopology(
+            this.#workspaceMutations!,
             validateWorkspaceEditorTopologyReserveParams(params),
           ),
         );
@@ -1095,6 +1134,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await completeWorkspaceEditorTopology(
+            this.#workspaceMutations!,
             validateWorkspaceEditorTopologyCompleteParams(params),
           ),
         );
@@ -1102,6 +1142,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await releaseWorkspaceEditorTopology(
+            this.#workspaceMutations!,
             validateWorkspaceEditorTopologyFinalizeParams(
               params,
               "workspace.editor.topology.release",
@@ -1112,6 +1153,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await listRecoveredWorkspaceEditorTopologies(
+            this.#workspaceMutations!,
             validateWorkspaceEditorHeartbeatParams(
               params,
               "workspace.editor.topology.recovered.list",
@@ -1122,11 +1164,13 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await resolveRecoveredWorkspaceEditorTopology(
+            this.#workspaceMutations!,
             validateWorkspaceEditorRecoveredTopologyResolveParams(params),
           ),
         );
       case "workspace.editor.proposal.get": {
         const proposal = await inspectWorkspaceEditorProposal(
+          this.#workspaceMutations!,
           validateWorkspaceEditorProposalParams(
             params,
             "workspace.editor.proposal.get",
@@ -1139,6 +1183,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await statusWorkspaceEditorProposal(
+            this.#workspaceMutations!,
             validateWorkspaceEditorProposalStatusParams(params),
             id,
           ),
@@ -1147,6 +1192,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await applyWorkspaceEditorProposal(
+            this.#workspaceMutations!,
             validateWorkspaceEditorProposalApplyParams(params),
           ),
         );
@@ -1154,6 +1200,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await discardWorkspaceEditorProposal(
+            this.#workspaceMutations!,
             validateWorkspaceEditorProposalParams(
               params,
               "workspace.editor.proposal.discard",
@@ -1164,6 +1211,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         return internalSuccessResponse(
           id,
           await listWorkspaceEditorChanges(
+            this.#workspaceMutations!,
             validateWorkspaceEditorChangesListParams(params),
           ),
         );
@@ -4491,10 +4539,13 @@ function validateWorkspaceEditorPredictionFeedbackParams(
   return validated as WorkspaceEditorPredictionFeedbackParams;
 }
 
-async function acquireWorkspaceEditor(params: WorkspaceEditorAcquireParams) {
+async function acquireWorkspaceEditor(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
+  params: WorkspaceEditorAcquireParams,
+) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const lease = workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
+    const lease = workspaceMutations.acquireEditor(workspaceRoot, {
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
       ...(params.takeover !== undefined ? { takeover: params.takeover } : {}),
@@ -4508,7 +4559,7 @@ async function acquireWorkspaceEditor(params: WorkspaceEditorAcquireParams) {
     // projecting terminal audit entries. If that append failed, acquiring the
     // same in-process coordinator is the client's retry boundary: do not
     // acknowledge the lease until the append-once outbox is durably drained.
-    await workspaceMutationCoordinators
+    await workspaceMutations
       .getOrCreate(workspaceRoot)
       .flushPendingAuditOutbox();
     return lease;
@@ -4517,11 +4568,14 @@ async function acquireWorkspaceEditor(params: WorkspaceEditorAcquireParams) {
   }
 }
 
-async function syncWorkspaceEditor(params: WorkspaceEditorSyncParams) {
+async function syncWorkspaceEditor(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
+  params: WorkspaceEditorSyncParams,
+) {
   let coordinator: WorkspaceMutationCoordinator | null = null;
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     const input = {
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4549,11 +4603,12 @@ async function syncWorkspaceEditor(params: WorkspaceEditorSyncParams) {
 }
 
 async function refreshWorkspaceEditorStaleAuthority(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorHeartbeatParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return workspaceMutationCoordinators
+    return workspaceMutations
       .getOrCreate(workspaceRoot)
       .refreshStaleAuthority({
         workspaceRoot,
@@ -4567,11 +4622,12 @@ async function refreshWorkspaceEditorStaleAuthority(
 }
 
 async function heartbeatWorkspaceEditor(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorHeartbeatParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return workspaceMutationCoordinators.getOrCreate(workspaceRoot).heartbeat({
+    return workspaceMutations.getOrCreate(workspaceRoot).heartbeat({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
       leaseToken: params.leaseToken,
@@ -4582,11 +4638,13 @@ async function heartbeatWorkspaceEditor(
   }
 }
 
-async function releaseWorkspaceEditor(params: WorkspaceEditorReleaseParams) {
+async function releaseWorkspaceEditor(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
+  params: WorkspaceEditorReleaseParams,
+) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator =
-      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     const result = await coordinator.release({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4604,12 +4662,13 @@ async function releaseWorkspaceEditor(params: WorkspaceEditorReleaseParams) {
 }
 
 async function reserveWorkspaceEditorTopology(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorTopologyReserveParams,
 ) {
   let coordinator: WorkspaceMutationCoordinator | null = null;
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     const token = await coordinator.reserveEditorTopologyMutation({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4629,12 +4688,13 @@ async function reserveWorkspaceEditorTopology(
 }
 
 async function completeWorkspaceEditorTopology(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorTopologyCompleteParams,
 ) {
   let coordinator: WorkspaceMutationCoordinator | null = null;
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     return await coordinator.completeEditorTopologyMutation({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4652,12 +4712,13 @@ async function completeWorkspaceEditorTopology(
 }
 
 async function releaseWorkspaceEditorTopology(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorTopologyFinalizeParams,
 ) {
   let coordinator: WorkspaceMutationCoordinator | null = null;
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     return await coordinator.releaseEditorTopologyMutation({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4674,12 +4735,12 @@ async function releaseWorkspaceEditorTopology(
 }
 
 async function listRecoveredWorkspaceEditorTopologies(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorRecoveredTopologyListParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator =
-      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     return {
       mutations: coordinator.listRecoveredEditorTopologyMutations({
         workspaceRoot,
@@ -4694,12 +4755,13 @@ async function listRecoveredWorkspaceEditorTopologies(
 }
 
 async function resolveRecoveredWorkspaceEditorTopology(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorRecoveredTopologyResolveParams,
 ) {
   let coordinator: WorkspaceMutationCoordinator | null = null;
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     return await coordinator.resolveRecoveredEditorTopologyMutation({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,
@@ -4716,12 +4778,13 @@ async function resolveRecoveredWorkspaceEditorTopology(
 }
 
 async function inspectWorkspaceEditorProposal(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorProposalParams,
   requestId: RequestId,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const proposal = workspaceMutationCoordinators
+    const proposal = workspaceMutations
       .getOrCreate(workspaceRoot)
       .inspectProposal({
         workspaceRoot,
@@ -4741,12 +4804,13 @@ async function inspectWorkspaceEditorProposal(
 }
 
 async function statusWorkspaceEditorProposal(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorProposalStatusParams,
   requestId: RequestId,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const status = await workspaceMutationCoordinators
+    const status = await workspaceMutations
       .getOrCreate(workspaceRoot)
       .proposalStatus({
         workspaceRoot,
@@ -4763,11 +4827,12 @@ async function statusWorkspaceEditorProposal(
 }
 
 async function applyWorkspaceEditorProposal(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorProposalApplyParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return await workspaceMutationCoordinators
+    return await workspaceMutations
       .getOrCreate(workspaceRoot)
       .applyProposal({
         workspaceRoot,
@@ -4785,11 +4850,12 @@ async function applyWorkspaceEditorProposal(
 }
 
 async function discardWorkspaceEditorProposal(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorProposalParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return await workspaceMutationCoordinators
+    return await workspaceMutations
       .getOrCreate(workspaceRoot)
       .discardProposalForEditor({
         workspaceRoot,
@@ -4804,12 +4870,12 @@ async function discardWorkspaceEditorProposal(
 }
 
 async function listWorkspaceEditorChanges(
+  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
   params: WorkspaceEditorChangesListParams,
 ) {
   try {
     const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator =
-      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     const result = coordinator.listChanges({
       workspaceRoot,
       editorInstanceId: params.editorInstanceId,

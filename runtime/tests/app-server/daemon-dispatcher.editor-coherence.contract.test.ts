@@ -23,6 +23,11 @@ import {
   WORKSPACE_EDITOR_PROPOSAL_MAX_FRAME_BYTES,
   workspaceMutationCoordinators,
 } from "../workspace/mutation-coordinator.js";
+import {
+  enterCanonicalSettingsAuthority,
+  getCanonicalSettingsAuthority,
+  resetCanonicalSettingsAuthorityForTesting,
+} from "../utils/settings/canonicalAuthority.js";
 
 const temporaryPaths: string[] = [];
 const originalAgencHome = process.env.AGENC_HOME;
@@ -48,11 +53,21 @@ function request(id: string, method: string, params: JsonObject): JsonObject {
   return { jsonrpc: JSON_RPC_VERSION, id, method, params };
 }
 
+function dispatcherForHome(agencHome: string) {
+  const workspaceMutations = workspaceMutationCoordinators.forHome(agencHome);
+  return {
+    workspaceMutations,
+    dispatcher: new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      workspaceMutations,
+    }),
+  };
+}
+
 describe("daemon editor coherence protocol", () => {
   it("advertises recovered topology resolution only to protocol 1.1 clients", async () => {
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-    });
+    const agencHome = await tempDirectory("agenc-editor-capability-home-");
+    const { dispatcher } = dispatcherForHome(agencHome);
     for (const [version, expected] of [
       ["1.0.0", false],
       ["1.1.0", true],
@@ -75,13 +90,46 @@ describe("daemon editor coherence protocol", () => {
     }
   });
 
+  it("routes Editor mutations through the daemon home without ambient ConfigStore authority", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-editor-explicit-home-workspace-",
+    );
+    const daemonHome = await tempDirectory("agenc-editor-explicit-home-");
+    const previousAuthority = getCanonicalSettingsAuthority();
+    const previousHome = process.env.AGENC_HOME;
+    resetCanonicalSettingsAuthorityForTesting();
+    delete process.env.AGENC_HOME;
+    try {
+      const { dispatcher } = dispatcherForHome(daemonHome);
+      const connection = dispatcher.createConnection();
+      await connection.dispatch(
+        request("initialize-explicit-home", "initialize", {
+          protocol: { version: "1.1.0" },
+        }),
+      );
+      await expect(
+        connection.dispatch(
+          request("acquire-explicit-home", "workspace.editor.acquire", {
+            workspaceRoot,
+            editorInstanceId: "editor-explicit-daemon-home",
+          }),
+        ),
+      ).resolves.toMatchObject({ result: { sequence: -1 } });
+      await connection.close();
+    } finally {
+      if (previousHome === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = previousHome;
+      if (previousAuthority !== null) {
+        enterCanonicalSettingsAuthority(previousAuthority);
+      }
+    }
+  });
+
   it("does not acknowledge a dirty sync whose quarantine cannot be persisted", async () => {
     const workspaceRoot = await tempDirectory("agenc-editor-rpc-workspace-");
     const agencHome = await tempDirectory("agenc-editor-rpc-home-");
     process.env.AGENC_HOME = agencHome;
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-    });
+    const { dispatcher } = dispatcherForHome(agencHome);
     const connection = dispatcher.createConnection();
     await connection.dispatch(
       request("initialize", "initialize", {
@@ -141,9 +189,8 @@ describe("daemon editor coherence protocol", () => {
     const orphanedContent = "orphaned Editor revision\n";
     await writeFile(path, initialDiskContent, "utf8");
 
-    const firstDispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-    });
+    const firstScope = dispatcherForHome(agencHome);
+    const firstDispatcher = firstScope.dispatcher;
     const firstConnection = firstDispatcher.createConnection();
     await firstConnection.dispatch(
       request("initialize-first", "initialize", {
@@ -182,15 +229,14 @@ describe("daemon editor coherence protocol", () => {
         }),
       ),
     ).resolves.toMatchObject({ result: { accepted: true } });
-    await workspaceMutationCoordinators
+    await firstScope.workspaceMutations
       .getOrCreate(workspaceRoot)
       .flushQuarantinePersistence();
     await firstConnection.close();
     workspaceMutationCoordinators.clearForTests();
 
-    const restartedDispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-    });
+    const restartedScope = dispatcherForHome(agencHome);
+    const restartedDispatcher = restartedScope.dispatcher;
     const connection = restartedDispatcher.createConnection();
     await connection.dispatch(
       request("initialize-restarted", "initialize", {
@@ -269,7 +315,7 @@ describe("daemon editor coherence protocol", () => {
     });
 
     const coordinator =
-      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+      restartedScope.workspaceMutations.getOrCreate(workspaceRoot);
     expect(coordinator.authorityForPath(path)).toBe("stale_dirty");
     expect(coordinator.stalePaths()).toEqual([path]);
 
@@ -359,9 +405,7 @@ describe("daemon editor coherence protocol", () => {
     );
     await mkdir(ledgerPath);
 
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-    });
+    const { dispatcher } = dispatcherForHome(agencHome);
     const connection = dispatcher.createConnection();
     await connection.dispatch(
       request("initialize", "initialize", {
@@ -433,9 +477,7 @@ describe("daemon editor coherence protocol", () => {
     process.env.AGENC_HOME = agencHome;
     await mkdir(workspaceRoot, { recursive: true });
 
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-    });
+    const { dispatcher, workspaceMutations } = dispatcherForHome(agencHome);
     const connection = dispatcher.createConnection();
     const initialized = await connection.dispatch(
       request("initialize", "initialize", {
@@ -524,8 +566,7 @@ describe("daemon editor coherence protocol", () => {
       },
     });
 
-    const coordinator =
-      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     const candidate = "export const n = 2;\n";
     const proposed = await coordinator.prepareMutation({
       path,
@@ -742,9 +783,12 @@ describe("daemon editor coherence protocol", () => {
     const candidate = "export const restart = 2;\n";
     await writeFile(path, base);
 
+    const currentWorkspaceMutations = () =>
+      workspaceMutationCoordinators.forHome(agencHome);
     const createConnection = async () => {
       const dispatcher = new AgenCDaemonJsonRpcDispatcher({
         agentManager: new AgenCDaemonAgentManager(),
+        workspaceMutations: currentWorkspaceMutations(),
       });
       const connection = dispatcher.createConnection();
       await connection.dispatch(
@@ -795,7 +839,7 @@ describe("daemon editor coherence protocol", () => {
         ],
       }),
     );
-    const admission = await workspaceMutationCoordinators
+    const admission = await currentWorkspaceMutations()
       .getOrCreate(workspaceRoot)
       .prepareMutation({
         path,
@@ -878,9 +922,7 @@ describe("daemon editor coherence protocol", () => {
     const after = "\u0001".repeat(1_300_000);
     await writeFile(path, before);
 
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-    });
+    const { dispatcher, workspaceMutations } = dispatcherForHome(agencHome);
     const connection = dispatcher.createConnection();
     await connection.dispatch(
       request("initialize", "initialize", {
@@ -920,8 +962,7 @@ describe("daemon editor coherence protocol", () => {
       }),
     );
 
-    const coordinator =
-      workspaceMutationCoordinators.getOrCreate(workspaceRoot);
+    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
     const admission = await coordinator.prepareMutation({
       path,
       source: "file_edit",
@@ -1000,9 +1041,7 @@ describe("daemon editor coherence protocol", () => {
     await mkdir(sourceDirectory, { recursive: true });
     await writeFile(sourcePath, content);
 
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-    });
+    const { dispatcher } = dispatcherForHome(agencHome);
     const connection = dispatcher.createConnection();
     await connection.dispatch(
       request("initialize", "initialize", {
