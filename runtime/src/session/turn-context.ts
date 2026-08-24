@@ -91,6 +91,7 @@ export interface ModelInfo {
 /** `max` sits above `xhigh`; the gpt-5.6 family accepts it. */
 export type ReasoningEffort =
   | "none"
+  | "minimal"
   | "low"
   | "medium"
   | "high"

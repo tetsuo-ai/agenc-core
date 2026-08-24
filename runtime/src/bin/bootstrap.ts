@@ -651,8 +651,10 @@ function buildDeferredConfig(
   config: AgenCConfig,
   sandboxStatus?: ReturnType<SandboxExecutionBroker["status"]>,
 ): Config {
-  const modelReasoningEffort =
-    config.reasoning_effort === "minimal" ? "low" : config.reasoning_effort;
+  // `minimal` used to be folded into `low` here, which meant gpt-5 — the
+  // one family that documents it — could never actually be run at its
+  // floor. Adapters that lack the rung map it themselves.
+  const modelReasoningEffort = config.reasoning_effort;
   const maxTurns = maxTurnsFromAgenCConfig(config);
   return {
     model,

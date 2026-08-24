@@ -337,6 +337,17 @@ export function buildAnthropicMessagesRequest(
       name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
     };
   }
+  // Effort is a first-class request field here (`output_config.effort`,
+  // low…max), not something to approximate with a thinking budget. It
+  // shapes the whole response — text, tool calls and thinking — and needs
+  // no beta header. Sending it is what lets the app's dial mean anything
+  // on this provider.
+  if (input.options?.reasoningEffort !== undefined) {
+    // `minimal` is an upstream-provider rung with no counterpart here;
+    // low is this family's floor. Every other value is accepted as-is.
+    const effort = input.options.reasoningEffort;
+    body.output_config = { effort: effort === "minimal" ? "low" : effort };
+  }
   // Task 28: never attach a `thinking` config for the Fable/Mythos 5
   // family — thinking is always on and any explicit configuration other
   // than `{type:"adaptive"}` (incl. `disabled` and `enabled`/budget_tokens)

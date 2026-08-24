@@ -472,6 +472,22 @@ function geminiGenerationConfig(
   if (options?.stopSequences !== undefined && options.stopSequences.length > 0) {
     config.stopSequences = [...options.stopSequences];
   }
+  // Thinking depth here is `thinking_level`, not a token budget: the
+  // documented rungs are minimal/low/medium/high depending on the model.
+  // Mapping the app's ladder onto them is what makes an effort choice
+  // reach this provider at all — without it the setting was inert.
+  const effort = options?.reasoningEffort;
+  if (effort !== undefined) {
+    // gemini-2.5-pro, the curated model here, documents low/medium/high
+    // only: minimal folds down, and xhigh/max fold up to its ceiling.
+    const level =
+      effort === "minimal" || effort === "low"
+        ? "low"
+        : effort === "medium"
+          ? "medium"
+          : "high";
+    config.thinking_level = level;
+  }
   const structuredSchema = options?.structuredOutput?.schema;
   if (options?.structuredOutput?.enabled || structuredSchema) {
     config.responseMimeType = "application/json";
