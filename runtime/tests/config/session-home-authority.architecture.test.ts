@@ -74,6 +74,7 @@ describe("session home authority architecture", () => {
       "permissions/rpc/request-permissions.ts",
       "sandbox/engine/index.ts",
       "sandbox/engine/manager.ts",
+      "utils/imagePaste.ts",
     ]) {
       expect(source(name), name).toContain("resolveSessionTempRoot")
       expect(source(name), name).not.toMatch(/process\.env(?:\.|\[)["']?TMPDIR/u)

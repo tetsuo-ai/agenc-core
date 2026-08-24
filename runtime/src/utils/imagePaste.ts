@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
 import { execa } from 'execa'
 import { basename, extname, isAbsolute, join } from 'path'
+import { resolveSessionTempRoot } from '../session/runtime-options.js'
 import {
   IMAGE_MAX_HEIGHT,
   IMAGE_MAX_WIDTH,
@@ -17,7 +18,6 @@ import {
   maybeResizeAndDownsampleImageBuffer,
 } from './imageResizer.js'
 import { logError } from './log.js'
-import { peekAmbientRuntimeSession } from '../session/current-session.js'
 
 // Native NSPasteboard reader. GrowthBook gate tengu_collage_kaleidoscope is
 // a kill switch (default on). Falls through to osascript when off.
@@ -57,10 +57,8 @@ function getClipboardCommands() {
   const platform = process.platform as SupportedPlatform
 
   // Platform-specific short-lived file paths
-  // Use AGENC_TMPDIR if set, otherwise fall back to platform defaults
-  const baseTmpDir =
-    peekAmbientRuntimeSession()?.services?.runtimeOptions?.sessionTempRoot ||
-    (platform === 'win32' ? process.env.TEMP || 'C:\\Temp' : '/tmp')
+  // Use the immutable session temp root captured at the trusted ingress.
+  const baseTmpDir = resolveSessionTempRoot()
   const screenshotFilename = 'agenc_cli_latest_screenshot.png'
   const tempPaths: Record<SupportedPlatform, string> = {
     darwin: join(baseTmpDir, screenshotFilename),
