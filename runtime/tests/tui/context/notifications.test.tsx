@@ -27,9 +27,6 @@ vi.mock("../context/mailbox.js", () => ({
 vi.mock("../hooks/useEffectEventCompat.js", () => ({
   useEffectEventCompat: (callback: unknown) => callback,
 }));
-vi.mock("../hooks/useSettingsChange.js", () => ({
-  useSettingsChange: () => {},
-}));
 vi.mock("../../bootstrap/state.js", () => ({
   flushInteractionTime: () => {},
   getActiveTimeCounter: () => ({ activeMs: 0, totalMs: 0 }),
@@ -71,9 +68,6 @@ vi.mock("../../permissions/settings.js", async (importOriginal) => ({
     bypassPermissionsModeDisabled: false,
     disableAutoMode: false,
   }),
-}));
-vi.mock("../../utils/settings/applySettingsChange.js", () => ({
-  applySettingsChange: () => {},
 }));
 vi.mock("../../utils/settings/settings.js", () => ({
   getInitialSettings: () => ({}),

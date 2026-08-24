@@ -190,7 +190,7 @@ import type {
 import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
 import { EDITOR_PROPOSAL_TOOL_NAME } from "../../tools/system/editor-proposal.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
-import { defaultConfig, type AgenCConfig } from "../../config/schema.js";
+import type { AgenCConfig } from "../../config/schema.js";
 import { createTuiTools } from "../tool-rendering.js";
 import { useSessionTranscript } from "../session-transcript.js";
 import { useToolJSX } from "../tool-jsx-state.js";
@@ -1666,12 +1666,17 @@ export function shouldShowPromptInputState(options: {
  * Provides FPS metrics, stats context, and app state to the component tree.
  */
 export function App(t0) {
-  const $ = _c(9);
-  const { getFpsMetrics, stats, initialState, children } = t0;
+  const $ = _c(10);
+  const { getFpsMetrics, stats, initialState, configStore, children } = t0;
   let t1;
-  if ($[0] !== children || $[1] !== initialState) {
+  if (
+    $[0] !== children ||
+    $[1] !== configStore ||
+    $[2] !== initialState
+  ) {
     t1 = (
       <AppStateProvider
+        configStore={configStore}
         initialState={initialState}
         onChangeAppState={onChangeAppState}
       >
@@ -1679,32 +1684,33 @@ export function App(t0) {
       </AppStateProvider>
     );
     $[0] = children;
-    $[1] = initialState;
-    $[2] = t1;
+    $[1] = configStore;
+    $[2] = initialState;
+    $[3] = t1;
   } else {
-    t1 = $[2];
+    t1 = $[3];
   }
   let t2;
-  if ($[3] !== stats || $[4] !== t1) {
+  if ($[4] !== stats || $[5] !== t1) {
     t2 = <StatsProvider store={stats}>{t1}</StatsProvider>;
-    $[3] = stats;
-    $[4] = t1;
-    $[5] = t2;
+    $[4] = stats;
+    $[5] = t1;
+    $[6] = t2;
   } else {
-    t2 = $[5];
+    t2 = $[6];
   }
   let t3;
-  if ($[6] !== getFpsMetrics || $[7] !== t2) {
+  if ($[7] !== getFpsMetrics || $[8] !== t2) {
     t3 = (
       <FpsMetricsProvider getFpsMetrics={getFpsMetrics}>
         {t2}
       </FpsMetricsProvider>
     );
-    $[6] = getFpsMetrics;
-    $[7] = t2;
-    $[8] = t3;
+    $[7] = getFpsMetrics;
+    $[8] = t2;
+    $[9] = t3;
   } else {
-    t3 = $[8];
+    t3 = $[9];
   }
   return t3;
 }
@@ -1736,8 +1742,7 @@ async function persistOnboardingSelection(
       .setModelSelection(provider, model)
       .apply();
   }
-  await props.configStore.reload?.();
-  await props.session.services.configStore?.reload?.();
+  await getTuiConfigStore(props.session).reload();
 }
 function initialState(props: AgenCTuiProps, roleWorkspaceCwd: string): any {
   const roleWorkspace = createAgentRoleWorkspace(roleWorkspaceCwd);
@@ -2342,7 +2347,8 @@ export function getTuiProviderEnvironment(
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const { exit } = useApp();
   const settings = useSettings();
-  const stateRepository = getTuiConfigStore(props.session).stateRepository;
+  const configStore = getTuiConfigStore(props.session);
+  const stateRepository = configStore.stateRepository;
   const getFpsMetrics = useFpsMetrics();
   useCostSummary(getFpsMetrics);
   const renderHealthWarning = formatRenderHealthWarning(getFpsMetrics?.());
@@ -2966,19 +2972,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const [toolPermissionContext, setToolPermissionContext] =
     useSyncedPermissionContext(props.session);
   const [config, setConfig] = useState<AgenCConfig>(
-    () => props.configStore.current?.() ?? defaultConfig(),
+    () => configStore.current(),
   );
   useEffect(() => {
-    setConfig(props.configStore.current?.() ?? defaultConfig());
-    const unsubscribe = props.configStore.subscribe?.((next) => {
-      setConfig(next as AgenCConfig);
+    setConfig(configStore.current());
+    const unsubscribe = configStore.subscribe((next) => {
+      setConfig(next);
     });
-    return typeof unsubscribe === "function" ? unsubscribe : undefined;
-  }, [props.configStore]);
-  const agencHome =
-    props.configStore.homeContext?.path ??
-    props.configStore.agencHome ??
-    props.session.home;
+    return unsubscribe;
+  }, [configStore]);
+  const agencHome = configStore.homeContext.path;
   const persistPredictionConsent = useCallback(
     async (enabled: "on" | "off"): Promise<void> => {
       const nextBuffer = {
@@ -2992,16 +2995,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         .setBufferEditorConfig(nextBuffer)
         .apply();
       await props.session.applyDaemonConfig?.({ reload: true });
-      const reloaded = await props.configStore.reload?.();
-      setConfig(
-        reloaded ?? {
-          ...config,
-          buffer: nextBuffer,
-        },
-      );
+      const reloaded = await configStore.reload();
+      setConfig(reloaded);
       setPredictionConsentPromptVisible(false);
     },
-    [agencHome, config, props.configStore, props.session],
+    [agencHome, config, configStore, props.session],
   );
   const completeCodePrediction = useCallback(
     async (
@@ -7175,17 +7173,19 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
 }
 export function AgenCTuiApp(props: AgenCTuiProps): React.ReactElement {
   const roleWorkspaceCwd = useMemo(() => requireTuiRoleWorkspaceCwd(props), []);
+  const configStore = getTuiConfigStore(props.session);
   const initial = useMemo(
     () => initialState(props, roleWorkspaceCwd),
     [roleWorkspaceCwd],
   );
   return (
     <App
+      configStore={configStore}
       initialState={initial}
       getFpsMetrics={props.getFpsMetrics ?? DEFAULT_FPS_METRICS_GETTER}
     >
       <PromptOverlayProvider>
-        <KeybindingSetup configStore={props.configStore}>
+        <KeybindingSetup configStore={configStore}>
           <AgenCTuiShell {...props} roleWorkspaceCwd={roleWorkspaceCwd} />
         </KeybindingSetup>
       </PromptOverlayProvider>

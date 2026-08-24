@@ -64,7 +64,6 @@ type RenderedTuiElement = {
   readonly type: unknown;
   readonly props: {
     readonly session: unknown;
-    readonly configStore: unknown;
     readonly isInteractive: boolean;
     readonly model?: unknown;
     readonly initialPrompt?: string;
@@ -94,7 +93,6 @@ describe("TUI main coverage", () => {
     const stdout = new TestWriteStream();
     const stderr = new TestWriteStream();
     const session = { id: "session-1" };
-    const configStore = { source: "test" };
     const unmount = vi.fn();
     const waitUntilExit = vi.fn(async () => undefined);
 
@@ -102,7 +100,6 @@ describe("TUI main coverage", () => {
 
     const handle = await bootTUI({
       session: session as never,
-      configStore: configStore as never,
       stdin: stdin as never,
       stdout: stdout as never,
       stderr: stderr as never,
@@ -124,7 +121,6 @@ describe("TUI main coverage", () => {
     ];
     expect(element.type).toBe(AgenCTuiApp);
     expect(element.props.session).toBe(session);
-    expect(element.props.configStore).toBe(configStore);
     expect(element.props.isInteractive).toBe(true);
     expect(element.props.model).toBe("model-for-test");
     expect(element.props.initialPrompt).toBe("start here");
@@ -187,7 +183,6 @@ describe("TUI main coverage", () => {
 
     const handle = await bootTUI({
       session: {} as never,
-      configStore: {} as never,
       stdin: stdin as never,
       stdout: stdout as never,
       stderr: stderr as never,

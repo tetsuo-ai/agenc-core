@@ -54,10 +54,7 @@ import {
   type AgentRoleWorkspace,
 } from "../agents/role-workspace.js";
 import { loadFreshAgentDefinitions } from "../tools/AgentTool/loadAgentsDir.js";
-import type {
-  AgenCBridgeSession,
-  ConfigStoreLike,
-} from "../tui/session-types.js";
+import type { AgenCBridgeSession } from "../tui/session-types.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
 
 export {
@@ -339,9 +336,14 @@ export interface AgenCDaemonOnlyTuiContextOptions {
     | "auto";
 }
 
+export type AgenCDaemonOnlyTuiSession = Omit<AgenCBridgeSession, "services"> & {
+  readonly services: AgenCBridgeSession["services"] & {
+    readonly configStore: ConfigStore;
+  };
+};
+
 export interface AgenCDaemonOnlyTuiContext {
-  readonly configStore: ConfigStoreLike;
-  readonly baseSession: AgenCBridgeSession;
+  readonly baseSession: AgenCDaemonOnlyTuiSession;
   readonly model?: string;
   readonly workspaceRoot: string;
   close(): Promise<void>;
@@ -441,7 +443,7 @@ async function createBoundAgenCDaemonOnlyTuiContext(
     // The bridge exposes provider identity, not an in-process LLMProvider.
     provider: { slug: startup.provider },
   };
-  const session: AgenCBridgeSession = {
+  const session: AgenCDaemonOnlyTuiSession = {
     conversationId: options.conversationId,
     roleWorkspace,
     agentDefinitions,
@@ -487,7 +489,6 @@ async function createBoundAgenCDaemonOnlyTuiContext(
     listMcpTools: () => mcpService.getTools?.() ?? [],
   };
   return {
-    configStore,
     baseSession: session,
     model: startup.model,
     workspaceRoot: options.cwd,

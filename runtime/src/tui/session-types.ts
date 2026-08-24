@@ -1,5 +1,4 @@
 import type { LLMMessage } from "../llm/types.js";
-import type { AgenCConfig } from "../config/schema.js";
 import type { ConfigStore } from "../config/store.js";
 import type { Event } from "../session/event-log.js";
 import type { HistoryReplacedEvent } from "../session/transcript-replacement.js";
@@ -409,19 +408,8 @@ function restoreCompactProgressControl<
   }
 }
 
-export interface ConfigStoreLike {
-  readonly homeContext?: { readonly path: string };
-  readonly agencHome?: string;
-  readonly stateRepository?: ConfigStore["stateRepository"];
-  current?(): AgenCConfig;
-  reload?(): Promise<AgenCConfig>;
-  subscribe?(listener: (config: AgenCConfig) => void): (() => void) | void;
-  warnings?(): readonly string[];
-}
-
 export interface AgenCTuiProps {
   readonly session: AgenCBridgeSession;
-  readonly configStore: ConfigStoreLike;
   /**
    * bootTUI-owned awaitable lifecycle boundary. Components register
    * idempotent cleanup here so waitUntilExit cannot outrun daemon/editor

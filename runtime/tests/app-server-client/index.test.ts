@@ -502,7 +502,7 @@ describe("app-server-client daemon helpers", () => {
       });
 
       expect(context.model).toBe("grok-4.3");
-      expect(context.configStore.current()).toMatchObject({
+      expect(context.baseSession.services.configStore.current()).toMatchObject({
         model_provider: "grok",
         model: "grok-4.3",
       });
@@ -559,7 +559,7 @@ describe("app-server-client daemon helpers", () => {
         provider: "grok",
         model: "grok-4.6",
       });
-      const store = context.configStore as ConfigStore;
+      const store = context.baseSession.services.configStore as ConfigStore;
       const expectedConfig = {
         model_provider: "grok",
         model: "grok-4.6",
@@ -678,7 +678,7 @@ describe("app-server-client daemon helpers", () => {
             home: agencHome,
             agencHome,
             configStore:
-              context.configStore as SlashCommandContext["configStore"],
+              context.baseSession.services.configStore as SlashCommandContext["configStore"],
             commandRegistry: registry,
             appState: {
               getAppState: () => ({ mcp: { commands: [] } }),
@@ -760,7 +760,7 @@ describe("app-server-client daemon helpers", () => {
             cwd,
             home: agencHome,
             agencHome,
-            configStore: context!
+            configStore: context!.baseSession.services
               .configStore as SlashCommandContext["configStore"],
             commandRegistry: registry,
             appState: {
@@ -829,7 +829,7 @@ describe("app-server-client daemon helpers", () => {
             home: agencHome,
             agencHome,
             configStore:
-              context.configStore as SlashCommandContext["configStore"],
+              context.baseSession.services.configStore as SlashCommandContext["configStore"],
             commandRegistry: registry,
             appState: {
               getAppState: () => ({

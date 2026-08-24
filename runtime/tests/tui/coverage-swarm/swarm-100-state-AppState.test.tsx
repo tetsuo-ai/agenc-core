@@ -16,11 +16,11 @@ import {
 
 const harness = vi.hoisted(() => ({
   bypassDisabled: false,
-  settingsChange: undefined as ((source: unknown) => void) | undefined,
+  configChange: undefined as (() => void) | undefined,
 }));
 
 const mockFns = vi.hoisted(() => ({
-  applySettingsChange: vi.fn(),
+  applyConfigStoreChange: vi.fn(),
   createDisabledBypassPermissionsContext: vi.fn(
     (context: Record<string, unknown>) => ({
       ...context,
@@ -37,16 +37,6 @@ vi.mock("bun:bundle", () => ({
 
 vi.mock("../../../src/tui/context/mailbox.js", () => ({
   MailboxProvider: ({ children }: { children: React.ReactNode }) => children,
-}));
-
-vi.mock("../../../src/tui/hooks/useEffectEventCompat.js", () => ({
-  useEffectEventCompat: (callback: unknown) => callback,
-}));
-
-vi.mock("../../../src/tui/hooks/useSettingsChange.js", () => ({
-  useSettingsChange: (callback: (source: unknown) => void) => {
-    harness.settingsChange = callback;
-  },
 }));
 
 vi.mock("../../../src/utils/debug.js", () => ({
@@ -70,8 +60,8 @@ vi.mock("../../../src/permissions/settings.js", async (importOriginal) => ({
   }),
 }));
 
-vi.mock("../../../src/utils/settings/applySettingsChange.js", () => ({
-  applySettingsChange: mockFns.applySettingsChange,
+vi.mock("../../../src/utils/settings/applyConfigStoreChange.js", () => ({
+  applyConfigStoreChange: mockFns.applyConfigStoreChange,
 }));
 
 vi.mock("../../../src/services/PromptSuggestion/promptSuggestion.js", () => ({
@@ -181,7 +171,7 @@ function MaybeOutsideProbe(): React.ReactNode {
 describe("AppState coverage swarm row 100", () => {
   beforeEach(() => {
     harness.bypassDisabled = false;
-    harness.settingsChange = undefined;
+    harness.configChange = undefined;
   });
 
   afterEach(() => {
@@ -207,6 +197,13 @@ describe("AppState coverage swarm row 100", () => {
       },
     });
     const onChangeAppState = vi.fn();
+    const unsubscribeConfig = vi.fn();
+    const configStore = {
+      subscribe: vi.fn((listener: () => void) => {
+        harness.configChange = listener;
+        return unsubscribeConfig;
+      }),
+    } as never;
     let capturedStore: AppStateStore | undefined;
     let capturedSetAppState:
       | ((updater: (prev: AppState) => AppState) => void)
@@ -233,6 +230,7 @@ describe("AppState coverage swarm row 100", () => {
     try {
       root.render(
         <AppStateProvider
+          configStore={configStore}
           initialState={initialState}
           onChangeAppState={onChangeAppState}
         >
@@ -263,10 +261,10 @@ describe("AppState coverage swarm row 100", () => {
       expect(capturedStore?.getState().statusLineText).toBe("after-set");
       expect(onChangeAppState).toHaveBeenCalledTimes(2);
 
-      harness.settingsChange?.("workspace");
+      harness.configChange?.();
 
-      expect(mockFns.applySettingsChange).toHaveBeenCalledWith(
-        "workspace",
+      expect(mockFns.applyConfigStoreChange).toHaveBeenCalledWith(
+        configStore,
         capturedStore?.setState,
       );
     } finally {
@@ -274,6 +272,7 @@ describe("AppState coverage swarm row 100", () => {
       stdin.end();
       stdout.end();
       stderr.end();
+      expect(unsubscribeConfig).toHaveBeenCalledTimes(1);
     }
   });
 

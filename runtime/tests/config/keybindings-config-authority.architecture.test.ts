@@ -49,7 +49,11 @@ describe("canonical keybinding configuration authority", () => {
     const loader = source("tui/keybindings/loadUserBindings.ts");
     const setup = source("tui/keybindings/KeybindingProviderSetup.tsx");
     const app = source("tui/components/App.tsx");
+    const appServerClient = source("app-server-client/index.ts");
+    const cli = source("bin/agenc-main.ts");
     const mcp = source("cli/handlers/mcp.tsx");
+    const sessionTypes = source("tui/session-types.ts");
+    const tuiMain = source("tui/main.tsx");
 
     expect(loader).toContain("snapshot?.tui?.keybindings");
     expect(loader).toContain("store.subscribe(");
@@ -57,7 +61,22 @@ describe("canonical keybinding configuration authority", () => {
       /node:fs|chokidar|readFile|writeFile|JSON\.parse|process\.env|getAgenCHome/u,
     );
     expect(setup).toContain("initializeKeybindingSubscription(configStore)");
-    expect(app).toContain("<KeybindingSetup configStore={props.configStore}>");
+    expect(app).toContain("<KeybindingSetup configStore={configStore}>");
+    expect(app).toContain("const configStore = getTuiConfigStore(props.session)");
+    expect(app).not.toContain("props.configStore");
+    expect(sessionTypes).not.toContain("ConfigStoreLike");
+    expect(sessionTypes).not.toMatch(
+      /interface AgenCTuiProps \{[^}]*configStore/su,
+    );
+    expect(tuiMain).not.toMatch(
+      /interface BootTUIOptions \{[^}]*configStore/su,
+    );
+    expect(appServerClient).not.toMatch(
+      /interface AgenCDaemonOnlyTuiContext \{\s*readonly configStore/su,
+    );
+    expect(cli).not.toMatch(
+      /createDeferredDaemonPromptTuiSession\(params: \{[^}]*readonly configStore/su,
+    );
     expect(mcp).toContain("<KeybindingSetup configStore={authority}>");
   });
 

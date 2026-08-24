@@ -33,6 +33,7 @@ if (process.versions.bun !== undefined) {
 
 let createRoot: any;
 let defaultConfig: any;
+let ConfigStoreClass: typeof import("../../config/store.js").ConfigStore;
 let testConfigStore: import("../../config/store.js").ConfigStore;
 let markFirstRunOnboardingComplete: any;
 let readOnboardingState: any;
@@ -242,10 +243,6 @@ vi.mock("../hooks/useEffectEventCompat.js", () => ({
   useEffectEventCompat: (callback: unknown) => callback,
 }));
 
-vi.mock("../hooks/useSettingsChange.js", () => ({
-  useSettingsChange: () => {},
-}));
-
 vi.mock("../hooks/useApiKeyVerification.js", () => ({
   useApiKeyVerification: (context: unknown) => {
     apiKeyVerificationProbe.contexts.push(context);
@@ -307,8 +304,8 @@ vi.mock("../../permissions/settings.js", async (importOriginal) => ({
   parseToolRuleStringsFromCLI: (tools: string[] = []) => tools,
 }));
 
-vi.mock("../../utils/settings/applySettingsChange.js", () => ({
-  applySettingsChange: () => {},
+vi.mock("../../utils/settings/applyConfigStoreChange.js", () => ({
+  applyConfigStoreChange: () => {},
 }));
 
 vi.mock("../../utils/settings/settings.js", () => ({
@@ -876,14 +873,8 @@ beforeAll(async () => {
   if (!supportsVitestModuleMocks) return;
   ({ createRoot } = await import("../ink/root.js"));
   ({ defaultConfig } = await import("../../config/schema.js"));
-  const { ConfigStore } = await import("../../config/store.js");
-  testConfigStore = new ConfigStore({
-    base: defaultConfig(),
-    cwd: process.cwd(),
-    env: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
-    home: TEST_REMOTE_AUTH_SESSION_CONTEXT.home.path,
-    projectTrusted: false,
-  });
+  ({ ConfigStore: ConfigStoreClass } = await import("../../config/store.js"));
+  testConfigStore = createAppConfigStore();
   ({ markFirstRunOnboardingComplete, readOnboardingState } =
     await import("../../onboarding/projectOnboardingState.js"));
   const app = await import("./App.js");
@@ -891,6 +882,22 @@ beforeAll(async () => {
   settlePendingOnSubmit = app.settlePendingOnSubmit;
   visibleCancelStreamMode = app.visibleCancelStreamMode;
 }, 30_000);
+
+function createAppConfigStore(
+  config: import("../../config/schema.js").AgenCConfig = defaultConfig(),
+  agencHome = TEST_REMOTE_AUTH_SESSION_CONTEXT.home.path,
+): import("../../config/store.js").ConfigStore {
+  return new ConfigStoreClass({
+    base: config,
+    cwd: process.cwd(),
+    env: {
+      ...TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+      AGENC_HOME: agencHome,
+    },
+    home: agencHome,
+    projectTrusted: false,
+  });
+}
 
 async function renderApp(node: React.ReactNode): Promise<string> {
   const { stdout, stdin, output } = createTestStreams();
@@ -962,6 +969,7 @@ function createSession(
     readonly agentDefinitions?: AgenCBridgeSession["agentDefinitions"];
     readonly enqueueIdleInputBatch?: AgenCBridgeSession["enqueueIdleInputBatch"];
     readonly authBackend?: AgenCBridgeSession["services"]["authBackend"];
+    readonly configStore?: import("../../config/store.js").ConfigStore;
   } = {},
 ): AgenCBridgeSession {
   const modeSubscribers: Array<() => void> = [];
@@ -975,7 +983,7 @@ function createSession(
       ? { agentDefinitions: opts.agentDefinitions }
       : {}),
     services: {
-      configStore: testConfigStore,
+      configStore: opts.configStore ?? testConfigStore,
       providerEnvironment: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
       permissionModeRegistry: {
         current: () => permissionContext,
@@ -1129,7 +1137,6 @@ async function runConcurrentExitIntentScenario({
     await withRenderedApp(
       <AgenCTuiApp
         session={createSession()}
-        configStore={{}}
         isInteractive={false}
       />,
       async () => {
@@ -1275,7 +1282,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={createSession()}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -1509,7 +1515,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -1908,7 +1913,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -2020,7 +2024,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -2183,7 +2186,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -2323,7 +2325,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -2548,7 +2549,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async ({ render }) => {
@@ -2589,7 +2589,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           await render(
             <AgenCTuiApp
               session={reconnectedSession}
-              configStore={{}}
               isInteractive={false}
             />,
           );
@@ -2652,7 +2651,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           await render(
             <AgenCTuiApp
               session={{ ...session }}
-              configStore={{}}
               isInteractive={false}
             />,
           );
@@ -2869,7 +2867,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -3026,7 +3023,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const output = await renderApp(
       <AgenCTuiApp
         session={session}
-        configStore={{}}
         isInteractive={false}
         initialComposerText="draft"
       />,
@@ -3076,7 +3072,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           updatePermissionContext,
           setDaemonPermissionMode,
         })}
-        configStore={{}}
         isInteractive={false}
       />,
       async () => {
@@ -3114,7 +3109,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           },
           nextInternalSubId: () => "permission-sync-warning",
         })}
-        configStore={{}}
         isInteractive={false}
       />,
       async () => {
@@ -3155,7 +3149,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await renderApp(
       <AgenCTuiApp
         session={createSession()}
-        configStore={{}}
         isInteractive={false}
       />,
     );
@@ -3196,12 +3189,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       ...createSession(),
       predictEditorCode,
     } satisfies AgenCBridgeSession;
-    const config = defaultConfig();
 
     await withRenderedApp(
       <AgenCTuiApp
         session={session}
-        configStore={{ current: () => config }}
         isInteractive={false}
       />,
       async ({ output }) => {
@@ -3263,10 +3254,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       latencyMs: 8,
       cached: false,
     }));
-    const session = {
-      ...createSession(),
-      predictEditorCode,
-    } satisfies AgenCBridgeSession;
     const base = defaultConfig();
     const config = {
       ...base,
@@ -3278,11 +3265,14 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         },
       },
     };
+    const session = {
+      ...createSession({ configStore: createAppConfigStore(config) }),
+      predictEditorCode,
+    } satisfies AgenCBridgeSession;
 
     await withRenderedApp(
       <AgenCTuiApp
         session={session}
-        configStore={{ current: () => config }}
         isInteractive={false}
       />,
       async () => {
@@ -3340,7 +3330,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await renderApp(
         <AgenCTuiApp
           session={createSession()}
-          configStore={{}}
           isInteractive={false}
           initialComposerText="draft"
         />,
@@ -3369,7 +3358,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await renderApp(
       <AgenCTuiApp
         session={session}
-        configStore={{}}
         isInteractive={false}
       />,
     );
@@ -3424,7 +3412,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await renderApp(
       <AgenCTuiApp
         session={session}
-        configStore={{}}
         isInteractive={false}
       />,
     );
@@ -3451,7 +3438,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         expect(session.services.requestUserInputResolver).toBeDefined();
         expect(session.services.approvalResolver).toBeDefined();
@@ -3524,7 +3511,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -3591,7 +3577,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const acknowledgeWorkbenchAttachments = vi.fn();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async ({ output }) => {
         const promptProps = providerProbe.promptProps.at(-1)!;
         (
@@ -3673,7 +3659,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         providerProbe.setAppState!((state) => {
           let next = applyWorkbenchCommand(state as never, {
@@ -3824,7 +3810,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
           initialComposerText="agent draft"
         />,
@@ -4014,7 +3999,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await withRenderedApp(
       <AgenCTuiApp
         session={session}
-        configStore={{}}
         isInteractive={false}
         initialUserMessages={[
           { role: "user", content: "first" },
@@ -4063,7 +4047,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await withRenderedApp(
       <AgenCTuiApp
         session={session}
-        configStore={{}}
         isInteractive={false}
         initialPrompt="start now"
         initialUserMessages={[
@@ -4109,7 +4092,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await withRenderedApp(
       <AgenCTuiApp
         session={session}
-        configStore={{}}
         isInteractive={false}
         initialPrompt="$help"
         initialUserMessages={[{ role: "user", content: "must not leak" }]}
@@ -4174,7 +4156,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       root.render(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
       );
@@ -4224,7 +4205,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     };
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async ({ output }) => {
         const onSubmit = providerProbe.promptSubmits.at(-1);
         expect(onSubmit).toBeDefined();
@@ -4270,7 +4251,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     const output = await renderApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
     );
 
     expect(output).toContain("spinner:tool-use:Running");
@@ -4324,7 +4305,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         const onSubmit = providerProbe.promptSubmits.at(-1);
         expect(onSubmit).toBeDefined();
@@ -4412,7 +4393,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         const onSubmit = providerProbe.promptProps.at(-1)?.onSubmit as (
           input: string,
@@ -4464,7 +4445,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     const output = await renderApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
     );
 
     expect(output).toContain("spinner:responding:");
@@ -4516,7 +4497,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     const output = await renderApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
     );
 
     expect(output).toContain("spinner:responding:");
@@ -4571,7 +4552,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     const output = await renderApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
     );
 
     expect(output).toContain("spinner:tool-input:");
@@ -4612,7 +4593,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async ({ output }) => {
         const onSubmit = providerProbe.promptSubmits.at(-1);
         expect(onSubmit).toBeDefined();
@@ -4661,7 +4642,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         const firstMessageProps = providerProbe.messageProps.at(-1);
         const onInputChange = providerProbe.promptProps.at(-1)
@@ -4711,7 +4692,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         expect(providerProbe.mcpConnectivityProps.at(-1)).toEqual({
           mcpClients,
@@ -4793,7 +4774,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         let promptProps = providerProbe.promptProps.at(-1)!;
         let context = (
@@ -4844,7 +4825,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     providerProbe.messageProps.length = 0;
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         expect(providerProbe.globalKeybindingProps.at(-1)).toEqual(
           expect.objectContaining({
@@ -4896,7 +4877,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await withRenderedApp(
       <AgenCTuiApp
         session={session}
-        configStore={{}}
         isInteractive={false}
         initialUserMessages={[{ role: "user", content: "revise this" }]}
       />,
@@ -4952,7 +4932,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async ({ output }) => {
         expect(providerProbe.costSummaryGetters.at(-1)).toBe(
           providerProbe.fpsGetters.at(-1),
@@ -4996,7 +4976,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     mockWorktreeSession = { worktreePath: "/tmp/worktree" };
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         const promptProps = providerProbe.promptProps.at(-1)!;
         (promptProps.onExit as () => void)();
@@ -5021,7 +5001,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await withRenderedApp(
       <AgenCTuiApp
         session={createSession()}
-        configStore={{}}
         isInteractive={false}
       />,
       async () => {
@@ -5063,7 +5042,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         await withRenderedApp(
           <AgenCTuiApp
             session={createSession()}
-            configStore={{}}
             isInteractive={false}
           />,
           async () => {
@@ -5136,11 +5114,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await withRenderedApp(
       <AgenCTuiApp
         session={session}
-        configStore={{
-          stateRepository: {
-            get: () => mockGlobalConfig,
-          } as never,
-        }}
         isInteractive={false}
       />,
       async ({ output }) => {
@@ -5170,7 +5143,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await withRenderedApp(
       <AgenCTuiApp
         session={createSession()}
-        configStore={{}}
         isInteractive={false}
       />,
       async ({ output }) => {
@@ -5224,7 +5196,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await withRenderedApp(
       <AgenCTuiApp
         session={session}
-        configStore={{}}
         isInteractive={false}
         initialUserMessages={[{ role: "user", content: "summarize this" }]}
       />,
@@ -5303,7 +5274,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await withRenderedApp(
       <AgenCTuiApp
         session={session}
-        configStore={{}}
         isInteractive={false}
         initialUserMessages={[
           {
@@ -5360,7 +5330,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await withRenderedApp(
       <AgenCTuiApp
         session={session}
-        configStore={{}}
         isInteractive={false}
         initialUserMessages={[{ role: "user", content: "busy turn" }]}
       />,
@@ -5398,8 +5367,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
   test("renders first-run onboarding before the normal transcript when enabled", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    const session = createSession();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    const session = createSession({
+      configStore: createAppConfigStore(defaultConfig(), agencHome),
+    });
     const fetchSpy = mockOfflineOnboardingFetch();
     const previousApiKeyStatus = apiKeyVerificationProbe.status;
     apiKeyVerificationProbe.status = "missing";
@@ -5408,10 +5379,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         <AgenCTuiApp
           session={session}
           isInteractive={true}
-          configStore={{
-            agencHome,
-            current: () => defaultConfig(),
-          }}
         />,
       );
 
@@ -5439,17 +5406,15 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
   test("suppresses first-run onboarding in noninteractive renders", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    const session = createSession();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    const session = createSession({
+      configStore: createAppConfigStore(defaultConfig(), agencHome),
+    });
     try {
       const output = await renderApp(
         <AgenCTuiApp
           session={session}
           isInteractive={false}
-          configStore={{
-            agencHome,
-            current: () => defaultConfig(),
-          }}
         />,
       );
 
@@ -5477,7 +5442,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     providerProbe.promptSubmits.length = 0;
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         const onSubmit = providerProbe.promptSubmits.at(-1);
         expect(onSubmit).toBeDefined();
@@ -5525,7 +5490,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -5604,7 +5568,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -5676,7 +5639,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async ({ output }) => {
@@ -5738,7 +5700,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -5803,7 +5764,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -5860,7 +5820,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         // Retain the Agent render's callback, then mutate the synchronous store
         // without yielding to React. This is the exact handoff/tab-switch gap
@@ -5933,7 +5893,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     resetShellSurfaceProbe();
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         providerProbe.setAppState!((state) =>
           applyWorkbenchCommand(state as never, {
@@ -5992,7 +5952,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     process.env.AGENC_TUI_WORKBENCH = "1";
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp session={session} isInteractive={false} />,
       async () => {
         providerProbe.setAppState!(
           (state) =>
@@ -6108,7 +6068,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         await withRenderedApp(
           <AgenCTuiApp
             session={session}
-            configStore={{}}
             isInteractive={false}
           />,
           async () => {
@@ -6239,7 +6198,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -6308,7 +6266,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -6446,7 +6403,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
           initialComposerText="agent-only draft"
         />,
@@ -6571,7 +6527,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -6687,7 +6642,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
           initialComposerText="preserve this draft"
         />,
@@ -6821,7 +6775,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -6914,7 +6867,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await withRenderedApp(
         <AgenCTuiApp
           session={session}
-          configStore={{}}
           isInteractive={false}
         />,
         async () => {
@@ -6978,8 +6930,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
   test("skips first-run onboarding after completion is persisted", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    const session = createSession();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    const session = createSession({
+      configStore: createAppConfigStore(defaultConfig(), agencHome),
+    });
     try {
       markFirstRunOnboardingComplete({
         agencHome,
@@ -6992,10 +6946,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         <AgenCTuiApp
           session={session}
           isInteractive={true}
-          configStore={{
-            agencHome,
-            current: () => defaultConfig(),
-          }}
         />,
       );
 
@@ -7008,8 +6958,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
   test("lets /exit leave first-run onboarding immediately", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    const session = createSession();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    const session = createSession({
+      configStore: createAppConfigStore(defaultConfig(), agencHome),
+    });
     const helpers = {
       clearBuffer: vi.fn(),
       resetHistory: vi.fn(),
@@ -7023,10 +6975,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         <AgenCTuiApp
           session={session}
           isInteractive={true}
-          configStore={{
-            agencHome,
-            current: () => defaultConfig(),
-          }}
         />,
         async () => {
           const onSubmit = providerProbe.promptSubmits.at(-1);
@@ -7069,11 +7017,13 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           resultKind: "text",
         },
       } as never);
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
     const session = {
-      ...createSession(),
+      ...createSession({
+        configStore: createAppConfigStore(defaultConfig(), agencHome),
+      }),
       submit: vi.fn(async () => {}),
     };
-    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
     const fetchSpy = mockOfflineOnboardingFetch();
     providerProbe.promptSubmits.length = 0;
     const helpers = {
@@ -7087,10 +7037,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         <AgenCTuiApp
           session={session}
           isInteractive={true}
-          configStore={{
-            agencHome,
-            current: () => defaultConfig(),
-          }}
         />,
         async ({ output }) => {
           const onSubmit = providerProbe.promptSubmits.at(-1);
@@ -7116,12 +7062,14 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
   test("routes composer submissions through onboarding and stages provider switch on completion", async () => {
     const { AgenCTuiApp } = await import("./App.js");
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
     const session = {
-      ...createSession(),
+      ...createSession({
+        configStore: createAppConfigStore(defaultConfig(), agencHome),
+      }),
       submit: vi.fn(async () => {}),
       setPendingProviderSwitch: vi.fn(),
     };
-    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
     // Isolate AGENC_HOME: a real ~/.agenc/auth.json (hosted managed session)
     // would reorder the onboarding provider menu and swap the API-key step
     // for the hosted-access path, breaking the scripted anonymous flow.
@@ -7139,10 +7087,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         <AgenCTuiApp
           session={session}
           isInteractive={true}
-          configStore={{
-            agencHome,
-            current: () => defaultConfig(),
-          }}
         />,
         async ({ output }) => {
           const currentFrameText = (): string =>
@@ -7207,6 +7151,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
   test("routes BYOK key approval through the real first-run TUI submission path", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const savedKeys = new Map<string, string>();
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
     const session = {
       ...createSession({
         authBackend: {
@@ -7214,10 +7159,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             savedKeys.set(provider, apiKey);
           },
         } as never,
+        configStore: createAppConfigStore(defaultConfig(), agencHome),
       }),
       setPendingProviderSwitch: vi.fn(),
     };
-    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
     // Isolate AGENC_HOME: a real ~/.agenc/auth.json (hosted managed session)
     // would replace the BYOK API-key step with the hosted-access path.
     const previousAgencHome = process.env.AGENC_HOME;
@@ -7238,10 +7183,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         <AgenCTuiApp
           session={session}
           isInteractive={true}
-          configStore={{
-            agencHome,
-            current: () => defaultConfig(),
-          }}
         />,
         async ({ output }) => {
           const submit = async (value: string): Promise<void> => {
@@ -7287,6 +7228,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
   test("persists first-run BYOK provider selection for restarts", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const savedKeys = new Map<string, string>();
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-persist-"));
     const session = {
       ...createSession({
         authBackend: {
@@ -7294,10 +7236,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             savedKeys.set(provider, apiKey);
           },
         } as never,
+        configStore: createAppConfigStore(defaultConfig(), agencHome),
       }),
       setPendingProviderSwitch: vi.fn(),
     };
-    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-persist-"));
     const previousAgencHome = process.env.AGENC_HOME;
     process.env.AGENC_HOME = agencHome;
     const fetchSpy = vi
@@ -7316,11 +7258,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         <AgenCTuiApp
           session={session}
           isInteractive={true}
-          configStore={{
-            agencHome,
-            current: () => defaultConfig(),
-            reload: vi.fn(async () => defaultConfig()),
-          }}
         />,
         async () => {
           const submit = async (value: string): Promise<void> => {

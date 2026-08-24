@@ -438,17 +438,16 @@ function installDaemonCliDepsForTest(
       conversationId: string;
     }) => {
       const abortController = new AbortController();
-      return {
-        configStore: {
-          agencHome: params.env?.AGENC_HOME ?? "/tmp/agenc-test-home",
-          current: () => ({
-            ...defaultConfig(),
-            model: "grok-4.3",
-            model_provider: "grok",
-          }),
-          subscribe: () => () => undefined,
-          warnings: () => [],
+      const configStore = new ConfigStore({
+        home: params.env?.AGENC_HOME ?? "/tmp/agenc-test-home",
+        env: params.env ?? {},
+        base: {
+          ...defaultConfig(),
+          model: "grok-4.3",
+          model_provider: "grok",
         },
+      });
+      return {
         baseSession: {
           conversationId: params.conversationId,
           roleWorkspace: params.roleWorkspace,
@@ -459,6 +458,7 @@ function installDaemonCliDepsForTest(
             provider: { slug: "xai" },
           },
           services: {
+            configStore,
             permissionModeRegistry: new PermissionModeRegistry(
               createEmptyToolPermissionContext(),
             ),

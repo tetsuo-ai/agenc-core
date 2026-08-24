@@ -132,8 +132,7 @@ async function createDeferredInputSession(
   } = {},
 ): Promise<DeferredInputSession> {
   const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-    baseSession: options.baseSession ?? {},
-    configStore: options.configStore ?? new ConfigStore({ env: {} }),
+    baseSession: withConfigStore(options.baseSession, options.configStore),
     deps: (options.deps ?? {}) as never,
     agencHome: process.cwd(),
     env: {},
@@ -145,6 +144,27 @@ async function createDeferredInputSession(
   });
   cleanups.push(deferred.close);
   return deferred.session as DeferredInputSession;
+}
+
+function withConfigStore(
+  baseSession: unknown = {},
+  configStore = new ConfigStore({ env: {} }),
+): Record<string, unknown> {
+  const base =
+    typeof baseSession === "object" && baseSession !== null
+      ? (baseSession as Record<string, unknown>)
+      : {};
+  const services =
+    typeof base.services === "object" && base.services !== null
+      ? (base.services as Record<string, unknown>)
+      : {};
+  return {
+    ...base,
+    services: {
+      ...services,
+      configStore,
+    },
+  };
 }
 
 function queuedText(text: string): {
@@ -301,8 +321,7 @@ describe("deferred daemon input ownership", () => {
   it("exposes cold Editor authority through one lazy sessionless control client", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -395,8 +414,7 @@ describe("deferred daemon input ownership", () => {
   it("reloads daemon-global config before the first turn without starting an agent", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -434,8 +452,7 @@ describe("deferred daemon input ownership", () => {
     });
     const startPromptAgent = vi.fn(async () => ({ agentId: "unused" }));
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: {},
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(),
       deps: {
         startPromptAgent,
         stopPromptAgent: vi.fn(async () => undefined),
@@ -494,8 +511,7 @@ describe("deferred daemon input ownership", () => {
     const createConnectedTuiClient = vi.fn(() => connection);
     const stopPromptAgent = vi.fn(async () => undefined);
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: {},
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(),
       deps: {
         startPromptAgent,
         stopPromptAgent,
@@ -533,8 +549,7 @@ describe("deferred daemon input ownership", () => {
   it("stops a prediction-only daemon session when the TUI closes before submit", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -578,8 +593,7 @@ describe("deferred daemon input ownership", () => {
   it("replaces one lost deferred prediction session across concurrent retry", async () => {
     const harness = daemonHarness({ rejectFirstEditorPrediction: true });
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -641,8 +655,7 @@ describe("deferred daemon input ownership", () => {
   it("does not replace an activated Agent session from prediction routing", async () => {
     const harness = daemonHarness({ rejectFirstEditorPrediction: true });
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -688,8 +701,7 @@ describe("deferred daemon input ownership", () => {
   it("stops a prediction-started daemon after an Editor-only submission", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -728,8 +740,7 @@ describe("deferred daemon input ownership", () => {
   it("stops a daemon started directly by a cold Editor-only submission", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -762,8 +773,7 @@ describe("deferred daemon input ownership", () => {
   it("keeps a daemon alive after Editor mode activates through an ordinary Agent submission", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -787,8 +797,7 @@ describe("deferred daemon input ownership", () => {
   it("retains Editor-only teardown ownership when Agent activation fails", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -821,8 +830,7 @@ describe("deferred daemon input ownership", () => {
   it("preserves pre-prediction queued input when reusing the cold session for the first turn", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -872,8 +880,7 @@ describe("deferred daemon input ownership", () => {
   it("keeps cold and live Editor attachments out of Agent turns and migrates them exactly once", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: harness.baseSession,
-      configStore: new ConfigStore({ env: {} }),
+      baseSession: withConfigStore(harness.baseSession),
       deps: harness.deps as never,
       agencHome: process.cwd(),
       env: {},
@@ -1063,13 +1070,12 @@ describe("deferred daemon input ownership", () => {
       return client;
     });
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
-      baseSession: {
+      baseSession: withConfigStore({
         activeTurn: { unsafePeek: () => null },
         conversationId: "deferred-editor-dynamic",
         services: {},
         sessionConfiguration: { cwd: workspaceRoot },
-      },
-      configStore: new ConfigStore({ env: {} }),
+      }),
       deps: {
         startPromptAgent,
         stopPromptAgent: vi.fn(async () => undefined),
@@ -1305,9 +1311,8 @@ describe("deferred daemon input ownership", () => {
   it("rejects a blocked live prompt instead of resolving without submission", async () => {
     const submit = vi.fn(async () => undefined);
     const wrapped = __wrapDaemonTuiSessionWithPromptPreparationForTest(
-      { submit },
+      withConfigStore({ submit }),
       {
-        configStore: new ConfigStore({ env: {} }),
         agencHome: process.cwd(),
         cwd: process.cwd(),
         env: {},
@@ -1340,9 +1345,8 @@ describe("deferred daemon input ownership", () => {
       },
     };
     const wrapped = __wrapDaemonTuiSessionWithPromptPreparationForTest(
-      { submit },
+      withConfigStore({ submit }),
       {
-        configStore: new ConfigStore({ env: {} }),
         agencHome: process.cwd(),
         cwd: process.cwd(),
         env: {},

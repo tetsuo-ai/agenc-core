@@ -2522,7 +2522,6 @@ export async function oneShotCLI(
 async function loadBootTUI(): Promise<
   (opts: {
     session: unknown;
-    configStore: unknown;
     model?: string;
     initialPrompt?: string;
     initialComposerText?: string;
@@ -2543,7 +2542,6 @@ async function loadBootTUI(): Promise<
   const mod = (await import(specifier)) as {
     readonly bootTUI: (opts: {
       session: unknown;
-      configStore: unknown;
       model?: string;
       initialPrompt?: string;
       initialComposerText?: string;
@@ -2913,6 +2911,17 @@ type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
   } | null;
 };
 
+function requireTuiSessionConfigStore(session: unknown): ConfigStore {
+  if (!isRecord(session) || !isRecord(session.services)) {
+    throw new Error("TUI session is missing its canonical ConfigStore");
+  }
+  const configStore = session.services.configStore;
+  if (!(configStore instanceof ConfigStore)) {
+    throw new Error("TUI session is missing its canonical ConfigStore");
+  }
+  return configStore;
+}
+
 type LocalTuiSlashOutcome =
   | { readonly kind: "handled" }
   | { readonly kind: "prompt"; readonly content: string };
@@ -2971,7 +2980,6 @@ async function handleLocalTuiSlashCommand(params: {
 
 async function createDeferredDaemonPromptTuiSession(params: {
   readonly baseSession: unknown;
-  readonly configStore: Pick<ConfigStore, "current">;
   readonly deps: AgenCDaemonCliDeps;
   readonly agencHome: string;
   readonly env: NodeJS.ProcessEnv;
@@ -2988,6 +2996,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
   readonly session: unknown;
   readonly close: () => Promise<void>;
 }> {
+  const configStore = requireTuiSessionConfigStore(params.baseSession);
   // Mutable bootstrap config for the not-yet-created daemon session. Pre-first-
   // turn slash commands (`/model`, `/provider`, `/permissions mode`, `/plan`)
   // stage their choice HERE so the FIRST daemon turn (created lazily in
@@ -3278,7 +3287,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
               ? firstMessage
               : await (params.preparePrompt ?? prepareDaemonTuiPrompt)({
                   message: firstMessage,
-                  configStore: params.configStore,
+                  configStore,
                   agencHome: params.agencHome,
                   cwd: params.cwd,
                   env: params.env,
@@ -3401,7 +3410,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
             clientId: params.clientId,
           })) as TuiSessionShape,
           {
-            configStore: params.configStore,
             agencHome: params.agencHome,
             cwd: params.cwd,
             env: params.env,
@@ -4005,7 +4013,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
                 message,
                 session,
                 subscribers,
-                configStore: params.configStore,
+                configStore,
                 agencHome: params.agencHome,
                 cwd: params.cwd,
                 env: params.env,
@@ -4110,7 +4118,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
               message,
               session,
               subscribers,
-              configStore: params.configStore,
+              configStore,
               agencHome: params.agencHome,
               cwd: params.cwd,
               env: params.env,
@@ -4398,7 +4406,6 @@ function wrapDaemonTuiSessionWithPromptPreparation<
 >(
   session: Session,
   params: {
-    readonly configStore: Pick<ConfigStore, "current">;
     readonly agencHome: string;
     readonly cwd: string;
     readonly env: NodeJS.ProcessEnv;
@@ -4406,6 +4413,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
     readonly preparePrompt?: typeof prepareDaemonTuiPrompt;
   },
 ): Session {
+  const configStore = requireTuiSessionConfigStore(session);
   const originalSubmit = session.submit?.bind(session);
   if (originalSubmit === undefined) return session;
   const originalSubscribe = session.subscribeToEvents?.bind(session);
@@ -4431,7 +4439,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
             message,
             session: wrapped as TuiSessionShape & Record<string, unknown>,
             subscribers: localSubscribers,
-            configStore: params.configStore,
+            configStore,
             agencHome: params.agencHome,
             cwd: params.cwd,
             env: params.env,
@@ -4441,6 +4449,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
       const prepared = await (params.preparePrompt ?? prepareDaemonTuiPrompt)({
         message: nextMessage.content,
         ...params,
+        configStore,
       });
       if (prepared === null) {
         throw new Error(
@@ -4625,7 +4634,6 @@ export async function bootTUIEntry(
       const deps = daemonCliDeps();
       const idlePermissionMode = startupPermissionMode(startupCliFlags);
       const {
-        configStore,
         workspaceRoot,
         baseSession,
         model,
@@ -4651,13 +4659,11 @@ export async function bootTUIEntry(
           ? { permissionMode: idlePermissionMode }
           : {}),
       });
+      const configStore = baseSession.services.configStore;
       const deferred = await createDeferredDaemonPromptTuiSession({
         baseSession,
-        configStore: configStore as unknown as Pick<ConfigStore, "current">,
         deps,
-        agencHome:
-          (configStore as { readonly agencHome?: string }).agencHome ??
-          resolveAgencHome(sessionEnv),
+        agencHome: configStore.agencHome,
         env: sessionEnv,
         runtimeOptions,
         cwd: workspaceRoot,
@@ -4686,7 +4692,6 @@ export async function bootTUIEntry(
       try {
         const handle = await boot({
           session: deferred.session,
-          configStore,
           model,
           stdinMode: runtimeOptions.stdinDataMode === true ? "data" : "readable",
           ...(capturedEarlyInput.length > 0
@@ -4930,7 +4935,6 @@ export async function attachAgentTuiEntry(
     const attachPermissionMode =
       startupPermissionMode(startupCliFlags) ?? retainedUserPermissionMode;
     const {
-      configStore,
       workspaceRoot,
       baseSession,
       model,
@@ -4951,6 +4955,7 @@ export async function attachAgentTuiEntry(
         ? { permissionMode: attachPermissionMode }
         : {}),
     });
+    const configStore = baseSession.services.configStore;
     const createDaemonTuiSession = await loadCreateDaemonTuiSession();
     const daemonSession = await createDaemonTuiSession({
       baseSession,
@@ -4967,10 +4972,7 @@ export async function attachAgentTuiEntry(
         ) => Promise<void>;
       },
       {
-        configStore: configStore as unknown as Pick<ConfigStore, "current">,
-        agencHome:
-          (configStore as { readonly agencHome?: string }).agencHome ??
-          resolveAgencHome(bootstrapEnv),
+        agencHome: configStore.agencHome,
         cwd: workspaceRoot,
         env: bootstrapEnv,
         stderr: process.stderr,
@@ -4989,7 +4991,6 @@ export async function attachAgentTuiEntry(
     try {
       const handle = await boot({
         session: preparedDaemonSession,
-        configStore,
         model,
         stdinMode: runtimeOptions.stdinDataMode === true ? "data" : "readable",
         ...(args.initialComposerText !== undefined &&
