@@ -47,23 +47,13 @@ function finalMessageMetadata(
  * Returns `undefined` when neither signal is available (so we don't clobber
  * a previously-recorded progress with zeros).
  */
-export function liveAgentCounts(
+function liveAgentCounts(
   thread: AgentThreadTaskHandle,
 ): { readonly toolUseCount: number; readonly tokenCount: number } | undefined {
   const tokenCount = thread.live.tokenUsage?.totalTokens;
-  const liveToolCallCount = thread.live.toolCallCount;
-  let toolUseCount = liveToolCallCount ?? 0;
-  let sawToolCount = liveToolCallCount !== undefined;
-  // Structural/legacy adapters may not expose the dedicated counter yet.
-  // Retain transcript counting as a compatibility fallback only.
-  if (!sawToolCount && thread.live.messages !== undefined) {
-    sawToolCount = true;
-    for (const message of thread.live.messages) {
-      toolUseCount += message.toolCalls?.length ?? 0;
-    }
-  }
-  if (tokenCount === undefined && !sawToolCount) return undefined;
-  return { toolUseCount, tokenCount: tokenCount ?? 0 };
+  const toolUseCount = thread.live.toolCallCount;
+  if (tokenCount === undefined && toolUseCount === undefined) return undefined;
+  return { toolUseCount: toolUseCount ?? 0, tokenCount: tokenCount ?? 0 };
 }
 
 export interface AgentThreadTaskHandle {
@@ -97,10 +87,6 @@ export interface AgentThreadTaskHandle {
     readonly tokenUsage?: { readonly totalTokens?: number };
     /** Cumulative tool calls maintained directly by the child runner. */
     readonly toolCallCount?: number;
-    /**
-     * Legacy fallback for adapters that predate `toolCallCount`.
-     */
-    readonly messages?: ReadonlyArray<LLMMessage>;
   };
   join(): Promise<RunAgentResult>;
 }
@@ -131,6 +117,49 @@ export interface RegisterAgentThreadTaskOptions {
     readonly logDebug?: (message: string) => void;
     readonly logError?: (error: unknown) => void;
   };
+}
+
+function projectAgentThreadSnapshot(
+  thread: AgentThreadTaskHandle,
+  snapshot: BackgroundTaskSnapshot,
+): BackgroundTaskSnapshot {
+  return thread.live.status.value.status === "idle" &&
+    !isTerminalTaskStatus(snapshot.status)
+    ? { ...snapshot, status: "idle" as BackgroundTaskStatus }
+    : snapshot;
+}
+
+/**
+ * Observe a task already owned by the canonical lifecycle.
+ *
+ * Daemon registration can win the race with the model-facing spawn tool. The
+ * tool attaches here instead of creating another status mapper and progress
+ * poller; all state still comes from the original lifecycle registration.
+ */
+export function observeAgentThreadTask(
+  lifecycle: BackgroundTaskLifecycle,
+  thread: AgentThreadTaskHandle,
+  onSnapshot: (snapshot: BackgroundTaskSnapshot) => void,
+): () => void {
+  const threadId = thread.threadId ?? thread.live.agentId;
+  let lastSignature: string | undefined;
+  let unsubscribe = (): void => {};
+  const forward = (snapshot: BackgroundTaskSnapshot): void => {
+    const projected = projectAgentThreadSnapshot(thread, snapshot);
+    const signature = JSON.stringify({
+      status: projected.status,
+      progress: projected.progress,
+      error: projected.error,
+    });
+    if (signature === lastSignature) return;
+    lastSignature = signature;
+    onSnapshot(projected);
+    if (isTerminalTaskStatus(projected.status)) unsubscribe();
+  };
+  unsubscribe = lifecycle.subscribe(threadId, forward);
+  const current = lifecycle.get(threadId);
+  if (current !== undefined) forward(current);
+  return unsubscribe;
 }
 
 export function registerAgentThreadTask(
@@ -185,11 +214,7 @@ export function registerAgentThreadTask(
     // including the progress-timer snapshot that can land a tick after the
     // idle transition. Terminal snapshots (completed/failed/killed) are never
     // relabeled. collabStatusToTaskStatus maps "idle" -> "completed".
-    const relabeled =
-      thread.live.status.value.status === "idle" &&
-      !isTerminalTaskStatus(snapshot.status)
-        ? { ...snapshot, status: "idle" as BackgroundTaskStatus }
-        : snapshot;
+    const relabeled = projectAgentThreadSnapshot(thread, snapshot);
     opts.onSnapshot?.(relabeled);
     return relabeled;
   };
@@ -477,10 +502,9 @@ function mapAgentStatus(
       case "errored":
         return lifecycle.fail(taskId, status.error);
       case "shutdown":
-        void lifecycle.stop(taskId, "agent shutdown").catch(() => {});
-        return undefined;
+        return lifecycle.kill(taskId, "agent shutdown");
       case "not_found":
-        return lifecycle.fail(taskId, "agent not found");
+        return lifecycle.kill(taskId, "agent not found");
     }
   } catch {
     // The lifecycle may already be terminal when a late AgentStatus arrives.

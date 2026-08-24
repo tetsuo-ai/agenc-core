@@ -325,6 +325,8 @@ function makeWiring() {
     primaryCwd: projectA.cwd,
     kernel,
     warn: () => {},
+    env: {},
+    argv: ["node", "agenc"],
     stateDatabasePaths: () => [
       resolveStateDatabasePaths({ cwd: projectA.cwd, agencHome: home }),
       resolveStateDatabasePaths({ cwd: projectB.cwd, agencHome: home }),

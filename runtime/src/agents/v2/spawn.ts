@@ -25,9 +25,8 @@ import {
 import {
   BackgroundTaskError,
   backgroundTaskLifecycle,
-  liveAgentCounts,
+  observeAgentThreadTask,
   registerAgentThreadTask,
-  type AgentThreadTaskHandle,
   type BackgroundTaskSnapshot,
 } from "../../tasks/index.js";
 import { syncBackgroundTaskSnapshotToAppState } from "../../tasks/app-state-bridge.js";
@@ -334,89 +333,6 @@ function roleReasoningEffort(
 
 function roleServiceTier(role: AgentRole | undefined): string | undefined {
   return role?.config.serviceTier;
-}
-
-/**
- * Telemetry for a spawn whose lifecycle registration was skipped: the
- * daemon path registers agent threads before spawn_agent can, and the
- * onSnapshot hook that emission rides was silently dropped with the
- * duplicate registration — attached UIs saw the spawn begin and end but
- * never a status or a live tool/token count. This wires the equivalent
- * emission straight to the live handle: an immediate status, a modest
- * counter poll while the agent runs, and the final status on the
- * terminal transition.
- */
-export function attachDetachedSpawnTelemetry(
-  thread: AgentThreadTaskHandle,
-  emitTaskStatus: (snapshot: BackgroundTaskSnapshot) => void,
-): void {
-  const statusOf = (): { status?: string; error?: string } => {
-    const value = thread.live.status.value as unknown;
-    return typeof value === "object" && value !== null
-      ? (value as { status?: string; error?: string })
-      : {};
-  };
-  const terminal = (status: string | undefined): boolean =>
-    status === "completed" ||
-    status === "errored" ||
-    status === "shutdown" ||
-    status === "not_found";
-  /*
-   * The wire status is CollabAgentTaskStatus, a CLOSED union — a raw
-   * agent-status word outside it ("errored", "shutdown") poisons the
-   * canonical journal on replay and excludes the whole workspace from
-   * execution admission (see event-log.ts's history of exactly this).
-   * Map agent words onto the task vocabulary before emitting.
-   */
-  const wireStatus = (status: string | undefined): string => {
-    switch (status) {
-      case "running":
-      case "idle":
-      case "completed":
-        return status;
-      case "errored":
-        return "failed";
-      case "shutdown":
-      case "not_found":
-        return "killed";
-      default:
-        return "pending";
-    }
-  };
-  const emitNow = (): void => {
-    const value = statusOf();
-    const counts = liveAgentCounts(thread);
-    emitTaskStatus({
-      status: wireStatus(value.status) as BackgroundTaskSnapshot["status"],
-      ...(counts !== undefined ? { progress: counts } : {}),
-      ...(value.error !== undefined ? { error: value.error } : {}),
-    } as BackgroundTaskSnapshot);
-  };
-  let lastTools = -1;
-  let lastTokens = -1;
-  const timer = setInterval(() => {
-    if (terminal(statusOf().status)) return;
-    const counts = liveAgentCounts(thread);
-    if (counts === undefined) return;
-    if (counts.toolUseCount === lastTools && counts.tokenCount === lastTokens) {
-      return;
-    }
-    lastTools = counts.toolUseCount;
-    lastTokens = counts.tokenCount;
-    emitNow();
-  }, 1_000);
-  if (typeof timer.unref === "function") timer.unref();
-  let unsubscribe: () => void = () => {};
-  if (typeof thread.live.status.subscribe === "function") {
-    unsubscribe = thread.live.status.subscribe((status) => {
-      emitNow();
-      if (terminal((status as { status?: string } | undefined)?.status)) {
-        clearInterval(timer);
-        unsubscribe();
-      }
-    });
-  }
-  emitNow();
 }
 
 export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
@@ -870,7 +786,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
        * and end, then nothing. No status, no live tool/token counts. Wire
        * the same telemetry straight to the live handle instead.
        */
-      attachDetachedSpawnTelemetry(thread, emitTaskStatus);
+      observeAgentThreadTask(
+        backgroundTaskLifecycle,
+        thread,
+        emitTaskStatus,
+      );
     }
     emit(session, {
       type: "collab_agent_spawn_end",

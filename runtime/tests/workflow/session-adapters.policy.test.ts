@@ -25,12 +25,10 @@ import {
   inspectWorkflowChildTerminal,
   recordWorkflowChildTerminal,
   workflowChildAdmissionUsage,
-  workflowPermissionModeArgv,
   type WorkflowSessionSeams,
 } from "../../src/app-server/workflow/session-adapters.js";
 import type { WorkflowRunSessionPolicy } from "../../src/app-server/workflow/verified-change-controller.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
-import { readStartupCliFlags } from "../../src/bin/startup-selection.js";
 import {
   EFFECT_EVIDENCE_FORMAT_VERSION,
   EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
@@ -130,6 +128,9 @@ function makeSeams(
     undefined,
 ): WorkflowSessionSeams {
   return createWorkflowSessionSeams({
+    agencHome: home,
+    env: {},
+    argv: ["node", "agenc"],
     kernel: {} as ExecutionAdmissionKernel,
     durability: () => repo,
     resolveRunRepoPath: () => cwd,
@@ -166,7 +167,7 @@ describe("A2 — spec permission policy on the run session", () => {
       repoPath: cwd,
       policy: {
         permissionMode: "acceptEdits",
-        unattendedAllow: ["Bash", "FileRead"],
+        unattendedAllow: ["exec_command", "FileRead"],
         unattendedDeny: ["Edit"],
       },
     });
@@ -199,12 +200,12 @@ describe("A2 — spec permission policy on the run session", () => {
   it("a resumed run re-resolves the policy from the durable intake spec", async () => {
     const seams = makeSeams(() => ({
       permissionMode: "plan",
-      unattendedDeny: ["Bash"],
+      unattendedDeny: ["exec_command"],
     }));
     // No explicit policy → the resume path (journal.open without context).
     await seams.journal.open(RUN_ID);
     expect(resolvedPolicies).toEqual([
-      { permissionMode: "plan", unattendedDeny: ["Bash"] },
+      { permissionMode: "plan", unattendedDeny: ["exec_command"] },
     ]);
     const call = bootstrapCalls[0];
     expect(call.resumeConversation).toBe(true);
@@ -218,69 +219,6 @@ describe("A2 — spec permission policy on the run session", () => {
     await seams.close();
   });
 
-  it("workflowPermissionModeArgv never duplicates flags already present", () => {
-    expect(
-      workflowPermissionModeArgv("bypassPermissions", [
-        "node",
-        "agenc",
-        "--dangerously-bypass-approvals-and-sandbox",
-      ]),
-    ).toEqual([
-      "node",
-      "agenc",
-      "--dangerously-bypass-approvals-and-sandbox",
-    ]);
-    expect(
-      workflowPermissionModeArgv("acceptEdits", [
-        "node",
-        "agenc",
-        "--permission-mode",
-        "plan",
-      ]),
-    ).toEqual(["node", "agenc", "--permission-mode", "plan"]);
-    expect(workflowPermissionModeArgv("plan", ["node", "agenc"])).toEqual([
-      "node",
-      "agenc",
-      "--permission-mode",
-      "plan",
-    ]);
-  });
-
-  it.each(["--yolo", "--allow-dangerously-skip-permissions"])(
-    "rejects retired bypass flag %s instead of forwarding it",
-    (flag) => {
-      expect(() =>
-        workflowPermissionModeArgv("bypassPermissions", [
-          "node",
-          "agenc",
-          flag,
-        ]),
-      ).toThrow(`unknown option '${flag}'`);
-    },
-  );
-
-  it("inserts generated permission options before a positional argv boundary", () => {
-    const argv = workflowPermissionModeArgv("plan", [
-      "node",
-      "agenc",
-      "daemon",
-      "run",
-      "--permission-mode",
-      "bypassPermissions",
-    ]);
-
-    expect(argv).toEqual([
-      "node",
-      "agenc",
-      "--permission-mode",
-      "plan",
-      "daemon",
-      "run",
-      "--permission-mode",
-      "bypassPermissions",
-    ]);
-    expect(readStartupCliFlags(argv).permissionMode).toBe("plan");
-  });
 });
 
 describe("A1 — effect evidence format", () => {

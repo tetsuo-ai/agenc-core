@@ -14,9 +14,7 @@ import {
   type BootstrapLocalRuntimeSessionOptions,
   type LocalRuntimeBootstrap,
 } from "../bin/bootstrap.js";
-import {
-  DANGEROUS_BYPASS_FLAG,
-} from "../bin/startup-flags.js";
+import { buildStructuredSessionBootstrapArgv } from "./session-bootstrap-argv.js";
 import { ensureAgentControl } from "../bin/delegate-tool.js";
 import { clearSession } from "../commands/clear.js";
 import type { AgentControl } from "../agents/control.js";
@@ -8235,47 +8233,12 @@ function buildBootstrapArgv(
       | "dontAsk"
       | "auto";
   },
-  baseArgv: readonly string[] | undefined,
+  executableArgv: readonly string[] | undefined,
 ): readonly string[] {
-  const argv = baseArgv ?? process.argv;
-  const generatedOptions: string[] = [];
-  appendFlag(generatedOptions, "--provider", params.provider);
-  appendFlag(generatedOptions, "--model", params.model);
-  appendFlag(generatedOptions, "--profile", params.profile);
-  appendFlag(generatedOptions, "--config", params.configPath);
-  // Forward the canonical dangerous-bypass flag when the caller asked for
-  // bypassPermissions mode. startup-selection sets the matching bootstrap
-  // boolean, so the daemon-spawned bootstrap honors the structured request.
-  if (params.permissionMode === "bypassPermissions") {
-    generatedOptions.push(DANGEROUS_BYPASS_FLAG);
-  }
-  // Mirror non-bypass modes via `--permission-mode <value>` so plan and
-  // acceptEdits also propagate. startup-selection.ts already parses
-  // this flag.
-  if (
-    params.permissionMode !== undefined &&
-    params.permissionMode !== "bypassPermissions"
-  ) {
-    generatedOptions.push("--permission-mode", params.permissionMode);
-  }
-  // todo-114: do not force --autonomous on every daemon agent. Unattended
-  // permission policy is installed separately; keepalive ticks only exist on
-  // the TUI contract path. Forcing autonomous here made models expect ticks
-  // that never arrived and defaulted empty unattended allowlists to pause-all.
-  // The daemon process argv is not a session configuration authority. Only
-  // the structured agent.create/restore fields become bootstrap flags; keeping
-  // daemon-launch options here would create a second, first-match-wins layer.
-  return [...argv.slice(0, 2), ...generatedOptions];
-}
-
-function appendFlag(
-  argv: string[],
-  flag: string,
-  value: string | undefined,
-): void {
-  const trimmed = value?.trim();
-  if (trimmed === undefined || trimmed.length === 0) return;
-  argv.push(flag, trimmed);
+  return buildStructuredSessionBootstrapArgv(
+    params,
+    executableArgv ?? [process.execPath, process.argv[1] ?? "agenc"],
+  );
 }
 
 // Install the minimal turnDriverHooks the daemon path needs so
