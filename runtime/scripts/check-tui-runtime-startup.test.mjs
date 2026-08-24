@@ -22,6 +22,10 @@ import {
   runImportProbe,
 } from "./check-tui-runtime-startup.mjs";
 import {
+  buildMockProviderEnv,
+  MOCK_MODEL,
+} from "./local-openai-compatible-mock.mjs";
+import {
   createTuiGateProject,
   createTuiGateState,
   startTuiGateDaemon,
@@ -155,6 +159,18 @@ test("mock provider configuration must be injected explicitly", () => {
   assert.equal(env.OPENAI_COMPATIBLE_API_KEY, "local-test-key");
   assert.equal(env.OPENAI_COMPATIBLE_BASE_URL, "http://127.0.0.1:43210/v1");
   assert.equal(env.AGENC_PROVIDER, "openai-compatible");
+});
+
+test("mock provider configuration uses only the canonical model authority", () => {
+  const env = buildMockProviderEnv("http://127.0.0.1:43210", {
+    OPENAI_COMPATIBLE_MODEL: "retired-model",
+    OPENAI_MODEL: "retired-openai-model",
+    PATH: process.env.PATH,
+  });
+
+  assert.equal(env.AGENC_MODEL, MOCK_MODEL);
+  assert.equal(env.OPENAI_COMPATIBLE_MODEL, undefined);
+  assert.equal(env.OPENAI_MODEL, undefined);
 });
 
 test("private gate state publishes one canonical root through path aliases", async () => {
