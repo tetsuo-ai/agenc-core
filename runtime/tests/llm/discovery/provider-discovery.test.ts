@@ -1,4 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const xaiOauthMocks = vi.hoisted(() => ({
+  readAccessToken: vi.fn<() => string | undefined>(() => undefined),
+}));
+
+vi.mock("../../../src/utils/xaiOauthCredentials.js", () => ({
+  readXaiOauthAccessToken: xaiOauthMocks.readAccessToken,
+}));
 
 import type { AuthBackend, AuthSubscriptionTier } from "../../auth/backend.js";
 import { defaultConfig } from "../../config/schema.js";
@@ -45,6 +53,11 @@ function byProvider<T extends { readonly provider: string }>(
 }
 
 describe("provider discovery", () => {
+  afterEach(() => {
+    xaiOauthMocks.readAccessToken.mockReset();
+    xaiOauthMocks.readAccessToken.mockReturnValue(undefined);
+  });
+
   it("detects BYOK keys, local model servers, and missing hosted keys", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       const url = String(input);
@@ -224,6 +237,26 @@ describe("provider discovery", () => {
       keyStatus: "present",
       keyEnvVar: "GITHUB_TOKEN",
     });
+  });
+
+  it("identifies stored Grok OAuth without attributing it to a BYOK env var", async () => {
+    xaiOauthMocks.readAccessToken.mockReturnValue("oauth-bearer");
+
+    const report = await collectProviderAvailability({
+      authBackend: authBackend("local", "free"),
+      checkLocal: false,
+      config: defaultConfig(),
+      // OAuth wins over a stale shell key in runtime resolution and discovery.
+      env: { XAI_API_KEY: "stale-byok-key" },
+    });
+    const grok = byProvider(report.entries).get("grok");
+
+    expect(grok).toMatchObject({
+      usable: true,
+      keyStatus: "oauth",
+      detail: "Grok OAuth credential found",
+    });
+    expect(grok).not.toHaveProperty("keyEnvVar");
   });
 
   it("does not treat shared credentials as hosted provider credentials", async () => {
