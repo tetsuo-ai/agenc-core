@@ -1404,7 +1404,13 @@ export class ProviderHttpClientSession {
       (options.api ? resolveApiPath(options.api) : resolveApiPath(this.wireApi));
     if (
       !isResponsesCreateRequest(method, path, options.body) ||
-      !this.config.responsesContinuationState
+      !this.config.responsesContinuationState ||
+      // The ChatGPT subscription backend keeps no server-side response
+      // state, so anchoring a turn to the previous one answers
+      // `Unsupported parameter: previous_response_id` and the turn dies.
+      // Sending the full input every time is the only shape it accepts.
+      // branding-scan: allow factual reference to real provider in host check
+      /(^|\/\/)chatgpt\.com\//.test(this.config.baseURL)
     ) {
       return { options };
     }
