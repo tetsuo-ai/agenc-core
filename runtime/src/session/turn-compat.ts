@@ -173,6 +173,7 @@ export async function createTurnCompatSession(
       history: [],
     },
     features: parent.features,
+    mcpManagerOwnership: "borrowed",
     services: {
       ...parent.services,
       // The compat child owns its selected model/provider revision. Sharing

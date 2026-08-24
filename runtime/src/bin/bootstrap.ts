@@ -64,7 +64,10 @@ import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
 import { CostSidecar } from "../session/cost.js";
 import { bindActiveCostSidecar } from "../cost/tracker.js";
-import { shutdownSessionLifecycle } from "../session/lifecycle.js";
+import {
+  SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
+  shutdownSessionLifecycle,
+} from "../session/lifecycle.js";
 import type { EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RunResumeReason } from "../contracts/run-contracts.js";
@@ -838,6 +841,27 @@ export interface LocalRuntimeBootstrap {
   readonly autonomousModeEnabled: boolean;
 }
 
+async function waitForPartialMcpDisposal(task: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `partial MCP disposal exceeded ${SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS}ms`,
+          ),
+        ),
+      SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
+    );
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([task, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function parsePositiveFileIdentity(value: string, label: string): bigint {
   if (!/^[1-9][0-9]*$/.test(value)) {
     throw new Error(`cold-resume workspace ${label} identity is invalid`);
@@ -1447,6 +1471,10 @@ async function bootstrapLocalRuntimeSessionScoped(
   let agentControlForShutdown: AgentControl | null = null;
   let rolloutStoreForReturn: RolloutStore | null = null;
   let ctxForReturn: TurnContext | null = null;
+  const mcpService = createSessionMcpService(mcpManager, {
+    authority: configStore,
+    environment: mcpRequestEnvironment,
+  });
   const bootstrapServices: BootstrapSessionServicesHandle =
     buildBootstrapSessionServices({
       provider,
@@ -1457,10 +1485,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         : {}),
       authSubscriptionTier,
       registry,
-      mcpManager: createSessionMcpService(mcpManager, {
-        authority: configStore,
-        environment: mcpRequestEnvironment,
-      }),
+      mcpManager: mcpService,
       unifiedExecManager,
       permissionModeRegistry,
       configStore,
@@ -1487,6 +1512,16 @@ async function bootstrapLocalRuntimeSessionScoped(
     // begins on a microtask, and sidecar stop may await; neither may leave a
     // window where a late submit can activate MCP/cron/job startup.
     sessionForShutdown?.beginShutdown();
+    let partialMcpDisposeTask: Promise<void> | undefined;
+    if (sessionForShutdown === null) {
+      try {
+        partialMcpDisposeTask = mcpService.dispose?.();
+        void partialMcpDisposeTask?.catch(() => undefined);
+      } catch (error) {
+        partialMcpDisposeTask = Promise.reject(error);
+        void partialMcpDisposeTask.catch(() => undefined);
+      }
+    }
 
     const task = Promise.resolve().then(async (): Promise<void> => {
       const errors: unknown[] = [];
@@ -1512,10 +1547,12 @@ async function bootstrapLocalRuntimeSessionScoped(
         } catch (error) {
           errors.push(error);
         }
-        if (sessionForShutdown !== null && agentControlForShutdown !== null) {
+        if (sessionForShutdown !== null) {
           await shutdownSessionLifecycle({
             session: sessionForShutdown,
-            agentControl: agentControlForShutdown,
+            ...(agentControlForShutdown !== null
+              ? { agentControl: agentControlForShutdown }
+              : {}),
             mcpManager,
           }).catch(() => {
             /* best effort */
@@ -1526,6 +1563,13 @@ async function bootstrapLocalRuntimeSessionScoped(
         try {
           await bootstrapServices.shutdown();
           bootstrapServicesStopped = true;
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (partialMcpDisposeTask !== undefined) {
+        try {
+          await waitForPartialMcpDisposal(partialMcpDisposeTask);
         } catch (error) {
           errors.push(error);
         }
@@ -1589,6 +1633,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       initialState,
       features: config.features,
       services: bootstrapServices.services,
+      mcpManagerOwnership: "owned",
       jsRepl: { id: `repl-${conversationId}` },
       config,
       modelInfo,

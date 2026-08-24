@@ -601,7 +601,7 @@ export class MCPManager {
     if (this.bridges.has(name)) return { type: "connected" };
     const state = this.connectionStates.get(name);
     if (state?.type === "failed") return state;
-    if (this.retainedCleanup.has(name)) {
+    if (config !== undefined && this.retainedCleanup.has(name)) {
       return {
         type: "failed",
         error: `MCP server "${name}" cleanup remains unproven`,
@@ -760,6 +760,34 @@ export class MCPManager {
     void this.beginShutdown();
     await this.enqueueLifecycle(async () => {
       await this.stopInternal(true);
+    });
+  }
+
+  /**
+   * Strictly revoke every connection owner and remove every configured server
+   * without entering the startup/deferred-refresh path. This is the terminal
+   * fail-closed primitive: callers must not use `refreshServers([])` while the
+   * sandbox is quiesced because that operation intentionally waits for resume.
+   */
+  async clearServersStrict(): Promise<void> {
+    this.restartAfterSandboxTransition = false;
+    this.rejectDeferredRefresh(new Error("MCP refresh cancelled by shutdown"));
+    void this.beginShutdown();
+    // Authority revocation is synchronous and independent of transport
+    // cleanup. Even if an owner cannot yet prove disposal, callers must never
+    // rediscover the old configured names, connections, or tools.
+    this.configs = Object.freeze([]);
+    this.resetConnectionStates();
+    await this.enqueueLifecycle(async () => {
+      try {
+        await this.stopInternal(true);
+      } finally {
+        // A lifecycle operation already in the queue may have written its
+        // candidate configs after the synchronous revocation above. Reassert
+        // the terminal projection at the serialized commit boundary.
+        this.configs = Object.freeze([]);
+        this.resetConnectionStates();
+      }
     });
   }
 

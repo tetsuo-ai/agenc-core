@@ -3,6 +3,7 @@ import {
   SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
   shutdownSessionLifecycle,
 } from "./lifecycle.js";
+import { mkSession } from "../fixtures.js";
 
 function stubSession() {
   return {
@@ -85,6 +86,86 @@ describe("shutdownSessionLifecycle", () => {
       mcpManager: mcp as any,
     });
     expect(order).toEqual(["session", "mcp"]);
+  });
+
+  it("closes MCP service admission synchronously and awaits disposal", async () => {
+    const order: string[] = [];
+    let releaseDispose!: () => void;
+    const session = stubSession();
+    (session.shutdown as any) = vi.fn(async () => order.push("session"));
+    const dispose = vi.fn(() => {
+      order.push("dispose-start");
+      return new Promise<void>((resolve) => {
+        releaseDispose = () => {
+          order.push("dispose-end");
+          resolve();
+        };
+      });
+    });
+    let disposeTask: Promise<void> | undefined;
+    (session as any).beginShutdown = vi.fn(() => {
+      disposeTask ??= dispose();
+    });
+    (session as any).prepareOwnedMcpDisposalForShutdown = vi.fn(
+      () => disposeTask,
+    );
+    const concreteStop = vi.fn().mockResolvedValue(undefined);
+
+    const shutdown = shutdownSessionLifecycle({
+      session,
+      mcpManager: { stop: concreteStop } as any,
+    });
+    await vi.waitFor(() => expect(order).toEqual(["dispose-start", "session"]));
+    expect(concreteStop).not.toHaveBeenCalled();
+
+    releaseDispose();
+    await shutdown;
+    expect(order).toEqual(["dispose-start", "session", "dispose-end"]);
+  });
+
+  it("does not retry MCP disposal after the deadline or throw after journal seal", async () => {
+    let rejectDispose!: (error: Error) => void;
+    const dispose = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectDispose = reject;
+        }),
+    );
+    const cancel = vi.fn();
+    const { session } = mkSession({
+      services: {
+        mcpManager: { dispose } as never,
+        mcpStartupCancellationToken: {
+          signal: new AbortController().signal,
+          cancel,
+          isCancelled: () => cancel.mock.calls.length > 0,
+        },
+      },
+      mcpManagerOwnership: "owned",
+    });
+    const concreteStop = vi.fn().mockResolvedValue(undefined);
+
+    const shutdown = shutdownSessionLifecycle({
+      session,
+      mcpManager: { stop: concreteStop } as any,
+      shutdownBudgetMs: 30,
+    });
+    await vi.waitFor(() =>
+      expect(
+        (session as unknown as { canonicalJournalSealed: boolean })
+          .canonicalJournalSealed,
+      ).toBe(true),
+    );
+    await expect(shutdown).resolves.toBeUndefined();
+
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(concreteStop).not.toHaveBeenCalled();
+
+    rejectDispose(new Error("late strict clear failure"));
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+    expect(dispose).toHaveBeenCalledOnce();
   });
 
   it("I-87: outer budget caps the full lifecycle", async () => {

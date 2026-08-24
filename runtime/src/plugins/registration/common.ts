@@ -16,6 +16,8 @@ import {
   isRepositoryControlledPlugin,
   loadPlugins,
   type LoadedPlugin,
+  type PluginLoadIssue,
+  type PluginLoadResult,
   type PluginLoaderOptions,
 } from "../loader.js";
 import type { PluginUserConfigOption } from "../manifest-schema.js";
@@ -46,6 +48,7 @@ export interface PluginRuntimeLoadOptions {
   readonly config?: PluginLoaderOptions["config"];
   readonly extraPluginDirs?: readonly string[];
   readonly env?: NodeJS.ProcessEnv;
+  readonly errors?: PluginLoadIssue[];
   /** Bypass process-local discovery snapshots and re-read plugin sources. */
   readonly fresh?: boolean;
 }
@@ -97,24 +100,26 @@ export async function loadRuntimePlugins(
   options: PluginRuntimeLoadOptions = {},
 ): Promise<readonly LoadedPlugin[]> {
   const loaderOptions = toPluginLoaderOptions(options);
+  const projectResult = (result: PluginLoadResult): readonly LoadedPlugin[] => {
+    options.errors?.push(...result.errors);
+    return result.enabled;
+  };
   if (options.fresh === true || hasExplicitPluginDiscoveryInput(options)) {
     const result = await loadPlugins(loaderOptions);
-    return result.enabled;
+    return projectResult(result);
   }
   const key = `${loaderOptions.workspaceRoot}\0${loaderOptions.agencHome}`;
   const cached = runtimePluginLoadCache.get(key);
-  if (cached !== undefined) return cached;
-  const loaded = loadPlugins(loaderOptions)
-    .then((result) => result.enabled)
-    .catch((error: unknown) => {
-      runtimePluginLoadCache.delete(key);
-      throw error;
-    });
+  if (cached !== undefined) return projectResult(await cached);
+  const loaded = loadPlugins(loaderOptions).catch((error: unknown) => {
+    runtimePluginLoadCache.delete(key);
+    throw error;
+  });
   runtimePluginLoadCache.set(key, loaded);
-  return loaded;
+  return projectResult(await loaded);
 }
 
-const runtimePluginLoadCache = new Map<string, Promise<readonly LoadedPlugin[]>>();
+const runtimePluginLoadCache = new Map<string, Promise<PluginLoadResult>>();
 
 export function clearRuntimePluginLoadCache(): void {
   runtimePluginLoadCache.clear();

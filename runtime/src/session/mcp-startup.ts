@@ -75,6 +75,7 @@ import type { EventMsg, TokenCountEvent } from "./event-log.js";
 import { createMCPCallObserverForSession } from "./observer-wiring.js";
 import { createSessionMcpElicitationHandlers } from "../elicitation/mcp.js";
 import type { McpGranularElicitationPolicy } from "../elicitation/mcp.js";
+import { logForDebugging } from "../utils/debug.js";
 
 export interface McpStartupCancellationToken {
   readonly signal: AbortSignal;
@@ -95,6 +96,7 @@ export interface SessionMcpResolutionPlan {
   readonly configs: readonly MCPServerConfig[];
   readonly definitions: ReadonlyMap<string, ResolvedMcpServerDefinition>;
   readonly knownDefinitionIds: ReadonlySet<string>;
+  readonly pluginDefinitionKnowledgeComplete: boolean;
   readonly authoritySnapshot: ReturnType<CanonicalSettingsAuthority["current"]>;
   readonly sessionDispositions: Readonly<
     Record<string, McpSessionServerDisposition>
@@ -690,6 +692,7 @@ export async function resolveSessionMcpPlan(
   environment: ProviderEnvironment,
   sessionServers: Readonly<Record<string, MCPServerConfig>> = {},
   enabledOverrides: ReadonlyMap<string, boolean> = new Map(),
+  options: McpAuthorityRefreshOptions = {},
 ): Promise<SessionMcpResolutionPlan> {
   const scopedSessionServers = Object.fromEntries(
     Object.entries(sessionServers).map(([name, config]) => [
@@ -705,6 +708,7 @@ export async function resolveSessionMcpPlan(
     servers,
     definitions,
     knownDefinitionIds,
+    pluginDefinitionKnowledgeComplete,
     authoritySnapshot,
     sessionDispositions,
   } = await getAllMcpConfigs(
@@ -712,6 +716,7 @@ export async function resolveSessionMcpPlan(
     environment,
     scopedSessionServers,
     enabledOverrides,
+    options,
   );
   return {
     configs: Object.entries(servers).map(([name, config]) =>
@@ -719,6 +724,7 @@ export async function resolveSessionMcpPlan(
     ),
     definitions,
     knownDefinitionIds,
+    pluginDefinitionKnowledgeComplete,
     authoritySnapshot,
     sessionDispositions,
   };
@@ -780,7 +786,13 @@ export function createMcpStartupCancellationToken(): McpStartupCancellationToken
 
 interface SessionMcpOverlayState {
   readonly servers: ReadonlyMap<string, MCPServerConfig>;
-  readonly enabledOverrides: ReadonlyMap<string, boolean>;
+  readonly enabledOverrides: ReadonlyMap<
+    string,
+    {
+      readonly enabled: boolean;
+      readonly origin: ResolvedMcpServerDefinition["origin"];
+    }
+  >;
 }
 
 const MAX_MCP_AUTHORITY_RETRIES = 5;
@@ -822,6 +834,24 @@ export function createSessionMcpService(
     enabledOverrides: new Map(),
   };
   let mutationTail: Promise<void> = Promise.resolve();
+  let closed = false;
+  let authorityGeneration = 0;
+  let appliedAuthorityGeneration = -1;
+  let notifiedAuthorityGeneration = -1;
+  let joinedAuthorityGeneration = -1;
+  let lastCommittedRefreshResult: McpRefreshResult = {
+    configuredServers: [],
+    requiredServers: [],
+  };
+  let activeAuthorityController: AbortController | undefined;
+  let authorityRefreshPending = false;
+  let authorityRefreshForcePending = false;
+  let authorityRefreshTask: Promise<McpRefreshResult> | undefined;
+  let pendingAuthorityRevocation: Promise<void> | undefined;
+  let authoritySubscriptionInstalled = false;
+  let unsubscribeAuthority: (() => void) | undefined;
+  let disposeTask: Promise<void> | undefined;
+  const planGenerations = new WeakMap<SessionMcpResolutionPlan, number>();
 
   const enqueueMutation = <T>(operation: () => Promise<T>): Promise<T> => {
     const run = mutationTail.then(operation);
@@ -831,17 +861,59 @@ export function createSessionMcpService(
     );
     return run;
   };
+  const closedError = (): Error => new Error("MCP session service is closed");
+  const stopManagerStrict = (): Promise<void> => manager.stopStrict();
+  const clearManagerStrict = (): Promise<void> => manager.clearServersStrict();
+  const beginAuthorityOperation = (
+    externalSignal?: AbortSignal,
+  ): {
+    readonly controller: AbortController;
+    readonly generation: number;
+    release(): void;
+  } => {
+    if (closed) throw closedError();
+    const controller = new AbortController();
+    const generation = authorityGeneration;
+    const forwardExternalAbort = (): void => {
+      controller.abort(externalSignal?.reason ?? "mcp_refresh_cancelled");
+    };
+    if (externalSignal?.aborted === true) {
+      forwardExternalAbort();
+    } else {
+      externalSignal?.addEventListener("abort", forwardExternalAbort, {
+        once: true,
+      });
+    }
+    activeAuthorityController = controller;
+    return {
+      controller,
+      generation,
+      release: () => {
+        externalSignal?.removeEventListener("abort", forwardExternalAbort);
+        if (activeAuthorityController === controller) {
+          activeAuthorityController = undefined;
+        }
+      },
+    };
+  };
   const sessionServerRecord = (
     state: SessionMcpOverlayState,
   ): Record<string, MCPServerConfig> => Object.fromEntries(state.servers);
   const resolveOverlayPlan = (
     state: SessionMcpOverlayState,
+    signal?: AbortSignal,
   ): Promise<SessionMcpResolutionPlan> =>
     resolveSessionMcpPlan(
       options.authority,
       options.environment,
       sessionServerRecord(state),
-      state.enabledOverrides,
+      new Map(
+        Array.from(state.enabledOverrides, ([id, override]) => [
+          id,
+          override.enabled,
+        ]),
+      ),
+      { ...(signal !== undefined ? { signal } : {}) },
     );
   const pruneOverlay = (
     state: SessionMcpOverlayState,
@@ -853,8 +925,23 @@ export function createSessionMcpService(
       ),
     ),
     enabledOverrides: new Map(
+      Array.from(state.enabledOverrides).filter(
+        ([definitionId, override]) =>
+          plan.knownDefinitionIds.has(definitionId) ||
+          (!plan.pluginDefinitionKnowledgeComplete &&
+            override.origin === "plugin"),
+      ),
+    ),
+  });
+  const retainCurrentOverlayAuthority = (
+    state: SessionMcpOverlayState,
+  ): SessionMcpOverlayState => ({
+    servers: new Map(
+      Array.from(state.servers).filter(([name]) => overlay.servers.has(name)),
+    ),
+    enabledOverrides: new Map(
       Array.from(state.enabledOverrides).filter(([definitionId]) =>
-        plan.knownDefinitionIds.has(definitionId),
+        overlay.enabledOverrides.has(definitionId),
       ),
     ),
   });
@@ -868,41 +955,30 @@ export function createSessionMcpService(
     plan: SessionMcpResolutionPlan,
     externalSignal?: AbortSignal,
   ): Promise<McpRefreshResult> => {
+    const expectedGeneration = planGenerations.get(plan);
+    const operation = beginAuthorityOperation(externalSignal);
     const isCurrent = (): boolean =>
+      !closed &&
+      operation.generation === authorityGeneration &&
+      (expectedGeneration === undefined ||
+        expectedGeneration === operation.generation) &&
       options.authority.current() === plan.authoritySnapshot;
-    if (!isCurrent()) throw new McpAuthorityChangedError();
-
-    const controller = new AbortController();
-    const forwardExternalAbort = (): void => {
-      controller.abort(externalSignal?.reason ?? "mcp_refresh_cancelled");
-    };
-    if (externalSignal?.aborted === true) {
-      forwardExternalAbort();
-    } else {
-      externalSignal?.addEventListener("abort", forwardExternalAbort, {
-        once: true,
-      });
+    if (!isCurrent()) {
+      operation.release();
+      throw new McpAuthorityChangedError();
     }
-    let authorityChanged = false;
-    const unsubscribe = options.authority.subscribe((snapshot) => {
-      if (snapshot !== plan.authoritySnapshot) {
-        authorityChanged = true;
-        controller.abort("canonical_mcp_authority_changed");
-      }
-    });
     const requiredServers = requiredMcpServerNames(plan.configs);
     try {
       if (!isCurrent()) {
-        authorityChanged = true;
-        controller.abort("canonical_mcp_authority_changed");
+        operation.controller.abort("canonical_mcp_authority_changed");
       }
       await manager.refreshServers(
         plan.configs,
         withConfiguredRequiredServers(plan.configs, {
-          signal: controller.signal,
+          signal: operation.controller.signal,
         }),
       );
-      if (authorityChanged || !isCurrent()) {
+      if (!isCurrent()) {
         throw new McpAuthorityChangedError();
       }
       return {
@@ -910,22 +986,46 @@ export function createSessionMcpService(
         requiredServers,
       };
     } catch (error) {
-      if (authorityChanged || !isCurrent()) {
+      if (!isCurrent()) {
         throw new McpAuthorityChangedError();
       }
       throw error;
     } finally {
-      unsubscribe?.();
-      externalSignal?.removeEventListener("abort", forwardExternalAbort);
+      operation.release();
     }
   };
   const resolveCurrentOverlayPlan = async (
     state: SessionMcpOverlayState,
+    externalSignal?: AbortSignal,
   ): Promise<SessionMcpResolutionPlan> => {
     const churnErrors: Error[] = [];
     for (let attempt = 0; attempt < MAX_MCP_AUTHORITY_RETRIES; attempt += 1) {
-      const plan = await resolveOverlayPlan(state);
-      if (options.authority.current() === plan.authoritySnapshot) return plan;
+      const operation = beginAuthorityOperation(externalSignal);
+      let plan: SessionMcpResolutionPlan;
+      try {
+        plan = await resolveOverlayPlan(state, operation.controller.signal);
+      } catch (error) {
+        if (
+          !closed &&
+          externalSignal?.aborted !== true &&
+          operation.generation !== authorityGeneration
+        ) {
+          churnErrors.push(new McpAuthorityChangedError());
+          continue;
+        }
+        throw error;
+      } finally {
+        operation.release();
+      }
+      if (
+        !closed &&
+        operation.generation === authorityGeneration &&
+        options.authority.current() === plan.authoritySnapshot
+      ) {
+        planGenerations.set(plan, operation.generation);
+        return plan;
+      }
+      if (closed) throw closedError();
       churnErrors.push(new McpAuthorityChangedError());
     }
     throw mcpTransactionError(
@@ -942,20 +1042,43 @@ export function createSessionMcpService(
     readonly plan: SessionMcpResolutionPlan;
     readonly result: McpRefreshResult;
   }> => {
+    let workingState = state;
     let plan = initialPlan;
     const churnErrors: Error[] = [];
     for (let attempt = 0; attempt < MAX_MCP_AUTHORITY_RETRIES; attempt += 1) {
       if (
         plan === undefined ||
+        planGenerations.get(plan) !== authorityGeneration ||
         options.authority.current() !== plan.authoritySnapshot
       ) {
-        if (plan !== undefined) churnErrors.push(new McpAuthorityChangedError());
-        plan = await resolveCurrentOverlayPlan(state);
+        if (plan !== undefined)
+          churnErrors.push(new McpAuthorityChangedError());
+        plan = await resolveCurrentOverlayPlan(workingState, externalSignal);
       }
+      // Authority revocations are irreversible for the current service
+      // generation. Purge blocked session definitions and retired exact-ID
+      // overrides before touching the manager so a failed apply cannot make
+      // them reappear on a later, less restrictive reload.
+      overlay = pruneOverlay(overlay, plan);
+      workingState = pruneOverlay(workingState, plan);
       try {
         const result = await applyPlan(plan, externalSignal);
+        if (
+          closed ||
+          planGenerations.get(plan) !== authorityGeneration ||
+          options.authority.current() !== plan.authoritySnapshot
+        ) {
+          throw new McpAuthorityChangedError();
+        }
+        const committedOverlay = workingState;
+        // Commit inside the same generation lease/continuation as the manager
+        // apply. Callers may await this promise without opening a stale-overlay
+        // assignment window after authority invalidation.
+        overlay = committedOverlay;
+        appliedAuthorityGeneration = authorityGeneration;
+        lastCommittedRefreshResult = result;
         return {
-          overlay: pruneOverlay(state, plan),
+          overlay: committedOverlay,
           plan,
           result,
         };
@@ -978,14 +1101,38 @@ export function createSessionMcpService(
     causes: readonly unknown[],
   ): Promise<AggregateError> => {
     const errors = [...causes];
+    overlay = { servers: new Map(), enabledOverrides: new Map() };
+    appliedAuthorityGeneration = -1;
+    lastCommittedRefreshResult = {
+      configuredServers: [],
+      requiredServers: [],
+    };
+    // Disposal has already synchronously revoked manager authority and queued
+    // one final strict clear after this mutation drains. Do not create a
+    // competing cleanup owner from the cancelled mutation itself.
+    if (closed) return mcpTransactionError(message, errors);
     try {
-      await manager.refreshServers([], {});
-    } catch (refreshError) {
-      errors.push(refreshError);
+      await clearManagerStrict();
+    } catch (clearError) {
+      errors.push(clearError);
       try {
-        await manager.stop();
+        await stopManagerStrict();
       } catch (stopError) {
         errors.push(stopError);
+        return mcpTransactionError(message, errors);
+      }
+      try {
+        // A retained cleanup owner may be retryable. Once strict stop proves
+        // it is gone, retry the non-starting clear so stale configs cannot
+        // remain visible through getConfiguredServers/effective projections.
+        await clearManagerStrict();
+      } catch (retryError) {
+        errors.push(retryError);
+        try {
+          await stopManagerStrict();
+        } catch (finalStopError) {
+          errors.push(finalStopError);
+        }
       }
     }
     return mcpTransactionError(message, errors);
@@ -994,8 +1141,15 @@ export function createSessionMcpService(
     baseline: SessionMcpOverlayState,
     primaryError: unknown,
   ): Promise<Error> => {
+    if (closed) {
+      return primaryError instanceof Error
+        ? primaryError
+        : new Error(String(primaryError));
+    }
     try {
-      const reconciled = await reconcileOverlayState(baseline);
+      const reconciled = await reconcileOverlayState(
+        retainCurrentOverlayAuthority(baseline),
+      );
       overlay = reconciled.overlay;
       return primaryError instanceof Error
         ? primaryError
@@ -1012,8 +1166,11 @@ export function createSessionMcpService(
     baseline: SessionMcpOverlayState,
     rejection: Error,
   ): Promise<McpServerMutationResult> => {
+    if (closed) return mcpMutationFailure(serverName, closedError());
     try {
-      const reconciled = await reconcileOverlayState(baseline);
+      const reconciled = await reconcileOverlayState(
+        retainCurrentOverlayAuthority(baseline),
+      );
       overlay = reconciled.overlay;
       return mcpMutationFailure(serverName, rejection);
     } catch (applyError) {
@@ -1023,24 +1180,6 @@ export function createSessionMcpService(
           "MCP mutation was rejected, canonical reconciliation failed, and the session was fail-closed.",
           [rejection, applyError],
         ),
-      );
-    }
-  };
-  const refreshFromAuthorityUnlocked = async (
-    refreshOptions: McpAuthorityRefreshOptions = {},
-  ): Promise<McpRefreshResult> => {
-    try {
-      const reconciled = await reconcileOverlayState(
-        overlay,
-        undefined,
-        refreshOptions.signal,
-      );
-      overlay = reconciled.overlay;
-      return reconciled.result;
-    } catch (error) {
-      throw await failClosed(
-        "Canonical MCP refresh failed and the session was fail-closed.",
-        [error],
       );
     }
   };
@@ -1080,10 +1219,10 @@ export function createSessionMcpService(
     }
     const candidate: SessionMcpOverlayState = {
       servers: baseline.servers,
-      enabledOverrides: new Map(baseline.enabledOverrides).set(
-        definition.id,
+      enabledOverrides: new Map(baseline.enabledOverrides).set(definition.id, {
         enabled,
-      ),
+        origin: definition.origin,
+      }),
     };
     let reconciled: Awaited<ReturnType<typeof reconcileOverlayState>>;
     try {
@@ -1160,9 +1299,15 @@ export function createSessionMcpService(
         ),
       );
     }
+    const existingConfig = baselinePlan.configs.find(
+      (server) => server.name === config.name,
+    );
+    const existingCanBeShadowed =
+      existingConfig?.origin?.scope === "default" ||
+      existingConfig?.origin?.scope === "plugin";
     if (
       baseline.servers.has(config.name) ||
-      baselinePlan.configs.some((server) => server.name === config.name)
+      (existingConfig !== undefined && !existingCanBeShadowed)
     ) {
       return rejectAfterCanonicalReconciliation(
         config.name,
@@ -1259,19 +1404,168 @@ export function createSessionMcpService(
       toolCount: manager.getToolsByServer(name).length,
     };
   };
+  const reportBackgroundRefreshFailure = (error: unknown): void => {
+    logForDebugging(
+      `Canonical MCP authority reconciliation failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { level: "error" },
+    );
+  };
+  const scheduleAuthorityRefresh = (
+    refreshOptions?: McpAuthorityRefreshOptions,
+    revokeImmediately = false,
+    force = false,
+  ): Promise<McpRefreshResult> => {
+    if (closed) return Promise.reject(closedError());
+    authorityRefreshPending = true;
+    authorityRefreshForcePending ||= force;
+    if (revokeImmediately) {
+      const revocation = stopManagerStrict();
+      pendingAuthorityRevocation = revocation;
+      void revocation.catch(() => undefined);
+    }
+    if (authorityRefreshTask !== undefined) return authorityRefreshTask;
+    const task = enqueueMutation(async (): Promise<McpRefreshResult> => {
+      let failure: Error | undefined;
+      while (authorityRefreshPending && !closed) {
+        authorityRefreshPending = false;
+        const forceRefresh = authorityRefreshForcePending;
+        authorityRefreshForcePending = false;
+        const pendingRevocation = pendingAuthorityRevocation;
+        pendingAuthorityRevocation = undefined;
+        try {
+          await pendingRevocation;
+          if (closed) throw closedError();
+          if (
+            !forceRefresh &&
+            appliedAuthorityGeneration === authorityGeneration
+          ) {
+            failure = undefined;
+            continue;
+          }
+          const reconciled = await reconcileOverlayState(
+            overlay,
+            undefined,
+            refreshOptions?.signal,
+          );
+          overlay = reconciled.overlay;
+          failure = undefined;
+        } catch (error) {
+          if (closed) throw closedError();
+          failure = await failClosed(
+            "Canonical MCP refresh failed and the session was fail-closed.",
+            [error],
+          );
+        }
+      }
+      if (closed) throw closedError();
+      if (failure !== undefined) throw failure;
+      return lastCommittedRefreshResult;
+    });
+    authorityRefreshTask = task;
+    const settle = (): void => {
+      if (authorityRefreshTask !== task) return;
+      authorityRefreshTask = undefined;
+      if (authorityRefreshPending && !closed) {
+        void scheduleAuthorityRefresh();
+      }
+    };
+    void task.then(settle, settle);
+    void task.catch(reportBackgroundRefreshFailure);
+    return task;
+  };
+  const ensureAuthoritySubscription = (): void => {
+    if (authoritySubscriptionInstalled || closed) return;
+    authoritySubscriptionInstalled = true;
+    try {
+      unsubscribeAuthority =
+        options.authority.subscribe(() => {
+          if (closed) return;
+          authorityGeneration += 1;
+          notifiedAuthorityGeneration = authorityGeneration;
+          activeAuthorityController?.abort("canonical_mcp_authority_changed");
+          void scheduleAuthorityRefresh(undefined, true);
+        }) ?? undefined;
+    } catch (error) {
+      authoritySubscriptionInstalled = false;
+      throw error;
+    }
+  };
+  const dispose = (): Promise<void> => {
+    if (disposeTask !== undefined) return disposeTask;
+    closed = true;
+    authorityGeneration += 1;
+    authorityRefreshPending = false;
+    authorityRefreshForcePending = false;
+    activeAuthorityController?.abort("mcp_session_service_disposed");
+    unsubscribeAuthority?.();
+    unsubscribeAuthority = undefined;
+    authoritySubscriptionInstalled = false;
+    overlay = { servers: new Map(), enabledOverrides: new Map() };
+    const initialRevocation = stopManagerStrict();
+    void initialRevocation.catch(() => undefined);
+    const drain = mutationTail;
+    const run = drain.then(async () => {
+      await initialRevocation.catch(() => undefined);
+      await clearManagerStrict();
+    });
+    mutationTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    disposeTask = run;
+    void run.catch(() => {
+      if (disposeTask === run) disposeTask = undefined;
+    });
+    return run;
+  };
+  const enqueueRefresh = (
+    refreshOptions: McpAuthorityRefreshOptions | undefined,
+  ): Promise<McpRefreshResult> => {
+    if (closed) return Promise.reject(closedError());
+    ensureAuthoritySubscription();
+    if (authorityRefreshTask !== undefined) {
+      joinedAuthorityGeneration = authorityGeneration;
+      return authorityRefreshTask;
+    }
+    if (
+      appliedAuthorityGeneration === authorityGeneration &&
+      notifiedAuthorityGeneration === authorityGeneration &&
+      joinedAuthorityGeneration !== authorityGeneration
+    ) {
+      joinedAuthorityGeneration = authorityGeneration;
+      return Promise.resolve(lastCommittedRefreshResult);
+    }
+    return scheduleAuthorityRefresh(refreshOptions, false, true);
+  };
+  const enqueueServerMutation = (
+    name: string,
+    operation: () => Promise<McpServerMutationResult>,
+  ): Promise<McpServerMutationResult> => {
+    if (closed) return Promise.resolve(mcpMutationFailure(name, closedError()));
+    ensureAuthoritySubscription();
+    return enqueueMutation(() =>
+      closed
+        ? Promise.resolve(mcpMutationFailure(name, closedError()))
+        : operation(),
+    );
+  };
   return {
     effectiveServers: async () => buildEffectiveServerMap(runtimeManager),
     toolPluginProvenance: async () => null,
-    refreshFromAuthority: (refreshOptions) =>
-      enqueueMutation(() => refreshFromAuthorityUnlocked(refreshOptions)),
+    refreshFromAuthority: enqueueRefresh,
     reconnectServer: (name) =>
-      enqueueMutation(() => reconnectServerUnlocked(name)),
+      enqueueServerMutation(name, () => reconnectServerUnlocked(name)),
     enableServer: (name) =>
-      enqueueMutation(() => setServerEnabledUnlocked(name, true)),
+      enqueueServerMutation(name, () => setServerEnabledUnlocked(name, true)),
     disableServer: (name) =>
-      enqueueMutation(() => setServerEnabledUnlocked(name, false)),
+      enqueueServerMutation(name, () => setServerEnabledUnlocked(name, false)),
     addServer: (config) =>
-      enqueueMutation(() => addSessionServerUnlocked(config)),
+      enqueueServerMutation(config.name, () =>
+        addSessionServerUnlocked(config),
+      ),
+    dispose,
     getTools:
       typeof manager.getTools === "function"
         ? manager.getTools.bind(manager)

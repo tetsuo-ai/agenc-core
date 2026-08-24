@@ -1065,6 +1065,7 @@ export interface McpManager {
   refreshFromAuthority?(
     options?: McpAuthorityRefreshOptions,
   ): Promise<McpRefreshResult>;
+  dispose?(): Promise<void>;
   reconnectServer?(name: string): Promise<McpServerMutationResult>;
   enableServer?(name: string): Promise<McpServerMutationResult>;
   disableServer?(name: string): Promise<McpServerMutationResult>;
@@ -1743,6 +1744,12 @@ export interface SessionOpts {
   readonly initialState: SessionState;
   readonly features: ManagedFeatures;
   readonly services: SessionServices;
+  /**
+   * MCP transport ownership is explicit because child sessions may borrow the
+   * parent's service projection. Only the owning root may dispose that live
+   * authority; omitted means borrowed for compatibility and fail-safe teardown.
+   */
+  readonly mcpManagerOwnership?: "owned" | "borrowed";
   readonly jsRepl: JsReplHandle;
   /** Immutable role trust-domain identity; distinct from mutable execution cwd. */
   readonly roleWorkspace?: AgentRoleWorkspace;
@@ -2582,6 +2589,11 @@ export class Session {
   private sessionStartLifecycleReady = true;
   private deferredOrdinarySubmitHooks: Array<() => Promise<void>> = [];
   private deferredOrdinarySubmitHookPromise: Promise<void> | null = null;
+  private readonly ownsMcpManager: boolean;
+  private mcpDisposeTask: Promise<void> | null = null;
+  private mcpDisposeCompletionTask: Promise<void> | null = null;
+  private mcpDisposeState: "idle" | "pending" | "fulfilled" | "rejected" =
+    "idle";
   private lifecycleState: "open" | "shutting_down" | "closed" = "open";
 
   /** Serialize submit calls so the session keeps a single active turn. */
@@ -2631,6 +2643,7 @@ export class Session {
    */
   constructor(opts: SessionOpts) {
     this.conversationId = opts.conversationId;
+    this.ownsMcpManager = opts.mcpManagerOwnership === "owned";
     // Keep legacy producers that were handed `session.eventLog` on the same
     // canonical persist-before-publish path as direct `session.emit` callers.
     this.eventLog.setEmitDelegate((event) => this.emit(event));
@@ -3367,13 +3380,88 @@ export class Session {
   beginShutdown(): void {
     if (this.lifecycleState !== "open") return;
     this.lifecycleState = "shutting_down";
-    this.services.mcpStartupCancellationToken.cancel();
+    if (this.ownsMcpManager) {
+      this.services.mcpStartupCancellationToken.cancel();
+      this.startOwnedMcpDisposal(false);
+    }
     if (this.deferredSessionStartHookPromise === null) {
       this.deferredSessionStartHook = null;
     }
     if (this.deferredOrdinarySubmitHookPromise === null) {
       this.deferredOrdinarySubmitHooks = [];
     }
+  }
+
+  /**
+   * Complete disposal for the MCP authority this session owns. A rejected
+   * attempt is retried because the MCP service preserves unresolved cleanup
+   * state and makes a later dispose call resume that strict teardown.
+   * Borrowed child sessions deliberately return no task.
+   *
+   * @internal Prepared at the root shutdown boundary; Session.shutdown later
+   * awaits the captured operation after critical state has drained.
+   */
+  prepareOwnedMcpDisposalForShutdown(
+    retryDeadlineMs: number,
+  ): Promise<void> | undefined {
+    if (!this.ownsMcpManager) return undefined;
+    if (this.mcpDisposeCompletionTask !== null) {
+      return this.mcpDisposeCompletionTask;
+    }
+    const initial = this.startOwnedMcpDisposal(false);
+    if (initial === null) return undefined;
+    const completion = initial.catch(async (initialError: unknown) => {
+      if (monotonicMs() >= retryDeadlineMs) throw initialError;
+      if (this.mcpDisposeTask === initial) {
+        this.mcpDisposeState = "rejected";
+      }
+      const retry = this.startOwnedMcpDisposal(true);
+      if (retry === null || retry === initial) throw initialError;
+      try {
+        await retry;
+      } catch (retryError) {
+        throw new AggregateError(
+          [initialError, retryError],
+          "owned MCP disposal failed after retry",
+        );
+      }
+    });
+    this.mcpDisposeCompletionTask = completion;
+    void completion.catch(() => undefined);
+    return completion;
+  }
+
+  private startOwnedMcpDisposal(
+    retryRejected: boolean,
+  ): Promise<void> | null {
+    if (!this.ownsMcpManager) return null;
+    if (
+      this.mcpDisposeTask !== null &&
+      (this.mcpDisposeState !== "rejected" || !retryRejected)
+    ) {
+      return this.mcpDisposeTask;
+    }
+    const dispose = this.services.mcpManager?.dispose;
+    if (dispose === undefined) return null;
+
+    let task: Promise<void>;
+    try {
+      task = Promise.resolve(dispose.call(this.services.mcpManager));
+    } catch (error) {
+      task = Promise.reject(error);
+    }
+    this.mcpDisposeTask = task;
+    this.mcpDisposeState = "pending";
+    void task.then(
+      () => {
+        if (this.mcpDisposeTask === task) this.mcpDisposeState = "fulfilled";
+      },
+      () => {
+        if (this.mcpDisposeTask === task) this.mcpDisposeState = "rejected";
+      },
+    );
+    void task.catch(() => undefined);
+    return task;
   }
 
   async drainDeferredStartupForShutdown(): Promise<void> {
@@ -5567,6 +5655,9 @@ export class Session {
   async shutdown(): Promise<void> {
     const MAX_DRAIN_MS = 2_000;
     this.beginShutdown();
+    const mcpDisposeTask = this.prepareOwnedMcpDisposalForShutdown(
+      monotonicMs() + MAX_DRAIN_MS,
+    );
     await this.drainDeferredStartupForShutdown();
     // SessionEnd hooks fire first (bounded, failure-contained) once the
     // matching SessionStart hook has run. A cold Editor-only session keeps
@@ -5710,6 +5801,25 @@ export class Session {
       this.services.rolloutTrace?.close();
     } catch {
       /* best-effort */
+    }
+    // MCP disposal starts synchronously in beginShutdown(), but it must not
+    // consume the shutdown budget before active tasks, mailboxes, and durable
+    // state have drained. Give it a bounded tail wait after those critical
+    // teardown steps; the outer lifecycle performs its own final bounded wait.
+    if (mcpDisposeTask !== undefined) {
+      let mcpDisposeTimer: ReturnType<typeof setTimeout> | undefined;
+      const mcpDisposeTimeout = new Promise<void>((resolveTimeout) => {
+        mcpDisposeTimer = setTimeout(resolveTimeout, MAX_DRAIN_MS);
+        mcpDisposeTimer.unref?.();
+      });
+      try {
+        await Promise.race([
+          mcpDisposeTask.catch(() => undefined),
+          mcpDisposeTimeout,
+        ]);
+      } finally {
+        if (mcpDisposeTimer !== undefined) clearTimeout(mcpDisposeTimer);
+      }
     }
     this.eventLog.close();
     this.txEvent.close();

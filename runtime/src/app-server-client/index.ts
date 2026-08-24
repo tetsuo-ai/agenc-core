@@ -48,6 +48,7 @@ import {
 import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { projectMcpManagerToConnections } from "../mcp-client/tui-connections.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 import {
   createAgentRoleWorkspace,
   normalizeAgentRoleWorkspace,
@@ -361,6 +362,54 @@ export function createAgenCDaemonOnlyTuiContext(
   );
 }
 
+interface DaemonOnlyTuiCleanupResources {
+  readonly watcherStarted: boolean;
+  readonly skillsWatcher: ReturnType<
+    typeof createLocalSkillsServices
+  >["skillsWatcher"];
+  readonly mcpService?: ReturnType<typeof createSessionMcpService>;
+  readonly mcpManager?: ReturnType<typeof createSessionMcpManager>;
+  readonly sandboxExecutionBroker?: SandboxExecutionBroker;
+}
+
+async function closeDaemonOnlyTuiResources(
+  resources: DaemonOnlyTuiCleanupResources,
+): Promise<void> {
+  const startCleanup = (
+    operation: () => void | Promise<void>,
+  ): Promise<void> => {
+    try {
+      return Promise.resolve(operation());
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  };
+  const mcpDispose = startCleanup(() =>
+    resources.mcpService?.dispose !== undefined
+      ? resources.mcpService.dispose()
+      : (resources.mcpManager?.clearServersStrict() ?? Promise.resolve()),
+  );
+  const skillsWatcherStop = startCleanup(() =>
+    resources.watcherStarted
+      ? (resources.skillsWatcher.stop?.() ?? Promise.resolve())
+      : Promise.resolve(),
+  );
+  const sandboxDispose = startCleanup(() =>
+    resources.sandboxExecutionBroker !== undefined
+      ? disposeSandboxExecutionBroker(resources.sandboxExecutionBroker)
+      : Promise.resolve(),
+  );
+  const failures = (
+    await Promise.allSettled([mcpDispose, skillsWatcherStop, sandboxDispose])
+  ).flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      "daemon-only TUI context cleanup failed",
+    );
+  }
+}
+
 async function createBoundAgenCDaemonOnlyTuiContext(
   options: AgenCDaemonOnlyTuiContextOptions,
   env: NodeJS.ProcessEnv,
@@ -403,98 +452,139 @@ async function createBoundAgenCDaemonOnlyTuiContext(
       AGENC_MANAGED_HOME: env.AGENC_MANAGED_HOME,
     },
   });
-  await skillsServices.skillsWatcher.start();
-  const sandboxExecutionBroker = new SandboxExecutionBroker({
-    mode:
-      options.permissionMode === "bypassPermissions"
-        ? "danger_full_access"
-        : effectiveConfig.sandbox_mode === "read-only"
-          ? "read_only"
-          : effectiveConfig.sandbox_mode === "danger-full-access"
-            ? "danger_full_access"
-            : "workspace_write",
-    // Role authority remains anchored to the canonical checkout, while
-    // execution policy must follow the attached worktree/session cwd.
-    cwd: options.cwd,
-    env,
-    allowGpu: effectiveConfig.sandbox?.allow_gpu === true,
-  });
-  const mcpRuntimeManager = createSessionMcpManager([], {
-    environment: mcpRequestEnvironment,
-    sandboxExecutionBroker,
-  });
-  const mcpService = createSessionMcpService(mcpRuntimeManager, {
-    authority: configStore,
-    environment: mcpRequestEnvironment,
-  });
-  await mcpService.refreshFromAuthority?.();
-  const agentDefinitions = await loadFreshAgentDefinitions(roleWorkspace.cwd);
-  const abortController = new AbortController();
-  let nextEventId = 0;
-  const sessionConfiguration = {
-    ...sessionConfigurationFromAgenCConfig({
-      config: effectiveConfig,
-      workspaceRoot: options.cwd,
-      provider: startup.provider,
-      model: startup.model,
-      dangerouslyBypassApprovalsAndSandbox:
-        options.permissionMode === "bypassPermissions",
-    }),
-    // The bridge exposes provider identity, not an in-process LLMProvider.
-    provider: { slug: startup.provider },
-  };
-  const session: AgenCDaemonOnlyTuiSession = {
-    conversationId: options.conversationId,
-    roleWorkspace,
-    agentDefinitions,
-    cwd: options.cwd,
-    home: agencHome,
-    sessionConfiguration,
-    services: {
-      runtimeOptions,
-      providerEnvironment,
-      permissionModeRegistry: new PermissionModeRegistry(
-        createEmptyToolPermissionContext({
-          mode: options.permissionMode ?? "default",
-          isBypassPermissionsModeAvailable:
-            options.permissionMode === "bypassPermissions",
-        }),
-      ),
-      configStore,
+  let watcherStarted = false;
+  let sandboxExecutionBroker: SandboxExecutionBroker | undefined;
+  let mcpRuntimeManager: ReturnType<typeof createSessionMcpManager> | undefined;
+  let mcpService: ReturnType<typeof createSessionMcpService> | undefined;
+  try {
+    await skillsServices.skillsWatcher.start();
+    watcherStarted = true;
+    sandboxExecutionBroker = new SandboxExecutionBroker({
+      mode:
+        options.permissionMode === "bypassPermissions"
+          ? "danger_full_access"
+          : effectiveConfig.sandbox_mode === "read-only"
+            ? "read_only"
+            : effectiveConfig.sandbox_mode === "danger-full-access"
+              ? "danger_full_access"
+              : "workspace_write",
+      // Role authority remains anchored to the canonical checkout, while
+      // execution policy must follow the attached worktree/session cwd.
+      cwd: options.cwd,
+      env,
+      allowGpu: effectiveConfig.sandbox?.allow_gpu === true,
+    });
+    mcpRuntimeManager = createSessionMcpManager([], {
+      environment: mcpRequestEnvironment,
       sandboxExecutionBroker,
-      mcpManager: mcpService,
-      skillsManager: skillsServices.skillsManager,
-      pluginsManager: skillsServices.pluginsManager,
-      skillsWatcher: skillsServices.skillsWatcher,
-      authManager: { mode: "local_no_auth" },
-    },
-    config: effectiveConfig,
-    state: {
-      unsafePeek: () => ({
-        sessionConfiguration,
-        history: [],
+    });
+    mcpService = createSessionMcpService(mcpRuntimeManager, {
+      authority: configStore,
+      environment: mcpRequestEnvironment,
+    });
+    const activeMcpService = mcpService;
+    const activeMcpRuntimeManager = mcpRuntimeManager;
+    const activeSandboxExecutionBroker = sandboxExecutionBroker;
+    await activeMcpService.refreshFromAuthority?.();
+    const agentDefinitions = await loadFreshAgentDefinitions(roleWorkspace.cwd);
+    const abortController = new AbortController();
+    let nextEventId = 0;
+    const sessionConfiguration = {
+      ...sessionConfigurationFromAgenCConfig({
+        config: effectiveConfig,
+        workspaceRoot: options.cwd,
+        provider: startup.provider,
+        model: startup.model,
+        dangerouslyBypassApprovalsAndSandbox:
+          options.permissionMode === "bypassPermissions",
       }),
-    },
-    activeTurn: {
-      unsafePeek: () => null,
-    },
-    abortController,
-    abortTerminal: (reason) => {
-      if (!abortController.signal.aborted) abortController.abort(reason);
-    },
-    flushEventLog: () => {},
-    emit: () => {},
-    nextInternalSubId: () => `daemon-client-${++nextEventId}-${randomUUID()}`,
-    listMcpClients: () => projectMcpManagerToConnections(mcpService as never),
-    listMcpTools: () => mcpService.getTools?.() ?? [],
-  };
-  return {
-    baseSession: session,
-    model: startup.model,
-    workspaceRoot: options.cwd,
-    close: async () => {
-      await skillsServices.skillsWatcher?.stop?.();
-      await mcpRuntimeManager.stop();
-    },
-  };
+      // The bridge exposes provider identity, not an in-process LLMProvider.
+      provider: { slug: startup.provider },
+    };
+    const session: AgenCDaemonOnlyTuiSession = {
+      conversationId: options.conversationId,
+      roleWorkspace,
+      agentDefinitions,
+      cwd: options.cwd,
+      home: agencHome,
+      sessionConfiguration,
+      services: {
+        runtimeOptions,
+        providerEnvironment,
+        permissionModeRegistry: new PermissionModeRegistry(
+          createEmptyToolPermissionContext({
+            mode: options.permissionMode ?? "default",
+            isBypassPermissionsModeAvailable:
+              options.permissionMode === "bypassPermissions",
+          }),
+        ),
+        configStore,
+        sandboxExecutionBroker: activeSandboxExecutionBroker,
+        mcpManager: activeMcpService,
+        skillsManager: skillsServices.skillsManager,
+        pluginsManager: skillsServices.pluginsManager,
+        skillsWatcher: skillsServices.skillsWatcher,
+        authManager: { mode: "local_no_auth" },
+      },
+      config: effectiveConfig,
+      state: {
+        unsafePeek: () => ({
+          sessionConfiguration,
+          history: [],
+        }),
+      },
+      activeTurn: {
+        unsafePeek: () => null,
+      },
+      abortController,
+      abortTerminal: (reason) => {
+        if (!abortController.signal.aborted) abortController.abort(reason);
+      },
+      flushEventLog: () => {},
+      emit: () => {},
+      nextInternalSubId: () => `daemon-client-${++nextEventId}-${randomUUID()}`,
+      listMcpClients: () =>
+        projectMcpManagerToConnections(activeMcpService as never),
+      listMcpTools: () => activeMcpService.getTools?.() ?? [],
+    };
+    return {
+      baseSession: session,
+      model: startup.model,
+      workspaceRoot: options.cwd,
+      close: () =>
+        closeDaemonOnlyTuiResources({
+          watcherStarted,
+          skillsWatcher: skillsServices.skillsWatcher,
+          mcpService: activeMcpService,
+          mcpManager: activeMcpRuntimeManager,
+          sandboxExecutionBroker: activeSandboxExecutionBroker,
+        }),
+    };
+  } catch (error) {
+    try {
+      await closeDaemonOnlyTuiResources({
+        watcherStarted,
+        skillsWatcher: skillsServices.skillsWatcher,
+        ...(mcpService !== undefined ? { mcpService } : {}),
+        ...(mcpRuntimeManager !== undefined
+          ? { mcpManager: mcpRuntimeManager }
+          : {}),
+        ...(sandboxExecutionBroker !== undefined
+          ? { sandboxExecutionBroker }
+          : {}),
+      });
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [
+          error,
+          ...(cleanupError instanceof AggregateError
+            ? cleanupError.errors
+            : [cleanupError]),
+        ],
+        "daemon-only TUI context setup failed and cleanup was incomplete",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }

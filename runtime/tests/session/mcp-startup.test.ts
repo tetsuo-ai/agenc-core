@@ -41,6 +41,7 @@ import {
 } from "./mcp-startup.js";
 import type { Session } from "./session.js";
 import { ConfigStore } from "../config/store.js";
+import type { AgenCConfig } from "../config/schema.js";
 import {
   getCanonicalSettingsAuthority,
   type CanonicalSettingsAuthority,
@@ -69,7 +70,9 @@ const mockCreatePromptBridge = vi.mocked(createPromptBridge);
 const mockLoadPluginMcpServerRegistrations = vi.mocked(
   loadPluginMcpServerRegistrations,
 );
-const UNUSED_AUTHORITY = {} as CanonicalSettingsAuthority;
+const UNUSED_AUTHORITY = {
+  subscribe: () => () => {},
+} as unknown as CanonicalSettingsAuthority;
 const TEST_SERVICE_OPTIONS = Object.freeze({
   authority: UNUSED_AUTHORITY,
   environment: Object.freeze({}),
@@ -577,11 +580,14 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
   });
 });
 
-async function createMcpAuthorityFixture(options: {
-  readonly user?: readonly string[];
-  readonly project?: readonly string[];
-  readonly managed?: readonly string[];
-} = {}): Promise<{
+async function createMcpAuthorityFixture(
+  options: {
+    readonly user?: readonly string[];
+    readonly project?: readonly string[];
+    readonly managed?: readonly string[];
+    readonly base?: AgenCConfig;
+  } = {},
+): Promise<{
   readonly root: string;
   readonly home: string;
   readonly cwd: string;
@@ -622,6 +628,7 @@ async function createMcpAuthorityFixture(options: {
   }
   const store = new ConfigStore({
     home,
+    ...(options.base !== undefined ? { base: options.base } : {}),
     cwd,
     projectRoot: cwd,
     projectTrusted: true,
@@ -710,9 +717,13 @@ function createTransactionalManager(hook?: TransactionalRefreshHook) {
     configured = [];
     states.clear();
   });
+  const stopStrict = vi.fn(async (): Promise<void> => stop());
+  const clearServersStrict = vi.fn(async (): Promise<void> => stop());
   const manager = {
     refreshServers,
     stop,
+    stopStrict,
+    clearServersStrict,
     getConfiguredServers: () => configured,
     getServerConfig: (name: string) =>
       configured.find((config) => config.name === name),
@@ -738,6 +749,8 @@ function createTransactionalManager(hook?: TransactionalRefreshHook) {
     manager,
     refreshServers,
     stop,
+    stopStrict,
+    clearServersStrict,
     get configured(): readonly MCPServerConfig[] {
       return configured;
     },
@@ -1086,6 +1099,31 @@ describe("mcp-startup session-owned manager helpers", () => {
           }),
         }),
       ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("retains repository plugin defaults under plugin-only policy", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      base: {
+        mcp_servers: {
+          bundled: { command: "bundled-plugin-server" },
+        },
+      },
+      user: ["[mcp_servers.manual]", 'command = "manual-bin"'],
+      managed: ['strictPluginOnlyCustomization = ["mcp"]'],
+    });
+    try {
+      await expect(resolveSessionMcpConfig(fixture.store, {})).resolves.toEqual(
+        [
+          expect.objectContaining({
+            name: "bundled",
+            command: "bundled-plugin-server",
+            origin: { scope: "plugin" },
+          }),
+        ],
+      );
     } finally {
       fixture.cleanup();
     }
@@ -1445,6 +1483,223 @@ describe("mcp-startup session-owned manager helpers", () => {
       fixture.cleanup();
     }
   });
+
+  it("automatically revokes and reconciles after a canonical reload", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.before]", 'command = "before"'],
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      expect(fixture.store.subscriberCount()).toBe(0);
+      await service.refreshFromAuthority?.();
+      expect(fixture.store.subscriberCount()).toBe(1);
+      expect(harness.configured.map((config) => config.name)).toEqual([
+        "before",
+      ]);
+
+      writeCanonicalFixtureConfig(fixture.userConfigPath, [
+        "[mcp_servers.after]",
+        'command = "after"',
+      ]);
+      await fixture.store.reload();
+
+      await vi.waitFor(() => {
+        expect(harness.configured).toEqual([
+          expect.objectContaining({ name: "after", command: "after" }),
+        ]);
+      });
+      await expect(service.refreshFromAuthority?.()).resolves.toEqual({
+        configuredServers: ["after"],
+        requiredServers: [],
+      });
+      expect(harness.refreshServers).toHaveBeenCalledTimes(2);
+      await service.refreshFromAuthority?.();
+      expect(harness.refreshServers).toHaveBeenCalledTimes(3);
+      expect(harness.clearServersStrict).not.toHaveBeenCalled();
+    } finally {
+      await service.dispose?.();
+      expect(fixture.store.subscriberCount()).toBe(0);
+      fixture.cleanup();
+    }
+  });
+
+  it("cancels slow plugin discovery and revokes stale connections on reload", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.stale]", 'command = "stale"'],
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    const discoveryStarted = deferred();
+    const releaseDiscovery = deferred();
+    let discoveryFinished = false;
+    try {
+      await service.refreshFromAuthority?.();
+      mockLoadPluginMcpServerRegistrations.mockImplementationOnce(async () => {
+        discoveryStarted.resolve(undefined);
+        await releaseDiscovery.promise;
+        discoveryFinished = true;
+        return [];
+      });
+
+      const inFlightRefresh = service.refreshFromAuthority?.();
+      await discoveryStarted.promise;
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [
+        'deniedMcpServers = [{ serverName = "stale" }]',
+      ]);
+      await fixture.store.reload();
+
+      await vi.waitFor(() => expect(harness.configured).toEqual([]));
+      expect(discoveryFinished).toBe(false);
+      releaseDiscovery.resolve(undefined);
+      await expect(inFlightRefresh).resolves.toEqual({
+        configuredServers: [],
+        requiredServers: [],
+      });
+      expect(harness.configured).toEqual([]);
+    } finally {
+      releaseDiscovery.resolve(undefined);
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
+  it("lets an in-flight refresh satisfy the notified authority generation once", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.before]", 'command = "before"'],
+    });
+    const harness = createTransactionalManager(
+      async (_configs, _opts, call) => {
+        if (call !== 0) return;
+        writeCanonicalFixtureConfig(fixture.userConfigPath, [
+          "[mcp_servers.after]",
+          'command = "after"',
+        ]);
+        await fixture.store.reload();
+      },
+    );
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await expect(service.refreshFromAuthority?.()).resolves.toEqual({
+        configuredServers: ["after"],
+        requiredServers: [],
+      });
+      expect(harness.refreshServers).toHaveBeenCalledTimes(2);
+      expect(harness.configured).toEqual([
+        expect.objectContaining({ name: "after", command: "after" }),
+      ]);
+    } finally {
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
+  it("disposes during slow resolution without allowing a late restart", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.live]", 'command = "live"'],
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    const discoveryStarted = deferred();
+    const releaseDiscovery = deferred();
+    try {
+      await service.refreshFromAuthority?.();
+      mockLoadPluginMcpServerRegistrations.mockImplementationOnce(async () => {
+        discoveryStarted.resolve(undefined);
+        await releaseDiscovery.promise;
+        return [];
+      });
+      const inFlightRefresh = service.refreshFromAuthority?.();
+      await discoveryStarted.promise;
+
+      await expect(service.dispose?.()).resolves.toBeUndefined();
+      expect(harness.configured).toEqual([]);
+      releaseDiscovery.resolve(undefined);
+      await expect(inFlightRefresh).rejects.toThrow(
+        "MCP session service is closed",
+      );
+      await expect(service.refreshFromAuthority?.()).rejects.toThrow(
+        "MCP session service is closed",
+      );
+      expect(harness.configured).toEqual([]);
+    } finally {
+      releaseDiscovery.resolve(undefined);
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
+  it("performs a final strict stop after an in-flight manager apply drains", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const applyStarted = deferred();
+    const releaseApply = deferred();
+    const harness = createTransactionalManager(
+      async (_configs, _opts, call) => {
+        if (call !== 0) return;
+        applyStarted.resolve(undefined);
+        await releaseApply.promise;
+      },
+    );
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      const add = service.addServer?.({ name: "late", command: "late" });
+      await applyStarted.promise;
+      const disposal = service.dispose?.();
+      releaseApply.resolve(undefined);
+
+      await expect(add).resolves.toMatchObject({ success: false });
+      await expect(disposal).resolves.toBeUndefined();
+      expect(harness.stop).toHaveBeenCalledTimes(2);
+      expect(harness.clearServersStrict).toHaveBeenCalledOnce();
+      expect(harness.configured).toEqual([]);
+      expect(harness.manager.isConnected("late")).toBe(false);
+    } finally {
+      releaseApply.resolve(undefined);
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
+  it("retries strict projection cleanup after a failed disposal attempt", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const harness = createTransactionalManager();
+    harness.clearServersStrict.mockRejectedValueOnce(
+      new Error("retained owner still closing"),
+    );
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+
+      await expect(service.dispose?.()).rejects.toThrow(
+        "retained owner still closing",
+      );
+      await expect(service.dispose?.()).resolves.toBeUndefined();
+
+      expect(harness.clearServersStrict).toHaveBeenCalledTimes(2);
+      expect(harness.configured).toEqual([]);
+    } finally {
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
 });
 
 describe("session MCP mutation transactions", () => {
@@ -1471,6 +1726,45 @@ describe("session MCP mutation transactions", () => {
       expect(harness.refreshServers).not.toHaveBeenCalled();
       expect(mockCreateMCPConnection).not.toHaveBeenCalled();
     } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("allows a session definition to shadow a repository plugin default", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      base: {
+        mcp_servers: {
+          shared: { command: "plugin-default" },
+        },
+      },
+    });
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      expect(harness.configured).toEqual([
+        expect.objectContaining({
+          name: "shared",
+          command: "plugin-default",
+          origin: { scope: "plugin" },
+        }),
+      ]);
+
+      await expect(
+        service.addServer?.({ name: "shared", command: "session" }),
+      ).resolves.toMatchObject({ success: true });
+      expect(harness.configured).toEqual([
+        expect.objectContaining({
+          name: "shared",
+          command: "session",
+          origin: { scope: "session" },
+        }),
+      ]);
+    } finally {
+      await service.dispose?.();
       fixture.cleanup();
     }
   });
@@ -1690,14 +1984,79 @@ describe("session MCP mutation transactions", () => {
         success: false,
         error: expect.stringContaining("rollback failed"),
       });
-      expect(harness.refreshServers).toHaveBeenCalledTimes(3);
+      expect(harness.refreshServers).toHaveBeenCalledTimes(2);
+      expect(harness.clearServersStrict).toHaveBeenCalledOnce();
       expect(harness.configured).toEqual([]);
     } finally {
       fixture.cleanup();
     }
   });
 
-  it("fail-closes a failed authority refresh instead of preserving stale configs", async () => {
+  it("retries strict clear after fail-closed cleanup initially fails", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const harness = createTransactionalManager(
+      async (_configs, _opts, call) => {
+        if (call === 0) throw new Error("candidate failed");
+        if (call === 1) throw new Error("rollback failed");
+      },
+    );
+    harness.clearServersStrict.mockRejectedValueOnce(
+      new Error("cleanup ownership still retained"),
+    );
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await expect(
+        service.addServer?.({ name: "unsafe", command: "unsafe" }),
+      ).resolves.toMatchObject({ success: false });
+
+      expect(harness.clearServersStrict).toHaveBeenCalledTimes(2);
+      expect(harness.stopStrict).toHaveBeenCalledOnce();
+      expect(harness.configured).toEqual([]);
+    } finally {
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
+  it("invalidates a committed generation when postcondition rollback fail-closes", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const harness = createTransactionalManager(
+      async (_configs, _opts, call) => {
+        if (call === 0) await fixture.store.reload();
+        if (call === 2) throw new Error("rollback failed");
+      },
+    );
+    vi.spyOn(harness.manager, "getConnectionState").mockReturnValue({
+      type: "failed",
+      error: "candidate postcondition failed",
+    });
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await expect(
+        service.addServer?.({ name: "candidate", command: "candidate" }),
+      ).resolves.toMatchObject({ success: false });
+
+      await vi.waitFor(() =>
+        expect(harness.refreshServers).toHaveBeenCalledTimes(4),
+      );
+      await expect(service.refreshFromAuthority?.()).resolves.toEqual({
+        configuredServers: [],
+        requiredServers: [],
+      });
+      expect(harness.configured).toEqual([]);
+    } finally {
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
+  it("automatically fail-closes a failed authority refresh instead of preserving stale configs", async () => {
     const fixture = await createMcpAuthorityFixture({
       user: ["[mcp_servers.stale]", 'command = "stale"'],
     });
@@ -1716,11 +2075,116 @@ describe("session MCP mutation transactions", () => {
         'deniedMcpServers = [{ serverName = "stale" }]',
       ]);
       await fixture.store.reload();
-      await expect(service.refreshFromAuthority?.()).rejects.toThrow(
-        "Canonical MCP refresh failed and the session was fail-closed",
-      );
-      expect(harness.configured).toEqual([]);
+      await vi.waitFor(() => {
+        expect(harness.refreshServers).toHaveBeenCalledTimes(2);
+        expect(harness.clearServersStrict).toHaveBeenCalledOnce();
+        expect(harness.configured).toEqual([]);
+      });
     } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("retains a plugin disable across transient discovery failure", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const registration = {
+      name: "plugin:sample:goal",
+      pluginName: "sample",
+      pluginSource: "sample@registry",
+      serverName: "goal",
+      server: {
+        transport: "stdio" as const,
+        command: "node",
+        args: ["goal-server.mjs"],
+      },
+    };
+    mockLoadPluginMcpServerRegistrations.mockResolvedValue([registration]);
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      await expect(
+        service.disableServer?.("plugin:sample:goal"),
+      ).resolves.toMatchObject({ success: true });
+      expect(harness.configured[0]).toMatchObject({
+        name: "plugin:sample:goal",
+        enabled: false,
+      });
+
+      mockLoadPluginMcpServerRegistrations.mockRejectedValueOnce(
+        new Error("temporary plugin registry failure"),
+      );
+      await expect(service.refreshFromAuthority?.()).resolves.toEqual({
+        configuredServers: [],
+        requiredServers: [],
+      });
+      expect(harness.configured).toEqual([]);
+
+      await service.refreshFromAuthority?.();
+      expect(harness.configured).toEqual([
+        expect.objectContaining({
+          name: "plugin:sample:goal",
+          enabled: false,
+        }),
+      ]);
+      expect(harness.manager.getConnectionState("plugin:sample:goal")).toEqual({
+        type: "disabled",
+      });
+    } finally {
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
+  it("retains a plugin disable when discovery is only partially complete", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const registration = {
+      name: "plugin:sample:goal",
+      pluginName: "sample",
+      pluginSource: "sample@registry",
+      serverName: "goal",
+      server: {
+        transport: "stdio" as const,
+        command: "node",
+        args: ["goal-server.mjs"],
+      },
+    };
+    mockLoadPluginMcpServerRegistrations.mockResolvedValue([registration]);
+    const harness = createTransactionalManager();
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await service.refreshFromAuthority?.();
+      await service.disableServer?.("plugin:sample:goal");
+
+      mockLoadPluginMcpServerRegistrations.mockImplementationOnce(
+        async (options) => {
+          options.errors?.push({
+            type: "manifest",
+            plugin: "sample",
+            source: "sample@registry",
+            message: "manifest temporarily unreadable",
+          });
+          return [];
+        },
+      );
+      await service.refreshFromAuthority?.();
+      expect(harness.configured).toEqual([]);
+
+      await service.refreshFromAuthority?.();
+      expect(harness.configured).toEqual([
+        expect.objectContaining({
+          name: "plugin:sample:goal",
+          enabled: false,
+        }),
+      ]);
+    } finally {
+      await service.dispose?.();
       fixture.cleanup();
     }
   });
@@ -1804,6 +2268,153 @@ describe("session MCP mutation transactions", () => {
       }
     },
   );
+
+  it("purges a blocked session definition even when authority application fails", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const harness = createTransactionalManager(
+      async (_configs, _opts, call) => {
+        if (call === 1) throw new Error("blocked authority apply failed");
+      },
+    );
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await expect(
+        service.addServer?.({ name: "ephemeral", command: "ephemeral" }),
+      ).resolves.toMatchObject({ success: true });
+
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [
+        'deniedMcpServers = [{ serverName = "ephemeral" }]',
+      ]);
+      await fixture.store.reload();
+      await vi.waitFor(() => {
+        expect(harness.refreshServers).toHaveBeenCalledTimes(2);
+        expect(harness.clearServersStrict).toHaveBeenCalledOnce();
+        expect(harness.configured).toEqual([]);
+      });
+
+      rmSync(fixture.managedConfigPath, { force: true });
+      await fixture.store.reload();
+      await vi.waitFor(() => {
+        expect(harness.refreshServers).toHaveBeenCalledTimes(3);
+        expect(harness.configured).toEqual([]);
+      });
+    } finally {
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
+  it("does not resurrect a purged session definition when authority churns during apply", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const blockedApplyStarted = deferred();
+    const releaseBlockedApply = deferred();
+    const harness = createTransactionalManager(
+      async (_configs, _opts, call) => {
+        if (call !== 1) return;
+        blockedApplyStarted.resolve(undefined);
+        await releaseBlockedApply.promise;
+      },
+    );
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await expect(
+        service.addServer?.({ name: "ephemeral", command: "ephemeral" }),
+      ).resolves.toMatchObject({ success: true });
+
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [
+        'deniedMcpServers = [{ serverName = "ephemeral" }]',
+      ]);
+      await fixture.store.reload();
+      await blockedApplyStarted.promise;
+
+      rmSync(fixture.managedConfigPath, { force: true });
+      await fixture.store.reload();
+      releaseBlockedApply.resolve(undefined);
+
+      await vi.waitFor(() => {
+        expect(harness.refreshServers).toHaveBeenCalledTimes(3);
+        expect(harness.configured).toEqual([]);
+      });
+    } finally {
+      releaseBlockedApply.resolve(undefined);
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
+  it("does not resurrect a revoked server from a stale rollback baseline", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const mutationBaselineStarted = deferred();
+    const releaseMutationBaseline = deferred();
+    const rollbackResolutionStarted = deferred();
+    const releaseRollbackResolution = deferred();
+    let pluginLoadCall = 0;
+    mockLoadPluginMcpServerRegistrations.mockImplementation(async () => {
+      const call = pluginLoadCall;
+      pluginLoadCall += 1;
+      if (call === 2) {
+        mutationBaselineStarted.resolve(undefined);
+        await releaseMutationBaseline.promise;
+      }
+      if (call === 5) {
+        rollbackResolutionStarted.resolve(undefined);
+        await releaseRollbackResolution.promise;
+      }
+      return [];
+    });
+    const harness = createTransactionalManager(
+      async (_configs, _opts, call) => {
+        if (call === 1) throw new Error("candidate failed");
+      },
+    );
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    try {
+      await expect(
+        service.addServer?.({ name: "ephemeral", command: "ephemeral" }),
+      ).resolves.toMatchObject({ success: true });
+
+      const trigger = service.addServer?.({
+        name: "trigger",
+        command: "trigger",
+      });
+      await mutationBaselineStarted.promise;
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [
+        'deniedMcpServers = [{ serverName = "ephemeral" }]',
+      ]);
+      await fixture.store.reload();
+      releaseMutationBaseline.resolve(undefined);
+
+      await rollbackResolutionStarted.promise;
+      rmSync(fixture.managedConfigPath, { force: true });
+      await fixture.store.reload();
+      releaseRollbackResolution.resolve(undefined);
+
+      await expect(trigger).resolves.toMatchObject({
+        serverName: "trigger",
+        success: false,
+        error: expect.stringContaining("candidate failed"),
+      });
+      await service.refreshFromAuthority?.();
+      expect(harness.configured).toEqual([]);
+      expect(
+        harness.manager.getConfiguredServers().map((config) => config.name),
+      ).not.toContain("ephemeral");
+    } finally {
+      releaseMutationBaseline.resolve(undefined);
+      releaseRollbackResolution.resolve(undefined);
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
 
   it("revokes denied servers even when plugin discovery fails", async () => {
     const fixture = await createMcpAuthorityFixture({
@@ -2102,7 +2713,8 @@ describe("session MCP mutation transactions", () => {
       );
       expect(snapshotReads).toBeGreaterThanOrEqual(10);
       expect(snapshotReads).toBeLessThan(20);
-      expect(harness.refreshServers).toHaveBeenCalledTimes(1);
+      expect(harness.refreshServers).not.toHaveBeenCalled();
+      expect(harness.clearServersStrict).toHaveBeenCalledOnce();
       expect(harness.configured).toEqual([]);
     } finally {
       fixture.cleanup();

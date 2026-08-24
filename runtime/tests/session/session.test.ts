@@ -210,6 +210,7 @@ function buildSession(
     sessionConfiguration?: SessionConfiguration;
     config?: Config;
     modelInfo?: ModelInfo;
+    mcpManagerOwnership?: SessionOpts["mcpManagerOwnership"];
   } = {},
 ): Session {
   const services = {
@@ -243,6 +244,9 @@ function buildSession(
     },
     features: mkFeatures(),
     services,
+    ...(overrides.mcpManagerOwnership !== undefined
+      ? { mcpManagerOwnership: overrides.mcpManagerOwnership }
+      : {}),
     jsRepl: { id: "repl-test" },
     config: overrides.config ?? mkConfig(),
     modelInfo: overrides.modelInfo ?? mkModelInfo(),
@@ -1398,6 +1402,7 @@ describe("Session turn-driver hooks", () => {
           isCancelled: () => cancel.mock.calls.length > 0,
         },
       },
+      mcpManagerOwnership: "owned",
     });
     const startup = vi.fn(async () => {});
     const submit = vi.fn(async () => {});
@@ -1414,6 +1419,65 @@ describe("Session turn-driver hooks", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  it("drains critical session state before waiting on MCP disposal", async () => {
+    let releaseDispose!: () => void;
+    const dispose = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDispose = resolve;
+        }),
+    );
+    const session = buildSession({
+      services: {
+        mcpManager: { dispose },
+      },
+      mcpManagerOwnership: "owned",
+    });
+
+    const shutdown = session.shutdown();
+    await vi.waitFor(() => expect(session.mailbox.isClosed).toBe(true));
+    expect(dispose).toHaveBeenCalledOnce();
+
+    releaseDispose();
+    await shutdown;
+  });
+
+  it("retries rejected disposal for an owned MCP manager exactly once", async () => {
+    const dispose = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("first strict clear failed"))
+      .mockResolvedValueOnce(undefined);
+    const session = buildSession({
+      services: { mcpManager: { dispose } },
+      mcpManagerOwnership: "owned",
+    });
+
+    await session.shutdown();
+
+    expect(dispose).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cancel or dispose MCP authority borrowed by a child session", async () => {
+    const cancel = vi.fn();
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const session = buildSession({
+      services: {
+        mcpManager: { dispose },
+        mcpStartupCancellationToken: {
+          signal: new AbortController().signal,
+          cancel,
+          isCancelled: () => false,
+        },
+      },
+      mcpManagerOwnership: "borrowed",
+    });
+
+    await session.shutdown();
+
+    expect(cancel).not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
+  });
+
   it("cancels and drains an in-flight startup activation before shutdown completes", async () => {
     const cancel = vi.fn();
     const session = buildSession({
@@ -1424,6 +1488,7 @@ describe("Session turn-driver hooks", () => {
           isCancelled: () => cancel.mock.calls.length > 0,
         },
       },
+      mcpManagerOwnership: "owned",
     });
     let releaseStartup!: () => void;
     const startupGate = new Promise<void>((resolve) => {

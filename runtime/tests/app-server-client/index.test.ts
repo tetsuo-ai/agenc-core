@@ -128,6 +128,78 @@ describe("app-server-client daemon helpers", () => {
     ).rejects.toThrow("matches multiple agents");
   });
 
+  it("rolls back watcher and MCP resources when daemon-only setup fails", async () => {
+    vi.resetModules();
+    const watcherStart = vi.fn().mockResolvedValue(undefined);
+    const watcherStop = vi.fn().mockResolvedValue(undefined);
+    const refreshFromAuthority = vi.fn().mockResolvedValue(undefined);
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const clearServersStrict = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("../skills/local-loader.js", async (importActual) => {
+      const actual =
+        await importActual<typeof import("../skills/local-loader.js")>();
+      return {
+        ...actual,
+        createLocalSkillsServices: vi.fn(() => ({
+          skillsManager: {},
+          pluginsManager: {},
+          skillsWatcher: { start: watcherStart, stop: watcherStop },
+        })),
+      };
+    });
+    vi.doMock("../session/mcp-startup.js", async (importActual) => {
+      const actual =
+        await importActual<typeof import("../session/mcp-startup.js")>();
+      return {
+        ...actual,
+        createSessionMcpManager: vi.fn(() => ({ clearServersStrict })),
+        createSessionMcpService: vi.fn(() => ({
+          refreshFromAuthority,
+          dispose,
+        })),
+      };
+    });
+    vi.doMock("../tools/AgentTool/loadAgentsDir.js", async (importActual) => {
+      const actual =
+        await importActual<
+          typeof import("../tools/AgentTool/loadAgentsDir.js")
+        >();
+      return {
+        ...actual,
+        loadFreshAgentDefinitions: vi
+          .fn()
+          .mockRejectedValue(new Error("agent definition setup failed")),
+      };
+    });
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-setup-fail-home-"));
+    const workspace = mkdtempSync(
+      join(tmpdir(), "agenc-setup-fail-workspace-"),
+    );
+    try {
+      const module = await import("./index.js");
+      await expect(
+        module.createAgenCDaemonOnlyTuiContext({
+          env: { AGENC_HOME: agencHome, HOME: agencHome },
+          cwd: workspace,
+          conversationId: "agenc-tui-setup-failure",
+        }),
+      ).rejects.toThrow("agent definition setup failed");
+
+      expect(watcherStart).toHaveBeenCalledOnce();
+      expect(refreshFromAuthority).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(watcherStop).toHaveBeenCalledOnce();
+      expect(clearServersStrict).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../skills/local-loader.js");
+      vi.doUnmock("../session/mcp-startup.js");
+      vi.doUnmock("../tools/AgentTool/loadAgentsDir.js");
+      vi.resetModules();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("finds a live canonical conversation id and ignores persisted-only rows", async () => {
     const live = createListClient([
       {
@@ -441,6 +513,47 @@ describe("app-server-client daemon helpers", () => {
       );
     } finally {
       await context?.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("still disposes MCP when the daemon-only skills watcher stop fails", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-close-fail-home-"));
+    const workspace = mkdtempSync(
+      join(tmpdir(), "agenc-close-fail-workspace-"),
+    );
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
+    try {
+      context = await createAgenCDaemonOnlyTuiContext({
+        env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
+        cwd: workspace,
+        conversationId: "agenc-tui-close-failure",
+      });
+      const watcher = context.baseSession.services.skillsWatcher;
+      const originalWatcherStop = watcher.stop?.bind(watcher);
+      const watcherStop = vi
+        .spyOn(watcher, "stop")
+        .mockImplementation(async () => {
+          await originalWatcherStop?.();
+          throw new Error("watcher stop failed");
+        });
+      const mcpService = context.baseSession.services.mcpManager;
+      const originalDispose = mcpService.dispose?.bind(mcpService);
+      const mcpDispose = vi
+        .spyOn(mcpService, "dispose")
+        .mockImplementation(() => originalDispose?.() ?? Promise.resolve());
+
+      await expect(context.close()).rejects.toThrow(
+        "daemon-only TUI context cleanup failed",
+      );
+      expect(watcherStop).toHaveBeenCalledOnce();
+      expect(mcpDispose).toHaveBeenCalledOnce();
+      context = null;
+    } finally {
+      await context?.close().catch(() => undefined);
       rmSync(agencHome, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });
     }

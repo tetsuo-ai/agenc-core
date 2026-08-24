@@ -1654,6 +1654,47 @@ describe("plugin registration", () => {
       vi.resetModules();
     }
   });
+
+  test("MCP discovery surfaces partial loader errors", async () => {
+    vi.resetModules();
+    const issue: PluginLoadIssue = {
+      type: "manifest",
+      plugin: "broken",
+      source: "broken@registry",
+      message: "manifest temporarily unreadable",
+    };
+    const loadPluginsMock = vi.fn(async () => ({
+      enabled: [],
+      disabled: [],
+      errors: [issue],
+    }));
+    vi.doMock("./loader.js", async () => {
+      const actual =
+        await vi.importActual<typeof import("./loader.js")>("./loader.js");
+      return { ...actual, loadPlugins: loadPluginsMock };
+    });
+    try {
+      const commonModule = await import("./registration/common.js");
+      const mcpModule =
+        await import("./registration/mcp-plugin-integration.js");
+      commonModule.clearRuntimePluginLoadCache();
+      const errors: PluginLoadIssue[] = [];
+
+      await expect(
+        mcpModule.loadPluginMcpServers({
+          cwd: "/tmp/agenc-plugin-error-load",
+          agencHome: "/tmp/agenc-plugin-error-home",
+          errors,
+        }),
+      ).resolves.toEqual({});
+
+      expect(loadPluginsMock).toHaveBeenCalledOnce();
+      expect(errors).toEqual([issue]);
+    } finally {
+      vi.doUnmock("./loader.js");
+      vi.resetModules();
+    }
+  });
 });
 
 async function withTempPlugin(

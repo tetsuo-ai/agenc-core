@@ -934,6 +934,7 @@ export async function spawnAgenCDelegateThread(
       },
       features: parent.features,
       services: childServices,
+      mcpManagerOwnership: "borrowed",
       jsRepl: parent.jsRepl,
       config: req.config,
       modelInfo: reviewerModelInfo,

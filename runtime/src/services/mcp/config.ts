@@ -920,6 +920,48 @@ export interface ResolvedMcpServerDefinition {
 
 export type McpSessionServerDisposition = 'active' | 'shadowed' | 'blocked'
 
+export interface McpConfigResolutionOptions {
+  readonly signal?: AbortSignal
+}
+
+function mcpResolutionAbortError(signal: AbortSignal): Error {
+  const error = new Error(
+    `MCP configuration resolution cancelled (${String(
+      signal.reason ?? 'unspecified',
+    )})`,
+  )
+  error.name = 'AbortError'
+  return error
+}
+
+function throwIfMcpResolutionAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) throw mcpResolutionAbortError(signal)
+}
+
+function raceMcpResolutionWithAbort<T>(
+  operation: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal === undefined) return operation
+  if (signal.aborted) return Promise.reject(mcpResolutionAbortError(signal))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(mcpResolutionAbortError(signal))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    void operation.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
 function withMcpServerEnabled(
   config: ScopedMcpServerConfig,
   enabled: boolean,
@@ -1096,16 +1138,19 @@ export async function getAllMcpConfigs(
   environment: Readonly<Record<string, string | undefined>> = {},
   sessionServers: Readonly<Record<string, ScopedMcpServerConfig>> = {},
   enabledOverrides: ReadonlyMap<string, boolean> = new Map(),
+  options: McpConfigResolutionOptions = {},
 ): Promise<{
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
   definitions: ReadonlyMap<string, ResolvedMcpServerDefinition>
   knownDefinitionIds: ReadonlySet<string>
+  pluginDefinitionKnowledgeComplete: boolean
   authoritySnapshot: ReturnType<CanonicalSettingsAuthority['current']>
   sessionDispositions: Readonly<
     Record<string, McpSessionServerDisposition>
   >
 }> {
+  throwIfMcpResolutionAborted(options.signal)
   const resolutionAuthority = captureMcpResolutionAuthority(authority)
   const validationErrorsToPluginErrors = (
     errors: readonly ValidationError[],
@@ -1129,8 +1174,14 @@ export async function getAllMcpConfigs(
   >()
   const repositoryResolution = resolveMcpLayerCandidates(
     resolutionAuthority.authoritySnapshot().layers,
-    candidate => {
-      if (mcpLocked) return 'reject'
+    (candidate) => {
+      if (
+        mcpLocked &&
+        candidate.source.scope !== 'plugin' &&
+        candidate.source.scope !== 'default'
+      ) {
+        return 'reject'
+      }
       if (!canonicalMcpCandidateIsComplete(candidate.config)) {
         if (candidate.source.scope !== 'project') return 'defer'
         repositoryErrors.push(
@@ -1257,16 +1308,22 @@ export async function getAllMcpConfigs(
       registrations = await runWithCanonicalSettingsAuthority(
         resolutionAuthority,
         () =>
-          loadPluginMcpServerRegistrations({
-            agencHome: resolutionAuthority.homeContext.path,
-            workspaceRoot: resolutionAuthority.projectRoot,
-            config: resolutionAuthority.current(),
-            env: { ...environment },
-            errors: registrationIssues,
-          }),
+          raceMcpResolutionWithAbort(
+            loadPluginMcpServerRegistrations({
+              agencHome: resolutionAuthority.homeContext.path,
+              workspaceRoot: resolutionAuthority.projectRoot,
+              config: resolutionAuthority.current(),
+              env: { ...environment },
+              errors: registrationIssues,
+            }),
+            options.signal,
+          ),
       )
     }
   } catch (error) {
+    if (options.signal?.aborted === true) {
+      throw mcpResolutionAbortError(options.signal)
+    }
     const message = error instanceof Error ? error.message : String(error)
     registrationFailure = {
       type: 'generic-error',
@@ -1360,6 +1417,8 @@ export async function getAllMcpConfigs(
     ...Object.entries(effectiveManual.servers),
   ])
 
+  throwIfMcpResolutionAborted(options.signal)
+
   return {
     servers: configs,
     errors: mcpErrors,
@@ -1372,6 +1431,8 @@ export async function getAllMcpConfigs(
       ...admittedManualDefinitions,
       effectivePlugins.definitions,
     ),
+    pluginDefinitionKnowledgeComplete:
+      registrationFailure === undefined && registrationIssues.length === 0,
     authoritySnapshot: resolutionAuthority.current(),
     sessionDispositions,
   }

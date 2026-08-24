@@ -775,6 +775,46 @@ describe("MCPManager", () => {
     expect(manager.getConnectedServers()).toEqual([]);
   });
 
+  it("clearServersStrict revokes connections and configs without restarting", async () => {
+    mockCreateMCPConnection.mockResolvedValueOnce("c1");
+    mockCreateToolBridge.mockResolvedValueOnce(makeMockBridge("srv1", ["a"]));
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+    const start = vi.spyOn(manager, "start");
+
+    await manager.clearServersStrict();
+
+    expect(start).not.toHaveBeenCalled();
+    expect(manager.getConfiguredServers()).toEqual([]);
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(manager.getTools()).toEqual([]);
+  });
+
+  it("clearServersStrict hides revoked authority while cleanup is retained for retry", async () => {
+    const bridge = makeMockBridge("srv1", ["a"]);
+    bridge.dispose
+      .mockRejectedValueOnce(new Error("close failed"))
+      .mockResolvedValueOnce(undefined);
+    mockCreateMCPConnection.mockResolvedValueOnce("c1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+
+    await expect(manager.clearServersStrict()).rejects.toThrow(
+      /strict shutdown failed/,
+    );
+    expect(manager.getConfiguredServers()).toEqual([]);
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(manager.getConnectionState("srv1")).toBeUndefined();
+    expect(manager.getTools()).toEqual([]);
+
+    await expect(manager.clearServersStrict()).resolves.toBeUndefined();
+    expect(bridge.dispose).toHaveBeenCalledTimes(2);
+    expect(manager.getConfiguredServers()).toEqual([]);
+  });
+
   it("refreshServers replaces configs and restarts the same manager instance", async () => {
     const firstBridge = makeMockBridge("old", ["before"]);
     const nextBridge = makeMockBridge("new", ["after"]);

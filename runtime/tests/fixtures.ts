@@ -210,6 +210,8 @@ export function mkSession(opts?: {
   readonly cwd?: string;
   readonly provider?: LLMProvider;
   readonly registry?: ToolRegistry;
+  readonly services?: Partial<SessionServices>;
+  readonly mcpManagerOwnership?: SessionOpts["mcpManagerOwnership"];
   readonly history?: readonly LLMMessage[];
   readonly totalTokenUsage?: number;
   readonly modelInfo?: Partial<ModelInfo>;
@@ -259,12 +261,16 @@ export function mkSession(opts?: {
     permissionModeRegistry: new PermissionModeRegistry(
       createEmptyToolPermissionContext(),
     ),
+    ...(opts?.services ?? {}),
   } as unknown as SessionServices;
   const session = new Session({
     conversationId: "conv-test",
     services,
     initialState: state as unknown as SessionOpts["initialState"],
     features: mkFeatures(),
+    ...(opts?.mcpManagerOwnership !== undefined
+      ? { mcpManagerOwnership: opts.mcpManagerOwnership }
+      : {}),
     jsRepl: { id: "repl-test" },
     config: mkConfig(cwd),
     modelInfo: mkModelInfo(opts?.modelInfo),

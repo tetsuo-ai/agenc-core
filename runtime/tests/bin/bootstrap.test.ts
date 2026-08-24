@@ -551,6 +551,13 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(startMcpSpy).toHaveBeenCalledWith(boot.mcpManager, {
         signal: boot.session.services.mcpStartupCancellationToken.signal,
       });
+      const disposeSpy = vi.spyOn(
+        boot.session.services.mcpManager,
+        "dispose",
+      );
+      await boot.shutdown();
+      shutdown = null;
+      expect(disposeSpy).toHaveBeenCalledOnce();
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -3031,14 +3038,20 @@ describe("bootstrapLocalRuntimeSession", () => {
   it("hydrates the live MCP manager from canonical config.toml mcp_servers", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const pidFile = join(home, "mcp", "github.pid");
+    const mcpFixture = join(
+      process.cwd(),
+      "src/mcp-client/test-fixtures/stdio-pid-server.cjs",
+    );
     await writeFile(
       join(home, "config.toml"),
       `
 config_version = 2
+sandbox_mode = "danger-full-access"
 
 [mcp_servers.github]
-command = "github-mcp"
-args = ["--stdio"]
+command = ${JSON.stringify(process.execPath)}
+args = [${JSON.stringify(mcpFixture)}, ${JSON.stringify(pidFile)}]
 timeout = 5000
 required = true
       `,
@@ -3061,9 +3074,7 @@ required = true
           }),
         }) as never,
     );
-    const startMcpSpy = vi
-      .spyOn(Session.prototype, "startMcpManager")
-      .mockResolvedValue(undefined);
+    const startMcpSpy = vi.spyOn(Session.prototype, "startMcpManager");
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
@@ -3081,8 +3092,8 @@ required = true
       expect(boot.mcpManager.getConfiguredServers()).toEqual([
         expect.objectContaining({
           name: "github",
-          command: "github-mcp",
-          args: ["--stdio"],
+          command: process.execPath,
+          args: [mcpFixture, pidFile],
           timeout: 5_000,
           required: true,
         }),

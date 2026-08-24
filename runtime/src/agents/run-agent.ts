@@ -2995,6 +2995,7 @@ function buildChildSession(
       history: [],
     },
     features: params.parent.features,
+    mcpManagerOwnership: "borrowed",
     services: {
       ...params.parent.services,
       provider,
